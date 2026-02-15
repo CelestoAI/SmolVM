@@ -1,11 +1,11 @@
 # Copyright 2026 Celesto AI
-# 
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-# 
+#
 #     http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -121,44 +121,67 @@ def ensure_ssh_key(key_dir: Path | None = None) -> tuple[Path, Path]:
     """Ensure an ED25519 SSH key pair exists for the current user.
 
     Args:
-        key_dir: Directory to store keys. Defaults to ~/.smolvm.
+        key_dir: Directory to store keys. Defaults to ``~/.smolvm/keys``.
 
     Returns:
         Tuple of (private_key_path, public_key_path).
     """
+    sudo_uid: int | None = None
+    sudo_gid: int | None = None
+
     if key_dir is None:
         user_home = Path.home()
-        sudo_uid = None
-        sudo_gid = None
 
-        # If running as root via sudo, use the real user's home directory
+        # If running as root via sudo, use the real user's home directory.
         sudo_user = os.environ.get("SUDO_USER")
         if sudo_user:
             import pwd
+
             try:
                 pw = pwd.getpwnam(sudo_user)
                 user_home = Path(pw.pw_dir)
                 sudo_uid = pw.pw_uid
                 sudo_gid = pw.pw_gid
             except KeyError:
-                pass  # Fallback to root's home if user lookup fails
+                pass  # Fallback to root's home if user lookup fails.
 
-        key_dir = user_home / ".smolvm"
+        base_dir = user_home / ".smolvm"
+        key_dir = base_dir / "keys"
 
-        # Create dir with correct permissions if we switched users
-        if not key_dir.exists():
+        legacy_private = base_dir / "id_ed25519"
+        legacy_public = base_dir / "id_ed25519.pub"
+        migrated_private = key_dir / "id_ed25519"
+        migrated_public = key_dir / "id_ed25519.pub"
+
+        # Backward compatibility: reuse legacy key location if present by
+        # copying it into the new ~/.smolvm/keys layout.
+        if (
+            not migrated_private.exists()
+            and not migrated_public.exists()
+            and legacy_private.exists()
+            and legacy_public.exists()
+        ):
             key_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(legacy_private, migrated_private)
+            shutil.copy2(legacy_public, migrated_public)
             if sudo_uid is not None and sudo_gid is not None:
                 os.chown(key_dir, sudo_uid, sudo_gid)
+                os.chown(migrated_private, sudo_uid, sudo_gid)
+                os.chown(migrated_public, sudo_uid, sudo_gid)
+
+    key_dir = Path(key_dir)
+    if not key_dir.exists():
+        key_dir.mkdir(parents=True, exist_ok=True)
+        if sudo_uid is not None and sudo_gid is not None:
+            os.chown(key_dir, sudo_uid, sudo_gid)
 
     private_key = key_dir / "id_ed25519"
     public_key = key_dir / "id_ed25519.pub"
-    
-    # Check if keys exist
+
+    # Check if keys exist.
     if private_key.exists() and public_key.exists():
-        # Ensure correct ownership if we are sudo
+        # Ensure correct ownership if we are sudo.
         if sudo_uid is not None and sudo_gid is not None:
-            # Best effort chown of existing keys
             try:
                 os.chown(private_key, sudo_uid, sudo_gid)
                 os.chown(public_key, sudo_uid, sudo_gid)
@@ -170,17 +193,21 @@ def ensure_ssh_key(key_dir: Path | None = None) -> tuple[Path, Path]:
     subprocess.run(
         [
             "ssh-keygen",
-            "-t", "ed25519",
-            "-N", "",
-            "-f", str(private_key),
-            "-C", "smolvm-auto",
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-f",
+            str(private_key),
+            "-C",
+            "smolvm-auto",
         ],
         check=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
 
-    # Fix ownership of generated keys
+    # Fix ownership of generated keys.
     if sudo_uid is not None and sudo_gid is not None:
         os.chown(private_key, sudo_uid, sudo_gid)
         os.chown(public_key, sudo_uid, sudo_gid)

@@ -71,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
     env_set.add_argument(
         "--ssh-key",
         default=None,
-        help="SSH private key path (default fallback: ~/.smolvm/id_ed25519).",
+        help="SSH private key path (default fallback: ~/.smolvm/keys/id_ed25519).",
     )
     env_set.add_argument(
         "--ssh-user",
@@ -94,7 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
     env_unset.add_argument(
         "--ssh-key",
         default=None,
-        help="SSH private key path (default fallback: ~/.smolvm/id_ed25519).",
+        help="SSH private key path (default fallback: ~/.smolvm/keys/id_ed25519).",
     )
     env_unset.add_argument(
         "--ssh-user",
@@ -116,7 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
     env_list.add_argument(
         "--ssh-key",
         default=None,
-        help="SSH private key path (default fallback: ~/.smolvm/id_ed25519).",
+        help="SSH private key path (default fallback: ~/.smolvm/keys/id_ed25519).",
     )
     env_list.add_argument(
         "--ssh-user",

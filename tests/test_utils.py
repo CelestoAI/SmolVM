@@ -1,11 +1,11 @@
 # Copyright 2026 Celesto AI
-# 
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-# 
+#
 #     http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from smolvm.exceptions import SmolVMError
-from smolvm.utils import run_command, which
+from smolvm.utils import ensure_ssh_key, run_command, which
 
 
 class TestRunCommand:
@@ -138,3 +138,67 @@ class TestWhich:
         """Test that empty binary name raises ValueError."""
         with pytest.raises(ValueError, match="binary name cannot be empty"):
             which("")
+
+
+class TestEnsureSSHKey:
+    """Tests for ensure_ssh_key utility."""
+
+    @patch("smolvm.utils.subprocess.run")
+    @patch("smolvm.utils.Path.home")
+    def test_default_path_uses_keys_subdir(
+        self,
+        mock_home: MagicMock,
+        mock_run: MagicMock,
+        tmp_path,
+    ) -> None:
+        """Default key location should be ~/.smolvm/keys."""
+        mock_home.return_value = tmp_path
+
+        private_key, public_key = ensure_ssh_key()
+
+        expected_dir = tmp_path / ".smolvm" / "keys"
+        assert private_key == expected_dir / "id_ed25519"
+        assert public_key == expected_dir / "id_ed25519.pub"
+        assert expected_dir.exists()
+        mock_run.assert_called_once()
+
+    @patch("smolvm.utils.subprocess.run")
+    @patch("smolvm.utils.Path.home")
+    def test_legacy_key_location_is_migrated(
+        self,
+        mock_home: MagicMock,
+        mock_run: MagicMock,
+        tmp_path,
+    ) -> None:
+        """Legacy ~/.smolvm/id_ed25519 keys should be reused via migration."""
+        mock_home.return_value = tmp_path
+        legacy_dir = tmp_path / ".smolvm"
+        legacy_dir.mkdir(parents=True)
+        legacy_private = legacy_dir / "id_ed25519"
+        legacy_public = legacy_dir / "id_ed25519.pub"
+        legacy_private.write_text("legacy-private")
+        legacy_public.write_text("legacy-public")
+
+        private_key, public_key = ensure_ssh_key()
+
+        expected_dir = tmp_path / ".smolvm" / "keys"
+        assert private_key == expected_dir / "id_ed25519"
+        assert public_key == expected_dir / "id_ed25519.pub"
+        assert private_key.read_text() == "legacy-private"
+        assert public_key.read_text() == "legacy-public"
+        mock_run.assert_not_called()
+
+    @patch("smolvm.utils.subprocess.run")
+    def test_explicit_key_dir_does_not_require_sudo_context(
+        self,
+        mock_run: MagicMock,
+        tmp_path,
+    ) -> None:
+        """Passing key_dir should work without relying on sudo-derived locals."""
+        key_dir = tmp_path / "custom-keys"
+
+        private_key, public_key = ensure_ssh_key(key_dir=key_dir)
+
+        assert private_key == key_dir / "id_ed25519"
+        assert public_key == key_dir / "id_ed25519.pub"
+        mock_run.assert_called_once()

@@ -86,7 +86,7 @@ class VM:
         ssh_user: SSH user for :meth:`run` (default ``root``).
         ssh_key_path: Optional SSH private key path. If omitted,
             SmolVM first tries default SSH auth, then falls back to
-            ``~/.smolvm/id_ed25519`` when needed.
+            ``~/.smolvm/keys/id_ed25519`` when needed.
 
     Raises:
         ValueError: If both *config* and *vm_id* are given.
@@ -229,7 +229,7 @@ class VM:
             ssh_user: SSH user for :meth:`run`.
             ssh_key_path: Optional SSH private key path. If omitted,
                 SmolVM first tries default SSH auth, then falls back to
-                ``~/.smolvm/id_ed25519`` when needed.
+                ``~/.smolvm/keys/id_ed25519`` when needed.
 
         Returns:
             A :class:`VM` instance bound to the existing VM.
