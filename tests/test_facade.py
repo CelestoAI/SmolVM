@@ -18,7 +18,11 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from smolvm.exceptions import CommandExecutionUnavailableError, SmolVMError
+from smolvm.exceptions import (
+    CommandExecutionUnavailableError,
+    OperationTimeoutError,
+    SmolVMError,
+)
 from smolvm.facade import VM
 from smolvm.types import VMConfig, VMState
 
@@ -269,6 +273,86 @@ class TestVMRun:
 
     @patch("smolvm.facade.SSHClient")
     @patch("smolvm.facade.SmolVM")
+    def test_run_falls_back_to_guest_ip_when_localhost_unreachable(
+        self,
+        mock_sdk_cls: MagicMock,
+        mock_ssh_cls: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """run() should fallback to guest IP when localhost forwarding is down."""
+        mock_network = MagicMock()
+        mock_network.guest_ip = "172.16.0.2"
+        mock_network.ssh_host_port = 2200
+
+        mock_info = MagicMock()
+        mock_info.vm_id = "vm001"
+        mock_info.status = VMState.RUNNING
+        mock_info.network = mock_network
+        mock_info.config.boot_args = "console=ttyS0 reboot=k panic=1 pci=off init=/init"
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        mock_sdk.get.return_value = mock_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        localhost_client = MagicMock()
+        localhost_client.wait_for_ssh.side_effect = OperationTimeoutError("wait_for_ssh", 15.0)
+        guest_client = MagicMock()
+        guest_client.run.return_value = MagicMock(exit_code=0, stdout="ok\n", stderr="")
+        mock_ssh_cls.side_effect = [localhost_client, guest_client]
+
+        vm = VM(sample_config)
+        result = vm.run("echo ok")
+
+        assert result.exit_code == 0
+        assert mock_ssh_cls.call_count == 2
+        assert mock_ssh_cls.call_args_list[0].kwargs["host"] == "127.0.0.1"
+        assert mock_ssh_cls.call_args_list[0].kwargs["port"] == 2200
+        assert mock_ssh_cls.call_args_list[1].kwargs["host"] == "172.16.0.2"
+        assert mock_ssh_cls.call_args_list[1].kwargs["port"] == 22
+        guest_client.wait_for_ssh.assert_called_once()
+        guest_client.run.assert_called_once_with("echo ok", timeout=30)
+
+    @patch("smolvm.facade.SSHClient")
+    @patch("smolvm.facade.SmolVM")
+    def test_wait_for_ssh_falls_back_to_guest_ip_when_localhost_unreachable(
+        self,
+        mock_sdk_cls: MagicMock,
+        mock_ssh_cls: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """wait_for_ssh() should fallback from localhost to guest IP."""
+        mock_network = MagicMock()
+        mock_network.guest_ip = "172.16.0.2"
+        mock_network.ssh_host_port = 2200
+
+        mock_info = MagicMock()
+        mock_info.vm_id = "vm001"
+        mock_info.status = VMState.RUNNING
+        mock_info.network = mock_network
+        mock_info.config.boot_args = "console=ttyS0 reboot=k panic=1 pci=off init=/init"
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        mock_sdk.get.return_value = mock_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        localhost_client = MagicMock()
+        localhost_client.wait_for_ssh.side_effect = OperationTimeoutError("wait_for_ssh", 10.0)
+        guest_client = MagicMock()
+        mock_ssh_cls.side_effect = [localhost_client, guest_client]
+
+        vm = VM(sample_config)
+        vm.wait_for_ssh(timeout=20.0)
+
+        assert mock_ssh_cls.call_count == 2
+        localhost_client.wait_for_ssh.assert_called_once()
+        guest_client.wait_for_ssh.assert_called_once()
+        assert vm._ssh is guest_client
+        assert vm._ssh_ready is True
+
+    @patch("smolvm.facade.SSHClient")
+    @patch("smolvm.facade.SmolVM")
     def test_run_on_non_ssh_boot_profile_raises_clear_error(
         self,
         mock_sdk_cls: MagicMock,
@@ -305,8 +389,6 @@ class TestVMRun:
         sample_config: VMConfig,
     ) -> None:
         """Test run() surfaces readiness timeout as command-unavailable error."""
-        from smolvm.exceptions import OperationTimeoutError
-
         mock_network = MagicMock()
         mock_network.guest_ip = "172.16.0.2"
 
@@ -834,6 +916,53 @@ class TestVMEnvInjection:
         mock_ssh_cls.assert_called()
         # Should call inject
         mock_inject.assert_called_once_with(mock_ssh, {"FOO": "bar"})
+
+    @patch("smolvm.facade.inject_env_vars")
+    @patch("smolvm.facade.SSHClient")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_injects_env_vars_with_ssh_fallback(
+        self,
+        mock_sdk_cls: MagicMock,
+        mock_ssh_cls: MagicMock,
+        mock_inject: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """start() should fallback to guest IP for env injection if localhost SSH fails."""
+        mock_sdk = MagicMock()
+        config_with_env = sample_config.model_copy(
+            update={"env_vars": {"FOO": "bar"}, "boot_args": "init=/init"}
+        )
+
+        created_info = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        created_info.config = config_with_env
+        created_info.network.guest_ip = "172.16.0.2"
+        created_info.network.ssh_host_port = 2200
+
+        running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
+        running_info.config = config_with_env
+        running_info.network.guest_ip = "172.16.0.2"
+        running_info.network.ssh_host_port = 2200
+
+        mock_sdk.create.return_value = created_info
+        mock_sdk.start.return_value = running_info
+        mock_sdk.get.return_value = running_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        localhost_client = MagicMock()
+        localhost_client.wait_for_ssh.side_effect = OperationTimeoutError("wait_for_ssh", 15.0)
+        guest_client = MagicMock()
+        mock_ssh_cls.side_effect = [localhost_client, guest_client]
+        mock_inject.return_value = ["FOO"]
+
+        vm = VM(config_with_env)
+        vm.start()
+
+        assert mock_ssh_cls.call_count == 2
+        assert mock_ssh_cls.call_args_list[0].kwargs["host"] == "127.0.0.1"
+        assert mock_ssh_cls.call_args_list[0].kwargs["port"] == 2200
+        assert mock_ssh_cls.call_args_list[1].kwargs["host"] == "172.16.0.2"
+        assert mock_ssh_cls.call_args_list[1].kwargs["port"] == 22
+        mock_inject.assert_called_once_with(guest_client, {"FOO": "bar"})
 
     @patch("smolvm.facade.inject_env_vars")
     @patch("smolvm.facade.SmolVM")

@@ -22,7 +22,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNTIME_USER="${SUDO_USER:-}"
 CHECK_ONLY=false
 REMOVE=false
-LOOPFS_HELPER_SRC="${SCRIPT_DIR}/internal/image-build-loopfs.sh"
+LOOPFS_HELPER_SRC="${SCRIPT_DIR}/image-build-loopfs.sh"
 LOOPFS_HELPER_DST="/usr/local/libexec/smolvm-loopfs-helper"
 
 usage() {

@@ -44,6 +44,7 @@ class TestSSHPortForwarding:
         commands = [call.args[0] for call in mock_run_command.call_args_list]
         assert any("-A" in cmd and "PREROUTING" in cmd for cmd in commands)
         assert any("-A" in cmd and "OUTPUT" in cmd for cmd in commands)
+        assert any("-A" in cmd and "POSTROUTING" in cmd for cmd in commands)
         assert any("-A" in cmd and "FORWARD" in cmd for cmd in commands)
 
     @patch("smolvm.network.run_command")
@@ -59,6 +60,7 @@ class TestSSHPortForwarding:
         )
 
         commands = [call.args[0] for call in mock_run_command.call_args_list]
+        assert any("-D" in cmd and "POSTROUTING" in cmd for cmd in commands)
         assert any("-D" in cmd and "FORWARD" in cmd for cmd in commands)
         assert any("-D" in cmd and "OUTPUT" in cmd for cmd in commands)
         assert any("-D" in cmd and "PREROUTING" in cmd for cmd in commands)
@@ -87,6 +89,7 @@ class TestLocalPortForwarding:
 
         commands = [call.args[0] for call in mock_run_command.call_args_list]
         assert any("-A" in cmd and "OUTPUT" in cmd for cmd in commands)
+        assert any("-A" in cmd and "POSTROUTING" in cmd for cmd in commands)
         assert any("-A" in cmd and "FORWARD" in cmd for cmd in commands)
         assert not any("-A" in cmd and "PREROUTING" in cmd for cmd in commands)
 
@@ -103,6 +106,7 @@ class TestLocalPortForwarding:
         )
 
         commands = [call.args[0] for call in mock_run_command.call_args_list]
+        assert any("-D" in cmd and "POSTROUTING" in cmd for cmd in commands)
         assert any("-D" in cmd and "FORWARD" in cmd for cmd in commands)
         assert any("-D" in cmd and "OUTPUT" in cmd for cmd in commands)
         assert not any("-D" in cmd and "PREROUTING" in cmd for cmd in commands)
@@ -120,7 +124,7 @@ class TestLocalPortForwarding:
             host_port=18080,
             guest_port=8080,
         )
-        assert mock_run_command.call_count == 2
+        assert mock_run_command.call_count == 3
 
     @patch("smolvm.network.run_command")
     def test_cleanup_all_local_port_forwards_removes_matching_rules_only(

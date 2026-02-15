@@ -341,25 +341,21 @@ class VM:
                 {"vm_id": self._vm_id},
             )
 
-        if self._ssh is None:
-            ssh_host, ssh_port = self._ssh_endpoint()
-            self._ssh = SSHClient(
-                host=ssh_host,
-                user=self._ssh_user,
-                port=ssh_port,
-                key_path=self._ssh_key_path,
-            )
-
         if not self._ssh_ready:
             try:
-                self._ssh.wait_for_ssh(timeout=_DEFAULT_RUN_READY_TIMEOUT)
-                self._ssh_ready = True
+                self._wait_for_ssh_with_fallback(timeout=_DEFAULT_RUN_READY_TIMEOUT)
             except OperationTimeoutError as e:
                 raise CommandExecutionUnavailableError(
                     vm_id=self._vm_id,
                     reason="SSH did not become ready on the guest.",
                     remediation=self._command_exec_remediation(),
                 ) from e
+
+        if self._ssh is None:
+            raise SmolVMError(
+                "Cannot run command: SSH client is not initialized",
+                {"vm_id": self._vm_id},
+            )
 
         return self._ssh.run(command, timeout=timeout)
 
@@ -389,17 +385,7 @@ class VM:
                 {"vm_id": self._vm_id},
             )
 
-        if self._ssh is None:
-            ssh_host, ssh_port = self._ssh_endpoint()
-            self._ssh = SSHClient(
-                host=ssh_host,
-                user=self._ssh_user,
-                port=ssh_port,
-                key_path=self._ssh_key_path,
-            )
-
-        self._ssh.wait_for_ssh(timeout=timeout)
-        self._ssh_ready = True
+        self._wait_for_ssh_with_fallback(timeout=timeout)
         return self
 
     def ssh_commands(
@@ -665,26 +651,131 @@ class VM:
         finally:
             self._sdk.close()
 
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _is_port_reachable(self, host: str, port: int, timeout: float = 0.5) -> bool:
+        """Check if a TCP port is open."""
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except (OSError, TimeoutError):
+            return False
 
     def _refresh_info(self) -> None:
         """Refresh the cached VMInfo from the state store."""
         self._info = self._sdk.get(self._vm_id)
 
     def _ssh_endpoint(self) -> tuple[str, int]:
-        """Return host/port endpoint used for guest SSH connectivity."""
+        """Return the preferred host/port endpoint for guest SSH.
+
+        If localhost port forwarding is configured but unreachable
+        (e.g. due to Linux networking issues), falls back to direct
+        guest IP. The result is cached for the VM session lifetime.
+        """
+        # Return cached endpoint if available and valid
+        if hasattr(self, "_probed_endpoint") and self._probed_endpoint:
+            return self._probed_endpoint
+
+        candidates = self._ssh_endpoints()
+        if not candidates:
+            raise SmolVMError(
+                "No SSH endpoints available",
+                {"vm_id": self._vm_id},
+            )
+
+        # Probe candidates in order
+        for host, port in candidates:
+            # If 127.0.0.1, we probe to ensure forwarding works.
+            # If it's a direct IP, we assume it's the fallback.
+            # (We probe all to be safe, with short timeout)
+            if self._is_port_reachable(host, port, timeout=0.2):
+                self._probed_endpoint = (host, port)
+                return (host, port)
+
+        # If none reachable (e.g. boot not finished), return the first one
+        # to let standard SSH retries handle it.
+        return candidates[0]
+
+    def _ssh_endpoints(self) -> list[tuple[str, int]]:
+        """Return SSH endpoint candidates in preferred order."""
         if self._info.network is None:
             raise SmolVMError(
                 "VM has no network configuration",
                 {"vm_id": self._vm_id},
             )
 
-        if self._info.network.ssh_host_port is not None:
-            return ("127.0.0.1", self._info.network.ssh_host_port)
+        endpoints: list[tuple[str, int]] = []
+        ssh_host_port = self._info.network.ssh_host_port
+        if isinstance(ssh_host_port, int):
+            endpoints.append(("127.0.0.1", ssh_host_port))
+        endpoints.append((self._info.network.guest_ip, 22))
 
-        return (self._info.network.guest_ip, 22)
+        unique: list[tuple[str, int]] = []
+        for endpoint in endpoints:
+            if endpoint in unique:
+                continue
+            unique.append(endpoint)
+        return unique
+
+    def _wait_for_ssh_with_fallback(self, timeout: float) -> None:
+        """Wait for SSH, falling back from localhost-forwarded port to guest IP."""
+        endpoints = self._ssh_endpoints()
+
+        # Prefer the already selected client first, then try remaining candidates.
+        if self._ssh is not None:
+            current = (self._ssh.host, self._ssh.port)
+            ordered = [current]
+            ordered.extend(endpoint for endpoint in endpoints if endpoint != current)
+            endpoints = ordered
+
+        if len(endpoints) == 1:
+            host, port = endpoints[0]
+            client = self._ssh
+            if client is None or client.host != host or client.port != port:
+                client = SSHClient(
+                    host=host,
+                    user=self._ssh_user,
+                    port=port,
+                    key_path=self._ssh_key_path,
+                )
+            client.wait_for_ssh(timeout=timeout)
+            self._ssh = client
+            self._ssh_ready = True
+            return
+
+        errors: list[str] = []
+        deadline = time.monotonic() + timeout
+
+        for index, (host, port) in enumerate(endpoints):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+
+            attempts_left = len(endpoints) - index
+            endpoint_timeout = max(0.5, remaining / attempts_left)
+            client = self._ssh
+            if client is None or client.host != host or client.port != port:
+                client = SSHClient(
+                    host=host,
+                    user=self._ssh_user,
+                    port=port,
+                    key_path=self._ssh_key_path,
+                )
+
+            try:
+                client.wait_for_ssh(timeout=endpoint_timeout)
+                self._ssh = client
+                self._ssh_ready = True
+                return
+            except OperationTimeoutError as e:
+                errors.append(f"{host}:{port} ({e.message})")
+
+        self._ssh_ready = False
+        detail = "; ".join(errors) if errors else "no endpoint attempts completed"
+        raise OperationTimeoutError(f"wait_for_ssh fallback: {detail}", timeout)
 
     def _cleanup_local_forwards(self) -> None:
         """Best-effort cleanup for localhost-only guest port forwards."""
