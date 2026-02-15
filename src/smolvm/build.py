@@ -701,20 +701,20 @@ done
         """Execute the Docker build and image conversion."""
         docker_tag = f"smolvm-{name}"
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir = Path(tmpdir)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
 
             # Write Dockerfile and init script
-            (tmpdir / "Dockerfile").write_text(dockerfile_content)
-            (tmpdir / "init").write_text(init_script)
+            (tmp_path / "Dockerfile").write_text(dockerfile_content)
+            (tmp_path / "init").write_text(init_script)
             if extra_files:
                 for filename, content in extra_files.items():
-                    (tmpdir / filename).write_text(content)
+                    (tmp_path / filename).write_text(content)
 
             # 1. Build Docker image
             logger.info("  [1/4] Building Docker image...")
             subprocess.run(
-                ["docker", "build", "-t", docker_tag, str(tmpdir)],
+                ["docker", "build", "-t", docker_tag, str(tmp_path)],
                 check=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
@@ -730,7 +730,7 @@ done
             ).stdout.strip()
 
             try:
-                tar_path = tmpdir / "rootfs.tar"
+                tar_path = tmp_path / "rootfs.tar"
                 subprocess.run(
                     ["docker", "export", container_id, "-o", str(tar_path)],
                     check=True,
@@ -744,9 +744,9 @@ done
 
             # 3. Create ext4 filesystem and populate it
             if self._loopfs_helper_path() is not None:
-                self._create_ext4_with_loopfs(tar_path, rootfs_path, rootfs_size_mb, tmpdir)
+                self._create_ext4_with_loopfs(tar_path, rootfs_path, rootfs_size_mb, tmp_path)
             else:
-                self._create_ext4_with_docker(tar_path, rootfs_path, rootfs_size_mb, tmpdir)
+                self._create_ext4_with_docker(tar_path, rootfs_path, rootfs_size_mb, tmp_path)
 
             # 4. Download architecture-compatible kernel
             resolved_kernel_url = kernel_url or self._kernel_url_for_host()

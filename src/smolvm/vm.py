@@ -1045,6 +1045,8 @@ class SmolVM:
         if backend == BACKEND_QEMU:
             # Firecracker defaults include pci=off, which breaks QEMU PCI devices.
             parts = [part for part in parts if part != "pci=off"]
+            if not any(part.startswith("root=") for part in parts):
+                parts.extend(["root=/dev/vda", "rw"])
             args = " ".join(parts).strip()
 
         if vm_info.network is None:

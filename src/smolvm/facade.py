@@ -127,19 +127,13 @@ class VM:
             builder = ImageBuilder()
             # Keep backend/arch specific cache names to avoid stale cross-arch reuse.
             image_name = "alpine-ssh-key"
-            kernel_url: str | None = None
             if resolved_backend == BACKEND_QEMU:
                 arch = platform.machine().lower()
                 image_arch = "aarch64" if arch in {"arm64", "aarch64"} else "x86_64"
-                image_name = f"alpine-ssh-key-{image_arch}-qemu"
-                kernel_url = builder.qemu_kernel_url_for_host()
+                image_name = f"alpine-ssh-key-{image_arch}"
 
             # This will download/build if needed (cached otherwise)
-            kernel, rootfs = builder.build_alpine_ssh_key(
-                pub_key,
-                name=image_name,
-                kernel_url=kernel_url,
-            )
+            kernel, rootfs = builder.build_alpine_ssh_key(pub_key, name=image_name)
 
             # 3. Create Config
             # Use a unique ID to avoid conflicts with previous runs
