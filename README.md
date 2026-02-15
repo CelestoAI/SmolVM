@@ -66,10 +66,16 @@ Initialize a VM with no arguments for an auto-configured, SSH-ready environment:
 ```python
 from smolvm import SmolVM
 
-# Auto-configures keys, image, and network automatically
-with SmolVM() as vm:
-    result = vm.run("echo 'Hello from the sandbox!'")
-    print(result.output)
+# Start sandboxed runtime
+vm = SmolVM()
+vm.start()
+
+# Run ANY command like a real system
+result = vm.run("echo 'Hello from the sandbox!'")
+print(result.output)
+
+# Stop the runtime
+vm.stop()
 ```
 
 Customize auto-config memory and disk size:
@@ -77,6 +83,7 @@ Customize auto-config memory and disk size:
 ```python
 from smolvm import SmolVM
 
+# Use with context manager (auto start and deletes after use)
 with SmolVM(mem_size_mib=2048, disk_size_mib=4096) as vm:
     print(vm.run("free -m").output)
 ```
