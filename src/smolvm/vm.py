@@ -796,6 +796,11 @@ class SmolVM:
                         host_port=ssh_host_port,
                     )
 
+            # Reconnect flows may not have in-memory local-forward state.
+            # Always remove any persisted localhost forwarding rules by vm_id.
+            with suppress(Exception):
+                self.network.cleanup_all_local_port_forwards(vm_id)
+
             # Get IP lease info
             if lease:
                 _, tap_device = lease

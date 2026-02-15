@@ -20,6 +20,7 @@ Requires root/sudo privileges for network operations.
 
 import logging
 import os
+import shlex
 from contextlib import suppress
 
 from smolvm.exceptions import NetworkError, SmolVMError
@@ -555,7 +556,7 @@ class NetworkManager:
         target = f"{guest_ip}:{guest_port}"
         comment = f"smolvm:{vm_id}:local:{host_port}:{guest_port}"
 
-        with suppress(NetworkError):
+        with suppress(NetworkError, SmolVMError):
             run_command(
                 [
                     "iptables",
@@ -580,7 +581,7 @@ class NetworkManager:
                 ]
             )
 
-        with suppress(NetworkError):
+        with suppress(NetworkError, SmolVMError):
             run_command(
                 [
                     "iptables",
@@ -604,6 +605,61 @@ class NetworkManager:
                     target,
                 ]
             )
+
+    def cleanup_all_local_port_forwards(self, vm_id: str) -> None:
+        """Best-effort removal of all localhost-only forwarding rules for a VM."""
+        if not vm_id:
+            raise ValueError("vm_id cannot be empty")
+
+        comment_prefix = f"smolvm:{vm_id}:local:"
+
+        for table, chain in (("nat", "OUTPUT"), ("filter", "FORWARD")):
+            for rule_tokens in self._list_chain_rules(table, chain):
+                comment = self._extract_comment(rule_tokens)
+                if comment is None or not comment.startswith(comment_prefix):
+                    continue
+
+                delete_tokens = list(rule_tokens)
+                if not delete_tokens or delete_tokens[0] != "-A":
+                    continue
+                delete_tokens[0] = "-D"
+
+                cmd = ["iptables"]
+                if table != "filter":
+                    cmd.extend(["-t", table])
+                cmd.extend(delete_tokens)
+
+                with suppress(NetworkError, SmolVMError):
+                    run_command(cmd)
+
+    def _list_chain_rules(self, table: str, chain: str) -> list[list[str]]:
+        """Return parsed `iptables -S <chain>` rules for a table."""
+        cmd = ["iptables"]
+        if table != "filter":
+            cmd.extend(["-t", table])
+        cmd.extend(["-S", chain])
+
+        result = run_command(cmd)
+        rules: list[list[str]] = []
+        for line in result.stdout.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("-A "):
+                continue
+            try:
+                tokens = shlex.split(stripped)
+            except ValueError:
+                continue
+            if len(tokens) >= 2 and tokens[0] == "-A" and tokens[1] == chain:
+                rules.append(tokens)
+        return rules
+
+    @staticmethod
+    def _extract_comment(rule_tokens: list[str]) -> str | None:
+        """Extract `--comment` value from parsed iptables tokens."""
+        for i, token in enumerate(rule_tokens):
+            if token == "--comment" and i + 1 < len(rule_tokens):
+                return rule_tokens[i + 1]
+        return None
 
     def _rule_exists(self, table: str, chain: str, rule_parts: list[str]) -> bool:
         """Check if an iptables rule already exists.
