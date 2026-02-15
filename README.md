@@ -59,7 +59,7 @@ macOS (QEMU):
 # export SMOLVM_BACKEND=qemu
 ```
 
-### 3. Basic Usage (Zero-Config)
+### 3. Basic Usage
 
 Initialize a VM with no arguments for an auto-configured, SSH-ready environment:
 
@@ -68,9 +68,8 @@ from smolvm import VM
 
 # Auto-configures keys, image, and network automatically
 with VM() as vm:
-    print(f"VM IP: {vm.get_ip()}")
     result = vm.run("echo 'Hello from the sandbox!'")
-    print(result.stdout.strip())
+    print(result.output)
 ```
 
 ### 4. Reconnect to an existing VM

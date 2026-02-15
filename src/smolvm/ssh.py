@@ -1,11 +1,11 @@
 # Copyright 2026 Celesto AI
-# 
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-# 
+#
 #     http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -21,8 +21,10 @@ leveraging the SSH binary that is already a checked dependency in
 """
 
 import logging
+import shlex
 import subprocess
 import time
+from typing import Literal
 
 from smolvm.exceptions import OperationTimeoutError, SmolVMError
 from smolvm.types import CommandResult
@@ -42,6 +44,8 @@ _SSH_OPTS = [
     "-o",
     "BatchMode=yes",
 ]
+
+ShellMode = Literal["login", "raw"]
 
 
 class SSHClient:
@@ -103,12 +107,38 @@ class SSHClient:
         cmd.append(command)
         return cmd
 
-    def run(self, command: str, timeout: int = 30) -> CommandResult:
+    @staticmethod
+    def _wrap_login_shell_command(command: str) -> str:
+        """Wrap a command so it runs inside a login shell."""
+        quoted_command = shlex.quote(command)
+        return (
+            "SHELL_BIN=\"${SHELL:-/bin/sh}\"; "
+            "exec \"$SHELL_BIN\" -lc "
+            f"{quoted_command}"
+        )
+
+    def _prepare_remote_command(self, command: str, shell: ShellMode) -> str:
+        """Prepare a command string based on desired shell mode."""
+        if shell == "raw":
+            return command
+        if shell == "login":
+            return self._wrap_login_shell_command(command)
+        raise ValueError("shell must be 'login' or 'raw'")
+
+    def run(
+        self,
+        command: str,
+        timeout: int = 30,
+        shell: ShellMode = "login",
+    ) -> CommandResult:
         """Execute a command on the guest VM.
 
         Args:
             command: Shell command to execute.
             timeout: Maximum seconds to wait for the command.
+            shell: Command execution mode:
+                - ``"login"`` (default): run via guest login shell.
+                - ``"raw"``: execute command directly with no shell wrapping.
 
         Returns:
             :class:`~smolvm.types.CommandResult` with exit code, stdout,
@@ -124,8 +154,15 @@ class SSHClient:
         if timeout < 1:
             raise ValueError("timeout must be >= 1")
 
-        cmd = self._build_ssh_cmd(command)
-        logger.debug("SSH exec on %s:%d: %s", self.host, self.port, command)
+        remote_command = self._prepare_remote_command(command, shell=shell)
+        cmd = self._build_ssh_cmd(remote_command)
+        logger.debug(
+            "SSH exec on %s:%d (shell=%s): %s",
+            self.host,
+            self.port,
+            shell,
+            command,
+        )
 
         try:
             result = subprocess.run(
@@ -177,7 +214,7 @@ class SSHClient:
 
         while time.monotonic() < deadline:
             try:
-                result = self.run("echo __smolvm_ready__", timeout=5)
+                result = self.run("echo __smolvm_ready__", timeout=5, shell="raw")
                 if "__smolvm_ready__" in result.stdout:
                     logger.info("SSH is ready on %s:%d", self.host, self.port)
                     return
