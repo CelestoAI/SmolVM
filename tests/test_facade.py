@@ -347,8 +347,10 @@ class TestVMLocalExpose:
     """Tests for localhost-only port exposure."""
 
     @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.VM._probe_local_forward", return_value=True)
     def test_expose_local_with_explicit_host_port(
         self,
+        _mock_probe: MagicMock,
         mock_sdk_cls: MagicMock,
         sample_config: VMConfig,
     ) -> None:
@@ -379,10 +381,12 @@ class TestVMLocalExpose:
         )
 
     @patch("smolvm.facade.SmolVM")
-    @patch("smolvm.facade.VM._find_available_local_port", return_value=18081)
+    @patch("smolvm.facade.VM._probe_local_forward", return_value=True)
+    @patch("smolvm.facade.VM._find_available_local_port", side_effect=[18081, 18082])
     def test_expose_local_auto_host_port(
         self,
         mock_find_port: MagicMock,
+        _mock_probe: MagicMock,
         mock_sdk_cls: MagicMock,
         sample_config: VMConfig,
     ) -> None:
@@ -405,7 +409,7 @@ class TestVMLocalExpose:
         host_port = vm.expose_local(guest_port=8080)
 
         assert host_port == 18081
-        mock_find_port.assert_called_once()
+        assert mock_find_port.call_count == 2
         mock_sdk.network.setup_local_port_forward.assert_called_once()
 
     @patch("smolvm.facade.SmolVM")
@@ -430,8 +434,10 @@ class TestVMLocalExpose:
             vm.expose_local(guest_port=8080, host_port=18080)
 
     @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.VM._probe_local_forward", return_value=True)
     def test_stop_cleans_local_forwards(
         self,
+        _mock_probe: MagicMock,
         mock_sdk_cls: MagicMock,
         sample_config: VMConfig,
     ) -> None:
@@ -466,6 +472,130 @@ class TestVMLocalExpose:
             host_port=18080,
             guest_port=8080,
         )
+
+    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.VM._start_local_tunnel")
+    @patch("smolvm.facade.VM._probe_local_forward", return_value=False)
+    def test_expose_local_falls_back_to_ssh_tunnel(
+        self,
+        _mock_probe: MagicMock,
+        mock_start_tunnel: MagicMock,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """Falls back to SSH tunnel when iptables local path is unreachable."""
+        mock_network = MagicMock()
+        mock_network.guest_ip = "172.16.0.2"
+
+        mock_info = MagicMock()
+        mock_info.vm_id = "vm001"
+        mock_info.status = VMState.RUNNING
+        mock_info.network = mock_network
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        mock_sdk.get.return_value = mock_info
+        mock_sdk.network = MagicMock()
+        mock_sdk_cls.return_value = mock_sdk
+
+        tunnel_proc = MagicMock()
+        mock_start_tunnel.return_value = tunnel_proc
+
+        vm = VM(sample_config)
+        host_port = vm.expose_local(guest_port=8080, host_port=18080)
+
+        assert host_port == 18080
+        mock_start_tunnel.assert_called_once_with(host_port=18080, guest_port=8080)
+        mock_sdk.network.setup_local_port_forward.assert_called_once_with(
+            vm_id="vm001",
+            guest_ip="172.16.0.2",
+            host_port=18080,
+            guest_port=8080,
+        )
+        mock_sdk.network.cleanup_local_port_forward.assert_called_once_with(
+            vm_id="vm001",
+            guest_ip="172.16.0.2",
+            host_port=18080,
+            guest_port=8080,
+        )
+
+    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.VM._allocate_local_port", return_value=18081)
+    @patch("smolvm.facade.VM._start_local_tunnel")
+    @patch("smolvm.facade.VM._probe_local_forward", return_value=False)
+    def test_expose_local_retries_with_fallback_port(
+        self,
+        _mock_probe: MagicMock,
+        mock_start_tunnel: MagicMock,
+        _mock_allocate: MagicMock,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """If the requested host port fails, expose_local retries once with fallback."""
+        mock_network = MagicMock()
+        mock_network.guest_ip = "172.16.0.2"
+
+        mock_info = MagicMock()
+        mock_info.vm_id = "vm001"
+        mock_info.status = VMState.RUNNING
+        mock_info.network = mock_network
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        mock_sdk.get.return_value = mock_info
+        mock_sdk.network = MagicMock()
+        mock_sdk_cls.return_value = mock_sdk
+
+        tunnel_proc = MagicMock()
+        mock_start_tunnel.side_effect = [SmolVMError("first failed"), tunnel_proc]
+
+        vm = VM(sample_config)
+        host_port = vm.expose_local(guest_port=8080, host_port=18080)
+
+        assert host_port == 18081
+        assert mock_start_tunnel.call_count == 2
+        first_call = mock_start_tunnel.call_args_list[0]
+        second_call = mock_start_tunnel.call_args_list[1]
+        assert first_call.kwargs == {"host_port": 18080, "guest_port": 8080}
+        assert second_call.kwargs == {"host_port": 18081, "guest_port": 8080}
+
+    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.VM._stop_local_tunnel")
+    @patch("smolvm.facade.VM._start_local_tunnel")
+    @patch("smolvm.facade.VM._probe_local_forward", return_value=False)
+    def test_unexpose_local_cleans_ssh_tunnel_transport(
+        self,
+        _mock_probe: MagicMock,
+        mock_start_tunnel: MagicMock,
+        mock_stop_tunnel: MagicMock,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """unexpose_local() stops tracked SSH tunnel forwards."""
+        mock_network = MagicMock()
+        mock_network.guest_ip = "172.16.0.2"
+
+        mock_info = MagicMock()
+        mock_info.vm_id = "vm001"
+        mock_info.status = VMState.RUNNING
+        mock_info.network = mock_network
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        mock_sdk.get.return_value = mock_info
+        mock_sdk.network = MagicMock()
+        mock_sdk_cls.return_value = mock_sdk
+
+        tunnel_proc = MagicMock()
+        mock_start_tunnel.return_value = tunnel_proc
+
+        vm = VM(sample_config)
+        vm.expose_local(guest_port=8080, host_port=18080)
+        vm.unexpose_local(host_port=18080, guest_port=8080)
+
+        mock_stop_tunnel.assert_called_once_with(tunnel_proc)
+        # iptables cleanup happens once immediately after failed probe in expose_local
+        mock_sdk.network.cleanup_local_port_forward.assert_called_once()
 
 
 class TestVMContextManager:

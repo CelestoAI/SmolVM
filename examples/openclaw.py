@@ -3,11 +3,7 @@
 
 from __future__ import annotations
 
-import socket
-import subprocess
 import sys
-import time
-from pathlib import Path
 
 from smolvm import SSH_BOOT_ARGS, VM, ImageBuilder, VMConfig
 from smolvm.utils import ensure_ssh_key
@@ -116,61 +112,6 @@ def _install_openclaw(vm: VM) -> None:
     _run_or_exit(vm, "openclaw --help >/dev/null 2>&1 || true", timeout=60)
 
 
-def _start_ssh_tunnel(
-    private_key: Path,
-    guest_ip: str,
-    host_port: int,
-    guest_port: int,
-) -> subprocess.Popen[str]:
-    """Start an SSH localhost tunnel and wait until it's listening."""
-    cmd = [
-        "ssh",
-        "-N",
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "ExitOnForwardFailure=yes",
-        "-o",
-        "StrictHostKeyChecking=no",
-        "-o",
-        "UserKnownHostsFile=/dev/null",
-        "-i",
-        str(private_key),
-        "-L",
-        f"127.0.0.1:{host_port}:127.0.0.1:{guest_port}",
-        f"root@{guest_ip}",
-    ]
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-
-    deadline = time.monotonic() + 10.0
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            stderr = (proc.stderr.read() if proc.stderr else "").strip()
-            raise SystemExit(f"Failed to start SSH tunnel: {stderr}")
-        try:
-            with socket.create_connection(("127.0.0.1", host_port), timeout=0.5):
-                return proc
-        except OSError:
-            time.sleep(0.2)
-
-    proc.terminate()
-    raise SystemExit(
-        f"SSH tunnel did not become ready on localhost:{host_port} in time"
-    )
-
-
-def _find_available_local_port() -> int:
-    """Return an available host localhost TCP port."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
-
-
 def main() -> int:
     private_key, public_key = ensure_ssh_key()
     kernel, rootfs = ImageBuilder().build_debian_ssh_key(
@@ -221,48 +162,24 @@ def main() -> int:
             timeout=60,
         )
 
-        tunnel_proc: subprocess.Popen[str] | None = None
-        host_port = HOST_DASHBOARD_PORT
-        try:
-            try:
-                tunnel_proc = _start_ssh_tunnel(
-                    private_key=private_key,
-                    guest_ip=guest_ip,
-                    host_port=host_port,
-                    guest_port=GUEST_DASHBOARD_PORT,
-                )
-            except SystemExit:
-                host_port = _find_available_local_port()
-                tunnel_proc = _start_ssh_tunnel(
-                    private_key=private_key,
-                    guest_ip=guest_ip,
-                    host_port=host_port,
-                    guest_port=GUEST_DASHBOARD_PORT,
-                )
-
+        host_port = vm.expose_local(
+            guest_port=GUEST_DASHBOARD_PORT,
+            host_port=HOST_DASHBOARD_PORT,
+        )
+        print(f"\nDashboard ready: http://127.0.0.1:{host_port}/ (localhost only)")
+        if host_port != HOST_DASHBOARD_PORT:
             print(
-                f"\nDashboard ready: http://127.0.0.1:{host_port}/ (localhost only)"
+                f"Preferred localhost port {HOST_DASHBOARD_PORT} was unavailable; "
+                f"using {host_port} instead."
             )
-            if host_port != HOST_DASHBOARD_PORT:
-                print(
-                    f"Preferred localhost port {HOST_DASHBOARD_PORT} was unavailable; "
-                    f"using {host_port} instead."
-                )
-            print(f"Gateway token: {GATEWAY_TOKEN}")
+        print(f"Gateway token: {GATEWAY_TOKEN}")
 
-            # Helpful in headless mode: prints dashboard URL if browser open is unavailable.
-            _run_or_exit(vm, "openclaw dashboard || true", timeout=60)
-            try:
-                input("\nPress Enter to stop and clean up the VM...")
-            except EOFError:
-                print("\nNo interactive input available; cleaning up now.")
-        finally:
-            if tunnel_proc is not None:
-                tunnel_proc.terminate()
-                try:
-                    tunnel_proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    tunnel_proc.kill()
+        # Helpful in headless mode: prints dashboard URL if browser open is unavailable.
+        _run_or_exit(vm, "openclaw dashboard || true", timeout=60)
+        try:
+            input("\nPress Enter to stop and clean up the VM...")
+        except EOFError:
+            print("\nNo interactive input available; cleaning up now.")
 
     print("\nOpenClaw install flow completed.")
     return 0

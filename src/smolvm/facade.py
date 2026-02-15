@@ -29,7 +29,12 @@ from __future__ import annotations
 
 import logging
 import socket
+import subprocess
+import time
+from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from smolvm.exceptions import (
     CommandExecutionUnavailableError,
@@ -43,6 +48,20 @@ from smolvm.vm import SmolVM
 logger = logging.getLogger(__name__)
 
 _DEFAULT_RUN_READY_TIMEOUT = 30.0
+_LOCAL_FORWARD_PROBE_TIMEOUT = 2.0
+_LOCAL_FORWARD_PROBE_INTERVAL = 0.2
+_LOCAL_TUNNEL_START_TIMEOUT = 10.0
+_LOCAL_FORWARD_MAX_PORT_ATTEMPTS = 10
+
+
+@dataclass(slots=True)
+class _LocalForward:
+    """Internal tracking for localhost exposure transport."""
+
+    host_port: int
+    guest_port: int
+    transport: Literal["iptables", "ssh_tunnel"]
+    tunnel_proc: subprocess.Popen[str] | None = None
 
 
 class VM:
@@ -135,7 +154,7 @@ class VM:
 
         self._ssh: SSHClient | None = None
         self._ssh_ready = False
-        self._local_forwards: set[tuple[int, int]] = set()
+        self._local_forwards: dict[tuple[int, int], _LocalForward] = {}
 
     # ------------------------------------------------------------------
     # Class methods
@@ -362,35 +381,119 @@ class VM:
         if guest_port < 1 or guest_port > 65535:
             raise ValueError("guest_port must be 1-65535")
 
+        requested_port = host_port
         if host_port is None:
-            host_port = self._find_available_local_port()
+            host_port = self._allocate_local_port()
         if host_port < 1 or host_port > 65535:
             raise ValueError("host_port must be 1-65535")
 
-        key = (host_port, guest_port)
-        if key in self._local_forwards:
-            return host_port
+        initial_key = (host_port, guest_port)
+        existing = self._local_forwards.get(initial_key)
+        if existing is not None:
+            return existing.host_port
 
-        if any(existing_host == host_port for existing_host, _ in self._local_forwards):
-            raise SmolVMError(
-                f"Host port {host_port} is already exposed for this VM instance",
-                {"vm_id": self._vm_id, "host_port": host_port},
-            )
+        candidate_ports = [host_port]
+        fallback_port = self._allocate_local_port({host_port})
+        if fallback_port != host_port:
+            candidate_ports.append(fallback_port)
 
-        self._sdk.network.setup_local_port_forward(
-            vm_id=self._vm_id,
-            guest_ip=self._info.network.guest_ip,
-            host_port=host_port,
-            guest_port=guest_port,
+        guest_ip = self._info.network.guest_ip
+        attempts: list[str] = []
+
+        for candidate in candidate_ports:
+            key = (candidate, guest_port)
+            existing = self._local_forwards.get(key)
+            if existing is not None:
+                return existing.host_port
+
+            if any(
+                forward.host_port == candidate
+                for forward in self._local_forwards.values()
+            ):
+                attempts.append(
+                    f"localhost:{candidate} already exposed by this VM instance"
+                )
+                continue
+
+            iptables_configured = False
+            keep_iptables = False
+            try:
+                self._sdk.network.setup_local_port_forward(
+                    vm_id=self._vm_id,
+                    guest_ip=guest_ip,
+                    host_port=candidate,
+                    guest_port=guest_port,
+                )
+                iptables_configured = True
+                if self._probe_local_forward(candidate):
+                    self._local_forwards[key] = _LocalForward(
+                        host_port=candidate,
+                        guest_port=guest_port,
+                        transport="iptables",
+                    )
+                    keep_iptables = True
+                    logger.info(
+                        "VM %s exposed localhost:%d -> guest:%d (transport=iptables)",
+                        self._vm_id,
+                        candidate,
+                        guest_port,
+                    )
+                    return candidate
+                attempts.append(
+                    f"iptables forward localhost:{candidate} -> guest:{guest_port} "
+                    "was configured but not reachable"
+                )
+            except Exception as e:
+                attempts.append(
+                    f"iptables forward localhost:{candidate} -> guest:{guest_port} "
+                    f"failed: {e}"
+                )
+            finally:
+                if iptables_configured and not keep_iptables:
+                    with suppress(Exception):
+                        self._sdk.network.cleanup_local_port_forward(
+                            vm_id=self._vm_id,
+                            guest_ip=guest_ip,
+                            host_port=candidate,
+                            guest_port=guest_port,
+                        )
+
+            try:
+                tunnel_proc = self._start_local_tunnel(
+                    host_port=candidate,
+                    guest_port=guest_port,
+                )
+                self._local_forwards[key] = _LocalForward(
+                    host_port=candidate,
+                    guest_port=guest_port,
+                    transport="ssh_tunnel",
+                    tunnel_proc=tunnel_proc,
+                )
+                logger.info(
+                    "VM %s exposed localhost:%d -> guest:%d (transport=ssh_tunnel)",
+                    self._vm_id,
+                    candidate,
+                    guest_port,
+                )
+                return candidate
+            except Exception as e:
+                attempts.append(
+                    f"ssh tunnel localhost:{candidate} -> guest:{guest_port} failed: {e}"
+                )
+                continue
+
+        context = {
+            "vm_id": self._vm_id,
+            "guest_port": guest_port,
+            "requested_host_port": requested_port,
+            "candidate_ports": candidate_ports,
+            "attempts": attempts,
+        }
+        details = "; ".join(attempts) if attempts else "no attempts executed"
+        raise SmolVMError(
+            f"Failed to expose guest port {guest_port} on localhost. {details}",
+            context,
         )
-        self._local_forwards.add(key)
-        logger.info(
-            "VM %s exposed localhost:%d -> guest:%d",
-            self._vm_id,
-            host_port,
-            guest_port,
-        )
-        return host_port
 
     def unexpose_local(self, host_port: int, guest_port: int) -> VM:
         """Remove a previously configured localhost-only port forward."""
@@ -398,6 +501,12 @@ class VM:
             raise ValueError("host_port must be 1-65535")
         if guest_port < 1 or guest_port > 65535:
             raise ValueError("guest_port must be 1-65535")
+
+        key = (host_port, guest_port)
+        tracked = self._local_forwards.pop(key, None)
+        if tracked is not None:
+            self._cleanup_local_forward(tracked)
+            return self
 
         self._refresh_info()
         if self._info.network is None:
@@ -412,7 +521,6 @@ class VM:
             host_port=host_port,
             guest_port=guest_port,
         )
-        self._local_forwards.discard((host_port, guest_port))
         return self
 
     # ------------------------------------------------------------------
@@ -512,29 +620,24 @@ class VM:
         if not self._local_forwards:
             return
 
-        self._refresh_info()
-        if self._info.network is None:
-            self._local_forwards.clear()
-            return
+        guest_ip: str | None = None
+        with suppress(Exception):
+            self._refresh_info()
+            if self._info.network is not None:
+                guest_ip = self._info.network.guest_ip
 
-        guest_ip = self._info.network.guest_ip
-        for host_port, guest_port in list(self._local_forwards):
+        for key, tracked in list(self._local_forwards.items()):
             try:
-                self._sdk.network.cleanup_local_port_forward(
-                    vm_id=self._vm_id,
-                    guest_ip=guest_ip,
-                    host_port=host_port,
-                    guest_port=guest_port,
-                )
+                self._cleanup_local_forward(tracked, guest_ip=guest_ip)
             except Exception:
                 logger.warning(
                     "Failed to cleanup local forward localhost:%d -> guest:%d for VM %s",
-                    host_port,
-                    guest_port,
+                    tracked.host_port,
+                    tracked.guest_port,
                     self._vm_id,
                 )
             finally:
-                self._local_forwards.discard((host_port, guest_port))
+                self._local_forwards.pop(key, None)
 
     @staticmethod
     def _find_available_local_port() -> int:
@@ -542,6 +645,163 @@ class VM:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.bind(("127.0.0.1", 0))
             return int(sock.getsockname()[1])
+
+    def _allocate_local_port(self, exclude: set[int] | None = None) -> int:
+        """Allocate an unused localhost port not already tracked."""
+        excluded = set(exclude or ())
+        used = {forward.host_port for forward in self._local_forwards.values()}
+
+        for _ in range(_LOCAL_FORWARD_MAX_PORT_ATTEMPTS):
+            candidate = self._find_available_local_port()
+            if candidate in excluded or candidate in used:
+                continue
+            return candidate
+
+        raise SmolVMError(
+            "Failed to allocate an available localhost port",
+            {"vm_id": self._vm_id, "excluded_ports": sorted(excluded | used)},
+        )
+
+    @staticmethod
+    def _probe_local_forward(host_port: int, timeout: float = _LOCAL_FORWARD_PROBE_TIMEOUT) -> bool:
+        """Check whether localhost:host_port is currently accepting TCP connections."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection(("127.0.0.1", host_port), timeout=0.5):
+                    return True
+            except OSError:
+                pass
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(_LOCAL_FORWARD_PROBE_INTERVAL, remaining))
+        return False
+
+    def _start_local_tunnel(self, host_port: int, guest_port: int) -> subprocess.Popen[str]:
+        """Start an SSH localhost tunnel from host_port to guest_port."""
+        if self._info.network is None:
+            raise SmolVMError(
+                "Cannot create SSH tunnel: VM has no network configuration",
+                {"vm_id": self._vm_id},
+            )
+
+        guest_ip = self._info.network.guest_ip
+        cmd = [
+            "ssh",
+            "-N",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+            "-o",
+            "ConnectTimeout=5",
+            "-L",
+            f"127.0.0.1:{host_port}:127.0.0.1:{guest_port}",
+        ]
+        if self._ssh_key_path:
+            cmd.extend(["-i", self._ssh_key_path])
+        cmd.append(f"{self._ssh_user}@{guest_ip}")
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except FileNotFoundError:
+            raise SmolVMError(
+                "ssh binary not found. Install openssh-client.",
+                {"vm_id": self._vm_id},
+            ) from None
+        except OSError as e:
+            raise SmolVMError(
+                f"Failed to start SSH tunnel: {e}",
+                {"vm_id": self._vm_id},
+            ) from e
+
+        deadline = time.monotonic() + _LOCAL_TUNNEL_START_TIMEOUT
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                stderr = ""
+                if proc.stderr is not None:
+                    with suppress(Exception):
+                        stderr = proc.stderr.read().strip()
+                raise SmolVMError(
+                    "SSH tunnel exited before becoming ready."
+                    + (f" stderr: {stderr}" if stderr else ""),
+                    {"vm_id": self._vm_id, "host_port": host_port, "guest_port": guest_port},
+                )
+            if self._probe_local_forward(host_port, timeout=0.3):
+                return proc
+            time.sleep(_LOCAL_FORWARD_PROBE_INTERVAL)
+
+        self._stop_local_tunnel(proc)
+        raise SmolVMError(
+            f"SSH tunnel did not become ready on localhost:{host_port} within "
+            f"{_LOCAL_TUNNEL_START_TIMEOUT:.1f}s",
+            {"vm_id": self._vm_id, "host_port": host_port, "guest_port": guest_port},
+        )
+
+    @staticmethod
+    def _stop_local_tunnel(proc: subprocess.Popen[str] | None) -> None:
+        """Best-effort shutdown for an SSH tunnel process."""
+        if proc is None:
+            return
+
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                with suppress(Exception):
+                    proc.wait(timeout=2.0)
+
+        if proc.stderr is not None:
+            with suppress(Exception):
+                proc.stderr.close()
+
+    def _cleanup_local_forward(
+        self,
+        forward: _LocalForward,
+        *,
+        guest_ip: str | None = None,
+    ) -> None:
+        """Remove one tracked localhost exposure."""
+        if forward.transport == "ssh_tunnel":
+            self._stop_local_tunnel(forward.tunnel_proc)
+            return
+
+        if guest_ip is None:
+            with suppress(Exception):
+                self._refresh_info()
+                if self._info.network is not None:
+                    guest_ip = self._info.network.guest_ip
+
+        if guest_ip is None:
+            logger.warning(
+                "Skipping iptables cleanup for localhost:%d -> guest:%d on VM %s "
+                "because guest network info is unavailable",
+                forward.host_port,
+                forward.guest_port,
+                self._vm_id,
+            )
+            return
+
+        self._sdk.network.cleanup_local_port_forward(
+            vm_id=self._vm_id,
+            guest_ip=guest_ip,
+            host_port=forward.host_port,
+            guest_port=forward.guest_port,
+        )
 
     def _command_exec_remediation(self) -> str:
         """Return actionable guidance when command execution is unavailable."""
