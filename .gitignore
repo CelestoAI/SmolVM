@@ -13,3 +13,4 @@ venv/
 .coverage
 htmlcov/
 .DS_Store
+uv.lock
