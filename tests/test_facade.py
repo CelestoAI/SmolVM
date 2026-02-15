@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from smolvm.exceptions import (
     CommandExecutionUnavailableError,
     OperationTimeoutError,
@@ -159,10 +160,10 @@ class TestVMLifecycle:
         mock_sdk = MagicMock()
         mock_info = MagicMock(vm_id="vm001", status=VMState.CREATED)
         mock_info.config.env_vars = {}
-        
+
         running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
         running_info.config.env_vars = {}
-        
+
         mock_sdk.create.return_value = mock_info
         mock_sdk.start.return_value = running_info
         mock_sdk_cls.return_value = mock_sdk
@@ -182,7 +183,7 @@ class TestVMLifecycle:
         """Test start() is a no-op when VM is already running."""
         mock_sdk = MagicMock()
         running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
-        running_info.config.env_vars = {} 
+        running_info.config.env_vars = {}
         mock_sdk.create.return_value = running_info
         mock_sdk_cls.return_value = mock_sdk
 
@@ -786,7 +787,7 @@ class TestVMContextManager:
         running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
         running_info.config.env_vars = {}
         stopped_info = MagicMock(vm_id="vm001", status=VMState.STOPPED)
-        
+
         mock_sdk.create.return_value = created_info
         mock_sdk.start.return_value = running_info
         mock_sdk.stop.return_value = stopped_info
@@ -1038,7 +1039,7 @@ class TestVMEnvInjection:
         # Empty env_vars
         config = sample_config.model_copy(update={"env_vars": {}, "boot_args": "init=/init"})
         mock_info.config = config
-        
+
         mock_sdk.create.return_value = mock_info
         mock_sdk.start.return_value = mock_info
         mock_sdk_cls.return_value = mock_sdk
@@ -1064,14 +1065,124 @@ class TestVMEnvInjection:
             update={"env_vars": {"FOO": "bar"}, "boot_args": "console=ttyS0"}
         )
         mock_info.config = config
-        
+
         mock_sdk.create.return_value = mock_info
         mock_sdk.start.return_value = mock_info
         mock_sdk_cls.return_value = mock_sdk
 
         vm = VM(config)
-        
+
         with pytest.raises(SmolVMError, match="does not support SSH"):
             vm.start()
 
         mock_inject.assert_not_called()
+
+
+class TestVMEnvManagement:
+    """Tests for runtime environment variable management methods."""
+
+    @patch("smolvm.facade.inject_env_vars")
+    @patch("smolvm.facade.SmolVM")
+    def test_set_env_vars(
+        self,
+        mock_sdk_cls: MagicMock,
+        mock_inject: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """set_env_vars should delegate to inject_env_vars with merge=True."""
+        config = sample_config.model_copy(update={"boot_args": "init=/init"})
+        running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
+        running_info.config = config
+        running_info.network.guest_ip = "172.16.0.2"
+        running_info.network.ssh_host_port = None
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = running_info
+        mock_sdk.get.return_value = running_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = VM(config)
+        vm._ssh = MagicMock()
+        vm._ssh_ready = True
+        mock_inject.return_value = ["FOO"]
+
+        result = vm.set_env_vars({"FOO": "bar"})
+
+        assert result == ["FOO"]
+        mock_inject.assert_called_once_with(vm._ssh, {"FOO": "bar"}, merge=True)
+
+    @patch("smolvm.facade.remove_env_vars")
+    @patch("smolvm.facade.SmolVM")
+    def test_unset_env_vars(
+        self,
+        mock_sdk_cls: MagicMock,
+        mock_remove: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """unset_env_vars should delegate to remove_env_vars."""
+        config = sample_config.model_copy(update={"boot_args": "init=/init"})
+        running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
+        running_info.config = config
+        running_info.network.guest_ip = "172.16.0.2"
+        running_info.network.ssh_host_port = None
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = running_info
+        mock_sdk.get.return_value = running_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = VM(config)
+        vm._ssh = MagicMock()
+        vm._ssh_ready = True
+        mock_remove.return_value = {"FOO": "bar"}
+
+        result = vm.unset_env_vars(["FOO"])
+
+        assert result == {"FOO": "bar"}
+        mock_remove.assert_called_once_with(vm._ssh, ["FOO"])
+
+    @patch("smolvm.facade.read_env_vars")
+    @patch("smolvm.facade.SmolVM")
+    def test_list_env_vars(
+        self,
+        mock_sdk_cls: MagicMock,
+        mock_read: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """list_env_vars should delegate to read_env_vars."""
+        config = sample_config.model_copy(update={"boot_args": "init=/init"})
+        running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
+        running_info.config = config
+        running_info.network.guest_ip = "172.16.0.2"
+        running_info.network.ssh_host_port = None
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = running_info
+        mock_sdk.get.return_value = running_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = VM(config)
+        vm._ssh = MagicMock()
+        vm._ssh_ready = True
+        mock_read.return_value = {"FOO": "bar"}
+
+        result = vm.list_env_vars()
+
+        assert result == {"FOO": "bar"}
+        mock_read.assert_called_once_with(vm._ssh)
+
+    @patch("smolvm.facade.SmolVM")
+    def test_close_proxies_to_sdk(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """close() should release underlying SDK resources."""
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = VM(sample_config)
+        vm.close()
+
+        mock_sdk.close.assert_called_once()

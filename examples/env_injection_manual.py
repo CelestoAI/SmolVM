@@ -34,7 +34,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from smolvm.build import ImageBuilder, SSH_BOOT_ARGS
+from smolvm.build import SSH_BOOT_ARGS, ImageBuilder
 from smolvm.env import ENV_FILE, inject_env_vars, read_env_vars, remove_env_vars
 from smolvm.facade import VM
 from smolvm.ssh import SSHClient

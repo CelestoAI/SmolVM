@@ -54,17 +54,6 @@ def build_parser() -> argparse.ArgumentParser:
         "env",
         help="Manage environment variables on a running VM",
     )
-    env_parser.add_argument(
-        "--ssh-key",
-        default=None,
-        help="SSH private key path (default: ~/.smolvm/keys/id_ed25519).",
-    )
-    env_parser.add_argument(
-        "--ssh-user",
-        default="root",
-        help="SSH user (default: root).",
-    )
-
     env_sub = env_parser.add_subparsers(dest="env_action")
 
     # smolvm env set <vm_id> KEY=VALUE ...
@@ -79,6 +68,16 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="KEY=VALUE",
         help="One or more KEY=VALUE pairs",
     )
+    env_set.add_argument(
+        "--ssh-key",
+        default=None,
+        help="SSH private key path (default: ~/.smolvm/keys/id_ed25519).",
+    )
+    env_set.add_argument(
+        "--ssh-user",
+        default="root",
+        help="SSH user (default: root).",
+    )
 
     # smolvm env unset <vm_id> KEY ...
     env_unset = env_sub.add_parser(
@@ -92,6 +91,16 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="KEY",
         help="Variable names to remove",
     )
+    env_unset.add_argument(
+        "--ssh-key",
+        default=None,
+        help="SSH private key path (default: ~/.smolvm/keys/id_ed25519).",
+    )
+    env_unset.add_argument(
+        "--ssh-user",
+        default="root",
+        help="SSH user (default: root).",
+    )
 
     # smolvm env list <vm_id>
     env_list = env_sub.add_parser(
@@ -103,6 +112,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--show-values",
         action="store_true",
         help="Show values (they are masked by default).",
+    )
+    env_list.add_argument(
+        "--ssh-key",
+        default=None,
+        help="SSH private key path (default: ~/.smolvm/keys/id_ed25519).",
+    )
+    env_list.add_argument(
+        "--ssh-user",
+        default="root",
+        help="SSH user (default: root).",
     )
 
     return parser
@@ -138,97 +157,64 @@ def _env_reload_hint() -> None:
 
 def _run_env(args: argparse.Namespace) -> int:
     """Handle ``smolvm env set|unset|list``."""
-    from smolvm.env import inject_env_vars, read_env_vars, remove_env_vars
-    from smolvm.ssh import SSHClient
-    from smolvm.vm import SmolVM
+    from smolvm.facade import VM
 
     if args.env_action is None:
         print("Usage: smolvm env {set,unset,list} <vm_id> ...")
         return 2
 
-    # Look up the VM.
+    vm: VM | None = None
     try:
-        sdk = SmolVM.from_id(args.vm_id)
+        vm = VM.from_id(
+            args.vm_id,
+            ssh_user=args.ssh_user,
+            ssh_key_path=args.ssh_key,
+        )
+
+        if args.env_action == "set":
+            env_vars = _parse_env_pairs(args.pairs)
+            injected = vm.set_env_vars(env_vars)
+            if injected:
+                print(f"✓ Set {len(injected)} env var(s) on '{args.vm_id}': {', '.join(injected)}")
+                _env_reload_hint()
+            else:
+                print("No variables to set.")
+            return 0
+
+        if args.env_action == "unset":
+            removed = vm.unset_env_vars(args.keys)
+            if removed:
+                keys = ", ".join(sorted(removed))
+                print(f"✓ Removed {len(removed)} env var(s) from '{args.vm_id}': {keys}")
+                _env_reload_hint()
+            else:
+                not_found = ", ".join(args.keys)
+                print(f"No matching variables found on '{args.vm_id}': {not_found}")
+            return 0
+
+        if args.env_action == "list":
+            current = vm.list_env_vars()
+            if not current:
+                print(f"No SmolVM-managed environment variables on '{args.vm_id}'.")
+                return 0
+            print(f"Environment variables for '{args.vm_id}':")
+            for key in sorted(current):
+                if args.show_values:
+                    print(f"  {key}={current[key]}")
+                else:
+                    print(f"  {key}=****")
+            if not args.show_values:
+                print("  (use --show-values to reveal)")
+            return 0
+
+        return 2
+
     except Exception as e:
         print(f"Error: {e}")
         return 1
-
-    vm_info = sdk.get(args.vm_id)
-    if vm_info.network is None:
-        print(f"Error: VM '{args.vm_id}' has no network configuration.")
-        return 1
-
-    from smolvm.types import VMState
-
-    if vm_info.status != VMState.RUNNING:
-        print(
-            f"Error: VM '{args.vm_id}' is {vm_info.status.value}, "
-            "not running. Start the VM first."
-        )
-        return 1
-
-    # Resolve SSH key.
-    key_path = args.ssh_key
-    if key_path is None:
-        from smolvm.utils import ensure_ssh_key
-
-        priv_key, _ = ensure_ssh_key()
-        key_path = str(priv_key)
-
-    ssh = SSHClient(
-        host=vm_info.network.guest_ip,
-        user=args.ssh_user,
-        key_path=key_path,
-    )
-
-    if args.env_action == "set":
-        env_vars = _parse_env_pairs(args.pairs)
-        try:
-            injected = inject_env_vars(ssh, env_vars)
-        except Exception as e:
-            print(f"Error: {e}")
-            return 1
-        if injected:
-            print(f"✓ Set {len(injected)} env var(s) on '{args.vm_id}': {', '.join(injected)}")
-            _env_reload_hint()
-        else:
-            print("No variables to set.")
-        return 0
-
-    if args.env_action == "unset":
-        try:
-            removed = remove_env_vars(ssh, args.keys)
-        except Exception as e:
-            print(f"Error: {e}")
-            return 1
-        if removed:
-            print(f"✓ Removed {len(removed)} env var(s) from '{args.vm_id}': {', '.join(sorted(removed))}")
-            _env_reload_hint()
-        else:
-            not_found = ", ".join(args.keys)
-            print(f"No matching variables found on '{args.vm_id}': {not_found}")
-        return 0
-
-    if args.env_action == "list":
-        try:
-            current = read_env_vars(ssh)
-        except Exception as e:
-            print(f"Error: {e}")
-            return 1
-        if not current:
-            print(f"No SmolVM-managed environment variables on '{args.vm_id}'.")
-            return 0
-        print(f"Environment variables for '{args.vm_id}':")
-        for key in sorted(current):
-            if args.show_values:
-                print(f"  {key}={current[key]}")
-            else:
-                print(f"  {key}=****")
-        if not args.show_values:
-            print("  (use --show-values to reveal)")
-        return 0
-
-    return 2
+    finally:
+        if vm is not None:
+            vm.close()
 
 
 def main(argv: Sequence[str] | None = None) -> int:

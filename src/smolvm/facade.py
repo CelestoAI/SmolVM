@@ -38,12 +38,12 @@ from pathlib import Path
 from typing import Any, Literal
 
 from smolvm.backends import BACKEND_QEMU, resolve_backend
+from smolvm.env import inject_env_vars, read_env_vars, remove_env_vars
 from smolvm.exceptions import (
     CommandExecutionUnavailableError,
     OperationTimeoutError,
     SmolVMError,
 )
-from smolvm.env import inject_env_vars
 from smolvm.ssh import SSHClient
 from smolvm.types import CommandResult, VMConfig, VMInfo, VMState
 from smolvm.vm import SmolVM
@@ -367,6 +367,45 @@ class VM:
 
         return self._ssh.run(command, timeout=timeout, shell=shell)
 
+    def set_env_vars(self, env_vars: dict[str, str], *, merge: bool = True) -> list[str]:
+        """Set environment variables on a running VM.
+
+        Variables are persisted in ``/etc/profile.d/smolvm_env.sh`` and
+        affect new SSH sessions/login shells.
+
+        Args:
+            env_vars: Key/value pairs to set.
+            merge: If True (default), merge with existing variables.
+
+        Returns:
+            Sorted variable names present after update.
+        """
+        if not env_vars:
+            return []
+
+        ssh = self._ensure_ssh_for_env()
+        return inject_env_vars(ssh, env_vars, merge=merge)
+
+    def unset_env_vars(self, keys: list[str]) -> dict[str, str]:
+        """Remove environment variables from a running VM.
+
+        Args:
+            keys: Variable names to remove.
+
+        Returns:
+            Mapping of removed keys to their previous values.
+        """
+        if not keys:
+            return {}
+
+        ssh = self._ensure_ssh_for_env()
+        return remove_env_vars(ssh, keys)
+
+    def list_env_vars(self) -> dict[str, str]:
+        """Return SmolVM-managed environment variables for a running VM."""
+        ssh = self._ensure_ssh_for_env()
+        return read_env_vars(ssh)
+
     def wait_for_ssh(self, timeout: float = 60.0) -> VM:
         """Wait for SSH to become available on the guest.
 
@@ -630,6 +669,10 @@ class VM:
         """
         return "init=/init" in self._info.config.boot_args
 
+    def close(self) -> None:
+        """Release underlying SDK resources for this facade instance."""
+        self._sdk.close()
+
     # ------------------------------------------------------------------
     # Context manager
     # ------------------------------------------------------------------
@@ -657,12 +700,46 @@ class VM:
                 except Exception:
                     logger.warning("Failed to delete VM %s on context exit", self._vm_id)
         finally:
-            self._sdk.close()
-
+            self.close()
 
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _ensure_ssh_for_env(self) -> SSHClient:
+        """Return a ready SSH client for env operations on a running VM."""
+        self._refresh_info()
+
+        if self._info.status != VMState.RUNNING:
+            raise SmolVMError(
+                f"Cannot manage environment variables: VM is {self._info.status.value}",
+                {"vm_id": self._vm_id},
+            )
+        if not self.can_run_commands():
+            raise CommandExecutionUnavailableError(
+                vm_id=self._vm_id,
+                reason=(
+                    "VM boot args are missing 'init=/init', "
+                    "so guest SSH is not guaranteed to start."
+                ),
+                remediation=self._command_exec_remediation(),
+            )
+        if self._info.network is None:
+            raise SmolVMError(
+                "Cannot manage environment variables: VM has no network configuration",
+                {"vm_id": self._vm_id},
+            )
+
+        if not self._ssh_ready:
+            self._wait_for_ssh_with_fallback(timeout=_DEFAULT_RUN_READY_TIMEOUT)
+
+        if self._ssh is None:
+            raise SmolVMError(
+                "Cannot manage environment variables: SSH client is not initialized",
+                {"vm_id": self._vm_id},
+            )
+
+        return self._ssh
 
     def _is_port_reachable(self, host: str, port: int, timeout: float = 0.5) -> bool:
         """Check if a TCP port is open."""

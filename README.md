@@ -99,18 +99,24 @@ with VM() as vm:
 
 ## 6. Environment Variables
 
-Inject environment variables into the guest OS. Variables are injected into `/etc/profile.d/` and are available in login shells and SSH sessions.
+Inject environment variables into a running VM. Variables are persisted in
+`/etc/profile.d/smolvm_env.sh` and apply to new SSH/login shell sessions.
 
 ```python
-from smolvm import VM, VMConfig
+from smolvm import VM
 
-# Configure env vars at creation
-config = VMConfig(
-    env_vars={"API_KEY": "sk-...", "DEBUG": "1"}
-)
+with VM() as vm:
+    vm.set_env_vars({"API_KEY": "sk-...", "DEBUG": "1"})
+    print(vm.list_env_vars())
+    print(vm.run("echo $API_KEY").output)
+```
 
-with VM(config) as vm:
-    vm.run("env | grep API_KEY")
+CLI:
+
+```bash
+smolvm env set <vm_id> API_KEY=sk-... DEBUG=1
+smolvm env list <vm_id> --show-values
+smolvm env unset <vm_id> DEBUG
 ```
 
 ## 📄 License
