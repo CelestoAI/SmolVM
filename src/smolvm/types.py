@@ -48,6 +48,8 @@ class VMConfig(BaseModel):
         rootfs_path: Path to the root filesystem image.
         boot_args: Kernel boot arguments.
         backend: Optional runtime backend override ("firecracker" or "qemu").
+        env_vars: Environment variables to inject into the guest
+            after boot via SSH.  Keys must be valid shell identifiers.
     """
 
     vm_id: Annotated[
@@ -63,6 +65,7 @@ class VMConfig(BaseModel):
     rootfs_path: Path
     boot_args: str = "console=ttyS0 reboot=k panic=1 pci=off"
     backend: str | None = None
+    env_vars: dict[str, str] = {}
 
     @field_validator("vm_id", mode="before")
     @classmethod
@@ -80,6 +83,16 @@ class VMConfig(BaseModel):
             raise ValueError(f"Path does not exist: {v}")
         if not v.is_file():
             raise ValueError(f"Path is not a file: {v}")
+        return v
+
+    @field_validator("env_vars")
+    @classmethod
+    def validate_env_keys(cls, v: dict[str, str]) -> dict[str, str]:
+        """Ensure all env var keys are valid shell identifiers."""
+        from smolvm.env import validate_env_key  # deferred to avoid circular import
+
+        for key in v:
+            validate_env_key(key)
         return v
 
     model_config = {"frozen": True}

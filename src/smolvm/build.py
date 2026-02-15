@@ -34,7 +34,9 @@ from smolvm.utils import RUNTIME_PRIVILEGE_SETUP_HINT, run_command
 logger = logging.getLogger(__name__)
 
 # Default boot args that include init=/init for our custom init script
-SSH_BOOT_ARGS = "console=ttyS0 reboot=k panic=1 pci=off init=/init"
+SSH_BOOT_ARGS = (
+    "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/init"
+)
 
 # Firecracker-compatible uncompressed kernels.
 FIRECRACKER_KERNEL_URLS = {

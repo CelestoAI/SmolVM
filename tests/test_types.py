@@ -183,6 +183,80 @@ class TestVMConfig:
 
         assert "not a file" in str(exc_info.value)
 
+    def test_env_vars_valid(self, tmp_path: Path) -> None:
+        """Test that valid env_vars are accepted."""
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+
+        config = VMConfig(
+            vm_id="vm001",
+            kernel_path=kernel,
+            rootfs_path=rootfs,
+            env_vars={"FOO": "bar", "BAZ_2": "qux", "_PRIVATE": "val"},
+        )
+        assert config.env_vars == {"FOO": "bar", "BAZ_2": "qux", "_PRIVATE": "val"}
+
+    def test_env_vars_default_empty(self, tmp_path: Path) -> None:
+        """Test that env_vars defaults to empty dict."""
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+
+        config = VMConfig(
+            vm_id="vm001",
+            kernel_path=kernel,
+            rootfs_path=rootfs,
+        )
+        assert config.env_vars == {}
+
+    def test_env_vars_invalid_key_empty(self, tmp_path: Path) -> None:
+        """Test that empty env var key is rejected."""
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+
+        with pytest.raises(ValidationError, match="cannot be empty"):
+            VMConfig(
+                vm_id="vm001",
+                kernel_path=kernel,
+                rootfs_path=rootfs,
+                env_vars={"": "value"},
+            )
+
+    def test_env_vars_invalid_key_starts_with_digit(self, tmp_path: Path) -> None:
+        """Test that env var key starting with digit is rejected."""
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+
+        with pytest.raises(ValidationError, match="Invalid"):
+            VMConfig(
+                vm_id="vm001",
+                kernel_path=kernel,
+                rootfs_path=rootfs,
+                env_vars={"123KEY": "value"},
+            )
+
+    def test_env_vars_invalid_key_with_equals(self, tmp_path: Path) -> None:
+        """Test that env var key containing = is rejected."""
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+
+        with pytest.raises(ValidationError, match="Invalid"):
+            VMConfig(
+                vm_id="vm001",
+                kernel_path=kernel,
+                rootfs_path=rootfs,
+                env_vars={"A=B": "value"},
+            )
+
 
 class TestVMState:
     """Tests for VMState enum."""

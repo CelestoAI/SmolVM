@@ -106,6 +106,28 @@ with VM() as vm:
     print(f"App available at http://localhost:{host_port}")
 ```
 
+## 6. Environment Variables
+
+Inject environment variables into a running VM. Variables are persisted in
+`/etc/profile.d/smolvm_env.sh` and apply to new SSH/login shell sessions.
+
+```python
+from smolvm import VM
+
+with VM() as vm:
+    vm.set_env_vars({"API_KEY": "sk-...", "DEBUG": "1"})
+    print(vm.list_env_vars())
+    print(vm.run("echo $API_KEY").output)
+```
+
+CLI:
+
+```bash
+smolvm env set <vm_id> API_KEY=sk-... DEBUG=1
+smolvm env list <vm_id> --show-values
+smolvm env unset <vm_id> DEBUG
+```
+
 ## 📄 License
 
 Apache 2.0 License - see [LICENSE](LICENSE) for details.

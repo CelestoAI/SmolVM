@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from smolvm.backends import BACKEND_QEMU, resolve_backend
+from smolvm.env import inject_env_vars, read_env_vars, remove_env_vars
 from smolvm.exceptions import (
     CommandExecutionUnavailableError,
     OperationTimeoutError,
@@ -247,11 +248,18 @@ class VM:
     def start(self, boot_timeout: float = 30.0) -> VM:
         """Start the VM.
 
+        If the VM config contains ``env_vars``, they are injected into
+        the guest via SSH after boot completes.
+
         Args:
             boot_timeout: Maximum seconds to wait for boot.
 
         Returns:
             ``self`` for method chaining.
+
+        Raises:
+            SmolVMError: If ``env_vars`` is set but the image does not
+                support SSH (missing ``init=/init`` in boot args).
         """
         if self._info.status == VMState.RUNNING:
             logger.info("VM %s already running; start() is a no-op", self._vm_id)
@@ -260,6 +268,34 @@ class VM:
         self._info = self._sdk.start(self._vm_id, boot_timeout=boot_timeout)
         self._ssh_ready = False
         logger.info("VM %s started", self._vm_id)
+
+        # Inject environment variables after boot if configured.
+        env_vars = self._info.config.env_vars
+        if env_vars:
+            if not self.can_run_commands():
+                raise SmolVMError(
+                    "Cannot inject environment variables: VM image does not "
+                    "support SSH (boot args missing 'init=/init'). Use an "
+                    "SSH-capable image built with ImageBuilder, or bake env "
+                    "vars into the rootfs at build time.",
+                    {"vm_id": self._vm_id},
+                )
+            self.wait_for_ssh(timeout=boot_timeout)
+            if self._ssh is None:
+                self._ssh = SSHClient(
+                    host=self._info.network.guest_ip,
+                    user=self._ssh_user,
+                    key_path=self._ssh_key_path,
+                )
+                self._ssh_ready = True
+            injected = inject_env_vars(self._ssh, env_vars)
+            logger.info(
+                "VM %s: injected %d env var(s): %s",
+                self._vm_id,
+                len(injected),
+                ", ".join(injected),
+            )
+
         return self
 
     def stop(self, timeout: float = 10.0) -> VM:
@@ -336,19 +372,9 @@ class VM:
                 {"vm_id": self._vm_id},
             )
 
-        if self._ssh is None:
-            ssh_host, ssh_port = self._ssh_endpoint()
-            self._ssh = SSHClient(
-                host=ssh_host,
-                user=self._ssh_user,
-                port=ssh_port,
-                key_path=self._ssh_key_path,
-            )
-
         if not self._ssh_ready:
             try:
-                self._ssh.wait_for_ssh(timeout=_DEFAULT_RUN_READY_TIMEOUT)
-                self._ssh_ready = True
+                self._wait_for_ssh_with_fallback(timeout=_DEFAULT_RUN_READY_TIMEOUT)
             except OperationTimeoutError as e:
                 raise CommandExecutionUnavailableError(
                     vm_id=self._vm_id,
@@ -356,7 +382,52 @@ class VM:
                     remediation=self._command_exec_remediation(),
                 ) from e
 
+        if self._ssh is None:
+            raise SmolVMError(
+                "Cannot run command: SSH client is not initialized",
+                {"vm_id": self._vm_id},
+            )
+
         return self._ssh.run(command, timeout=timeout, shell=shell)
+
+    def set_env_vars(self, env_vars: dict[str, str], *, merge: bool = True) -> list[str]:
+        """Set environment variables on a running VM.
+
+        Variables are persisted in ``/etc/profile.d/smolvm_env.sh`` and
+        affect new SSH sessions/login shells.
+
+        Args:
+            env_vars: Key/value pairs to set.
+            merge: If True (default), merge with existing variables.
+
+        Returns:
+            Sorted variable names present after update.
+        """
+        if not env_vars:
+            return []
+
+        ssh = self._ensure_ssh_for_env()
+        return inject_env_vars(ssh, env_vars, merge=merge)
+
+    def unset_env_vars(self, keys: list[str]) -> dict[str, str]:
+        """Remove environment variables from a running VM.
+
+        Args:
+            keys: Variable names to remove.
+
+        Returns:
+            Mapping of removed keys to their previous values.
+        """
+        if not keys:
+            return {}
+
+        ssh = self._ensure_ssh_for_env()
+        return remove_env_vars(ssh, keys)
+
+    def list_env_vars(self) -> dict[str, str]:
+        """Return SmolVM-managed environment variables for a running VM."""
+        ssh = self._ensure_ssh_for_env()
+        return read_env_vars(ssh)
 
     def wait_for_ssh(self, timeout: float = 60.0) -> VM:
         """Wait for SSH to become available on the guest.
@@ -384,17 +455,7 @@ class VM:
                 {"vm_id": self._vm_id},
             )
 
-        if self._ssh is None:
-            ssh_host, ssh_port = self._ssh_endpoint()
-            self._ssh = SSHClient(
-                host=ssh_host,
-                user=self._ssh_user,
-                port=ssh_port,
-                key_path=self._ssh_key_path,
-            )
-
-        self._ssh.wait_for_ssh(timeout=timeout)
-        self._ssh_ready = True
+        self._wait_for_ssh_with_fallback(timeout=timeout)
         return self
 
     def ssh_commands(
@@ -631,6 +692,10 @@ class VM:
         """
         return "init=/init" in self._info.config.boot_args
 
+    def close(self) -> None:
+        """Release underlying SDK resources for this facade instance."""
+        self._sdk.close()
+
     # ------------------------------------------------------------------
     # Context manager
     # ------------------------------------------------------------------
@@ -658,28 +723,167 @@ class VM:
                 except Exception:
                     logger.warning("Failed to delete VM %s on context exit", self._vm_id)
         finally:
-            self._sdk.close()
+            self.close()
 
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _ensure_ssh_for_env(self) -> SSHClient:
+        """Return a ready SSH client for env operations on a running VM."""
+        self._refresh_info()
+
+        if self._info.status != VMState.RUNNING:
+            raise SmolVMError(
+                f"Cannot manage environment variables: VM is {self._info.status.value}",
+                {"vm_id": self._vm_id},
+            )
+        if not self.can_run_commands():
+            raise CommandExecutionUnavailableError(
+                vm_id=self._vm_id,
+                reason=(
+                    "VM boot args are missing 'init=/init', "
+                    "so guest SSH is not guaranteed to start."
+                ),
+                remediation=self._command_exec_remediation(),
+            )
+        if self._info.network is None:
+            raise SmolVMError(
+                "Cannot manage environment variables: VM has no network configuration",
+                {"vm_id": self._vm_id},
+            )
+
+        if not self._ssh_ready:
+            self._wait_for_ssh_with_fallback(timeout=_DEFAULT_RUN_READY_TIMEOUT)
+
+        if self._ssh is None:
+            raise SmolVMError(
+                "Cannot manage environment variables: SSH client is not initialized",
+                {"vm_id": self._vm_id},
+            )
+
+        return self._ssh
+
+    def _is_port_reachable(self, host: str, port: int, timeout: float = 0.5) -> bool:
+        """Check if a TCP port is open."""
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except (OSError, TimeoutError):
+            return False
 
     def _refresh_info(self) -> None:
         """Refresh the cached VMInfo from the state store."""
         self._info = self._sdk.get(self._vm_id)
 
     def _ssh_endpoint(self) -> tuple[str, int]:
-        """Return host/port endpoint used for guest SSH connectivity."""
+        """Return the preferred host/port endpoint for guest SSH.
+
+        If localhost port forwarding is configured but unreachable
+        (e.g. due to Linux networking issues), falls back to direct
+        guest IP. The result is cached for the VM session lifetime.
+        """
+        # Return cached endpoint if available and valid
+        if hasattr(self, "_probed_endpoint") and self._probed_endpoint:
+            return self._probed_endpoint
+
+        candidates = self._ssh_endpoints()
+        if not candidates:
+            raise SmolVMError(
+                "No SSH endpoints available",
+                {"vm_id": self._vm_id},
+            )
+
+        # Probe candidates in order
+        for host, port in candidates:
+            # If 127.0.0.1, we probe to ensure forwarding works.
+            # If it's a direct IP, we assume it's the fallback.
+            # (We probe all to be safe, with short timeout)
+            if self._is_port_reachable(host, port, timeout=0.2):
+                self._probed_endpoint = (host, port)
+                return (host, port)
+
+        # If none reachable (e.g. boot not finished), return the first one
+        # to let standard SSH retries handle it.
+        return candidates[0]
+
+    def _ssh_endpoints(self) -> list[tuple[str, int]]:
+        """Return SSH endpoint candidates in preferred order."""
         if self._info.network is None:
             raise SmolVMError(
                 "VM has no network configuration",
                 {"vm_id": self._vm_id},
             )
 
-        if self._info.network.ssh_host_port is not None:
-            return ("127.0.0.1", self._info.network.ssh_host_port)
+        endpoints: list[tuple[str, int]] = []
+        ssh_host_port = self._info.network.ssh_host_port
+        if isinstance(ssh_host_port, int):
+            endpoints.append(("127.0.0.1", ssh_host_port))
+        endpoints.append((self._info.network.guest_ip, 22))
 
-        return (self._info.network.guest_ip, 22)
+        unique: list[tuple[str, int]] = []
+        for endpoint in endpoints:
+            if endpoint in unique:
+                continue
+            unique.append(endpoint)
+        return unique
+
+    def _wait_for_ssh_with_fallback(self, timeout: float) -> None:
+        """Wait for SSH, falling back from localhost-forwarded port to guest IP."""
+        endpoints = self._ssh_endpoints()
+
+        # Prefer the already selected client first, then try remaining candidates.
+        if self._ssh is not None:
+            current = (self._ssh.host, self._ssh.port)
+            ordered = [current]
+            ordered.extend(endpoint for endpoint in endpoints if endpoint != current)
+            endpoints = ordered
+
+        if len(endpoints) == 1:
+            host, port = endpoints[0]
+            client = self._ssh
+            if client is None or client.host != host or client.port != port:
+                client = SSHClient(
+                    host=host,
+                    user=self._ssh_user,
+                    port=port,
+                    key_path=self._ssh_key_path,
+                )
+            client.wait_for_ssh(timeout=timeout)
+            self._ssh = client
+            self._ssh_ready = True
+            return
+
+        errors: list[str] = []
+        deadline = time.monotonic() + timeout
+
+        for index, (host, port) in enumerate(endpoints):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+
+            attempts_left = len(endpoints) - index
+            endpoint_timeout = max(0.5, remaining / attempts_left)
+            client = self._ssh
+            if client is None or client.host != host or client.port != port:
+                client = SSHClient(
+                    host=host,
+                    user=self._ssh_user,
+                    port=port,
+                    key_path=self._ssh_key_path,
+                )
+
+            try:
+                client.wait_for_ssh(timeout=endpoint_timeout)
+                self._ssh = client
+                self._ssh_ready = True
+                return
+            except OperationTimeoutError as e:
+                errors.append(f"{host}:{port} ({e.message})")
+
+        self._ssh_ready = False
+        detail = "; ".join(errors) if errors else "no endpoint attempts completed"
+        raise OperationTimeoutError(f"wait_for_ssh fallback: {detail}", timeout)
 
     def _cleanup_local_forwards(self) -> None:
         """Best-effort cleanup for localhost-only guest port forwards."""

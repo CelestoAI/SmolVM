@@ -152,6 +152,15 @@ class NetworkManager:
         # Bring interface up
         run_command(["ip", "link", "set", tap_name, "up"])
 
+        # Enable route_localnet to allow localhost forwarding
+        try:
+            run_command(
+                ["sysctl", "-w", f"net.ipv4.conf.{tap_name}.route_localnet=1"],
+                use_sudo=True,
+            )
+        except Exception as e:
+            logger.warning("Failed to enable route_localnet on %s: %s", tap_name, e)
+
     def add_route(self, ip_address: str, device: str) -> None:
         """Add a static route for a specific IP via a device.
 
@@ -351,6 +360,29 @@ class NetworkManager:
         if not self._rule_exists("nat", "OUTPUT", output):
             run_command(["iptables", "-t", "nat", "-A", "OUTPUT", *output])
 
+        # Rewrite localhost source so guest replies route back to host TAP
+        # instead of guest loopback.
+        localhost_snat = [
+            "-s",
+            "127.0.0.0/8",
+            "-d",
+            guest_ip,
+            "-p",
+            "tcp",
+            "--dport",
+            str(guest_port),
+            "-m",
+            "comment",
+            "--comment",
+            comment,
+            "-j",
+            "SNAT",
+            "--to-source",
+            self.host_ip,
+        ]
+        if not self._rule_exists("nat", "POSTROUTING", localhost_snat):
+            run_command(["iptables", "-t", "nat", "-A", "POSTROUTING", *localhost_snat])
+
         forward = [
             "-p",
             "tcp",
@@ -392,6 +424,33 @@ class NetworkManager:
         iface = self.outbound_interface
         target = f"{guest_ip}:{guest_port}"
         comment = f"smolvm:{vm_id}:ssh"
+
+        with suppress(NetworkError):
+            run_command(
+                [
+                    "iptables",
+                    "-t",
+                    "nat",
+                    "-D",
+                    "POSTROUTING",
+                    "-s",
+                    "127.0.0.0/8",
+                    "-d",
+                    guest_ip,
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    str(guest_port),
+                    "-m",
+                    "comment",
+                    "--comment",
+                    comment,
+                    "-j",
+                    "SNAT",
+                    "--to-source",
+                    self.host_ip,
+                ]
+            )
 
         with suppress(NetworkError):
             run_command(
@@ -515,6 +574,27 @@ class NetworkManager:
         if not self._rule_exists("nat", "OUTPUT", output):
             run_command(["iptables", "-t", "nat", "-A", "OUTPUT", *output])
 
+        localhost_snat = [
+            "-s",
+            "127.0.0.0/8",
+            "-d",
+            guest_ip,
+            "-p",
+            "tcp",
+            "--dport",
+            str(guest_port),
+            "-m",
+            "comment",
+            "--comment",
+            comment,
+            "-j",
+            "SNAT",
+            "--to-source",
+            self.host_ip,
+        ]
+        if not self._rule_exists("nat", "POSTROUTING", localhost_snat):
+            run_command(["iptables", "-t", "nat", "-A", "POSTROUTING", *localhost_snat])
+
         forward = [
             "-p",
             "tcp",
@@ -555,6 +635,33 @@ class NetworkManager:
 
         target = f"{guest_ip}:{guest_port}"
         comment = f"smolvm:{vm_id}:local:{host_port}:{guest_port}"
+
+        with suppress(NetworkError, SmolVMError):
+            run_command(
+                [
+                    "iptables",
+                    "-t",
+                    "nat",
+                    "-D",
+                    "POSTROUTING",
+                    "-s",
+                    "127.0.0.0/8",
+                    "-d",
+                    guest_ip,
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    str(guest_port),
+                    "-m",
+                    "comment",
+                    "--comment",
+                    comment,
+                    "-j",
+                    "SNAT",
+                    "--to-source",
+                    self.host_ip,
+                ]
+            )
 
         with suppress(NetworkError, SmolVMError):
             run_command(
