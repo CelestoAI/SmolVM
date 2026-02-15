@@ -48,6 +48,33 @@ def _host_env_vars() -> dict[str, str]:
     return env_vars
 
 
+def _start_gateway(vm: VM) -> None:
+    """Start OpenClaw gateway in the guest and wait until ready."""
+    print("\n== Starting OpenClaw gateway ==")
+    _run_or_exit(
+        vm,
+        (
+            f"nohup openclaw gateway --allow-unconfigured --token {GATEWAY_TOKEN} "
+            f"--port {GUEST_DASHBOARD_PORT} "
+            ">/tmp/openclaw-gateway.log 2>&1 &"
+        ),
+        timeout=30,
+    )
+    _run_or_exit(
+        vm,
+        (
+            f"for i in $(seq 1 45); do "
+            f"curl -sS -o /dev/null http://127.0.0.1:{GUEST_DASHBOARD_PORT}/ && exit 0; "
+            "sleep 1; "
+            "done; "
+            "echo 'Gateway did not start in time' >&2; "
+            "tail -n 80 /tmp/openclaw-gateway.log >&2; "
+            "exit 1"
+        ),
+        timeout=90,
+    )
+
+
 def _onboard_openclaw_if_possible(vm: VM, env_vars: dict[str, str]) -> None:
     """Run non-interactive onboarding when a provider API key is available."""
     if "OPENROUTER_API_KEY" in env_vars:
@@ -186,31 +213,8 @@ def main() -> int:
 
         _ensure_node_runtime(vm)
         _install_openclaw(vm)
+        _start_gateway(vm)
         _onboard_openclaw_if_possible(vm, env_vars)
-
-        # Start gateway dashboard endpoint in the guest.
-        _run_or_exit(
-            vm,
-            (
-                f"nohup openclaw gateway --allow-unconfigured --token {GATEWAY_TOKEN} "
-                f"--port {GUEST_DASHBOARD_PORT} "
-                ">/tmp/openclaw-gateway.log 2>&1 &"
-            ),
-            timeout=30,
-        )
-        _run_or_exit(
-            vm,
-            (
-                f"for i in $(seq 1 30); do "
-                f"curl -sS -o /dev/null http://127.0.0.1:{GUEST_DASHBOARD_PORT}/ && exit 0; "
-                "sleep 1; "
-                "done; "
-                "echo 'Gateway did not start in time' >&2; "
-                "tail -n 50 /tmp/openclaw-gateway.log >&2; "
-                "exit 1"
-            ),
-            timeout=60,
-        )
 
         host_port = vm.expose_local(
             guest_port=GUEST_DASHBOARD_PORT,
