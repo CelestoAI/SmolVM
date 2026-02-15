@@ -34,7 +34,7 @@ import time
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from smolvm.exceptions import (
     CommandExecutionUnavailableError,
@@ -136,7 +136,7 @@ class VM:
         self._ssh_user = ssh_user
         self._ssh_key_path = ssh_key_path
 
-        sdk_kwargs: dict = {}
+        sdk_kwargs: dict[str, Any] = {}
         if data_dir is not None:
             sdk_kwargs["data_dir"] = data_dir
         if socket_dir is not None:

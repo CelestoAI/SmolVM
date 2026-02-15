@@ -27,7 +27,7 @@ import subprocess
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 
 from smolvm.api import FirecrackerClient
 from smolvm.backends import BACKEND_FIRECRACKER, BACKEND_QEMU, resolve_backend
@@ -204,7 +204,7 @@ class SmolVM:
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_id(cls, vm_id: str, **kwargs: object) -> "SmolVM":
+    def from_id(cls, vm_id: str, **kwargs: Any) -> "SmolVM":
         """Create an SDK instance and verify a VM exists.
 
         Useful for attaching to an existing VM from a different process.
@@ -580,11 +580,12 @@ class SmolVM:
                 socket_path=socket_path,
             )
 
+            guest_ip = vm_info.network.guest_ip if vm_info.network else "unknown"
             logger.info(
                 "VM started: %s (PID: %d, IP: %s)",
                 vm_id,
                 process.pid,
-                vm_info.network.guest_ip,
+                guest_ip,
             )
             return vm_info
 
@@ -808,7 +809,7 @@ class SmolVM:
         self,
         vm_info: VMInfo,
         log_path: Path,
-    ) -> subprocess.Popen[str]:
+    ) -> subprocess.Popen[bytes]:
         """Start a QEMU process for the qemu backend.
 
         Args:
@@ -918,7 +919,7 @@ class SmolVM:
         self,
         socket_path: Path,
         log_path: Path,
-    ) -> subprocess.Popen[str]:
+    ) -> subprocess.Popen[bytes]:
         """Start the Firecracker process.
 
         Args:
