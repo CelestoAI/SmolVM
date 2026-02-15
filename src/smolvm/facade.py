@@ -43,6 +43,7 @@ from smolvm.exceptions import (
     OperationTimeoutError,
     SmolVMError,
 )
+from smolvm.env import inject_env_vars
 from smolvm.ssh import SSHClient
 from smolvm.types import CommandResult, VMConfig, VMInfo, VMState
 from smolvm.vm import SmolVM
@@ -224,11 +225,18 @@ class VM:
     def start(self, boot_timeout: float = 30.0) -> VM:
         """Start the VM.
 
+        If the VM config contains ``env_vars``, they are injected into
+        the guest via SSH after boot completes.
+
         Args:
             boot_timeout: Maximum seconds to wait for boot.
 
         Returns:
             ``self`` for method chaining.
+
+        Raises:
+            SmolVMError: If ``env_vars`` is set but the image does not
+                support SSH (missing ``init=/init`` in boot args).
         """
         if self._info.status == VMState.RUNNING:
             logger.info("VM %s already running; start() is a no-op", self._vm_id)
@@ -237,6 +245,34 @@ class VM:
         self._info = self._sdk.start(self._vm_id, boot_timeout=boot_timeout)
         self._ssh_ready = False
         logger.info("VM %s started", self._vm_id)
+
+        # Inject environment variables after boot if configured.
+        env_vars = self._info.config.env_vars
+        if env_vars:
+            if not self.can_run_commands():
+                raise SmolVMError(
+                    "Cannot inject environment variables: VM image does not "
+                    "support SSH (boot args missing 'init=/init'). Use an "
+                    "SSH-capable image built with ImageBuilder, or bake env "
+                    "vars into the rootfs at build time.",
+                    {"vm_id": self._vm_id},
+                )
+            self.wait_for_ssh(timeout=boot_timeout)
+            if self._ssh is None:
+                self._ssh = SSHClient(
+                    host=self._info.network.guest_ip,
+                    user=self._ssh_user,
+                    key_path=self._ssh_key_path,
+                )
+                self._ssh_ready = True
+            injected = inject_env_vars(self._ssh, env_vars)
+            logger.info(
+                "VM %s: injected %d env var(s): %s",
+                self._vm_id,
+                len(injected),
+                ", ".join(injected),
+            )
+
         return self
 
     def stop(self, timeout: float = 10.0) -> VM:

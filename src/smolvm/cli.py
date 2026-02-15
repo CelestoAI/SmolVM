@@ -60,7 +60,186 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print targets without deleting.",
     )
 
+    # ── env subcommand group ──────────────────────────────────────────
+    env_parser = subparsers.add_parser(
+        "env",
+        help="Manage environment variables on a running VM",
+    )
+    env_parser.add_argument(
+        "--ssh-key",
+        default=None,
+        help="SSH private key path (default: ~/.smolvm/keys/id_ed25519).",
+    )
+    env_parser.add_argument(
+        "--ssh-user",
+        default="root",
+        help="SSH user (default: root).",
+    )
+
+    env_sub = env_parser.add_subparsers(dest="env_action")
+
+    # smolvm env set <vm_id> KEY=VALUE ...
+    env_set = env_sub.add_parser(
+        "set",
+        help="Set environment variables (merges with existing)",
+    )
+    env_set.add_argument("vm_id", help="VM identifier")
+    env_set.add_argument(
+        "pairs",
+        nargs="+",
+        metavar="KEY=VALUE",
+        help="One or more KEY=VALUE pairs",
+    )
+
+    # smolvm env unset <vm_id> KEY ...
+    env_unset = env_sub.add_parser(
+        "unset",
+        help="Remove environment variables",
+    )
+    env_unset.add_argument("vm_id", help="VM identifier")
+    env_unset.add_argument(
+        "keys",
+        nargs="+",
+        metavar="KEY",
+        help="Variable names to remove",
+    )
+
+    # smolvm env list <vm_id>
+    env_list = env_sub.add_parser(
+        "list",
+        help="List current environment variables",
+    )
+    env_list.add_argument("vm_id", help="VM identifier")
+    env_list.add_argument(
+        "--show-values",
+        action="store_true",
+        help="Show values (they are masked by default).",
+    )
+
     return parser
+
+
+def _parse_env_pairs(pairs: list[str]) -> dict[str, str]:
+    """Parse ``KEY=VALUE`` pairs, raising on malformed entries."""
+    from smolvm.env import validate_env_key
+
+    result: dict[str, str] = {}
+    for pair in pairs:
+        if "=" not in pair:
+            raise SystemExit(f"Error: malformed pair (expected KEY=VALUE): {pair!r}")
+        key, _, value = pair.partition("=")
+        if not key:
+            raise SystemExit(f"Error: empty key in pair: {pair!r}")
+        try:
+            validate_env_key(key)
+        except ValueError as e:
+            raise SystemExit(f"Error: {e}") from None
+        result[key] = value
+    return result
+
+
+def _env_reload_hint() -> None:
+    """Print hint about reloading env in existing sessions."""
+    print(
+        "  Note: Changes apply to new SSH sessions. "
+        "In an existing session, run:"
+    )
+    print("    source /etc/profile.d/smolvm_env.sh")
+
+
+def _run_env(args: argparse.Namespace) -> int:
+    """Handle ``smolvm env set|unset|list``."""
+    from smolvm.env import inject_env_vars, read_env_vars, remove_env_vars
+    from smolvm.ssh import SSHClient
+    from smolvm.vm import SmolVM
+
+    if args.env_action is None:
+        print("Usage: smolvm env {set,unset,list} <vm_id> ...")
+        return 2
+
+    # Look up the VM.
+    try:
+        sdk = SmolVM.from_id(args.vm_id)
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+
+    vm_info = sdk.get(args.vm_id)
+    if vm_info.network is None:
+        print(f"Error: VM '{args.vm_id}' has no network configuration.")
+        return 1
+
+    from smolvm.types import VMState
+
+    if vm_info.status != VMState.RUNNING:
+        print(
+            f"Error: VM '{args.vm_id}' is {vm_info.status.value}, "
+            "not running. Start the VM first."
+        )
+        return 1
+
+    # Resolve SSH key.
+    key_path = args.ssh_key
+    if key_path is None:
+        from smolvm.utils import ensure_ssh_key
+
+        priv_key, _ = ensure_ssh_key()
+        key_path = str(priv_key)
+
+    ssh = SSHClient(
+        host=vm_info.network.guest_ip,
+        user=args.ssh_user,
+        key_path=key_path,
+    )
+
+    if args.env_action == "set":
+        env_vars = _parse_env_pairs(args.pairs)
+        try:
+            injected = inject_env_vars(ssh, env_vars)
+        except Exception as e:
+            print(f"Error: {e}")
+            return 1
+        if injected:
+            print(f"✓ Set {len(injected)} env var(s) on '{args.vm_id}': {', '.join(injected)}")
+            _env_reload_hint()
+        else:
+            print("No variables to set.")
+        return 0
+
+    if args.env_action == "unset":
+        try:
+            removed = remove_env_vars(ssh, args.keys)
+        except Exception as e:
+            print(f"Error: {e}")
+            return 1
+        if removed:
+            print(f"✓ Removed {len(removed)} env var(s) from '{args.vm_id}': {', '.join(sorted(removed))}")
+            _env_reload_hint()
+        else:
+            not_found = ", ".join(args.keys)
+            print(f"No matching variables found on '{args.vm_id}': {not_found}")
+        return 0
+
+    if args.env_action == "list":
+        try:
+            current = read_env_vars(ssh)
+        except Exception as e:
+            print(f"Error: {e}")
+            return 1
+        if not current:
+            print(f"No SmolVM-managed environment variables on '{args.vm_id}'.")
+            return 0
+        print(f"Environment variables for '{args.vm_id}':")
+        for key in sorted(current):
+            if args.show_values:
+                print(f"  {key}={current[key]}")
+            else:
+                print(f"  {key}=****")
+        if not args.show_values:
+            print("  (use --show-values to reveal)")
+        return 0
+
+    return 2
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -96,5 +275,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "cleanup":
         return run_cleanup(delete_all=args.all, prefix=args.prefix, dry_run=args.dry_run)
 
+    if args.command == "env":
+        return _run_env(args)
+
     parser.print_help()
     return 2
+
