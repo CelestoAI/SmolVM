@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""SmolVM - Production-ready Python SDK for sandbox VM management."""
+"""SmolVM - Production-ready Python SDK for sandbox microVM management."""
 
 from smolvm.build import SSH_BOOT_ARGS, ImageBuilder
 from smolvm.exceptions import (
@@ -35,7 +35,7 @@ from smolvm.ssh import SSHClient
 from smolvm.types import CommandResult, NetworkConfig, VMConfig, VMInfo, VMState
 from smolvm.vm import SmolVM
 
-__version__ = "0.0.1"
+__version__ = "0.0.2"
 
 __all__ = [
     # Core classes
