@@ -1,11 +1,11 @@
 # Copyright 2026 Celesto AI
-# 
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-# 
+#
 #     http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -18,9 +18,9 @@ from __future__ import annotations
 
 import argparse
 import os
-from typing import Sequence
+from collections.abc import Sequence
 
-from smolvm.vm import SmolVM
+from smolvm.vm import SmolVMManager
 
 
 def run_cleanup(*, delete_all: bool = False, prefix: str = "vm-", dry_run: bool = False) -> int:
@@ -37,7 +37,7 @@ def run_cleanup(*, delete_all: bool = False, prefix: str = "vm-", dry_run: bool 
     if os.geteuid() != 0:
         print("Warning: not running as root. Cleanup may fail for TAP/iptables resources.")
 
-    sdk = SmolVM()
+    sdk = SmolVMManager()
     try:
         stale_ids = set(sdk.reconcile())
         if stale_ids:

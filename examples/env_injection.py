@@ -25,11 +25,11 @@ This demonstrates the high-level facade methods:
 - ``vm.unset_env_vars``
 """
 
-from smolvm import VM
+from smolvm import SmolVM
 
 
 def main() -> int:
-    with VM() as vm:
+    with SmolVM() as vm:
         print(f"VM started: {vm.vm_id}")
 
         print("\n1) Set environment variables")

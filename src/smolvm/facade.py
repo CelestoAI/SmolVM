@@ -14,12 +14,13 @@
 
 """User-friendly VM facade matching the SmolVM Initial Design API.
 
-Provides a simple ``VM`` class that wraps the lower-level :class:`~smolvm.vm.SmolVM`
-manager, giving callers an instance-style interface::
+Provides a simple ``SmolVM`` class that wraps the lower-level
+:class:`~smolvm.vm.SmolVMManager` manager, giving callers an instance-style
+interface::
 
-    from smolvm import VM
+    from smolvm import SmolVM
 
-    with VM(config) as vm:
+    with SmolVM(config) as vm:
         # VM auto-starts on context entry
         result = vm.run("uname -r")
         print(result.stdout)
@@ -46,7 +47,7 @@ from smolvm.exceptions import (
 )
 from smolvm.ssh import SSHClient
 from smolvm.types import CommandResult, VMConfig, VMInfo, VMState
-from smolvm.vm import SmolVM
+from smolvm.vm import SmolVMManager
 
 logger = logging.getLogger(__name__)
 
@@ -67,11 +68,11 @@ class _LocalForward:
     tunnel_proc: subprocess.Popen[str] | None = None
 
 
-class VM:
+class SmolVM:
     """High-level interface for a single microVM.
 
     Create a VM with a config, reconnect to an existing one by ID,
-    or call ``VM()`` for an auto-configured SSH-ready VM.
+    or call ``SmolVM()`` for an auto-configured SSH-ready VM.
 
     Args:
         config: VM configuration. Mutually exclusive with *vm_id*.
@@ -81,8 +82,8 @@ class VM:
         data_dir: Override the default data directory.
         socket_dir: Override the default socket directory.
         backend: Runtime backend override (``firecracker``, ``qemu``, or ``auto``).
-        mem_size_mib: Guest memory in MiB for auto-config mode (``VM()`` only).
-        disk_size_mib: Root filesystem size in MiB for auto-config mode (``VM()`` only).
+        mem_size_mib: Guest memory in MiB for auto-config mode (``SmolVM()`` only).
+        disk_size_mib: Root filesystem size in MiB for auto-config mode (``SmolVM()`` only).
         ssh_user: SSH user for :meth:`run` (default ``root``).
         ssh_key_path: Optional SSH private key path. If omitted,
             SmolVM first tries default SSH auth, then falls back to
@@ -188,14 +189,14 @@ class VM:
             sdk_kwargs["backend"] = backend
 
         if config is not None:
-            self._sdk = SmolVM(**sdk_kwargs)
+            self._sdk = SmolVMManager(**sdk_kwargs)
             self._info = self._sdk.create(config)
             self._vm_id = config.vm_id
             self._owns_vm = True
         else:
             # Reconnect to an existing VM
             assert vm_id is not None
-            self._sdk = SmolVM.from_id(vm_id, **sdk_kwargs)
+            self._sdk = SmolVMManager.from_id(vm_id, **sdk_kwargs)
             self._info = self._sdk.get(vm_id)
             self._vm_id = vm_id
             self._owns_vm = False
@@ -218,7 +219,7 @@ class VM:
         backend: str | None = None,
         ssh_user: str = "root",
         ssh_key_path: str | None = None,
-    ) -> VM:
+    ) -> SmolVM:
         """Reconnect to an existing VM by ID.
 
         Args:
@@ -232,7 +233,7 @@ class VM:
                 ``~/.smolvm/keys/id_ed25519`` when needed.
 
         Returns:
-            A :class:`VM` instance bound to the existing VM.
+            A :class:`SmolVM` instance bound to the existing VM.
 
         Raises:
             VMNotFoundError: If no VM with this ID exists.
@@ -250,7 +251,7 @@ class VM:
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def start(self, boot_timeout: float = 30.0) -> VM:
+    def start(self, boot_timeout: float = 30.0) -> SmolVM:
         """Start the VM.
 
         If the VM config contains ``env_vars``, they are injected into
@@ -303,7 +304,7 @@ class VM:
 
         return self
 
-    def stop(self, timeout: float = 10.0) -> VM:
+    def stop(self, timeout: float = 10.0) -> SmolVM:
         """Stop the VM.
 
         Args:
@@ -434,7 +435,7 @@ class VM:
         ssh = self._ensure_ssh_for_env()
         return read_env_vars(ssh)
 
-    def wait_for_ssh(self, timeout: float = 60.0) -> VM:
+    def wait_for_ssh(self, timeout: float = 60.0) -> SmolVM:
         """Wait for SSH to become available on the guest.
 
         Args:
@@ -614,7 +615,7 @@ class VM:
             context,
         )
 
-    def unexpose_local(self, host_port: int, guest_port: int) -> VM:
+    def unexpose_local(self, host_port: int, guest_port: int) -> SmolVM:
         """Remove a previously configured localhost-only port forward."""
         if host_port < 1 or host_port > 65535:
             raise ValueError("host_port must be 1-65535")
@@ -680,7 +681,7 @@ class VM:
             )
         return self._info.network.guest_ip
 
-    def refresh(self) -> VM:
+    def refresh(self) -> SmolVM:
         """Refresh cached VM info from the state store.
 
         Returns:
@@ -705,7 +706,7 @@ class VM:
     # Context manager
     # ------------------------------------------------------------------
 
-    def __enter__(self) -> VM:
+    def __enter__(self) -> SmolVM:
         # Auto-start VMs created by this facade instance so callers can
         # immediately interact with the guest inside a context block.
         if self._owns_vm and self._info.status != VMState.RUNNING:
@@ -1169,9 +1170,9 @@ class VM:
     def _command_exec_remediation(self) -> str:
         """Return actionable guidance when command execution is unavailable."""
         return (
-            "Use `VM()` auto-config mode for an SSH-ready image, or build one with "
+            "Use `SmolVM()` auto-config mode for an SSH-ready image, or build one with "
             "`ImageBuilder.build_alpine_ssh_key(...)` and set `boot_args=SSH_BOOT_ARGS`."
         )
 
     def __repr__(self) -> str:
-        return f"VM(vm_id={self._vm_id!r}, status={self._info.status.value!r})"
+        return f"SmolVM(vm_id={self._vm_id!r}, status={self._info.status.value!r})"

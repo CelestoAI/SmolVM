@@ -157,15 +157,15 @@ def _env_reload_hint() -> None:
 
 def _run_env(args: argparse.Namespace) -> int:
     """Handle ``smolvm env set|unset|list``."""
-    from smolvm.facade import VM
+    from smolvm.facade import SmolVM
 
     if args.env_action is None:
         print("Usage: smolvm env {set,unset,list} <vm_id> ...")
         return 2
 
-    vm: VM | None = None
+    vm: SmolVM | None = None
     try:
-        vm = VM.from_id(
+        vm = SmolVM.from_id(
             args.vm_id,
             ssh_user=args.ssh_user,
             ssh_key_path=args.ssh_key,

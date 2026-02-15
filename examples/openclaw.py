@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import sys
 
-from smolvm import SSH_BOOT_ARGS, VM, ImageBuilder, VMConfig
+from smolvm import SSH_BOOT_ARGS, ImageBuilder, SmolVM, VMConfig
 from smolvm.utils import ensure_ssh_key
 
 GUEST_DASHBOARD_PORT = 18789
@@ -20,7 +20,7 @@ OPENCLAW_PREFIX = "/opt/openclaw"
 VM_MEMORY_MIB = 2048
 
 
-def _run_or_exit(vm: VM, command: str, timeout: int = 300) -> None:
+def _run_or_exit(vm: SmolVM, command: str, timeout: int = 300) -> None:
     """Run a guest command, print output, and exit on failure."""
     print(f"\n$ {command}")
     result = vm.run(command, timeout=timeout)
@@ -48,7 +48,7 @@ def _host_env_vars() -> dict[str, str]:
     return env_vars
 
 
-def _start_gateway(vm: VM) -> None:
+def _start_gateway(vm: SmolVM) -> None:
     """Start OpenClaw gateway in the guest and wait until ready."""
     print("\n== Starting OpenClaw gateway ==")
     _run_or_exit(
@@ -75,7 +75,7 @@ def _start_gateway(vm: VM) -> None:
     )
 
 
-def _onboard_openclaw_if_possible(vm: VM, env_vars: dict[str, str]) -> None:
+def _onboard_openclaw_if_possible(vm: SmolVM, env_vars: dict[str, str]) -> None:
     """Run non-interactive onboarding when a provider API key is available."""
     gateway_args = (
         f"--gateway-auth token --gateway-token {GATEWAY_TOKEN} "
@@ -105,7 +105,7 @@ def _onboard_openclaw_if_possible(vm: VM, env_vars: dict[str, str]) -> None:
     print("\nNo OPENROUTER_API_KEY or OPENAI_API_KEY found; skipping onboarding.")
 
 
-def _ensure_node_runtime(vm: VM) -> None:
+def _ensure_node_runtime(vm: SmolVM) -> None:
     """Install Node.js/NPM and guarantee Node >= 22.12.0 for OpenClaw."""
     print("\n== Installing runtime dependencies ==")
     _run_or_exit(
@@ -161,7 +161,7 @@ def _ensure_node_runtime(vm: VM) -> None:
     )
 
 
-def _install_openclaw(vm: VM) -> None:
+def _install_openclaw(vm: SmolVM) -> None:
     """Install OpenClaw in an isolated npm prefix to avoid global path conflicts."""
     print("\n== Installing OpenClaw ==")
     _run_or_exit(vm, f"rm -rf {OPENCLAW_PREFIX}", timeout=60)
@@ -212,7 +212,7 @@ def main() -> int:
         env_vars=env_vars,
     )
 
-    with VM(config, ssh_key_path=str(private_key)) as vm:
+    with SmolVM(config, ssh_key_path=str(private_key)) as vm:
         print(f"VM running: {vm.vm_id} ({vm.get_ip()})")
         _run_or_exit(vm, "df -h /", timeout=60)
 

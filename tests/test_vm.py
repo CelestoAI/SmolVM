@@ -27,13 +27,13 @@ from smolvm.exceptions import (
     VMNotFoundError,
 )
 from smolvm.types import VMConfig, VMState
-from smolvm.vm import SmolVM
+from smolvm.vm import SmolVMManager
 
 
 @pytest.fixture
-def smol_vm(tmp_path: Path) -> SmolVM:
+def smol_vm(tmp_path: Path) -> SmolVMManager:
     """Create a SmolVM instance with temporary directories."""
-    return SmolVM(
+    return SmolVMManager(
         data_dir=tmp_path / "data",
         socket_dir=tmp_path / "sockets",
         backend="firecracker",
@@ -64,7 +64,7 @@ class TestSmolVMCreate:
     def test_create_vm_allocates_resources(
         self,
         mock_network_class: MagicMock,
-        smol_vm: SmolVM,
+        smol_vm: SmolVMManager,
         sample_config: VMConfig,
     ) -> None:
         """Test that create allocates IP and TAP."""
@@ -92,7 +92,7 @@ class TestSmolVMCreate:
     def test_create_duplicate_raises(
         self,
         mock_network_class: MagicMock,
-        smol_vm: SmolVM,
+        smol_vm: SmolVMManager,
         sample_config: VMConfig,
     ) -> None:
         """Test that creating duplicate VM raises error."""
@@ -111,7 +111,7 @@ class TestSmolVMCreate:
     def test_create_rollback_on_network_failure(
         self,
         mock_network_class: MagicMock,
-        smol_vm: SmolVM,
+        smol_vm: SmolVMManager,
         sample_config: VMConfig,
     ) -> None:
         """Test that resources are cleaned up on failure."""
@@ -136,7 +136,7 @@ class TestSmolVMDiskLifecycle:
     def test_create_materializes_isolated_disk(
         self,
         mock_network_class: MagicMock,
-        smol_vm: SmolVM,
+        smol_vm: SmolVMManager,
         sample_config: VMConfig,
     ) -> None:
         """Isolated mode should clone rootfs into data_dir/disks per VM."""
@@ -156,7 +156,7 @@ class TestSmolVMDiskLifecycle:
     def test_shared_disk_mode_uses_original_rootfs(
         self,
         mock_network_class: MagicMock,
-        smol_vm: SmolVM,
+        smol_vm: SmolVMManager,
         sample_config: VMConfig,
     ) -> None:
         """Shared disk mode should use the caller-provided rootfs path directly."""
@@ -176,7 +176,7 @@ class TestSmolVMDiskLifecycle:
     def test_delete_removes_isolated_disk_by_default(
         self,
         mock_network_class: MagicMock,
-        smol_vm: SmolVM,
+        smol_vm: SmolVMManager,
         sample_config: VMConfig,
     ) -> None:
         """Deleting a VM removes its isolated disk unless retention is enabled."""
@@ -198,7 +198,7 @@ class TestSmolVMDiskLifecycle:
     def test_delete_retains_isolated_disk_when_enabled(
         self,
         mock_network_class: MagicMock,
-        smol_vm: SmolVM,
+        smol_vm: SmolVMManager,
         sample_config: VMConfig,
     ) -> None:
         """retain_disk_on_delete preserves isolated disk for later reuse."""
@@ -221,7 +221,7 @@ class TestSmolVMDiskLifecycle:
     def test_create_reuses_retained_disk_for_same_vm_id(
         self,
         mock_network_class: MagicMock,
-        smol_vm: SmolVM,
+        smol_vm: SmolVMManager,
         sample_config: VMConfig,
     ) -> None:
         """A retained isolated disk should be reused for a recreated VM ID."""
@@ -251,7 +251,7 @@ class TestSmolVMGet:
     def test_get_existing_vm(
         self,
         mock_network_class: MagicMock,
-        smol_vm: SmolVM,
+        smol_vm: SmolVMManager,
         sample_config: VMConfig,
     ) -> None:
         """Test getting an existing VM."""
@@ -267,7 +267,7 @@ class TestSmolVMGet:
 
         assert vm_info.vm_id == "vm001"
 
-    def test_get_nonexistent_raises(self, smol_vm: SmolVM) -> None:
+    def test_get_nonexistent_raises(self, smol_vm: SmolVMManager) -> None:
         """Test that getting nonexistent VM raises error."""
         with pytest.raises(VMNotFoundError):
             smol_vm.get("nonexistent")
@@ -280,7 +280,7 @@ class TestSmolVMList:
     def test_list_empty(
         self,
         mock_network_class: MagicMock,
-        smol_vm: SmolVM,
+        smol_vm: SmolVMManager,
     ) -> None:
         """Test listing when no VMs exist."""
         vms = smol_vm.list_vms()
@@ -290,7 +290,7 @@ class TestSmolVMList:
     def test_list_multiple(
         self,
         mock_network_class: MagicMock,
-        smol_vm: SmolVM,
+        smol_vm: SmolVMManager,
         tmp_path: Path,
     ) -> None:
         """Test listing multiple VMs."""
@@ -324,7 +324,7 @@ class TestSmolVMDelete:
     def test_delete_vm(
         self,
         mock_network_class: MagicMock,
-        smol_vm: SmolVM,
+        smol_vm: SmolVMManager,
         sample_config: VMConfig,
     ) -> None:
         """Test deleting a VM."""
@@ -340,7 +340,7 @@ class TestSmolVMDelete:
         with pytest.raises(VMNotFoundError):
             smol_vm.get("vm001")
 
-    def test_delete_nonexistent_raises(self, smol_vm: SmolVM) -> None:
+    def test_delete_nonexistent_raises(self, smol_vm: SmolVMManager) -> None:
         """Test that deleting nonexistent VM raises error."""
         with pytest.raises(VMNotFoundError):
             smol_vm.delete("nonexistent")
@@ -349,7 +349,7 @@ class TestSmolVMDelete:
     def test_delete_cleans_local_forward_rules(
         self,
         mock_network_class: MagicMock,
-        smol_vm: SmolVM,
+        smol_vm: SmolVMManager,
         sample_config: VMConfig,
     ) -> None:
         """Delete should clean local-forward iptables rules by vm_id."""
@@ -372,7 +372,7 @@ class TestIPBasedTAPNaming:
     def test_create_uses_ip_for_tap_name(
         self,
         mock_network_class: MagicMock,
-        smol_vm: SmolVM,
+        smol_vm: SmolVMManager,
         sample_config: VMConfig,
     ) -> None:
         """Test that TAP name is derived from the IP last octet."""
@@ -399,7 +399,7 @@ class TestIPBasedTAPNaming:
     def test_sequential_vms_get_unique_taps(
         self,
         mock_network_class: MagicMock,
-        smol_vm: SmolVM,
+        smol_vm: SmolVMManager,
         tmp_path: Path,
     ) -> None:
         """Test that sequential VMs get unique TAP names based on IPs."""
@@ -433,7 +433,7 @@ class TestSmolVMContextManager:
 
     def test_context_manager(self, tmp_path: Path) -> None:
         """Test that SmolVM can be used with 'with' statement."""
-        with SmolVM(
+        with SmolVMManager(
             data_dir=tmp_path / "data",
             socket_dir=tmp_path / "sockets",
             backend="firecracker",
@@ -443,7 +443,7 @@ class TestSmolVMContextManager:
 
         assert sdk._closed
 
-    def test_close_is_idempotent(self, smol_vm: SmolVM) -> None:
+    def test_close_is_idempotent(self, smol_vm: SmolVMManager) -> None:
         """Test that close() can be called multiple times safely."""
         smol_vm.close()
         smol_vm.close()  # Should not raise
@@ -457,7 +457,7 @@ class TestSmolVMFromId:
     def test_from_id_existing(
         self,
         mock_network_class: MagicMock,
-        smol_vm: SmolVM,
+        smol_vm: SmolVMManager,
         sample_config: VMConfig,
         tmp_path: Path,
     ) -> None:
@@ -471,7 +471,7 @@ class TestSmolVMFromId:
         smol_vm.create(sample_config)
 
         # from_id should succeed and return a new SDK instance
-        sdk2 = SmolVM.from_id(
+        sdk2 = SmolVMManager.from_id(
             "vm001",
             data_dir=tmp_path / "data",
             socket_dir=tmp_path / "sockets",
@@ -482,7 +482,7 @@ class TestSmolVMFromId:
     def test_from_id_nonexistent(self, tmp_path: Path) -> None:
         """Test from_id raises for nonexistent VM."""
         with pytest.raises(VMNotFoundError):
-            SmolVM.from_id(
+            SmolVMManager.from_id(
                 "nonexistent",
                 data_dir=tmp_path / "data",
                 socket_dir=tmp_path / "sockets",
@@ -493,14 +493,14 @@ class TestSmolVMBootArgsAndSSHCommands:
     """Tests for boot-arg injection and SSH helper commands."""
 
     @patch("smolvm.vm.FirecrackerClient")
-    @patch.object(SmolVM, "_start_firecracker")
+    @patch.object(SmolVMManager, "_start_firecracker")
     @patch("smolvm.vm.NetworkManager")
     def test_start_injects_ip_boot_arg_when_missing(
         self,
         mock_network_class: MagicMock,
         mock_start_fc: MagicMock,
         mock_client_cls: MagicMock,
-        smol_vm: SmolVM,
+        smol_vm: SmolVMManager,
         sample_config: VMConfig,
     ) -> None:
         """Test start() auto-injects ip= boot arg if not present."""
@@ -524,14 +524,14 @@ class TestSmolVMBootArgsAndSSHCommands:
         assert "ip=172.16.0.2::172.16.0.1:255.255.255.0::eth0:off" in boot_args
 
     @patch("smolvm.vm.FirecrackerClient")
-    @patch.object(SmolVM, "_start_firecracker")
+    @patch.object(SmolVMManager, "_start_firecracker")
     @patch("smolvm.vm.NetworkManager")
     def test_start_preserves_existing_ip_boot_arg(
         self,
         mock_network_class: MagicMock,
         mock_start_fc: MagicMock,
         mock_client_cls: MagicMock,
-        smol_vm: SmolVM,
+        smol_vm: SmolVMManager,
         tmp_path: Path,
     ) -> None:
         """Test start() does not override caller-provided ip= boot args."""
@@ -569,7 +569,7 @@ class TestSmolVMBootArgsAndSSHCommands:
     def test_get_ssh_commands_returns_private_and_forwarded(
         self,
         mock_network_class: MagicMock,
-        smol_vm: SmolVM,
+        smol_vm: SmolVMManager,
         sample_config: VMConfig,
     ) -> None:
         """Test SSH helper command output includes forwarded host port."""
@@ -598,7 +598,7 @@ class TestDataDirResolution:
         env_dir = tmp_path / "env"
         monkeypatch.setenv("SMOLVM_DATA_DIR", str(env_dir))
 
-        sdk = SmolVM(
+        sdk = SmolVMManager(
             data_dir=explicit_dir,
             socket_dir=tmp_path / "sockets",
             backend="firecracker",
@@ -615,7 +615,7 @@ class TestDataDirResolution:
         monkeypatch.setenv("SMOLVM_DATA_DIR", str(env_dir))
         monkeypatch.delenv("SUDO_USER", raising=False)
 
-        sdk = SmolVM(socket_dir=tmp_path / "sockets", backend="firecracker")
+        sdk = SmolVMManager(socket_dir=tmp_path / "sockets", backend="firecracker")
         try:
             assert sdk.data_dir == env_dir
             assert (env_dir / "smolvm.db").exists()
@@ -632,7 +632,7 @@ class TestDataDirResolution:
         monkeypatch.setenv("XDG_STATE_HOME", str(xdg_state_home))
 
         with patch("smolvm.vm.os.geteuid", return_value=1000):
-            sdk = SmolVM(socket_dir=tmp_path / "sockets", backend="firecracker")
+            sdk = SmolVMManager(socket_dir=tmp_path / "sockets", backend="firecracker")
 
         try:
             assert sdk.data_dir == xdg_state_home / "smolvm"
@@ -660,7 +660,7 @@ class TestDataDirResolution:
             patch("smolvm.vm.pwd.getpwnam", return_value=fake_passwd),
             patch("smolvm.vm.os.chown"),
         ):
-            sdk = SmolVM(socket_dir=tmp_path / "sockets", backend="firecracker")
+            sdk = SmolVMManager(socket_dir=tmp_path / "sockets", backend="firecracker")
 
         try:
             assert sdk.data_dir == sudo_home / ".local" / "state" / "smolvm"
@@ -673,7 +673,7 @@ class TestFirecrackerLaunchAndSocketCleanup:
     """Tests for Firecracker launch mode and socket cleanup behavior."""
 
     def test_start_firecracker_runs_without_sudo(
-        self, smol_vm: SmolVM, tmp_path: Path
+        self, smol_vm: SmolVMManager, tmp_path: Path
     ) -> None:
         """Firecracker should run as current user; no sudo prefix in launch command."""
         socket_path = tmp_path / "sockets" / "fc-vm.sock"
@@ -706,7 +706,7 @@ class TestFirecrackerLaunchAndSocketCleanup:
         self,
         mock_unlink: MagicMock,
         mock_run: MagicMock,
-        smol_vm: SmolVM,
+        smol_vm: SmolVMManager,
     ) -> None:
         """Permission errors should trigger sudo rm fallback for stale root sockets."""
         mock_unlink.side_effect = PermissionError
@@ -723,7 +723,7 @@ class TestFirecrackerLaunchAndSocketCleanup:
         self,
         mock_unlink: MagicMock,
         mock_run: MagicMock,
-        smol_vm: SmolVM,
+        smol_vm: SmolVMManager,
     ) -> None:
         """If sudo fallback fails, raise a clear error with manual remediation."""
         mock_unlink.side_effect = PermissionError

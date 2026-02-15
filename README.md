@@ -64,10 +64,10 @@ macOS (QEMU):
 Initialize a VM with no arguments for an auto-configured, SSH-ready environment:
 
 ```python
-from smolvm import VM
+from smolvm import SmolVM
 
 # Auto-configures keys, image, and network automatically
-with VM() as vm:
+with SmolVM() as vm:
     result = vm.run("echo 'Hello from the sandbox!'")
     print(result.output)
 ```
@@ -75,9 +75,9 @@ with VM() as vm:
 Customize auto-config memory and disk size:
 
 ```python
-from smolvm import VM
+from smolvm import SmolVM
 
-with VM(mem_size_mib=2048, disk_size_mib=4096) as vm:
+with SmolVM(mem_size_mib=2048, disk_size_mib=4096) as vm:
     print(vm.run("free -m").output)
 ```
 
@@ -86,10 +86,10 @@ with VM(mem_size_mib=2048, disk_size_mib=4096) as vm:
 You can also reconnect to a running VM by its ID:
 
 ```python
-from smolvm import VM
+from smolvm import SmolVM
 
 # Reconnect to an existing VM
-vm = VM.from_id("vm-abcdef12")
+vm = SmolVM.from_id("vm-abcdef12")
 print(f"Status: {vm.status}")
 ```
 
@@ -111,9 +111,9 @@ config = VMConfig(..., disk_mode="shared")
 Expose a guest application to your local machine securely. `expose_local` prefers host-local iptables forwarding and automatically falls back to an SSH tunnel when needed.
 
 ```python
-from smolvm import VM
+from smolvm import SmolVM
 
-with VM() as vm:
+with SmolVM() as vm:
     # Example: App in VM listening on port 8080, expose to host port 18080
     host_port = vm.expose_local(guest_port=8080, host_port=18080)
     print(f"App available at http://localhost:{host_port}")
@@ -125,9 +125,9 @@ Inject environment variables into a running VM. Variables are persisted in
 `/etc/profile.d/smolvm_env.sh` and apply to new SSH/login shell sessions.
 
 ```python
-from smolvm import VM
+from smolvm import SmolVM
 
-with VM() as vm:
+with SmolVM() as vm:
     vm.set_env_vars({"API_KEY": "sk-...", "DEBUG": "1"})
     print(vm.list_env_vars())
     print(vm.run("echo $API_KEY").output)

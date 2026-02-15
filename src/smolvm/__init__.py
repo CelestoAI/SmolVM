@@ -28,19 +28,19 @@ from smolvm.exceptions import (
     VMAlreadyExistsError,
     VMNotFoundError,
 )
-from smolvm.facade import VM
+from smolvm.facade import SmolVM
 from smolvm.host import HostManager
 from smolvm.images import ImageManager, ImageSource, LocalImage
 from smolvm.ssh import SSHClient
 from smolvm.types import CommandResult, NetworkConfig, VMConfig, VMInfo, VMState
-from smolvm.vm import SmolVM
+from smolvm.vm import SmolVMManager
 
 __version__ = "0.0.2"
 
 __all__ = [
     # Core classes
     "SmolVM",
-    "VM",
+    "SmolVMManager",
     # Image management
     "ImageManager",
     "ImageBuilder",

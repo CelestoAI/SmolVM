@@ -26,7 +26,7 @@ class TestCliEnv:
 
     @pytest.fixture
     def mock_vm_cls(self) -> MagicMock:
-        with patch("smolvm.facade.VM") as m:
+        with patch("smolvm.facade.SmolVM") as m:
             yield m
 
     def _setup_vm(self, mock_vm_cls: MagicMock, vm_id: str = "vm001") -> MagicMock:

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Main SmolVM SDK class.
+"""Low-level SmolVM manager.
 
 Orchestrates VM lifecycle, networking, and state management across runtimes.
 """
@@ -136,8 +136,8 @@ def resolve_data_dir(data_dir: Path | None = None) -> Path:
     )
 
 
-class SmolVM:
-    """Main SDK class for managing sandbox VMs.
+class SmolVMManager:
+    """Low-level manager class for orchestrating sandbox VMs.
 
     Provides high-level operations for creating, starting, stopping,
     and managing VMs with proper state persistence and cleanup.
@@ -208,7 +208,7 @@ class SmolVM:
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_id(cls, vm_id: str, **kwargs: Any) -> "SmolVM":
+    def from_id(cls, vm_id: str, **kwargs: Any) -> "SmolVMManager":
         """Create an SDK instance and verify a VM exists.
 
         Useful for attaching to an existing VM from a different process.
@@ -218,7 +218,7 @@ class SmolVM:
             **kwargs: Forwarded to :meth:`__init__` (e.g. ``data_dir``).
 
         Returns:
-            A :class:`SmolVM` instance whose state DB contains *vm_id*.
+            A :class:`SmolVMManager` instance whose state DB contains *vm_id*.
 
         Raises:
             VMNotFoundError: If no VM with this ID exists.
@@ -227,7 +227,7 @@ class SmolVM:
         sdk.state.get_vm(vm_id)  # raises VMNotFoundError if absent
         return sdk
 
-    def __enter__(self) -> "SmolVM":
+    def __enter__(self) -> "SmolVMManager":
         return self
 
     def __exit__(self, *args: object) -> None:

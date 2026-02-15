@@ -24,7 +24,7 @@ from smolvm.exceptions import (
     OperationTimeoutError,
     SmolVMError,
 )
-from smolvm.facade import VM
+from smolvm.facade import SmolVM
 from smolvm.types import VMConfig, VMState
 
 
@@ -48,7 +48,7 @@ def sample_config(tmp_path: Path) -> VMConfig:
 class TestVMInit:
     """Tests for VM initialization."""
 
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_create_with_config(
         self,
         mock_sdk_cls: MagicMock,
@@ -59,12 +59,12 @@ class TestVMInit:
         mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
 
         assert vm.vm_id == "vm001"
         mock_sdk.create.assert_called_once_with(sample_config)
 
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_create_with_config_without_vm_id(
         self,
         mock_sdk_cls: MagicMock,
@@ -85,7 +85,7 @@ class TestVMInit:
         mock_sdk.create.return_value = MagicMock(vm_id=config.vm_id, status=VMState.CREATED)
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = VM(config)
+        vm = SmolVM(config)
 
         assert vm.vm_id == config.vm_id
         assert vm.vm_id.startswith("vm-")
@@ -94,9 +94,9 @@ class TestVMInit:
     def test_both_config_and_id_raises(self, sample_config: VMConfig) -> None:
         """Test that passing both config and vm_id raises ValueError."""
         with pytest.raises(ValueError, match="not both"):
-            VM(sample_config, vm_id="vm001")
+            SmolVM(sample_config, vm_id="vm001")
 
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     @patch("smolvm.build.ImageBuilder")
     @patch("smolvm.utils.ensure_ssh_key")
     def test_neither_config_nor_id_autoconfigures(
@@ -125,7 +125,7 @@ class TestVMInit:
         mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = VM()
+        vm = SmolVM()
 
         assert vm.vm_id.startswith("vm-")
         mock_builder.build_alpine_ssh_key.assert_called_once()
@@ -136,7 +136,7 @@ class TestVMInit:
         assert "init=/init" in created_config.boot_args
         assert created_config.mem_size_mib == 512
 
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     @patch("smolvm.build.ImageBuilder")
     @patch("smolvm.utils.ensure_ssh_key")
     def test_autoconfigure_with_custom_mem_and_disk(
@@ -165,7 +165,7 @@ class TestVMInit:
         mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = VM(mem_size_mib=2048, disk_size_mib=4096)
+        vm = SmolVM(mem_size_mib=2048, disk_size_mib=4096)
 
         assert vm.vm_id.startswith("vm-")
         mock_builder.build_alpine_ssh_key.assert_called_once()
@@ -177,16 +177,16 @@ class TestVMInit:
     def test_custom_auto_sizing_with_config_raises(self, sample_config: VMConfig) -> None:
         """Custom auto sizing options are only valid in zero-config mode."""
         with pytest.raises(ValueError, match="auto-config mode"):
-            VM(sample_config, mem_size_mib=1024)
+            SmolVM(sample_config, mem_size_mib=1024)
 
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_from_id(self, mock_sdk_cls: MagicMock) -> None:
         """Test reconnecting to an existing VM by ID."""
         mock_sdk = MagicMock()
         mock_sdk.get.return_value = MagicMock(vm_id="vm001", status=VMState.RUNNING)
         mock_sdk_cls.from_id.return_value = mock_sdk
 
-        vm = VM.from_id("vm001")
+        vm = SmolVM.from_id("vm001")
 
         assert vm.vm_id == "vm001"
         mock_sdk_cls.from_id.assert_called_once()
@@ -195,7 +195,7 @@ class TestVMInit:
 class TestVMLifecycle:
     """Tests for VM lifecycle operations."""
 
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_start_returns_self(
         self,
         mock_sdk_cls: MagicMock,
@@ -213,13 +213,13 @@ class TestVMLifecycle:
         mock_sdk.start.return_value = running_info
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
         result = vm.start()
 
         assert result is vm
         mock_sdk.start.assert_called_once()
 
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_start_noop_if_already_running(
         self,
         mock_sdk_cls: MagicMock,
@@ -232,13 +232,13 @@ class TestVMLifecycle:
         mock_sdk.create.return_value = running_info
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
         result = vm.start()
 
         assert result is vm
         mock_sdk.start.assert_not_called()
 
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_stop_returns_self(
         self,
         mock_sdk_cls: MagicMock,
@@ -250,13 +250,13 @@ class TestVMLifecycle:
         mock_sdk.stop.return_value = MagicMock(vm_id="vm001", status=VMState.STOPPED)
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
         result = vm.stop()
 
         assert result is vm
         mock_sdk.stop.assert_called_once()
 
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_delete(
         self,
         mock_sdk_cls: MagicMock,
@@ -267,7 +267,7 @@ class TestVMLifecycle:
         mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
         vm.delete()
 
         mock_sdk.delete.assert_called_once_with("vm001")
@@ -277,7 +277,7 @@ class TestVMRun:
     """Tests for command execution on the VM."""
 
     @patch("smolvm.facade.SSHClient")
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_run_on_running_vm(
         self,
         mock_sdk_cls: MagicMock,
@@ -303,7 +303,7 @@ class TestVMRun:
         mock_ssh.run.return_value = MagicMock(exit_code=0, stdout="ok\n", stderr="")
         mock_ssh_cls.return_value = mock_ssh
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
         result = vm.run("echo ok")
 
         assert result.exit_code == 0
@@ -313,7 +313,7 @@ class TestVMRun:
         mock_ssh.run.assert_called_once_with("echo ok", timeout=30, shell="login")
 
     @patch("smolvm.facade.SSHClient")
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_run_raw_shell_mode(
         self,
         mock_sdk_cls: MagicMock,
@@ -339,7 +339,7 @@ class TestVMRun:
         mock_ssh.run.return_value = MagicMock(exit_code=0, stdout="ok\n", stderr="")
         mock_ssh_cls.return_value = mock_ssh
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
         vm.run("echo ok", shell="raw")
 
         mock_ssh.wait_for_ssh.assert_called_once()
@@ -348,7 +348,7 @@ class TestVMRun:
         mock_ssh.run.assert_called_once_with("echo ok", timeout=30, shell="raw")
 
     @patch("smolvm.facade.SSHClient")
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_run_waits_for_ssh_once(
         self,
         mock_sdk_cls: MagicMock,
@@ -374,7 +374,7 @@ class TestVMRun:
         mock_ssh.run.return_value = MagicMock(exit_code=0, stdout="ok\n", stderr="")
         mock_ssh_cls.return_value = mock_ssh
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
         vm.run("echo one")
         vm.run("echo two")
 
@@ -385,7 +385,7 @@ class TestVMRun:
 
     @patch("smolvm.utils.ensure_ssh_key")
     @patch("smolvm.facade.SSHClient")
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_run_retries_with_default_key_when_no_explicit_key(
         self,
         mock_sdk_cls: MagicMock,
@@ -421,7 +421,7 @@ class TestVMRun:
 
         mock_ssh_cls.side_effect = [no_key_client, key_client]
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
         result = vm.run("echo ok")
 
         assert result.exit_code == 0
@@ -434,7 +434,7 @@ class TestVMRun:
     @patch("smolvm.facade.Path.home")
     @patch("smolvm.utils.ensure_ssh_key")
     @patch("smolvm.facade.SSHClient")
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_run_retries_with_legacy_default_key_when_key_resolution_fails(
         self,
         mock_sdk_cls: MagicMock,
@@ -476,7 +476,7 @@ class TestVMRun:
 
         mock_ssh_cls.side_effect = [no_key_client, key_client]
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
         result = vm.run("echo ok")
 
         assert result.exit_code == 0
@@ -488,7 +488,7 @@ class TestVMRun:
 
     @patch("smolvm.utils.ensure_ssh_key")
     @patch("smolvm.facade.SSHClient")
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_run_with_explicit_key_does_not_resolve_default_key(
         self,
         mock_sdk_cls: MagicMock,
@@ -516,7 +516,7 @@ class TestVMRun:
         timeout_client.wait_for_ssh.side_effect = OperationTimeoutError("wait_for_ssh", 10.0)
         mock_ssh_cls.return_value = timeout_client
 
-        vm = VM(sample_config, ssh_key_path="/custom/id_ed25519")
+        vm = SmolVM(sample_config, ssh_key_path="/custom/id_ed25519")
         with pytest.raises(CommandExecutionUnavailableError, match="SSH did not become ready"):
             vm.run("echo ok")
 
@@ -525,7 +525,7 @@ class TestVMRun:
         assert mock_ssh_cls.call_args.kwargs["key_path"] == "/custom/id_ed25519"
 
     @patch("smolvm.facade.SSHClient")
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_run_falls_back_to_guest_ip_when_localhost_unreachable(
         self,
         mock_sdk_cls: MagicMock,
@@ -554,7 +554,7 @@ class TestVMRun:
         guest_client.run.return_value = MagicMock(exit_code=0, stdout="ok\n", stderr="")
         mock_ssh_cls.side_effect = [localhost_client, guest_client]
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
         result = vm.run("echo ok")
 
         assert result.exit_code == 0
@@ -567,7 +567,7 @@ class TestVMRun:
         guest_client.run.assert_called_once_with("echo ok", timeout=30, shell="login")
 
     @patch("smolvm.facade.SSHClient")
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_wait_for_ssh_falls_back_to_guest_ip_when_localhost_unreachable(
         self,
         mock_sdk_cls: MagicMock,
@@ -595,7 +595,7 @@ class TestVMRun:
         guest_client = MagicMock()
         mock_ssh_cls.side_effect = [localhost_client, guest_client]
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
         vm.wait_for_ssh(timeout=20.0)
 
         assert mock_ssh_cls.call_count == 2
@@ -605,7 +605,7 @@ class TestVMRun:
         assert vm._ssh_ready is True
 
     @patch("smolvm.facade.SSHClient")
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_run_on_non_ssh_boot_profile_raises_clear_error(
         self,
         mock_sdk_cls: MagicMock,
@@ -627,7 +627,7 @@ class TestVMRun:
         mock_sdk.get.return_value = mock_info
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
         with pytest.raises(CommandExecutionUnavailableError, match="init=/init"):
             vm.run("echo test")
 
@@ -635,7 +635,7 @@ class TestVMRun:
 
     @patch("smolvm.utils.ensure_ssh_key")
     @patch("smolvm.facade.SSHClient")
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_run_maps_ssh_readiness_timeout_to_clear_error(
         self,
         mock_sdk_cls: MagicMock,
@@ -663,14 +663,14 @@ class TestVMRun:
         mock_ssh_cls.return_value = mock_ssh
         mock_ensure_ssh_key.return_value = (Path("/tmp/id_ed25519"), Path("/tmp/id_ed25519.pub"))
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
         with pytest.raises(CommandExecutionUnavailableError, match="SSH did not become ready"):
             vm.run("echo test")
 
         mock_ensure_ssh_key.assert_called_once()
         mock_ssh.run.assert_not_called()
 
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_run_on_stopped_vm_raises(
         self,
         mock_sdk_cls: MagicMock,
@@ -685,7 +685,7 @@ class TestVMRun:
         mock_sdk.get.return_value = mock_info
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
         with pytest.raises(SmolVMError, match="VM is stopped"):
             vm.run("echo test")
 
@@ -693,8 +693,8 @@ class TestVMRun:
 class TestVMLocalExpose:
     """Tests for localhost-only port exposure."""
 
-    @patch("smolvm.facade.SmolVM")
-    @patch("smolvm.facade.VM._probe_local_forward", return_value=True)
+    @patch("smolvm.facade.SmolVMManager")
+    @patch("smolvm.facade.SmolVM._probe_local_forward", return_value=True)
     def test_expose_local_with_explicit_host_port(
         self,
         _mock_probe: MagicMock,
@@ -716,7 +716,7 @@ class TestVMLocalExpose:
         mock_sdk.network = MagicMock()
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
         host_port = vm.expose_local(guest_port=8080, host_port=18080)
 
         assert host_port == 18080
@@ -727,9 +727,9 @@ class TestVMLocalExpose:
             guest_port=8080,
         )
 
-    @patch("smolvm.facade.SmolVM")
-    @patch("smolvm.facade.VM._probe_local_forward", return_value=True)
-    @patch("smolvm.facade.VM._find_available_local_port", side_effect=[18081, 18082])
+    @patch("smolvm.facade.SmolVMManager")
+    @patch("smolvm.facade.SmolVM._probe_local_forward", return_value=True)
+    @patch("smolvm.facade.SmolVM._find_available_local_port", side_effect=[18081, 18082])
     def test_expose_local_auto_host_port(
         self,
         mock_find_port: MagicMock,
@@ -752,14 +752,14 @@ class TestVMLocalExpose:
         mock_sdk.network = MagicMock()
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
         host_port = vm.expose_local(guest_port=8080)
 
         assert host_port == 18081
         assert mock_find_port.call_count == 2
         mock_sdk.network.setup_local_port_forward.assert_called_once()
 
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_expose_local_requires_running_vm(
         self,
         mock_sdk_cls: MagicMock,
@@ -776,12 +776,12 @@ class TestVMLocalExpose:
         mock_sdk.network = MagicMock()
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
         with pytest.raises(SmolVMError, match="VM is stopped"):
             vm.expose_local(guest_port=8080, host_port=18080)
 
-    @patch("smolvm.facade.SmolVM")
-    @patch("smolvm.facade.VM._probe_local_forward", return_value=True)
+    @patch("smolvm.facade.SmolVMManager")
+    @patch("smolvm.facade.SmolVM._probe_local_forward", return_value=True)
     def test_stop_cleans_local_forwards(
         self,
         _mock_probe: MagicMock,
@@ -809,7 +809,7 @@ class TestVMLocalExpose:
         mock_sdk.network = MagicMock()
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
         vm.expose_local(guest_port=8080, host_port=18080)
         vm.stop()
 
@@ -820,9 +820,9 @@ class TestVMLocalExpose:
             guest_port=8080,
         )
 
-    @patch("smolvm.facade.SmolVM")
-    @patch("smolvm.facade.VM._start_local_tunnel")
-    @patch("smolvm.facade.VM._probe_local_forward", return_value=False)
+    @patch("smolvm.facade.SmolVMManager")
+    @patch("smolvm.facade.SmolVM._start_local_tunnel")
+    @patch("smolvm.facade.SmolVM._probe_local_forward", return_value=False)
     def test_expose_local_falls_back_to_ssh_tunnel(
         self,
         _mock_probe: MagicMock,
@@ -848,7 +848,7 @@ class TestVMLocalExpose:
         tunnel_proc = MagicMock()
         mock_start_tunnel.return_value = tunnel_proc
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
         host_port = vm.expose_local(guest_port=8080, host_port=18080)
 
         assert host_port == 18080
@@ -866,10 +866,10 @@ class TestVMLocalExpose:
             guest_port=8080,
         )
 
-    @patch("smolvm.facade.SmolVM")
-    @patch("smolvm.facade.VM._allocate_local_port", return_value=18081)
-    @patch("smolvm.facade.VM._start_local_tunnel")
-    @patch("smolvm.facade.VM._probe_local_forward", return_value=False)
+    @patch("smolvm.facade.SmolVMManager")
+    @patch("smolvm.facade.SmolVM._allocate_local_port", return_value=18081)
+    @patch("smolvm.facade.SmolVM._start_local_tunnel")
+    @patch("smolvm.facade.SmolVM._probe_local_forward", return_value=False)
     def test_expose_local_retries_with_fallback_port(
         self,
         _mock_probe: MagicMock,
@@ -896,7 +896,7 @@ class TestVMLocalExpose:
         tunnel_proc = MagicMock()
         mock_start_tunnel.side_effect = [SmolVMError("first failed"), tunnel_proc]
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
         host_port = vm.expose_local(guest_port=8080, host_port=18080)
 
         assert host_port == 18081
@@ -906,10 +906,10 @@ class TestVMLocalExpose:
         assert first_call.kwargs == {"host_port": 18080, "guest_port": 8080}
         assert second_call.kwargs == {"host_port": 18081, "guest_port": 8080}
 
-    @patch("smolvm.facade.SmolVM")
-    @patch("smolvm.facade.VM._stop_local_tunnel")
-    @patch("smolvm.facade.VM._start_local_tunnel")
-    @patch("smolvm.facade.VM._probe_local_forward", return_value=False)
+    @patch("smolvm.facade.SmolVMManager")
+    @patch("smolvm.facade.SmolVM._stop_local_tunnel")
+    @patch("smolvm.facade.SmolVM._start_local_tunnel")
+    @patch("smolvm.facade.SmolVM._probe_local_forward", return_value=False)
     def test_unexpose_local_cleans_ssh_tunnel_transport(
         self,
         _mock_probe: MagicMock,
@@ -936,7 +936,7 @@ class TestVMLocalExpose:
         tunnel_proc = MagicMock()
         mock_start_tunnel.return_value = tunnel_proc
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
         vm.expose_local(guest_port=8080, host_port=18080)
         vm.unexpose_local(host_port=18080, guest_port=8080)
 
@@ -948,7 +948,7 @@ class TestVMLocalExpose:
 class TestVMContextManager:
     """Tests for VM context manager."""
 
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_context_manager_stops_on_exit(
         self,
         mock_sdk_cls: MagicMock,
@@ -962,7 +962,7 @@ class TestVMContextManager:
         mock_sdk.stop.return_value = stopped_info
         mock_sdk_cls.return_value = mock_sdk
 
-        with VM(sample_config) as vm:
+        with SmolVM(sample_config) as vm:
             assert vm.vm_id == "vm001"
 
         # stop/delete/close should have been called for owned VM
@@ -970,7 +970,7 @@ class TestVMContextManager:
         mock_sdk.delete.assert_called_once_with("vm001")
         mock_sdk.close.assert_called_once()
 
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_context_manager_autostarts_owned_vm(
         self,
         mock_sdk_cls: MagicMock,
@@ -989,7 +989,7 @@ class TestVMContextManager:
         mock_sdk.stop.return_value = stopped_info
         mock_sdk_cls.return_value = mock_sdk
 
-        with VM(sample_config):
+        with SmolVM(sample_config):
             pass
 
         mock_sdk.start.assert_called_once_with("vm001", boot_timeout=30.0)
@@ -997,7 +997,7 @@ class TestVMContextManager:
         mock_sdk.delete.assert_called_once_with("vm001")
         mock_sdk.close.assert_called_once()
 
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_context_manager_from_id_does_not_delete(
         self,
         mock_sdk_cls: MagicMock,
@@ -1011,7 +1011,7 @@ class TestVMContextManager:
         mock_sdk.stop.return_value = stopped_info
         mock_sdk_cls.from_id.return_value = mock_sdk
 
-        with VM.from_id("vm001") as vm:
+        with SmolVM.from_id("vm001") as vm:
             assert vm.vm_id == "vm001"
 
         mock_sdk.stop.assert_called_once()
@@ -1022,7 +1022,7 @@ class TestVMContextManager:
 class TestVMProperties:
     """Tests for VM properties."""
 
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_get_ip(
         self,
         mock_sdk_cls: MagicMock,
@@ -1042,10 +1042,10 @@ class TestVMProperties:
         mock_sdk.get.return_value = mock_info
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
         assert vm.get_ip() == "172.16.0.2"
 
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_get_ip_no_network_raises(
         self,
         mock_sdk_cls: MagicMock,
@@ -1060,11 +1060,11 @@ class TestVMProperties:
         mock_sdk.get.return_value = mock_info
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
         with pytest.raises(SmolVMError, match="no network"):
             vm.get_ip()
 
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_data_dir_property(
         self,
         mock_sdk_cls: MagicMock,
@@ -1081,10 +1081,10 @@ class TestVMProperties:
         mock_sdk.data_dir = Path("/tmp/smolvm-test")
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
         assert vm.data_dir == Path("/tmp/smolvm-test")
 
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_repr(
         self,
         mock_sdk_cls: MagicMock,
@@ -1095,11 +1095,11 @@ class TestVMProperties:
         mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
         assert "vm001" in repr(vm)
         assert "created" in repr(vm)
 
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_ssh_commands_proxy(
         self,
         mock_sdk_cls: MagicMock,
@@ -1114,7 +1114,7 @@ class TestVMProperties:
         }
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = VM(sample_config, ssh_key_path="/tmp/id_ed25519")
+        vm = SmolVM(sample_config, ssh_key_path="/tmp/id_ed25519")
         cmds = vm.ssh_commands(public_host="203.0.113.10")
 
         assert "private_ip" in cmds
@@ -1131,7 +1131,7 @@ class TestVMEnvInjection:
 
     @patch("smolvm.facade.inject_env_vars")
     @patch("smolvm.facade.SSHClient")
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_start_injects_env_vars(
         self,
         mock_sdk_cls: MagicMock,
@@ -1164,7 +1164,7 @@ class TestVMEnvInjection:
         mock_ssh_cls.return_value = mock_ssh
         mock_inject.return_value = ["FOO"]
 
-        vm = VM(config_with_env)
+        vm = SmolVM(config_with_env)
         vm.start()
 
         # Should wait for SSH
@@ -1176,7 +1176,7 @@ class TestVMEnvInjection:
 
     @patch("smolvm.facade.inject_env_vars")
     @patch("smolvm.facade.SSHClient")
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_start_injects_env_vars_with_ssh_fallback(
         self,
         mock_sdk_cls: MagicMock,
@@ -1211,7 +1211,7 @@ class TestVMEnvInjection:
         mock_ssh_cls.side_effect = [localhost_client, guest_client]
         mock_inject.return_value = ["FOO"]
 
-        vm = VM(config_with_env)
+        vm = SmolVM(config_with_env)
         vm.start()
 
         assert mock_ssh_cls.call_count == 2
@@ -1222,7 +1222,7 @@ class TestVMEnvInjection:
         mock_inject.assert_called_once_with(guest_client, {"FOO": "bar"})
 
     @patch("smolvm.facade.inject_env_vars")
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_start_skips_injection_if_no_env_vars(
         self,
         mock_sdk_cls: MagicMock,
@@ -1240,13 +1240,13 @@ class TestVMEnvInjection:
         mock_sdk.start.return_value = mock_info
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = VM(config)
+        vm = SmolVM(config)
         vm.start()
 
         mock_inject.assert_not_called()
 
     @patch("smolvm.facade.inject_env_vars")
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_start_raises_if_ssh_not_supported(
         self,
         mock_sdk_cls: MagicMock,
@@ -1266,7 +1266,7 @@ class TestVMEnvInjection:
         mock_sdk.start.return_value = mock_info
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = VM(config)
+        vm = SmolVM(config)
 
         with pytest.raises(SmolVMError, match="does not support SSH"):
             vm.start()
@@ -1278,7 +1278,7 @@ class TestVMEnvManagement:
     """Tests for runtime environment variable management methods."""
 
     @patch("smolvm.facade.inject_env_vars")
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_set_env_vars(
         self,
         mock_sdk_cls: MagicMock,
@@ -1297,7 +1297,7 @@ class TestVMEnvManagement:
         mock_sdk.get.return_value = running_info
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = VM(config)
+        vm = SmolVM(config)
         vm._ssh = MagicMock()
         vm._ssh_ready = True
         mock_inject.return_value = ["FOO"]
@@ -1308,7 +1308,7 @@ class TestVMEnvManagement:
         mock_inject.assert_called_once_with(vm._ssh, {"FOO": "bar"}, merge=True)
 
     @patch("smolvm.facade.remove_env_vars")
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_unset_env_vars(
         self,
         mock_sdk_cls: MagicMock,
@@ -1327,7 +1327,7 @@ class TestVMEnvManagement:
         mock_sdk.get.return_value = running_info
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = VM(config)
+        vm = SmolVM(config)
         vm._ssh = MagicMock()
         vm._ssh_ready = True
         mock_remove.return_value = {"FOO": "bar"}
@@ -1338,7 +1338,7 @@ class TestVMEnvManagement:
         mock_remove.assert_called_once_with(vm._ssh, ["FOO"])
 
     @patch("smolvm.facade.read_env_vars")
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_list_env_vars(
         self,
         mock_sdk_cls: MagicMock,
@@ -1357,7 +1357,7 @@ class TestVMEnvManagement:
         mock_sdk.get.return_value = running_info
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = VM(config)
+        vm = SmolVM(config)
         vm._ssh = MagicMock()
         vm._ssh_ready = True
         mock_read.return_value = {"FOO": "bar"}
@@ -1367,7 +1367,7 @@ class TestVMEnvManagement:
         assert result == {"FOO": "bar"}
         mock_read.assert_called_once_with(vm._ssh)
 
-    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.SmolVMManager")
     def test_close_proxies_to_sdk(
         self,
         mock_sdk_cls: MagicMock,
@@ -1378,7 +1378,7 @@ class TestVMEnvManagement:
         mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = VM(sample_config)
+        vm = SmolVM(sample_config)
         vm.close()
 
         mock_sdk.close.assert_called_once()

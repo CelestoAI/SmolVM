@@ -64,7 +64,7 @@ class ImageBuilder:
 
     Example usage::
 
-        from smolvm import ImageBuilder, VM, VMConfig
+        from smolvm import ImageBuilder, SmolVM, VMConfig
         from smolvm.build import SSH_BOOT_ARGS
 
         builder = ImageBuilder()
@@ -76,7 +76,7 @@ class ImageBuilder:
             rootfs_path=rootfs,
             boot_args=SSH_BOOT_ARGS,
         )
-        with VM(config) as vm:
+        with SmolVM(config) as vm:
             vm.start()
             # SSH into vm.get_ip() with root / smolvm
     """
