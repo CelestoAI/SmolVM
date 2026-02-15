@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from smolvm.types import NetworkConfig, VMConfig, VMInfo, VMState
+from smolvm.types import CommandResult, NetworkConfig, VMConfig, VMInfo, VMState
 
 
 class TestVMConfig:
@@ -217,3 +217,25 @@ class TestVMInfo:
         assert info.status == VMState.CREATED
         assert info.network is None
         assert info.pid is None
+
+
+class TestCommandResult:
+    """Tests for CommandResult helpers."""
+
+    def test_ok_property(self) -> None:
+        """Test success helper reflects exit code."""
+        success = CommandResult(exit_code=0, stdout="ok\n", stderr="")
+        failure = CommandResult(exit_code=1, stdout="", stderr="boom")
+
+        assert success.ok is True
+        assert failure.ok is False
+
+    def test_output_property_strips_stdout(self) -> None:
+        """Test output convenience helper returns stripped stdout."""
+        result = CommandResult(
+            exit_code=0,
+            stdout="Hello from the sandbox!\n",
+            stderr="",
+        )
+
+        assert result.output == "Hello from the sandbox!"

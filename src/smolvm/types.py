@@ -127,3 +127,8 @@ class CommandResult(BaseModel):
     def ok(self) -> bool:
         """Whether the command succeeded (exit_code == 0)."""
         return self.exit_code == 0
+
+    @property
+    def output(self) -> str:
+        """Convenience alias for stripped standard output."""
+        return self.stdout.strip()
