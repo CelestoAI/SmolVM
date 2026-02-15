@@ -35,7 +35,7 @@ vm.stop()
 
 Run with a context manager to automatically clean up the microVM after use:
 
-```
+```python
 from smolvm import VM
 
 with VM() as vm:
