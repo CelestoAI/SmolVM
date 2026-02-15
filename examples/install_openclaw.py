@@ -10,7 +10,9 @@ from smolvm.utils import ensure_ssh_key
 
 GUEST_DASHBOARD_PORT = 18789
 HOST_DASHBOARD_PORT = 18789
+GATEWAY_TOKEN = "smolvm-local-token"
 OPENCLAW_PREFIX = "/opt/openclaw"
+VM_MEMORY_MIB = 2048
 
 
 def _run_or_exit(vm: VM, command: str, timeout: int = 300) -> None:
@@ -49,7 +51,7 @@ def _ensure_node_runtime(vm: VM) -> None:
         vm,
         (
             "curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key "
-            "| gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg"
+            "| gpg --dearmor --batch --yes -o /etc/apt/keyrings/nodesource.gpg"
         ),
         timeout=120,
     )
@@ -94,7 +96,7 @@ def _install_openclaw(vm: VM) -> None:
     _run_or_exit(
         vm,
         f"npm --prefix {OPENCLAW_PREFIX} install -g openclaw",
-        timeout=600,
+        timeout=1200,
     )
     _run_or_exit(
         vm,
@@ -121,7 +123,8 @@ def main() -> int:
     config = VMConfig(
         vm_id="openclaw-install",
         vcpu_count=1,
-        mem_size_mib=512,
+        # OpenClaw npm install is memory-heavy; 512 MiB can drop SSH mid-command.
+        mem_size_mib=VM_MEMORY_MIB,
         kernel_path=kernel,
         rootfs_path=rootfs,
         boot_args=SSH_BOOT_ARGS,
@@ -138,7 +141,8 @@ def main() -> int:
         _run_or_exit(
             vm,
             (
-                f"nohup openclaw gateway --port {GUEST_DASHBOARD_PORT} "
+                f"nohup openclaw gateway --allow-unconfigured --token {GATEWAY_TOKEN} "
+                f"--port {GUEST_DASHBOARD_PORT} "
                 ">/tmp/openclaw-gateway.log 2>&1 &"
             ),
             timeout=30,
@@ -147,7 +151,7 @@ def main() -> int:
             vm,
             (
                 f"for i in $(seq 1 30); do "
-                f"curl -fsS http://127.0.0.1:{GUEST_DASHBOARD_PORT}/ >/dev/null && exit 0; "
+                f"curl -sS -o /dev/null http://127.0.0.1:{GUEST_DASHBOARD_PORT}/ && exit 0; "
                 "sleep 1; "
                 "done; "
                 "echo 'Gateway did not start in time' >&2; "
@@ -162,6 +166,7 @@ def main() -> int:
             host_port=HOST_DASHBOARD_PORT,
         )
         print(f"\nDashboard ready: http://127.0.0.1:{host_port}/ (localhost only)")
+        print(f"Gateway token: {GATEWAY_TOKEN}")
 
         # Helpful in headless mode: prints dashboard URL if browser open is unavailable.
         _run_or_exit(vm, "openclaw dashboard || true", timeout=60)
