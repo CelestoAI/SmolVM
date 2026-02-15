@@ -125,8 +125,14 @@ class TestVMLifecycle:
     ) -> None:
         """Test that start() returns self for chaining."""
         mock_sdk = MagicMock()
-        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
-        mock_sdk.start.return_value = MagicMock(vm_id="vm001", status=VMState.RUNNING)
+        mock_info = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        mock_info.config.env_vars = {}
+        
+        running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
+        running_info.config.env_vars = {}
+        
+        mock_sdk.create.return_value = mock_info
+        mock_sdk.start.return_value = running_info
         mock_sdk_cls.return_value = mock_sdk
 
         vm = VM(sample_config)
@@ -144,6 +150,7 @@ class TestVMLifecycle:
         """Test start() is a no-op when VM is already running."""
         mock_sdk = MagicMock()
         running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
+        running_info.config.env_vars = {} 
         mock_sdk.create.return_value = running_info
         mock_sdk_cls.return_value = mock_sdk
 
@@ -632,8 +639,11 @@ class TestVMContextManager:
         """Test context manager auto-starts and then stops owned VMs."""
         mock_sdk = MagicMock()
         created_info = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        created_info.config.env_vars = {}
         running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
+        running_info.config.env_vars = {}
         stopped_info = MagicMock(vm_id="vm001", status=VMState.STOPPED)
+        
         mock_sdk.create.return_value = created_info
         mock_sdk.start.return_value = running_info
         mock_sdk.stop.return_value = stopped_info
@@ -774,3 +784,104 @@ class TestVMProperties:
             key_path="/tmp/id_ed25519",
             public_host="203.0.113.10",
         )
+
+
+class TestVMEnvInjection:
+    """Tests for environment variable injection during start()."""
+
+    @patch("smolvm.facade.inject_env_vars")
+    @patch("smolvm.facade.SSHClient")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_injects_env_vars(
+        self,
+        mock_sdk_cls: MagicMock,
+        mock_ssh_cls: MagicMock,
+        mock_inject: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """Test that start() injects env vars if configured."""
+        mock_sdk = MagicMock()
+        mock_info = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        # Add env vars to the runtime config (simulating start returning info)
+        config_with_env = sample_config.model_copy(
+            update={"env_vars": {"FOO": "bar"}, "boot_args": "init=/init"}
+        )
+        mock_info.config = config_with_env
+        mock_info.network.guest_ip = "172.16.0.2"
+
+        # Mock start() transitioning to RUNNING
+        running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
+        running_info.config = config_with_env
+        running_info.network.guest_ip = "172.16.0.2"
+
+        mock_sdk.create.return_value = mock_info
+        mock_sdk.start.return_value = running_info
+        # wait_for_ssh calls get() to poll status
+        mock_sdk.get.return_value = running_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        mock_ssh = MagicMock()
+        mock_ssh_cls.return_value = mock_ssh
+        mock_inject.return_value = ["FOO"]
+
+        vm = VM(config_with_env)
+        vm.start()
+
+        # Should wait for SSH
+        mock_ssh.wait_for_ssh.assert_called_once()
+        # Should create SSH client
+        mock_ssh_cls.assert_called()
+        # Should call inject
+        mock_inject.assert_called_once_with(mock_ssh, {"FOO": "bar"})
+
+    @patch("smolvm.facade.inject_env_vars")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_skips_injection_if_no_env_vars(
+        self,
+        mock_sdk_cls: MagicMock,
+        mock_inject: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """Test that start() skips injection if env_vars is empty."""
+        mock_sdk = MagicMock()
+        mock_info = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        # Empty env_vars
+        config = sample_config.model_copy(update={"env_vars": {}, "boot_args": "init=/init"})
+        mock_info.config = config
+        
+        mock_sdk.create.return_value = mock_info
+        mock_sdk.start.return_value = mock_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = VM(config)
+        vm.start()
+
+        mock_inject.assert_not_called()
+
+    @patch("smolvm.facade.inject_env_vars")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_raises_if_ssh_not_supported(
+        self,
+        mock_sdk_cls: MagicMock,
+        mock_inject: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """Test that start() raises if env_vars set but no SSH support."""
+        mock_sdk = MagicMock()
+        mock_info = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        # boot_args missing init=/init
+        config = sample_config.model_copy(
+            update={"env_vars": {"FOO": "bar"}, "boot_args": "console=ttyS0"}
+        )
+        mock_info.config = config
+        
+        mock_sdk.create.return_value = mock_info
+        mock_sdk.start.return_value = mock_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = VM(config)
+        
+        with pytest.raises(SmolVMError, match="does not support SSH"):
+            vm.start()
+
+        mock_inject.assert_not_called()
