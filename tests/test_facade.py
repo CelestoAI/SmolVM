@@ -431,6 +431,61 @@ class TestVMRun:
         assert vm._ssh_key_path == str(private_key)
         mock_ensure_ssh_key.assert_called_once()
 
+    @patch("smolvm.facade.Path.home")
+    @patch("smolvm.utils.ensure_ssh_key")
+    @patch("smolvm.facade.SSHClient")
+    @patch("smolvm.facade.SmolVM")
+    def test_run_retries_with_legacy_default_key_when_key_resolution_fails(
+        self,
+        mock_sdk_cls: MagicMock,
+        mock_ssh_cls: MagicMock,
+        mock_ensure_ssh_key: MagicMock,
+        mock_home: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        """run() should fallback to legacy key path when ensure_ssh_key fails."""
+        mock_network = MagicMock()
+        mock_network.guest_ip = "172.16.0.2"
+        mock_network.ssh_host_port = None
+
+        mock_info = MagicMock()
+        mock_info.vm_id = "vm001"
+        mock_info.status = VMState.RUNNING
+        mock_info.network = mock_network
+        mock_info.config.boot_args = "console=ttyS0 reboot=k panic=1 pci=off init=/init"
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        mock_sdk.get.return_value = mock_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        mock_home.return_value = tmp_path
+        legacy_dir = tmp_path / ".smolvm"
+        legacy_dir.mkdir(parents=True)
+        legacy_private = legacy_dir / "id_ed25519"
+        legacy_private.write_text("legacy-private")
+
+        mock_ensure_ssh_key.side_effect = PermissionError("permission denied")
+
+        no_key_client = MagicMock()
+        no_key_client.wait_for_ssh.side_effect = OperationTimeoutError("wait_for_ssh", 10.0)
+
+        key_client = MagicMock()
+        key_client.run.return_value = MagicMock(exit_code=0, stdout="ok\n", stderr="")
+
+        mock_ssh_cls.side_effect = [no_key_client, key_client]
+
+        vm = VM(sample_config)
+        result = vm.run("echo ok")
+
+        assert result.exit_code == 0
+        assert mock_ssh_cls.call_count == 2
+        assert mock_ssh_cls.call_args_list[0].kwargs["key_path"] is None
+        assert mock_ssh_cls.call_args_list[1].kwargs["key_path"] == str(legacy_private)
+        assert vm._ssh_key_path == str(legacy_private)
+        mock_ensure_ssh_key.assert_called_once()
+
     @patch("smolvm.utils.ensure_ssh_key")
     @patch("smolvm.facade.SSHClient")
     @patch("smolvm.facade.SmolVM")

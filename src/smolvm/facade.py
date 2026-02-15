@@ -846,12 +846,29 @@ class VM:
             from smolvm.utils import ensure_ssh_key
 
             private_key, _ = ensure_ssh_key()
+            self._default_ssh_key_path = str(private_key)
+            return self._default_ssh_key_path
         except Exception as e:
             logger.debug("Failed to resolve default SSH key for VM %s: %s", self._vm_id, e)
-            return None
 
-        self._default_ssh_key_path = str(private_key)
-        return self._default_ssh_key_path
+        # Compatibility fallback: if key generation/migration fails (e.g. permission
+        # issues), still try known on-disk locations.
+        home = Path.home()
+        candidates = [
+            home / ".smolvm" / "keys" / "id_ed25519",
+            home / ".smolvm" / "id_ed25519",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                self._default_ssh_key_path = str(candidate)
+                logger.debug(
+                    "VM %s: using existing SSH key fallback path %s",
+                    self._vm_id,
+                    candidate,
+                )
+                return self._default_ssh_key_path
+
+        return None
 
     def _attempt_ssh_candidates(
         self,
@@ -955,6 +972,11 @@ class VM:
                         errors=errors,
                     ):
                         return
+            else:
+                errors.append(
+                    "default SSH key fallback unavailable"
+                    " (~/.smolvm/keys/id_ed25519)"
+                )
 
         self._ssh_ready = False
         detail = "; ".join(errors) if errors else "no endpoint attempts completed"
