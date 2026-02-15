@@ -170,6 +170,10 @@ def main() -> int:
 
         # Helpful in headless mode: prints dashboard URL if browser open is unavailable.
         _run_or_exit(vm, "openclaw dashboard || true", timeout=60)
+        try:
+            input("\nPress Enter to stop and clean up the VM...")
+        except EOFError:
+            print("\nNo interactive input available; cleaning up now.")
 
     print("\nOpenClaw install flow completed.")
     return 0
