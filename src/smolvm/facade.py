@@ -28,6 +28,7 @@ manager, giving callers an instance-style interface::
 from __future__ import annotations
 
 import logging
+import socket
 from pathlib import Path
 
 from smolvm.exceptions import (
@@ -134,6 +135,7 @@ class VM:
 
         self._ssh: SSHClient | None = None
         self._ssh_ready = False
+        self._local_forwards: set[tuple[int, int]] = set()
 
     # ------------------------------------------------------------------
     # Class methods
@@ -203,6 +205,7 @@ class VM:
         Returns:
             ``self`` for method chaining.
         """
+        self._cleanup_local_forwards()
         self._info = self._sdk.stop(self._vm_id, timeout=timeout)
         self._ssh = None
         self._ssh_ready = False
@@ -211,6 +214,7 @@ class VM:
 
     def delete(self) -> None:
         """Delete the VM and release all resources."""
+        self._cleanup_local_forwards()
         self._sdk.delete(self._vm_id)
         self._ssh = None
         self._ssh_ready = False
@@ -330,6 +334,87 @@ class VM:
             public_host=public_host,
         )
 
+    def expose_local(self, guest_port: int, host_port: int | None = None) -> int:
+        """Expose a guest TCP port on localhost only.
+
+        Forwards ``127.0.0.1:<host_port>`` on the host to
+        ``<guest_ip>:<guest_port>`` inside the VM.
+
+        Args:
+            guest_port: Guest TCP port to expose.
+            host_port: Host localhost port. If omitted, an available port is chosen.
+
+        Returns:
+            The host localhost port to connect to.
+        """
+        self._refresh_info()
+
+        if self._info.status != VMState.RUNNING:
+            raise SmolVMError(
+                f"Cannot expose port: VM is {self._info.status.value}",
+                {"vm_id": self._vm_id},
+            )
+        if self._info.network is None:
+            raise SmolVMError(
+                "Cannot expose port: VM has no network configuration",
+                {"vm_id": self._vm_id},
+            )
+        if guest_port < 1 or guest_port > 65535:
+            raise ValueError("guest_port must be 1-65535")
+
+        if host_port is None:
+            host_port = self._find_available_local_port()
+        if host_port < 1 or host_port > 65535:
+            raise ValueError("host_port must be 1-65535")
+
+        key = (host_port, guest_port)
+        if key in self._local_forwards:
+            return host_port
+
+        if any(existing_host == host_port for existing_host, _ in self._local_forwards):
+            raise SmolVMError(
+                f"Host port {host_port} is already exposed for this VM instance",
+                {"vm_id": self._vm_id, "host_port": host_port},
+            )
+
+        self._sdk.network.setup_local_port_forward(
+            vm_id=self._vm_id,
+            guest_ip=self._info.network.guest_ip,
+            host_port=host_port,
+            guest_port=guest_port,
+        )
+        self._local_forwards.add(key)
+        logger.info(
+            "VM %s exposed localhost:%d -> guest:%d",
+            self._vm_id,
+            host_port,
+            guest_port,
+        )
+        return host_port
+
+    def unexpose_local(self, host_port: int, guest_port: int) -> VM:
+        """Remove a previously configured localhost-only port forward."""
+        if host_port < 1 or host_port > 65535:
+            raise ValueError("host_port must be 1-65535")
+        if guest_port < 1 or guest_port > 65535:
+            raise ValueError("guest_port must be 1-65535")
+
+        self._refresh_info()
+        if self._info.network is None:
+            raise SmolVMError(
+                "Cannot remove local port forward: VM has no network configuration",
+                {"vm_id": self._vm_id},
+            )
+
+        self._sdk.network.cleanup_local_port_forward(
+            vm_id=self._vm_id,
+            guest_ip=self._info.network.guest_ip,
+            host_port=host_port,
+            guest_port=guest_port,
+        )
+        self._local_forwards.discard((host_port, guest_port))
+        return self
+
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
@@ -421,6 +506,42 @@ class VM:
     def _refresh_info(self) -> None:
         """Refresh the cached VMInfo from the state store."""
         self._info = self._sdk.get(self._vm_id)
+
+    def _cleanup_local_forwards(self) -> None:
+        """Best-effort cleanup for localhost-only guest port forwards."""
+        if not self._local_forwards:
+            return
+
+        self._refresh_info()
+        if self._info.network is None:
+            self._local_forwards.clear()
+            return
+
+        guest_ip = self._info.network.guest_ip
+        for host_port, guest_port in list(self._local_forwards):
+            try:
+                self._sdk.network.cleanup_local_port_forward(
+                    vm_id=self._vm_id,
+                    guest_ip=guest_ip,
+                    host_port=host_port,
+                    guest_port=guest_port,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to cleanup local forward localhost:%d -> guest:%d for VM %s",
+                    host_port,
+                    guest_port,
+                    self._vm_id,
+                )
+            finally:
+                self._local_forwards.discard((host_port, guest_port))
+
+    @staticmethod
+    def _find_available_local_port() -> int:
+        """Return an available TCP port bound on localhost."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            return int(sock.getsockname()[1])
 
     def _command_exec_remediation(self) -> str:
         """Return actionable guidance when command execution is unavailable."""

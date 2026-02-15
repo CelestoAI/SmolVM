@@ -1,11 +1,11 @@
 # Copyright 2026 Celesto AI
-# 
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-# 
+#
 #     http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -153,11 +153,11 @@ class NetworkManager:
 
     def add_route(self, ip_address: str, device: str) -> None:
         """Add a static route for a specific IP via a device.
-        
+
         Args:
             ip_address: Target IP (e.g. "172.16.0.2").
             device: Output device name.
-            
+
         Raises:
             NetworkError: If route addition fails.
         """
@@ -165,7 +165,7 @@ class NetworkManager:
             raise ValueError("ip_address cannot be empty")
         if not device:
             raise ValueError("device cannot be empty")
-            
+
         logger.info("Adding route: %s via %s", ip_address, device)
         try:
             run_command(["ip", "route", "add", f"{ip_address}/32", "dev", device])
@@ -452,6 +452,144 @@ class NetworkManager:
                     "PREROUTING",
                     "-i",
                     iface,
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    str(host_port),
+                    "-m",
+                    "comment",
+                    "--comment",
+                    comment,
+                    "-j",
+                    "DNAT",
+                    "--to-destination",
+                    target,
+                ]
+            )
+
+    def setup_local_port_forward(
+        self,
+        vm_id: str,
+        guest_ip: str,
+        host_port: int,
+        guest_port: int,
+    ) -> None:
+        """Set up localhost-only TCP forwarding from host to guest.
+
+        Creates rules to forward:
+        - 127.0.0.1:<host_port> -> guest_ip:<guest_port>
+
+        This does not add a PREROUTING rule, so the service is not exposed on
+        external host interfaces.
+        """
+        if not vm_id:
+            raise ValueError("vm_id cannot be empty")
+        if not guest_ip:
+            raise ValueError("guest_ip cannot be empty")
+        if host_port < 1 or host_port > 65535:
+            raise ValueError("host_port must be 1-65535")
+        if guest_port < 1 or guest_port > 65535:
+            raise ValueError("guest_port must be 1-65535")
+
+        self.enable_ip_forwarding()
+        target = f"{guest_ip}:{guest_port}"
+        comment = f"smolvm:{vm_id}:local:{host_port}:{guest_port}"
+
+        output = [
+            "-d",
+            "127.0.0.1/32",
+            "-p",
+            "tcp",
+            "--dport",
+            str(host_port),
+            "-m",
+            "comment",
+            "--comment",
+            comment,
+            "-j",
+            "DNAT",
+            "--to-destination",
+            target,
+        ]
+        if not self._rule_exists("nat", "OUTPUT", output):
+            run_command(["iptables", "-t", "nat", "-A", "OUTPUT", *output])
+
+        forward = [
+            "-p",
+            "tcp",
+            "-d",
+            guest_ip,
+            "--dport",
+            str(guest_port),
+            "-m",
+            "conntrack",
+            "--ctstate",
+            "NEW,ESTABLISHED,RELATED",
+            "-m",
+            "comment",
+            "--comment",
+            comment,
+            "-j",
+            "ACCEPT",
+        ]
+        if not self._rule_exists("filter", "FORWARD", forward):
+            run_command(["iptables", "-A", "FORWARD", *forward])
+
+    def cleanup_local_port_forward(
+        self,
+        vm_id: str,
+        guest_ip: str,
+        host_port: int,
+        guest_port: int,
+    ) -> None:
+        """Remove localhost-only TCP forwarding rules for a VM."""
+        if not vm_id:
+            raise ValueError("vm_id cannot be empty")
+        if not guest_ip:
+            raise ValueError("guest_ip cannot be empty")
+        if host_port < 1 or host_port > 65535:
+            raise ValueError("host_port must be 1-65535")
+        if guest_port < 1 or guest_port > 65535:
+            raise ValueError("guest_port must be 1-65535")
+
+        target = f"{guest_ip}:{guest_port}"
+        comment = f"smolvm:{vm_id}:local:{host_port}:{guest_port}"
+
+        with suppress(NetworkError):
+            run_command(
+                [
+                    "iptables",
+                    "-D",
+                    "FORWARD",
+                    "-p",
+                    "tcp",
+                    "-d",
+                    guest_ip,
+                    "--dport",
+                    str(guest_port),
+                    "-m",
+                    "conntrack",
+                    "--ctstate",
+                    "NEW,ESTABLISHED,RELATED",
+                    "-m",
+                    "comment",
+                    "--comment",
+                    comment,
+                    "-j",
+                    "ACCEPT",
+                ]
+            )
+
+        with suppress(NetworkError):
+            run_command(
+                [
+                    "iptables",
+                    "-t",
+                    "nat",
+                    "-D",
+                    "OUTPUT",
+                    "-d",
+                    "127.0.0.1/32",
                     "-p",
                     "tcp",
                     "--dport",

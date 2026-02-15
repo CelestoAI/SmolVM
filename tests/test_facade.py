@@ -343,6 +343,131 @@ class TestVMRun:
             vm.run("echo test")
 
 
+class TestVMLocalExpose:
+    """Tests for localhost-only port exposure."""
+
+    @patch("smolvm.facade.SmolVM")
+    def test_expose_local_with_explicit_host_port(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """Test exposing a guest port on localhost with explicit host port."""
+        mock_network = MagicMock()
+        mock_network.guest_ip = "172.16.0.2"
+
+        mock_info = MagicMock()
+        mock_info.vm_id = "vm001"
+        mock_info.status = VMState.RUNNING
+        mock_info.network = mock_network
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        mock_sdk.get.return_value = mock_info
+        mock_sdk.network = MagicMock()
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = VM(sample_config)
+        host_port = vm.expose_local(guest_port=8080, host_port=18080)
+
+        assert host_port == 18080
+        mock_sdk.network.setup_local_port_forward.assert_called_once_with(
+            vm_id="vm001",
+            guest_ip="172.16.0.2",
+            host_port=18080,
+            guest_port=8080,
+        )
+
+    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade.VM._find_available_local_port", return_value=18081)
+    def test_expose_local_auto_host_port(
+        self,
+        mock_find_port: MagicMock,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """Test host port auto-selection for localhost forwarding."""
+        mock_network = MagicMock()
+        mock_network.guest_ip = "172.16.0.2"
+
+        mock_info = MagicMock()
+        mock_info.vm_id = "vm001"
+        mock_info.status = VMState.RUNNING
+        mock_info.network = mock_network
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        mock_sdk.get.return_value = mock_info
+        mock_sdk.network = MagicMock()
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = VM(sample_config)
+        host_port = vm.expose_local(guest_port=8080)
+
+        assert host_port == 18081
+        mock_find_port.assert_called_once()
+        mock_sdk.network.setup_local_port_forward.assert_called_once()
+
+    @patch("smolvm.facade.SmolVM")
+    def test_expose_local_requires_running_vm(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """Test expose_local() fails when VM is not running."""
+        mock_info = MagicMock()
+        mock_info.status = VMState.STOPPED
+        mock_info.network = None
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        mock_sdk.get.return_value = mock_info
+        mock_sdk.network = MagicMock()
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = VM(sample_config)
+        with pytest.raises(SmolVMError, match="VM is stopped"):
+            vm.expose_local(guest_port=8080, host_port=18080)
+
+    @patch("smolvm.facade.SmolVM")
+    def test_stop_cleans_local_forwards(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """stop() should remove local forwards configured via expose_local()."""
+        mock_network = MagicMock()
+        mock_network.guest_ip = "172.16.0.2"
+
+        running_info = MagicMock()
+        running_info.vm_id = "vm001"
+        running_info.status = VMState.RUNNING
+        running_info.network = mock_network
+
+        stopped_info = MagicMock()
+        stopped_info.vm_id = "vm001"
+        stopped_info.status = VMState.STOPPED
+        stopped_info.network = mock_network
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        mock_sdk.get.return_value = running_info
+        mock_sdk.stop.return_value = stopped_info
+        mock_sdk.network = MagicMock()
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = VM(sample_config)
+        vm.expose_local(guest_port=8080, host_port=18080)
+        vm.stop()
+
+        mock_sdk.network.cleanup_local_port_forward.assert_called_once_with(
+            vm_id="vm001",
+            guest_ip="172.16.0.2",
+            host_port=18080,
+            guest_port=8080,
+        )
+
+
 class TestVMContextManager:
     """Tests for VM context manager."""
 
