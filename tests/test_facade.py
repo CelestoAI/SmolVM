@@ -96,7 +96,8 @@ class TestVMInit:
         vm = VM()
 
         assert vm.vm_id.startswith("vm-")
-        mock_builder.build_alpine_ssh_key.assert_called_once_with(public_key)
+        mock_builder.build_alpine_ssh_key.assert_called_once()
+        assert mock_builder.build_alpine_ssh_key.call_args.args[0] == public_key
         mock_sdk.create.assert_called_once()
         created_config = mock_sdk.create.call_args[0][0]
         assert "init=/init" in created_config.boot_args

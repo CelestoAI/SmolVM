@@ -21,7 +21,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_SCRIPT="${SCRIPT_DIR}/internal/install-firecracker.sh"
-RUNTIME_CONFIG_SCRIPT="${SCRIPT_DIR}/configure-runtime-sudoers.sh"
+RUNTIME_CONFIG_SCRIPT="${SCRIPT_DIR}/internal/configure-runtime-sudoers.sh"
 
 ORIGINAL_ARGS=("$@")
 

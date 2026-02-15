@@ -28,6 +28,7 @@ manager, giving callers an instance-style interface::
 from __future__ import annotations
 
 import logging
+import platform
 import socket
 import subprocess
 import time
@@ -36,6 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from smolvm.backends import BACKEND_QEMU, resolve_backend
 from smolvm.exceptions import (
     CommandExecutionUnavailableError,
     OperationTimeoutError,
@@ -109,6 +111,13 @@ class VM:
             from smolvm.build import SSH_BOOT_ARGS, ImageBuilder
             from smolvm.utils import ensure_ssh_key
 
+            resolved_backend = resolve_backend(backend)
+            boot_args = SSH_BOOT_ARGS
+            if resolved_backend == BACKEND_QEMU:
+                arch = platform.machine().lower()
+                console = "ttyAMA0" if arch in {"arm64", "aarch64"} else "ttyS0"
+                boot_args = f"console={console} reboot=k panic=1 init=/init"
+
             # 1. Ensure SSH keys
             priv_key, pub_key = ensure_ssh_key()
             if ssh_key_path is None:
@@ -116,8 +125,21 @@ class VM:
 
             # 2. Ensure Image
             builder = ImageBuilder()
+            # Keep backend/arch specific cache names to avoid stale cross-arch reuse.
+            image_name = "alpine-ssh-key"
+            kernel_url: str | None = None
+            if resolved_backend == BACKEND_QEMU:
+                arch = platform.machine().lower()
+                image_arch = "aarch64" if arch in {"arm64", "aarch64"} else "x86_64"
+                image_name = f"alpine-ssh-key-{image_arch}-qemu"
+                kernel_url = builder.qemu_kernel_url_for_host()
+
             # This will download/build if needed (cached otherwise)
-            kernel, rootfs = builder.build_alpine_ssh_key(pub_key)
+            kernel, rootfs = builder.build_alpine_ssh_key(
+                pub_key,
+                name=image_name,
+                kernel_url=kernel_url,
+            )
 
             # 3. Create Config
             # Use a unique ID to avoid conflicts with previous runs
@@ -128,10 +150,10 @@ class VM:
                 mem_size_mib=512,
                 kernel_path=kernel,
                 rootfs_path=rootfs,
-                boot_args=SSH_BOOT_ARGS,
-                backend=backend,
+                boot_args=boot_args,
+                backend=resolved_backend,
             )
-            logger.info("Auto-configured VM: %s", auto_id)
+            logger.info("Auto-configured VM: %s (backend=%s)", auto_id, resolved_backend)
 
         self._ssh_user = ssh_user
         self._ssh_key_path = ssh_key_path
@@ -418,13 +440,8 @@ class VM:
             if existing is not None:
                 return existing.host_port
 
-            if any(
-                forward.host_port == candidate
-                for forward in self._local_forwards.values()
-            ):
-                attempts.append(
-                    f"localhost:{candidate} already exposed by this VM instance"
-                )
+            if any(forward.host_port == candidate for forward in self._local_forwards.values()):
+                attempts.append(f"localhost:{candidate} already exposed by this VM instance")
                 continue
 
             iptables_configured = False
@@ -457,8 +474,7 @@ class VM:
                 )
             except Exception as e:
                 attempts.append(
-                    f"iptables forward localhost:{candidate} -> guest:{guest_port} "
-                    f"failed: {e}"
+                    f"iptables forward localhost:{candidate} -> guest:{guest_port} failed: {e}"
                 )
             finally:
                 if iptables_configured and not keep_iptables:

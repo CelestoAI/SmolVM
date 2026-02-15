@@ -1,11 +1,11 @@
 # Copyright 2026 Celesto AI
-# 
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-# 
+#
 #     http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -15,6 +15,7 @@
 """Tests for SmolVM image builder module."""
 
 import subprocess
+import tarfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -79,10 +80,13 @@ class TestImageBuilderLoopFs:
         kernel_path = image_dir / "vmlinux.bin"
         rootfs_path = image_dir / "rootfs.ext4"
 
-        with patch.object(
-            ImageBuilder,
-            "_loopfs_helper_path",
-            return_value=Path("/usr/local/libexec/smolvm-loopfs-helper"),
+        with (
+            patch.object(
+                ImageBuilder,
+                "_loopfs_helper_path",
+                return_value=Path("/usr/local/libexec/smolvm-loopfs-helper"),
+            ),
+            patch.object(ImageBuilder, "_download_kernel"),
         ):
             builder._do_build(
                 name="demo",
@@ -108,6 +112,69 @@ class TestImageBuilderLoopFs:
         assert first_call.kwargs["use_sudo"] is True
         assert second_call.kwargs["use_sudo"] is True
         assert third_call.kwargs["use_sudo"] is True
+
+    @patch("smolvm.build.subprocess.run")
+    @patch("smolvm.build.run_command")
+    def test_do_build_uses_docker_fallback_when_loopfs_missing(
+        self, mock_run_command: MagicMock, mock_subprocess_run: MagicMock, tmp_path: Path
+    ) -> None:
+        builder = ImageBuilder(cache_dir=tmp_path / "images")
+
+        def _subprocess_side_effect(
+            cmd: list[str], *args: object, **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            if cmd[:2] == ["docker", "create"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="container-id\n", stderr="")
+
+            if cmd[:2] == ["docker", "export"]:
+                tar_index = cmd.index("-o") + 1
+                tar_path = Path(cmd[tar_index])
+                with tarfile.open(tar_path, "w"):
+                    pass
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            if cmd[:2] == ["docker", "run"]:
+                volumes = [cmd[i + 1] for i, token in enumerate(cmd) if token == "-v"]
+                out_host = Path(volumes[1].split(":", 1)[0])
+                (out_host / "rootfs.ext4").write_bytes(b"ext4")
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        mock_subprocess_run.side_effect = _subprocess_side_effect
+
+        image_dir = tmp_path / "image"
+        image_dir.mkdir()
+        kernel_path = image_dir / "vmlinux.bin"
+        rootfs_path = image_dir / "rootfs.ext4"
+
+        with (
+            patch.object(ImageBuilder, "_loopfs_helper_path", return_value=None),
+            patch.object(
+                ImageBuilder,
+                "_kernel_url_for_host",
+                return_value="https://example.invalid/vmlinux",
+            ),
+            patch.object(ImageBuilder, "_download_kernel"),
+        ):
+            builder._do_build(
+                name="demo",
+                dockerfile_content="FROM scratch\n",
+                init_script="#!/bin/sh\n",
+                image_dir=image_dir,
+                kernel_path=kernel_path,
+                rootfs_path=rootfs_path,
+                rootfs_size_mb=8,
+            )
+
+        assert mock_run_command.call_count == 0
+        docker_run_calls = [
+            call
+            for call in mock_subprocess_run.call_args_list
+            if call.args[0][:2] == ["docker", "run"]
+        ]
+        assert len(docker_run_calls) == 1
+        assert rootfs_path.exists()
 
     @patch("smolvm.build.subprocess.run")
     @patch("smolvm.build.run_command")

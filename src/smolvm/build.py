@@ -18,8 +18,14 @@ Automatically builds VM images with SSH using Docker.
 """
 
 import logging
+import platform
+import shlex
+import shutil
 import subprocess
+import tarfile
 import tempfile
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from smolvm.exceptions import ImageError, SmolVMError
@@ -28,14 +34,26 @@ from smolvm.utils import RUNTIME_PRIVILEGE_SETUP_HINT, run_command
 logger = logging.getLogger(__name__)
 
 # Default boot args that include init=/init for our custom init script
-SSH_BOOT_ARGS = (
-    "console=ttyS0 reboot=k panic=1 pci=off init=/init"
-)
+SSH_BOOT_ARGS = "console=ttyS0 reboot=k panic=1 pci=off init=/init"
 
-# Firecracker-compatible uncompressed kernel
-FIRECRACKER_KERNEL_URL = (
-    "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.6/x86_64/vmlinux-5.10.198"
-)
+# Firecracker-compatible uncompressed kernels.
+FIRECRACKER_KERNEL_URLS = {
+    "x86_64": "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.6/x86_64/vmlinux-5.10.198",
+    "aarch64": "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.6/aarch64/vmlinux-5.10.198",
+}
+
+# QEMU-compatible kernels (Ubuntu cloud kernels, unpacked).
+QEMU_KERNEL_URLS = {
+    "x86_64": (
+        "https://cloud-images.ubuntu.com/jammy/current/unpacked/"
+        "jammy-server-cloudimg-amd64-vmlinuz-generic"
+    ),
+    "aarch64": (
+        "https://cloud-images.ubuntu.com/jammy/current/unpacked/"
+        "jammy-server-cloudimg-arm64-vmlinuz-generic"
+    ),
+}
+
 LOOPFS_HELPER_PATH = Path("/usr/local/libexec/smolvm-loopfs-helper")
 
 
@@ -88,6 +106,7 @@ class ImageBuilder:
         name: str = "alpine-ssh",
         ssh_password: str = "smolvm",
         rootfs_size_mb: int = 512,
+        kernel_url: str | None = None,
     ) -> tuple[Path, Path]:
         """Build Alpine Linux image with SSH server.
 
@@ -105,6 +124,7 @@ class ImageBuilder:
             name: Image name for caching.
             ssh_password: Root password for SSH (default: smolvm).
             rootfs_size_mb: Size of rootfs in MB (default: 512).
+            kernel_url: Optional kernel URL override.
 
         Returns:
             Tuple of (kernel_path, rootfs_path).
@@ -115,7 +135,7 @@ class ImageBuilder:
         if not self.check_docker():
             raise ImageError(
                 "Docker is required to build images. "
-                "Install with: sudo apt install docker.io"
+                "Install Docker Desktop (macOS) or docker.io (Linux)."
             )
 
         image_dir = self.cache_dir / name
@@ -132,7 +152,6 @@ class ImageBuilder:
 
         # The /init script runs as PID 1 inside the VM and brings up SSH.
         init_script = self._default_init_script()
-
 
         dockerfile_content = f"""
 FROM alpine:3.19
@@ -155,11 +174,16 @@ COPY init /init
 RUN chmod +x /init
 """
 
-
         try:
             self._do_build(
-                name, dockerfile_content, init_script, image_dir,
-                kernel_path, rootfs_path, rootfs_size_mb,
+                name,
+                dockerfile_content,
+                init_script,
+                image_dir,
+                kernel_path,
+                rootfs_path,
+                rootfs_size_mb,
+                kernel_url=kernel_url,
             )
         except (subprocess.CalledProcessError, ImageError) as e:
             # Clean up partial build
@@ -179,6 +203,7 @@ RUN chmod +x /init
         ssh_public_key: str | Path,
         name: str = "alpine-ssh-key",
         rootfs_size_mb: int = 512,
+        kernel_url: str | None = None,
     ) -> tuple[Path, Path]:
         """Build Alpine Linux image with key-only SSH access.
 
@@ -186,6 +211,7 @@ RUN chmod +x /init
             ssh_public_key: Public key content or path to a public key file.
             name: Image name for caching.
             rootfs_size_mb: Size of rootfs in MB.
+            kernel_url: Optional kernel URL override.
 
         Returns:
             Tuple of (kernel_path, rootfs_path).
@@ -193,7 +219,7 @@ RUN chmod +x /init
         if not self.check_docker():
             raise ImageError(
                 "Docker is required to build images. "
-                "Install with: sudo apt install docker.io"
+                "Install Docker Desktop (macOS) or docker.io (Linux)."
             )
 
         key_value = self._resolve_public_key(ssh_public_key)
@@ -226,7 +252,7 @@ RUN chmod +x /init
                     if key_mtime > img_mtime:
                         logger.info(
                             "SSH key '%s' is newer than cached image. Rebuilding...",
-                            key_path_check.name
+                            key_path_check.name,
                         )
                         is_stale = True
                 except OSError:
@@ -278,6 +304,7 @@ RUN chmod +x /init
                 rootfs_path,
                 rootfs_size_mb,
                 extra_files={"authorized_keys": f"{key_value}\n"},
+                kernel_url=kernel_url,
             )
         except (subprocess.CalledProcessError, ImageError) as e:
             if rootfs_path.exists():
@@ -297,6 +324,7 @@ RUN chmod +x /init
         name: str = "debian-ssh-key",
         rootfs_size_mb: int = 2048,
         base_image: str = "debian:bookworm-slim",
+        kernel_url: str | None = None,
     ) -> tuple[Path, Path]:
         """Build Debian Linux image with key-only SSH access.
 
@@ -305,6 +333,7 @@ RUN chmod +x /init
             name: Image name for caching.
             rootfs_size_mb: Size of rootfs in MB.
             base_image: Docker base image to build from.
+            kernel_url: Optional kernel URL override.
 
         Returns:
             Tuple of (kernel_path, rootfs_path).
@@ -312,7 +341,7 @@ RUN chmod +x /init
         if not self.check_docker():
             raise ImageError(
                 "Docker is required to build images. "
-                "Install with: sudo apt install docker.io"
+                "Install Docker Desktop (macOS) or docker.io (Linux)."
             )
 
         key_value = self._resolve_public_key(ssh_public_key)
@@ -401,6 +430,7 @@ RUN chmod +x /init
                 rootfs_path,
                 rootfs_size_mb,
                 extra_files={"authorized_keys": f"{key_value}\n"},
+                kernel_url=kernel_url,
             )
         except (subprocess.CalledProcessError, ImageError) as e:
             if rootfs_path.exists():
@@ -510,6 +540,152 @@ done
                 f"error: {e}"
             ) from e
 
+    @staticmethod
+    def _host_arch_key() -> str:
+        """Normalize host architecture to SmolVM kernel key."""
+        arch = platform.machine().lower()
+        if arch in {"x86_64", "amd64"}:
+            return "x86_64"
+        if arch in {"arm64", "aarch64"}:
+            return "aarch64"
+        raise ImageError(f"Unsupported host architecture '{arch}'")
+
+    def _kernel_url_for_host(self) -> str:
+        """Return a Firecracker-compatible kernel URL for the current host arch."""
+        arch_key = self._host_arch_key()
+        return FIRECRACKER_KERNEL_URLS[arch_key]
+
+    def qemu_kernel_url_for_host(self) -> str:
+        """Return a QEMU-compatible kernel URL for the current host arch."""
+        arch_key = self._host_arch_key()
+        return QEMU_KERNEL_URLS[arch_key]
+
+    def _download_kernel(self, url: str, dest: Path) -> None:
+        """Download kernel image to *dest* without external wget dependency."""
+        try:
+            with urllib.request.urlopen(url, timeout=180) as response:
+                with open(dest, "wb") as out:
+                    shutil.copyfileobj(response, out)
+        except (urllib.error.URLError, OSError) as e:
+            raise ImageError(f"Failed to download kernel from {url}: {e}") from e
+
+    def _create_ext4_with_loopfs(
+        self,
+        tar_path: Path,
+        rootfs_path: Path,
+        rootfs_size_mb: int,
+        tmpdir: Path,
+    ) -> None:
+        """Create and populate ext4 rootfs via loopfs helper (Linux path)."""
+        logger.info("  [3/4] Creating ext4 filesystem (%dMB)...", rootfs_size_mb)
+        subprocess.run(
+            ["dd", "if=/dev/zero", f"of={rootfs_path}", "bs=1M", f"count={rootfs_size_mb}"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["mkfs.ext4", "-F", str(rootfs_path)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        mount_dir = tmpdir / "mnt"
+        mount_dir.mkdir()
+        self._run_loopfs("mount", rootfs_path, mount_dir)
+        tar_error: Exception | None = None
+        try:
+            self._run_loopfs("extract", tar_path, mount_dir)
+        except Exception as e:
+            tar_error = e
+        finally:
+            try:
+                self._run_loopfs("umount", mount_dir)
+            except ImageError:
+                if tar_error is None:
+                    raise
+                logger.warning(
+                    "Failed to unmount rootfs after tar extraction error",
+                    exc_info=True,
+                )
+        if tar_error is not None:
+            raise tar_error
+
+    def _create_ext4_with_docker(
+        self,
+        tar_path: Path,
+        rootfs_path: Path,
+        rootfs_size_mb: int,
+        tmpdir: Path,
+    ) -> None:
+        """Create and populate ext4 rootfs using Docker + mke2fs.
+
+        This path avoids Linux loop mounts and works on macOS where
+        ``mkfs.ext4`` and loop devices are typically unavailable.
+        """
+        logger.info("  [3/4] Creating ext4 filesystem via Docker helper (%dMB)...", rootfs_size_mb)
+
+        rootfs_dir = tmpdir / "rootfs-dir"
+        rootfs_dir.mkdir()
+
+        with tarfile.open(tar_path, "r") as tar:
+            for member in tar.getmembers():
+                member_path = Path(member.name)
+                if member_path.is_absolute() or ".." in member_path.parts:
+                    raise ImageError(
+                        f"Refusing to extract suspicious tar path from docker export: {member.name}"
+                    )
+
+            # Python 3.14 defaults to a restrictive extraction filter that rejects
+            # absolute symlink targets commonly present in container rootfs archives.
+            # We already validated member names above, so trusted extraction is safe here.
+            try:
+                tar.extractall(path=rootfs_dir, filter="fully_trusted")
+            except TypeError:
+                # Python <3.12 does not support the 'filter' argument.
+                tar.extractall(path=rootfs_dir)
+
+        rootfs_path.unlink(missing_ok=True)
+        rootfs_name = shlex.quote(rootfs_path.name)
+        shell_cmd = (
+            "set -e; "
+            "apk add --no-cache e2fsprogs >/dev/null; "
+            f"mke2fs -d /work/rootfs -t ext4 -F /work/out/{rootfs_name} "
+            f"{rootfs_size_mb}M >/dev/null"
+        )
+
+        try:
+            subprocess.run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "-v",
+                    f"{rootfs_dir.resolve()}:/work/rootfs:ro",
+                    "-v",
+                    f"{rootfs_path.parent.resolve()}:/work/out",
+                    "alpine:3.19",
+                    "sh",
+                    "-lc",
+                    shell_cmd,
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except subprocess.CalledProcessError as e:
+            stderr = (e.stderr or "").strip()
+            raise ImageError(
+                "Failed to create ext4 image via Docker helper.\n"
+                f"Command: docker run ... mke2fs\n"
+                f"stderr: {stderr}"
+            ) from e
+
+        if not rootfs_path.exists():
+            raise ImageError(f"Expected rootfs image not produced: {rootfs_path}")
+
     def _do_build(
         self,
         name: str,
@@ -520,6 +696,7 @@ done
         rootfs_path: Path,
         rootfs_size_mb: int,
         extra_files: dict[str, str] | None = None,
+        kernel_url: str | None = None,
     ) -> None:
         """Execute the Docker build and image conversion."""
         docker_tag = f"smolvm-{name}"
@@ -547,7 +724,9 @@ done
             logger.info("  [2/4] Exporting rootfs...")
             container_id = subprocess.run(
                 ["docker", "create", docker_tag],
-                check=True, capture_output=True, text=True,
+                check=True,
+                capture_output=True,
+                text=True,
             ).stdout.strip()
 
             try:
@@ -559,46 +738,20 @@ done
             finally:
                 subprocess.run(
                     ["docker", "rm", container_id],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                 )
 
             # 3. Create ext4 filesystem and populate it
-            logger.info("  [3/4] Creating ext4 filesystem (%dMB)...", rootfs_size_mb)
-            subprocess.run(
-                ["dd", "if=/dev/zero", f"of={rootfs_path}",
-                 "bs=1M", f"count={rootfs_size_mb}"],
-                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-            subprocess.run(
-                ["mkfs.ext4", "-F", str(rootfs_path)],
-                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
+            if self._loopfs_helper_path() is not None:
+                self._create_ext4_with_loopfs(tar_path, rootfs_path, rootfs_size_mb, tmpdir)
+            else:
+                self._create_ext4_with_docker(tar_path, rootfs_path, rootfs_size_mb, tmpdir)
 
-            mount_dir = tmpdir / "mnt"
-            mount_dir.mkdir()
-            self._run_loopfs("mount", rootfs_path, mount_dir)
-            tar_error: Exception | None = None
-            try:
-                self._run_loopfs("extract", tar_path, mount_dir)
-            except Exception as e:
-                tar_error = e
-            finally:
-                try:
-                    self._run_loopfs("umount", mount_dir)
-                except ImageError:
-                    if tar_error is None:
-                        raise
-                    logger.warning(
-                        "Failed to unmount rootfs after tar extraction error",
-                        exc_info=True,
-                    )
-            if tar_error is not None:
-                raise tar_error
-
-            # 4. Download Firecracker-compatible kernel
-            logger.info("  [4/4] Downloading Firecracker kernel...")
-            subprocess.run(
-                ["wget", "-q", "--show-progress",
-                 FIRECRACKER_KERNEL_URL, "-O", str(kernel_path)],
-                check=True,
+            # 4. Download architecture-compatible kernel
+            resolved_kernel_url = kernel_url or self._kernel_url_for_host()
+            logger.info(
+                "  [4/4] Downloading kernel for host arch from %s",
+                resolved_kernel_url,
             )
+            self._download_kernel(resolved_kernel_url, kernel_path)

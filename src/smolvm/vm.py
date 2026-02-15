@@ -799,8 +799,7 @@ class SmolVM:
             ).strip()
             if public_host:
                 commands["public"] = (
-                    f"ssh {key_opt}-p {vm_info.network.ssh_host_port} "
-                    f"{ssh_user}@{public_host}"
+                    f"ssh {key_opt}-p {vm_info.network.ssh_host_port} {ssh_user}@{public_host}"
                 ).strip()
 
         return commands
@@ -830,9 +829,7 @@ class SmolVM:
             )
 
         if vm_info.network is None or vm_info.network.ssh_host_port is None:
-            raise SmolVMError(
-                "QEMU backend requires a reserved ssh_host_port in VM network config"
-            )
+            raise SmolVMError("QEMU backend requires a reserved ssh_host_port in VM network config")
 
         ssh_port = vm_info.network.ssh_host_port
         guest_mac = vm_info.network.guest_mac.lower()
@@ -1041,11 +1038,18 @@ class SmolVM:
 
     def _resolve_boot_args(self, vm_info: VMInfo) -> str:
         """Resolve final boot args, injecting static IP config when absent."""
-        if vm_info.network is None:
-            return vm_info.config.boot_args
-
         args = vm_info.config.boot_args.strip()
         parts = args.split()
+
+        backend = self._backend_for_vm(vm_info)
+        if backend == BACKEND_QEMU:
+            # Firecracker defaults include pci=off, which breaks QEMU PCI devices.
+            parts = [part for part in parts if part != "pci=off"]
+            args = " ".join(parts).strip()
+
+        if vm_info.network is None:
+            return args
+
         if any(part.startswith("ip=") for part in parts):
             return args
 
