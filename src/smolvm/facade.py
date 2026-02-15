@@ -936,47 +936,41 @@ class VM:
         if self._ssh is not None:
             attempts.append((self._ssh.host, self._ssh.port, self._ssh.key_path))
 
-        # Phase 1: explicit key if configured; otherwise default SSH auth (no -i).
-        phase1_key = self._ssh_key_path
+        # First try explicit key if configured, otherwise default SSH auth (no -i).
+        primary_key = self._ssh_key_path
         for host, port in ordered_endpoints:
-            attempt = (host, port, phase1_key)
+            attempt = (host, port, primary_key)
             if attempt in attempts:
                 continue
             attempts.append(attempt)
+
+        # If no explicit key was configured, also try SmolVM default key.
+        default_key = None
+        if self._ssh_key_path is None:
+            default_key = self._resolve_default_ssh_key_path()
+            if default_key is not None:
+                for host, port in ordered_endpoints:
+                    attempt = (host, port, default_key)
+                    if attempt in attempts:
+                        continue
+                    attempts.append(attempt)
+            else:
+                logger.debug(
+                    "VM %s: default SSH key fallback unavailable"
+                    " (~/.smolvm/keys/id_ed25519)",
+                    self._vm_id,
+                )
 
         errors: list[str] = []
         deadline = time.monotonic() + timeout
         if self._attempt_ssh_candidates(attempts, deadline=deadline, errors=errors):
             return
 
-        # Phase 2: if no explicit key was configured, retry with SmolVM default key.
-        if self._ssh_key_path is None:
-            default_key = self._resolve_default_ssh_key_path()
-            if default_key is not None:
-                fallback_attempts: list[tuple[str, int, str | None]] = []
-                for host, port in ordered_endpoints:
-                    attempt = (host, port, default_key)
-                    if attempt in attempts:
-                        continue
-                    fallback_attempts.append(attempt)
-
-                if fallback_attempts:
-                    logger.debug(
-                        "VM %s: retrying SSH readiness with default key %s",
-                        self._vm_id,
-                        default_key,
-                    )
-                    if self._attempt_ssh_candidates(
-                        fallback_attempts,
-                        deadline=deadline,
-                        errors=errors,
-                    ):
-                        return
-            else:
-                errors.append(
-                    "default SSH key fallback unavailable"
-                    " (~/.smolvm/keys/id_ed25519)"
-                )
+        if self._ssh_key_path is None and default_key is None:
+            errors.append(
+                "default SSH key fallback unavailable"
+                " (~/.smolvm/keys/id_ed25519)"
+            )
 
         self._ssh_ready = False
         detail = "; ".join(errors) if errors else "no endpoint attempts completed"

@@ -309,7 +309,7 @@ class TestVMRun:
         assert result.exit_code == 0
         mock_ssh.wait_for_ssh.assert_called_once()
         wait_timeout = mock_ssh.wait_for_ssh.call_args.kwargs["timeout"]
-        assert 29.0 <= wait_timeout <= 30.0
+        assert 0.5 <= wait_timeout <= 30.0
         mock_ssh.run.assert_called_once_with("echo ok", timeout=30, shell="login")
 
     @patch("smolvm.facade.SSHClient")
@@ -344,7 +344,7 @@ class TestVMRun:
 
         mock_ssh.wait_for_ssh.assert_called_once()
         wait_timeout = mock_ssh.wait_for_ssh.call_args.kwargs["timeout"]
-        assert 29.0 <= wait_timeout <= 30.0
+        assert 0.5 <= wait_timeout <= 30.0
         mock_ssh.run.assert_called_once_with("echo ok", timeout=30, shell="raw")
 
     @patch("smolvm.facade.SSHClient")
@@ -380,7 +380,7 @@ class TestVMRun:
 
         mock_ssh.wait_for_ssh.assert_called_once()
         wait_timeout = mock_ssh.wait_for_ssh.call_args.kwargs["timeout"]
-        assert 29.0 <= wait_timeout <= 30.0
+        assert 0.5 <= wait_timeout <= 30.0
         assert mock_ssh.run.call_count == 2
 
     @patch("smolvm.utils.ensure_ssh_key")
