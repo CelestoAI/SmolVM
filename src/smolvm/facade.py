@@ -80,6 +80,8 @@ class VM:
         data_dir: Override the default data directory.
         socket_dir: Override the default socket directory.
         backend: Runtime backend override (``firecracker``, ``qemu``, or ``auto``).
+        mem_size_mib: Guest memory in MiB for auto-config mode (``VM()`` only).
+        disk_size_mib: Root filesystem size in MiB for auto-config mode (``VM()`` only).
         ssh_user: SSH user for :meth:`run` (default ``root``).
         ssh_key_path: Optional SSH private key path.
 
@@ -95,11 +97,21 @@ class VM:
         data_dir: Path | None = None,
         socket_dir: Path | None = None,
         backend: str | None = None,
+        mem_size_mib: int | None = None,
+        disk_size_mib: int | None = None,
         ssh_user: str = "root",
         ssh_key_path: str | None = None,
     ) -> None:
         if config is not None and vm_id is not None:
             raise ValueError("Provide either config or vm_id, not both.")
+
+        if (config is not None or vm_id is not None) and (
+            mem_size_mib is not None or disk_size_mib is not None
+        ):
+            raise ValueError(
+                "mem_size_mib and disk_size_mib can only be set when both "
+                "config and vm_id are omitted (auto-config mode)."
+            )
 
         if config is None and vm_id is None:
             # Auto-configuration mode
@@ -123,6 +135,11 @@ class VM:
             if ssh_key_path is None:
                 ssh_key_path = str(priv_key)
 
+            resolved_mem_size_mib = 512 if mem_size_mib is None else mem_size_mib
+            resolved_disk_size_mib = 512 if disk_size_mib is None else disk_size_mib
+            if resolved_disk_size_mib < 64:
+                raise ValueError("disk_size_mib must be >= 64")
+
             # 2. Ensure Image
             builder = ImageBuilder()
             # Keep backend/arch specific cache names to avoid stale cross-arch reuse.
@@ -131,9 +148,15 @@ class VM:
                 arch = platform.machine().lower()
                 image_arch = "aarch64" if arch in {"arm64", "aarch64"} else "x86_64"
                 image_name = f"alpine-ssh-key-{image_arch}"
+            if resolved_disk_size_mib != 512:
+                image_name = f"{image_name}-{resolved_disk_size_mib}m"
 
             # This will download/build if needed (cached otherwise)
-            kernel, rootfs = builder.build_alpine_ssh_key(pub_key, name=image_name)
+            kernel, rootfs = builder.build_alpine_ssh_key(
+                pub_key,
+                name=image_name,
+                rootfs_size_mb=resolved_disk_size_mib,
+            )
 
             # 3. Create Config
             # Use a unique ID to avoid conflicts with previous runs
@@ -141,7 +164,7 @@ class VM:
             config = VMConfig(
                 vm_id=auto_id,
                 vcpu_count=1,
-                mem_size_mib=512,
+                mem_size_mib=resolved_mem_size_mib,
                 kernel_path=kernel,
                 rootfs_path=rootfs,
                 boot_args=boot_args,

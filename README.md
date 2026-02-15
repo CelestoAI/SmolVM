@@ -72,6 +72,15 @@ with VM() as vm:
     print(result.output)
 ```
 
+Customize auto-config memory and disk size:
+
+```python
+from smolvm import VM
+
+with VM(mem_size_mib=2048, disk_size_mib=4096) as vm:
+    print(vm.run("free -m").output)
+```
+
 ### 4. Reconnect to an existing VM
 
 You can also reconnect to a running VM by its ID:

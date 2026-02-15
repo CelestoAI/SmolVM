@@ -126,9 +126,54 @@ class TestVMInit:
         assert vm.vm_id.startswith("vm-")
         mock_builder.build_alpine_ssh_key.assert_called_once()
         assert mock_builder.build_alpine_ssh_key.call_args.args[0] == public_key
+        assert mock_builder.build_alpine_ssh_key.call_args.kwargs["rootfs_size_mb"] == 512
         mock_sdk.create.assert_called_once()
         created_config = mock_sdk.create.call_args[0][0]
         assert "init=/init" in created_config.boot_args
+        assert created_config.mem_size_mib == 512
+
+    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.build.ImageBuilder")
+    @patch("smolvm.utils.ensure_ssh_key")
+    def test_autoconfigure_with_custom_mem_and_disk(
+        self,
+        mock_ensure_ssh_key: MagicMock,
+        mock_builder_cls: MagicMock,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Test auto-configuration accepts custom memory and disk size."""
+        kernel = tmp_path / "auto-kernel"
+        rootfs = tmp_path / "auto-rootfs.ext4"
+        private_key = tmp_path / "id_ed25519"
+        public_key = tmp_path / "id_ed25519.pub"
+        kernel.touch()
+        rootfs.touch()
+        private_key.touch()
+        public_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKey user@test\n")
+
+        mock_ensure_ssh_key.return_value = (private_key, public_key)
+        mock_builder = MagicMock()
+        mock_builder.build_alpine_ssh_key.return_value = (kernel, rootfs)
+        mock_builder_cls.return_value = mock_builder
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = VM(mem_size_mib=2048, disk_size_mib=4096)
+
+        assert vm.vm_id.startswith("vm-")
+        mock_builder.build_alpine_ssh_key.assert_called_once()
+        assert mock_builder.build_alpine_ssh_key.call_args.kwargs["rootfs_size_mb"] == 4096
+        mock_sdk.create.assert_called_once()
+        created_config = mock_sdk.create.call_args[0][0]
+        assert created_config.mem_size_mib == 2048
+
+    def test_custom_auto_sizing_with_config_raises(self, sample_config: VMConfig) -> None:
+        """Custom auto sizing options are only valid in zero-config mode."""
+        with pytest.raises(ValueError, match="auto-config mode"):
+            VM(sample_config, mem_size_mib=1024)
 
     @patch("smolvm.facade.SmolVM")
     def test_from_id(self, mock_sdk_cls: MagicMock) -> None:
