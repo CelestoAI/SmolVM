@@ -33,6 +33,17 @@ print(result.stdout.strip())
 vm.stop()
 ```
 
+Run with a context manager to automatically clean up the microVM after use:
+
+```
+from smolvm import VM
+
+with VM() as vm:
+    print(f"VM running at {vm.get_ip()}")
+    result = vm.run("echo 'Command execution is ready'")
+    print(result.stdout.strip())
+```
+
 
 ## 📄 License
 
