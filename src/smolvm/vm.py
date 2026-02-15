@@ -14,11 +14,12 @@
 
 """Main SmolVM SDK class.
 
-Orchestrates VM lifecycle, networking, and state management.
+Orchestrates VM lifecycle, networking, and state management across runtimes.
 """
 
 import logging
 import os
+import platform
 import pwd
 import shlex
 import signal
@@ -26,8 +27,10 @@ import subprocess
 import time
 from contextlib import suppress
 from pathlib import Path
+from typing import TextIO
 
 from smolvm.api import FirecrackerClient
+from smolvm.backends import BACKEND_FIRECRACKER, BACKEND_QEMU, resolve_backend
 from smolvm.exceptions import (
     SmolVMError,
     VMNotFoundError,
@@ -36,7 +39,7 @@ from smolvm.host import HostCapability, HostManager
 from smolvm.network import NetworkManager, check_network_prerequisites
 from smolvm.storage import StateManager
 from smolvm.types import NetworkConfig, VMConfig, VMInfo, VMState
-from smolvm.utils import RUNTIME_PRIVILEGE_SETUP_HINT
+from smolvm.utils import RUNTIME_PRIVILEGE_SETUP_HINT, which
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +48,11 @@ DEFAULT_DATA_DIR_ENV = "SMOLVM_DATA_DIR"
 DEFAULT_SYSTEM_DATA_DIR = Path("/var/lib/smolvm")
 DEFAULT_DATA_DIR = DEFAULT_SYSTEM_DATA_DIR  # Backward-compatible constant.
 DEFAULT_SOCKET_DIR = Path("/tmp")
+
+# Backend-specific defaults
+QEMU_GUEST_IP = "10.0.2.15"
+QEMU_GATEWAY_IP = "10.0.2.2"
+QEMU_NETMASK = "255.255.255.0"
 
 
 def _get_sudo_user_info() -> pwd.struct_passwd | None:
@@ -128,16 +136,17 @@ def resolve_data_dir(data_dir: Path | None = None) -> Path:
 
 
 class SmolVM:
-    """Main SDK class for managing Firecracker microVMs.
+    """Main SDK class for managing sandbox VMs.
 
     Provides high-level operations for creating, starting, stopping,
-    and managing microVMs with proper state persistence and cleanup.
+    and managing VMs with proper state persistence and cleanup.
     """
 
     def __init__(
         self,
         data_dir: Path | None = None,
         socket_dir: Path | None = None,
+        backend: str | None = None,
     ) -> None:
         """Initialize the SmolVM manager.
 
@@ -146,9 +155,12 @@ class SmolVM:
                 a writable default (``$SMOLVM_DATA_DIR`` -> user state dir ->
                 ``/var/lib/smolvm`` as fallback).
             socket_dir: Directory for VM sockets (default: /tmp).
+            backend: Runtime backend (``firecracker``, ``qemu``, or ``auto``).
+                Defaults to ``auto`` via :func:`smolvm.backends.resolve_backend`.
         """
         self.data_dir = resolve_data_dir(data_dir)
         self.socket_dir = socket_dir or DEFAULT_SOCKET_DIR
+        self.backend = resolve_backend(backend)
 
         # Under sudo, keep the chosen user-state path owned by the real user.
         owner = _get_sudo_user_info()
@@ -164,13 +176,14 @@ class SmolVM:
         self.host = HostManager()
 
         # Track open log file handles per VM for proper cleanup
-        self._log_files: dict[str, object] = {}
+        self._log_files: dict[str, TextIO] = {}
         self._closed = False
 
         logger.info(
-            "SmolVM initialized: data_dir=%s, socket_dir=%s",
+            "SmolVM initialized: data_dir=%s, socket_dir=%s, backend=%s",
             self.data_dir,
             self.socket_dir,
+            self.backend,
         )
 
     @staticmethod
@@ -191,7 +204,7 @@ class SmolVM:
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_id(cls, vm_id: str, **kwargs) -> "SmolVM":
+    def from_id(cls, vm_id: str, **kwargs: object) -> "SmolVM":
         """Create an SDK instance and verify a VM exists.
 
         Useful for attaching to an existing VM from a different process.
@@ -226,19 +239,93 @@ class SmolVM:
             return
         for fh in self._log_files.values():
             with suppress(Exception):
-                fh.close()  # type: ignore[union-attr]
+                fh.close()
         self._log_files.clear()
         self._closed = True
         logger.debug("SmolVM resources released")
 
+    def _resolve_vm_backend(self, backend_override: str | None) -> str:
+        """Resolve a backend override with helpful error wrapping."""
+        try:
+            return resolve_backend(backend_override)
+        except ValueError as e:
+            raise SmolVMError(str(e)) from e
+
+    def _backend_for_config(self, config: VMConfig) -> str:
+        """Return effective backend for the provided VM config."""
+        if config.backend:
+            return self._resolve_vm_backend(config.backend)
+        return self.backend
+
+    def _backend_for_vm(self, vm_info: VMInfo) -> str:
+        """Return effective backend for a persisted VM."""
+        if vm_info.config.backend:
+            return self._resolve_vm_backend(vm_info.config.backend)
+        return self.backend
+
+    def _qemu_binary_candidates(self) -> list[str]:
+        """Return architecture-aware qemu-system binary candidates."""
+        arch = platform.machine().lower()
+        if arch in {"arm64", "aarch64"}:
+            return ["qemu-system-aarch64", "qemu-system-x86_64"]
+        if arch in {"x86_64", "amd64"}:
+            return ["qemu-system-x86_64", "qemu-system-aarch64"]
+        return ["qemu-system-aarch64", "qemu-system-x86_64"]
+
+    def _find_qemu_binary(self) -> Path | None:
+        """Find an available qemu-system binary."""
+        for candidate in self._qemu_binary_candidates():
+            path = which(candidate)
+            if path is not None:
+                return path
+        return None
+
+    def _check_qemu_prerequisites(self) -> list[str]:
+        """Check host prerequisites for the qemu backend."""
+        errors: list[str] = []
+
+        qemu_bin = self._find_qemu_binary()
+        if qemu_bin is None:
+            errors.append(
+                "QEMU not found. Install one of: qemu-system-aarch64, qemu-system-x86_64 "
+                "(macOS/Homebrew: brew install qemu)."
+            )
+        elif platform.system() == "Darwin":
+            try:
+                result = subprocess.run(
+                    [str(qemu_bin), "-accel", "help"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=5,
+                )
+                accel_text = f"{result.stdout}\n{result.stderr}".lower()
+                if "hvf" not in accel_text:
+                    errors.append(
+                        "QEMU binary does not report Hypervisor.framework (hvf) acceleration. "
+                        "Install/upgrade Homebrew qemu."
+                    )
+            except Exception:
+                logger.debug("Could not probe qemu accelerators", exc_info=True)
+
+        if which("ssh") is None:
+            errors.append("'ssh' command not found (install openssh-client)")
+
+        return errors
+
     def check_prerequisites(self) -> list[str]:
         """Check if all prerequisites are met.
 
-        Uses HostManager for comprehensive validation.
+        Uses backend-specific validation:
+        - firecracker: KVM + Linux networking + Firecracker binary
+        - qemu: qemu-system binary + SSH client
 
         Returns:
             List of error messages (empty if all good).
         """
+        if self.backend == BACKEND_QEMU:
+            return self._check_qemu_prerequisites()
+
         errors = []
 
         host_info = self.host.validate()
@@ -279,22 +366,47 @@ class SmolVM:
         if config is None:
             raise ValueError("config cannot be None")
 
-        logger.info("Creating VM: %s", config.vm_id)
+        backend = self._backend_for_config(config)
+        effective_config = config
+        if effective_config.backend != backend:
+            effective_config = config.model_copy(update={"backend": backend})
+
+        logger.info("Creating VM: %s (backend=%s)", effective_config.vm_id, backend)
 
         # Create VM record
-        vm_info = self.state.create_vm(config)
+        vm_info = self.state.create_vm(effective_config)
 
         try:
-            # Allocate an IP first, then derive the TAP name from the
-            # last octet.  This replaces the old _extract_vm_number()
-            # approach which had collision bugs.
-            guest_ip = self.state.allocate_ip(config.vm_id, "pending")
-            ssh_host_port = self.state.reserve_ssh_port(config.vm_id)
+            ssh_host_port = self.state.reserve_ssh_port(effective_config.vm_id)
+
+            if backend == BACKEND_QEMU:
+                mac_seed = (ssh_host_port % 254) + 1
+                guest_mac = self.network.generate_mac(mac_seed)
+                network_config = NetworkConfig(
+                    guest_ip=QEMU_GUEST_IP,
+                    gateway_ip=QEMU_GATEWAY_IP,
+                    netmask=QEMU_NETMASK,
+                    tap_device="usernet",
+                    guest_mac=guest_mac,
+                    ssh_host_port=ssh_host_port,
+                )
+                vm_info = self.state.update_vm(effective_config.vm_id, network=network_config)
+                logger.info(
+                    "VM created: %s (backend=%s, ssh localhost:%d)",
+                    effective_config.vm_id,
+                    backend,
+                    ssh_host_port,
+                )
+                return vm_info
+
+            # Firecracker networking: allocate an IP first, then derive
+            # the TAP name from the last octet.
+            guest_ip = self.state.allocate_ip(effective_config.vm_id, "pending")
             last_octet = int(guest_ip.split(".")[-1])
             tap_name = f"tap{last_octet}"
 
             # Update the lease with the real TAP name
-            self.state.update_ip_lease_tap(config.vm_id, tap_name)
+            self.state.update_ip_lease_tap(effective_config.vm_id, tap_name)
 
             # Create and configure TAP device
             user = os.environ.get("USER", "root")
@@ -306,7 +418,7 @@ class SmolVM:
 
             self.network.setup_nat(tap_name)
             self.network.setup_ssh_port_forward(
-                vm_id=config.vm_id,
+                vm_id=effective_config.vm_id,
                 guest_ip=guest_ip,
                 host_port=ssh_host_port,
             )
@@ -324,11 +436,11 @@ class SmolVM:
             )
 
             # Update VM with network info
-            vm_info = self.state.update_vm(config.vm_id, network=network_config)
+            vm_info = self.state.update_vm(effective_config.vm_id, network=network_config)
 
             logger.info(
                 "VM created: %s (IP: %s, TAP: %s)",
-                config.vm_id,
+                effective_config.vm_id,
                 guest_ip,
                 tap_name,
             )
@@ -336,11 +448,11 @@ class SmolVM:
 
         except Exception as e:
             # Rollback on failure
-            logger.error("Failed to create VM %s: %s", config.vm_id, e)
-            self._cleanup_resources(config.vm_id)
+            logger.error("Failed to create VM %s: %s", effective_config.vm_id, e)
+            self._cleanup_resources(effective_config.vm_id)
             # Delete the VM record that was created
             with suppress(Exception):
-                self.state.delete_vm(config.vm_id)
+                self.state.delete_vm(effective_config.vm_id)
             raise
 
     def start(
@@ -382,7 +494,44 @@ class SmolVM:
                 {"vm_id": vm_id},
             )
 
-        # Prepare socket path
+        backend = self._backend_for_vm(vm_info)
+
+        if backend == BACKEND_QEMU:
+            log_path = self.data_dir / f"{vm_id}.log"
+            process = self._start_qemu(vm_info, log_path)
+
+            try:
+                # Ensure qemu did not crash immediately due invalid args/kernel.
+                warmup_deadline = time.time() + min(boot_timeout, 2.0)
+                while time.time() < warmup_deadline:
+                    exit_code = process.poll()
+                    if exit_code is not None:
+                        raise SmolVMError(
+                            f"QEMU exited early while booting VM '{vm_id}' (exit={exit_code})."
+                        )
+                    time.sleep(0.05)
+
+                vm_info = self.state.update_vm(
+                    vm_id,
+                    status=VMState.RUNNING,
+                    pid=process.pid,
+                    socket_path=None,
+                )
+                logger.info(
+                    "VM started: %s (backend=%s, PID: %d, ssh localhost:%s)",
+                    vm_id,
+                    backend,
+                    process.pid,
+                    vm_info.network.ssh_host_port if vm_info.network else "unknown",
+                )
+                return vm_info
+            except Exception as e:
+                logger.error("Failed to start VM %s: %s", vm_id, e)
+                self._kill_process(process.pid)
+                self.state.update_vm(vm_id, status=VMState.ERROR, clear_pid=True)
+                raise
+
+        # Firecracker path
         socket_path = self.socket_dir / f"fc-{vm_id}.sock"
         if socket_path.exists():
             self._unlink_socket(socket_path)
@@ -412,6 +561,7 @@ class SmolVM:
                 is_root_device=True,
                 is_read_only=False,
             )
+            assert vm_info.network is not None
             client.add_network_interface(
                 "eth0",
                 vm_info.network.tap_device,
@@ -469,7 +619,34 @@ class SmolVM:
             logger.warning("VM %s is not running (status: %s)", vm_id, vm_info.status)
             return vm_info
 
-        # Try graceful shutdown first
+        backend = self._backend_for_vm(vm_info)
+
+        if backend == BACKEND_QEMU:
+            if vm_info.pid and self._is_process_running(vm_info.pid):
+                try:
+                    os.kill(vm_info.pid, signal.SIGTERM)
+                    self._wait_for_process(vm_info.pid, timeout)
+                except Exception as e:
+                    logger.warning("Graceful QEMU shutdown failed for %s: %s", vm_id, e)
+
+            if vm_info.pid and self._is_process_running(vm_info.pid):
+                self._kill_process(vm_info.pid)
+
+            qemu_key = f"qemu:{vm_id}"
+            fh = self._log_files.pop(qemu_key, None)
+            if fh is not None:
+                with suppress(Exception):
+                    fh.close()
+
+            vm_info = self.state.update_vm(
+                vm_id,
+                status=VMState.STOPPED,
+                clear_pid=True,
+            )
+            logger.info("VM stopped: %s (backend=%s)", vm_id, backend)
+            return vm_info
+
+        # Firecracker graceful shutdown
         if vm_info.socket_path and vm_info.socket_path.exists():
             try:
                 client = FirecrackerClient(vm_info.socket_path)
@@ -516,21 +693,21 @@ class SmolVM:
         logger.info("Deleting VM: %s", vm_id)
 
         # Stop if running
-        # Stop if running
         try:
             vm_info = self.state.get_vm(vm_id)
-            if vm_info.status == VMState.RUNNING:
-                self.stop(vm_id)
         except VMNotFoundError:
-            # VM record missing, but we must still ensure resources (IPs, sockets) are cleaned up
-            pass
+            # Best-effort cleanup of leaked artifacts, then propagate the lookup error.
+            self._cleanup_resources(vm_id)
+            raise
+
+        if vm_info.status == VMState.RUNNING:
+            self.stop(vm_id)
 
         # Cleanup all resources
         self._cleanup_resources(vm_id)
 
         # Delete from database
-        with suppress(VMNotFoundError):
-            self.state.delete_vm(vm_id)
+        self.state.delete_vm(vm_id)
 
         logger.info("VM deleted: %s", vm_id)
 
@@ -627,11 +804,121 @@ class SmolVM:
 
         return commands
 
+    def _start_qemu(
+        self,
+        vm_info: VMInfo,
+        log_path: Path,
+    ) -> subprocess.Popen[str]:
+        """Start a QEMU process for the qemu backend.
+
+        Args:
+            vm_info: VM info with persisted configuration/network.
+            log_path: Path for combined stdout/stderr log output.
+
+        Returns:
+            The started QEMU process.
+
+        Raises:
+            SmolVMError: If qemu binary or required config is missing.
+        """
+        qemu_bin = self._find_qemu_binary()
+        if qemu_bin is None:
+            raise SmolVMError(
+                "QEMU backend selected but no qemu-system binary was found. "
+                "Install with: brew install qemu"
+            )
+
+        if vm_info.network is None or vm_info.network.ssh_host_port is None:
+            raise SmolVMError(
+                "QEMU backend requires a reserved ssh_host_port in VM network config"
+            )
+
+        ssh_port = vm_info.network.ssh_host_port
+        guest_mac = vm_info.network.guest_mac.lower()
+        boot_args = self._resolve_boot_args(vm_info)
+
+        qemu_name = qemu_bin.name
+        system = platform.system()
+
+        drive_arg = f"file={vm_info.config.rootfs_path},if=none,format=raw,id=hd0"
+        netdev_arg = f"user,id=net0,hostfwd=tcp:127.0.0.1:{ssh_port}-:22"
+
+        cmd = [
+            str(qemu_bin),
+            "-smp",
+            str(vm_info.config.vcpu_count),
+            "-m",
+            str(vm_info.config.mem_size_mib),
+            "-kernel",
+            str(vm_info.config.kernel_path),
+            "-append",
+            boot_args,
+            "-drive",
+            drive_arg,
+            "-netdev",
+            netdev_arg,
+            "-nographic",
+            "-no-reboot",
+        ]
+
+        if "aarch64" in qemu_name:
+            machine = "virt,accel=hvf" if system == "Darwin" else "virt"
+            cpu = "host" if system == "Darwin" else "cortex-a72"
+            cmd.extend(
+                [
+                    "-machine",
+                    machine,
+                    "-cpu",
+                    cpu,
+                    "-device",
+                    "virtio-blk-device,drive=hd0",
+                    "-device",
+                    f"virtio-net-device,netdev=net0,mac={guest_mac}",
+                ]
+            )
+        else:
+            machine = "q35,accel=hvf" if system == "Darwin" else "q35"
+            cpu = "host" if system == "Darwin" else "max"
+            cmd.extend(
+                [
+                    "-machine",
+                    machine,
+                    "-cpu",
+                    cpu,
+                    "-device",
+                    "virtio-blk-pci,drive=hd0",
+                    "-device",
+                    f"virtio-net-pci,netdev=net0,mac={guest_mac}",
+                ]
+            )
+
+        logger.debug("Starting QEMU: %s", " ".join(cmd))
+
+        log_file = open(log_path, "w")  # noqa: SIM115 - must stay open for subprocess
+
+        try:
+            process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        except Exception:
+            log_file.close()
+            raise
+
+        key = f"qemu:{vm_info.vm_id}"
+        self._log_files[key] = log_file
+
+        logger.debug("Started QEMU: PID=%d, vm_id=%s", process.pid, vm_info.vm_id)
+        return process
+
     def _start_firecracker(
         self,
         socket_path: Path,
         log_path: Path,
-    ) -> subprocess.Popen:
+    ) -> subprocess.Popen[str]:
         """Start the Firecracker process.
 
         Args:
@@ -778,6 +1065,11 @@ class SmolVM:
             with suppress(VMNotFoundError):
                 vm_info = self.state.get_vm(vm_id)
 
+            backend = self.backend
+            if vm_info is not None:
+                with suppress(SmolVMError):
+                    backend = self._backend_for_vm(vm_info)
+
             lease = self.state.get_ip_lease(vm_id)
 
             ssh_host_port: int | None = None
@@ -788,7 +1080,7 @@ class SmolVM:
             else:
                 ssh_host_port = self.state.get_ssh_port(vm_id)
 
-            if ssh_host_port is not None and guest_ip:
+            if backend == BACKEND_FIRECRACKER and ssh_host_port is not None and guest_ip:
                 with suppress(Exception):
                     self.network.cleanup_ssh_port_forward(
                         vm_id=vm_id,
@@ -805,27 +1097,30 @@ class SmolVM:
             if lease:
                 _, tap_device = lease
 
-                # Cleanup network
-                self.network.cleanup_nat_rules(tap_device)
-                self.network.cleanup_tap(tap_device)
+                if backend == BACKEND_FIRECRACKER:
+                    # Cleanup Linux TAP/NAT only for Firecracker backend.
+                    self.network.cleanup_nat_rules(tap_device)
+                    self.network.cleanup_tap(tap_device)
 
-                # Release IP
+                # Release IP lease regardless of backend.
                 self.state.release_ip(vm_id)
 
             if ssh_host_port is not None:
                 self.state.release_ssh_port(vm_id)
 
-            # Cleanup socket
+            # Cleanup Firecracker socket artifacts.
             socket_path = self.socket_dir / f"fc-{vm_id}.sock"
             if socket_path.exists():
                 self._unlink_socket(socket_path)
 
-            # Close log file handle if tracked
-            key = str(socket_path)
-            fh = self._log_files.pop(key, None)
-            if fh is not None:
-                with suppress(Exception):
-                    fh.close()  # type: ignore[union-attr]
+            # Close tracked log file handles.
+            firecracker_key = str(socket_path)
+            qemu_key = f"qemu:{vm_id}"
+            for key in (firecracker_key, qemu_key):
+                fh = self._log_files.pop(key, None)
+                if fh is not None:
+                    with suppress(Exception):
+                        fh.close()
 
         except Exception as e:
             logger.warning("Error during cleanup for %s: %s", vm_id, e)

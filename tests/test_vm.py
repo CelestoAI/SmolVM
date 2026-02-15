@@ -35,6 +35,7 @@ def smol_vm(tmp_path: Path) -> SmolVM:
     return SmolVM(
         data_dir=tmp_path / "data",
         socket_dir=tmp_path / "sockets",
+        backend="firecracker",
     )
 
 
@@ -319,6 +320,7 @@ class TestSmolVMContextManager:
         with SmolVM(
             data_dir=tmp_path / "data",
             socket_dir=tmp_path / "sockets",
+            backend="firecracker",
         ) as sdk:
             assert sdk is not None
             assert not sdk._closed
@@ -480,7 +482,11 @@ class TestDataDirResolution:
         env_dir = tmp_path / "env"
         monkeypatch.setenv("SMOLVM_DATA_DIR", str(env_dir))
 
-        sdk = SmolVM(data_dir=explicit_dir, socket_dir=tmp_path / "sockets")
+        sdk = SmolVM(
+            data_dir=explicit_dir,
+            socket_dir=tmp_path / "sockets",
+            backend="firecracker",
+        )
         try:
             assert sdk.data_dir == explicit_dir
             assert sdk.data_dir.exists()
@@ -493,7 +499,7 @@ class TestDataDirResolution:
         monkeypatch.setenv("SMOLVM_DATA_DIR", str(env_dir))
         monkeypatch.delenv("SUDO_USER", raising=False)
 
-        sdk = SmolVM(socket_dir=tmp_path / "sockets")
+        sdk = SmolVM(socket_dir=tmp_path / "sockets", backend="firecracker")
         try:
             assert sdk.data_dir == env_dir
             assert (env_dir / "smolvm.db").exists()
@@ -510,7 +516,7 @@ class TestDataDirResolution:
         monkeypatch.setenv("XDG_STATE_HOME", str(xdg_state_home))
 
         with patch("smolvm.vm.os.geteuid", return_value=1000):
-            sdk = SmolVM(socket_dir=tmp_path / "sockets")
+            sdk = SmolVM(socket_dir=tmp_path / "sockets", backend="firecracker")
 
         try:
             assert sdk.data_dir == xdg_state_home / "smolvm"
@@ -538,7 +544,7 @@ class TestDataDirResolution:
             patch("smolvm.vm.pwd.getpwnam", return_value=fake_passwd),
             patch("smolvm.vm.os.chown"),
         ):
-            sdk = SmolVM(socket_dir=tmp_path / "sockets")
+            sdk = SmolVM(socket_dir=tmp_path / "sockets", backend="firecracker")
 
         try:
             assert sdk.data_dir == sudo_home / ".local" / "state" / "smolvm"

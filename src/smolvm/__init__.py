@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""SmolVM - Production-ready Python SDK for Firecracker microVM management."""
+"""SmolVM - Production-ready Python SDK for sandbox VM management."""
 
 from smolvm.build import SSH_BOOT_ARGS, ImageBuilder
 from smolvm.exceptions import (

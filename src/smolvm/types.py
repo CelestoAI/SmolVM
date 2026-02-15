@@ -40,6 +40,7 @@ class VMConfig(BaseModel):
         kernel_path: Path to the kernel image.
         rootfs_path: Path to the root filesystem image.
         boot_args: Kernel boot arguments.
+        backend: Optional runtime backend override ("firecracker" or "qemu").
     """
 
     vm_id: Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$")]
@@ -48,6 +49,7 @@ class VMConfig(BaseModel):
     kernel_path: Path
     rootfs_path: Path
     boot_args: str = "console=ttyS0 reboot=k panic=1 pci=off"
+    backend: str | None = None
 
     @field_validator("kernel_path", "rootfs_path")
     @classmethod

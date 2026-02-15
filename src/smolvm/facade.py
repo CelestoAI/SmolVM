@@ -77,6 +77,7 @@ class VM:
         vm_id: ID of an existing VM to reconnect to.
         data_dir: Override the default data directory.
         socket_dir: Override the default socket directory.
+        backend: Runtime backend override (``firecracker``, ``qemu``, or ``auto``).
         ssh_user: SSH user for :meth:`run` (default ``root``).
         ssh_key_path: Optional SSH private key path.
 
@@ -91,6 +92,7 @@ class VM:
         vm_id: str | None = None,
         data_dir: Path | None = None,
         socket_dir: Path | None = None,
+        backend: str | None = None,
         ssh_user: str = "root",
         ssh_key_path: str | None = None,
     ) -> None:
@@ -127,6 +129,7 @@ class VM:
                 kernel_path=kernel,
                 rootfs_path=rootfs,
                 boot_args=SSH_BOOT_ARGS,
+                backend=backend,
             )
             logger.info("Auto-configured VM: %s", auto_id)
 
@@ -138,6 +141,8 @@ class VM:
             sdk_kwargs["data_dir"] = data_dir
         if socket_dir is not None:
             sdk_kwargs["socket_dir"] = socket_dir
+        if backend is not None:
+            sdk_kwargs["backend"] = backend
 
         if config is not None:
             self._sdk = SmolVM(**sdk_kwargs)
@@ -167,6 +172,7 @@ class VM:
         *,
         data_dir: Path | None = None,
         socket_dir: Path | None = None,
+        backend: str | None = None,
         ssh_user: str = "root",
         ssh_key_path: str | None = None,
     ) -> VM:
@@ -176,6 +182,7 @@ class VM:
             vm_id: VM identifier.
             data_dir: Override the default data directory.
             socket_dir: Override the default socket directory.
+            backend: Runtime backend override (``firecracker``, ``qemu``, or ``auto``).
             ssh_user: SSH user for :meth:`run`.
             ssh_key_path: Optional SSH private key path.
 
@@ -189,6 +196,7 @@ class VM:
             vm_id=vm_id,
             data_dir=data_dir,
             socket_dir=socket_dir,
+            backend=backend,
             ssh_user=ssh_user,
             ssh_key_path=ssh_key_path,
         )
@@ -282,9 +290,11 @@ class VM:
             )
 
         if self._ssh is None:
+            ssh_host, ssh_port = self._ssh_endpoint()
             self._ssh = SSHClient(
-                host=self._info.network.guest_ip,
+                host=ssh_host,
                 user=self._ssh_user,
+                port=ssh_port,
                 key_path=self._ssh_key_path,
             )
 
@@ -328,9 +338,11 @@ class VM:
             )
 
         if self._ssh is None:
+            ssh_host, ssh_port = self._ssh_endpoint()
             self._ssh = SSHClient(
-                host=self._info.network.guest_ip,
+                host=ssh_host,
                 user=self._ssh_user,
+                port=ssh_port,
                 key_path=self._ssh_key_path,
             )
 
@@ -615,6 +627,19 @@ class VM:
         """Refresh the cached VMInfo from the state store."""
         self._info = self._sdk.get(self._vm_id)
 
+    def _ssh_endpoint(self) -> tuple[str, int]:
+        """Return host/port endpoint used for guest SSH connectivity."""
+        if self._info.network is None:
+            raise SmolVMError(
+                "VM has no network configuration",
+                {"vm_id": self._vm_id},
+            )
+
+        if self._info.network.ssh_host_port is not None:
+            return ("127.0.0.1", self._info.network.ssh_host_port)
+
+        return (self._info.network.guest_ip, 22)
+
     def _cleanup_local_forwards(self) -> None:
         """Best-effort cleanup for localhost-only guest port forwards."""
         if not self._local_forwards:
@@ -686,7 +711,7 @@ class VM:
                 {"vm_id": self._vm_id},
             )
 
-        guest_ip = self._info.network.guest_ip
+        ssh_host, ssh_port = self._ssh_endpoint()
         cmd = [
             "ssh",
             "-N",
@@ -702,12 +727,14 @@ class VM:
             "LogLevel=ERROR",
             "-o",
             "ConnectTimeout=5",
+            "-p",
+            str(ssh_port),
             "-L",
             f"127.0.0.1:{host_port}:127.0.0.1:{guest_port}",
         ]
         if self._ssh_key_path:
             cmd.extend(["-i", self._ssh_key_path])
-        cmd.append(f"{self._ssh_user}@{guest_ip}")
+        cmd.append(f"{self._ssh_user}@{ssh_host}")
 
         try:
             proc = subprocess.Popen(

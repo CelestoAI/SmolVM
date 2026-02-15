@@ -180,7 +180,7 @@ class NetworkManager:
         try:
             with open("/proc/sys/net/ipv4/ip_forward", "w") as f:
                 f.write("1")
-        except PermissionError:
+        except (PermissionError, FileNotFoundError):
             run_command(
                 ["sysctl", "-w", "net.ipv4.ip_forward=1"],
                 use_sudo=True,
