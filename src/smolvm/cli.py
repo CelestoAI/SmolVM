@@ -29,17 +29,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    demo = subparsers.add_parser(
-        "demo",
-        help="Run built-in demos",
-    )
-    demo_subparsers = demo.add_subparsers(dest="demo_command")
-
-    demo_subparsers.add_parser("list", help="List available demos")
-    demo_subparsers.add_parser("simple", help="Run the quick lifecycle demo")
-    demo_subparsers.add_parser("api", help="Run the API patterns demo")
-    demo_subparsers.add_parser("ssh", help="Run the SSH demo (requires Docker)")
-
     cleanup = subparsers.add_parser(
         "cleanup",
         help="Clean stale SmolVM resources",
@@ -67,31 +56,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     """CLI entrypoint for `smolvm`."""
     parser = build_parser()
     args = parser.parse_args(argv)
-
-    if args.command == "demo":
-        if args.demo_command == "list" or args.demo_command is None:
-            print("Available demos:")
-            print("  - simple")
-            print("  - api")
-            print("  - ssh")
-            return 0
-
-        if args.demo_command == "simple":
-            from smolvm.demos.simple import main as demo_simple_main
-
-            return demo_simple_main()
-
-        if args.demo_command == "api":
-            from smolvm.demos.api import main as demo_api_main
-
-            return demo_api_main()
-
-        if args.demo_command == "ssh":
-            from smolvm.demos.ssh import main as demo_ssh_main
-
-            return demo_ssh_main()
-
-        parser.error(f"Unknown demo: {args.demo_command}")
 
     if args.command == "cleanup":
         return run_cleanup(delete_all=args.all, prefix=args.prefix, dry_run=args.dry_run)
