@@ -267,7 +267,12 @@ class VM:
     # Command execution
     # ------------------------------------------------------------------
 
-    def run(self, command: str, timeout: int = 30) -> CommandResult:
+    def run(
+        self,
+        command: str,
+        timeout: int = 30,
+        shell: Literal["login", "raw"] = "login",
+    ) -> CommandResult:
         """Execute a command on the guest via SSH.
 
         Lazily creates an :class:`~smolvm.ssh.SSHClient` on first call
@@ -276,6 +281,9 @@ class VM:
         Args:
             command: Shell command to execute.
             timeout: Maximum seconds to wait for the command.
+            shell: Command execution mode:
+                - ``"login"`` (default): run via guest login shell.
+                - ``"raw"``: execute command directly with no shell wrapping.
 
         Returns:
             :class:`~smolvm.types.CommandResult`.
@@ -325,7 +333,7 @@ class VM:
                     remediation=self._command_exec_remediation(),
                 ) from e
 
-        return self._ssh.run(command, timeout=timeout)
+        return self._ssh.run(command, timeout=timeout, shell=shell)
 
     def wait_for_ssh(self, timeout: float = 60.0) -> VM:
         """Wait for SSH to become available on the guest.

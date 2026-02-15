@@ -1,11 +1,11 @@
 # Copyright 2026 Celesto AI
-# 
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-# 
+#
 #     http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -114,6 +114,12 @@ class TestSSHClientRun:
         with pytest.raises(ValueError, match="command cannot be empty"):
             client.run("   ")
 
+    def test_run_invalid_shell_mode_raises(self) -> None:
+        """Test invalid shell mode raises ValueError."""
+        client = SSHClient("172.16.0.2")
+        with pytest.raises(ValueError, match="shell must be"):
+            client.run("echo ok", shell="interactive")  # type: ignore[arg-type]
+
     @patch("smolvm.ssh.subprocess.run")
     def test_run_timeout(self, mock_run: MagicMock) -> None:
         """Test SSH timeout raises OperationTimeoutError."""
@@ -149,7 +155,19 @@ class TestSSHClientRun:
         assert "-i" in call_args
         assert "/tmp/key" in call_args
         assert "admin@172.16.0.2" in call_args
-        assert "uname -r" in call_args
+        assert call_args[-1].startswith("SHELL_BIN=")
+        assert "uname -r" in call_args[-1]
+
+    @patch("smolvm.ssh.subprocess.run")
+    def test_run_raw_shell_uses_unwrapped_command(self, mock_run: MagicMock) -> None:
+        """Test raw mode sends command without login-shell wrapping."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        client = SSHClient("172.16.0.2")
+        client.run("uname -r", shell="raw")
+
+        call_args = mock_run.call_args[0][0]
+        assert call_args[-1] == "uname -r"
 
 
 class TestSSHClientWaitForSSH:

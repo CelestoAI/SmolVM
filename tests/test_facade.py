@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from smolvm.exceptions import CommandExecutionUnavailableError, SmolVMError
 from smolvm.facade import VM
 from smolvm.types import VMConfig, VMState
@@ -224,7 +225,40 @@ class TestVMRun:
 
         assert result.exit_code == 0
         mock_ssh.wait_for_ssh.assert_called_once_with(timeout=30.0)
-        mock_ssh.run.assert_called_once_with("echo ok", timeout=30)
+        mock_ssh.run.assert_called_once_with("echo ok", timeout=30, shell="login")
+
+    @patch("smolvm.facade.SSHClient")
+    @patch("smolvm.facade.SmolVM")
+    def test_run_raw_shell_mode(
+        self,
+        mock_sdk_cls: MagicMock,
+        mock_ssh_cls: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """Test run() can bypass login-shell wrapping via raw mode."""
+        mock_network = MagicMock()
+        mock_network.guest_ip = "172.16.0.2"
+
+        mock_info = MagicMock()
+        mock_info.vm_id = "vm001"
+        mock_info.status = VMState.RUNNING
+        mock_info.network = mock_network
+        mock_info.config.boot_args = "console=ttyS0 reboot=k panic=1 pci=off init=/init"
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        mock_sdk.get.return_value = mock_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        mock_ssh = MagicMock()
+        mock_ssh.run.return_value = MagicMock(exit_code=0, stdout="ok\n", stderr="")
+        mock_ssh_cls.return_value = mock_ssh
+
+        vm = VM(sample_config)
+        vm.run("echo ok", shell="raw")
+
+        mock_ssh.wait_for_ssh.assert_called_once_with(timeout=30.0)
+        mock_ssh.run.assert_called_once_with("echo ok", timeout=30, shell="raw")
 
     @patch("smolvm.facade.SSHClient")
     @patch("smolvm.facade.SmolVM")
