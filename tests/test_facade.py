@@ -60,6 +60,33 @@ class TestVMInit:
         assert vm.vm_id == "vm001"
         mock_sdk.create.assert_called_once_with(sample_config)
 
+    @patch("smolvm.facade.SmolVM")
+    def test_create_with_config_without_vm_id(
+        self,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Test creating a VM when VMConfig omits vm_id."""
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+
+        config = VMConfig(
+            kernel_path=kernel,
+            rootfs_path=rootfs,
+        )
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id=config.vm_id, status=VMState.CREATED)
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = VM(config)
+
+        assert vm.vm_id == config.vm_id
+        assert vm.vm_id.startswith("vm-")
+        mock_sdk.create.assert_called_once_with(config)
+
     def test_both_config_and_id_raises(self, sample_config: VMConfig) -> None:
         """Test that passing both config and vm_id raises ValueError."""
         with pytest.raises(ValueError, match="not both"):

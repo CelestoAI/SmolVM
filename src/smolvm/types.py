@@ -1,11 +1,11 @@
 # Copyright 2026 Celesto AI
-# 
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-# 
+#
 #     http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -17,6 +17,7 @@
 from enum import Enum
 from pathlib import Path
 from typing import Annotated
+from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -30,11 +31,17 @@ class VMState(str, Enum):
     ERROR = "error"
 
 
+def _generate_vm_id() -> str:
+    """Generate a VM identifier compatible with VMConfig validation."""
+    return f"vm-{uuid4().hex[:8]}"
+
+
 class VMConfig(BaseModel):
     """Configuration for creating a microVM.
 
     Attributes:
-        vm_id: Unique identifier (lowercase alphanumeric with hyphens).
+        vm_id: Optional unique identifier (lowercase alphanumeric with hyphens).
+            If omitted, SmolVM auto-generates one.
         vcpu_count: Number of virtual CPUs (1-32).
         mem_size_mib: Memory size in MiB (128-16384).
         kernel_path: Path to the kernel image.
@@ -43,13 +50,27 @@ class VMConfig(BaseModel):
         backend: Optional runtime backend override ("firecracker" or "qemu").
     """
 
-    vm_id: Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$")]
+    vm_id: Annotated[
+        str,
+        Field(
+            default_factory=_generate_vm_id,
+            pattern=r"^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$",
+        ),
+    ]
     vcpu_count: Annotated[int, Field(ge=1, le=32)] = 2
     mem_size_mib: Annotated[int, Field(ge=128, le=16384)] = 512
     kernel_path: Path
     rootfs_path: Path
     boot_args: str = "console=ttyS0 reboot=k panic=1 pci=off"
     backend: str | None = None
+
+    @field_validator("vm_id", mode="before")
+    @classmethod
+    def default_vm_id_when_none(cls, v: object) -> object:
+        """Generate VM ID when explicitly provided as ``None``."""
+        if v is None:
+            return _generate_vm_id()
+        return v
 
     @field_validator("kernel_path", "rootfs_path")
     @classmethod

@@ -1,11 +1,11 @@
 # Copyright 2026 Celesto AI
-# 
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-# 
+#
 #     http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -14,6 +14,7 @@
 
 """Tests for SmolVM types module."""
 
+import re
 from pathlib import Path
 
 import pytest
@@ -43,6 +44,36 @@ class TestVMConfig:
         assert config.vm_id == "vm001"
         assert config.vcpu_count == 2
         assert config.mem_size_mib == 512
+
+    def test_vm_id_auto_generated_when_omitted(self, tmp_path: Path) -> None:
+        """Test VM ID is generated when omitted."""
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+
+        config = VMConfig(
+            kernel_path=kernel,
+            rootfs_path=rootfs,
+        )
+
+        assert config.vm_id.startswith("vm-")
+        assert re.fullmatch(r"^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$", config.vm_id)
+
+    def test_vm_id_auto_generated_when_none(self, tmp_path: Path) -> None:
+        """Test VM ID is generated when explicitly set to None."""
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+
+        config = VMConfig(  # type: ignore[arg-type]
+            vm_id=None,
+            kernel_path=kernel,
+            rootfs_path=rootfs,
+        )
+
+        assert config.vm_id.startswith("vm-")
 
     def test_invalid_vm_id_uppercase(self, tmp_path: Path) -> None:
         """Test that uppercase VM IDs are rejected."""
