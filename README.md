@@ -97,6 +97,22 @@ with VM() as vm:
     print(f"App available at http://localhost:{host_port}")
 ```
 
+## 6. Environment Variables
+
+Inject environment variables into the guest OS. Variables are injected into `/etc/profile.d/` and are available in login shells and SSH sessions.
+
+```python
+from smolvm import VM, VMConfig
+
+# Configure env vars at creation
+config = VMConfig(
+    env_vars={"API_KEY": "sk-...", "DEBUG": "1"}
+)
+
+with VM(config) as vm:
+    vm.run("env | grep API_KEY")
+```
+
 ## 📄 License
 
 Apache 2.0 License - see [LICENSE](LICENSE) for details.
