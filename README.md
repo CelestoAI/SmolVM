@@ -93,6 +93,19 @@ vm = VM.from_id("vm-abcdef12")
 print(f"Status: {vm.status}")
 ```
 
+### 4.1 Disk isolation defaults
+
+SmolVM now defaults to **isolated per-VM disks** (`disk_mode="isolated"`),
+so each VM gets its own writable rootfs clone (sandbox-by-default).
+
+If you intentionally want shared/persistent image behavior across VMs, set:
+
+```python
+from smolvm import VMConfig
+
+config = VMConfig(..., disk_mode="shared")
+```
+
 ### 5. Port Forwarding
 
 Expose a guest application to your local machine securely. `expose_local` prefers host-local iptables forwarding and automatically falls back to an SSH tunnel when needed.

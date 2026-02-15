@@ -20,6 +20,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from smolvm.exceptions import (
     SmolVMError,
     VMAlreadyExistsError,
@@ -126,6 +127,121 @@ class TestSmolVMCreate:
         # VM should not exist after rollback
         with pytest.raises(VMNotFoundError):
             smol_vm.get("vm001")
+
+
+class TestSmolVMDiskLifecycle:
+    """Tests for per-VM disk materialization and cleanup."""
+
+    @patch("smolvm.vm.NetworkManager")
+    def test_create_materializes_isolated_disk(
+        self,
+        mock_network_class: MagicMock,
+        smol_vm: SmolVM,
+        sample_config: VMConfig,
+    ) -> None:
+        """Isolated mode should clone rootfs into data_dir/disks per VM."""
+        mock_network = MagicMock()
+        mock_network.host_ip = "172.16.0.1"
+        mock_network.generate_mac.return_value = "AA:FC:00:00:00:01"
+        mock_network_class.return_value = mock_network
+        smol_vm.network = mock_network
+
+        vm_info = smol_vm.create(sample_config)
+
+        expected_disk = smol_vm.data_dir / "disks" / "vm001.ext4"
+        assert vm_info.config.rootfs_path == expected_disk
+        assert expected_disk.exists()
+
+    @patch("smolvm.vm.NetworkManager")
+    def test_shared_disk_mode_uses_original_rootfs(
+        self,
+        mock_network_class: MagicMock,
+        smol_vm: SmolVM,
+        sample_config: VMConfig,
+    ) -> None:
+        """Shared disk mode should use the caller-provided rootfs path directly."""
+        mock_network = MagicMock()
+        mock_network.host_ip = "172.16.0.1"
+        mock_network.generate_mac.return_value = "AA:FC:00:00:00:01"
+        mock_network_class.return_value = mock_network
+        smol_vm.network = mock_network
+
+        config = sample_config.model_copy(update={"disk_mode": "shared"})
+        vm_info = smol_vm.create(config)
+
+        assert vm_info.config.rootfs_path == sample_config.rootfs_path
+        assert not (smol_vm.data_dir / "disks" / "vm001.ext4").exists()
+
+    @patch("smolvm.vm.NetworkManager")
+    def test_delete_removes_isolated_disk_by_default(
+        self,
+        mock_network_class: MagicMock,
+        smol_vm: SmolVM,
+        sample_config: VMConfig,
+    ) -> None:
+        """Deleting a VM removes its isolated disk unless retention is enabled."""
+        mock_network = MagicMock()
+        mock_network.host_ip = "172.16.0.1"
+        mock_network.generate_mac.return_value = "AA:FC:00:00:00:01"
+        mock_network_class.return_value = mock_network
+        smol_vm.network = mock_network
+
+        smol_vm.create(sample_config)
+        disk_path = smol_vm.data_dir / "disks" / "vm001.ext4"
+        assert disk_path.exists()
+
+        smol_vm.delete("vm001")
+
+        assert not disk_path.exists()
+
+    @patch("smolvm.vm.NetworkManager")
+    def test_delete_retains_isolated_disk_when_enabled(
+        self,
+        mock_network_class: MagicMock,
+        smol_vm: SmolVM,
+        sample_config: VMConfig,
+    ) -> None:
+        """retain_disk_on_delete preserves isolated disk for later reuse."""
+        mock_network = MagicMock()
+        mock_network.host_ip = "172.16.0.1"
+        mock_network.generate_mac.return_value = "AA:FC:00:00:00:01"
+        mock_network_class.return_value = mock_network
+        smol_vm.network = mock_network
+
+        retained_config = sample_config.model_copy(update={"retain_disk_on_delete": True})
+        smol_vm.create(retained_config)
+        disk_path = smol_vm.data_dir / "disks" / "vm001.ext4"
+        assert disk_path.exists()
+
+        smol_vm.delete("vm001")
+
+        assert disk_path.exists()
+
+    @patch("smolvm.vm.NetworkManager")
+    def test_create_reuses_retained_disk_for_same_vm_id(
+        self,
+        mock_network_class: MagicMock,
+        smol_vm: SmolVM,
+        sample_config: VMConfig,
+    ) -> None:
+        """A retained isolated disk should be reused for a recreated VM ID."""
+        mock_network = MagicMock()
+        mock_network.host_ip = "172.16.0.1"
+        mock_network.generate_mac.return_value = "AA:FC:00:00:00:01"
+        mock_network_class.return_value = mock_network
+        smol_vm.network = mock_network
+
+        retained_config = sample_config.model_copy(update={"retain_disk_on_delete": True})
+        smol_vm.create(retained_config)
+        disk_path = smol_vm.data_dir / "disks" / "vm001.ext4"
+        original_mtime = disk_path.stat().st_mtime_ns
+
+        smol_vm.delete("vm001")
+        assert disk_path.exists()
+
+        recreated = smol_vm.create(retained_config)
+        assert recreated.config.rootfs_path == disk_path
+        assert disk_path.stat().st_mtime_ns == original_mtime
 
 
 class TestSmolVMGet:

@@ -257,6 +257,33 @@ class TestVMConfig:
                 env_vars={"A=B": "value"},
             )
 
+    def test_disk_mode_defaults_to_isolated(self, tmp_path: Path) -> None:
+        """Test default disk mode is isolated for sandbox-by-default behavior."""
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+
+        config = VMConfig(vm_id="vm001", kernel_path=kernel, rootfs_path=rootfs)
+
+        assert config.disk_mode == "isolated"
+        assert config.retain_disk_on_delete is False
+
+    def test_invalid_disk_mode_rejected(self, tmp_path: Path) -> None:
+        """Test unsupported disk_mode values are rejected."""
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+
+        with pytest.raises(ValidationError):
+            VMConfig(  # type: ignore[arg-type]
+                vm_id="vm001",
+                kernel_path=kernel,
+                rootfs_path=rootfs,
+                disk_mode="snapshot",
+            )
+
 
 class TestVMState:
     """Tests for VMState enum."""

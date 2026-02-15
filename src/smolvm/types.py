@@ -16,7 +16,7 @@
 
 from enum import Enum
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
@@ -48,8 +48,13 @@ class VMConfig(BaseModel):
         rootfs_path: Path to the root filesystem image.
         boot_args: Kernel boot arguments.
         backend: Optional runtime backend override ("firecracker" or "qemu").
+        disk_mode: Disk lifecycle mode:
+            - ``"isolated"`` (default): clone rootfs per VM for sandbox isolation.
+            - ``"shared"``: boot directly from ``rootfs_path``.
+        retain_disk_on_delete: Keep isolated VM disk after delete, so a later
+            create with the same VM ID can reuse prior state.
         env_vars: Environment variables to inject into the guest
-            after boot via SSH.  Keys must be valid shell identifiers.
+            after boot via SSH. Keys must be valid shell identifiers.
     """
 
     vm_id: Annotated[
@@ -65,6 +70,8 @@ class VMConfig(BaseModel):
     rootfs_path: Path
     boot_args: str = "console=ttyS0 reboot=k panic=1 pci=off"
     backend: str | None = None
+    disk_mode: Literal["isolated", "shared"] = "isolated"
+    retain_disk_on_delete: bool = False
     env_vars: dict[str, str] = {}
 
     @field_validator("vm_id", mode="before")

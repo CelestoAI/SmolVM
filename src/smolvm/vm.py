@@ -22,6 +22,7 @@ import os
 import platform
 import pwd
 import shlex
+import shutil
 import signal
 import subprocess
 import time
@@ -161,11 +162,14 @@ class SmolVM:
         self.data_dir = resolve_data_dir(data_dir)
         self.socket_dir = socket_dir or DEFAULT_SOCKET_DIR
         self.backend = resolve_backend(backend)
+        self.disk_dir = self.data_dir / "disks"
+        self.disk_dir.mkdir(parents=True, exist_ok=True)
 
         # Under sudo, keep the chosen user-state path owned by the real user.
         owner = _get_sudo_user_info()
         if owner is not None:
             self._ensure_path_owner(self.data_dir, owner.pw_uid, owner.pw_gid)
+            self._ensure_path_owner(self.disk_dir, owner.pw_uid, owner.pw_gid)
 
         # Initialize managers
         db_path = self.data_dir / "smolvm.db"
@@ -262,6 +266,51 @@ class SmolVM:
         if vm_info.config.backend:
             return self._resolve_vm_backend(vm_info.config.backend)
         return self.backend
+
+    def _instance_disk_path(self, vm_id: str) -> Path:
+        """Return managed isolated disk path for a VM ID."""
+        return self.disk_dir / f"{vm_id}.ext4"
+
+    def _materialize_rootfs(self, config: VMConfig) -> VMConfig:
+        """Materialize the effective rootfs path for a VM create request.
+
+        In ``isolated`` mode, clones the configured ``rootfs_path`` into a
+        per-VM disk file under ``data_dir/disks`` (or reuses an existing one
+        for the same VM ID). In ``shared`` mode, uses ``rootfs_path`` directly.
+        """
+        if config.disk_mode == "shared":
+            return config
+
+        instance_rootfs = self._instance_disk_path(config.vm_id)
+        if not instance_rootfs.exists():
+            logger.info(
+                "Creating isolated disk for VM %s from %s -> %s",
+                config.vm_id,
+                config.rootfs_path,
+                instance_rootfs,
+            )
+            shutil.copy2(config.rootfs_path, instance_rootfs)
+        else:
+            logger.info(
+                "Reusing isolated disk for VM %s at %s",
+                config.vm_id,
+                instance_rootfs,
+            )
+
+        return config.model_copy(update={"rootfs_path": instance_rootfs})
+
+    def _managed_disk_for_vm(self, vm_info: VMInfo | None) -> Path | None:
+        """Return the managed isolated disk path for a VM if applicable."""
+        if vm_info is None:
+            return None
+        if vm_info.config.disk_mode != "isolated":
+            return None
+
+        expected = self._instance_disk_path(vm_info.vm_id).resolve()
+        actual = vm_info.config.rootfs_path.resolve()
+        if actual != expected:
+            return None
+        return expected
 
     def _qemu_binary_candidates(self) -> list[str]:
         """Return architecture-aware qemu-system binary candidates."""
@@ -369,9 +418,16 @@ class SmolVM:
         backend = self._backend_for_config(config)
         effective_config = config
         if effective_config.backend != backend:
-            effective_config = config.model_copy(update={"backend": backend})
+            effective_config = effective_config.model_copy(update={"backend": backend})
 
-        logger.info("Creating VM: %s (backend=%s)", effective_config.vm_id, backend)
+        effective_config = self._materialize_rootfs(effective_config)
+
+        logger.info(
+            "Creating VM: %s (backend=%s, disk_mode=%s)",
+            effective_config.vm_id,
+            backend,
+            effective_config.disk_mode,
+        )
 
         # Create VM record
         vm_info = self.state.create_vm(effective_config)
@@ -1128,6 +1184,19 @@ class SmolVM:
                 if fh is not None:
                     with suppress(Exception):
                         fh.close()
+
+            managed_disk = self._managed_disk_for_vm(vm_info)
+            if managed_disk and managed_disk.exists():
+                if vm_info.config.retain_disk_on_delete:
+                    logger.info(
+                        "Retaining isolated disk for VM %s at %s",
+                        vm_id,
+                        managed_disk,
+                    )
+                else:
+                    with suppress(Exception):
+                        managed_disk.unlink()
+                        logger.info("Removed isolated disk for VM %s: %s", vm_id, managed_disk)
 
         except Exception as e:
             logger.warning("Error during cleanup for %s: %s", vm_id, e)
