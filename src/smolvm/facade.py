@@ -84,7 +84,9 @@ class VM:
         mem_size_mib: Guest memory in MiB for auto-config mode (``VM()`` only).
         disk_size_mib: Root filesystem size in MiB for auto-config mode (``VM()`` only).
         ssh_user: SSH user for :meth:`run` (default ``root``).
-        ssh_key_path: Optional SSH private key path.
+        ssh_key_path: Optional SSH private key path. If omitted,
+            SmolVM first tries default SSH auth, then falls back to
+            ``~/.smolvm/id_ed25519`` when needed.
 
     Raises:
         ValueError: If both *config* and *vm_id* are given.
@@ -175,6 +177,7 @@ class VM:
 
         self._ssh_user = ssh_user
         self._ssh_key_path = ssh_key_path
+        self._default_ssh_key_path: str | None = None
 
         sdk_kwargs: dict[str, Any] = {}
         if data_dir is not None:
@@ -224,7 +227,9 @@ class VM:
             socket_dir: Override the default socket directory.
             backend: Runtime backend override (``firecracker``, ``qemu``, or ``auto``).
             ssh_user: SSH user for :meth:`run`.
-            ssh_key_path: Optional SSH private key path.
+            ssh_key_path: Optional SSH private key path. If omitted,
+                SmolVM first tries default SSH auth, then falls back to
+                ``~/.smolvm/id_ed25519`` when needed.
 
         Returns:
             A :class:`VM` instance bound to the existing VM.
@@ -828,58 +833,128 @@ class VM:
             unique.append(endpoint)
         return unique
 
-    def _wait_for_ssh_with_fallback(self, timeout: float) -> None:
-        """Wait for SSH, falling back from localhost-forwarded port to guest IP."""
-        endpoints = self._ssh_endpoints()
+    def _resolve_default_ssh_key_path(self) -> str | None:
+        """Resolve SmolVM's default SSH private key path.
 
-        # Prefer the already selected client first, then try remaining candidates.
-        if self._ssh is not None:
-            current = (self._ssh.host, self._ssh.port)
-            ordered = [current]
-            ordered.extend(endpoint for endpoint in endpoints if endpoint != current)
-            endpoints = ordered
+        Returns:
+            Path string if available, otherwise ``None``.
+        """
+        if self._default_ssh_key_path is not None:
+            return self._default_ssh_key_path
 
-        if len(endpoints) == 1:
-            host, port = endpoints[0]
-            client = self._ssh
-            if client is None or client.host != host or client.port != port:
-                client = SSHClient(
-                    host=host,
-                    user=self._ssh_user,
-                    port=port,
-                    key_path=self._ssh_key_path,
-                )
-            client.wait_for_ssh(timeout=timeout)
-            self._ssh = client
-            self._ssh_ready = True
-            return
+        try:
+            from smolvm.utils import ensure_ssh_key
 
-        errors: list[str] = []
-        deadline = time.monotonic() + timeout
+            private_key, _ = ensure_ssh_key()
+        except Exception as e:
+            logger.debug("Failed to resolve default SSH key for VM %s: %s", self._vm_id, e)
+            return None
 
-        for index, (host, port) in enumerate(endpoints):
+        self._default_ssh_key_path = str(private_key)
+        return self._default_ssh_key_path
+
+    def _attempt_ssh_candidates(
+        self,
+        attempts: list[tuple[str, int, str | None]],
+        *,
+        deadline: float,
+        errors: list[str],
+    ) -> bool:
+        """Try a sequence of SSH endpoint/key combinations.
+
+        Returns:
+            ``True`` once SSH becomes ready, otherwise ``False``.
+        """
+        for index, (host, port, key_path) in enumerate(attempts):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                break
+                return False
 
-            attempts_left = len(endpoints) - index
+            attempts_left = len(attempts) - index
             endpoint_timeout = max(0.5, remaining / attempts_left)
             client = self._ssh
-            if client is None or client.host != host or client.port != port:
+            if (
+                client is None
+                or client.host != host
+                or client.port != port
+                or client.key_path != key_path
+            ):
                 client = SSHClient(
                     host=host,
                     user=self._ssh_user,
                     port=port,
-                    key_path=self._ssh_key_path,
+                    key_path=key_path,
                 )
 
             try:
                 client.wait_for_ssh(timeout=endpoint_timeout)
                 self._ssh = client
                 self._ssh_ready = True
-                return
+                if self._ssh_key_path is None and key_path is not None:
+                    self._ssh_key_path = key_path
+                    logger.debug(
+                        "VM %s: SSH ready using fallback key path %s",
+                        self._vm_id,
+                        key_path,
+                    )
+                return True
             except OperationTimeoutError as e:
-                errors.append(f"{host}:{port} ({e.message})")
+                key_label = "agent/default-auth" if key_path is None else f"key={key_path}"
+                errors.append(f"{host}:{port} [{key_label}] ({e.message})")
+
+        return False
+
+    def _wait_for_ssh_with_fallback(self, timeout: float) -> None:
+        """Wait for SSH, with endpoint and key fallback strategies."""
+        endpoints = self._ssh_endpoints()
+
+        # Prefer the already selected client first, then try remaining candidates.
+        ordered_endpoints = endpoints
+        if self._ssh is not None:
+            current = (self._ssh.host, self._ssh.port)
+            ordered_endpoints = [current]
+            ordered_endpoints.extend(endpoint for endpoint in endpoints if endpoint != current)
+
+        attempts: list[tuple[str, int, str | None]] = []
+        if self._ssh is not None:
+            attempts.append((self._ssh.host, self._ssh.port, self._ssh.key_path))
+
+        # Phase 1: explicit key if configured; otherwise default SSH auth (no -i).
+        phase1_key = self._ssh_key_path
+        for host, port in ordered_endpoints:
+            attempt = (host, port, phase1_key)
+            if attempt in attempts:
+                continue
+            attempts.append(attempt)
+
+        errors: list[str] = []
+        deadline = time.monotonic() + timeout
+        if self._attempt_ssh_candidates(attempts, deadline=deadline, errors=errors):
+            return
+
+        # Phase 2: if no explicit key was configured, retry with SmolVM default key.
+        if self._ssh_key_path is None:
+            default_key = self._resolve_default_ssh_key_path()
+            if default_key is not None:
+                fallback_attempts: list[tuple[str, int, str | None]] = []
+                for host, port in ordered_endpoints:
+                    attempt = (host, port, default_key)
+                    if attempt in attempts:
+                        continue
+                    fallback_attempts.append(attempt)
+
+                if fallback_attempts:
+                    logger.debug(
+                        "VM %s: retrying SSH readiness with default key %s",
+                        self._vm_id,
+                        default_key,
+                    )
+                    if self._attempt_ssh_candidates(
+                        fallback_attempts,
+                        deadline=deadline,
+                        errors=errors,
+                    ):
+                        return
 
         self._ssh_ready = False
         detail = "; ".join(errors) if errors else "no endpoint attempts completed"
