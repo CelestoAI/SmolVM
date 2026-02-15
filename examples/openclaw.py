@@ -77,12 +77,17 @@ def _start_gateway(vm: VM) -> None:
 
 def _onboard_openclaw_if_possible(vm: VM, env_vars: dict[str, str]) -> None:
     """Run non-interactive onboarding when a provider API key is available."""
+    gateway_args = (
+        f"--gateway-auth token --gateway-token {GATEWAY_TOKEN} "
+        f"--gateway-port {GUEST_DASHBOARD_PORT} --gateway-bind loopback"
+    )
+
     if "OPENROUTER_API_KEY" in env_vars:
         print("\n== Onboarding OpenClaw with OPENROUTER_API_KEY ==")
         _run_or_exit(
             vm,
             'openclaw onboard --openrouter-api-key "$OPENROUTER_API_KEY" '
-            "--accept-risk --non-interactive",
+            f"{gateway_args} --accept-risk --non-interactive",
             timeout=300,
         )
         return
@@ -92,7 +97,7 @@ def _onboard_openclaw_if_possible(vm: VM, env_vars: dict[str, str]) -> None:
         _run_or_exit(
             vm,
             'openclaw onboard --openai-api-key "$OPENAI_API_KEY" '
-            "--accept-risk --non-interactive",
+            f"{gateway_args} --accept-risk --non-interactive",
             timeout=300,
         )
         return
