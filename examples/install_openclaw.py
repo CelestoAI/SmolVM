@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install OpenClaw inside a SmolVM guest using a 4GB rootfs image."""
+"""Install OpenClaw inside a Debian-based SmolVM guest (4GB rootfs)."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from smolvm.utils import ensure_ssh_key
 
 GUEST_DASHBOARD_PORT = 18789
 HOST_DASHBOARD_PORT = 18789
+OPENCLAW_PREFIX = "/opt/openclaw"
 
 
 def _run_or_exit(vm: VM, command: str, timeout: int = 300) -> None:
@@ -21,14 +22,99 @@ def _run_or_exit(vm: VM, command: str, timeout: int = 300) -> None:
     if result.stderr:
         print(result.stderr.strip(), file=sys.stderr)
     if result.exit_code != 0:
+        print(
+            f"Command failed (exit {result.exit_code}): {command}",
+            file=sys.stderr,
+        )
         raise SystemExit(result.exit_code)
+
+
+def _ensure_node_runtime(vm: VM) -> None:
+    """Install Node.js/NPM and guarantee Node >= 22.12.0 for OpenClaw."""
+    print("\n== Installing runtime dependencies ==")
+    _run_or_exit(
+        vm,
+        (
+            "apt-get update && "
+            "apt-get install -y --no-install-recommends "
+            "ca-certificates curl gnupg git bash && "
+            "rm -rf /var/lib/apt/lists/*"
+        ),
+        timeout=300,
+    )
+
+    # OpenClaw currently requires Node >= 22.12.0.
+    _run_or_exit(vm, "mkdir -p /etc/apt/keyrings", timeout=60)
+    _run_or_exit(
+        vm,
+        (
+            "curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key "
+            "| gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg"
+        ),
+        timeout=120,
+    )
+    _run_or_exit(
+        vm,
+        (
+            "echo 'deb [signed-by=/etc/apt/keyrings/nodesource.gpg] "
+            "https://deb.nodesource.com/node_22.x nodistro main' "
+            "> /etc/apt/sources.list.d/nodesource.list"
+        ),
+        timeout=60,
+    )
+    _run_or_exit(
+        vm,
+        (
+            "apt-get update && "
+            "apt-get install -y --no-install-recommends nodejs && "
+            "rm -rf /var/lib/apt/lists/*"
+        ),
+        timeout=300,
+    )
+    _run_or_exit(vm, "node -v && npm -v", timeout=60)
+    _run_or_exit(
+        vm,
+        (
+            "node -e \"const [maj,min]=process.versions.node.split('.').map(Number); "
+            "if(maj<22||(maj===22&&min<12)){"
+            "console.error('Node >=22.12.0 required, found '+process.versions.node);"
+            "process.exit(1)"
+            "}\""
+        ),
+        timeout=60,
+    )
+
+
+def _install_openclaw(vm: VM) -> None:
+    """Install OpenClaw in an isolated npm prefix to avoid global path conflicts."""
+    print("\n== Installing OpenClaw ==")
+    _run_or_exit(vm, f"rm -rf {OPENCLAW_PREFIX}", timeout=60)
+    _run_or_exit(vm, f"mkdir -p {OPENCLAW_PREFIX}", timeout=60)
+    _run_or_exit(vm, "npm cache clean --force || true", timeout=120)
+    _run_or_exit(
+        vm,
+        f"npm --prefix {OPENCLAW_PREFIX} install -g openclaw",
+        timeout=600,
+    )
+    _run_or_exit(
+        vm,
+        f"ln -sf {OPENCLAW_PREFIX}/bin/openclaw /usr/local/bin/openclaw",
+        timeout=60,
+    )
+    print("\n== Verifying OpenClaw install ==")
+    _run_or_exit(
+        vm,
+        "command -v openclaw >/dev/null || { echo 'openclaw not found in PATH' >&2; exit 1; }",
+        timeout=60,
+    )
+    _run_or_exit(vm, "openclaw --help >/dev/null 2>&1 || true", timeout=60)
 
 
 def main() -> int:
     private_key, public_key = ensure_ssh_key()
-    kernel, rootfs = ImageBuilder().build_alpine_ssh_key(
+    kernel, rootfs = ImageBuilder().build_debian_ssh_key(
         ssh_public_key=public_key,
-        name="alpine-ssh-key-openclaw-4g",
+        name="debian-ssh-key-openclaw-4g",
         rootfs_size_mb=4096,
     )
 
@@ -45,9 +131,8 @@ def main() -> int:
         print(f"VM running at {vm.get_ip()}")
         _run_or_exit(vm, "df -h /", timeout=60)
 
-        _run_or_exit(vm, "apk add --no-cache bash curl git nodejs npm", timeout=300)
-        _run_or_exit(vm, "npm install -g openclaw", timeout=600)
-        _run_or_exit(vm, "openclaw --version || which openclaw", timeout=60)
+        _ensure_node_runtime(vm)
+        _install_openclaw(vm)
 
         # Start gateway dashboard endpoint in the guest.
         _run_or_exit(

@@ -1,11 +1,11 @@
 # Copyright 2026 Celesto AI
-# 
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-# 
+#
 #     http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -260,6 +260,129 @@ RUN mkdir -p /root/.ssh && chmod 700 /root/.ssh && \
     sed -i 's/#PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config && \
     sed -i 's/#PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config && \
     sed -i 's/#PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+
+COPY authorized_keys /root/.ssh/authorized_keys
+RUN chmod 600 /root/.ssh/authorized_keys && chown -R root:root /root/.ssh
+
+COPY init /init
+RUN chmod +x /init
+"""
+
+        try:
+            self._do_build(
+                name,
+                dockerfile_content,
+                init_script,
+                image_dir,
+                kernel_path,
+                rootfs_path,
+                rootfs_size_mb,
+                extra_files={"authorized_keys": f"{key_value}\n"},
+            )
+        except (subprocess.CalledProcessError, ImageError) as e:
+            if rootfs_path.exists():
+                rootfs_path.unlink()
+            if kernel_path.exists():
+                kernel_path.unlink()
+            if isinstance(e, ImageError):
+                raise
+            raise ImageError(f"Image build failed: {e}") from e
+
+        logger.info("Image '%s' built successfully at %s", name, image_dir)
+        return (kernel_path, rootfs_path)
+
+    def build_debian_ssh_key(
+        self,
+        ssh_public_key: str | Path,
+        name: str = "debian-ssh-key",
+        rootfs_size_mb: int = 2048,
+        base_image: str = "debian:bookworm-slim",
+    ) -> tuple[Path, Path]:
+        """Build Debian Linux image with key-only SSH access.
+
+        Args:
+            ssh_public_key: Public key content or path to a public key file.
+            name: Image name for caching.
+            rootfs_size_mb: Size of rootfs in MB.
+            base_image: Docker base image to build from.
+
+        Returns:
+            Tuple of (kernel_path, rootfs_path).
+        """
+        if not self.check_docker():
+            raise ImageError(
+                "Docker is required to build images. "
+                "Install with: sudo apt install docker.io"
+            )
+
+        key_value = self._resolve_public_key(ssh_public_key)
+
+        image_dir = self.cache_dir / name
+        kernel_path = image_dir / "vmlinux.bin"
+        rootfs_path = image_dir / "rootfs.ext4"
+
+        if kernel_path.exists() and rootfs_path.exists():
+            # Check if the image is stale (older than the provided key file)
+            is_stale = False
+
+            # Resolve key path from input if possible
+            key_path_check: Path | None = None
+            if isinstance(ssh_public_key, Path):
+                key_path_check = ssh_public_key
+            elif isinstance(ssh_public_key, str):
+                try:
+                    p = Path(ssh_public_key)
+                    if p.exists():
+                        key_path_check = p
+                except OSError:
+                    pass
+
+            # If we found a key file, check its mtime
+            if key_path_check and key_path_check.exists():
+                try:
+                    key_mtime = key_path_check.stat().st_mtime
+                    img_mtime = rootfs_path.stat().st_mtime
+                    if key_mtime > img_mtime:
+                        logger.info(
+                            "SSH key '%s' is newer than cached image. Rebuilding...",
+                            key_path_check.name,
+                        )
+                        is_stale = True
+                except OSError:
+                    pass
+
+            if not is_stale:
+                logger.info("Image '%s' already exists at %s", name, image_dir)
+                return (kernel_path, rootfs_path)
+
+            # Remove stale files
+            if kernel_path.exists():
+                kernel_path.unlink()
+            if rootfs_path.exists():
+                rootfs_path.unlink()
+
+        logger.info("Building Debian key-only SSH image '%s'...", name)
+        image_dir.mkdir(parents=True, exist_ok=True)
+
+        init_script = self._default_init_script()
+
+        dockerfile_content = f"""
+FROM {base_image}
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    openssh-server \\
+    iproute2 \\
+    curl \\
+    bash \\
+    ca-certificates \\
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh && \\
+    sed -ri 's/^#?PermitRootLogin .*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config && \\
+    sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config && \\
+    sed -ri 's/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
 
 COPY authorized_keys /root/.ssh/authorized_keys
 RUN chmod 600 /root/.ssh/authorized_keys && chown -R root:root /root/.ssh
