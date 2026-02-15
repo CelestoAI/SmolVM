@@ -5,7 +5,7 @@
 Secure runtime for AI agents, and tools -- free and open-source from Celesto AI 🧡
 
 [Docs](https://docs.celesto.ai) •
-[Examples](https://github.com/celestoai/smolvm/tree/main/docs/examples)
+[Examples](https://github.com/celestoai/smolvm/tree/main/examples)
 
 </div>
 
@@ -53,6 +53,12 @@ with VM() as vm:
     # Example: app in VM listening on port 8080
     host_port = vm.expose_local(guest_port=8080, host_port=18080)
     print(f"Open http://127.0.0.1:{host_port}")
+```
+
+Example script:
+
+```bash
+uv run python examples/install_openclaw.py
 ```
 
 
