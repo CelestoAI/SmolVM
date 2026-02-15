@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 # Default boot args that include init=/init for our custom init script
 SSH_BOOT_ARGS = (
-    "console=ttyS0 reboot=k panic=1 pci=off init=/init"
+    "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/init"
 )
 
 # Firecracker-compatible uncompressed kernel
