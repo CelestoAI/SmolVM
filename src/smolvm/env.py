@@ -141,6 +141,7 @@ def _atomic_write(ssh: SSHClient, content: str) -> "CommandResult":  # noqa: F82
     A ``mktemp``-generated temp file prevents symlink attacks, and a
     ``trap`` ensures the temp file is cleaned up on any failure.
     """
+    from smolvm.types import CommandResult  # noqa: F401 - avoid circular import
 
     b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
     cmd = (
