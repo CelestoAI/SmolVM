@@ -148,10 +148,7 @@ def _parse_env_pairs(pairs: list[str]) -> dict[str, str]:
 
 def _env_reload_hint() -> None:
     """Print hint about reloading env in existing sessions."""
-    print(
-        "  Note: Changes apply to new SSH sessions. "
-        "In an existing session, run:"
-    )
+    print("  Note: Changes apply to new SSH sessions. In an existing session, run:")
     print("    source /etc/profile.d/smolvm_env.sh")
 
 
@@ -230,4 +227,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser.print_help()
     return 2
-

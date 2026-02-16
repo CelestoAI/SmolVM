@@ -155,7 +155,7 @@ def _ensure_node_runtime(vm: SmolVM) -> None:
             "if(maj<22||(maj===22&&min<12)){"
             "console.error('Node >=22.12.0 required, found '+process.versions.node);"
             "process.exit(1)"
-            "}\""
+            '}"'
         ),
         timeout=60,
     )

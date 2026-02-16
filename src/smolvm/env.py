@@ -46,8 +46,7 @@ def validate_env_key(key: str) -> None:
         raise ValueError("Environment variable key cannot be empty")
     if not _VALID_KEY_RE.match(key):
         raise ValueError(
-            f"Invalid environment variable key: {key!r}. "
-            "Keys must match [A-Za-z_][A-Za-z0-9_]*"
+            f"Invalid environment variable key: {key!r}. Keys must match [A-Za-z_][A-Za-z0-9_]*"
         )
 
 
@@ -150,8 +149,8 @@ def _atomic_write(ssh: SSHClient, content: str) -> "CommandResult":
         "_t=$(mktemp /tmp/.smolvm_env.XXXXXXXXXX); "
         "trap 'rm -f \"$_t\"' EXIT; "
         f"printf '%s' '{b64}' | base64 -d > \"$_t\"; "
-        f"chmod 0644 \"$_t\"; "
-        f"mv \"$_t\" {ENV_FILE}"
+        f'chmod 0644 "$_t"; '
+        f'mv "$_t" {ENV_FILE}'
     )
     return ssh.run(cmd, timeout=10)
 
@@ -179,12 +178,12 @@ def read_env_vars(ssh: SSHClient) -> dict[str, str]:
         if not line.startswith("export "):
             continue
         # Format: export KEY='value' or export KEY=value
-        rest = line[len("export "):]
+        rest = line[len("export ") :]
         eq_idx = rest.find("=")
         if eq_idx < 0:
             continue
         key = rest[:eq_idx]
-        raw_value = rest[eq_idx + 1:]
+        raw_value = rest[eq_idx + 1 :]
         # Use a shlex lexer configured for single-token extraction.
         # This handles 'val'\''ue' style quoting correctly and treats
         # the entire remainder as one value (even if it contains spaces

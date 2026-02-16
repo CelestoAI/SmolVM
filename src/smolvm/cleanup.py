@@ -48,11 +48,7 @@ def run_cleanup(*, delete_all: bool = False, prefix: str = "vm-", dry_run: bool 
             target_ids = [vm.vm_id for vm in vms]
         else:
             target_ids = sorted(
-                {
-                    vm.vm_id
-                    for vm in vms
-                    if vm.vm_id.startswith(prefix) or vm.vm_id in stale_ids
-                }
+                {vm.vm_id for vm in vms if vm.vm_id.startswith(prefix) or vm.vm_id in stale_ids}
             )
 
         if not target_ids:

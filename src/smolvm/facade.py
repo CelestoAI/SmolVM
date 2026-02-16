@@ -957,8 +957,7 @@ class SmolVM:
                     attempts.append(attempt)
             else:
                 logger.debug(
-                    "VM %s: default SSH key fallback unavailable"
-                    " (~/.smolvm/keys/id_ed25519)",
+                    "VM %s: default SSH key fallback unavailable (~/.smolvm/keys/id_ed25519)",
                     self._vm_id,
                 )
 
@@ -968,10 +967,7 @@ class SmolVM:
             return
 
         if self._ssh_key_path is None and default_key is None:
-            errors.append(
-                "default SSH key fallback unavailable"
-                " (~/.smolvm/keys/id_ed25519)"
-            )
+            errors.append("default SSH key fallback unavailable (~/.smolvm/keys/id_ed25519)")
 
         self._ssh_ready = False
         detail = "; ".join(errors) if errors else "no endpoint attempts completed"

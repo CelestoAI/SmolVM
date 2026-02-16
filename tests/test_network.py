@@ -138,10 +138,10 @@ class TestLocalPortForwarding:
             if cmd == ["iptables", "-t", "nat", "-S", "OUTPUT"]:
                 return MagicMock(
                     stdout=(
-                        '-A OUTPUT -d 127.0.0.1/32 -p tcp --dport 18080 '
+                        "-A OUTPUT -d 127.0.0.1/32 -p tcp --dport 18080 "
                         '-m comment --comment "smolvm:vm001:local:18080:8080" '
                         "-j DNAT --to-destination 172.16.0.2:8080\n"
-                        '-A OUTPUT -d 127.0.0.1/32 -p tcp --dport 18081 '
+                        "-A OUTPUT -d 127.0.0.1/32 -p tcp --dport 18081 "
                         '-m comment --comment "smolvm:other:local:18081:8081" '
                         "-j DNAT --to-destination 172.16.0.3:8081\n"
                     )
@@ -149,10 +149,10 @@ class TestLocalPortForwarding:
             if cmd == ["iptables", "-S", "FORWARD"]:
                 return MagicMock(
                     stdout=(
-                        '-A FORWARD -p tcp -d 172.16.0.2 --dport 8080 '
-                        '-m conntrack --ctstate NEW,ESTABLISHED,RELATED '
+                        "-A FORWARD -p tcp -d 172.16.0.2 --dport 8080 "
+                        "-m conntrack --ctstate NEW,ESTABLISHED,RELATED "
                         '-m comment --comment "smolvm:vm001:local:18080:8080" -j ACCEPT\n'
-                        '-A FORWARD -p tcp -d 172.16.0.2 --dport 22 '
+                        "-A FORWARD -p tcp -d 172.16.0.2 --dport 22 "
                         '-m comment --comment "smolvm:vm001:ssh" -j ACCEPT\n'
                     )
                 )

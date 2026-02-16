@@ -134,15 +134,17 @@ class TestCliEnv:
         vm = self._setup_vm(mock_vm_cls)
         vm.list_env_vars.return_value = {}
 
-        main([
-            "env",
-            "list",
-            "vm001",
-            "--ssh-key",
-            "/custom/key",
-            "--ssh-user",
-            "custom-user",
-        ])
+        main(
+            [
+                "env",
+                "list",
+                "vm001",
+                "--ssh-key",
+                "/custom/key",
+                "--ssh-user",
+                "custom-user",
+            ]
+        )
 
         mock_vm_cls.from_id.assert_called_once_with(
             "vm001",

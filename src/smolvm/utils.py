@@ -112,7 +112,6 @@ def which(binary: str) -> Path | None:
     if not binary:
         raise ValueError("binary name cannot be empty")
 
-
     result = shutil.which(binary)
     return Path(result) if result else None
 

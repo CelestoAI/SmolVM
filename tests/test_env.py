@@ -186,6 +186,7 @@ class TestInjectEnvVars:
         assert ENV_FILE in call_cmd
         # Decode the payload to verify content
         import base64 as b64mod
+
         # Extract the base64 string from: printf '%s' '<b64>' | base64 -d
         b64_start = call_cmd.index("printf '%s' '") + len("printf '%s' '")
         b64_end = call_cmd.index("'", b64_start)
@@ -291,7 +292,9 @@ class TestRemoveEnvVars:
     def test_remove_failure_raises(self) -> None:
         # First call (read) succeeds, second call (write) fails
         ssh = MagicMock()
-        read_result = CommandResult(ok=True, exit_code=0, stdout="#!/bin/sh\nexport A='1'\n", stderr="")
+        read_result = CommandResult(
+            ok=True, exit_code=0, stdout="#!/bin/sh\nexport A='1'\n", stderr=""
+        )
         write_result = CommandResult(ok=False, exit_code=1, stdout="", stderr="disk full")
         ssh.run.side_effect = [read_result, write_result]
         with pytest.raises(SmolVMError, match="Failed to update"):

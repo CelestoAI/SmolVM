@@ -111,11 +111,7 @@ class SSHClient:
     def _wrap_login_shell_command(command: str) -> str:
         """Wrap a command so it runs inside a login shell."""
         quoted_command = shlex.quote(command)
-        return (
-            "SHELL_BIN=\"${SHELL:-/bin/sh}\"; "
-            "exec \"$SHELL_BIN\" -lc "
-            f"{quoted_command}"
-        )
+        return f'SHELL_BIN="${{SHELL:-/bin/sh}}"; exec "$SHELL_BIN" -lc {quoted_command}'
 
     def _prepare_remote_command(self, command: str, shell: ShellMode) -> str:
         """Prepare a command string based on desired shell mode."""
