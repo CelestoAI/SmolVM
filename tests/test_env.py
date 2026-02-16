@@ -30,7 +30,6 @@ from smolvm.env import (
 from smolvm.exceptions import SmolVMError
 from smolvm.types import CommandResult
 
-
 # ── validate_env_key ──────────────────────────────────────────────────
 
 
@@ -80,7 +79,7 @@ class TestBuildEnvScript:
     def test_multiple_vars_sorted(self) -> None:
         result = build_env_script({"Z_VAR": "z", "A_VAR": "a"})
         lines = result.strip().splitlines()
-        export_lines = [l for l in lines if l.startswith("export")]
+        export_lines = [line for line in lines if line.startswith("export")]
         assert len(export_lines) == 2
         assert export_lines[0].startswith("export A_VAR=a")
         assert export_lines[1].startswith("export Z_VAR=z")
@@ -88,7 +87,8 @@ class TestBuildEnvScript:
     def test_value_with_single_quote(self) -> None:
         result = build_env_script({"KEY": "it's a test"})
         # shlex.quote handles ' by closing, escaping, and reopening
-        # "it's a test" -> "'it'"'"'s a test'" is one way, but shlex usually does "'it'"'"'s a test'"
+        # "it's a test" -> "'it'"'"'s a test'" is one way,
+        # but shlex usually does "'it'"'"'s a test'"
         # actually shlex.quote("it's a test") -> "'it'"'"'s a test'"
         assert "KEY=" in result
         assert "it" in result and "test" in result

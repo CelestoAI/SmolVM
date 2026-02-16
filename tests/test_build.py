@@ -20,6 +20,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from smolvm.build import ImageBuilder
 from smolvm.exceptions import ImageError, SmolVMError
 

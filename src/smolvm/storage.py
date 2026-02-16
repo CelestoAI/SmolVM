@@ -88,7 +88,8 @@ class StateManager:
     def _init_schema(self) -> None:
         """Create database tables if they don't exist."""
         with self._get_connection() as conn:
-            conn.executescript("""
+            conn.executescript(
+                """
                 CREATE TABLE IF NOT EXISTS vms (
                     id TEXT PRIMARY KEY,
                     status TEXT NOT NULL,
@@ -121,7 +122,8 @@ class StateManager:
 
                 CREATE INDEX IF NOT EXISTS idx_ssh_forwards_vm_id ON ssh_forwards(vm_id);
                 CREATE INDEX IF NOT EXISTS idx_ssh_forwards_host_port ON ssh_forwards(host_port);
-            """)
+            """
+            )
 
     def create_vm(self, config: VMConfig) -> VMInfo:
         """Create a new VM record.

@@ -133,7 +133,7 @@ def inject_env_vars(
     return keys
 
 
-def _atomic_write(ssh: SSHClient, content: str) -> "CommandResult":
+def _atomic_write(ssh: SSHClient, content: str) -> "CommandResult":  # noqa: F821
     """Write *content* to the env file atomically inside the guest.
 
     Uses **base64 transport** to avoid any shell-interpretation of the
@@ -141,7 +141,6 @@ def _atomic_write(ssh: SSHClient, content: str) -> "CommandResult":
     A ``mktemp``-generated temp file prevents symlink attacks, and a
     ``trap`` ensures the temp file is cleaned up on any failure.
     """
-    from smolvm.types import CommandResult  # avoid circular at module level
 
     b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
     cmd = (
