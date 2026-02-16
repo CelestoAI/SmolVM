@@ -97,8 +97,10 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
 
     # Shutdown
     poller_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
+    try:
         await poller_task
+    except asyncio.CancelledError:
+        pass
 
     sdk: SmolVMManager | None = getattr(app.state, "sdk", None)
     if sdk is not None:
