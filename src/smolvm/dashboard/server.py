@@ -24,7 +24,6 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -100,6 +99,7 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     try:
         await poller_task
     except asyncio.CancelledError:
+        # Poller cancellation is expected during shutdown
         pass
 
     sdk: SmolVMManager | None = getattr(app.state, "sdk", None)
