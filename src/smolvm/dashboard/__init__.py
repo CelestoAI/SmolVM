@@ -14,11 +14,19 @@
 
 """SmolVM Nebula Dashboard - Web-based control plane for AI microVMs."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
+
 __all__ = ["create_app"]
 
 
-def create_app() -> "FastAPI":  # type: ignore[name-defined]  # noqa: F821
+def create_app() -> FastAPI:
     """Create and return the configured FastAPI application."""
     from smolvm.dashboard.server import app
 
     return app
+

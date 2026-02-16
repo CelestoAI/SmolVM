@@ -38,51 +38,59 @@ from pydantic import BaseModel
 from smolvm.dashboard.commands import CommandAction, parse_command
 from smolvm.dashboard.connection_manager import ConnectionManager
 from smolvm.dashboard.poller import poll_vm_state
+from smolvm.exceptions import VMNotFoundError
 from smolvm.storage import StateManager
 from smolvm.types import VMInfo, VMState
 from smolvm.vm import SmolVMManager, resolve_data_dir
 
 logger = logging.getLogger(__name__)
 
-# --- Shared state ---
-_conn_manager = ConnectionManager()
-_sdk: SmolVMManager | None = None
-_state_manager: StateManager | None = None
 
-
-def _get_sdk() -> SmolVMManager:
-    """Get the SDK instance, raising if not initialized."""
-    if _sdk is None:
+# --- Accessor helpers for app.state ---
+def _get_sdk(app: FastAPI) -> SmolVMManager:
+    """Get the SDK instance from app.state, raising if not initialized."""
+    sdk: SmolVMManager | None = getattr(app.state, "sdk", None)
+    if sdk is None:
         raise RuntimeError("SmolVMManager not initialized.")
-    return _sdk
+    return sdk
 
 
-def _get_state_manager() -> StateManager:
-    """Get the StateManager instance, raising if not initialized."""
-    if _state_manager is None:
+def _get_state_manager(app: FastAPI) -> StateManager:
+    """Get the StateManager instance from app.state, raising if not initialized."""
+    sm: StateManager | None = getattr(app.state, "state_manager", None)
+    if sm is None:
         raise RuntimeError("StateManager not initialized.")
-    return _state_manager
+    return sm
+
+
+def _get_conn_manager(app: FastAPI) -> ConnectionManager:
+    """Get the ConnectionManager from app.state."""
+    cm: ConnectionManager | None = getattr(app.state, "conn_manager", None)
+    if cm is None:
+        raise RuntimeError("ConnectionManager not initialized.")
+    return cm
 
 
 # --- Lifespan ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     """Application lifespan: initialize SDK and start background poller."""
-    global _sdk, _state_manager  # noqa: PLW0603
-
     data_dir = resolve_data_dir()
     db_path = data_dir / "smolvm.db"
 
-    _state_manager = StateManager(db_path)
-    _sdk = SmolVMManager(data_dir=data_dir)
+    app.state.state_manager = StateManager(db_path)
+    app.state.sdk = SmolVMManager(data_dir=data_dir)
+    app.state.conn_manager = ConnectionManager()
 
     # Reconcile stale VMs on startup
-    stale = await asyncio.to_thread(_state_manager.reconcile)
+    stale = await asyncio.to_thread(app.state.state_manager.reconcile)
     if stale:
         logger.warning("Reconciled %d stale VMs on startup.", len(stale))
 
     # Start background poller
-    poller_task = asyncio.create_task(poll_vm_state(_state_manager, _conn_manager))
+    poller_task = asyncio.create_task(
+        poll_vm_state(app.state.state_manager, app.state.conn_manager)
+    )
 
     logger.info("Nebula Dashboard started. Data dir: %s", data_dir)
     yield
@@ -92,8 +100,9 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     with contextlib.suppress(asyncio.CancelledError):
         await poller_task
 
-    if _sdk is not None:
-        _sdk.close()
+    sdk: SmolVMManager | None = getattr(app.state, "sdk", None)
+    if sdk is not None:
+        sdk.close()
 
     logger.info("Nebula Dashboard stopped.")
 
@@ -124,7 +133,10 @@ class CommandRequest(BaseModel):
 
 
 class CommandResponse(BaseModel):
-    """Response from a command execution."""
+    """Response from a command execution.
+
+    Not yet used as the return type but documents the API contract.
+    """
 
     action: str
     target: str
@@ -181,7 +193,7 @@ async def list_vms(status: str | None = None) -> list[dict[str, Any]]:
     Args:
         status: Filter by VM status (created/running/stopped/error).
     """
-    sm = _get_state_manager()
+    sm = _get_state_manager(app)
     filter_state = VMState(status) if status else None
 
     try:
@@ -198,7 +210,7 @@ async def list_particles() -> list[VMSummary]:
 
     Returns only vm_id and status — no heavy JSON deserialization.
     """
-    sm = _get_state_manager()
+    sm = _get_state_manager(app)
     vms = await asyncio.to_thread(sm.list_vms)
     return [VMSummary(vm_id=vm.vm_id, status=vm.status.value) for vm in vms]
 
@@ -206,10 +218,10 @@ async def list_particles() -> list[VMSummary]:
 @app.get("/api/vms/{vm_id}")
 async def get_vm(vm_id: str) -> dict[str, Any]:
     """Get detailed information about a specific VM."""
-    sm = _get_state_manager()
+    sm = _get_state_manager(app)
     try:
         vm = await asyncio.to_thread(sm.get_vm, vm_id)
-    except Exception:
+    except VMNotFoundError:
         raise HTTPException(status_code=404, detail=f"VM not found: {vm_id}") from None
 
     return _vm_info_to_dict(vm)
@@ -218,11 +230,11 @@ async def get_vm(vm_id: str) -> dict[str, Any]:
 @app.delete("/api/vms/{vm_id}")
 async def delete_vm(vm_id: str) -> dict[str, str]:
     """Delete a VM and release all resources."""
-    sdk = _get_sdk()
+    sdk = _get_sdk(app)
     try:
         await asyncio.to_thread(sdk.delete, vm_id)
-    except Exception as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
+    except VMNotFoundError:
+        raise HTTPException(status_code=404, detail=f"VM not found: {vm_id}") from None
 
     return {"status": "deleted", "vm_id": vm_id}
 
@@ -230,11 +242,11 @@ async def delete_vm(vm_id: str) -> dict[str, str]:
 @app.post("/api/vms/{vm_id}/stop")
 async def stop_vm(vm_id: str) -> dict[str, Any]:
     """Stop a running VM."""
-    sdk = _get_sdk()
+    sdk = _get_sdk(app)
     try:
         info = await asyncio.to_thread(sdk.stop, vm_id)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+    except VMNotFoundError:
+        raise HTTPException(status_code=404, detail=f"VM not found: {vm_id}") from None
 
     return _vm_info_to_dict(info)
 
@@ -242,8 +254,8 @@ async def stop_vm(vm_id: str) -> dict[str, Any]:
 @app.post("/api/command")
 async def execute_command(request: CommandRequest) -> JSONResponse:
     """Execute a natural-language command from the command bar."""
-    sdk = _get_sdk()
-    sm = _get_state_manager()
+    sdk = _get_sdk(app)
+    sm = _get_state_manager(app)
     parsed = parse_command(request.text)
 
     affected: list[str] = []
@@ -270,8 +282,10 @@ async def execute_command(request: CommandRequest) -> JSONResponse:
             try:
                 await asyncio.to_thread(sdk.delete, vm_id)
                 affected.append(vm_id)
+            except VMNotFoundError:
+                logger.warning("VM %s already deleted, skipping.", vm_id)
             except Exception:
-                logger.warning("Failed to delete VM %s", vm_id)
+                logger.warning("Failed to delete VM %s", vm_id, exc_info=True)
         result_msg = f"Deleted {len(affected)} VMs."
 
     elif parsed.action == CommandAction.STOP:
@@ -281,8 +295,10 @@ async def execute_command(request: CommandRequest) -> JSONResponse:
             try:
                 await asyncio.to_thread(sdk.stop, vm_id)
                 affected.append(vm_id)
+            except VMNotFoundError:
+                logger.warning("VM %s not found, skipping.", vm_id)
             except Exception:
-                logger.warning("Failed to stop VM %s", vm_id)
+                logger.warning("Failed to stop VM %s", vm_id, exc_info=True)
         result_msg = f"Stopped {len(affected)} VMs."
 
     elif parsed.action == CommandAction.INFO:
@@ -290,7 +306,7 @@ async def execute_command(request: CommandRequest) -> JSONResponse:
             vm = await asyncio.to_thread(sm.get_vm, parsed.target)
             affected = [vm.vm_id]
             result_msg = f"VM {vm.vm_id}: {vm.status.value}"
-        except Exception:
+        except VMNotFoundError:
             result_msg = f"VM not found: {parsed.target}"
 
     else:
@@ -315,21 +331,22 @@ def _resolve_targets(vms: list[VMInfo], target: str) -> list[str]:
     Handles:
     - "all" → all VMs
     - "error"/"running"/"stopped"/"created" → filter by status
-    - specific VM ID → single VM
+    - specific VM ID → single VM (case-sensitive)
     """
-    target_lower = target.lower().strip()
+    target = target.strip()
+    target_lower = target.lower()
 
     if target_lower == "all":
         return [vm.vm_id for vm in vms]
 
-    # Try as a status filter
+    # Try as a status filter (case-insensitive)
     try:
         status = VMState(target_lower)
         return [vm.vm_id for vm in vms if vm.status == status]
     except ValueError:
         pass
 
-    # Try as a specific VM ID
+    # Try as a specific VM ID (case-sensitive, exact match)
     for vm in vms:
         if vm.vm_id == target:
             return [vm.vm_id]
@@ -351,12 +368,13 @@ async def websocket_stream(websocket: WebSocket) -> None:
     - vm_updated: VM status changed
     - vm_deleted: VM removed
     """
-    await _conn_manager.connect(websocket)
+    conn_mgr = _get_conn_manager(app)
+    await conn_mgr.connect(websocket)
     try:
         # Send initial state snapshot
-        sm = _get_state_manager()
+        sm = _get_state_manager(app)
         vms = await asyncio.to_thread(sm.list_vms)
-        await _conn_manager.send_personal(
+        await conn_mgr.send_personal(
             websocket,
             {
                 "type": "snapshot",
@@ -371,9 +389,9 @@ async def websocket_stream(websocket: WebSocket) -> None:
             logger.debug("Received WebSocket message: %s", data)
 
     except WebSocketDisconnect:
-        _conn_manager.disconnect(websocket)
+        conn_mgr.disconnect(websocket)
     except Exception:
-        _conn_manager.disconnect(websocket)
+        conn_mgr.disconnect(websocket)
 
 
 # =====================================================================
