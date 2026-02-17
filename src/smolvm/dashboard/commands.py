@@ -12,16 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Natural-language command parser for the Nebula command bar.
+"""Command-style parser for the Nebula command bar.
 
-Translates simple text commands into SmolVMManager actions.
-Phase 1 uses regex matching; future phases may incorporate LLMs.
+Parses deterministic commands into SmolVMManager actions.
+Natural-language parsing is intentionally deferred.
 """
 
 from __future__ import annotations
 
 import logging
-import re
+import shlex
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -56,37 +56,32 @@ class ParsedCommand:
     params: dict[str, Any]
 
 
-# --- Regex patterns for command matching ---
-_PATTERNS: list[tuple[re.Pattern[str], CommandAction, str]] = [
-    # "kill all error", "delete stalled", "kill vm-abc123"
-    (
-        re.compile(r"^(?:kill|delete|remove)\s+(?:all\s+)?(.+)$", re.IGNORECASE),
-        CommandAction.DELETE,
-        "target",
-    ),
-    # "stop all", "stop vm-abc123"
-    (
-        re.compile(r"^stop\s+(.+)$", re.IGNORECASE),
-        CommandAction.STOP,
-        "target",
-    ),
-    # "list", "list running", "show vms"
-    (
-        re.compile(r"^(?:list|show|ls)\s*(.*)$", re.IGNORECASE),
-        CommandAction.LIST,
-        "filter",
-    ),
-    # "info vm-abc123", "inspect vm-abc123"
-    (
-        re.compile(r"^(?:info|inspect|details?)\s+(.+)$", re.IGNORECASE),
-        CommandAction.INFO,
-        "target",
-    ),
-]
+_VERB_ALIASES: dict[str, CommandAction] = {
+    "list": CommandAction.LIST,
+    "ls": CommandAction.LIST,
+    "show": CommandAction.LIST,
+    "delete": CommandAction.DELETE,
+    "kill": CommandAction.DELETE,
+    "remove": CommandAction.DELETE,
+    "stop": CommandAction.STOP,
+    "info": CommandAction.INFO,
+    "inspect": CommandAction.INFO,
+    "detail": CommandAction.INFO,
+    "details": CommandAction.INFO,
+}
+
+
+def _unknown(raw_input: str, target: str = "") -> ParsedCommand:
+    return ParsedCommand(
+        action=CommandAction.UNKNOWN,
+        target=target,
+        raw_input=raw_input,
+        params={},
+    )
 
 
 def parse_command(raw_input: str) -> ParsedCommand:
-    """Parse a natural-language command from the command bar.
+    """Parse a command-style input from the command bar.
 
     Args:
         raw_input: Raw text from the user.
@@ -95,44 +90,62 @@ def parse_command(raw_input: str) -> ParsedCommand:
         ParsedCommand with action, target, and metadata.
 
     Examples:
-        >>> parse_command("kill all error")
-        ParsedCommand(action=DELETE, target="error", ...)
-
         >>> parse_command("list running")
         ParsedCommand(action=LIST, target="running", ...)
+
+        >>> parse_command("delete vm-abc123")
+        ParsedCommand(action=DELETE, target="vm-abc123", ...)
 
         >>> parse_command("info vm-abc123")
         ParsedCommand(action=INFO, target="vm-abc123", ...)
     """
     text = raw_input.strip()
     if not text:
+        return _unknown(raw_input)
+
+    try:
+        tokens = shlex.split(text)
+    except ValueError:
+        logger.warning("Invalid command quoting: %s", raw_input)
+        return _unknown(raw_input, target=text)
+
+    if not tokens:
+        return _unknown(raw_input)
+
+    action = _VERB_ALIASES.get(tokens[0].lower())
+    if action is None:
+        logger.warning("Unknown command verb: %s", tokens[0])
+        return _unknown(raw_input, target=text)
+
+    # list [status]
+    if action == CommandAction.LIST:
+        if len(tokens) == 1:
+            target = ""
+            params: dict[str, Any] = {}
+        elif len(tokens) == 2:
+            token = tokens[1].lower()
+            target = "" if token in {"all", "vm", "vms"} else token
+            params = {"filter": target}
+        else:
+            return _unknown(raw_input, target=text)
+
+        logger.info("Parsed command: action=%s target='%s'", action.value, target)
         return ParsedCommand(
-            action=CommandAction.UNKNOWN,
-            target="",
+            action=action,
+            target=target,
             raw_input=raw_input,
-            params={},
+            params=params,
         )
 
-    for pattern, action, param_name in _PATTERNS:
-        match = pattern.match(text)
-        if match:
-            value = match.group(1).strip() if match.group(1) else ""
-            logger.info(
-                "Parsed command: action=%s target='%s'",
-                action.value,
-                value,
-            )
-            return ParsedCommand(
-                action=action,
-                target=value,
-                raw_input=raw_input,
-                params={param_name: value},
-            )
+    # info/delete/stop require exactly one target token.
+    if len(tokens) != 2:
+        return _unknown(raw_input, target=text)
 
-    logger.warning("Unrecognized command: %s", raw_input)
+    target = tokens[1]
+    logger.info("Parsed command: action=%s target='%s'", action.value, target)
     return ParsedCommand(
-        action=CommandAction.UNKNOWN,
-        target=text,
+        action=action,
+        target=target,
         raw_input=raw_input,
-        params={},
+        params={"target": target},
     )

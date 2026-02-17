@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -96,11 +96,8 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
 
     # Shutdown
     poller_task.cancel()
-    try:
+    with suppress(asyncio.CancelledError):
         await poller_task
-    except asyncio.CancelledError:
-        # Poller cancellation is expected during shutdown
-        pass
 
     sdk: SmolVMManager | None = getattr(app.state, "sdk", None)
     if sdk is not None:
@@ -196,12 +193,14 @@ async def list_vms(status: str | None = None) -> list[dict[str, Any]]:
         status: Filter by VM status (created/running/stopped/error).
     """
     sm = _get_state_manager(app)
-    filter_state = VMState(status) if status else None
+    filter_state: VMState | None = None
+    if status:
+        try:
+            filter_state = VMState(status)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid status: {status}") from None
 
-    try:
-        vms = await asyncio.to_thread(sm.list_vms, filter_state)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid status: {status}") from None
+    vms = await asyncio.to_thread(sm.list_vms, filter_state)
 
     return [_vm_info_to_dict(vm) for vm in vms]
 
@@ -253,9 +252,9 @@ async def stop_vm(vm_id: str) -> dict[str, Any]:
     return _vm_info_to_dict(info)
 
 
-@app.post("/api/command")
-async def execute_command(request: CommandRequest) -> JSONResponse:
-    """Execute a natural-language command from the command bar."""
+@app.post("/api/command", response_model=CommandResponse)
+async def execute_command(request: CommandRequest) -> CommandResponse | JSONResponse:
+    """Execute a command-style action from the command bar."""
     sdk = _get_sdk(app)
     sm = _get_state_manager(app)
     parsed = parse_command(request.text)
@@ -317,13 +316,11 @@ async def execute_command(request: CommandRequest) -> JSONResponse:
             content={"error": f"Unknown command: {request.text}"},
         )
 
-    return JSONResponse(
-        content={
-            "action": parsed.action.value,
-            "target": parsed.target,
-            "result": result_msg,
-            "affected_vms": affected,
-        }
+    return CommandResponse(
+        action=parsed.action.value,
+        target=parsed.target,
+        result=result_msg,
+        affected_vms=affected,
     )
 
 

@@ -75,7 +75,8 @@ class ConnectionManager:
             return
 
         dead: set[WebSocket] = set()
-        for connection in self._active:
+        # Iterate over a snapshot so connect/disconnect can safely mutate _active.
+        for connection in tuple(self._active):
             try:
                 await connection.send_json(message)
             except Exception:
