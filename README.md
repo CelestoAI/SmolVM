@@ -148,6 +148,28 @@ smolvm env list <vm_id> --show-values
 smolvm env unset <vm_id> DEBUG
 ```
 
+## ⚡ Performance
+
+SmolVM is optimized for low-latency agent workflows. Typical lifecycle timings on a standard Linux host:
+
+| Phase | Time |
+|---|---|
+| Create + Start | ~580ms |
+| SSH ready | ~2.1s |
+| Command execution | **~43ms** |
+| Stop + Delete | ~750ms |
+| **Full lifecycle (boot → run → teardown)** | **~3.5s** |
+
+Command execution uses persistent SSH connections — subsequent commands in the same session run at the same ~43ms regardless of count.
+
+Run the benchmark yourself:
+
+```bash
+python scripts/bench_subprocess.py --vms 3 -v
+```
+
+> Measured on AMD Ryzen 7 7800X3D (8C/16T), Ubuntu Linux, KVM/Firecracker backend.
+
 ## 📄 License
 
 Apache 2.0 License - see [LICENSE](LICENSE) for details.
