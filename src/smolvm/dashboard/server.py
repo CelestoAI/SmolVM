@@ -32,6 +32,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from smolvm.dashboard.commands import CommandAction, parse_command
@@ -397,9 +398,19 @@ async def websocket_stream(websocket: WebSocket) -> None:
 # Static file serving (React build output)
 # =====================================================================
 
-_ui_dist = Path(__file__).parent / "ui" / "dist"
-if _ui_dist.is_dir():
-    from fastapi.staticfiles import StaticFiles
+_server_dir = Path(__file__).resolve().parent
+_repo_root = _server_dir.parents[2]
+_repo_ui_dist = _repo_root / "ui" / "dist"
+_pkg_ui_dist = _server_dir / "ui" / "dist"
 
-    app.mount("/", StaticFiles(directory=_ui_dist, html=True), name="ui")
+_ui_dist = _repo_ui_dist if _repo_ui_dist.is_dir() else _pkg_ui_dist
+app.mount("/", StaticFiles(directory=_ui_dist, html=True, check_dir=False), name="ui")
+
+if _ui_dist.is_dir():
     logger.info("Serving static UI from: %s", _ui_dist)
+else:
+    logger.warning(
+        "Dashboard UI dist directory not found. Checked: %s and %s",
+        _repo_ui_dist,
+        _pkg_ui_dist,
+    )
