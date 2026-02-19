@@ -1,0 +1,39 @@
+name: Publish Dashboard UI Dist
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  publish-dashboard-dist:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install UI dependencies
+        run: npm ci --prefix ui
+
+      - name: Build dashboard UI
+        run: npm run build --prefix ui
+
+      - name: Package dashboard dist
+        run: |
+          tar -C ui -czf smolvm-dashboard-ui-${{ github.ref_name }}.tar.gz dist
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: smolvm-dashboard-ui-${{ github.ref_name }}.tar.gz
