@@ -18,6 +18,7 @@ import logging
 import os
 import shutil
 import subprocess
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -78,6 +79,7 @@ def run_command(
     logger.debug("Running command: %s", " ".join(full_cmd))
 
     try:
+        start = time.monotonic()
         result = subprocess.run(
             full_cmd,
             check=check,
@@ -85,6 +87,12 @@ def run_command(
             text=True,
             timeout=timeout,
         )
+        elapsed_ms = (time.monotonic() - start) * 1000
+        # Log at INFO so timing data is visible in normal operation.
+        # The base command (e.g. "ip", "iptables") is extracted for easy
+        # histogram grouping in profiling/analysis.
+        base_cmd = cmd[0] if cmd else "unknown"
+        logger.info("CMD %-10s %.1fms", base_cmd, elapsed_ms)
         return result
     except subprocess.CalledProcessError as e:
         stderr = (e.stderr or "").strip()
