@@ -171,13 +171,13 @@ SmolVM is optimized for low-latency agent workflows. Latest lifecycle timings (p
 | Create + Start | ~572ms |
 | SSH ready | ~2.1s |
 | Command execution | **~43ms** |
-| Stop + Delete | ~744ms |
+| Stop + Delete | ~751ms |
 | **Full lifecycle (boot → run → teardown)** | **~3.5s** |
 
 Run the benchmark yourself:
 
 ```bash
-python scripts/benchmarks/bench_subprocess.py --vms 3 -v
+python scripts/benchmarks/bench_subprocess.py --vms 10 -v
 ```
 
 > Measured on AMD Ryzen 7 7800X3D (8C/16T), Ubuntu Linux, KVM/Firecracker backend.
