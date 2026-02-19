@@ -77,3 +77,24 @@ Out-of-scope (unless caused by SmolVM code):
 - Vulnerabilities in third-party dependencies/upstream projects
 - Host misconfiguration outside documented SmolVM setup
 - Security findings without a realistic exploit path or impact
+
+## Current SSH Trust Model (Important)
+
+SmolVM is optimized for non-interactive local sandbox workflows. To reduce user
+friction in ephemeral VM lifecycles, the current SSH path accepts unknown host
+keys on first connection (Paramiko `AutoAddPolicy`).
+
+### Impact
+
+- This can allow man-in-the-middle attacks in untrusted network environments
+  (CWE-295).
+- SmolVM should therefore be treated as a **trusted-host / trusted-network**
+  local runtime by default.
+
+### Recommended Operational Guidance
+
+- Prefer local-only usage on developer machines or trusted CI runners.
+- Avoid exposing guest SSH endpoints to public or untrusted networks.
+- If your environment requires strict host identity validation, add external
+  network controls (private networking, firewall restrictions, bastion/proxy,
+  or SSH key pinning policy at your deployment layer).

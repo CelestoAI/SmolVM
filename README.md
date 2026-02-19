@@ -162,6 +162,16 @@ smolvm doctor --backend qemu
 smolvm doctor --json --strict
 ```
 
+## 🔐 SSH trust model (important)
+
+SmolVM currently prioritizes zero-touch VM access for local agent workflows.
+By default, SSH host keys are not strictly verified during first connection
+(`paramiko.AutoAddPolicy`).
+
+- Use SmolVM on trusted/local networks and hosts.
+- Do not expose guest SSH endpoints publicly without additional controls.
+- See [SECURITY.md](SECURITY.md) for policy and scope details.
+
 ## ⚡ Performance
 
 SmolVM is optimized for low-latency agent workflows. Latest lifecycle timings (p50) on a standard Linux host:
