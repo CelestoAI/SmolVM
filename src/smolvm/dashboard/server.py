@@ -50,7 +50,7 @@ from smolvm.vm import SmolVMManager, resolve_data_dir
 
 logger = logging.getLogger(__name__)
 
-LATEST_RELEASE_URL = "https://api.github.com/repos/CelestoAI/SmolVM/releases/latest"
+RELEASES_URL = "https://api.github.com/repos/CelestoAI/SmolVM/releases"
 DASHBOARD_ASSET_PREFIX = "smolvm-dashboard-ui-"
 DASHBOARD_ASSET_SUFFIX = ".tar.gz"
 UI_DIST_ENV = "SMOLVM_DASHBOARD_UI_DIST"
@@ -84,45 +84,60 @@ def _github_headers() -> dict[str, str]:
 
 
 def _latest_dashboard_release_asset() -> tuple[str, str]:
-    """Return latest release tag and dashboard dist asset download URL."""
-    response = requests.get(LATEST_RELEASE_URL, headers=_github_headers(), timeout=15)
+    """Return newest release tag and dashboard dist asset download URL.
+
+    Scans recent releases (including prereleases) and picks the first release
+    that has a dashboard UI asset.
+    """
+    response = requests.get(
+        RELEASES_URL,
+        headers=_github_headers(),
+        params={"per_page": 30},
+        timeout=15,
+    )
     response.raise_for_status()
     payload = response.json()
 
-    tag_name = payload.get("tag_name")
-    if not isinstance(tag_name, str) or not tag_name:
-        raise RuntimeError("Latest release payload missing tag_name")
+    if not isinstance(payload, list):
+        raise RuntimeError("Releases payload is not a list")
 
-    assets = payload.get("assets")
-    if not isinstance(assets, list):
-        raise RuntimeError("Latest release payload missing assets list")
-
-    expected_name = f"{DASHBOARD_ASSET_PREFIX}{tag_name}{DASHBOARD_ASSET_SUFFIX}"
-    fallback_url: str | None = None
-
-    for asset in assets:
-        if not isinstance(asset, dict):
+    for release in payload:
+        if not isinstance(release, dict):
             continue
-        name = asset.get("name")
-        url = asset.get("browser_download_url")
-        if not isinstance(name, str) or not isinstance(url, str):
+        if release.get("draft") is True:
             continue
 
-        if name == expected_name:
-            return tag_name, url
+        tag_name = release.get("tag_name")
+        assets = release.get("assets")
+        if not isinstance(tag_name, str) or not tag_name or not isinstance(assets, list):
+            continue
 
-        if (
-            fallback_url is None
-            and name.startswith(DASHBOARD_ASSET_PREFIX)
-            and name.endswith(DASHBOARD_ASSET_SUFFIX)
-        ):
-            fallback_url = url
+        expected_name = f"{DASHBOARD_ASSET_PREFIX}{tag_name}{DASHBOARD_ASSET_SUFFIX}"
+        fallback_url: str | None = None
 
-    if fallback_url is not None:
-        return tag_name, fallback_url
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            name = asset.get("name")
+            url = asset.get("browser_download_url")
+            if not isinstance(name, str) or not isinstance(url, str):
+                continue
+
+            if name == expected_name:
+                return tag_name, url
+
+            if (
+                fallback_url is None
+                and name.startswith(DASHBOARD_ASSET_PREFIX)
+                and name.endswith(DASHBOARD_ASSET_SUFFIX)
+            ):
+                fallback_url = url
+
+        if fallback_url is not None:
+            return tag_name, fallback_url
 
     raise RuntimeError(
-        "Latest release does not include dashboard UI asset "
+        "No release includes a dashboard UI asset "
         f"({DASHBOARD_ASSET_PREFIX}*{DASHBOARD_ASSET_SUFFIX})"
     )
 
