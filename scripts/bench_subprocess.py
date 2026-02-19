@@ -247,6 +247,7 @@ def _live_benchmark(num_vms: int) -> dict:
     for i in range(num_vms):
         logger.info("── VM %d/%d ──", i + 1, num_vms)
         timings: dict[str, float] = {}
+        vm_id = f"bench-{i}"
 
         vm = None
         try:
