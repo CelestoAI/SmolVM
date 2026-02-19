@@ -72,23 +72,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Treat warnings as failures.",
     )
 
-    # ── start subcommand group ────────────────────────────────────────
-    start = subparsers.add_parser(
-        "start",
-        help="Start long-running SmolVM services",
-    )
-    start_sub = start.add_subparsers(dest="start_target")
-
-    start_dashboard = start_sub.add_parser(
+    # ── dashboard subcommand ──────────────────────────────────────────
+    dashboard = subparsers.add_parser(
         "dashboard",
         help="Start the SmolVM dashboard API server",
     )
-    start_dashboard.add_argument(
+    dashboard.add_argument(
         "--host",
         default="127.0.0.1",
         help="Bind host (default: 127.0.0.1).",
     )
-    start_dashboard.add_argument(
+    dashboard.add_argument(
         "--port",
         type=int,
         default=8080,
@@ -260,16 +254,8 @@ def _run_env(args: argparse.Namespace) -> int:
             vm.close()
 
 
-def _run_start(args: argparse.Namespace) -> int:
-    """Handle ``smolvm start ...`` commands."""
-    if args.start_target is None:
-        print("Usage: smolvm start dashboard [--host HOST] [--port PORT]")
-        return 2
-
-    if args.start_target != "dashboard":
-        print(f"Error: unsupported start target: {args.start_target}")
-        return 2
-
+def _run_dashboard(args: argparse.Namespace) -> int:
+    """Handle ``smolvm dashboard``."""
     try:
         uvicorn = importlib.import_module("uvicorn")
     except ImportError:
@@ -308,8 +294,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             strict=args.strict,
         )
 
-    if args.command == "start":
-        return _run_start(args)
+    if args.command == "dashboard":
+        return _run_dashboard(args)
 
     if args.command == "env":
         return _run_env(args)
