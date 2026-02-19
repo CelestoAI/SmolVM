@@ -245,20 +245,19 @@ def _live_benchmark(num_vms: int) -> dict:
     vm_results: list[dict] = []
 
     for i in range(num_vms):
-        vm_id = f"bench-{i}"
-        logger.info("── VM %d/%d (%s) ──", i + 1, num_vms, vm_id)
+        logger.info("── VM %d/%d ──", i + 1, num_vms)
         timings: dict[str, float] = {}
 
         vm = None
         try:
-            # Phase: Create (includes network setup)
+            # Phase: Create + Start (auto-config builds image, creates VM, etc.)
+            # SmolVM() with no args = auto-configure a fresh SSH-ready VM.
             vm, timings["create_ms"] = _timed(
-                "create",
+                "create (auto-config)",
                 SmolVM,
-                vm_id=vm_id,
             )
 
-            # Phase: Start (boot + Firecracker socket ready)
+            # Phase: Start (boot + Firecracker/QEMU process ready)
             _, timings["start_ms"] = _timed(
                 "start",
                 vm.start,
@@ -271,14 +270,17 @@ def _live_benchmark(num_vms: int) -> dict:
                 timeout=30.0,
             )
 
-            # Phase: Command execution (simple echo)
+            vm_id = vm._vm_id
+            logger.info("  VM ID: %s", vm_id)
+
+            # Phase: Command execution (simple echo — first call, cold SSH)
             result, timings["cmd_exec_ms"] = _timed(
-                "run(echo)",
+                "run(echo hello)",
                 vm.run,
                 "echo hello",
             )
 
-            # Phase: A second command (measures steady-state, SSH reuse)
+            # Phase: Second command (warm SSH, connection reuse)
             _, timings["cmd_exec_2_ms"] = _timed(
                 "run(uname -a)",
                 vm.run,
