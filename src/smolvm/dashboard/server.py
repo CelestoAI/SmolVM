@@ -169,8 +169,9 @@ def _ensure_latest_dashboard_ui_dist(target_dist: Path) -> bool:
         try:
             if tag_file.read_text(encoding="utf-8").strip() == latest_tag:
                 return True
-        except OSError:
-            pass
+        except OSError as exc:
+            # If we cannot read the tag file, treat it as a cache miss and re-download.
+            logger.debug("Failed to read dashboard UI tag file %s: %s", tag_file, exc)
 
     target_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="smolvm-ui-", dir=str(target_root)) as tmp_dir:
