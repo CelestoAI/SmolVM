@@ -468,9 +468,10 @@ shutdown() {
     # Kill all processes except PID 1
     kill -TERM -1 2>/dev/null
     sleep 0.2
-    # Sync and force immediate reboot (no init coordination)
+    # Sync and power off — Firecracker exits when guest powers off.
+    # (reboot -f would hang because Firecracker has no reboot path)
     sync
-    reboot -f
+    poweroff -f
 }
 trap shutdown INT TERM PWR
 

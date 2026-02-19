@@ -725,9 +725,17 @@ class SmolVMManager:
             logger.info("Sending SIGTERM to Firecracker process %d", vm_info.pid)
             try:
                 os.kill(vm_info.pid, signal.SIGTERM)
-                self._wait_for_process(vm_info.pid, min(timeout - graceful_timeout, 1.0))
-            except (ProcessLookupError, PermissionError):
+            except PermissionError:
+                # Firecracker runs as root — use sudo
+                subprocess.run(
+                    ["sudo", "-n", "kill", "-15", str(vm_info.pid)],
+                    check=False,
+                    capture_output=True,
+                )
+            except ProcessLookupError:
                 pass
+            else:
+                self._wait_for_process(vm_info.pid, min(timeout - graceful_timeout, 1.0))
 
         # Force kill if still running
         if vm_info.pid and self._is_process_running(vm_info.pid):
