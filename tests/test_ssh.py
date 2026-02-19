@@ -14,6 +14,7 @@
 
 """Tests for SmolVM SSH module."""
 
+import socket
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -65,17 +66,24 @@ class TestSSHClientInit:
             SSHClient("172.16.0.2", port=70000)
 
 
+def _mock_exec_result(exit_code: int, stdout: str, stderr: str) -> tuple[None, MagicMock, MagicMock]:
+    stdout_ch = MagicMock()
+    stderr_ch = MagicMock()
+    stdout_ch.read.return_value = stdout.encode("utf-8")
+    stderr_ch.read.return_value = stderr.encode("utf-8")
+    stdout_ch.channel.recv_exit_status.return_value = exit_code
+    return (None, stdout_ch, stderr_ch)
+
+
 class TestSSHClientRun:
     """Tests for SSH command execution."""
 
-    @patch("smolvm.ssh.subprocess.run")
-    def test_run_success(self, mock_run: MagicMock) -> None:
+    @patch.object(SSHClient, "_ensure_connected")
+    def test_run_success(self, mock_connected: MagicMock) -> None:
         """Test successful command execution."""
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout="hello world\n",
-            stderr="",
-        )
+        mock_client = MagicMock()
+        mock_client.exec_command.return_value = _mock_exec_result(0, "hello world\n", "")
+        mock_connected.return_value = mock_client
 
         client = SSHClient("172.16.0.2")
         result = client.run("echo hello world")
@@ -86,14 +94,12 @@ class TestSSHClientRun:
         assert result.stderr == ""
         assert result.ok is True
 
-    @patch("smolvm.ssh.subprocess.run")
-    def test_run_nonzero_exit(self, mock_run: MagicMock) -> None:
+    @patch.object(SSHClient, "_ensure_connected")
+    def test_run_nonzero_exit(self, mock_connected: MagicMock) -> None:
         """Test command with non-zero exit code."""
-        mock_run.return_value = MagicMock(
-            returncode=1,
-            stdout="",
-            stderr="command not found\n",
-        )
+        mock_client = MagicMock()
+        mock_client.exec_command.return_value = _mock_exec_result(1, "", "command not found\n")
+        mock_connected.return_value = mock_client
 
         client = SSHClient("172.16.0.2")
         result = client.run("bad-command")
@@ -120,81 +126,76 @@ class TestSSHClientRun:
         with pytest.raises(ValueError, match="shell must be"):
             client.run("echo ok", shell="interactive")  # type: ignore[arg-type]
 
-    @patch("smolvm.ssh.subprocess.run")
-    def test_run_timeout(self, mock_run: MagicMock) -> None:
+    @patch.object(SSHClient, "_ensure_connected")
+    def test_run_timeout(self, mock_connected: MagicMock) -> None:
         """Test SSH timeout raises OperationTimeoutError."""
-        import subprocess
-
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd="ssh", timeout=5)
+        mock_client = MagicMock()
+        mock_client.exec_command.side_effect = socket.timeout("timed out")
+        mock_connected.return_value = mock_client
 
         client = SSHClient("172.16.0.2")
         with pytest.raises(OperationTimeoutError):
             client.run("sleep 100", timeout=5)
 
-    @patch("smolvm.ssh.subprocess.run")
-    def test_run_ssh_not_found(self, mock_run: MagicMock) -> None:
-        """Test missing ssh binary raises SmolVMError."""
-        mock_run.side_effect = FileNotFoundError()
+    @patch.object(SSHClient, "_ensure_connected")
+    def test_run_connection_failure_raises(self, mock_connected: MagicMock) -> None:
+        """Test connection errors raise SmolVMError."""
+        mock_connected.side_effect = SmolVMError("SSH connection failed: boom")
 
         client = SSHClient("172.16.0.2")
-        with pytest.raises(SmolVMError, match="ssh binary not found"):
+        with pytest.raises(SmolVMError, match="SSH connection failed"):
             client.run("echo test")
 
-    @patch("smolvm.ssh.subprocess.run")
-    def test_run_builds_correct_command(self, mock_run: MagicMock) -> None:
+    @patch.object(SSHClient, "_ensure_connected")
+    def test_run_builds_correct_command(self, mock_connected: MagicMock) -> None:
         """Test that the SSH command is built correctly."""
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        mock_client = MagicMock()
+        mock_client.exec_command.return_value = _mock_exec_result(0, "", "")
+        mock_connected.return_value = mock_client
 
         client = SSHClient("172.16.0.2", user="admin", port=2222, key_path="/tmp/key")
         client.run("uname -r")
 
-        call_args = mock_run.call_args[0][0]
-        assert call_args[0] == "ssh"
-        assert "-p" in call_args
-        assert "2222" in call_args
-        assert "-i" in call_args
-        assert "/tmp/key" in call_args
-        assert "admin@172.16.0.2" in call_args
-        assert call_args[-1].startswith("SHELL_BIN=")
-        assert "uname -r" in call_args[-1]
+        remote_command = mock_client.exec_command.call_args.args[0]
+        timeout = mock_client.exec_command.call_args.kwargs["timeout"]
 
-    @patch("smolvm.ssh.subprocess.run")
-    def test_run_raw_shell_uses_unwrapped_command(self, mock_run: MagicMock) -> None:
+        assert remote_command.startswith('SHELL_BIN="${SHELL:-/bin/sh}"; exec "$SHELL_BIN" -lc ')
+        assert "uname -r" in remote_command
+        assert timeout == 30
+
+    @patch.object(SSHClient, "_ensure_connected")
+    def test_run_raw_shell_uses_unwrapped_command(self, mock_connected: MagicMock) -> None:
         """Test raw mode sends command without login-shell wrapping."""
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        mock_client = MagicMock()
+        mock_client.exec_command.return_value = _mock_exec_result(0, "", "")
+        mock_connected.return_value = mock_client
 
         client = SSHClient("172.16.0.2")
         client.run("uname -r", shell="raw")
 
-        call_args = mock_run.call_args[0][0]
-        assert call_args[-1] == "uname -r"
+        remote_command = mock_client.exec_command.call_args.args[0]
+        assert remote_command == "uname -r"
 
 
 class TestSSHClientWaitForSSH:
     """Tests for SSH readiness polling."""
 
-    @patch("smolvm.ssh.subprocess.run")
-    def test_wait_succeeds_immediately(self, mock_run: MagicMock) -> None:
+    @patch.object(SSHClient, "_connect")
+    @patch.object(SSHClient, "_tcp_port_open", return_value=True)
+    def test_wait_succeeds_immediately(self, _: MagicMock, mock_connect: MagicMock) -> None:
         """Test wait_for_ssh succeeds on first attempt."""
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout="__smolvm_ready__\n",
-            stderr="",
-        )
+        mock_connect.return_value = MagicMock()
 
         client = SSHClient("172.16.0.2")
         client.wait_for_ssh(timeout=5)  # Should not raise
 
-    @patch("smolvm.ssh.subprocess.run")
-    def test_wait_timeout_raises(self, mock_run: MagicMock) -> None:
+    @patch("smolvm.ssh.time.sleep", return_value=None)
+    @patch.object(SSHClient, "_tcp_port_open", return_value=False)
+    def test_wait_timeout_raises(self, _: MagicMock, __: MagicMock) -> None:
         """Test wait_for_ssh raises on timeout."""
-        import subprocess
-
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd="ssh", timeout=5)
-
         client = SSHClient("172.16.0.2")
         with pytest.raises(OperationTimeoutError):
-            client.wait_for_ssh(timeout=0.5, interval=0.1)
+            client.wait_for_ssh(timeout=0.2, interval=0.05)
 
     def test_wait_invalid_timeout_raises(self) -> None:
         """Test that invalid timeout raises ValueError."""
