@@ -704,8 +704,8 @@ class SmolVMManager:
             return vm_info
 
         # Firecracker graceful shutdown — tiered strategy:
-        #   1. SendCtrlAltDel → guest init traps SIGINT → reboot -f  (~200ms)
-        #   2. SIGTERM the Firecracker process                       (1s grace)
+        #   1. SendCtrlAltDel → guest init traps SIGINT → poweroff -f  (~200ms)
+        #   2. SIGTERM the Firecracker process                         (1s grace)
         #   3. SIGKILL as last resort
         graceful_timeout = min(timeout, 2.0)
 
@@ -726,15 +726,16 @@ class SmolVMManager:
             try:
                 os.kill(vm_info.pid, signal.SIGTERM)
             except PermissionError:
-                # Firecracker runs as root — use sudo
+                # Firecracker may run as root — use sudo
                 subprocess.run(
                     ["sudo", "-n", "kill", "-15", str(vm_info.pid)],
                     check=False,
                     capture_output=True,
                 )
             except ProcessLookupError:
-                pass
-            else:
+                pass  # Already exited
+            # Wait for SIGTERM to take effect
+            if self._is_process_running(vm_info.pid):
                 self._wait_for_process(vm_info.pid, min(timeout - graceful_timeout, 1.0))
 
         # Force kill if still running
