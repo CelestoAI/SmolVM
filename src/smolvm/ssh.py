@@ -182,14 +182,16 @@ class SSHClient:
         except OSError as e:
             raise SmolVMError(f"Failed to execute SSH: {e}") from e
 
-    def wait_for_ssh(self, timeout: float = 60.0, interval: float = 2.0) -> None:
+    def wait_for_ssh(self, timeout: float = 60.0, interval: float = 0.1) -> None:
         """Wait for the SSH daemon to become reachable on the guest.
 
-        Polls until a connection succeeds or *timeout* is exceeded.
+        Polls with exponential backoff until a connection succeeds or
+        *timeout* is exceeded.
 
         Args:
             timeout: Maximum seconds to wait.
-            interval: Seconds between connection attempts.
+            interval: Initial seconds between connection attempts.
+                Doubles after each failure, capped at 2.0s.
 
         Raises:
             OperationTimeoutError: If SSH does not become available
@@ -200,6 +202,8 @@ class SSHClient:
 
         deadline = time.monotonic() + timeout
         last_error: str = ""
+        backoff = interval
+        max_backoff = 2.0
 
         logger.info(
             "Waiting for SSH on %s:%d (timeout=%.0fs)",
@@ -210,7 +214,7 @@ class SSHClient:
 
         while time.monotonic() < deadline:
             try:
-                result = self.run("echo __smolvm_ready__", timeout=5, shell="raw")
+                result = self.run("echo __smolvm_ready__", timeout=2, shell="raw")
                 if "__smolvm_ready__" in result.stdout:
                     logger.info("SSH is ready on %s:%d", self.host, self.port)
                     return
@@ -226,7 +230,8 @@ class SSHClient:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            time.sleep(min(interval, remaining))
+            time.sleep(min(backoff, remaining))
+            backoff = min(backoff * 2, max_backoff)
 
         raise OperationTimeoutError(
             f"wait_for_ssh({self.host}:{self.port}): last error: {last_error}",
