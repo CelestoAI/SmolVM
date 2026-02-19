@@ -14,11 +14,12 @@
 
 """Tests for SmolVM CLI commands."""
 
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from smolvm.cli import main
+from smolvm.cli import DASHBOARD_ALLOW_BETA_ENV, main
 
 
 class TestCliEnv:
@@ -246,6 +247,23 @@ class TestCliUi:
             host="0.0.0.0",
             port=9090,
         )
+
+    @patch("smolvm.cli.importlib.import_module")
+    def test_ui_allow_beta_sets_env(self, mock_import: MagicMock) -> None:
+        """--allow-beta should set env flag while uvicorn starts."""
+        mock_uvicorn = MagicMock()
+
+        def _run(*args: object, **kwargs: object) -> None:
+            assert os.environ.get(DASHBOARD_ALLOW_BETA_ENV) == "1"
+
+        mock_uvicorn.run.side_effect = _run
+        mock_import.return_value = mock_uvicorn
+
+        os.environ.pop(DASHBOARD_ALLOW_BETA_ENV, None)
+        ret = main(["ui", "--allow-beta"])
+
+        assert ret == 0
+        assert DASHBOARD_ALLOW_BETA_ENV not in os.environ
 
     @patch("smolvm.cli.importlib.import_module", side_effect=ImportError)
     def test_ui_missing_dependency(
