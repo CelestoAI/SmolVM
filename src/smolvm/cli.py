@@ -25,6 +25,7 @@ from smolvm.cleanup import run_cleanup
 from smolvm.doctor import run_doctor
 
 DASHBOARD_ALLOW_BETA_ENV = "SMOLVM_DASHBOARD_ALLOW_BETA"
+DASHBOARD_URL_ENV = "SMOLVM_DASHBOARD_URL"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -293,9 +294,20 @@ def _run_dashboard(host: str, port: int, allow_beta: bool) -> int:
         print(f"Error: invalid port {port}. Expected 1-65535.")
         return 2
 
+    display_host = "localhost" if host in {"0.0.0.0", "::"} else host
+    dashboard_url = f"http://{display_host}:{port}"
+
     previous_allow_beta = os.environ.get(DASHBOARD_ALLOW_BETA_ENV)
+    previous_dashboard_url = os.environ.get(DASHBOARD_URL_ENV)
+
     if allow_beta:
         os.environ[DASHBOARD_ALLOW_BETA_ENV] = "1"
+    os.environ[DASHBOARD_URL_ENV] = dashboard_url
+
+    print(f"Starting SmolVM Dashboard on http://{host}:{port} ...")
+    print(f"Once started, open {dashboard_url} in your browser.")
+    if allow_beta:
+        print("Using prerelease dashboard UI assets (--allow-beta enabled).")
 
     try:
         uvicorn.run("smolvm.dashboard.server:app", host=host, port=port)
@@ -311,6 +323,11 @@ def _run_dashboard(host: str, port: int, allow_beta: bool) -> int:
                 os.environ.pop(DASHBOARD_ALLOW_BETA_ENV, None)
             else:
                 os.environ[DASHBOARD_ALLOW_BETA_ENV] = previous_allow_beta
+
+        if previous_dashboard_url is None:
+            os.environ.pop(DASHBOARD_URL_ENV, None)
+        else:
+            os.environ[DASHBOARD_URL_ENV] = previous_dashboard_url
 
 
 def _run_start(args: argparse.Namespace) -> int:

@@ -55,6 +55,7 @@ DASHBOARD_ASSET_PREFIX = "smolvm-dashboard-ui-"
 DASHBOARD_ASSET_SUFFIX = ".tar.gz"
 UI_DIST_ENV = "SMOLVM_DASHBOARD_UI_DIST"
 ALLOW_BETA_ENV = "SMOLVM_DASHBOARD_ALLOW_BETA"
+DASHBOARD_URL_ENV = "SMOLVM_DASHBOARD_URL"
 
 
 def _resolve_ui_dist_path() -> Path:
@@ -152,14 +153,62 @@ def _latest_dashboard_release_asset(*, allow_prerelease: bool = False) -> tuple[
     )
 
 
+def _format_bytes(size: int) -> str:
+    """Format bytes as a compact human-readable string."""
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
+
+
 def _download_asset(url: str, destination: Path) -> None:
-    """Download a release asset to disk."""
+    """Download a release asset to disk with progress logging."""
+    logger.info("Downloading dashboard UI bundle from: %s", url)
     with requests.get(url, headers=_github_headers(), stream=True, timeout=60) as response:
         response.raise_for_status()
+
+        total_bytes: int | None = None
+        content_length = response.headers.get("content-length")
+        if content_length and content_length.isdigit():
+            total_bytes = int(content_length)
+            logger.info("Dashboard UI bundle size: %s", _format_bytes(total_bytes))
+
+        downloaded = 0
+        next_progress_log = 5 * 1024 * 1024
+
         with destination.open("wb") as out:
             for chunk in response.iter_content(chunk_size=1024 * 1024):
-                if chunk:
-                    out.write(chunk)
+                if not chunk:
+                    continue
+
+                out.write(chunk)
+                downloaded += len(chunk)
+
+                if downloaded >= next_progress_log:
+                    if total_bytes:
+                        percent = min(100.0, (downloaded / total_bytes) * 100.0)
+                        logger.info(
+                            "Dashboard UI download progress: %s / %s (%.0f%%)",
+                            _format_bytes(downloaded),
+                            _format_bytes(total_bytes),
+                            percent,
+                        )
+                    else:
+                        logger.info(
+                            "Dashboard UI download progress: %s",
+                            _format_bytes(downloaded),
+                        )
+                    next_progress_log += 5 * 1024 * 1024
+
+    if total_bytes:
+        logger.info(
+            "Dashboard UI download complete: %s / %s",
+            _format_bytes(downloaded),
+            _format_bytes(total_bytes),
+        )
+    else:
+        logger.info("Dashboard UI download complete: %s", _format_bytes(downloaded))
 
 
 def _extract_dashboard_dist(archive_path: Path, extract_dir: Path) -> Path:
@@ -202,12 +251,14 @@ def _ensure_latest_dashboard_ui_dist(target_dist: Path, *, allow_prerelease: boo
     if target_dist.is_dir() and (target_dist / "index.html").is_file() and tag_file.is_file():
         try:
             if tag_file.read_text(encoding="utf-8").strip() == latest_tag:
+                logger.info("Dashboard UI already up to date (tag=%s)", latest_tag)
                 return True
         except OSError as exc:
             # If we cannot read the tag file, treat it as a cache miss and re-download.
             logger.debug("Failed to read dashboard UI tag file %s: %s", tag_file, exc)
 
     try:
+        logger.info("Preparing dashboard UI bundle (target tag=%s)", latest_tag)
         target_root.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="smolvm-ui-", dir=str(target_root)) as tmp_dir:
             tmp_path = Path(tmp_dir)
@@ -227,6 +278,7 @@ def _ensure_latest_dashboard_ui_dist(target_dist: Path, *, allow_prerelease: boo
                 else:
                     target_dist.unlink()
             shutil.move(str(staged_dist), str(target_dist))
+            logger.info("Dashboard UI bundle extracted to: %s", target_dist)
 
         try:
             tag_file.write_text(f"{latest_tag}\n", encoding="utf-8")
@@ -311,6 +363,9 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     )
 
     logger.info("Nebula Dashboard started. Data dir: %s", data_dir)
+    dashboard_url = os.environ.get(DASHBOARD_URL_ENV)
+    if dashboard_url:
+        logger.info("Open %s to view the dashboard", dashboard_url)
     yield
 
     # Shutdown
