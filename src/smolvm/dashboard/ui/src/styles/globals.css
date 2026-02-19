@@ -1,0 +1,232 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+    /* Light Mode */
+    --bg: #f7fafb;
+    --glass-bg: rgba(255, 255, 255, 0.7);
+    --glass-border: rgba(203, 213, 225, 0.6);
+    --text-primary: #0f172a;
+    --text-secondary: #64748b;
+    --hive-bg-start: #fff8e8;
+    --hive-bg-mid: #ffeec4;
+    --hive-bg-end: #deecff;
+    --hive-scroll-thumb: rgba(217, 119, 6, 0.38);
+    --hive-scroll-thumb-hover: rgba(217, 119, 6, 0.56);
+    --hive-scroll-track: rgba(217, 119, 6, 0.12);
+    --scroll-thumb: rgba(100, 116, 139, 0.48);
+    --scroll-thumb-hover: rgba(71, 85, 105, 0.66);
+    --scroll-track: rgba(148, 163, 184, 0.22);
+}
+
+.dark {
+    /* Dark Mode */
+    --bg: #071223;
+    --glass-bg: rgba(255, 255, 255, 0.04);
+    --glass-border: rgba(255, 255, 255, 0.09);
+    --text-primary: #f8fafc;
+    --text-secondary: #94a3b8;
+    --hive-bg-start: #0f1f3b;
+    --hive-bg-mid: #0c1730;
+    --hive-bg-end: #091327;
+    --hive-scroll-thumb: rgba(96, 165, 250, 0.45);
+    --hive-scroll-thumb-hover: rgba(125, 211, 252, 0.64);
+    --hive-scroll-track: rgba(59, 130, 246, 0.16);
+    --scroll-thumb: rgba(125, 211, 252, 0.4);
+    --scroll-thumb-hover: rgba(125, 211, 252, 0.6);
+    --scroll-track: rgba(30, 41, 59, 0.58);
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--text-primary);
+    font-family: 'Sora', 'Avenir Next', 'Segoe UI', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    transition: background-color 0.5s ease;
+}
+
+/* Geist Mono fallback to JetBrains Mono */
+.font-mono {
+    font-family: 'Geist Mono', 'JetBrains Mono', monospace;
+}
+
+/* Glass card utility */
+.glass {
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    transition: background-color 0.3s ease, border-color 0.3s ease;
+}
+
+/* Glow effects */
+.glow-cyan {
+    box-shadow: 0 0 20px rgba(6, 182, 212, 0.15),
+        0 0 60px rgba(6, 182, 212, 0.05);
+}
+
+.glow-purple {
+    box-shadow: 0 0 20px rgba(139, 92, 246, 0.15),
+        0 0 60px rgba(139, 92, 246, 0.05);
+}
+
+.hive-surface {
+    background:
+        radial-gradient(1200px 560px at 0% 0%, rgba(251, 191, 36, 0.16), transparent 58%),
+        radial-gradient(920px 420px at 100% 10%, rgba(56, 189, 248, 0.1), transparent 52%),
+        linear-gradient(180deg, var(--hive-bg-start) 0%, var(--hive-bg-mid) 52%, var(--hive-bg-end) 100%);
+}
+
+.dark .hive-surface {
+    background:
+        radial-gradient(1040px 520px at 8% 0%, rgba(59, 130, 246, 0.08), transparent 66%),
+        radial-gradient(920px 420px at 100% 8%, rgba(30, 64, 175, 0.06), transparent 64%),
+        linear-gradient(180deg, #0b1220 0%, #0a111d 52%, #090f1a 100%);
+}
+
+.bento-surface {
+    background:
+        radial-gradient(1000px 520px at 0% 0%, rgba(251, 191, 36, 0.12), transparent 60%),
+        radial-gradient(760px 360px at 100% 8%, rgba(14, 165, 233, 0.1), transparent 55%),
+        linear-gradient(180deg, #f8fafc 0%, #f2f6fa 56%, #edf2f8 100%);
+}
+
+.dark .bento-surface {
+    background:
+        radial-gradient(960px 460px at 5% 0%, rgba(56, 189, 248, 0.12), transparent 64%),
+        radial-gradient(760px 360px at 100% 8%, rgba(37, 99, 235, 0.09), transparent 58%),
+        linear-gradient(180deg, #12223f 0%, #0d1a34 56%, #09142a 100%);
+}
+
+.hive-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: var(--hive-scroll-thumb) var(--hive-scroll-track);
+}
+
+.hive-scroll::-webkit-scrollbar {
+    width: 8px;
+}
+
+.hive-scroll::-webkit-scrollbar-track {
+    background: var(--hive-scroll-track);
+    border-radius: 10px;
+}
+
+.hive-scroll::-webkit-scrollbar-thumb {
+    background: var(--hive-scroll-thumb);
+    border-radius: 10px;
+}
+
+.hive-scroll::-webkit-scrollbar-thumb:hover {
+    background: var(--hive-scroll-thumb-hover);
+}
+
+.bento-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scroll-thumb) var(--scroll-track);
+}
+
+.bento-scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+.bento-scroll::-webkit-scrollbar-track {
+    background: var(--scroll-track);
+    border-radius: 10px;
+}
+
+.bento-scroll::-webkit-scrollbar-thumb {
+    background: var(--scroll-thumb);
+    border-radius: 10px;
+}
+
+.bento-scroll::-webkit-scrollbar-thumb:hover {
+    background: var(--scroll-thumb-hover);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--scroll-track);
+    border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--scroll-thumb);
+    border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--scroll-thumb-hover);
+}
+
+/* Subtle pulse for error indicators */
+@keyframes pulse-error {
+
+    0%,
+    100% {
+        opacity: 0.95;
+    }
+
+    50% {
+        opacity: 0.4;
+    }
+}
+
+.animate-pulse-error {
+    animation: pulse-error 1.8s ease-in-out infinite;
+}
+
+@keyframes compact-fail-pulse {
+
+    0%,
+    100% {
+        transform: scale(1);
+        filter: saturate(1);
+    }
+
+    50% {
+        transform: scale(1.06);
+        filter: saturate(1.28);
+    }
+}
+
+.animate-compact-fail-pulse {
+    animation: compact-fail-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes failed-shell {
+
+    0%,
+    100% {
+        transform: scale(1);
+        filter: saturate(1) brightness(1);
+    }
+
+    50% {
+        transform: scale(1.04);
+        filter: saturate(1.25) brightness(1.18);
+    }
+}
+
+.animate-failed-shell {
+    animation: failed-shell 1.7s ease-in-out infinite;
+}
