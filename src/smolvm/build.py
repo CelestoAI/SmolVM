@@ -474,6 +474,23 @@ shutdown() {
 }
 trap shutdown INT TERM PWR
 
+# ── Timestamp helpers (for host-side startup profiling) ──────
+ts_uptime() {
+    cut -d' ' -f1 /proc/uptime 2>/dev/null || echo "0.00"
+}
+
+# date +%s is widely supported by busybox/coreutils.
+ts_epoch() {
+    date +%s 2>/dev/null || echo "0"
+}
+
+log_ts() {
+    STAGE="$1"
+    echo "SMOLVM_TS stage=${STAGE} epoch_s=$(ts_epoch) uptime_s=$(ts_uptime)"
+}
+
+log_ts "init-start"
+
 # ── Mount essential filesystems ──────────────────────────────
 mount -t proc proc /proc
 mount -t sysfs sys /sys
@@ -482,6 +499,8 @@ mkdir -p /dev/pts
 mount -t devpts devpts /dev/pts
 mount -t tmpfs tmpfs /run
 mount -t tmpfs tmpfs /tmp
+
+log_ts "mounts-ready"
 
 # Disable Ctrl+Alt+Del hardware reboot — send SIGINT to PID 1 instead
 echo 0 > /proc/sys/kernel/ctrl-alt-del
@@ -492,7 +511,10 @@ mount -o remount,rw /
 # Create required directories
 mkdir -p /run/sshd /var/log
 
+log_ts "root-ready"
+
 # ── Networking ───────────────────────────────────────────────
+log_ts "net-config-start"
 # Configure from kernel command line ip= parameter
 # Format: ip=<guest_ip>::<gateway>:<netmask>::eth0:off
 IP_CONFIG=$(cat /proc/cmdline | tr ' ' '\n' | grep '^ip=' | head -1)
@@ -515,12 +537,19 @@ echo "nameserver 8.8.4.4" >> /etc/resolv.conf
 
 # Set hostname
 hostname smolvm
+log_ts "net-ready"
 
 # ── SSH ──────────────────────────────────────────────────────
+log_ts "ssh-hostkey-check-start"
 ssh-keygen -A 2>/dev/null
+log_ts "ssh-hostkey-check-done"
+
+log_ts "sshd-start"
 /usr/sbin/sshd -e
+log_ts "sshd-invoked"
 
 echo "SmolVM init complete: IP=${GUEST_IP}, SSH listening on port 22"
+log_ts "init-complete"
 
 # ── Keep PID 1 alive ────────────────────────────────────────
 # Use 'wait' so signals are delivered promptly (plain 'sleep'
