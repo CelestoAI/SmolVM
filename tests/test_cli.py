@@ -179,3 +179,35 @@ class TestCliEnv:
         assert ret == 1
         assert "no network configuration" in capsys.readouterr().out
         vm.close.assert_called_once()
+
+
+class TestCliDoctor:
+    """Tests for `smolvm doctor`."""
+
+    @patch("smolvm.cli.run_doctor")
+    def test_doctor_default(self, mock_run_doctor: MagicMock) -> None:
+        """Default doctor invocation should call run_doctor with defaults."""
+        mock_run_doctor.return_value = 0
+
+        ret = main(["doctor"])
+
+        assert ret == 0
+        mock_run_doctor.assert_called_once_with(
+            backend=None,
+            json_output=False,
+            strict=False,
+        )
+
+    @patch("smolvm.cli.run_doctor")
+    def test_doctor_with_flags(self, mock_run_doctor: MagicMock) -> None:
+        """Doctor flags should be forwarded to run_doctor."""
+        mock_run_doctor.return_value = 1
+
+        ret = main(["doctor", "--backend", "firecracker", "--json", "--strict"])
+
+        assert ret == 1
+        mock_run_doctor.assert_called_once_with(
+            backend="firecracker",
+            json_output=True,
+            strict=True,
+        )

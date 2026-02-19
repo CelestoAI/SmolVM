@@ -1,0 +1,106 @@
+# Copyright 2026 Celesto AI
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Tests for SmolVM doctor diagnostics."""
+
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from smolvm.doctor import generate_doctor_report, run_doctor
+from smolvm.exceptions import SmolVMError
+
+
+class TestDoctorFirecracker:
+    """Firecracker backend diagnostic tests."""
+
+    @patch("smolvm.doctor.run_command")
+    @patch("smolvm.doctor.check_network_prerequisites", return_value=[])
+    @patch("smolvm.doctor.which")
+    @patch("smolvm.doctor.HostManager")
+    def test_generate_report_firecracker_ok(
+        self,
+        mock_host_cls: MagicMock,
+        mock_which: MagicMock,
+        mock_net_checks: MagicMock,
+        mock_run_command: MagicMock,
+    ) -> None:
+        """A healthy firecracker setup should produce no failures."""
+        mock_host = MagicMock()
+        mock_host.check_kvm.return_value = True
+        mock_host.find_firecracker.return_value = Path("/usr/local/bin/firecracker")
+        mock_host_cls.return_value = mock_host
+
+        def _which_side_effect(binary: str) -> Path | None:
+            if binary in {"ip", "nft", "ssh"}:
+                return Path(f"/usr/bin/{binary}")
+            return None
+
+        mock_which.side_effect = _which_side_effect
+        mock_run_command.return_value = MagicMock(stdout="")
+
+        report = generate_doctor_report(backend="firecracker")
+
+        assert report.backend_resolved == "firecracker"
+        assert report.failures == []
+        assert report.warnings == []
+
+    @patch("smolvm.doctor.run_command", side_effect=SmolVMError("No such file or directory"))
+    @patch("smolvm.doctor.check_network_prerequisites", return_value=[])
+    @patch("smolvm.doctor.which")
+    @patch("smolvm.doctor.HostManager")
+    def test_run_doctor_strict_fails_on_warnings(
+        self,
+        mock_host_cls: MagicMock,
+        mock_which: MagicMock,
+        mock_net_checks: MagicMock,
+        mock_run_command: MagicMock,
+        capsys,
+    ) -> None:
+        """Missing nft tables are warnings by default but fail in strict mode."""
+        mock_host = MagicMock()
+        mock_host.check_kvm.return_value = True
+        mock_host.find_firecracker.return_value = Path("/usr/local/bin/firecracker")
+        mock_host_cls.return_value = mock_host
+
+        def _which_side_effect(binary: str) -> Path | None:
+            if binary in {"ip", "nft", "ssh"}:
+                return Path(f"/usr/bin/{binary}")
+            return None
+
+        mock_which.side_effect = _which_side_effect
+
+        ret_normal = run_doctor(backend="firecracker", strict=False)
+        ret_strict = run_doctor(backend="firecracker", strict=True)
+
+        assert ret_normal == 0
+        assert ret_strict == 1
+        output = capsys.readouterr().out
+        assert "strict mode treats warnings as failures" in output
+
+
+class TestDoctorQemu:
+    """QEMU backend diagnostic tests."""
+
+    @patch("smolvm.doctor._find_qemu_binary", return_value=None)
+    @patch("smolvm.doctor.which", return_value=Path("/usr/bin/ssh"))
+    def test_generate_report_qemu_missing_binary(
+        self,
+        mock_which: MagicMock,
+        mock_find_qemu: MagicMock,
+    ) -> None:
+        """Missing qemu binary should produce a failure."""
+        report = generate_doctor_report(backend="qemu")
+
+        assert report.backend_resolved == "qemu"
+        assert any(check.name == "qemu" and check.status == "fail" for check in report.checks)

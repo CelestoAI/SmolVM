@@ -20,6 +20,7 @@ import argparse
 from collections.abc import Sequence
 
 from smolvm.cleanup import run_cleanup
+from smolvm.doctor import run_doctor
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -47,6 +48,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="Print targets without deleting.",
+    )
+
+    doctor = subparsers.add_parser(
+        "doctor",
+        help="Run host diagnostics for the selected backend",
+    )
+    doctor.add_argument(
+        "--backend",
+        choices=["auto", "firecracker", "qemu"],
+        default=None,
+        help="Backend to validate (default: auto).",
+    )
+    doctor.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output.",
+    )
+    doctor.add_argument(
+        "--strict",
+        action="store_true",
+        help="Treat warnings as failures.",
     )
 
     # ── env subcommand group ──────────────────────────────────────────
@@ -221,6 +243,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "cleanup":
         return run_cleanup(delete_all=args.all, prefix=args.prefix, dry_run=args.dry_run)
+
+    if args.command == "doctor":
+        return run_doctor(
+            backend=args.backend,
+            json_output=args.json,
+            strict=args.strict,
+        )
 
     if args.command == "env":
         return _run_env(args)

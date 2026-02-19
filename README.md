@@ -148,6 +148,20 @@ smolvm env list <vm_id> --show-values
 smolvm env unset <vm_id> DEBUG
 ```
 
+Diagnostics:
+
+```bash
+# Auto-detect backend (Darwin -> qemu, Linux -> firecracker)
+smolvm doctor
+
+# Force backend checks
+smolvm doctor --backend firecracker
+smolvm doctor --backend qemu
+
+# CI-friendly mode
+smolvm doctor --json --strict
+```
+
 ## ⚡ Performance
 
 SmolVM is optimized for low-latency agent workflows. Typical lifecycle timings on a standard Linux host:
