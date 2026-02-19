@@ -40,6 +40,8 @@ _NFT_NAT_TABLE = "smolvm_nat"
 _NFT_FILTER_FAMILY = "inet"
 _NFT_FILTER_TABLE = "smolvm_filter"
 
+_NFT_CHAIN_RE = re.compile(r"^chain\s+(?P<chain>[^\s{]+)\s*\{")
+_NFT_RULE_COMMENT_RE = re.compile(r'comment "(?P<comment>[^"]+)"')
 _NFT_RULE_HANDLE_RE = re.compile(r'comment "(?P<comment>[^"]+)".*# handle (?P<handle>\d+)')
 
 
@@ -52,6 +54,8 @@ class NetworkManager:
 
         self.host_ip = host_ip
         self._outbound_interface: str | None = None
+        self._nft_base_ready = False
+        self._ip_forwarding_enabled = False
 
     @property
     def outbound_interface(self) -> str:
@@ -160,24 +164,30 @@ class NetworkManager:
     # ------------------------------------------------------------------
 
     def enable_ip_forwarding(self) -> None:
-        """Enable IPv4 forwarding."""
-        self._write_sysctl("net/ipv4/ip_forward", "1")
+        """Enable IPv4 forwarding once per manager instance."""
+        if self._ip_forwarding_enabled:
+            return
 
-    def _write_sysctl(self, key_path: str, value: str) -> None:
+        if self._write_sysctl("net/ipv4/ip_forward", "1"):
+            self._ip_forwarding_enabled = True
+
+    def _write_sysctl(self, key_path: str, value: str) -> bool:
         """Write /proc/sys key, with sudo sysctl fallback."""
         path = Path(f"/proc/sys/{key_path}")
 
         try:
             path.write_text(value)
-            return
+            return True
         except (PermissionError, FileNotFoundError):
             pass
 
         key = key_path.replace("/", ".")
         try:
             run_command(["sysctl", "-w", f"{key}={value}"], use_sudo=True)
+            return True
         except Exception as e:
             logger.warning("Failed to set sysctl %s: %s", key, e)
+            return False
 
     def _run_ip_batch(self, commands: list[str]) -> None:
         """Execute batched iproute2 commands."""
@@ -198,71 +208,94 @@ class NetworkManager:
     def _run_nft_script(self, script: str) -> None:
         run_command(["nft", "-f", "-"], input=script, use_sudo=True)
 
-    def _ensure_nft_table(self, family: str, table: str) -> None:
+    def _nft_table_exists(self, family: str, table: str) -> bool:
         try:
             run_command(["nft", "list", "table", family, table], use_sudo=True)
+            return True
         except SmolVMError:
-            run_command(["nft", "add", "table", family, table], use_sudo=True)
+            return False
 
-    def _ensure_nft_chain(
-        self,
-        family: str,
-        table: str,
-        chain: str,
-        create_stmt: str,
-    ) -> None:
+    def _nft_chain_exists(self, family: str, table: str, chain: str) -> bool:
         try:
             run_command(["nft", "list", "chain", family, table, chain], use_sudo=True)
+            return True
         except SmolVMError:
-            self._run_nft_script(f"{create_stmt}\n")
+            return False
 
     def _ensure_nftables_base(self) -> None:
-        """Create SmolVM nftables tables/chains if missing."""
-        self._ensure_nft_table(_NFT_NAT_FAMILY, _NFT_NAT_TABLE)
-        self._ensure_nft_table(_NFT_FILTER_FAMILY, _NFT_FILTER_TABLE)
+        """Create SmolVM nftables tables/chains if missing.
 
-        self._ensure_nft_chain(
-            _NFT_NAT_FAMILY,
-            _NFT_NAT_TABLE,
-            "prerouting",
-            (
-                f"add chain {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} prerouting "
-                "{ type nat hook prerouting priority dstnat; policy accept; }"
-            ),
-        )
-        self._ensure_nft_chain(
-            _NFT_NAT_FAMILY,
-            _NFT_NAT_TABLE,
-            "output",
-            (
-                f"add chain {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} output "
-                "{ type nat hook output priority -100; policy accept; }"
-            ),
-        )
-        self._ensure_nft_chain(
-            _NFT_NAT_FAMILY,
-            _NFT_NAT_TABLE,
-            "postrouting",
-            (
-                f"add chain {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} postrouting "
-                "{ type nat hook postrouting priority srcnat; policy accept; }"
-            ),
-        )
-        self._ensure_nft_chain(
-            _NFT_FILTER_FAMILY,
-            _NFT_FILTER_TABLE,
-            "forward",
-            (
+        This is executed once per manager instance and uses a single batched
+        nft script for any missing objects.
+        """
+        if self._nft_base_ready:
+            return
+
+        script_lines: list[str] = []
+
+        nat_exists = self._nft_table_exists(_NFT_NAT_FAMILY, _NFT_NAT_TABLE)
+        if not nat_exists:
+            script_lines.extend(
+                [
+                    f"add table {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE}",
+                    (
+                        f"add chain {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} prerouting "
+                        "{ type nat hook prerouting priority dstnat; policy accept; }"
+                    ),
+                    (
+                        f"add chain {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} output "
+                        "{ type nat hook output priority -100; policy accept; }"
+                    ),
+                    (
+                        f"add chain {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} postrouting "
+                        "{ type nat hook postrouting priority srcnat; policy accept; }"
+                    ),
+                ]
+            )
+        else:
+            if not self._nft_chain_exists(_NFT_NAT_FAMILY, _NFT_NAT_TABLE, "prerouting"):
+                script_lines.append(
+                    f"add chain {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} prerouting "
+                    "{ type nat hook prerouting priority dstnat; policy accept; }"
+                )
+            if not self._nft_chain_exists(_NFT_NAT_FAMILY, _NFT_NAT_TABLE, "output"):
+                script_lines.append(
+                    f"add chain {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} output "
+                    "{ type nat hook output priority -100; policy accept; }"
+                )
+            if not self._nft_chain_exists(_NFT_NAT_FAMILY, _NFT_NAT_TABLE, "postrouting"):
+                script_lines.append(
+                    f"add chain {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} postrouting "
+                    "{ type nat hook postrouting priority srcnat; policy accept; }"
+                )
+
+        filter_exists = self._nft_table_exists(_NFT_FILTER_FAMILY, _NFT_FILTER_TABLE)
+        if not filter_exists:
+            script_lines.extend(
+                [
+                    f"add table {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE}",
+                    (
+                        f"add chain {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} forward "
+                        "{ type filter hook forward priority filter; policy accept; }"
+                    ),
+                ]
+            )
+        elif not self._nft_chain_exists(_NFT_FILTER_FAMILY, _NFT_FILTER_TABLE, "forward"):
+            script_lines.append(
                 f"add chain {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} forward "
                 "{ type filter hook forward priority filter; policy accept; }"
-            ),
-        )
+            )
 
-    def _nft_list_chain(self, family: str, table: str, chain: str, *, handles: bool) -> str:
+        if script_lines:
+            self._run_nft_script("\n".join(script_lines) + "\n")
+
+        self._nft_base_ready = True
+
+    def _nft_list_table(self, family: str, table: str, *, handles: bool) -> str:
         cmd = ["nft"]
         if handles:
             cmd.append("-a")
-        cmd.extend(["list", "chain", family, table, chain])
+        cmd.extend(["list", "table", family, table])
 
         try:
             result = run_command(cmd, use_sudo=True)
@@ -270,63 +303,120 @@ class NetworkManager:
         except SmolVMError:
             return ""
 
-    def _nft_chain_has_comment(self, family: str, table: str, chain: str, comment: str) -> bool:
-        marker = f'comment "{comment}"'
-        return marker in self._nft_list_chain(family, table, chain, handles=False)
+    @staticmethod
+    def _extract_table_comments(output: str) -> set[tuple[str, str]]:
+        """Return existing (chain, comment) pairs for one nft table listing."""
+        comments: set[tuple[str, str]] = set()
+        current_chain: str | None = None
 
-    def _add_nft_rule_if_missing(
+        for line in output.splitlines():
+            stripped = line.strip()
+            chain_match = _NFT_CHAIN_RE.match(stripped)
+            if chain_match is not None:
+                current_chain = chain_match.group("chain")
+                continue
+
+            if stripped == "}":
+                current_chain = None
+                continue
+
+            if current_chain is None:
+                continue
+
+            comment_match = _NFT_RULE_COMMENT_RE.search(stripped)
+            if comment_match is not None:
+                comments.add((current_chain, comment_match.group("comment")))
+
+        return comments
+
+    @staticmethod
+    def _extract_table_rule_handles(output: str) -> list[tuple[str, str, str]]:
+        """Return (chain, comment, handle) tuples from an nft table listing."""
+        handles: list[tuple[str, str, str]] = []
+        current_chain: str | None = None
+
+        for line in output.splitlines():
+            stripped = line.strip()
+            chain_match = _NFT_CHAIN_RE.match(stripped)
+            if chain_match is not None:
+                current_chain = chain_match.group("chain")
+                continue
+
+            if stripped == "}":
+                current_chain = None
+                continue
+
+            if current_chain is None:
+                continue
+
+            handle_match = _NFT_RULE_HANDLE_RE.search(stripped)
+            if handle_match is None:
+                continue
+
+            handles.append(
+                (
+                    current_chain,
+                    handle_match.group("comment"),
+                    handle_match.group("handle"),
+                )
+            )
+
+        return handles
+
+    def _add_nft_rules_if_missing(
         self,
-        family: str,
-        table: str,
-        chain: str,
-        rule_expr: str,
-        comment: str,
+        rules: list[tuple[str, str, str, str, str]],
     ) -> None:
-        if self._nft_chain_has_comment(family, table, chain, comment):
-            return
+        """Add rules in one batch, skipping existing (chain, comment) pairs."""
+        table_comments_cache: dict[tuple[str, str], set[tuple[str, str]]] = {}
+        script_lines: list[str] = []
 
-        quoted_comment = self._quote(comment)
-        self._run_nft_script(
-            f"add rule {family} {table} {chain} {rule_expr} comment {quoted_comment}\n"
-        )
+        for family, table, chain, rule_expr, comment in rules:
+            table_key = (family, table)
+            if table_key not in table_comments_cache:
+                table_output = self._nft_list_table(family, table, handles=False)
+                table_comments_cache[table_key] = self._extract_table_comments(table_output)
+
+            comment_key = (chain, comment)
+            if comment_key in table_comments_cache[table_key]:
+                continue
+
+            script_lines.append(
+                f"add rule {family} {table} {chain} {rule_expr} comment {self._quote(comment)}"
+            )
+            table_comments_cache[table_key].add(comment_key)
+
+        if script_lines:
+            self._run_nft_script("\n".join(script_lines) + "\n")
 
     def _delete_nft_rules(
         self,
         family: str,
         table: str,
-        chain: str,
         *,
         comment: str | None = None,
         comment_prefix: str | None = None,
     ) -> None:
+        """Delete matching rules in one batched nft call."""
         if comment is None and comment_prefix is None:
             raise ValueError("comment or comment_prefix must be provided")
 
-        output = self._nft_list_chain(family, table, chain, handles=True)
-        if not output:
+        table_output = self._nft_list_table(family, table, handles=True)
+        if not table_output:
             return
 
-        for line in output.splitlines():
-            match = _NFT_RULE_HANDLE_RE.search(line)
-            if match is None:
-                continue
+        handles = self._extract_table_rule_handles(table_output)
+        delete_lines: list[str] = []
 
-            rule_comment = match.group("comment")
-            handle = match.group("handle")
-
+        for chain, rule_comment, handle in handles:
             if comment is not None and rule_comment != comment:
                 continue
             if comment_prefix is not None and not rule_comment.startswith(comment_prefix):
                 continue
+            delete_lines.append(f"delete rule {family} {table} {chain} handle {handle}")
 
-            try:
-                run_command(
-                    ["nft", "delete", "rule", family, table, chain, "handle", handle],
-                    use_sudo=True,
-                )
-            except SmolVMError:
-                # Best effort cleanup for idempotency.
-                continue
+        if delete_lines:
+            self._run_nft_script("\n".join(delete_lines) + "\n")
 
     # ------------------------------------------------------------------
     # Public firewall/NAT API
@@ -344,42 +434,43 @@ class NetworkManager:
 
         iface = self.outbound_interface
 
-        self._add_nft_rule_if_missing(
-            _NFT_NAT_FAMILY,
-            _NFT_NAT_TABLE,
-            "postrouting",
-            f"oifname {self._quote(iface)} counter masquerade",
-            comment=f"smolvm:global:nat:masquerade:{iface}",
-        )
-
-        self._add_nft_rule_if_missing(
-            _NFT_FILTER_FAMILY,
-            _NFT_FILTER_TABLE,
-            "forward",
-            "ct state related,established counter accept",
-            comment="smolvm:global:forward:established",
-        )
-
-        self._add_nft_rule_if_missing(
-            _NFT_FILTER_FAMILY,
-            _NFT_FILTER_TABLE,
-            "forward",
-            (
-                f"iifname {self._quote(tap_name)} "
-                f"oifname {self._quote(iface)} counter accept"
-            ),
-            comment=f"smolvm:nat:tap:{tap_name}:to:{iface}",
-        )
-
-        self._add_nft_rule_if_missing(
-            _NFT_FILTER_FAMILY,
-            _NFT_FILTER_TABLE,
-            "forward",
-            (
-                f"iifname {self._quote('tap*')} "
-                f"oifname {self._quote('tap*')} counter drop"
-            ),
-            comment="smolvm:global:forward:tap-isolation",
+        self._add_nft_rules_if_missing(
+            [
+                (
+                    _NFT_NAT_FAMILY,
+                    _NFT_NAT_TABLE,
+                    "postrouting",
+                    f"oifname {self._quote(iface)} counter masquerade",
+                    f"smolvm:global:nat:masquerade:{iface}",
+                ),
+                (
+                    _NFT_FILTER_FAMILY,
+                    _NFT_FILTER_TABLE,
+                    "forward",
+                    "ct state related,established counter accept",
+                    "smolvm:global:forward:established",
+                ),
+                (
+                    _NFT_FILTER_FAMILY,
+                    _NFT_FILTER_TABLE,
+                    "forward",
+                    (
+                        f"iifname {self._quote(tap_name)} "
+                        f"oifname {self._quote(iface)} counter accept"
+                    ),
+                    f"smolvm:nat:tap:{tap_name}:to:{iface}",
+                ),
+                (
+                    _NFT_FILTER_FAMILY,
+                    _NFT_FILTER_TABLE,
+                    "forward",
+                    (
+                        f"iifname {self._quote('tap*')} "
+                        f"oifname {self._quote('tap*')} counter drop"
+                    ),
+                    "smolvm:global:forward:tap-isolation",
+                ),
+            ]
         )
 
     def setup_ssh_port_forward(
@@ -406,45 +497,46 @@ class NetworkManager:
         target = f"{guest_ip}:{guest_port}"
         comment = f"smolvm:{vm_id}:ssh"
 
-        self._add_nft_rule_if_missing(
-            _NFT_NAT_FAMILY,
-            _NFT_NAT_TABLE,
-            "prerouting",
-            (
-                f"iifname {self._quote(iface)} "
-                f"tcp dport {host_port} counter dnat to {target}"
-            ),
-            comment=comment,
-        )
-
-        self._add_nft_rule_if_missing(
-            _NFT_NAT_FAMILY,
-            _NFT_NAT_TABLE,
-            "output",
-            f"ip daddr 127.0.0.1/32 tcp dport {host_port} counter dnat to {target}",
-            comment=comment,
-        )
-
-        self._add_nft_rule_if_missing(
-            _NFT_NAT_FAMILY,
-            _NFT_NAT_TABLE,
-            "postrouting",
-            (
-                f"ip saddr 127.0.0.0/8 ip daddr {guest_ip}/32 "
-                f"tcp dport {guest_port} counter snat to {self.host_ip}"
-            ),
-            comment=comment,
-        )
-
-        self._add_nft_rule_if_missing(
-            _NFT_FILTER_FAMILY,
-            _NFT_FILTER_TABLE,
-            "forward",
-            (
-                f"ip daddr {guest_ip}/32 tcp dport {guest_port} "
-                "ct state new,related,established counter accept"
-            ),
-            comment=comment,
+        self._add_nft_rules_if_missing(
+            [
+                (
+                    _NFT_NAT_FAMILY,
+                    _NFT_NAT_TABLE,
+                    "prerouting",
+                    (
+                        f"iifname {self._quote(iface)} "
+                        f"tcp dport {host_port} counter dnat to {target}"
+                    ),
+                    comment,
+                ),
+                (
+                    _NFT_NAT_FAMILY,
+                    _NFT_NAT_TABLE,
+                    "output",
+                    f"ip daddr 127.0.0.1/32 tcp dport {host_port} counter dnat to {target}",
+                    comment,
+                ),
+                (
+                    _NFT_NAT_FAMILY,
+                    _NFT_NAT_TABLE,
+                    "postrouting",
+                    (
+                        f"ip saddr 127.0.0.0/8 ip daddr {guest_ip}/32 "
+                        f"tcp dport {guest_port} counter snat to {self.host_ip}"
+                    ),
+                    comment,
+                ),
+                (
+                    _NFT_FILTER_FAMILY,
+                    _NFT_FILTER_TABLE,
+                    "forward",
+                    (
+                        f"ip daddr {guest_ip}/32 tcp dport {guest_port} "
+                        "ct state new,related,established counter accept"
+                    ),
+                    comment,
+                ),
+            ]
         )
 
     def cleanup_ssh_port_forward(
@@ -466,10 +558,8 @@ class NetworkManager:
 
         comment = f"smolvm:{vm_id}:ssh"
 
-        self._delete_nft_rules(_NFT_NAT_FAMILY, _NFT_NAT_TABLE, "postrouting", comment=comment)
-        self._delete_nft_rules(_NFT_FILTER_FAMILY, _NFT_FILTER_TABLE, "forward", comment=comment)
-        self._delete_nft_rules(_NFT_NAT_FAMILY, _NFT_NAT_TABLE, "output", comment=comment)
-        self._delete_nft_rules(_NFT_NAT_FAMILY, _NFT_NAT_TABLE, "prerouting", comment=comment)
+        self._delete_nft_rules(_NFT_NAT_FAMILY, _NFT_NAT_TABLE, comment=comment)
+        self._delete_nft_rules(_NFT_FILTER_FAMILY, _NFT_FILTER_TABLE, comment=comment)
 
     def setup_local_port_forward(
         self,
@@ -494,34 +584,36 @@ class NetworkManager:
         comment = f"smolvm:{vm_id}:local:{host_port}:{guest_port}"
         target = f"{guest_ip}:{guest_port}"
 
-        self._add_nft_rule_if_missing(
-            _NFT_NAT_FAMILY,
-            _NFT_NAT_TABLE,
-            "output",
-            f"ip daddr 127.0.0.1/32 tcp dport {host_port} counter dnat to {target}",
-            comment=comment,
-        )
-
-        self._add_nft_rule_if_missing(
-            _NFT_NAT_FAMILY,
-            _NFT_NAT_TABLE,
-            "postrouting",
-            (
-                f"ip saddr 127.0.0.0/8 ip daddr {guest_ip}/32 "
-                f"tcp dport {guest_port} counter snat to {self.host_ip}"
-            ),
-            comment=comment,
-        )
-
-        self._add_nft_rule_if_missing(
-            _NFT_FILTER_FAMILY,
-            _NFT_FILTER_TABLE,
-            "forward",
-            (
-                f"ip daddr {guest_ip}/32 tcp dport {guest_port} "
-                "ct state new,related,established counter accept"
-            ),
-            comment=comment,
+        self._add_nft_rules_if_missing(
+            [
+                (
+                    _NFT_NAT_FAMILY,
+                    _NFT_NAT_TABLE,
+                    "output",
+                    f"ip daddr 127.0.0.1/32 tcp dport {host_port} counter dnat to {target}",
+                    comment,
+                ),
+                (
+                    _NFT_NAT_FAMILY,
+                    _NFT_NAT_TABLE,
+                    "postrouting",
+                    (
+                        f"ip saddr 127.0.0.0/8 ip daddr {guest_ip}/32 "
+                        f"tcp dport {guest_port} counter snat to {self.host_ip}"
+                    ),
+                    comment,
+                ),
+                (
+                    _NFT_FILTER_FAMILY,
+                    _NFT_FILTER_TABLE,
+                    "forward",
+                    (
+                        f"ip daddr {guest_ip}/32 tcp dport {guest_port} "
+                        "ct state new,related,established counter accept"
+                    ),
+                    comment,
+                ),
+            ]
         )
 
     def cleanup_local_port_forward(
@@ -543,9 +635,8 @@ class NetworkManager:
 
         comment = f"smolvm:{vm_id}:local:{host_port}:{guest_port}"
 
-        self._delete_nft_rules(_NFT_NAT_FAMILY, _NFT_NAT_TABLE, "postrouting", comment=comment)
-        self._delete_nft_rules(_NFT_FILTER_FAMILY, _NFT_FILTER_TABLE, "forward", comment=comment)
-        self._delete_nft_rules(_NFT_NAT_FAMILY, _NFT_NAT_TABLE, "output", comment=comment)
+        self._delete_nft_rules(_NFT_NAT_FAMILY, _NFT_NAT_TABLE, comment=comment)
+        self._delete_nft_rules(_NFT_FILTER_FAMILY, _NFT_FILTER_TABLE, comment=comment)
 
     def cleanup_all_local_port_forwards(self, vm_id: str) -> None:
         """Best-effort cleanup for all localhost forwards belonging to vm_id."""
@@ -557,19 +648,11 @@ class NetworkManager:
         self._delete_nft_rules(
             _NFT_NAT_FAMILY,
             _NFT_NAT_TABLE,
-            "output",
-            comment_prefix=prefix,
-        )
-        self._delete_nft_rules(
-            _NFT_NAT_FAMILY,
-            _NFT_NAT_TABLE,
-            "postrouting",
             comment_prefix=prefix,
         )
         self._delete_nft_rules(
             _NFT_FILTER_FAMILY,
             _NFT_FILTER_TABLE,
-            "forward",
             comment_prefix=prefix,
         )
 
@@ -583,7 +666,6 @@ class NetworkManager:
         self._delete_nft_rules(
             _NFT_FILTER_FAMILY,
             _NFT_FILTER_TABLE,
-            "forward",
             comment=comment,
         )
 
