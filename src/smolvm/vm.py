@@ -703,44 +703,23 @@ class SmolVMManager:
             logger.info("VM stopped: %s (backend=%s)", vm_id, backend)
             return vm_info
 
-        # Firecracker graceful shutdown — tiered strategy:
-        #   1. SendCtrlAltDel → guest init traps SIGINT → poweroff -f  (~200ms)
-        #   2. SIGTERM the Firecracker process                         (1s grace)
-        #   3. SIGKILL as last resort
-        graceful_timeout = min(timeout, 2.0)
-
+        # Firecracker shutdown — fast path for ephemeral sandbox VMs.
+        # These VMs use isolated disk copies and host-side cleanup happens
+        # in delete(), so there's no meaningful state to preserve.
+        # Try CtrlAltDel with a brief grace window, then SIGKILL.
         if vm_info.socket_path and vm_info.socket_path.exists():
             try:
                 client = FirecrackerClient(vm_info.socket_path)
                 client.send_ctrl_alt_del()
                 client.close()
-
+                # Brief wait — if guest handles it, great
                 if vm_info.pid:
-                    self._wait_for_process(vm_info.pid, graceful_timeout)
+                    self._wait_for_process(vm_info.pid, min(timeout, 0.5))
             except Exception as e:
-                logger.warning("Graceful shutdown failed for %s: %s", vm_id, e)
+                logger.debug("CtrlAltDel failed for %s: %s", vm_id, e)
 
-        # SIGTERM fallback if still running
+        # Kill the Firecracker process directly
         if vm_info.pid and self._is_process_running(vm_info.pid):
-            logger.info("Sending SIGTERM to Firecracker process %d", vm_info.pid)
-            try:
-                os.kill(vm_info.pid, signal.SIGTERM)
-            except PermissionError:
-                # Firecracker may run as root — use sudo
-                subprocess.run(
-                    ["sudo", "-n", "kill", "-15", str(vm_info.pid)],
-                    check=False,
-                    capture_output=True,
-                )
-            except ProcessLookupError:
-                pass  # Already exited
-            # Wait for SIGTERM to take effect
-            if self._is_process_running(vm_info.pid):
-                self._wait_for_process(vm_info.pid, min(timeout - graceful_timeout, 1.0))
-
-        # Force kill if still running
-        if vm_info.pid and self._is_process_running(vm_info.pid):
-            logger.warning("Force-killing Firecracker process %d", vm_info.pid)
             self._kill_process(vm_info.pid)
 
         # Cleanup socket
