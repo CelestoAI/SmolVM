@@ -542,7 +542,6 @@ class TestVMRun:
         mock_info.status = VMState.RUNNING
         mock_info.network = mock_network
         mock_info.config.boot_args = "console=ttyS0 reboot=k panic=1 pci=off init=/init"
-        mock_info.config.backend = "qemu"
 
         mock_sdk = MagicMock()
         mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
@@ -569,45 +568,6 @@ class TestVMRun:
 
     @patch("smolvm.facade.SSHClient")
     @patch("smolvm.facade.SmolVMManager")
-    def test_run_prefers_guest_ip_first_for_firecracker(
-        self,
-        mock_sdk_cls: MagicMock,
-        mock_ssh_cls: MagicMock,
-        sample_config: VMConfig,
-    ) -> None:
-        """run() should try guest_ip:22 first on Firecracker VMs."""
-        mock_network = MagicMock()
-        mock_network.guest_ip = "172.16.0.2"
-        mock_network.ssh_host_port = 2200
-
-        mock_info = MagicMock()
-        mock_info.vm_id = "vm001"
-        mock_info.status = VMState.RUNNING
-        mock_info.network = mock_network
-        mock_info.config.boot_args = "console=ttyS0 reboot=k panic=1 pci=off init=/init"
-        mock_info.config.backend = "firecracker"
-
-        mock_sdk = MagicMock()
-        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
-        mock_sdk.get.return_value = mock_info
-        mock_sdk_cls.return_value = mock_sdk
-
-        guest_client = MagicMock()
-        guest_client.run.return_value = MagicMock(exit_code=0, stdout="ok\n", stderr="")
-        mock_ssh_cls.return_value = guest_client
-
-        vm = SmolVM(sample_config)
-        result = vm.run("echo ok")
-
-        assert result.exit_code == 0
-        mock_ssh_cls.assert_called_once()
-        assert mock_ssh_cls.call_args.kwargs["host"] == "172.16.0.2"
-        assert mock_ssh_cls.call_args.kwargs["port"] == 22
-        guest_client.wait_for_ssh.assert_called_once()
-        guest_client.run.assert_called_once_with("echo ok", timeout=30, shell="login")
-
-    @patch("smolvm.facade.SSHClient")
-    @patch("smolvm.facade.SmolVMManager")
     def test_wait_for_ssh_falls_back_to_guest_ip_when_localhost_unreachable(
         self,
         mock_sdk_cls: MagicMock,
@@ -624,7 +584,6 @@ class TestVMRun:
         mock_info.status = VMState.RUNNING
         mock_info.network = mock_network
         mock_info.config.boot_args = "console=ttyS0 reboot=k panic=1 pci=off init=/init"
-        mock_info.config.backend = "qemu"
 
         mock_sdk = MagicMock()
         mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
@@ -1228,7 +1187,7 @@ class TestVMEnvInjection:
         """start() should fallback to guest IP for env injection if localhost SSH fails."""
         mock_sdk = MagicMock()
         config_with_env = sample_config.model_copy(
-            update={"env_vars": {"FOO": "bar"}, "boot_args": "init=/init", "backend": "qemu"}
+            update={"env_vars": {"FOO": "bar"}, "boot_args": "init=/init"}
         )
 
         created_info = MagicMock(vm_id="vm001", status=VMState.CREATED)

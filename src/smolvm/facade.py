@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from smolvm.backends import BACKEND_FIRECRACKER, BACKEND_QEMU, resolve_backend
+from smolvm.backends import BACKEND_QEMU, resolve_backend
 from smolvm.env import inject_env_vars, read_env_vars, remove_env_vars
 from smolvm.exceptions import (
     CommandExecutionUnavailableError,
@@ -817,54 +817,19 @@ class SmolVM:
         # to let standard SSH retries handle it.
         return candidates[0]
 
-    def _prefer_direct_guest_ssh_endpoint(self) -> bool:
-        """Return ``True`` when guest IP should be the first SSH candidate.
-
-        Firecracker VMs on Linux generally have the guest IP reachable directly,
-        so preferring ``guest_ip:22`` avoids localhost forwarding/NAT jitter on
-        readiness checks. QEMU keeps localhost first for compatibility.
-        """
-        backend: str | None = None
-
-        config_backend = getattr(getattr(self._info, "config", None), "backend", None)
-        if isinstance(config_backend, str) and config_backend.strip():
-            backend = config_backend
-
-        if backend is None:
-            sdk_backend = getattr(self._sdk, "backend", None)
-            if isinstance(sdk_backend, str) and sdk_backend.strip():
-                backend = sdk_backend
-
-        if backend is None:
-            return False
-
-        try:
-            resolved = resolve_backend(backend)
-        except ValueError:
-            return False
-
-        return resolved == BACKEND_FIRECRACKER
-
     def _ssh_endpoints(self) -> list[tuple[str, int]]:
-        """Return SSH endpoint candidates in backend-aware preferred order."""
+        """Return SSH endpoint candidates in preferred order."""
         if self._info.network is None:
             raise SmolVMError(
                 "VM has no network configuration",
                 {"vm_id": self._vm_id},
             )
 
-        guest_endpoint = (self._info.network.guest_ip, 22)
-        endpoints: list[tuple[str, int]] = [guest_endpoint]
+        endpoints: list[tuple[str, int]] = []
         ssh_host_port = self._info.network.ssh_host_port
-
-        if self._prefer_direct_guest_ssh_endpoint():
-            if isinstance(ssh_host_port, int):
-                endpoints.append(("127.0.0.1", ssh_host_port))
-        else:
-            endpoints = []
-            if isinstance(ssh_host_port, int):
-                endpoints.append(("127.0.0.1", ssh_host_port))
-            endpoints.append(guest_endpoint)
+        if isinstance(ssh_host_port, int):
+            endpoints.append(("127.0.0.1", ssh_host_port))
+        endpoints.append((self._info.network.guest_ip, 22))
 
         unique: list[tuple[str, int]] = []
         for endpoint in endpoints:
