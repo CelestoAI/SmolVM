@@ -85,6 +85,24 @@ def test_resolve_ui_dist_path_honors_env(monkeypatch: pytest.MonkeyPatch) -> Non
     assert server._resolve_ui_dist_path() == custom.resolve()
 
 
+def test_resolve_ui_dist_path_uses_state_dir_when_repo_layout_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Installed-package layout should fallback to resolve_data_dir()."""
+    fake_server = tmp_path / "site-packages" / "smolvm" / "dashboard" / "server.py"
+    fake_server.parent.mkdir(parents=True)
+    fake_server.write_text("", encoding="utf-8")
+
+    state_dir = tmp_path / "state"
+
+    monkeypatch.delenv(server.UI_DIST_ENV, raising=False)
+    monkeypatch.setattr(server, "__file__", str(fake_server))
+    monkeypatch.setattr(server, "resolve_data_dir", lambda: state_dir)
+
+    assert server._resolve_ui_dist_path() == state_dir / "dashboard-ui" / "dist"
+
+
 def test_list_vms_invalid_status_returns_400(monkeypatch: pytest.MonkeyPatch) -> None:
     """Unknown status query values should map to 400, not 500."""
     monkeypatch.setattr(server, "_get_state_manager", lambda _app: DummyStateManager())

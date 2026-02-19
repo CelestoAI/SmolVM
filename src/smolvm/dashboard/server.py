@@ -573,6 +573,11 @@ async def websocket_stream(websocket: WebSocket) -> None:
 # =====================================================================
 
 _ui_dist = _resolve_ui_dist_path()
+try:
+    _ui_dist.mkdir(parents=True, exist_ok=True)
+except OSError:
+    logger.warning("Failed to prepare dashboard UI dist directory: %s", _ui_dist, exc_info=True)
+
 app.mount("/", StaticFiles(directory=_ui_dist, html=True, check_dir=False), name="ui")
 
 if _ui_dist.is_dir():
