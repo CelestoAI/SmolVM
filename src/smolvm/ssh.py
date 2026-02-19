@@ -22,6 +22,7 @@ leveraging the SSH binary that is already a checked dependency in
 
 import logging
 import shlex
+import socket
 import subprocess
 import time
 from typing import Literal
@@ -182,15 +183,36 @@ class SSHClient:
         except OSError as e:
             raise SmolVMError(f"Failed to execute SSH: {e}") from e
 
+    def _tcp_port_open(self, timeout: float = 0.1) -> bool:
+        """Check if the SSH port is accepting TCP connections.
+
+        This is much faster than spawning an ssh subprocess (~1ms vs ~50ms)
+        and is used to efficiently poll for port readiness before attempting
+        a full SSH handshake.
+        """
+        try:
+            with socket.create_connection((self.host, self.port), timeout=timeout) as sock:
+                # Read the SSH banner to confirm sshd is actually ready,
+                # not just TCP backlog accepting connections.
+                sock.settimeout(timeout)
+                data = sock.recv(32)
+                return data.startswith(b"SSH-")
+        except (OSError, socket.timeout):
+            return False
+
     def wait_for_ssh(self, timeout: float = 60.0, interval: float = 0.1) -> None:
         """Wait for the SSH daemon to become reachable on the guest.
 
-        Polls with exponential backoff until a connection succeeds or
-        *timeout* is exceeded.
+        Uses a two-phase approach for fast detection:
+
+        1. **TCP probe** — lightweight ``socket.connect()`` calls (~1ms each)
+           with exponential backoff to detect when sshd is listening.
+        2. **SSH handshake** — one real ``ssh`` command to confirm
+           authentication works.
 
         Args:
             timeout: Maximum seconds to wait.
-            interval: Initial seconds between connection attempts.
+            interval: Initial seconds between TCP probe attempts.
                 Doubles after each failure, capped at 2.0s.
 
         Raises:
@@ -201,7 +223,6 @@ class SSHClient:
             raise ValueError("timeout must be > 0")
 
         deadline = time.monotonic() + timeout
-        last_error: str = ""
         backoff = interval
         max_backoff = 2.0
 
@@ -212,6 +233,25 @@ class SSHClient:
             timeout,
         )
 
+        # Phase 1: Fast TCP probe — detect when sshd port is open.
+        # Each probe is ~1ms (vs ~50ms for spawning ssh subprocess).
+        while time.monotonic() < deadline:
+            if self._tcp_port_open(timeout=min(0.5, deadline - time.monotonic())):
+                logger.debug("TCP port %d is open on %s", self.port, self.host)
+                break
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise OperationTimeoutError(
+                    f"wait_for_ssh({self.host}:{self.port}): port never opened",
+                    timeout,
+                )
+            time.sleep(min(backoff, remaining))
+            backoff = min(backoff * 2, max_backoff)
+
+        # Phase 2: Confirm SSH actually works (auth, shell, etc.)
+        # The port is open, so this should succeed quickly.
+        last_error: str = ""
         while time.monotonic() < deadline:
             try:
                 result = self.run("echo __smolvm_ready__", timeout=2, shell="raw")
@@ -221,7 +261,7 @@ class SSHClient:
             except (SmolVMError, OperationTimeoutError) as e:
                 last_error = str(e)
                 logger.debug(
-                    "SSH not ready yet on %s:%d: %s",
+                    "SSH handshake not ready on %s:%d: %s",
                     self.host,
                     self.port,
                     last_error,
@@ -230,8 +270,7 @@ class SSHClient:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            time.sleep(min(backoff, remaining))
-            backoff = min(backoff * 2, max_backoff)
+            time.sleep(min(0.2, remaining))
 
         raise OperationTimeoutError(
             f"wait_for_ssh({self.host}:{self.port}): last error: {last_error}",
