@@ -72,17 +72,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Treat warnings as failures.",
     )
 
-    # ── dashboard subcommand ──────────────────────────────────────────
-    dashboard = subparsers.add_parser(
-        "dashboard",
-        help="Start the SmolVM dashboard API server",
+    # ── ui subcommand ─────────────────────────────────────────────────
+    ui = subparsers.add_parser(
+        "ui",
+        help="Start the SmolVM dashboard UI server",
     )
-    dashboard.add_argument(
+    ui.add_argument(
         "--host",
         default="127.0.0.1",
         help="Bind host (default: 127.0.0.1).",
     )
-    dashboard.add_argument(
+    ui.add_argument(
         "--port",
         type=int,
         default=8080,
@@ -254,8 +254,8 @@ def _run_env(args: argparse.Namespace) -> int:
             vm.close()
 
 
-def _run_dashboard(args: argparse.Namespace) -> int:
-    """Handle ``smolvm dashboard``."""
+def _run_ui(args: argparse.Namespace) -> int:
+    """Handle ``smolvm ui``."""
     try:
         uvicorn = importlib.import_module("uvicorn")
     except ImportError:
@@ -275,7 +275,7 @@ def _run_dashboard(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         return 130
     except Exception as e:
-        print(f"Error: failed to start dashboard: {e}")
+        print(f"Error: failed to start UI: {e}")
         return 1
 
 
@@ -294,8 +294,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             strict=args.strict,
         )
 
-    if args.command == "dashboard":
-        return _run_dashboard(args)
+    if args.command == "ui":
+        return _run_ui(args)
 
     if args.command == "env":
         return _run_env(args)
