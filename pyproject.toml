@@ -10,7 +10,7 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
 authors = [
-    { name = "SmolVM Team" }
+    { name = "Celesto AI" }
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
