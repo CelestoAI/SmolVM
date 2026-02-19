@@ -64,7 +64,14 @@ def _resolve_ui_dist_path() -> Path:
 
     server_dir = Path(__file__).resolve().parent
     repo_root = server_dir.parents[2]
-    return repo_root / "ui" / "dist"
+    repo_ui_dir = repo_root / "ui"
+
+    # Source checkout layout: <repo>/src/smolvm/dashboard/server.py + <repo>/ui/dist
+    if repo_ui_dir.is_dir() or (repo_root / ".git").exists():
+        return repo_ui_dir / "dist"
+
+    # Installed package fallback: cache downloaded UI under writable SmolVM state.
+    return resolve_data_dir() / "dashboard-ui" / "dist"
 
 
 def _github_headers() -> dict[str, str]:
@@ -173,29 +180,37 @@ def _ensure_latest_dashboard_ui_dist(target_dist: Path) -> bool:
             # If we cannot read the tag file, treat it as a cache miss and re-download.
             logger.debug("Failed to read dashboard UI tag file %s: %s", tag_file, exc)
 
-    target_root.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="smolvm-ui-", dir=str(target_root)) as tmp_dir:
-        tmp_path = Path(tmp_dir)
-        archive_path = tmp_path / "dashboard-ui.tar.gz"
-        extract_dir = tmp_path / "extract"
-        extract_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        target_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="smolvm-ui-", dir=str(target_root)) as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            archive_path = tmp_path / "dashboard-ui.tar.gz"
+            extract_dir = tmp_path / "extract"
+            extract_dir.mkdir(parents=True, exist_ok=True)
 
-        try:
             _download_asset(asset_url, archive_path)
             extracted_dist = _extract_dashboard_dist(archive_path, extract_dir)
-        except Exception:
-            logger.warning("Failed to download/extract dashboard UI dist", exc_info=True)
-            return False
 
-        staged_dist = tmp_path / "dist"
-        shutil.copytree(extracted_dist, staged_dist)
+            staged_dist = tmp_path / "dist"
+            shutil.copytree(extracted_dist, staged_dist)
 
-        if target_dist.exists():
-            shutil.rmtree(target_dist)
-        shutil.move(str(staged_dist), str(target_dist))
+            if target_dist.exists():
+                if target_dist.is_dir():
+                    shutil.rmtree(target_dist)
+                else:
+                    target_dist.unlink()
+            shutil.move(str(staged_dist), str(target_dist))
 
-    tag_file.write_text(f"{latest_tag}\n", encoding="utf-8")
-    return True
+        try:
+            tag_file.write_text(f"{latest_tag}\n", encoding="utf-8")
+        except OSError as exc:
+            logger.warning("Failed to update dashboard UI tag file %s: %s", tag_file, exc)
+
+        return True
+
+    except Exception:
+        logger.warning("Failed to download/extract/store dashboard UI dist", exc_info=True)
+        return False
 
 
 # --- Accessor helpers for app.state ---
