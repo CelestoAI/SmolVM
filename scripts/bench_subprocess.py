@@ -236,10 +236,6 @@ def _live_benchmark(num_vms: int) -> dict:
         print("ERROR: Live benchmark requires Linux. Use --dry-run on macOS.")
         sys.exit(1)
 
-    if os.geteuid() != 0:
-        print("ERROR: Live benchmark requires root. Run with sudo.")
-        sys.exit(1)
-
     from smolvm.facade import SmolVM
 
     vm_results: list[dict] = []
