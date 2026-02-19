@@ -199,3 +199,15 @@ credentials*.json
 .zendata/
 .idea/
 *.skills/
+
+# Node / dashboard UI dependencies
+node_modules/
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Dashboard UI dependency lockfiles
+ui/package-lock.json
+ui/node_modules/.package-lock.json
