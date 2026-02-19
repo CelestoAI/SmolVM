@@ -227,7 +227,7 @@ check_cmd() {
 run_checks() {
     check_kvm
     check_cmd "ip" "ip (iproute2)"
-    check_cmd "iptables" "iptables"
+    check_cmd "nft" "nft (nftables)"
     check_cmd "ssh" "ssh (openssh-client)"
     check_cmd "firecracker" "firecracker"
     if [[ "${WITH_DOCKER}" == "true" ]]; then
@@ -235,7 +235,7 @@ run_checks() {
     fi
 }
 
-required_runtime_cmds=("ip" "iptables" "ssh")
+required_runtime_cmds=("ip" "nft" "ssh")
 required_install_cmds=("wget" "tar")
 if [[ "${WITH_DOCKER}" == "true" ]]; then
     required_install_cmds+=("curl")
@@ -310,7 +310,7 @@ else
         fi
     fi
 
-    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl wget jq iptables iproute2 e2fsprogs openssh-client tar; then
+    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl wget jq nftables iproute2 e2fsprogs openssh-client tar; then
         echo "❌ apt-get install failed. Fix apt sources or install deps manually, then rerun with --skip-deps."
         exit 1
     fi

@@ -35,7 +35,7 @@ def run_cleanup(*, delete_all: bool = False, prefix: str = "vm-", dry_run: bool 
         Process-style exit code (0 success, non-zero if failures occurred).
     """
     if os.geteuid() != 0:
-        print("Warning: not running as root. Cleanup may fail for TAP/iptables resources.")
+        print("Warning: not running as root. Cleanup may fail for TAP/nftables resources.")
 
     sdk = SmolVMManager()
     try:

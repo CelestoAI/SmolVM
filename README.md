@@ -115,7 +115,7 @@ config = VMConfig(..., disk_mode="shared")
 
 ### 5. Port Forwarding
 
-Expose a guest application to your local machine securely. `expose_local` prefers host-local iptables forwarding and automatically falls back to an SSH tunnel when needed.
+Expose a guest application to your local machine securely. `expose_local` prefers host-local nftables forwarding and automatically falls back to an SSH tunnel when needed.
 
 ```python
 from smolvm import SmolVM

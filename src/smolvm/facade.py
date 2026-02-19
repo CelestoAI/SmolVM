@@ -64,7 +64,7 @@ class _LocalForward:
 
     host_port: int
     guest_port: int
-    transport: Literal["iptables", "ssh_tunnel"]
+    transport: Literal["nftables", "ssh_tunnel"]
     tunnel_proc: subprocess.Popen[str] | None = None
 
 
@@ -540,8 +540,8 @@ class SmolVM:
                 attempts.append(f"localhost:{candidate} already exposed by this VM instance")
                 continue
 
-            iptables_configured = False
-            keep_iptables = False
+            nftables_configured = False
+            keep_nftables = False
             try:
                 self._sdk.network.setup_local_port_forward(
                     vm_id=self._vm_id,
@@ -549,31 +549,31 @@ class SmolVM:
                     host_port=candidate,
                     guest_port=guest_port,
                 )
-                iptables_configured = True
+                nftables_configured = True
                 if self._probe_local_forward(candidate):
                     self._local_forwards[key] = _LocalForward(
                         host_port=candidate,
                         guest_port=guest_port,
-                        transport="iptables",
+                        transport="nftables",
                     )
-                    keep_iptables = True
+                    keep_nftables = True
                     logger.info(
-                        "VM %s exposed localhost:%d -> guest:%d (transport=iptables)",
+                        "VM %s exposed localhost:%d -> guest:%d (transport=nftables)",
                         self._vm_id,
                         candidate,
                         guest_port,
                     )
                     return candidate
                 attempts.append(
-                    f"iptables forward localhost:{candidate} -> guest:{guest_port} "
+                    f"nftables forward localhost:{candidate} -> guest:{guest_port} "
                     "was configured but not reachable"
                 )
             except Exception as e:
                 attempts.append(
-                    f"iptables forward localhost:{candidate} -> guest:{guest_port} failed: {e}"
+                    f"nftables forward localhost:{candidate} -> guest:{guest_port} failed: {e}"
                 )
             finally:
-                if iptables_configured and not keep_iptables:
+                if nftables_configured and not keep_nftables:
                     with suppress(Exception):
                         self._sdk.network.cleanup_local_port_forward(
                             vm_id=self._vm_id,
@@ -1152,7 +1152,7 @@ class SmolVM:
 
         if guest_ip is None:
             logger.warning(
-                "Skipping iptables cleanup for localhost:%d -> guest:%d on VM %s "
+                "Skipping nftables cleanup for localhost:%d -> guest:%d on VM %s "
                 "because guest network info is unavailable",
                 forward.host_port,
                 forward.guest_port,

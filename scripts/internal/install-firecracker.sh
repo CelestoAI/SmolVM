@@ -90,7 +90,7 @@ if [[ "$SKIP_DEPS" == "true" ]]; then
     done
 else
     run_root apt-get update -qq
-    run_root apt-get install -y curl wget jq iptables e2fsprogs -qq
+    run_root apt-get install -y curl wget jq nftables e2fsprogs -qq
 fi
 
 cd /tmp

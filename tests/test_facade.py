@@ -830,7 +830,7 @@ class TestVMLocalExpose:
         mock_sdk_cls: MagicMock,
         sample_config: VMConfig,
     ) -> None:
-        """Falls back to SSH tunnel when iptables local path is unreachable."""
+        """Falls back to SSH tunnel when nftables local path is unreachable."""
         mock_network = MagicMock()
         mock_network.guest_ip = "172.16.0.2"
 
@@ -941,7 +941,7 @@ class TestVMLocalExpose:
         vm.unexpose_local(host_port=18080, guest_port=8080)
 
         mock_stop_tunnel.assert_called_once_with(tunnel_proc)
-        # iptables cleanup happens once immediately after failed probe in expose_local
+        # nftables cleanup happens once immediately after failed probe in expose_local
         mock_sdk.network.cleanup_local_port_forward.assert_called_once()
 
 

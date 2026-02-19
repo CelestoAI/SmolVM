@@ -138,7 +138,7 @@ class HostManager:
         """
         required = {
             "ip": "iproute2",
-            "iptables": "iptables",
+            "nft": "nftables",
             "ssh": "openssh-client",
         }
 

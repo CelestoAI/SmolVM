@@ -20,64 +20,109 @@ from smolvm.exceptions import SmolVMError
 from smolvm.network import NetworkManager, check_network_prerequisites
 
 
+def _collect_nft_scripts(mock_run_command: MagicMock) -> str:
+    scripts: list[str] = []
+    for call in mock_run_command.call_args_list:
+        cmd = call.args[0]
+        if cmd == ["nft", "-f", "-"]:
+            scripts.append(call.kwargs.get("input", ""))
+    return "\n".join(scripts)
+
+
 class TestSSHPortForwarding:
     """Tests for SSH forwarding rule setup/cleanup."""
 
     @patch("smolvm.network.run_command")
-    @patch.object(NetworkManager, "_rule_exists")
-    def test_setup_ssh_port_forward_adds_rules(
-        self,
-        mock_rule_exists: MagicMock,
-        mock_run_command: MagicMock,
-    ) -> None:
-        """Test setup creates PREROUTING, OUTPUT, and FORWARD rules."""
-        mock_rule_exists.return_value = False
+    def test_setup_ssh_port_forward_adds_rules(self, mock_run_command: MagicMock) -> None:
+        """Setup should add prerouting/output/postrouting and forward rules."""
+        mock_run_command.return_value = MagicMock(stdout="")
+
         nm = NetworkManager()
         nm._outbound_interface = "eth0"
 
-        nm.setup_ssh_port_forward(
-            vm_id="vm001",
-            guest_ip="172.16.0.2",
-            host_port=2200,
-        )
+        nm.setup_ssh_port_forward(vm_id="vm001", guest_ip="172.16.0.2", host_port=2200)
 
-        commands = [call.args[0] for call in mock_run_command.call_args_list]
-        assert any("-A" in cmd and "PREROUTING" in cmd for cmd in commands)
-        assert any("-A" in cmd and "OUTPUT" in cmd for cmd in commands)
-        assert any("-A" in cmd and "POSTROUTING" in cmd for cmd in commands)
-        assert any("-A" in cmd and "FORWARD" in cmd for cmd in commands)
+        scripts = _collect_nft_scripts(mock_run_command)
+        assert "add rule ip smolvm_nat prerouting" in scripts
+        assert "add rule ip smolvm_nat output" in scripts
+        assert "add rule ip smolvm_nat postrouting" in scripts
+        assert "add rule inet smolvm_filter forward" in scripts
+        assert 'comment "smolvm:vm001:ssh"' in scripts
 
     @patch("smolvm.network.run_command")
     def test_cleanup_ssh_port_forward_deletes_rules(self, mock_run_command: MagicMock) -> None:
-        """Test cleanup removes FORWARD, OUTPUT and PREROUTING rules."""
-        nm = NetworkManager()
-        nm._outbound_interface = "eth0"
+        """Cleanup should delete postrouting/forward/output/prerouting rules."""
 
-        nm.cleanup_ssh_port_forward(
-            vm_id="vm001",
-            guest_ip="172.16.0.2",
-            host_port=2200,
-        )
+        def _side_effect(cmd: list[str], *args: object, **kwargs: object) -> MagicMock:
+            if cmd == ["nft", "-a", "list", "chain", "ip", "smolvm_nat", "postrouting"]:
+                return MagicMock(stdout='tcp dport 22 comment "smolvm:vm001:ssh" # handle 11\n')
+            if cmd == ["nft", "-a", "list", "chain", "inet", "smolvm_filter", "forward"]:
+                return MagicMock(stdout='tcp dport 22 comment "smolvm:vm001:ssh" # handle 12\n')
+            if cmd == ["nft", "-a", "list", "chain", "ip", "smolvm_nat", "output"]:
+                return MagicMock(stdout='tcp dport 2200 comment "smolvm:vm001:ssh" # handle 13\n')
+            if cmd == ["nft", "-a", "list", "chain", "ip", "smolvm_nat", "prerouting"]:
+                return MagicMock(stdout='tcp dport 2200 comment "smolvm:vm001:ssh" # handle 14\n')
+            return MagicMock(stdout="")
+
+        mock_run_command.side_effect = _side_effect
+
+        nm = NetworkManager()
+        nm.cleanup_ssh_port_forward(vm_id="vm001", guest_ip="172.16.0.2", host_port=2200)
 
         commands = [call.args[0] for call in mock_run_command.call_args_list]
-        assert any("-D" in cmd and "POSTROUTING" in cmd for cmd in commands)
-        assert any("-D" in cmd and "FORWARD" in cmd for cmd in commands)
-        assert any("-D" in cmd and "OUTPUT" in cmd for cmd in commands)
-        assert any("-D" in cmd and "PREROUTING" in cmd for cmd in commands)
+        assert [
+            "nft",
+            "delete",
+            "rule",
+            "ip",
+            "smolvm_nat",
+            "postrouting",
+            "handle",
+            "11",
+        ] in commands
+        assert [
+            "nft",
+            "delete",
+            "rule",
+            "inet",
+            "smolvm_filter",
+            "forward",
+            "handle",
+            "12",
+        ] in commands
+        assert [
+            "nft",
+            "delete",
+            "rule",
+            "ip",
+            "smolvm_nat",
+            "output",
+            "handle",
+            "13",
+        ] in commands
+        assert [
+            "nft",
+            "delete",
+            "rule",
+            "ip",
+            "smolvm_nat",
+            "prerouting",
+            "handle",
+            "14",
+        ] in commands
 
 
 class TestLocalPortForwarding:
     """Tests for localhost-only forwarding rule setup/cleanup."""
 
     @patch("smolvm.network.run_command")
-    @patch.object(NetworkManager, "_rule_exists")
     def test_setup_local_port_forward_adds_output_and_forward(
         self,
-        mock_rule_exists: MagicMock,
         mock_run_command: MagicMock,
     ) -> None:
-        """Local forward should create OUTPUT and FORWARD, not PREROUTING."""
-        mock_rule_exists.return_value = False
+        """Local forward should add OUTPUT/POSTROUTING/FORWARD, not PREROUTING."""
+        mock_run_command.return_value = MagicMock(stdout="")
+
         nm = NetworkManager()
 
         nm.setup_local_port_forward(
@@ -87,17 +132,29 @@ class TestLocalPortForwarding:
             guest_port=8080,
         )
 
-        commands = [call.args[0] for call in mock_run_command.call_args_list]
-        assert any("-A" in cmd and "OUTPUT" in cmd for cmd in commands)
-        assert any("-A" in cmd and "POSTROUTING" in cmd for cmd in commands)
-        assert any("-A" in cmd and "FORWARD" in cmd for cmd in commands)
-        assert not any("-A" in cmd and "PREROUTING" in cmd for cmd in commands)
+        scripts = _collect_nft_scripts(mock_run_command)
+        assert "add rule ip smolvm_nat output" in scripts
+        assert "add rule ip smolvm_nat postrouting" in scripts
+        assert "add rule inet smolvm_filter forward" in scripts
+        assert "add rule ip smolvm_nat prerouting" not in scripts
 
     @patch("smolvm.network.run_command")
     def test_cleanup_local_port_forward_deletes_rules(self, mock_run_command: MagicMock) -> None:
-        """Local-forward cleanup should remove OUTPUT and FORWARD rules."""
-        nm = NetworkManager()
+        """Cleanup should delete OUTPUT/POSTROUTING/FORWARD local-forward rules."""
 
+        def _side_effect(cmd: list[str], *args: object, **kwargs: object) -> MagicMock:
+            comment = 'comment "smolvm:vm001:local:18080:8080"'
+            if cmd == ["nft", "-a", "list", "chain", "ip", "smolvm_nat", "postrouting"]:
+                return MagicMock(stdout=f"{comment} # handle 21\n")
+            if cmd == ["nft", "-a", "list", "chain", "inet", "smolvm_filter", "forward"]:
+                return MagicMock(stdout=f"{comment} # handle 22\n")
+            if cmd == ["nft", "-a", "list", "chain", "ip", "smolvm_nat", "output"]:
+                return MagicMock(stdout=f"{comment} # handle 23\n")
+            return MagicMock(stdout="")
+
+        mock_run_command.side_effect = _side_effect
+
+        nm = NetworkManager()
         nm.cleanup_local_port_forward(
             vm_id="vm001",
             guest_ip="172.16.0.2",
@@ -106,10 +163,36 @@ class TestLocalPortForwarding:
         )
 
         commands = [call.args[0] for call in mock_run_command.call_args_list]
-        assert any("-D" in cmd and "POSTROUTING" in cmd for cmd in commands)
-        assert any("-D" in cmd and "FORWARD" in cmd for cmd in commands)
-        assert any("-D" in cmd and "OUTPUT" in cmd for cmd in commands)
-        assert not any("-D" in cmd and "PREROUTING" in cmd for cmd in commands)
+        assert [
+            "nft",
+            "delete",
+            "rule",
+            "ip",
+            "smolvm_nat",
+            "postrouting",
+            "handle",
+            "21",
+        ] in commands
+        assert [
+            "nft",
+            "delete",
+            "rule",
+            "inet",
+            "smolvm_filter",
+            "forward",
+            "handle",
+            "22",
+        ] in commands
+        assert [
+            "nft",
+            "delete",
+            "rule",
+            "ip",
+            "smolvm_nat",
+            "output",
+            "handle",
+            "23",
+        ] in commands
 
     @patch("smolvm.network.run_command", side_effect=SmolVMError("missing rule"))
     def test_cleanup_local_port_forward_is_idempotent_when_rules_missing(
@@ -124,6 +207,7 @@ class TestLocalPortForwarding:
             host_port=18080,
             guest_port=8080,
         )
+        # One chain list attempt per cleanup target chain.
         assert mock_run_command.call_count == 3
 
     @patch("smolvm.network.run_command")
@@ -131,29 +215,26 @@ class TestLocalPortForwarding:
         self,
         mock_run_command: MagicMock,
     ) -> None:
-        """Bulk cleanup should only delete local-forward rules for the given VM."""
+        """Bulk cleanup should remove only local-forward rules for the VM."""
         nm = NetworkManager()
 
         def _side_effect(cmd: list[str], *args: object, **kwargs: object) -> MagicMock:
-            if cmd == ["iptables", "-t", "nat", "-S", "OUTPUT"]:
+            if cmd == ["nft", "-a", "list", "chain", "ip", "smolvm_nat", "output"]:
                 return MagicMock(
                     stdout=(
-                        "-A OUTPUT -d 127.0.0.1/32 -p tcp --dport 18080 "
-                        '-m comment --comment "smolvm:vm001:local:18080:8080" '
-                        "-j DNAT --to-destination 172.16.0.2:8080\n"
-                        "-A OUTPUT -d 127.0.0.1/32 -p tcp --dport 18081 "
-                        '-m comment --comment "smolvm:other:local:18081:8081" '
-                        "-j DNAT --to-destination 172.16.0.3:8081\n"
+                        'tcp dport 18080 comment "smolvm:vm001:local:18080:8080" # handle 31\n'
+                        'tcp dport 18081 comment "smolvm:other:local:18081:8081" # handle 32\n'
                     )
                 )
-            if cmd == ["iptables", "-S", "FORWARD"]:
+            if cmd == ["nft", "-a", "list", "chain", "ip", "smolvm_nat", "postrouting"]:
+                return MagicMock(
+                    stdout='tcp dport 8080 comment "smolvm:vm001:local:18080:8080" # handle 33\n'
+                )
+            if cmd == ["nft", "-a", "list", "chain", "inet", "smolvm_filter", "forward"]:
                 return MagicMock(
                     stdout=(
-                        "-A FORWARD -p tcp -d 172.16.0.2 --dport 8080 "
-                        "-m conntrack --ctstate NEW,ESTABLISHED,RELATED "
-                        '-m comment --comment "smolvm:vm001:local:18080:8080" -j ACCEPT\n'
-                        "-A FORWARD -p tcp -d 172.16.0.2 --dport 22 "
-                        '-m comment --comment "smolvm:vm001:ssh" -j ACCEPT\n'
+                        'tcp dport 8080 comment "smolvm:vm001:local:18080:8080" # handle 34\n'
+                        'tcp dport 22 comment "smolvm:vm001:ssh" # handle 35\n'
                     )
                 )
             return MagicMock(stdout="")
@@ -163,50 +244,63 @@ class TestLocalPortForwarding:
         nm.cleanup_all_local_port_forwards("vm001")
 
         commands = [call.args[0] for call in mock_run_command.call_args_list]
-        assert ["iptables", "-t", "nat", "-S", "OUTPUT"] in commands
-        assert ["iptables", "-S", "FORWARD"] in commands
+        assert ["nft", "-a", "list", "chain", "ip", "smolvm_nat", "output"] in commands
+        assert ["nft", "-a", "list", "chain", "ip", "smolvm_nat", "postrouting"] in commands
+        assert ["nft", "-a", "list", "chain", "inet", "smolvm_filter", "forward"] in commands
+
         assert [
-            "iptables",
-            "-t",
-            "nat",
-            "-D",
-            "OUTPUT",
-            "-d",
-            "127.0.0.1/32",
-            "-p",
-            "tcp",
-            "--dport",
-            "18080",
-            "-m",
-            "comment",
-            "--comment",
-            "smolvm:vm001:local:18080:8080",
-            "-j",
-            "DNAT",
-            "--to-destination",
-            "172.16.0.2:8080",
+            "nft",
+            "delete",
+            "rule",
+            "ip",
+            "smolvm_nat",
+            "output",
+            "handle",
+            "31",
         ] in commands
         assert [
-            "iptables",
-            "-D",
-            "FORWARD",
-            "-p",
-            "tcp",
-            "-d",
-            "172.16.0.2",
-            "--dport",
-            "8080",
-            "-m",
-            "conntrack",
-            "--ctstate",
-            "NEW,ESTABLISHED,RELATED",
-            "-m",
-            "comment",
-            "--comment",
-            "smolvm:vm001:local:18080:8080",
-            "-j",
-            "ACCEPT",
+            "nft",
+            "delete",
+            "rule",
+            "ip",
+            "smolvm_nat",
+            "postrouting",
+            "handle",
+            "33",
         ] in commands
+        assert [
+            "nft",
+            "delete",
+            "rule",
+            "inet",
+            "smolvm_filter",
+            "forward",
+            "handle",
+            "34",
+        ] in commands
+
+        # Must not delete rule belonging to another VM.
+        assert [
+            "nft",
+            "delete",
+            "rule",
+            "ip",
+            "smolvm_nat",
+            "output",
+            "handle",
+            "32",
+        ] not in commands
+        # Must not delete non-local (SSH) rule.
+        assert [
+            "nft",
+            "delete",
+            "rule",
+            "inet",
+            "smolvm_filter",
+            "forward",
+            "handle",
+            "35",
+        ] not in commands
 
 
 class TestNetworkPrerequisites:
@@ -227,5 +321,5 @@ class TestNetworkPrerequisites:
         assert errors == []
         commands = [call.args[0] for call in mock_run_command.call_args_list]
         assert ["ip", "link", "show"] in commands
-        assert ["iptables", "-L"] in commands
+        assert ["nft", "list", "tables"] in commands
         assert ["sysctl", "net.ipv4.ip_forward"] in commands

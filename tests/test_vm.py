@@ -352,7 +352,7 @@ class TestSmolVMDelete:
         smol_vm: SmolVMManager,
         sample_config: VMConfig,
     ) -> None:
-        """Delete should clean local-forward iptables rules by vm_id."""
+        """Delete should clean local-forward nftables rules by vm_id."""
         mock_network = MagicMock()
         mock_network.host_ip = "172.16.0.1"
         mock_network.generate_mac.return_value = "AA:FC:00:00:00:01"

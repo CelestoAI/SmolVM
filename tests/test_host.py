@@ -91,14 +91,14 @@ class TestCheckDependencies:
         """Test when some dependencies are missing."""
 
         def side_effect(binary: str) -> Path | None:
-            return Path(f"/usr/bin/{binary}") if binary != "iptables" else None
+            return Path(f"/usr/bin/{binary}") if binary != "nft" else None
 
         mock_which.side_effect = side_effect
 
         missing = host_manager.check_dependencies()
 
         assert len(missing) == 1
-        assert "iptables" in missing[0]
+        assert "nft" in missing[0]
 
 
 class TestFindFirecracker:

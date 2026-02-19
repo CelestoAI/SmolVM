@@ -89,7 +89,7 @@ if ! id "${RUNTIME_USER}" >/dev/null 2>&1; then
 fi
 
 IP_BIN="$(command -v ip || true)"
-IPTABLES_BIN="$(command -v iptables || true)"
+NFT_BIN="$(command -v nft || true)"
 SYSCTL_BIN="$(command -v sysctl || true)"
 VISUDO_BIN="$(command -v visudo || true)"
 FIRECRACKER_BIN="$(command -v firecracker || true)"
@@ -101,7 +101,7 @@ fi
 
 for item in \
     "ip:${IP_BIN}" \
-    "iptables:${IPTABLES_BIN}" \
+    "nft:${NFT_BIN}" \
     "sysctl:${SYSCTL_BIN}" \
     "visudo:${VISUDO_BIN}" \
     "firecracker:${FIRECRACKER_BIN}" \
@@ -132,7 +132,7 @@ render_sudoers() {
 # Managed by SmolVM (${SCRIPT_NAME}) for user ${RUNTIME_USER}
 # Allows only commands needed by SmolVM runtime networking, Firecracker, and image mount helper.
 Defaults:${RUNTIME_USER} !requiretty
-Cmnd_Alias SMOLVM_NET_CMDS = ${IP_BIN} *, ${IPTABLES_BIN} *, ${SYSCTL_BIN} net.ipv4.ip_forward, ${SYSCTL_BIN} -w net.ipv4.ip_forward=1
+Cmnd_Alias SMOLVM_NET_CMDS = ${IP_BIN} *, ${NFT_BIN} *, ${SYSCTL_BIN} net.ipv4.ip_forward, ${SYSCTL_BIN} -w net.ipv4.ip_forward=1, ${SYSCTL_BIN} -w net.ipv4.conf.*.route_localnet=1
 Cmnd_Alias SMOLVM_VM_CMDS = ${FIRECRACKER_BIN} *, /bin/kill -9 *, /usr/bin/kill -9 *
 Cmnd_Alias SMOLVM_IMG_CMDS = ${LOOPFS_HELPER_DST} *
 ${RUNTIME_USER} ALL=(root) NOPASSWD: SMOLVM_NET_CMDS, SMOLVM_VM_CMDS, SMOLVM_IMG_CMDS
@@ -151,8 +151,8 @@ check_runtime_access() {
     if ! "${runner[@]}" "${IP_BIN}" link show >/dev/null 2>&1; then
         failures+=("ip")
     fi
-    if ! "${runner[@]}" "${IPTABLES_BIN}" -L >/dev/null 2>&1; then
-        failures+=("iptables")
+    if ! "${runner[@]}" "${NFT_BIN}" list tables >/dev/null 2>&1; then
+        failures+=("nft")
     fi
     if ! "${runner[@]}" "${SYSCTL_BIN}" net.ipv4.ip_forward >/dev/null 2>&1; then
         failures+=("sysctl")

@@ -70,7 +70,7 @@ with VM() as vm:
     - `facade.py`: High-level `VM` class.
     - `vm.py`: Core `SmolVM` orchestrator.
     - `build.py`: Image building logic (rootfs/kernel).
-    - `network.py`: Linux networking setup (iptables/iproute2).
+    - `network.py`: Linux networking setup (nftables/iproute2).
 - `scripts/`: System-level setup and configuration.
 - `tests/`: Comprehensive test suite covering all modules.
 - `examples/`: Reference implementations and advanced usage.
