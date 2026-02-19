@@ -165,7 +165,7 @@ Command execution uses persistent SSH connections — subsequent commands in the
 Run the benchmark yourself:
 
 ```bash
-python scripts/bench_subprocess.py --vms 3 -v
+python scripts/benchmarks/bench_subprocess.py --vms 3 -v
 ```
 
 > Measured on AMD Ryzen 7 7800X3D (8C/16T), Ubuntu Linux, KVM/Firecracker backend.
