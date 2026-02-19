@@ -304,7 +304,7 @@ class SmolVM:
 
         return self
 
-    def stop(self, timeout: float = 10.0) -> SmolVM:
+    def stop(self, timeout: float = 3.0) -> SmolVM:
         """Stop the VM.
 
         Args:
