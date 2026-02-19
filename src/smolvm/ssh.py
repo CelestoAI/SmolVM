@@ -14,37 +14,24 @@
 
 """SSH command execution for SmolVM guests.
 
-Uses the system ``ssh`` binary to execute commands on guest VMs via their
-allocated IP addresses.  This avoids a heavy dependency on paramiko while
-leveraging the SSH binary that is already a checked dependency in
-:class:`~smolvm.host.HostManager`.
+Uses `paramiko <https://www.paramiko.org/>`_ for persistent SSH connections
+to guest VMs.  A single TCP connection is established on first use (or during
+:meth:`SSHClient.wait_for_ssh`) and reused for all subsequent commands,
+eliminating the ~170ms overhead of forking a new ``ssh`` process per call.
 """
 
 import logging
 import shlex
 import socket
-import subprocess
 import time
 from typing import Literal
+
+import paramiko
 
 from smolvm.exceptions import OperationTimeoutError, SmolVMError
 from smolvm.types import CommandResult
 
 logger = logging.getLogger(__name__)
-
-# Default SSH options for local microVM connections.
-# StrictHostKeyChecking=no is acceptable here because VMs run on a
-# private host-only subnet (172.16.0.0/24) and are ephemeral.
-_SSH_OPTS = [
-    "-o",
-    "StrictHostKeyChecking=no",
-    "-o",
-    "UserKnownHostsFile=/dev/null",
-    "-o",
-    "LogLevel=ERROR",
-    "-o",
-    "BatchMode=yes",
-]
 
 ShellMode = Literal["login", "raw"]
 
@@ -52,11 +39,15 @@ ShellMode = Literal["login", "raw"]
 class SSHClient:
     """Execute commands on a microVM guest via SSH.
 
+    Maintains a persistent paramiko SSH connection that is established
+    lazily on first use and reused for all subsequent commands.
+
     Args:
-        host: Guest IP address.
+        host: Guest IP address or hostname.
         user: SSH user (default ``root``).
         port: SSH port on the guest (default ``22``).
         key_path: Optional path to an SSH private key file.
+        password: Optional password for authentication.
         connect_timeout: Seconds to wait for the TCP connection.
     """
 
@@ -66,6 +57,7 @@ class SSHClient:
         user: str = "root",
         port: int = 22,
         key_path: str | None = None,
+        password: str | None = None,
         connect_timeout: int = 10,
     ) -> None:
         if not host:
@@ -81,32 +73,87 @@ class SSHClient:
         self.user = user
         self.port = port
         self.key_path = key_path
+        self.password = password
         self.connect_timeout = connect_timeout
 
-    def _build_ssh_cmd(self, command: str) -> list[str]:
-        """Build the ssh command line.
+        self._client: paramiko.SSHClient | None = None
 
-        Args:
-            command: Command to run on the guest.
+    # ── Connection lifecycle ────────────────────────────────────
+
+    def _connect(self) -> paramiko.SSHClient:
+        """Establish a paramiko SSH connection.
 
         Returns:
-            List of command-line arguments.
+            Connected paramiko SSHClient.
+
+        Raises:
+            SmolVMError: If connection fails.
         """
-        cmd = [
-            "ssh",
-            *_SSH_OPTS,
-            "-o",
-            f"ConnectTimeout={self.connect_timeout}",
-            "-p",
-            str(self.port),
-        ]
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+        connect_kwargs: dict[str, object] = {
+            "hostname": self.host,
+            "port": self.port,
+            "username": self.user,
+            "timeout": float(self.connect_timeout),
+            "allow_agent": False,
+            "look_for_keys": False,
+            "banner_timeout": float(self.connect_timeout),
+        }
 
         if self.key_path:
-            cmd.extend(["-i", self.key_path])
+            connect_kwargs["key_filename"] = self.key_path
+        elif self.password:
+            connect_kwargs["password"] = self.password
+        else:
+            # Fall back to trying the agent / default keys
+            connect_kwargs["allow_agent"] = True
+            connect_kwargs["look_for_keys"] = True
 
-        cmd.append(f"{self.user}@{self.host}")
-        cmd.append(command)
-        return cmd
+        try:
+            client.connect(**connect_kwargs)  # type: ignore[arg-type]
+        except Exception as e:
+            client.close()
+            raise SmolVMError(f"SSH connection failed: {e}") from e
+
+        return client
+
+    def _ensure_connected(self) -> paramiko.SSHClient:
+        """Return existing connection, or create a new one.
+
+        Automatically reconnects if the previous connection is dead.
+        """
+        if self._client is not None:
+            transport = self._client.get_transport()
+            if transport is not None and transport.is_active():
+                return self._client
+            # Transport is dead — close and reconnect.
+            logger.debug("SSH transport is dead, reconnecting to %s:%d", self.host, self.port)
+            self._client.close()
+            self._client = None
+
+        self._client = self._connect()
+        return self._client
+
+    @property
+    def connected(self) -> bool:
+        """Check if the SSH connection is alive."""
+        if self._client is None:
+            return False
+        transport = self._client.get_transport()
+        return transport is not None and transport.is_active()
+
+    def close(self) -> None:
+        """Close the SSH connection and release resources."""
+        if self._client is not None:
+            try:
+                self._client.close()
+            except Exception:
+                pass
+            self._client = None
+
+    # ── Command execution ───────────────────────────────────────
 
     @staticmethod
     def _wrap_login_shell_command(command: str) -> str:
@@ -130,6 +177,9 @@ class SSHClient:
     ) -> CommandResult:
         """Execute a command on the guest VM.
 
+        Uses the persistent SSH connection.  If the connection is not
+        yet established or has been lost, it is (re)created transparently.
+
         Args:
             command: Shell command to execute.
             timeout: Maximum seconds to wait for the command.
@@ -144,7 +194,7 @@ class SSHClient:
         Raises:
             ValueError: If *command* is empty.
             OperationTimeoutError: If the command exceeds *timeout*.
-            SmolVMError: If the SSH process cannot be started.
+            SmolVMError: If the SSH connection cannot be established.
         """
         if not command or not command.strip():
             raise ValueError("command cannot be empty")
@@ -152,7 +202,7 @@ class SSHClient:
             raise ValueError("timeout must be >= 1")
 
         remote_command = self._prepare_remote_command(command, shell=shell)
-        cmd = self._build_ssh_cmd(remote_command)
+
         logger.debug(
             "SSH exec on %s:%d (shell=%s): %s",
             self.host,
@@ -161,34 +211,40 @@ class SSHClient:
             command,
         )
 
+        client = self._ensure_connected()
+
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
+            _, stdout_ch, stderr_ch = client.exec_command(remote_command, timeout=timeout)
+            # Read all output
+            stdout = stdout_ch.read().decode("utf-8", errors="replace")
+            stderr = stderr_ch.read().decode("utf-8", errors="replace")
+            exit_code = stdout_ch.channel.recv_exit_status()
+
             return CommandResult(
-                exit_code=result.returncode,
-                stdout=result.stdout,
-                stderr=result.stderr,
+                exit_code=exit_code,
+                stdout=stdout,
+                stderr=stderr,
             )
-        except subprocess.TimeoutExpired as e:
+        except socket.timeout as e:
             raise OperationTimeoutError(
                 f"ssh {self.host}:{self.port}: {command}",
                 timeout,
             ) from e
-        except FileNotFoundError:
-            raise SmolVMError("ssh binary not found. Install openssh-client.") from None
-        except OSError as e:
-            raise SmolVMError(f"Failed to execute SSH: {e}") from e
+        except paramiko.SSHException as e:
+            # Connection may have died mid-command — invalidate it
+            self.close()
+            raise SmolVMError(f"SSH command failed: {e}") from e
+        except Exception as e:
+            raise SmolVMError(f"SSH command failed: {e}") from e
+
+    # ── Readiness detection ─────────────────────────────────────
 
     def _tcp_port_open(self, timeout: float = 0.1) -> bool:
         """Check if the SSH port is accepting TCP connections.
 
-        This is much faster than spawning an ssh subprocess (~1ms vs ~50ms)
+        This is much faster than a full SSH handshake (~1ms vs ~100ms)
         and is used to efficiently poll for port readiness before attempting
-        a full SSH handshake.
+        a paramiko connect.
         """
         try:
             with socket.create_connection((self.host, self.port), timeout=timeout) as sock:
@@ -206,14 +262,14 @@ class SSHClient:
         Uses a two-phase approach for fast detection:
 
         1. **TCP probe** — lightweight ``socket.connect()`` calls (~1ms each)
-           with exponential backoff to detect when sshd is listening.
-        2. **SSH handshake** — one real ``ssh`` command to confirm
-           authentication works.
+           with a short fixed polling interval to detect when sshd is
+           listening and sending its banner.
+        2. **Paramiko connect** — full SSH handshake + auth.  The resulting
+           connection is kept open for subsequent :meth:`run` calls.
 
         Args:
             timeout: Maximum seconds to wait.
-            interval: Initial seconds between TCP probe attempts.
-                Doubles after each failure, capped at 2.0s.
+            interval: Seconds between TCP probe attempts.
 
         Raises:
             OperationTimeoutError: If SSH does not become available
@@ -223,8 +279,6 @@ class SSHClient:
             raise ValueError("timeout must be > 0")
 
         deadline = time.monotonic() + timeout
-        backoff = interval
-        max_backoff = 2.0
 
         logger.info(
             "Waiting for SSH on %s:%d (timeout=%.0fs)",
@@ -234,7 +288,6 @@ class SSHClient:
         )
 
         # Phase 1: Fast TCP probe — detect when sshd port is open.
-        # Each probe is ~1ms (vs ~50ms for spawning ssh subprocess).
         while time.monotonic() < deadline:
             if self._tcp_port_open(timeout=min(0.5, deadline - time.monotonic())):
                 logger.debug("TCP port %d is open on %s", self.port, self.host)
@@ -246,22 +299,19 @@ class SSHClient:
                     f"wait_for_ssh({self.host}:{self.port}): port never opened",
                     timeout,
                 )
-            time.sleep(min(backoff, remaining))
-            backoff = min(backoff * 2, max_backoff)
+            time.sleep(min(interval, remaining))
 
-        # Phase 2: Confirm SSH actually works (auth, shell, etc.)
-        # The port is open, so this should succeed quickly.
+        # Phase 2: Establish persistent paramiko connection.
         last_error: str = ""
         while time.monotonic() < deadline:
             try:
-                result = self.run("echo __smolvm_ready__", timeout=2, shell="raw")
-                if "__smolvm_ready__" in result.stdout:
-                    logger.info("SSH is ready on %s:%d", self.host, self.port)
-                    return
-            except (SmolVMError, OperationTimeoutError) as e:
+                self._client = self._connect()
+                logger.info("SSH is ready on %s:%d", self.host, self.port)
+                return
+            except SmolVMError as e:
                 last_error = str(e)
                 logger.debug(
-                    "SSH handshake not ready on %s:%d: %s",
+                    "SSH connect failed on %s:%d: %s",
                     self.host,
                     self.port,
                     last_error,
