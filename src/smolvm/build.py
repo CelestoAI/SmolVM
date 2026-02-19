@@ -282,7 +282,8 @@ RUN apk add --no-cache \
     curl \
     bash
 
-RUN mkdir -p /root/.ssh && chmod 700 /root/.ssh && \
+RUN ssh-keygen -A && \
+    mkdir -p /root/.ssh && chmod 700 /root/.ssh && \
     sed -i 's/#PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config && \
     sed -i 's/#PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config && \
     sed -i 's/#PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
@@ -408,7 +409,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     ca-certificates \\
     && rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh && \\
+RUN ssh-keygen -A && \\
+    mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh && \\
     sed -ri 's/^#?PermitRootLogin .*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config && \\
     sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config && \\
     sed -ri 's/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
@@ -541,7 +543,10 @@ log_ts "net-ready"
 
 # ── SSH ──────────────────────────────────────────────────────
 log_ts "ssh-hostkey-check-start"
-ssh-keygen -A 2>/dev/null
+if ! ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1; then
+    echo "SmolVM init: SSH host keys missing; generating..."
+    ssh-keygen -A 2>/dev/null
+fi
 log_ts "ssh-hostkey-check-done"
 
 log_ts "sshd-start"
