@@ -460,16 +460,15 @@ RUN chmod +x /init
 # SmolVM custom init - runs as PID 1 inside Firecracker VM
 
 # ── Signal handling ──────────────────────────────────────────
-# Firecracker's SendCtrlAltDel delivers SIGINT to PID 1 (via
-# reboot=k boot param).  Trap it so we shut down immediately
-# instead of ignoring it and hitting the host-side timeout.
+# Firecracker's SendCtrlAltDel sends Ctrl+Alt+Del to the guest
+# kernel.  By default the kernel handles this by calling
+# kernel_restart() which tries a hardware reboot (doesn't exist
+# in Firecracker, so the VM hangs).  We disable CAD so the
+# kernel sends SIGINT to PID 1 instead, where we trap it.
 shutdown() {
     echo "SmolVM init: shutting down..."
-    # Kill all processes except PID 1
     kill -TERM -1 2>/dev/null
     sleep 0.2
-    # Sync and power off — Firecracker exits when guest powers off.
-    # (reboot -f would hang because Firecracker has no reboot path)
     sync
     poweroff -f
 }
@@ -483,6 +482,9 @@ mkdir -p /dev/pts
 mount -t devpts devpts /dev/pts
 mount -t tmpfs tmpfs /run
 mount -t tmpfs tmpfs /tmp
+
+# Disable Ctrl+Alt+Del hardware reboot — send SIGINT to PID 1 instead
+echo 0 > /proc/sys/kernel/ctrl-alt-del
 
 # Remount root read-write
 mount -o remount,rw /
