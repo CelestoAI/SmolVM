@@ -54,6 +54,7 @@ RELEASES_URL = "https://api.github.com/repos/CelestoAI/SmolVM/releases"
 DASHBOARD_ASSET_PREFIX = "smolvm-dashboard-ui-"
 DASHBOARD_ASSET_SUFFIX = ".tar.gz"
 UI_DIST_ENV = "SMOLVM_DASHBOARD_UI_DIST"
+ALLOW_BETA_ENV = "SMOLVM_DASHBOARD_ALLOW_BETA"
 
 
 def _resolve_ui_dist_path() -> Path:
@@ -83,11 +84,17 @@ def _github_headers() -> dict[str, str]:
     return headers
 
 
-def _latest_dashboard_release_asset() -> tuple[str, str]:
+def _allow_beta_releases() -> bool:
+    """Return whether prerelease dashboard assets are allowed."""
+    value = os.environ.get(ALLOW_BETA_ENV, "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _latest_dashboard_release_asset(*, allow_prerelease: bool = False) -> tuple[str, str]:
     """Return newest release tag and dashboard dist asset download URL.
 
-    Scans recent releases (including prereleases) and picks the first release
-    that has a dashboard UI asset.
+    Scans recent releases and picks the first release that has a dashboard UI
+    asset. Prereleases are ignored by default unless ``allow_prerelease`` is true.
     """
     response = requests.get(
         RELEASES_URL,
@@ -105,6 +112,8 @@ def _latest_dashboard_release_asset() -> tuple[str, str]:
         if not isinstance(release, dict):
             continue
         if release.get("draft") is True:
+            continue
+        if release.get("prerelease") is True and not allow_prerelease:
             continue
 
         tag_name = release.get("tag_name")
@@ -136,8 +145,9 @@ def _latest_dashboard_release_asset() -> tuple[str, str]:
         if fallback_url is not None:
             return tag_name, fallback_url
 
+    release_scope = "stable/prerelease" if allow_prerelease else "stable"
     raise RuntimeError(
-        "No release includes a dashboard UI asset "
+        f"No {release_scope} release includes a dashboard UI asset "
         f"({DASHBOARD_ASSET_PREFIX}*{DASHBOARD_ASSET_SUFFIX})"
     )
 
@@ -176,13 +186,15 @@ def _extract_dashboard_dist(archive_path: Path, extract_dir: Path) -> Path:
     raise RuntimeError("Dashboard archive did not contain dist/index.html")
 
 
-def _ensure_latest_dashboard_ui_dist(target_dist: Path) -> bool:
+def _ensure_latest_dashboard_ui_dist(target_dist: Path, *, allow_prerelease: bool = False) -> bool:
     """Download latest dashboard dist release asset and place it at target_dist."""
     target_root = target_dist.parent
     tag_file = target_root / ".dashboard-ui-tag"
 
     try:
-        latest_tag, asset_url = _latest_dashboard_release_asset()
+        latest_tag, asset_url = _latest_dashboard_release_asset(
+            allow_prerelease=allow_prerelease
+        )
     except Exception:
         logger.warning("Failed to discover latest dashboard UI release asset", exc_info=True)
         return False
@@ -260,12 +272,29 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     data_dir = resolve_data_dir()
     db_path = data_dir / "smolvm.db"
 
-    if await asyncio.to_thread(_ensure_latest_dashboard_ui_dist, _ui_dist):
-        logger.info("Dashboard UI dist ready at: %s", _ui_dist)
+    allow_beta = _allow_beta_releases()
+    if await asyncio.to_thread(
+        _ensure_latest_dashboard_ui_dist,
+        _ui_dist,
+        allow_prerelease=allow_beta,
+    ):
+        logger.info(
+            "Dashboard UI dist ready at: %s (allow_beta=%s)",
+            _ui_dist,
+            allow_beta,
+        )
     elif _ui_dist.is_dir():
-        logger.warning("Using existing dashboard UI dist at: %s", _ui_dist)
+        logger.warning(
+            "Using existing dashboard UI dist at: %s (allow_beta=%s)",
+            _ui_dist,
+            allow_beta,
+        )
     else:
-        logger.warning("Dashboard UI dist unavailable at startup: %s", _ui_dist)
+        logger.warning(
+            "Dashboard UI dist unavailable at startup: %s (allow_beta=%s)",
+            _ui_dist,
+            allow_beta,
+        )
 
     app.state.state_manager = StateManager(db_path)
     app.state.sdk = SmolVMManager(data_dir=data_dir)

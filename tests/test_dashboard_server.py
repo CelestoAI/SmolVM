@@ -79,17 +79,14 @@ def test_latest_dashboard_release_asset_prefers_exact_tag_name(
     assert url == "https://example.invalid/new.tar.gz"
 
 
-def test_latest_dashboard_release_asset_skips_releases_without_ui_asset(
+def test_latest_dashboard_release_asset_skips_prerelease_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When latest release lacks asset, use next release that has dashboard dist."""
+    """Default behavior should prefer stable assets over prerelease ones."""
     payload = [
         {
-            "tag_name": "v0.0.4",
-            "assets": [],
-        },
-        {
             "tag_name": "v0.0.5.a0",
+            "prerelease": True,
             "assets": [
                 {
                     "name": "smolvm-dashboard-ui-v0.0.5.a0.tar.gz",
@@ -97,10 +94,54 @@ def test_latest_dashboard_release_asset_skips_releases_without_ui_asset(
                 }
             ],
         },
+        {
+            "tag_name": "v0.0.4",
+            "prerelease": False,
+            "assets": [
+                {
+                    "name": "smolvm-dashboard-ui-v0.0.4.tar.gz",
+                    "browser_download_url": "https://example.invalid/stable.tar.gz",
+                }
+            ],
+        },
     ]
     monkeypatch.setattr(server.requests, "get", lambda *args, **kwargs: _FakeResponse(payload))
 
     tag, url = server._latest_dashboard_release_asset()
+
+    assert tag == "v0.0.4"
+    assert url == "https://example.invalid/stable.tar.gz"
+
+
+def test_latest_dashboard_release_asset_allows_prerelease_with_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """allow_prerelease=True should allow selecting prerelease assets."""
+    payload = [
+        {
+            "tag_name": "v0.0.5.a0",
+            "prerelease": True,
+            "assets": [
+                {
+                    "name": "smolvm-dashboard-ui-v0.0.5.a0.tar.gz",
+                    "browser_download_url": "https://example.invalid/prerelease.tar.gz",
+                }
+            ],
+        },
+        {
+            "tag_name": "v0.0.4",
+            "prerelease": False,
+            "assets": [
+                {
+                    "name": "smolvm-dashboard-ui-v0.0.4.tar.gz",
+                    "browser_download_url": "https://example.invalid/stable.tar.gz",
+                }
+            ],
+        },
+    ]
+    monkeypatch.setattr(server.requests, "get", lambda *args, **kwargs: _FakeResponse(payload))
+
+    tag, url = server._latest_dashboard_release_asset(allow_prerelease=True)
 
     assert tag == "v0.0.5.a0"
     assert url == "https://example.invalid/prerelease.tar.gz"
@@ -112,6 +153,15 @@ def test_resolve_ui_dist_path_honors_env(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setenv(server.UI_DIST_ENV, str(custom))
 
     assert server._resolve_ui_dist_path() == custom.resolve()
+
+
+def test_allow_beta_releases_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ALLOW_BETA_ENV should support common truthy/falsey values."""
+    monkeypatch.setenv(server.ALLOW_BETA_ENV, "true")
+    assert server._allow_beta_releases() is True
+
+    monkeypatch.setenv(server.ALLOW_BETA_ENV, "0")
+    assert server._allow_beta_releases() is False
 
 
 def test_resolve_ui_dist_path_uses_state_dir_when_repo_layout_missing(
