@@ -52,6 +52,7 @@ def run_command(
     capture_output: bool = True,
     use_sudo: bool = True,
     timeout: int = 30,
+    input: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a system command with optional sudo.
 
@@ -61,6 +62,7 @@ def run_command(
         capture_output: Capture stdout/stderr.
         use_sudo: Prefix with sudo if not root.
         timeout: Command timeout in seconds.
+        input: Optional input string to pass to stdin.
 
     Returns:
         CompletedProcess result.
@@ -86,6 +88,7 @@ def run_command(
             capture_output=capture_output,
             text=True,
             timeout=timeout,
+            input=input,
         )
         elapsed_ms = (time.monotonic() - start) * 1000
         # Log at INFO so timing data is visible in normal operation.
