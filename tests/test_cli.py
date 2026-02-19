@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for SmolVM CLI environment commands."""
+"""Tests for SmolVM CLI commands."""
 
 from unittest.mock import MagicMock, patch
 
@@ -211,3 +211,71 @@ class TestCliDoctor:
             json_output=True,
             strict=True,
         )
+
+
+class TestCliStart:
+    """Tests for `smolvm start` commands."""
+
+    def test_start_without_target_shows_usage(self, capsys: pytest.CaptureFixture) -> None:
+        """`smolvm start` should print usage when target is omitted."""
+        ret = main(["start"])
+
+        assert ret == 2
+        assert "smolvm start dashboard" in capsys.readouterr().out
+
+    @patch("smolvm.cli.importlib.import_module")
+    def test_start_dashboard_defaults(self, mock_import: MagicMock) -> None:
+        """`smolvm start dashboard` should launch uvicorn with defaults."""
+        mock_uvicorn = MagicMock()
+        mock_import.return_value = mock_uvicorn
+
+        ret = main(["start", "dashboard"])
+
+        assert ret == 0
+        mock_import.assert_called_once_with("uvicorn")
+        mock_uvicorn.run.assert_called_once_with(
+            "smolvm.dashboard.server:app",
+            host="127.0.0.1",
+            port=8080,
+        )
+
+    @patch("smolvm.cli.importlib.import_module")
+    def test_start_dashboard_custom_port(self, mock_import: MagicMock) -> None:
+        """Custom host/port should be forwarded to uvicorn."""
+        mock_uvicorn = MagicMock()
+        mock_import.return_value = mock_uvicorn
+
+        ret = main(["start", "dashboard", "--host", "0.0.0.0", "--port", "9090"])
+
+        assert ret == 0
+        mock_uvicorn.run.assert_called_once_with(
+            "smolvm.dashboard.server:app",
+            host="0.0.0.0",
+            port=9090,
+        )
+
+    @patch("smolvm.cli.importlib.import_module", side_effect=ImportError)
+    def test_start_dashboard_missing_dependency(
+        self,
+        _: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Missing dashboard extras should return an actionable error."""
+        ret = main(["start", "dashboard"])
+
+        assert ret == 1
+        assert "smolvm[dashboard]" in capsys.readouterr().out
+
+    @patch("smolvm.cli.importlib.import_module")
+    def test_start_dashboard_invalid_port(
+        self,
+        mock_import: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Out-of-range ports should fail fast with usage error code."""
+        mock_import.return_value = MagicMock()
+
+        ret = main(["start", "dashboard", "--port", "70000"])
+
+        assert ret == 2
+        assert "invalid port" in capsys.readouterr().out

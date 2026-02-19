@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 from collections.abc import Sequence
 
 from smolvm.cleanup import run_cleanup
@@ -69,6 +70,29 @@ def build_parser() -> argparse.ArgumentParser:
         "--strict",
         action="store_true",
         help="Treat warnings as failures.",
+    )
+
+    # ── start subcommand group ────────────────────────────────────────
+    start = subparsers.add_parser(
+        "start",
+        help="Start long-running SmolVM services",
+    )
+    start_sub = start.add_subparsers(dest="start_target")
+
+    start_dashboard = start_sub.add_parser(
+        "dashboard",
+        help="Start the SmolVM dashboard API server",
+    )
+    start_dashboard.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Bind host (default: 127.0.0.1).",
+    )
+    start_dashboard.add_argument(
+        "--port",
+        type=int,
+        default=8080,
+        help="Bind port (default: 8080).",
     )
 
     # ── env subcommand group ──────────────────────────────────────────
@@ -236,6 +260,39 @@ def _run_env(args: argparse.Namespace) -> int:
             vm.close()
 
 
+def _run_start(args: argparse.Namespace) -> int:
+    """Handle ``smolvm start ...`` commands."""
+    if args.start_target is None:
+        print("Usage: smolvm start dashboard [--host HOST] [--port PORT]")
+        return 2
+
+    if args.start_target != "dashboard":
+        print(f"Error: unsupported start target: {args.start_target}")
+        return 2
+
+    try:
+        uvicorn = importlib.import_module("uvicorn")
+    except ImportError:
+        print(
+            "Error: Dashboard dependencies are not installed. "
+            "Install with: pip install 'smolvm[dashboard]'"
+        )
+        return 1
+
+    if args.port < 1 or args.port > 65535:
+        print(f"Error: invalid port {args.port}. Expected 1-65535.")
+        return 2
+
+    try:
+        uvicorn.run("smolvm.dashboard.server:app", host=args.host, port=args.port)
+        return 0
+    except KeyboardInterrupt:
+        return 130
+    except Exception as e:
+        print(f"Error: failed to start dashboard: {e}")
+        return 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entrypoint for `smolvm`."""
     parser = build_parser()
@@ -250,6 +307,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             json_output=args.json,
             strict=args.strict,
         )
+
+    if args.command == "start":
+        return _run_start(args)
 
     if args.command == "env":
         return _run_env(args)
