@@ -54,6 +54,11 @@ smolvm-cleanup = "smolvm.cleanup:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/smolvm"]
 
+[tool.hatch.build]
+exclude = [
+    "/ui",
+]
+
 [tool.hatch.version]
 path = "src/smolvm/__init__.py"
 
