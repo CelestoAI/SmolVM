@@ -269,6 +269,42 @@ class TestVMConfig:
         assert config.disk_mode == "isolated"
         assert config.retain_disk_on_delete is False
 
+    def test_extra_drives_default_empty(self, tmp_path: Path) -> None:
+        """Test extra_drives defaults to an empty list."""
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+
+        config = VMConfig(vm_id="vm001", kernel_path=kernel, rootfs_path=rootfs)
+
+        assert config.extra_drives == []
+
+    def test_extra_drives_must_be_existing_files(self, tmp_path: Path) -> None:
+        """Test extra drive paths must exist and point to files."""
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        data_drive = tmp_path / "data.ext4"
+        kernel.touch()
+        rootfs.touch()
+        data_drive.touch()
+
+        config = VMConfig(
+            vm_id="vm001",
+            kernel_path=kernel,
+            rootfs_path=rootfs,
+            extra_drives=[data_drive],
+        )
+        assert config.extra_drives == [data_drive]
+
+        with pytest.raises(ValidationError, match="does not exist"):
+            VMConfig(
+                vm_id="vm002",
+                kernel_path=kernel,
+                rootfs_path=rootfs,
+                extra_drives=[tmp_path / "missing.ext4"],
+            )
+
     def test_invalid_disk_mode_rejected(self, tmp_path: Path) -> None:
         """Test unsupported disk_mode values are rejected."""
         kernel = tmp_path / "vmlinux"

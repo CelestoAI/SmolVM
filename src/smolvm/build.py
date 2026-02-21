@@ -36,6 +36,11 @@ logger = logging.getLogger(__name__)
 # Default boot args that include init=/init for our custom init script
 SSH_BOOT_ARGS = "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/init"
 
+# Boot args for OpenClaw VMs — 8250.nr_uarts=0 disables serial UART to avoid
+# vCPU exits on /dev/ttyS0 writes, which become a measurable host CPU tax at
+# 200+ VMs.  No console= since we don't need serial output in production.
+OPENCLAW_BOOT_ARGS = "reboot=k panic=1 pci=off init=/init 8250.nr_uarts=0"
+
 # Firecracker-compatible uncompressed kernels.
 FIRECRACKER_KERNEL_URLS = {
     "x86_64": "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.6/x86_64/vmlinux-5.10.198",
@@ -446,6 +451,161 @@ RUN chmod +x /init
         logger.info("Image '%s' built successfully at %s", name, image_dir)
         return (kernel_path, rootfs_path)
 
+    def build_openclaw_rootfs(
+        self,
+        name: str = "openclaw",
+        ssh_password: str = "smolvm",
+        rootfs_size_mb: int = 2048,
+        kernel_url: str | None = None,
+    ) -> tuple[Path, Path]:
+        """Build OpenClaw rootfs with Node.js, sidecars, and init wiring.
+
+        The resulting image contains:
+
+        - Node.js >= 22.12.0 (``node:22.12.0-bookworm-slim`` base)
+        - OpenClaw pre-installed at ``/app/``
+        - ``inotify-tools`` and the device-approver sidecar
+        - SSH server for ``vm.run()`` management commands
+        - Custom ``/init`` that boots networking, sshd, and the sidecar
+
+        Boot the resulting VM with :data:`OPENCLAW_BOOT_ARGS`.
+
+        Args:
+            name: Image name for caching.
+            ssh_password: Root password for SSH (default: smolvm).
+            rootfs_size_mb: Size of rootfs in MB (default: 2048).
+            kernel_url: Optional kernel URL override.
+
+        Returns:
+            Tuple of (kernel_path, rootfs_path).
+
+        Raises:
+            ImageError: If Docker is not available or build fails.
+        """
+        if not self.check_docker():
+            raise ImageError(
+                "Docker is required to build images. "
+                "Install Docker Desktop (macOS) or docker.io (Linux)."
+            )
+
+        image_dir = self.cache_dir / name
+        kernel_path = image_dir / "vmlinux.bin"
+        rootfs_path = image_dir / "rootfs.ext4"
+
+        if kernel_path.exists() and rootfs_path.exists():
+            logger.info("Image '%s' already exists at %s", name, image_dir)
+            return (kernel_path, rootfs_path)
+
+        logger.info("Building OpenClaw image '%s'...", name)
+        image_dir.mkdir(parents=True, exist_ok=True)
+
+        init_script = self._openclaw_init_script()
+
+        # --- Sidecar scripts (TDD Decision 1.2.5) ---
+        device_approver_py = r"""#!/usr/bin/env python3
+import json, time
+
+BASE = "/home/node/.openclaw/devices"
+PENDING = f"{BASE}/pending.json"
+PAIRED  = f"{BASE}/paired.json"
+
+def approve():
+    try:
+        pending = json.loads(open(PENDING).read())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return
+    if not pending:
+        return
+    try:
+        paired = json.loads(open(PAIRED).read())
+    except (FileNotFoundError, json.JSONDecodeError):
+        paired = {}
+    now_ms = int(time.time() * 1000)
+    for _, entry in pending.items():
+        device_id = entry.get("deviceId")
+        if not device_id:
+            continue
+        paired[device_id] = {**entry, "pairedAt": now_ms}
+    open(PAIRED, "w").write(json.dumps(paired, indent=2))
+    open(PENDING, "w").write(json.dumps({}))
+
+approve()
+"""
+
+        watch_devices_sh = r"""#!/bin/bash
+# Watch DIRECTORY not the file — handles atomic rename writes
+while inotifywait -e close_write,moved_to \
+    /home/node/.openclaw/devices 2>/dev/null; do
+    python3 /usr/local/bin/device-approver.py
+done
+"""
+
+        dockerfile_content = f"""
+FROM node:22.12.0-bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    openssh-server \\
+    iproute2 \\
+    curl \\
+    bash \\
+    ca-certificates \\
+    inotify-tools \\
+    python3 \\
+    && rm -rf /var/lib/apt/lists/*
+
+RUN ssh-keygen -A && \\
+    mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh && \\
+    sed -ri 's/^#?PermitRootLogin .*/PermitRootLogin yes/' /etc/ssh/sshd_config && \\
+    sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config && \\
+    echo 'root:{ssh_password}' | chpasswd
+
+# Prepare OpenClaw directories and workspace
+RUN useradd -m -s /bin/bash node 2>/dev/null || true && \\
+    mkdir -p /app /home/node/.openclaw/devices /workspace && \\
+    chown -R node:node /app /home/node/.openclaw /workspace
+
+WORKDIR /app
+RUN npm init -y && npm install openclaw
+
+# Sidecar scripts
+COPY device-approver.py /usr/local/bin/device-approver.py
+COPY watch-devices.sh /usr/local/bin/watch-devices.sh
+RUN chmod +x /usr/local/bin/device-approver.py /usr/local/bin/watch-devices.sh
+
+# Init script
+COPY init /init
+RUN chmod +x /init
+"""
+
+        try:
+            self._do_build(
+                name,
+                dockerfile_content,
+                init_script,
+                image_dir,
+                kernel_path,
+                rootfs_path,
+                rootfs_size_mb,
+                extra_files={
+                    "device-approver.py": device_approver_py,
+                    "watch-devices.sh": watch_devices_sh,
+                },
+                kernel_url=kernel_url,
+            )
+        except (subprocess.CalledProcessError, ImageError) as e:
+            if rootfs_path.exists():
+                rootfs_path.unlink()
+            if kernel_path.exists():
+                kernel_path.unlink()
+            if isinstance(e, ImageError):
+                raise
+            raise ImageError(f"Image build failed: {e}") from e
+
+        logger.info("Image '%s' built successfully at %s", name, image_dir)
+        return (kernel_path, rootfs_path)
+
     def _resolve_public_key(self, ssh_public_key: str | Path) -> str:
         """Resolve a public key from inline content or file path."""
         key_text = str(ssh_public_key).strip()
@@ -559,6 +719,112 @@ log_ts "init-complete"
 # ── Keep PID 1 alive ────────────────────────────────────────
 # Use 'wait' so signals are delivered promptly (plain 'sleep'
 # in a while-loop prevents signal delivery until sleep exits).
+while true; do
+    sleep 3600 &
+    wait $!
+done
+"""
+
+    def _openclaw_init_script(self) -> str:
+        """PID 1 init script for OpenClaw images.
+
+        Extends the base init with:
+        - Device-approver sidecar launched as a background process
+        - ``/home/node/.openclaw/devices`` directory setup
+        - Hostname set to ``openclaw``
+        """
+        return r"""#!/bin/sh
+# SmolVM OpenClaw init - runs as PID 1 inside Firecracker VM
+
+# ── Signal handling ──────────────────────────────────────────
+shutdown() {
+    echo "SmolVM init: shutting down..."
+    kill -TERM -1 2>/dev/null
+    sleep 0.2
+    sync
+    poweroff -f
+}
+trap shutdown INT TERM PWR
+
+# ── Timestamp helpers ────────────────────────────────────────
+ts_uptime() {
+    cut -d' ' -f1 /proc/uptime 2>/dev/null || echo "0.00"
+}
+ts_epoch() {
+    date +%s 2>/dev/null || echo "0"
+}
+log_ts() {
+    STAGE="$1"
+    echo "SMOLVM_TS stage=${STAGE} epoch_s=$(ts_epoch) uptime_s=$(ts_uptime)"
+}
+
+log_ts "init-start"
+
+# ── Mount essential filesystems ──────────────────────────────
+mount -t proc proc /proc
+mount -t sysfs sys /sys
+mount -t devtmpfs dev /dev 2>/dev/null
+mkdir -p /dev/pts
+mount -t devpts devpts /dev/pts
+mount -t tmpfs tmpfs /run
+mount -t tmpfs tmpfs /tmp
+
+log_ts "mounts-ready"
+
+echo 0 > /proc/sys/kernel/ctrl-alt-del
+mount -o remount,rw /
+mkdir -p /run/sshd /var/log
+
+log_ts "root-ready"
+
+# ── Networking ───────────────────────────────────────────────
+log_ts "net-config-start"
+IP_CONFIG=$(cat /proc/cmdline | tr ' ' '\n' | grep '^ip=' | head -1)
+if [ -n "$IP_CONFIG" ]; then
+    GUEST_IP=$(echo "$IP_CONFIG" | cut -d= -f2 | cut -d: -f1)
+    GATEWAY=$(echo "$IP_CONFIG" | cut -d= -f2 | cut -d: -f3)
+else
+    GUEST_IP="172.16.0.2"
+    GATEWAY="172.16.0.1"
+fi
+
+ip link set lo up
+ip link set eth0 up
+ip addr add "${GUEST_IP}/24" dev eth0 2>/dev/null || true
+ip route add default via "${GATEWAY}" dev eth0 2>/dev/null || true
+
+echo "nameserver 8.8.8.8" > /etc/resolv.conf
+echo "nameserver 8.8.4.4" >> /etc/resolv.conf
+
+hostname openclaw
+log_ts "net-ready"
+
+# ── SSH ──────────────────────────────────────────────────────
+log_ts "ssh-hostkey-check-start"
+if ! ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1; then
+    ssh-keygen -A 2>/dev/null
+fi
+log_ts "ssh-hostkey-check-done"
+
+log_ts "sshd-start"
+/usr/sbin/sshd -e
+log_ts "sshd-invoked"
+
+# ── Device-Approver Sidecar ─────────────────────────────────
+# Launched as a background process — no systemd required.
+# watch-devices.sh uses inotifywait on the directory (not file) to
+# handle atomic-rename writes from OpenClaw.
+log_ts "device-approver-start"
+mkdir -p /home/node/.openclaw/devices
+chown -R 1000:1000 /home/node/.openclaw
+/usr/local/bin/watch-devices.sh &
+DEVICE_APPROVER_PID=$!
+log_ts "device-approver-started"
+
+echo "SmolVM OpenClaw init complete: IP=${GUEST_IP}, SSH on :22, device-approver PID=${DEVICE_APPROVER_PID}"
+log_ts "init-complete"
+
+# ── Keep PID 1 alive ────────────────────────────────────────
 while true; do
     sleep 3600 &
     wait $!
