@@ -11,7 +11,7 @@ repos:
     # Match the installed ruff version (0.15.1)
     rev: v0.15.1
     hooks:
-      # Run the inter.
+      # Run the linter.
       - id: ruff-check
         args: [ --fix ]
       # Run the formatter.
