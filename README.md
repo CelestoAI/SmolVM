@@ -1,5 +1,8 @@
 <div align="center">
 
+<img src="https://ik.imagekit.io/gradsflow/celestoai/logo/smol-vm-logo_j3f2cqqRcO.png" width=100px>
+
+
 # SmolVM
 
 **Secure runtime for AI agents and tools**
@@ -7,7 +10,7 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
-[Docs](https://docs.celesto.ai) • [Examples](examples/) • [GitHub](https://github.com/celestoai/smolvm)
+[Docs](https://docs.celesto.ai) • [Examples](examples/) • [Slack](https://join.slack.com/t/celestoai/shared_invite/zt-3qc7h8gno-Nb5_PElEWHDNnGqdVzC~4Q)
 
 </div>
 
