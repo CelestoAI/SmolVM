@@ -201,5 +201,5 @@ Apache 2.0 License - see [LICENSE](LICENSE) for details.
 
 ---
 <div align="center">
-Built with 🧡 by <a href="https://celesto.ai">Celesto AI</a>
+Built with 🧡 in London by <a href="https://celesto.ai">Celesto AI</a>
 </div>
