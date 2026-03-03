@@ -38,11 +38,14 @@ class VsockClient:
 
         raw = (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
 
-        with socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM) as sock:
-            sock.settimeout(self.timeout)
-            sock.connect((self.guest_cid, self.guest_port))
-            sock.sendall(raw)
-            response = self._recv_line(sock)
+        try:
+            with socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM) as sock:
+                sock.settimeout(self.timeout)
+                sock.connect((self.guest_cid, self.guest_port))
+                sock.sendall(raw)
+                response = self._recv_line(sock)
+        except OSError as exc:
+            raise SmolVMError(f"Vsock transport error: {exc}") from exc
 
         try:
             data = json.loads(response)
