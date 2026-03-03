@@ -455,8 +455,10 @@ RUN chmod +x /init
         self,
         name: str = "openclaw",
         ssh_password: str = "smolvm",
+        ssh_public_key: str | Path | None = None,
         rootfs_size_mb: int = 2048,
         kernel_url: str | None = None,
+        extra_packages: list[str] | None = None,
     ) -> tuple[Path, Path]:
         """Build OpenClaw rootfs with Node.js, sidecars, and init wiring.
 
@@ -467,14 +469,17 @@ RUN chmod +x /init
         - ``inotify-tools`` and the device-approver sidecar
         - SSH server for ``vm.run()`` management commands
         - Custom ``/init`` that boots networking, sshd, and the sidecar
+        - Custom system packages like `git` (for npm source dependencies)
 
         Boot the resulting VM with :data:`OPENCLAW_BOOT_ARGS`.
 
         Args:
             name: Image name for caching.
             ssh_password: Root password for SSH (default: smolvm).
+            ssh_public_key: Public key content or path to a public key file.
             rootfs_size_mb: Size of rootfs in MB (default: 2048).
             kernel_url: Optional kernel URL override.
+            extra_packages: List of apt packages to install (defaults to ['git']).
 
         Returns:
             Tuple of (kernel_path, rootfs_path).
@@ -496,7 +501,12 @@ RUN chmod +x /init
             logger.info("Image '%s' already exists at %s", name, image_dir)
             return (kernel_path, rootfs_path)
 
-        logger.info("Building OpenClaw image '%s'...", name)
+        if extra_packages is None:
+            extra_packages = ["git"]
+
+        packages_str = " ".join(extra_packages)
+
+        logger.info("Building OpenClaw image '%s' with extra packages: %s...", name, packages_str)
         image_dir.mkdir(parents=True, exist_ok=True)
 
         init_script = self._openclaw_init_script()
@@ -540,6 +550,18 @@ while inotifywait -e close_write,moved_to \
 done
 """
 
+        systemctl_proxy_sh = r"""#!/bin/bash
+if [ "$1" = "start" ] && [ "$2" = "openclaw" ]; then
+    echo "Starting openclaw via dummy systemctl..."
+    # The reconciler writes the config to /home/node/.openclaw, so we must run as 'node' user
+    # We use --allow-unconfigured so it boots even if pairing hasn't finished
+    su - node -c "nohup openclaw gateway --allow-unconfigured > /var/log/openclaw.log 2>&1 &"
+    exit 0
+fi
+echo "dummy systemctl: ignoring command $@"
+exit 0
+"""
+
         dockerfile_content = f"""
 FROM node:22.12.0-bookworm-slim
 
@@ -553,6 +575,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     ca-certificates \\
     inotify-tools \\
     python3 \\
+    {packages_str} \\
     && rm -rf /var/lib/apt/lists/*
 
 RUN ssh-keygen -A && \\
@@ -561,23 +584,41 @@ RUN ssh-keygen -A && \\
     sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config && \\
     echo 'root:{ssh_password}' | chpasswd
 
+# Inject authorized_keys if provided
+COPY authorized_keys /root/.ssh/authorized_keys
+RUN chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true
+
 # Prepare OpenClaw directories and workspace
 RUN useradd -m -s /bin/bash node 2>/dev/null || true && \\
-    mkdir -p /app /home/node/.openclaw/devices /workspace && \\
-    chown -R node:node /app /home/node/.openclaw /workspace
+    mkdir -p /opt/openclaw /home/node/.openclaw/devices /workspace && \\
+    chown -R node:node /opt/openclaw /home/node/.openclaw /workspace
 
-WORKDIR /app
-RUN npm init -y && npm install openclaw
+WORKDIR /opt/openclaw
+RUN npm init -y && \\
+    npm --prefix /opt/openclaw install -g openclaw && \\
+    ln -sf /opt/openclaw/bin/openclaw /usr/local/bin/openclaw && \\
+    touch /var/log/openclaw.log && \\
+    chown node:node /var/log/openclaw.log
 
-# Sidecar scripts
+# Sidecar and proxy scripts
 COPY device-approver.py /usr/local/bin/device-approver.py
 COPY watch-devices.sh /usr/local/bin/watch-devices.sh
-RUN chmod +x /usr/local/bin/device-approver.py /usr/local/bin/watch-devices.sh
+COPY systemctl /usr/local/bin/systemctl
+RUN chmod +x /usr/local/bin/device-approver.py /usr/local/bin/watch-devices.sh /usr/local/bin/systemctl
 
 # Init script
 COPY init /init
 RUN chmod +x /init
 """
+
+        if ssh_public_key is None:
+            key_path = Path.home() / ".smolvm" / "keys" / "id_ed25519.pub"
+            try:
+                key_value = key_path.read_text().strip()
+            except OSError:
+                key_value = ""
+        else:
+            key_value = self._resolve_public_key(ssh_public_key)
 
         try:
             self._do_build(
@@ -591,6 +632,8 @@ RUN chmod +x /init
                 extra_files={
                     "device-approver.py": device_approver_py,
                     "watch-devices.sh": watch_devices_sh,
+                    "systemctl": systemctl_proxy_sh,
+                    "authorized_keys": f"{key_value}\n" if key_value else "",
                 },
                 kernel_url=kernel_url,
             )

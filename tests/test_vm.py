@@ -600,7 +600,7 @@ class TestSmolVMBootArgsAndSSHCommands:
 
         assert mock_client.add_drive.call_count == 2
         assert mock_client.add_drive.call_args_list[1] == call(
-            "data-drive",
+            "data_drive",
             data_drive,
             is_root_device=False,
             is_read_only=False,

@@ -58,7 +58,7 @@ class TestVMConfig:
         )
 
         assert config.vm_id.startswith("vm-")
-        assert re.fullmatch(r"^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$", config.vm_id)
+        assert re.fullmatch(r"^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$|^[a-z0-9]$", config.vm_id)
 
     def test_vm_id_auto_generated_when_none(self, tmp_path: Path) -> None:
         """Test VM ID is generated when explicitly set to None."""

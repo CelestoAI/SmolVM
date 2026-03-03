@@ -62,7 +62,7 @@ class VMConfig(BaseModel):
         str,
         Field(
             default_factory=_generate_vm_id,
-            pattern=r"^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$",
+            pattern=r"^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$|^[a-z0-9]$",
         ),
     ]
     vcpu_count: Annotated[int, Field(ge=1, le=32)] = 2

@@ -618,7 +618,7 @@ class SmolVMManager:
                 is_read_only=False,
             )
             for index, drive_path in enumerate(vm_info.config.extra_drives):
-                drive_id = "data-drive" if index == 0 else f"data-drive-{index}"
+                drive_id = "data_drive" if index == 0 else f"data_drive_{index}"
                 client.add_drive(
                     drive_id,
                     drive_path,
