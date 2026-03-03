@@ -418,6 +418,33 @@ class NetworkManager:
         if delete_lines:
             self._run_nft_script("\n".join(delete_lines) + "\n")
 
+    def _find_nft_delete_rule_lines(
+        self,
+        family: str,
+        table: str,
+        *,
+        comment: str | None = None,
+        comment_prefix: str | None = None,
+    ) -> list[str]:
+        """Return nft 'delete rule' lines for rules matching comment filters."""
+        if comment is None and comment_prefix is None:
+            raise ValueError("comment or comment_prefix must be provided")
+
+        table_output = self._nft_list_table(family, table, handles=True)
+        if not table_output:
+            return []
+
+        handles = self._extract_table_rule_handles(table_output)
+        delete_lines: list[str] = []
+        for chain, rule_comment, handle in handles:
+            if comment is not None and rule_comment != comment:
+                continue
+            if comment_prefix is not None and not rule_comment.startswith(comment_prefix):
+                continue
+            delete_lines.append(f"delete rule {family} {table} {chain} handle {handle}")
+
+        return delete_lines
+
     # ------------------------------------------------------------------
     # Public firewall/NAT API
     # ------------------------------------------------------------------
@@ -683,9 +710,10 @@ class NetworkManager:
             # drop everything else going out from this tap
             iifname <tap> ip daddr != { <ip1>, <ip2>, ... } counter drop
 
-        The function is update-safe: prior egress rules for the tap are removed
-        before new rules are added, so changing ``allowed_ips`` replaces policy
-        instead of leaving stale nft expressions in place.
+        The function is fail-closed and update-safe: it applies a single nft
+        transaction that stages new rules first, then removes stale rules and
+        any generic per-TAP NAT accept rule. If the transaction fails, old rules
+        remain in place unchanged.
 
         Args:
             tap_device: TAP interface name (e.g., ``tap42``).
@@ -706,45 +734,36 @@ class NetworkManager:
         )
 
         self._ensure_nftables_base()
-        self.remove_egress_rules(tap_device)
-
-        # Remove generic per-TAP NAT forwarding accept, otherwise it can
-        # short-circuit allowlist drops due to rule ordering.
         iface = self.outbound_interface
-        self._delete_nft_rules(
+
+        comment_prefix = f"smolvm:egress:{tap_device}"
+        old_egress_delete_lines = self._find_nft_delete_rule_lines(
+            _NFT_FILTER_FAMILY,
+            _NFT_FILTER_TABLE,
+            comment_prefix=f"{comment_prefix}:",
+        )
+        old_nat_accept_delete_lines = self._find_nft_delete_rule_lines(
             _NFT_FILTER_FAMILY,
             _NFT_FILTER_TABLE,
             comment=f"smolvm:nat:tap:{tap_device}:to:{iface}",
         )
-
-        comment_prefix = f"smolvm:egress:{tap_device}"
-        rules: list[tuple[str, str, str, str, str]] = [
+        script_lines = [
             (
-                _NFT_FILTER_FAMILY,
-                _NFT_FILTER_TABLE,
-                "forward",
-                (
-                    f"iifname {self._quote(tap_device)} "
-                    "ct state established,related counter accept"
-                ),
-                f"{comment_prefix}:established",
+                f"add rule {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} forward "
+                f"iifname {self._quote(tap_device)} ct state established,related "
+                f"counter accept comment {self._quote(f'{comment_prefix}:established')}"
             ),
         ]
 
         if allowed_ips:
             # nftables anonymous set: ip daddr != { a, b, c }
             ip_set = ", ".join(allowed_ips)
-            rules.append(
+            script_lines.append(
                 (
-                    _NFT_FILTER_FAMILY,
-                    _NFT_FILTER_TABLE,
-                    "forward",
-                    (
-                        f"iifname {self._quote(tap_device)} "
-                        f"ip daddr {{ {ip_set} }} counter accept"
-                    ),
-                    f"{comment_prefix}:allow",
-                )
+                    f"add rule {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} forward "
+                    f"iifname {self._quote(tap_device)} ip daddr {{ {ip_set} }} "
+                    f"counter accept comment {self._quote(f'{comment_prefix}:allow')}"
+                ),
             )
             drop_expr = (
                 f"iifname {self._quote(tap_device)} "
@@ -754,17 +773,17 @@ class NetworkManager:
             # No IPs allowed — drop unconditionally.
             drop_expr = f"iifname {self._quote(tap_device)} counter drop"
 
-        rules.append(
+        script_lines.append(
             (
-                _NFT_FILTER_FAMILY,
-                _NFT_FILTER_TABLE,
-                "forward",
-                drop_expr,
-                f"{comment_prefix}:drop",
+                f"add rule {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} forward "
+                f"{drop_expr} comment {self._quote(f'{comment_prefix}:drop')}"
             )
         )
 
-        self._add_nft_rules_if_missing(rules)
+        script_lines.extend(old_egress_delete_lines)
+        script_lines.extend(old_nat_accept_delete_lines)
+
+        self._run_nft_script("\n".join(script_lines) + "\n")
 
     def remove_egress_rules(self, tap_device: str) -> None:
         """Remove all egress allowlist rules for *tap_device*.
