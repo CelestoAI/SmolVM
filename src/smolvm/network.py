@@ -673,17 +673,19 @@ class NetworkManager:
     ) -> None:
         """Restrict outbound traffic from *tap_device* to *allowed_ips* only.
 
-        Installs two complementary rules in the SmolVM filter forward chain,
-        keyed by tap device name so they are fully isolated between tenants::
+        Installs per-TAP rules in the SmolVM filter forward chain keyed by tap
+        name so they are isolated between tenants::
 
             # pass matching return traffic (established sessions)
             iifname <tap> ct state established,related counter accept
+            # allow the configured destination set
+            iifname <tap> ip daddr { <ip1>, <ip2>, ... } counter accept
             # drop everything else going out from this tap
             iifname <tap> ip daddr != { <ip1>, <ip2>, ... } counter drop
 
-        The function is idempotent: calling it a second time with the same
-        arguments is a no-op because ``_add_nft_rules_if_missing`` deduplicates
-        on ``(chain, comment)``.
+        The function is update-safe: prior egress rules for the tap are removed
+        before new rules are added, so changing ``allowed_ips`` replaces policy
+        instead of leaving stale nft expressions in place.
 
         Args:
             tap_device: TAP interface name (e.g., ``tap42``).
@@ -704,38 +706,65 @@ class NetworkManager:
         )
 
         self._ensure_nftables_base()
+        self.remove_egress_rules(tap_device)
+
+        # Remove generic per-TAP NAT forwarding accept, otherwise it can
+        # short-circuit allowlist drops due to rule ordering.
+        iface = self.outbound_interface
+        self._delete_nft_rules(
+            _NFT_FILTER_FAMILY,
+            _NFT_FILTER_TABLE,
+            comment=f"smolvm:nat:tap:{tap_device}:to:{iface}",
+        )
 
         comment_prefix = f"smolvm:egress:{tap_device}"
+        rules: list[tuple[str, str, str, str, str]] = [
+            (
+                _NFT_FILTER_FAMILY,
+                _NFT_FILTER_TABLE,
+                "forward",
+                (
+                    f"iifname {self._quote(tap_device)} "
+                    "ct state established,related counter accept"
+                ),
+                f"{comment_prefix}:established",
+            ),
+        ]
 
         if allowed_ips:
             # nftables anonymous set: ip daddr != { a, b, c }
             ip_set = ", ".join(allowed_ips)
-            drop_expr = f"iifname {self._quote(tap_device)} ip daddr != {{ {ip_set} }} counter drop"
-        else:
-            # No IPs allowed — drop unconditionally.
-            drop_expr = f"iifname {self._quote(tap_device)} counter drop"
-
-        self._add_nft_rules_if_missing(
-            [
+            rules.append(
                 (
                     _NFT_FILTER_FAMILY,
                     _NFT_FILTER_TABLE,
                     "forward",
                     (
                         f"iifname {self._quote(tap_device)} "
-                        "ct state established,related counter accept"
+                        f"ip daddr {{ {ip_set} }} counter accept"
                     ),
-                    f"{comment_prefix}:established",
-                ),
-                (
-                    _NFT_FILTER_FAMILY,
-                    _NFT_FILTER_TABLE,
-                    "forward",
-                    drop_expr,
-                    f"{comment_prefix}:drop",
-                ),
-            ]
+                    f"{comment_prefix}:allow",
+                )
+            )
+            drop_expr = (
+                f"iifname {self._quote(tap_device)} "
+                f"ip daddr != {{ {ip_set} }} counter drop"
+            )
+        else:
+            # No IPs allowed — drop unconditionally.
+            drop_expr = f"iifname {self._quote(tap_device)} counter drop"
+
+        rules.append(
+            (
+                _NFT_FILTER_FAMILY,
+                _NFT_FILTER_TABLE,
+                "forward",
+                drop_expr,
+                f"{comment_prefix}:drop",
+            )
         )
+
+        self._add_nft_rules_if_missing(rules)
 
     def remove_egress_rules(self, tap_device: str) -> None:
         """Remove all egress allowlist rules for *tap_device*.

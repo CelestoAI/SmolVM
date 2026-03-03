@@ -296,8 +296,8 @@ def _check_kvm_permissions() -> DoctorCheck:
 def check_worker_node_security() -> list[DoctorCheck]:
     """Run all host-level security invariants required before starting the reconciler.
 
-    Returns a list of :class:`DoctorCheck` results.  Raises
-    :class:`WorkerNodeSecurityError` if **any** check has status ``"fail"``.
+    Returns a list of :class:`DoctorCheck` results. Raises
+    :class:`WorkerNodeSecurityError` if **any** check is non-passing.
 
     Design rationale (C2 — Defence in Depth):
     These checks operate at the host kernel level.  No amount of application
@@ -322,11 +322,11 @@ def check_worker_node_security() -> list[DoctorCheck]:
         _check_kvm_permissions(),
     ]
 
-    failures = [c for c in checks if c.status == "fail"]
-    if failures:
-        lines = "; ".join(f"{c.name}: {c.detail}" for c in failures)
+    non_passing = [c for c in checks if c.status != "pass"]
+    if non_passing:
+        lines = "; ".join(f"{c.name} [{c.status}]: {c.detail}" for c in non_passing)
         raise WorkerNodeSecurityError(
-            f"Worker node security checks failed ({len(failures)}/{len(checks)}): {lines}"
+            f"Worker node security checks failed ({len(non_passing)}/{len(checks)}): {lines}"
         )
 
     return checks

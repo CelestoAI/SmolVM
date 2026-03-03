@@ -14,7 +14,7 @@
 
 """Tests for SmolVM network module."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from smolvm.exceptions import SmolVMError
 from smolvm.network import NetworkManager, check_network_prerequisites
@@ -256,3 +256,41 @@ class TestNetworkPrerequisites:
         assert ["ip", "link", "show"] in commands
         assert ["nft", "list", "tables"] in commands
         assert ["sysctl", "net.ipv4.ip_forward"] in commands
+
+
+class TestEgressAllowlist:
+    """Tests for egress allowlist rule behavior."""
+
+    def test_apply_egress_allowlist_replaces_rules_and_removes_generic_forward_accept(
+        self,
+    ) -> None:
+        """Applying allowlist should remove stale rules and generic per-TAP allow rule."""
+        nm = NetworkManager()
+        nm._outbound_interface = "eth0"
+        nm._ensure_nftables_base = MagicMock()
+        nm._delete_nft_rules = MagicMock()
+        nm._add_nft_rules_if_missing = MagicMock()
+
+        nm.apply_egress_allowlist("tap42", ["1.1.1.1", "8.8.8.8"])
+
+        assert nm._delete_nft_rules.call_args_list == [
+            call(
+                "inet",
+                "smolvm_filter",
+                comment_prefix="smolvm:egress:tap42:",
+            ),
+            call(
+                "inet",
+                "smolvm_filter",
+                comment="smolvm:nat:tap:tap42:to:eth0",
+            ),
+        ]
+
+        rules = nm._add_nft_rules_if_missing.call_args.args[0]
+        assert len(rules) == 3
+        assert rules[0][4] == "smolvm:egress:tap42:established"
+        assert "ct state established,related" in rules[0][3]
+        assert rules[1][4] == "smolvm:egress:tap42:allow"
+        assert "ip daddr { 1.1.1.1, 8.8.8.8 } counter accept" in rules[1][3]
+        assert rules[2][4] == "smolvm:egress:tap42:drop"
+        assert "ip daddr != { 1.1.1.1, 8.8.8.8 } counter drop" in rules[2][3]

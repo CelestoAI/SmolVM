@@ -363,6 +363,7 @@ class TestSmolVMDelete:
         smol_vm.delete("vm001")
 
         mock_network.cleanup_all_local_port_forwards.assert_called_once_with("vm001")
+        mock_network.remove_egress_rules.assert_called_once_with("tap2")
 
 
 class TestIPBasedTAPNaming:

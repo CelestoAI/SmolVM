@@ -17,7 +17,15 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from smolvm.doctor import DoctorCheck, generate_doctor_report, run_doctor
+import pytest
+
+from smolvm.doctor import (
+    DoctorCheck,
+    WorkerNodeSecurityError,
+    check_worker_node_security,
+    generate_doctor_report,
+    run_doctor,
+)
 from smolvm.exceptions import SmolVMError
 
 
@@ -118,3 +126,24 @@ class TestDoctorQemu:
 
         assert report.backend_resolved == "qemu"
         assert any(check.name == "qemu" and check.status == "fail" for check in report.checks)
+
+
+class TestWorkerNodeSecurityChecks:
+    """Tests for strict worker-node startup guard behavior."""
+
+    @patch("smolvm.doctor._check_kvm_permissions", new=lambda: _pass("worker:kvm-permissions"))
+    @patch(
+        "smolvm.doctor._check_kvm_nx_huge_pages",
+        new=lambda: DoctorCheck(
+            name="worker:kvm-nx-huge-pages",
+            status="warn",
+            detail="kvm module not loaded",
+        ),
+    )
+    @patch("smolvm.doctor._check_thp_disabled", new=lambda: _pass("worker:thp-disabled"))
+    @patch("smolvm.doctor._check_ksm_disabled", new=lambda: _pass("worker:ksm-disabled"))
+    @patch("smolvm.doctor._check_swap_disabled", new=lambda: _pass("worker:swap-disabled"))
+    def test_check_worker_node_security_raises_on_warn(self) -> None:
+        """Startup guard should reject non-pass security checks, including warnings."""
+        with pytest.raises(WorkerNodeSecurityError, match="worker:kvm-nx-huge-pages \\[warn\\]"):
+            check_worker_node_security()
