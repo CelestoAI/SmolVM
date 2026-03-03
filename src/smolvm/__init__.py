@@ -32,8 +32,9 @@ from smolvm.facade import SmolVM
 from smolvm.host import HostManager
 from smolvm.images import ImageManager, ImageSource, LocalImage
 from smolvm.ssh import SSHClient
-from smolvm.types import CommandResult, NetworkConfig, VMConfig, VMInfo, VMState
+from smolvm.types import CommandResult, NetworkConfig, VMConfig, VMInfo, VMState, VsockConfig
 from smolvm.vm import SmolVMManager
+from smolvm.vsock import VsockClient
 
 __version__ = "0.0.5.a0"
 
@@ -49,14 +50,16 @@ __all__ = [
     "LocalImage",
     # Host setup
     "HostManager",
-    # SSH
+    # SSH / vsock
     "SSHClient",
+    "VsockClient",
     # Data models
     "VMConfig",
     "VMInfo",
     "VMState",
     "NetworkConfig",
     "CommandResult",
+    "VsockConfig",
     # Exceptions
     "SmolVMError",
     "CommandExecutionUnavailableError",

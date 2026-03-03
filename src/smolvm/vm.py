@@ -17,6 +17,7 @@
 Orchestrates VM lifecycle, networking, and state management across runtimes.
 """
 
+import hashlib
 import logging
 import os
 import platform
@@ -39,7 +40,7 @@ from smolvm.exceptions import (
 from smolvm.host import HostCapability, HostManager
 from smolvm.network import NetworkManager, check_network_prerequisites
 from smolvm.storage import StateManager
-from smolvm.types import NetworkConfig, VMConfig, VMInfo, VMState
+from smolvm.types import NetworkConfig, VMConfig, VMInfo, VMState, VsockConfig
 from smolvm.utils import RUNTIME_PRIVILEGE_SETUP_HINT, which
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,22 @@ DEFAULT_SOCKET_DIR = Path("/tmp")
 QEMU_GUEST_IP = "10.0.2.15"
 QEMU_GATEWAY_IP = "10.0.2.2"
 QEMU_NETMASK = "255.255.255.0"
+
+
+def derive_vsock_guest_cid(vm_id: str) -> int:
+    """Derive a stable non-reserved guest CID from *vm_id*."""
+    digest = hashlib.sha256(vm_id.encode("utf-8")).digest()
+    raw = int.from_bytes(digest[:4], "big")
+    # Avoid reserved CIDs (0,1,2) and keep within 32-bit unsigned range.
+    return (raw % (2**32 - 3)) + 3
+
+
+def resolve_vsock_config(vm_info: VMInfo, data_dir: Path) -> VsockConfig:
+    """Resolve concrete vsock settings for a VM at runtime."""
+    cfg = vm_info.config.vsock
+    cid = cfg.guest_cid if cfg.guest_cid is not None else derive_vsock_guest_cid(vm_info.vm_id)
+    uds_path = cfg.uds_path if cfg.uds_path is not None else data_dir / f"vsock-{vm_info.vm_id}.sock"
+    return cfg.model_copy(update={"guest_cid": cid, "uds_path": uds_path})
 
 
 def _get_sudo_user_info() -> pwd.struct_passwd | None:
@@ -624,6 +641,18 @@ class SmolVMManager:
                 vm_info.network.guest_mac,
             )
 
+            if vm_info.config.vsock.enabled:
+                vsock_cfg = resolve_vsock_config(vm_info, self.data_dir)
+                assert vsock_cfg.guest_cid is not None
+                assert vsock_cfg.uds_path is not None
+                if vsock_cfg.uds_path.exists():
+                    self._unlink_socket(vsock_cfg.uds_path)
+                client.add_vsock(
+                    "control",
+                    guest_cid=vsock_cfg.guest_cid,
+                    uds_path=vsock_cfg.uds_path,
+                )
+
             # Start the instance
             client.start_instance()
             client.close()
@@ -768,6 +797,11 @@ class SmolVMManager:
         self.state.delete_vm(vm_id)
 
         logger.info("VM deleted: %s", vm_id)
+
+    def get_vsock_config(self, vm_id: str) -> VsockConfig:
+        """Return resolved vsock settings for a VM."""
+        vm_info = self.get(vm_id)
+        return resolve_vsock_config(vm_info, self.data_dir)
 
     def get(self, vm_id: str) -> VMInfo:
         """Get VM information.

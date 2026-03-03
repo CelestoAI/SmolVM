@@ -236,6 +236,25 @@ class FirecrackerClient:
         )
         logger.debug("Network interface added: %s -> %s", iface_id, host_dev_name)
 
+
+    def add_vsock(
+        self,
+        vsock_id: str,
+        guest_cid: int,
+        uds_path: Path,
+    ) -> None:
+        """Configure a vsock device for host/guest control-plane traffic."""
+        self._request(
+            "PUT",
+            f"/vsock/{vsock_id}",
+            json={
+                "vsock_id": vsock_id,
+                "guest_cid": guest_cid,
+                "uds_path": str(uds_path),
+            },
+        )
+        logger.debug("Vsock device added: %s (cid=%d)", vsock_id, guest_cid)
+
     def start_instance(self) -> None:
         """Start the microVM instance."""
         self._request(

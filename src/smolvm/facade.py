@@ -46,6 +46,7 @@ from smolvm.exceptions import (
     SmolVMError,
 )
 from smolvm.ssh import SSHClient
+from smolvm.vsock import VsockClient
 from smolvm.types import CommandResult, VMConfig, VMInfo, VMState
 from smolvm.vm import SmolVMManager
 
@@ -202,6 +203,7 @@ class SmolVM:
             self._owns_vm = False
 
         self._ssh: SSHClient | None = None
+        self._vsock: VsockClient | None = None
         self._ssh_ready = False
         self._local_forwards: dict[tuple[int, int], _LocalForward] = {}
 
@@ -319,6 +321,8 @@ class SmolVM:
             self._ssh.close()
         self._ssh = None
         self._ssh_ready = False
+        self._vsock = None
+        self._vsock = None
         logger.info("VM %s stopped", self._vm_id)
         return self
 
@@ -330,6 +334,7 @@ class SmolVM:
             self._ssh.close()
         self._ssh = None
         self._ssh_ready = False
+        self._vsock = None
         logger.info("VM %s deleted", self._vm_id)
 
     # ------------------------------------------------------------------
@@ -399,6 +404,50 @@ class SmolVM:
             )
 
         return self._ssh.run(command, timeout=timeout, shell=shell)
+
+    def run_vsock(
+        self,
+        command: str,
+        timeout: int = 30,
+        *,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+        token: str | None = None,
+    ) -> CommandResult:
+        """Execute a command through the vsock control-plane."""
+        self._refresh_info()
+
+        if self._info.status != VMState.RUNNING:
+            raise SmolVMError(
+                f"Cannot run command: VM is {self._info.status.value}",
+                {"vm_id": self._vm_id},
+            )
+
+        if self._vsock is None:
+            vsock_cfg = self._sdk.get_vsock_config(self._vm_id)
+            if not vsock_cfg.enabled:
+                raise SmolVMError("Vsock control-plane is disabled for this VM")
+            assert vsock_cfg.guest_cid is not None
+            self._vsock = VsockClient(vsock_cfg.guest_cid, vsock_cfg.guest_port)
+
+        return self._vsock.run(command, timeout=timeout, env=env, cwd=cwd, token=token)
+
+    def vsock_health(self) -> dict[str, Any]:
+        """Query health from the in-guest vsock agent."""
+        self._refresh_info()
+        if self._info.status != VMState.RUNNING:
+            raise SmolVMError(
+                f"Cannot query vsock health: VM is {self._info.status.value}",
+                {"vm_id": self._vm_id},
+            )
+        if self._vsock is None:
+            vsock_cfg = self._sdk.get_vsock_config(self._vm_id)
+            if not vsock_cfg.enabled:
+                raise SmolVMError("Vsock control-plane is disabled for this VM")
+            assert vsock_cfg.guest_cid is not None
+            self._vsock = VsockClient(vsock_cfg.guest_cid, vsock_cfg.guest_port)
+
+        return self._vsock.health()
 
     def set_env_vars(self, env_vars: dict[str, str], *, merge: bool = True) -> list[str]:
         """Set environment variables on a running VM.

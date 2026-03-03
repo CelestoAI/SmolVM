@@ -36,6 +36,17 @@ def _generate_vm_id() -> str:
     return f"vm-{uuid4().hex[:8]}"
 
 
+class VsockConfig(BaseModel):
+    """Vsock control-plane configuration."""
+
+    enabled: bool = True
+    guest_cid: int | None = None
+    guest_port: Annotated[int, Field(ge=1, le=65535)] = 5000
+    uds_path: Path | None = None
+
+    model_config = {"frozen": True}
+
+
 class VMConfig(BaseModel):
     """Configuration for creating a microVM.
 
@@ -55,6 +66,7 @@ class VMConfig(BaseModel):
             create with the same VM ID can reuse prior state.
         env_vars: Environment variables to inject into the guest
             after boot via SSH. Keys must be valid shell identifiers.
+        vsock: Vsock control-plane settings.
     """
 
     vm_id: Annotated[
@@ -73,6 +85,7 @@ class VMConfig(BaseModel):
     disk_mode: Literal["isolated", "shared"] = "isolated"
     retain_disk_on_delete: bool = False
     env_vars: dict[str, str] = {}
+    vsock: VsockConfig = VsockConfig()
 
     @field_validator("vm_id", mode="before")
     @classmethod
