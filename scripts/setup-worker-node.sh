@@ -36,11 +36,10 @@
 #
 # USAGE
 # -----
-#   sudo ./scripts/setup-worker-node.sh [--check-only] [--kvm-group <group>]
+#   sudo ./scripts/setup-worker-node.sh [--check-only]
 #
 # OPTIONS
 #   --check-only          Validate settings without applying changes.
-#   --kvm-group <group>   Override defaultkvm owner group (default: kvm).
 #   -h, --help            Show this help.
 #
 # EXIT CODES
@@ -48,6 +47,7 @@
 #   1  One or more settings could not be applied / verified.
 
 set -euo pipefail
+ORIG_ARGS=("$@")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -61,18 +61,16 @@ readonly THP_ENABLED="/sys/kernel/mm/transparent_hugepage/enabled"
 # Argument parsing
 # ---------------------------------------------------------------------------
 CHECK_ONLY=false
-KVM_GROUP="kvm"
 
 usage() {
     cat <<EOF_USAGE
-Usage: ${SCRIPT_NAME} [--check-only] [--kvm-group <group>] [-h|--help]
+Usage: ${SCRIPT_NAME} [--check-only] [-h|--help]
 
 Apply host-level security hardening required for SmolVM worker nodes.
 Run as root (script will re-exec under sudo if available).
 
 Options:
   --check-only           Only validate; do not apply any changes.
-  --kvm-group <group>    Group to own /dev/kvm (default: kvm).
   -h, --help             Show this help message.
 EOF_USAGE
 }
@@ -80,12 +78,6 @@ EOF_USAGE
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --check-only)  CHECK_ONLY=true ;;
-        --kvm-group)
-            if [[ $# -lt 2 || -z "$2" ]]; then
-                echo "❌ --kvm-group requires a value" >&2
-                usage; exit 1
-            fi
-            KVM_GROUP="$2"; shift ;;
         -h|--help)     usage; exit 0 ;;
         *)
             echo "Unknown argument: $1" >&2
@@ -99,7 +91,7 @@ done
 # ---------------------------------------------------------------------------
 if [[ ${EUID} -ne 0 ]]; then
     if command -v sudo >/dev/null 2>&1; then
-        exec sudo -E "$0" "$@"
+        exec sudo -E "$0" "${ORIG_ARGS[@]}"
     fi
     echo "❌ This script must be run as root (sudo not found)." >&2
     exit 1
@@ -308,7 +300,8 @@ check_or_apply_kvm_nx() {
 # 5. /dev/kvm permissions — 660 + kvm group ownership
 # ---------------------------------------------------------------------------
 check_or_apply_kvm_perms() {
-    local description="/dev/kvm permissions (660, group ${KVM_GROUP})"
+    local kvm_group="kvm"
+    local description="/dev/kvm permissions (660, group ${kvm_group})"
 
     if [[ ! -e "${KVM_DEV}" ]]; then
         fail "${description}: ${KVM_DEV} not found (KVM unavailable)"
@@ -316,35 +309,35 @@ check_or_apply_kvm_perms() {
     fi
 
     # Ensure the kvm group exists
-    if ! getent group "${KVM_GROUP}" >/dev/null 2>&1; then
+    if ! getent group "${kvm_group}" >/dev/null 2>&1; then
         if [[ "${CHECK_ONLY}" == "true" ]]; then
-            fail "${description}: group '${KVM_GROUP}' does not exist"
+            fail "${description}: group '${kvm_group}' does not exist"
             return
         fi
-        groupadd "${KVM_GROUP}"
-        info "Created group '${KVM_GROUP}'"
+        groupadd "${kvm_group}"
+        info "Created group '${kvm_group}'"
     fi
 
     local current_perms current_group
     current_perms="$(stat -c '%a' "${KVM_DEV}")"
     current_group="$(stat -c '%G' "${KVM_DEV}")"
 
-    if [[ "${current_perms}" == "660" && "${current_group}" == "${KVM_GROUP}" ]]; then
-        pass "${description}: correct (${KVM_DEV} is 660 ${KVM_GROUP})"
+    if [[ "${current_perms}" == "660" && "${current_group}" == "${kvm_group}" ]]; then
+        pass "${description}: correct (${KVM_DEV} is 660 ${kvm_group})"
         return
     fi
 
     if [[ "${CHECK_ONLY}" == "true" ]]; then
-        fail "${description}: ${KVM_DEV} is ${current_perms} ${current_group} (want 660 ${KVM_GROUP})"
+        fail "${description}: ${KVM_DEV} is ${current_perms} ${current_group} (want 660 ${kvm_group})"
         return
     fi
 
-    chmod 660 "${KVM_DEV}" && chgrp "${KVM_GROUP}" "${KVM_DEV}" || {
+    chmod 660 "${KVM_DEV}" && chgrp "${kvm_group}" "${KVM_DEV}" || {
         fail "${description}: chmod/chgrp failed on ${KVM_DEV}"
         return
     }
 
-    pass "${description}: applied (${KVM_DEV} is now 660 ${KVM_GROUP})"
+    pass "${description}: applied (${KVM_DEV} is now 660 ${kvm_group})"
 }
 
 # ---------------------------------------------------------------------------

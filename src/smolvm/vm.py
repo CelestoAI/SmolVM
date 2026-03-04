@@ -1172,6 +1172,8 @@ class SmolVMManager:
 
                 if backend == BACKEND_FIRECRACKER:
                     # Cleanup Linux TAP/NAT only for Firecracker backend.
+                    with suppress(Exception):
+                        self.network.remove_egress_rules(tap_device)
                     self.network.cleanup_nat_rules(tap_device)
                     self.network.cleanup_tap(tap_device)
 
