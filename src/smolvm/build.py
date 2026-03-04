@@ -986,7 +986,7 @@ done
             tar_error = e
         finally:
             try:
-                self._run_loopfs("umount", mount_dir)
+                self._run_loopfs("umount", mount_dir, timeout=extract_timeout)
             except ImageError:
                 if tar_error is None:
                     raise
