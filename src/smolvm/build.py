@@ -465,7 +465,7 @@ RUN chmod +x /init
         The resulting image contains:
 
         - Node.js >= 22.12.0 (``node:22.12.0-bookworm-slim`` base)
-        - OpenClaw pre-installed at ``/app/``
+        - OpenClaw pre-installed at ``/opt/openclaw/`` (symlinked to ``/usr/local/bin/openclaw``)
         - ``inotify-tools`` and the device-approver sidecar
         - SSH server for ``vm.run()`` management commands
         - Custom ``/init`` that boots networking, sshd, and the sidecar
@@ -553,9 +553,19 @@ done
         systemctl_proxy_sh = r"""#!/bin/bash
 if [ "$1" = "start" ] && [ "$2" = "openclaw" ]; then
     echo "Starting openclaw via dummy systemctl..."
-    # The reconciler writes the config to /home/node/.openclaw, so we must run as 'node' user
-    # We use --allow-unconfigured so it boots even if pairing hasn't finished
-    su - node -c "nohup openclaw gateway --allow-unconfigured > /var/log/openclaw.log 2>&1 &"
+    # The reconciler provisions the config via SSH then calls `systemctl start openclaw`.
+    # We use --allow-unconfigured so the gateway starts even before pairing completes.
+    #
+    # `</dev/null` — prevents openclaw from inheriting the SSH channel's stdin, which
+    #   would otherwise keep the SSH session alive until openclaw exits.
+    # `& disown`   — removes the job from bash's job table so the non-interactive shell
+    #   (su -c) can exit immediately without waiting for the backgrounded process.
+    #   Without disown, non-interactive bash may wait for child jobs before exiting,
+    #   causing the reconciler's ssh timeout to fire even though openclaw started.
+    _CMD="cd /home/node && HOME=/home/node"
+    _CMD="${_CMD} nohup openclaw gateway --allow-unconfigured"
+    _CMD="${_CMD} </dev/null > /var/log/openclaw.log 2>&1 & disown"
+    su - node -c "${_CMD}"
     exit 0
 fi
 echo "dummy systemctl: ignoring command $@"
@@ -880,8 +890,16 @@ done
             return LOOPFS_HELPER_PATH
         return None
 
-    def _run_loopfs(self, action: str, *args: Path) -> None:
-        """Run a privileged loopfs action through the scoped helper."""
+    def _run_loopfs(self, action: str, *args: Path, timeout: int = 30) -> None:
+        """Run a privileged loopfs action through the scoped helper.
+
+        Args:
+            action: One of ``mount``, ``extract``, ``umount``.
+            *args: Positional path arguments forwarded to the helper.
+            timeout: Command timeout in seconds.  Mount/umount are fast
+                (default 30 s); callers should pass a larger value for
+                ``extract`` when working with large images.
+        """
         helper = self._loopfs_helper_path()
         if helper is None:
             raise ImageError(
@@ -892,7 +910,7 @@ done
 
         cmd = [str(helper), action, *(str(arg) for arg in args)]
         try:
-            run_command(cmd, use_sudo=True, check=True, capture_output=True)
+            run_command(cmd, use_sudo=True, check=True, capture_output=True, timeout=timeout)
         except SmolVMError as e:
             raise ImageError(
                 "Image build loopfs operation failed.\n"
@@ -955,9 +973,15 @@ done
         mount_dir = tmpdir / "mnt"
         mount_dir.mkdir()
         self._run_loopfs("mount", rootfs_path, mount_dir)
+
+        # Scale extract timeout with image size: tar-extracting thousands of
+        # Node.js module files onto a loop-mounted ext4 is inode-bound, not
+        # throughput-bound.  30 s is sufficient for mount/umount but far too
+        # short for a 4 GB+ rootfs on a standard (non-SSD) disk.
+        extract_timeout = max(300, rootfs_size_mb // 8)
         tar_error: Exception | None = None
         try:
-            self._run_loopfs("extract", tar_path, mount_dir)
+            self._run_loopfs("extract", tar_path, mount_dir, timeout=extract_timeout)
         except Exception as e:
             tar_error = e
         finally:
