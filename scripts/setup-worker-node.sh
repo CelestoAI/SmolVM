@@ -222,20 +222,20 @@ check_or_apply_swap() {
     fi
 
     # Persistence: remove swap entries from /etc/fstab
-    if grep -qE '^\s*[^#].*\bswap\b' /etc/fstab 2>/dev/null; then
+    if awk '!/^#/ && $3 == "swap" {found=1; exit} END {exit !found}' /etc/fstab 2>/dev/null; then
         if [[ "${CHECK_ONLY}" == "true" ]]; then
             fail "${description}: /etc/fstab still contains swap entries"
             return
         fi
-        # Back up fstab, then strip swap lines (in-place)
+        # Back up fstab, then strip swap lines using awk (checking column 3 for 'swap' fstype)
         cp /etc/fstab /etc/fstab.bak.smolvm-worker
-        sed -i '/\bswap\b/d' /etc/fstab
+        awk '!/^#/ && $3 == "swap" {next} {print}' /etc/fstab.bak.smolvm-worker > /etc/fstab
         info "/etc/fstab swap entries removed (backup: /etc/fstab.bak.smolvm-worker)"
     fi
 
     # Final persistence check
-    if grep -qE '^\s*[^#].*\bswap\b' /etc/fstab 2>/dev/null; then
-        fail "${description}: /etc/fstab still contains swap entries after sed"
+    if awk '!/^#/ && $3 == "swap" {found=1; exit} END {exit !found}' /etc/fstab 2>/dev/null; then
+        fail "${description}: /etc/fstab still contains swap entries after awk"
     else
         pass "${description}"
     fi
@@ -295,7 +295,12 @@ check_or_apply_kvm_nx() {
 
     # The parameter is read-only once the module is loaded; we can only reload.
     # Reloading kvm is disruptive on a live node — document and fail.
-    fail "${description}: nx_huge_pages='${current}'; reload kvm module with: modprobe -r kvm_intel kvm && modprobe kvm nx_huge_pages=never"
+    # Try to detect which kvm vendor module is loaded
+    local kvm_mod="kvm_intel"
+    if [ -d "/sys/module/kvm_amd" ]; then
+        kvm_mod="kvm_amd"
+    fi
+    fail "${description}: nx_huge_pages='${current}'. KVM module must be reloaded to apply changes. Try: rmmod ${kvm_mod} kvm && modprobe kvm nx_huge_pages=never && modprobe ${kvm_mod}"
 }
 
 # ---------------------------------------------------------------------------
@@ -371,12 +376,12 @@ check_or_apply_docker_coexistence() {
 
     # Check whether the DOCKER-USER chain exists (Docker creates it on first
     # start; if Docker was never started it may be absent).
-    if ! iptables -L DOCKER-USER > /dev/null 2>&1; then
+    if ! iptables -n -L DOCKER-USER >/dev/null 2>&1; then
         if [[ "${CHECK_ONLY}" == "true" ]]; then
-            fail "${description}: DOCKER-USER chain absent (start Docker first)"
-            return
+            fail "${description}: DOCKER-USER chain is missing."
+        else
+            fail "${description}: DOCKER-USER chain is missing. Cannot apply Docker coexistence hardening."
         fi
-        warn "${description}: DOCKER-USER chain absent — please start Docker once, then re-run"
         return
     fi
 

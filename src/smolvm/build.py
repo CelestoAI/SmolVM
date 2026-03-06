@@ -17,13 +17,17 @@
 Automatically builds VM images with SSH using Docker.
 """
 
+import hashlib
+import json
 import logging
 import platform
+import re
 import shlex
 import shutil
 import subprocess
 import tarfile
 import tempfile
+import typing
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -147,9 +151,18 @@ class ImageBuilder:
         kernel_path = image_dir / "vmlinux.bin"
         rootfs_path = image_dir / "rootfs.ext4"
 
-        # Return cached image if it exists
-        if kernel_path.exists() and rootfs_path.exists():
-            logger.info("Image '%s' already exists at %s", name, image_dir)
+        # Check fingerprint cache
+        fingerprint_data = {
+            "rootfs_size_mb": rootfs_size_mb,
+            "kernel_url": kernel_url,
+            "ssh_password": ssh_password,
+        }
+        if (
+            kernel_path.exists()
+            and rootfs_path.exists()
+            and self._check_fingerprint(image_dir, fingerprint_data)
+        ):
+            logger.info("Image '%s' already exists and fingerprint matches at %s", name, image_dir)
             return (kernel_path, rootfs_path)
 
         logger.info("Building Alpine SSH image '%s'...", name)
@@ -158,8 +171,10 @@ class ImageBuilder:
         # The /init script runs as PID 1 inside the VM and brings up SSH.
         init_script = self._default_init_script()
 
-        dockerfile_content = f"""
+        dockerfile_content = """
 FROM alpine:3.19
+
+ARG SSH_PASSWORD
 
 # Install SSH and networking utilities
 RUN apk add --no-cache \\
@@ -172,7 +187,7 @@ RUN apk add --no-cache \\
 RUN ssh-keygen -A && \\
     sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \\
     sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config && \\
-    echo 'root:{ssh_password}' | chpasswd
+    echo "root:${SSH_PASSWORD}" | chpasswd
 
 # Install our custom init script
 COPY init /init
@@ -188,6 +203,7 @@ RUN chmod +x /init
                 kernel_path,
                 rootfs_path,
                 rootfs_size_mb,
+                build_args={"SSH_PASSWORD": ssh_password},
                 kernel_url=kernel_url,
             )
         except (subprocess.CalledProcessError, ImageError) as e:
@@ -233,45 +249,23 @@ RUN chmod +x /init
         kernel_path = image_dir / "vmlinux.bin"
         rootfs_path = image_dir / "rootfs.ext4"
 
+        fingerprint_data = {
+            "rootfs_size_mb": rootfs_size_mb,
+            "kernel_url": kernel_url,
+            "ssh_public_key": key_value,
+        }
+
         if kernel_path.exists() and rootfs_path.exists():
-            # Check if the image is stale (older than the provided key file)
-            is_stale = False
-
-            # Resolve key path from input if possible
-            key_path_check: Path | None = None
-            if isinstance(ssh_public_key, Path):
-                key_path_check = ssh_public_key
-            elif isinstance(ssh_public_key, str):
-                try:
-                    p = Path(ssh_public_key)
-                    if p.exists():
-                        key_path_check = p
-                except OSError:
-                    pass
-
-            # If we found a key file, check its mtime
-            if key_path_check and key_path_check.exists():
-                try:
-                    key_mtime = key_path_check.stat().st_mtime
-                    img_mtime = rootfs_path.stat().st_mtime
-                    if key_mtime > img_mtime:
-                        logger.info(
-                            "SSH key '%s' is newer than cached image. Rebuilding...",
-                            key_path_check.name,
-                        )
-                        is_stale = True
-                except OSError:
-                    pass
-
-            if not is_stale:
-                logger.info("Image '%s' already exists at %s", name, image_dir)
+            if self._check_fingerprint(image_dir, fingerprint_data):
+                logger.info(
+                    "Image '%s' already exists and fingerprint matches at %s", name, image_dir
+                )
                 return (kernel_path, rootfs_path)
 
+            logger.info("SSH key or config changed for image '%s'. Rebuilding...", name)
             # Remove stale files
-            if kernel_path.exists():
-                kernel_path.unlink()
-            if rootfs_path.exists():
-                rootfs_path.unlink()
+            kernel_path.unlink(missing_ok=True)
+            rootfs_path.unlink(missing_ok=True)
 
         logger.info("Building Alpine key-only SSH image '%s'...", name)
         image_dir.mkdir(parents=True, exist_ok=True)
@@ -356,45 +350,24 @@ RUN chmod +x /init
         kernel_path = image_dir / "vmlinux.bin"
         rootfs_path = image_dir / "rootfs.ext4"
 
+        fingerprint_data = {
+            "rootfs_size_mb": rootfs_size_mb,
+            "kernel_url": kernel_url,
+            "ssh_public_key": key_value,
+            "base_image": base_image,
+        }
+
         if kernel_path.exists() and rootfs_path.exists():
-            # Check if the image is stale (older than the provided key file)
-            is_stale = False
-
-            # Resolve key path from input if possible
-            key_path_check: Path | None = None
-            if isinstance(ssh_public_key, Path):
-                key_path_check = ssh_public_key
-            elif isinstance(ssh_public_key, str):
-                try:
-                    p = Path(ssh_public_key)
-                    if p.exists():
-                        key_path_check = p
-                except OSError:
-                    pass
-
-            # If we found a key file, check its mtime
-            if key_path_check and key_path_check.exists():
-                try:
-                    key_mtime = key_path_check.stat().st_mtime
-                    img_mtime = rootfs_path.stat().st_mtime
-                    if key_mtime > img_mtime:
-                        logger.info(
-                            "SSH key '%s' is newer than cached image. Rebuilding...",
-                            key_path_check.name,
-                        )
-                        is_stale = True
-                except OSError:
-                    pass
-
-            if not is_stale:
-                logger.info("Image '%s' already exists at %s", name, image_dir)
+            if self._check_fingerprint(image_dir, fingerprint_data):
+                logger.info(
+                    "Image '%s' already exists and fingerprint matches at %s", name, image_dir
+                )
                 return (kernel_path, rootfs_path)
 
+            logger.info("Inputs changed for image '%s'. Rebuilding...", name)
             # Remove stale files
-            if kernel_path.exists():
-                kernel_path.unlink()
-            if rootfs_path.exists():
-                rootfs_path.unlink()
+            kernel_path.unlink(missing_ok=True)
+            rootfs_path.unlink(missing_ok=True)
 
         logger.info("Building Debian key-only SSH image '%s'...", name)
         image_dir.mkdir(parents=True, exist_ok=True)
@@ -454,6 +427,8 @@ RUN chmod +x /init
     def build_openclaw_rootfs(
         self,
         name: str = "openclaw",
+        # Note: 'smolvm' is intentionally kept as the default for simplified local
+        # demos and testing fixtures. Production usages should override this value.
         ssh_password: str = "smolvm",
         ssh_public_key: str | Path | None = None,
         rootfs_size_mb: int = 2048,
@@ -493,16 +468,46 @@ RUN chmod +x /init
                 "Install Docker Desktop (macOS) or docker.io (Linux)."
             )
 
+        if extra_packages is None:
+            extra_packages = ["git"]
+
+        # Validate package names to prevent Dockerfile string-interpolation injection
+        valid_pkg_regex = re.compile(r"^[a-z0-9\.\+\-]+$")
+        for pkg in extra_packages:
+            if not valid_pkg_regex.match(pkg):
+                raise ImageError(f"Invalid package name requested for installation: '{pkg}'")
+
+        if ssh_public_key is None:
+            key_path = Path.home() / ".smolvm" / "keys" / "id_ed25519.pub"
+            try:
+                key_value = key_path.read_text().strip()
+            except OSError:
+                key_value = ""
+        else:
+            key_value = self._resolve_public_key(ssh_public_key)
+
         image_dir = self.cache_dir / name
         kernel_path = image_dir / "vmlinux.bin"
         rootfs_path = image_dir / "rootfs.ext4"
 
-        if kernel_path.exists() and rootfs_path.exists():
-            logger.info("Image '%s' already exists at %s", name, image_dir)
-            return (kernel_path, rootfs_path)
+        fingerprint_data = {
+            "rootfs_size_mb": rootfs_size_mb,
+            "kernel_url": kernel_url,
+            "ssh_password": ssh_password,
+            "ssh_public_key": key_value,
+            "extra_packages": extra_packages,
+        }
 
-        if extra_packages is None:
-            extra_packages = ["git"]
+        if kernel_path.exists() and rootfs_path.exists():
+            if self._check_fingerprint(image_dir, fingerprint_data):
+                logger.info(
+                    "Image '%s' already exists and fingerprint matches at %s", name, image_dir
+                )
+                return (kernel_path, rootfs_path)
+
+            logger.info("Inputs changed for OpenClaw image '%s'. Rebuilding...", name)
+            kernel_path.unlink(missing_ok=True)
+            rootfs_path.unlink(missing_ok=True)
 
         packages_str = " ".join(extra_packages)
 
@@ -575,6 +580,7 @@ exit 0
         dockerfile_content = f"""
 FROM node:22.12.0-bookworm-slim
 
+ARG SSH_PASSWORD
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \\
@@ -592,7 +598,7 @@ RUN ssh-keygen -A && \\
     mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh && \\
     sed -ri 's/^#?PermitRootLogin .*/PermitRootLogin yes/' /etc/ssh/sshd_config && \\
     sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config && \\
-    echo 'root:{ssh_password}' | chpasswd
+    echo "root:${{SSH_PASSWORD}}" | chpasswd
 
 # Inject authorized_keys if provided
 COPY authorized_keys /root/.ssh/authorized_keys
@@ -621,15 +627,6 @@ COPY init /init
 RUN chmod +x /init
 """
 
-        if ssh_public_key is None:
-            key_path = Path.home() / ".smolvm" / "keys" / "id_ed25519.pub"
-            try:
-                key_value = key_path.read_text().strip()
-            except OSError:
-                key_value = ""
-        else:
-            key_value = self._resolve_public_key(ssh_public_key)
-
         try:
             self._do_build(
                 name,
@@ -645,7 +642,9 @@ RUN chmod +x /init
                     "systemctl": systemctl_proxy_sh,
                     "authorized_keys": f"{key_value}\n" if key_value else "",
                 },
+                build_args={"SSH_PASSWORD": ssh_password},
                 kernel_url=kernel_url,
+                fingerprint_data=fingerprint_data,
             )
         except (subprocess.CalledProcessError, ImageError) as e:
             if rootfs_path.exists():
@@ -669,9 +668,14 @@ RUN chmod +x /init
             raise ImageError("Invalid SSH public key format")
         return key_text
 
-    def _default_init_script(self) -> str:
-        """Default PID 1 init script used by SSH-capable images."""
-        return r"""#!/bin/sh
+    def _base_init_script(self, custom_hostname: str = "smolvm", custom_commands: str = "") -> str:
+        """Base PID 1 init script used by SSH-capable images.
+
+        Args:
+            custom_hostname: Hostname to set (default: smolvm).
+            custom_commands: Additional shell commands to inject before the PID 1 sleep loop.
+        """
+        return f"""#!/bin/sh
 # SmolVM custom init - runs as PID 1 inside Firecracker VM
 
 # ── Signal handling ──────────────────────────────────────────
@@ -680,29 +684,29 @@ RUN chmod +x /init
 # kernel_restart() which tries a hardware reboot (doesn't exist
 # in Firecracker, so the VM hangs).  We disable CAD so the
 # kernel sends SIGINT to PID 1 instead, where we trap it.
-shutdown() {
+shutdown() {{
     echo "SmolVM init: shutting down..."
     kill -TERM -1 2>/dev/null
     sleep 0.2
     sync
     poweroff -f
-}
+}}
 trap shutdown INT TERM PWR
 
 # ── Timestamp helpers (for host-side startup profiling) ──────
-ts_uptime() {
+ts_uptime() {{
     cut -d' ' -f1 /proc/uptime 2>/dev/null || echo "0.00"
-}
+}}
 
 # date +%s is widely supported by busybox/coreutils.
-ts_epoch() {
+ts_epoch() {{
     date +%s 2>/dev/null || echo "0"
-}
+}}
 
-log_ts() {
+log_ts() {{
     STAGE="$1"
-    echo "SMOLVM_TS stage=${STAGE} epoch_s=$(ts_epoch) uptime_s=$(ts_uptime)"
-}
+    echo "SMOLVM_TS stage=${{STAGE}} epoch_s=$(ts_epoch) uptime_s=$(ts_uptime)"
+}}
 
 log_ts "init-start"
 
@@ -743,15 +747,14 @@ fi
 
 ip link set lo up
 ip link set eth0 up
-ip addr add "${GUEST_IP}/24" dev eth0 2>/dev/null || true
-ip route add default via "${GATEWAY}" dev eth0 2>/dev/null || true
+ip addr add "${{GUEST_IP}}/24" dev eth0 2>/dev/null || true
+ip route add default via "${{GATEWAY}}" dev eth0 2>/dev/null || true
 
 # DNS
 echo "nameserver 8.8.8.8" > /etc/resolv.conf
 echo "nameserver 8.8.4.4" >> /etc/resolv.conf
 
-# Set hostname
-hostname smolvm
+hostname {custom_hostname}
 log_ts "net-ready"
 
 # ── SSH ──────────────────────────────────────────────────────
@@ -766,8 +769,11 @@ log_ts "sshd-start"
 /usr/sbin/sshd -e
 log_ts "sshd-invoked"
 
-echo "SmolVM init complete: IP=${GUEST_IP}, SSH listening on port 22"
+echo "SmolVM init complete: IP=${{GUEST_IP}}, SSH listening on port 22"
 log_ts "init-complete"
+
+# ── Custom Injections ───────────────────────────────────────
+{custom_commands}
 
 # ── Keep PID 1 alive ────────────────────────────────────────
 # Use 'wait' so signals are delivered promptly (plain 'sleep'
@@ -778,6 +784,10 @@ while true; do
 done
 """
 
+    def _default_init_script(self) -> str:
+        """Default PID 1 init script used by SSH-capable images."""
+        return self._base_init_script()
+
     def _openclaw_init_script(self) -> str:
         """PID 1 init script for OpenClaw images.
 
@@ -786,83 +796,7 @@ done
         - ``/home/node/.openclaw/devices`` directory setup
         - Hostname set to ``openclaw``
         """
-        return r"""#!/bin/sh
-# SmolVM OpenClaw init - runs as PID 1 inside Firecracker VM
-
-# ── Signal handling ──────────────────────────────────────────
-shutdown() {
-    echo "SmolVM init: shutting down..."
-    kill -TERM -1 2>/dev/null
-    sleep 0.2
-    sync
-    poweroff -f
-}
-trap shutdown INT TERM PWR
-
-# ── Timestamp helpers ────────────────────────────────────────
-ts_uptime() {
-    cut -d' ' -f1 /proc/uptime 2>/dev/null || echo "0.00"
-}
-ts_epoch() {
-    date +%s 2>/dev/null || echo "0"
-}
-log_ts() {
-    STAGE="$1"
-    echo "SMOLVM_TS stage=${STAGE} epoch_s=$(ts_epoch) uptime_s=$(ts_uptime)"
-}
-
-log_ts "init-start"
-
-# ── Mount essential filesystems ──────────────────────────────
-mount -t proc proc /proc
-mount -t sysfs sys /sys
-mount -t devtmpfs dev /dev 2>/dev/null
-mkdir -p /dev/pts
-mount -t devpts devpts /dev/pts
-mount -t tmpfs tmpfs /run
-mount -t tmpfs tmpfs /tmp
-
-log_ts "mounts-ready"
-
-echo 0 > /proc/sys/kernel/ctrl-alt-del
-mount -o remount,rw /
-mkdir -p /run/sshd /var/log
-
-log_ts "root-ready"
-
-# ── Networking ───────────────────────────────────────────────
-log_ts "net-config-start"
-IP_CONFIG=$(cat /proc/cmdline | tr ' ' '\n' | grep '^ip=' | head -1)
-if [ -n "$IP_CONFIG" ]; then
-    GUEST_IP=$(echo "$IP_CONFIG" | cut -d= -f2 | cut -d: -f1)
-    GATEWAY=$(echo "$IP_CONFIG" | cut -d= -f2 | cut -d: -f3)
-else
-    GUEST_IP="172.16.0.2"
-    GATEWAY="172.16.0.1"
-fi
-
-ip link set lo up
-ip link set eth0 up
-ip addr add "${GUEST_IP}/24" dev eth0 2>/dev/null || true
-ip route add default via "${GATEWAY}" dev eth0 2>/dev/null || true
-
-echo "nameserver 8.8.8.8" > /etc/resolv.conf
-echo "nameserver 8.8.4.4" >> /etc/resolv.conf
-
-hostname openclaw
-log_ts "net-ready"
-
-# ── SSH ──────────────────────────────────────────────────────
-log_ts "ssh-hostkey-check-start"
-if ! ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1; then
-    ssh-keygen -A 2>/dev/null
-fi
-log_ts "ssh-hostkey-check-done"
-
-log_ts "sshd-start"
-/usr/sbin/sshd -e
-log_ts "sshd-invoked"
-
+        device_approver_block = r"""
 # ── Device-Approver Sidecar ─────────────────────────────────
 # Launched as a background process — no systemd required.
 # watch-devices.sh uses inotifywait on the directory (not file) to
@@ -873,16 +807,11 @@ chown -R 1000:1000 /home/node/.openclaw
 /usr/local/bin/watch-devices.sh &
 DEVICE_APPROVER_PID=$!
 log_ts "device-approver-started"
-
-echo "SmolVM OpenClaw init complete: IP=${GUEST_IP}, SSH on :22, device-approver PID=${DEVICE_APPROVER_PID}"
-log_ts "init-complete"
-
-# ── Keep PID 1 alive ────────────────────────────────────────
-while true; do
-    sleep 3600 &
-    wait $!
-done
+echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
 """
+        return self._base_init_script(
+            custom_hostname="openclaw", custom_commands=device_approver_block
+        )
 
     def _loopfs_helper_path(self) -> Path | None:
         """Return installed privileged helper path if available."""
@@ -938,6 +867,32 @@ done
         """Return a QEMU-compatible kernel URL for the current host arch."""
         arch_key = self._host_arch_key()
         return QEMU_KERNEL_URLS[arch_key]
+
+    def _check_fingerprint(self, image_dir: Path, data: dict[str, typing.Any]) -> bool:
+        """Check if the cached image fingerprint matches the current build inputs."""
+        fingerprint_file = image_dir / ".fingerprint"
+        if not fingerprint_file.exists():
+            return False
+
+        expected_hash = self._hash_fingerprint_data(data)
+        try:
+            stored_hash = fingerprint_file.read_text().strip()
+            return stored_hash == expected_hash
+        except OSError:
+            return False
+
+    def _write_fingerprint(self, image_dir: Path, data: dict[str, typing.Any]) -> None:
+        """Write the build input fingerprint to the cache directory."""
+        fingerprint_file = image_dir / ".fingerprint"
+        try:
+            fingerprint_file.write_text(self._hash_fingerprint_data(data))
+        except OSError as e:
+            logger.warning("Failed to write image fingerprint cache: %s", e)
+
+    def _hash_fingerprint_data(self, data: dict[str, typing.Any]) -> str:
+        """Compute SHA-256 hash of a JSON-serializable dictionary."""
+        json_str = json.dumps(data, sort_keys=True)
+        return hashlib.sha256(json_str.encode("utf-8")).hexdigest()
 
     def _download_kernel(self, url: str, dest: Path) -> None:
         """Download kernel image to *dest* without external wget dependency."""
@@ -1081,7 +1036,9 @@ done
         rootfs_path: Path,
         rootfs_size_mb: int,
         extra_files: dict[str, str] | None = None,
+        build_args: dict[str, str] | None = None,
         kernel_url: str | None = None,
+        fingerprint_data: dict[str, typing.Any] | None = None,
     ) -> None:
         """Execute the Docker build and image conversion."""
         docker_tag = f"smolvm-{name}"
@@ -1098,8 +1055,14 @@ done
 
             # 1. Build Docker image
             logger.info("  [1/4] Building Docker image...")
+            build_cmd = ["docker", "build", "-t", docker_tag]
+            if build_args:
+                for k, v in build_args.items():
+                    build_cmd.extend(["--build-arg", f"{k}={v}"])
+            build_cmd.append(str(tmp_path))
+
             subprocess.run(
-                ["docker", "build", "-t", docker_tag, str(tmp_path)],
+                build_cmd,
                 check=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
@@ -1140,3 +1103,7 @@ done
                 resolved_kernel_url,
             )
             self._download_kernel(resolved_kernel_url, kernel_path)
+
+            # 5. Write cache fingerprint if provided and successful
+            if fingerprint_data is not None:
+                self._write_fingerprint(image_dir, fingerprint_data)
