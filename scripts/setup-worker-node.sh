@@ -157,7 +157,9 @@ apply_sysfs() {
 # ---------------------------------------------------------------------------
 read_thp_value() {
     local path="$1"
-    grep -oP '(?<=\[)\w+(?=\])' "${path}" 2>/dev/null || cat "${path}" | awk '{print $1}'
+    # Extract bracketed value, e.g., "always madvise [never]" → "never"
+    # Fallback natively outputs the whole string if brackets are not found.
+    sed -n 's/.*\[\([^]]*\)\].*/\1/p' "${path}" 2>/dev/null | head -n1
 }
 
 check_thp() {
