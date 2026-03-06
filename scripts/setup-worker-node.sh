@@ -33,6 +33,8 @@
 #  3. Transparent HugePages disabled (THP causes latency spikes)
 #  4. kvm module loaded with nx_huge_pages=never (CVE-2021-3737 mitigation)
 #  5. /dev/kvm ownership/permissions set for the kvm group
+#  6. Docker coexistence: DOCKER-USER rules to allow tap+ forwarding (only if
+#     Docker is installed; no-op otherwise)
 #
 # USAGE
 # -----
@@ -341,6 +343,83 @@ check_or_apply_kvm_perms() {
 }
 
 # ---------------------------------------------------------------------------
+# 6. Docker coexistence — allow SmolVM tap traffic through Docker's firewall
+# ---------------------------------------------------------------------------
+# Docker's daemon (when --iptables=true, the default) restricts the global
+# FORWARD chain to protect its own containers.  This blocks SmolVM's tap
+# traffic.  Docker provides the DOCKER-USER chain specifically for user rules
+# that are evaluated before Docker's own DROP logic.  These two rules let
+# SmolVM tap interfaces route normally while leaving Docker container
+# isolation completely intact.
+#
+# Only applied when Docker is present.  Idempotent: -C checks before -I.
+# ---------------------------------------------------------------------------
+check_or_apply_docker_coexistence() {
+    local description="Docker coexistence (tap+ forwarding via DOCKER-USER)"
+
+    # Skip entirely if Docker is not installed — nothing to do.
+    if ! command -v docker > /dev/null 2>&1; then
+        warn "${description}: docker not found — skipping (not needed)"
+        return
+    fi
+
+    # Verify iptables is available (required to inspect/add DOCKER-USER rules).
+    if ! command -v iptables > /dev/null 2>&1; then
+        fail "${description}: iptables not found but Docker is installed"
+        return
+    fi
+
+    # Check whether the DOCKER-USER chain exists (Docker creates it on first
+    # start; if Docker was never started it may be absent).
+    if ! iptables -L DOCKER-USER > /dev/null 2>&1; then
+        if [[ "${CHECK_ONLY}" == "true" ]]; then
+            fail "${description}: DOCKER-USER chain absent (start Docker first)"
+            return
+        fi
+        warn "${description}: DOCKER-USER chain absent — please start Docker once, then re-run"
+        return
+    fi
+
+    local missing=0
+
+    # Rule 1: allow new outbound traffic from any tap interface.
+    if ! iptables -C DOCKER-USER -i tap+ -j ACCEPT > /dev/null 2>&1; then
+        missing=$((missing + 1))
+        if [[ "${CHECK_ONLY}" != "true" ]]; then
+            iptables -I DOCKER-USER -i tap+ -j ACCEPT || {
+                fail "${description}: could not insert outbound tap+ rule"
+                return
+            }
+        fi
+    fi
+
+    # Rule 2: allow established/related return traffic back to tap interfaces.
+    if ! iptables -C DOCKER-USER -o tap+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT > /dev/null 2>&1; then
+        missing=$((missing + 1))
+        if [[ "${CHECK_ONLY}" != "true" ]]; then
+            iptables -I DOCKER-USER -o tap+ -m conntrack \
+                --ctstate RELATED,ESTABLISHED -j ACCEPT || {
+                fail "${description}: could not insert return-traffic tap+ rule"
+                return
+            }
+        fi
+    fi
+
+    if [[ "${CHECK_ONLY}" == "true" && ${missing} -gt 0 ]]; then
+        fail "${description}: ${missing} DOCKER-USER rule(s) missing (run without --check-only to apply)"
+        return
+    fi
+
+    if [[ ${missing} -gt 0 ]]; then
+        pass "${description}: ${missing} rule(s) applied"
+        info "Rules are in kernel memory only. To persist across reboots:"
+        info "  apt install iptables-persistent && netfilter-persistent save"
+    else
+        pass "${description}: DOCKER-USER rules already present"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 echo "=== SmolVM Worker Node Hardening ==="
@@ -354,6 +433,7 @@ check_or_apply_ksm
 check_or_apply_thp
 check_or_apply_kvm_nx
 check_or_apply_kvm_perms
+check_or_apply_docker_coexistence
 
 echo ""
 if [[ ${FAILURES} -eq 0 ]]; then
