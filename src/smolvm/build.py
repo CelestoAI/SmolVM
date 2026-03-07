@@ -205,6 +205,7 @@ RUN chmod +x /init
                 rootfs_size_mb,
                 build_args={"SSH_PASSWORD": ssh_password},
                 kernel_url=kernel_url,
+                fingerprint_data=fingerprint_data,
             )
         except (subprocess.CalledProcessError, ImageError) as e:
             # Clean up partial build
@@ -305,6 +306,7 @@ RUN chmod +x /init
                 rootfs_size_mb,
                 extra_files={"authorized_keys": f"{key_value}\n"},
                 kernel_url=kernel_url,
+                fingerprint_data=fingerprint_data,
             )
         except (subprocess.CalledProcessError, ImageError) as e:
             if rootfs_path.exists():
@@ -411,6 +413,7 @@ RUN chmod +x /init
                 rootfs_size_mb,
                 extra_files={"authorized_keys": f"{key_value}\n"},
                 kernel_url=kernel_url,
+                fingerprint_data=fingerprint_data,
             )
         except (subprocess.CalledProcessError, ImageError) as e:
             if rootfs_path.exists():
@@ -620,7 +623,10 @@ RUN npm init -y && \\
 COPY device-approver.py /usr/local/bin/device-approver.py
 COPY watch-devices.sh /usr/local/bin/watch-devices.sh
 COPY systemctl /usr/local/bin/systemctl
-RUN chmod +x /usr/local/bin/device-approver.py /usr/local/bin/watch-devices.sh /usr/local/bin/systemctl
+RUN chmod +x \\
+    /usr/local/bin/device-approver.py \\
+    /usr/local/bin/watch-devices.sh \\
+    /usr/local/bin/systemctl
 
 # Init script
 COPY init /init
@@ -897,9 +903,11 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
     def _download_kernel(self, url: str, dest: Path) -> None:
         """Download kernel image to *dest* without external wget dependency."""
         try:
-            with urllib.request.urlopen(url, timeout=180) as response:
-                with open(dest, "wb") as out:
-                    shutil.copyfileobj(response, out)
+            with (
+                urllib.request.urlopen(url, timeout=180) as response,
+                open(dest, "wb") as out,
+            ):
+                shutil.copyfileobj(response, out)
         except (urllib.error.URLError, OSError) as e:
             raise ImageError(f"Failed to download kernel from {url}: {e}") from e
 
