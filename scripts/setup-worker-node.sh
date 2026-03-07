@@ -157,9 +157,12 @@ apply_sysfs() {
 # ---------------------------------------------------------------------------
 read_thp_value() {
     local path="$1"
-    # Extract bracketed value, e.g., "always madvise [never]" → "never"
-    # Fallback natively outputs the whole string if brackets are not found.
-    sed -n 's/.*\[\([^]]*\)\].*/\1/p' "${path}" 2>/dev/null | head -n1
+    # Extract bracketed value, e.g., "always madvise [never]" → "never".
+    # Fall back to the first whitespace-delimited field when brackets are absent.
+    {
+        sed -n 's/.*\[\([^]]*\)\].*/\1/p' "${path}" 2>/dev/null
+        awk 'NR == 1 {print $1}' "${path}" 2>/dev/null
+    } | head -n1
 }
 
 check_thp() {
@@ -229,10 +232,42 @@ check_or_apply_swap() {
             fail "${description}: /etc/fstab still contains swap entries"
             return
         fi
-        # Back up fstab, then strip swap lines using awk (checking column 3 for 'swap' fstype)
+        local tmp_fstab=""
+        cleanup_tmp_fstab() {
+            trap - RETURN
+            if [[ -n "${tmp_fstab}" && -e "${tmp_fstab}" ]]; then
+                rm -f -- "${tmp_fstab}"
+            fi
+        }
+        trap cleanup_tmp_fstab RETURN
+
+        # Back up fstab, then strip swap lines into a temp file before atomically replacing it.
         cp /etc/fstab /etc/fstab.bak.smolvm-worker
-        awk '!/^#/ && $3 == "swap" {next} {print}' /etc/fstab.bak.smolvm-worker > /etc/fstab
-        info "/etc/fstab swap entries removed (backup: /etc/fstab.bak.smolvm-worker)"
+        tmp_fstab="$(mktemp /etc/fstab.smolvm-worker.XXXXXX)" || {
+            fail "${description}: could not create temporary fstab"
+            return
+        }
+        chmod --reference=/etc/fstab "${tmp_fstab}" || {
+            fail "${description}: could not preserve /etc/fstab permissions"
+            return
+        }
+        chown --reference=/etc/fstab "${tmp_fstab}" || {
+            fail "${description}: could not preserve /etc/fstab ownership"
+            return
+        }
+        awk '!/^#/ && $3 == "swap" {next} {print}' /etc/fstab.bak.smolvm-worker > "${tmp_fstab}" || {
+            fail "${description}: could not generate filtered /etc/fstab"
+            return
+        }
+        if awk '!/^#/ && $3 == "swap" {found=1; exit} END {exit !found}' "${tmp_fstab}" 2>/dev/null; then
+            fail "${description}: filtered /etc/fstab still contains swap entries"
+            return
+        fi
+        mv "${tmp_fstab}" /etc/fstab || {
+            fail "${description}: could not atomically replace /etc/fstab"
+            return
+        }
+        info "/etc/fstab swap entries removed atomically (backup: /etc/fstab.bak.smolvm-worker)"
     fi
 
     # Final persistence check
