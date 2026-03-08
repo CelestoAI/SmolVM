@@ -217,6 +217,7 @@ class FirecrackerClient:
         iface_id: str,
         host_dev_name: str,
         guest_mac: str,
+        rate_limit_mbps: int | None = None,
     ) -> None:
         """Add a network interface.
 
@@ -224,15 +225,33 @@ class FirecrackerClient:
             iface_id: Interface identifier.
             host_dev_name: TAP device name on host.
             guest_mac: MAC address for the guest.
+            rate_limit_mbps: Optional rate limit in Mbps.
         """
+        payload: dict[str, Any] = {
+            "iface_id": iface_id,
+            "host_dev_name": host_dev_name,
+            "guest_mac": guest_mac,
+        }
+
+        if rate_limit_mbps is not None and rate_limit_mbps > 0:
+            bytes_per_sec = rate_limit_mbps * 125000
+            # 100ms refill time is standard for smooth throughput
+            size_per_100ms = max(bytes_per_sec // 10, 1)
+
+            token_bucket = {
+                "bandwidth": {
+                    "size": size_per_100ms,
+                    "one_time_burst": bytes_per_sec,
+                    "refill_time": 100,
+                }
+            }
+            payload["rx_rate_limiter"] = token_bucket
+            payload["tx_rate_limiter"] = token_bucket
+
         self._request(
             "PUT",
             f"/network-interfaces/{iface_id}",
-            json={
-                "iface_id": iface_id,
-                "host_dev_name": host_dev_name,
-                "guest_mac": guest_mac,
-            },
+            json=payload,
         )
         logger.debug("Network interface added: %s -> %s", iface_id, host_dev_name)
 

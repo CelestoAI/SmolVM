@@ -256,3 +256,58 @@ class TestNetworkPrerequisites:
         assert ["ip", "link", "show"] in commands
         assert ["nft", "list", "tables"] in commands
         assert ["sysctl", "net.ipv4.ip_forward"] in commands
+
+
+class TestEgressAllowlist:
+    """Tests for egress allowlist rule behavior."""
+
+    def test_apply_egress_allowlist_applies_atomic_add_then_delete_update(
+        self,
+    ) -> None:
+        """Allowlist updates should stage new rules before deleting old ones."""
+        nm = NetworkManager()
+        nm._outbound_interface = "eth0"
+        nm._ensure_nftables_base = MagicMock()
+        nm._nft_list_table = MagicMock(
+            return_value=(
+                "table inet smolvm_filter {\n"
+                "  chain forward {\n"
+                '    iifname "tap42" ct state established,related counter accept comment "smolvm:egress:tap42:established" # handle 41\n'
+                '    iifname "tap42" counter drop comment "smolvm:egress:tap42:drop" # handle 42\n'
+                '    iifname "tap42" oifname "eth0" counter accept comment "smolvm:nat:tap:tap42:to:eth0" # handle 43\n'
+                "  }\n"
+                "}\n"
+            )
+        )
+        nm._run_nft_script = MagicMock()
+
+        nm.apply_egress_allowlist("tap42", ["1.1.1.1", "8.8.8.8"])
+
+        assert nm._nft_list_table.call_count == 2
+        script = nm._run_nft_script.call_args.args[0]
+
+        add_established = (
+            'add rule inet smolvm_filter forward iifname "tap42" ct state established,related '
+            'counter accept comment "smolvm:egress:tap42:established"'
+        )
+        add_allow = (
+            'add rule inet smolvm_filter forward iifname "tap42" ip daddr { 1.1.1.1, 8.8.8.8 } '
+            'counter accept comment "smolvm:egress:tap42:allow"'
+        )
+        add_drop = (
+            'add rule inet smolvm_filter forward iifname "tap42" ip daddr != { 1.1.1.1, 8.8.8.8 } '
+            'counter drop comment "smolvm:egress:tap42:drop"'
+        )
+        delete_old_established = "delete rule inet smolvm_filter forward handle 41"
+        delete_old_drop = "delete rule inet smolvm_filter forward handle 42"
+        delete_old_nat_accept = "delete rule inet smolvm_filter forward handle 43"
+
+        assert add_established in script
+        assert add_allow in script
+        assert add_drop in script
+        assert delete_old_established in script
+        assert delete_old_drop in script
+        assert delete_old_nat_accept in script
+
+        # Fail-closed sequencing: all adds are staged before old rules are deleted.
+        assert script.index(add_drop) < script.index(delete_old_established)
