@@ -19,7 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from smolvm.cli import DASHBOARD_ALLOW_BETA_ENV, main
+from smolvm.cli import DASHBOARD_ALLOW_BETA_ENV, _current_version_is_prerelease, main
 from smolvm.types import NetworkConfig, VMState
 
 
@@ -236,6 +236,50 @@ class TestCliDoctor:
         )
 
 
+class TestCurrentVersionIsPrerelease:
+    """Tests for _current_version_is_prerelease helper."""
+
+    @patch("smolvm.cli.importlib.metadata.version", return_value="0.0.5.a1")
+    def test_alpha_version_is_prerelease(self, _: MagicMock) -> None:
+        """Alpha versions (e.g. 0.0.5.a1) should be detected as pre-release."""
+        assert _current_version_is_prerelease() is True
+
+    @patch("smolvm.cli.importlib.metadata.version", return_value="0.0.5.dev1")
+    def test_dev_version_is_prerelease(self, _: MagicMock) -> None:
+        """Dev versions (e.g. 0.0.5.dev1) should be detected as pre-release."""
+        assert _current_version_is_prerelease() is True
+
+    @patch("smolvm.cli.importlib.metadata.version", return_value="0.0.5b2")
+    def test_beta_version_is_prerelease(self, _: MagicMock) -> None:
+        """Beta versions (e.g. 0.0.5b2) should be detected as pre-release."""
+        assert _current_version_is_prerelease() is True
+
+    @patch("smolvm.cli.importlib.metadata.version", return_value="0.0.5rc1")
+    def test_rc_version_is_prerelease(self, _: MagicMock) -> None:
+        """Release candidates (e.g. 0.0.5rc1) should be detected as pre-release."""
+        assert _current_version_is_prerelease() is True
+
+    @patch("smolvm.cli.importlib.metadata.version", return_value="0.0.5")
+    def test_stable_version_is_not_prerelease(self, _: MagicMock) -> None:
+        """Stable versions (e.g. 0.0.5) should NOT be detected as pre-release."""
+        assert _current_version_is_prerelease() is False
+
+    @patch("smolvm.cli.importlib.metadata.version", return_value="1.2.3")
+    def test_stable_semver_is_not_prerelease(self, _: MagicMock) -> None:
+        """Stable semantic versions (e.g. 1.2.3) should NOT be detected as pre-release."""
+        assert _current_version_is_prerelease() is False
+
+    def test_package_not_found_returns_false(self) -> None:
+        """PackageNotFoundError should be handled gracefully by returning False."""
+        import importlib.metadata
+
+        with patch(
+            "smolvm.cli.importlib.metadata.version",
+            side_effect=importlib.metadata.PackageNotFoundError("smolvm"),
+        ):
+            assert _current_version_is_prerelease() is False
+
+
 class TestCliUi:
     """Tests for `smolvm ui`."""
 
@@ -312,6 +356,51 @@ class TestCliUi:
 
         assert ret == 2
         assert "invalid port" in capsys.readouterr().out
+
+    @patch("smolvm.cli._current_version_is_prerelease", return_value=True)
+    @patch("smolvm.cli.importlib.import_module")
+    def test_ui_auto_beta_for_prerelease_version(
+        self,
+        mock_import: MagicMock,
+        _mock_prerelease: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Pre-release smolvm version should auto-enable beta UI assets."""
+        mock_uvicorn = MagicMock()
+
+        def _run(*args: object, **kwargs: object) -> None:
+            assert os.environ.get(DASHBOARD_ALLOW_BETA_ENV) == "1"
+
+        mock_uvicorn.run.side_effect = _run
+        mock_import.return_value = mock_uvicorn
+
+        os.environ.pop(DASHBOARD_ALLOW_BETA_ENV, None)
+        ret = main(["ui"])
+
+        assert ret == 0
+        assert DASHBOARD_ALLOW_BETA_ENV not in os.environ
+        assert "auto-enabled" in capsys.readouterr().out
+
+    @patch("smolvm.cli.importlib.import_module")
+    def test_ui_no_auto_beta_for_stable_version(
+        self,
+        mock_import: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Stable smolvm version should NOT auto-enable beta UI assets."""
+        import smolvm.cli as cli_module
+
+        monkeypatch.setattr(cli_module, "_current_version_is_prerelease", lambda: False)
+        mock_uvicorn = MagicMock()
+        mock_import.return_value = mock_uvicorn
+
+        os.environ.pop(DASHBOARD_ALLOW_BETA_ENV, None)
+        ret = main(["ui"])
+
+        assert ret == 0
+        assert DASHBOARD_ALLOW_BETA_ENV not in os.environ
+        assert "auto-enabled" not in capsys.readouterr().out
 
 
 class TestCliList:

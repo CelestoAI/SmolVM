@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import importlib.metadata
 import os
+import re
 from collections.abc import Sequence
 
 from smolvm.cleanup import run_cleanup
@@ -26,6 +28,29 @@ from smolvm.doctor import run_doctor
 
 DASHBOARD_ALLOW_BETA_ENV = "SMOLVM_DASHBOARD_ALLOW_BETA"
 DASHBOARD_URL_ENV = "SMOLVM_DASHBOARD_URL"
+
+# Matches PEP 440 pre-release and dev-release version suffixes,
+# e.g. "0.0.5.a1", "0.0.5b2", "0.0.5.dev1", "0.0.5rc1".
+_PRERELEASE_RE = re.compile(r"[._]?(a|b|rc|alpha|beta|dev)\d*", re.IGNORECASE)
+
+
+def _current_version_is_prerelease() -> bool:
+    """Return True if the installed smolvm package version is a pre-release.
+
+    Uses ``packaging.version.Version`` when available for accurate PEP 440
+    parsing, and falls back to a regex heuristic otherwise.
+    """
+    try:
+        ver = importlib.metadata.version("smolvm")
+    except importlib.metadata.PackageNotFoundError:
+        return False
+
+    try:
+        from packaging.version import InvalidVersion, Version
+
+        return Version(ver).is_prerelease
+    except (ImportError, InvalidVersion):  # packaging not installed or parse error
+        return bool(_PRERELEASE_RE.search(ver))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -341,6 +366,12 @@ def _run_ui(host: str, port: int, allow_beta: bool) -> int:
         print(f"Error: invalid port {port}. Expected 1-65535.")
         return 2
 
+    # Automatically allow beta/prerelease UI assets when running a
+    # pre-release version of smolvm (e.g. 0.0.5.a1, 0.0.5.dev).
+    auto_beta = not allow_beta and _current_version_is_prerelease()
+    if auto_beta:
+        allow_beta = True
+
     display_host = "localhost" if host in {"0.0.0.0", "::"} else host
     dashboard_url = f"http://{display_host}:{port}"
 
@@ -354,7 +385,13 @@ def _run_ui(host: str, port: int, allow_beta: bool) -> int:
     print(f"Starting SmolVM UI on http://{host}:{port} ...")
     print(f"Once started, open {dashboard_url} in your browser.")
     if allow_beta:
-        print("Using prerelease dashboard UI assets (--allow-beta enabled).")
+        if auto_beta:
+            print(
+                "Using prerelease dashboard UI assets "
+                "(auto-enabled for pre-release version)."
+            )
+        else:
+            print("Using prerelease dashboard UI assets (--allow-beta enabled).")
 
     try:
         uvicorn.run("smolvm.dashboard.server:app", host=host, port=port)
