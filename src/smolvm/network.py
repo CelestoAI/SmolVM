@@ -418,6 +418,33 @@ class NetworkManager:
         if delete_lines:
             self._run_nft_script("\n".join(delete_lines) + "\n")
 
+    def _find_nft_delete_rule_lines(
+        self,
+        family: str,
+        table: str,
+        *,
+        comment: str | None = None,
+        comment_prefix: str | None = None,
+    ) -> list[str]:
+        """Return nft 'delete rule' lines for rules matching comment filters."""
+        if comment is None and comment_prefix is None:
+            raise ValueError("comment or comment_prefix must be provided")
+
+        table_output = self._nft_list_table(family, table, handles=True)
+        if not table_output:
+            return []
+
+        handles = self._extract_table_rule_handles(table_output)
+        delete_lines: list[str] = []
+        for chain, rule_comment, handle in handles:
+            if comment is not None and rule_comment != comment:
+                continue
+            if comment_prefix is not None and not rule_comment.startswith(comment_prefix):
+                continue
+            delete_lines.append(f"delete rule {family} {table} {chain} handle {handle}")
+
+        return delete_lines
+
     # ------------------------------------------------------------------
     # Public firewall/NAT API
     # ------------------------------------------------------------------
@@ -464,10 +491,7 @@ class NetworkManager:
                     _NFT_FILTER_FAMILY,
                     _NFT_FILTER_TABLE,
                     "forward",
-                    (
-                        f"iifname {self._quote('tap*')} "
-                        f"oifname {self._quote('tap*')} counter drop"
-                    ),
+                    (f"iifname {self._quote('tap*')} oifname {self._quote('tap*')} counter drop"),
                     "smolvm:global:forward:tap-isolation",
                 ),
             ]
@@ -667,6 +691,125 @@ class NetworkManager:
             _NFT_FILTER_FAMILY,
             _NFT_FILTER_TABLE,
             comment=comment,
+        )
+
+    def apply_egress_allowlist(
+        self,
+        tap_device: str,
+        allowed_ips: list[str],
+    ) -> None:
+        """Restrict outbound traffic from *tap_device* to *allowed_ips* only.
+
+        Installs per-TAP rules in the SmolVM filter forward chain keyed by tap
+        name so they are isolated between tenants::
+
+            # pass matching return traffic (established sessions)
+            iifname <tap> ct state established,related counter accept
+            # allow the configured destination set
+            iifname <tap> ip daddr { <ip1>, <ip2>, ... } counter accept
+            # drop everything else going out from this tap
+            iifname <tap> ip daddr != { <ip1>, <ip2>, ... } counter drop
+
+        The function is fail-closed and update-safe: it applies a single nft
+        transaction that stages new rules first, then removes stale rules and
+        any generic per-TAP NAT accept rule. If the transaction fails, old rules
+        remain in place unchanged.
+
+        Args:
+            tap_device: TAP interface name (e.g., ``tap42``).
+            allowed_ips: CIDR or host addresses that the guest may reach.
+                Pass an empty list to deny *all* outbound IP traffic.
+
+        Raises:
+            ValueError: If ``tap_device`` is empty.
+            NetworkError: If the nft call fails.
+        """
+        if not tap_device:
+            raise ValueError("tap_device cannot be empty")
+
+        logger.info(
+            "Applying egress allowlist for %s: %s",
+            tap_device,
+            allowed_ips or "<deny all>",
+        )
+
+        self._ensure_nftables_base()
+        iface = self.outbound_interface
+
+        comment_prefix = f"smolvm:egress:{tap_device}"
+        old_egress_delete_lines = self._find_nft_delete_rule_lines(
+            _NFT_FILTER_FAMILY,
+            _NFT_FILTER_TABLE,
+            comment_prefix=f"{comment_prefix}:",
+        )
+        old_nat_accept_delete_lines = self._find_nft_delete_rule_lines(
+            _NFT_FILTER_FAMILY,
+            _NFT_FILTER_TABLE,
+            comment=f"smolvm:nat:tap:{tap_device}:to:{iface}",
+        )
+        script_lines = [
+            (
+                f"add rule {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} forward "
+                f"iifname {self._quote(tap_device)} ct state established,related "
+                f"counter accept comment {self._quote(f'{comment_prefix}:established')}"
+            ),
+        ]
+
+        if allowed_ips:
+            # nftables anonymous set: ip daddr != { a, b, c }
+            ip_set = ", ".join(allowed_ips)
+            script_lines.append(
+                (
+                    f"add rule {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} forward "
+                    f"iifname {self._quote(tap_device)} ip daddr {{ {ip_set} }} "
+                    f"counter accept comment {self._quote(f'{comment_prefix}:allow')}"
+                ),
+            )
+            drop_expr = (
+                f"iifname {self._quote(tap_device)} "
+                f"ip daddr != {{ {ip_set} }} counter drop"
+            )
+        else:
+            # No IPs allowed — drop unconditionally.
+            drop_expr = f"iifname {self._quote(tap_device)} counter drop"
+
+        script_lines.append(
+            (
+                f"add rule {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} forward "
+                f"{drop_expr} comment {self._quote(f'{comment_prefix}:drop')}"
+            )
+        )
+
+        script_lines.extend(old_egress_delete_lines)
+        script_lines.extend(old_nat_accept_delete_lines)
+
+        self._run_nft_script("\n".join(script_lines) + "\n")
+
+    def remove_egress_rules(self, tap_device: str) -> None:
+        """Remove all egress allowlist rules for *tap_device*.
+
+        Must be called **before** ``vm.delete()`` to prevent a rule-table leak.
+        nftables rules survive VM termination; this cleans them up atomically
+        using a comment-prefix match.
+
+        The call is best-effort: if the table no longer exists (e.g., host
+        reboot) the function returns silently.
+
+        Args:
+            tap_device: TAP interface name used in :meth:`apply_egress_allowlist`.
+
+        Raises:
+            ValueError: If ``tap_device`` is empty.
+        """
+        if not tap_device:
+            raise ValueError("tap_device cannot be empty")
+
+        logger.info("Removing egress rules for %s", tap_device)
+
+        self._delete_nft_rules(
+            _NFT_FILTER_FAMILY,
+            _NFT_FILTER_TABLE,
+            comment_prefix=f"smolvm:egress:{tap_device}:",
         )
 
     def generate_mac(self, vm_number: int) -> str:
