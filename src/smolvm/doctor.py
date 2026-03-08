@@ -40,6 +40,7 @@ class DoctorCheck:
     name: str
     status: DoctorStatus
     detail: str
+    fix: str | None = None
 
 
 @dataclass(frozen=True)
@@ -67,7 +68,8 @@ def _check_command(binary: str, package_hint: str) -> DoctorCheck:
         return DoctorCheck(
             name=f"command:{binary}",
             status="fail",
-            detail=f"'{binary}' not found (install {package_hint})",
+            detail="Not found",
+            fix=f"Install {package_hint}",
         )
     return DoctorCheck(
         name=f"command:{binary}",
@@ -145,7 +147,7 @@ def _check_swap_disabled() -> DoctorCheck:
     try:
         meminfo = _PROC_MEMINFO.read_text()
     except OSError as exc:
-        return DoctorCheck(name=name, status="fail", detail=f"cannot read /proc/meminfo: {exc}")
+        return DoctorCheck(name=name, status="fail", detail=f"Cannot read /proc/meminfo: {exc}")
 
     match = re.search(r"^SwapTotal:\s+(\d+)", meminfo, re.MULTILINE)
     swap_total_kb = int(match.group(1)) if match else 0
@@ -153,7 +155,8 @@ def _check_swap_disabled() -> DoctorCheck:
         return DoctorCheck(
             name=name,
             status="fail",
-            detail=f"swap is active ({swap_total_kb} kB); run: swapoff -a",
+            detail=f"Active ({swap_total_kb} kB)",
+            fix="sudo swapoff -a",
         )
 
     # 2. Will it stay off after a reboot (/etc/fstab)?
@@ -171,10 +174,11 @@ def _check_swap_disabled() -> DoctorCheck:
         return DoctorCheck(
             name=name,
             status="fail",
-            detail="/etc/fstab contains swap entries; run: sed -i '/\\bswap\\b/d' /etc/fstab",
+            detail="Swap entries found in /etc/fstab",
+            fix="sudo sed -i '/\\bswap\\b/d' /etc/fstab",
         )
 
-    return DoctorCheck(name=name, status="pass", detail="swap inactive and absent from /etc/fstab")
+    return DoctorCheck(name=name, status="pass", detail="Inactive and absent from /etc/fstab")
 
 
 def _check_ksm_disabled() -> DoctorCheck:
@@ -182,20 +186,19 @@ def _check_ksm_disabled() -> DoctorCheck:
     name = "worker:ksm-disabled"
     if not _KSM_RUN.exists():
         # KSM not compiled in; that is fine — it cannot be used.
-        return DoctorCheck(
-            name=name, status="pass", detail="/sys/kernel/mm/ksm/run absent (KSM not compiled in)"
-        )
+        return DoctorCheck(name=name, status="pass", detail="Not compiled in kernel")
     try:
         value = _KSM_RUN.read_text().strip()
     except OSError as exc:
-        return DoctorCheck(name=name, status="fail", detail=f"cannot read {_KSM_RUN}: {exc}")
+        return DoctorCheck(name=name, status="fail", detail=f"Cannot read {_KSM_RUN}: {exc}")
 
     if value == "0":
-        return DoctorCheck(name=name, status="pass", detail="KSM is off (run=0)")
+        return DoctorCheck(name=name, status="pass", detail="Disabled")
     return DoctorCheck(
         name=name,
         status="fail",
-        detail=f"KSM is on (run={value}); run: echo 0 > /sys/kernel/mm/ksm/run",
+        detail=f"Active (run={value})",
+        fix="sudo sh -c 'echo 0 > /sys/kernel/mm/ksm/run'",
     )
 
 
@@ -203,26 +206,23 @@ def _check_thp_disabled() -> DoctorCheck:
     """THP=never: prevents latency spikes that could disrupt VM timing guarantees."""
     name = "worker:thp-disabled"
     if not _THP_ENABLED.exists():
-        return DoctorCheck(
-            name=name, status="pass", detail="THP sysfs absent (THP not compiled in)"
-        )
+        return DoctorCheck(name=name, status="pass", detail="Not compiled in kernel")
     try:
         raw = _THP_ENABLED.read_text()
     except OSError as exc:
-        return DoctorCheck(name=name, status="fail", detail=f"cannot read {_THP_ENABLED}: {exc}")
+        return DoctorCheck(name=name, status="fail", detail=f"Cannot read {_THP_ENABLED}: {exc}")
 
     # File content looks like: "always madvise [never]"
     bracket_match = re.search(r"\[(\w+)\]", raw)
     active = bracket_match.group(1) if bracket_match else raw.split()[0]
 
     if active == "never":
-        return DoctorCheck(name=name, status="pass", detail="THP is 'never'")
+        return DoctorCheck(name=name, status="pass", detail="Disabled ('never')")
     return DoctorCheck(
         name=name,
         status="fail",
-        detail=(
-            f"THP is '{active}'; run: echo never > /sys/kernel/mm/transparent_hugepage/enabled"
-        ),
+        detail=f"Active ('{active}')",
+        fix="sudo sh -c 'echo never > /sys/kernel/mm/transparent_hugepage/enabled'",
     )
 
 
@@ -233,30 +233,23 @@ def _check_kvm_nx_huge_pages() -> DoctorCheck:
         return DoctorCheck(
             name=name,
             status="warn",
-            detail=(
-                "/sys/module/kvm/parameters/nx_huge_pages absent (kvm module not loaded?); "
-                "load with: modprobe kvm nx_huge_pages=never"
-            ),
+            detail="Module parameter absent (kvm module not loaded?)",
+            fix="sudo modprobe kvm nx_huge_pages=never",
         )
     try:
         value = _KVM_NX_PARAM.read_text().strip().lower()
     except OSError as exc:
-        return DoctorCheck(name=name, status="fail", detail=f"cannot read {_KVM_NX_PARAM}: {exc}")
+        return DoctorCheck(name=name, status="fail", detail=f"Cannot read {_KVM_NX_PARAM}: {exc}")
 
     # Kernel exposes this as "never" or "N" depending on version.
     if value in {"never", "n"}:
-        return DoctorCheck(
-            name=name,
-            status="pass",
-            detail=f"kvm nx_huge_pages='{value}' (CVE-2021-3737 mitigated)",
-        )
+        return DoctorCheck(name=name, status="pass", detail=f"Mitigated ('{value}')")
+
     return DoctorCheck(
         name=name,
         status="fail",
-        detail=(
-            f"kvm nx_huge_pages='{value}'; reload module with: "
-            "modprobe -r kvm_intel kvm && modprobe kvm nx_huge_pages=never"
-        ),
+        detail=f"nx_huge_pages='{value}'",
+        fix="sudo modprobe -r kvm_intel kvm && sudo modprobe kvm nx_huge_pages=never",
     )
 
 
@@ -264,7 +257,7 @@ def _check_kvm_permissions() -> DoctorCheck:
     """Firecracker (jailer) needs /dev/kvm with 660 + kvm group ownership."""
     name = "worker:kvm-permissions"
     if not _KVM_DEV.exists():
-        return DoctorCheck(name=name, status="fail", detail="/dev/kvm not found; KVM unavailable")
+        return DoctorCheck(name=name, status="fail", detail="/dev/kvm not found")
 
     stat = _KVM_DEV.stat()
     # Mode bits: 0o660 means rw-rw----
@@ -280,17 +273,20 @@ def _check_kvm_permissions() -> DoctorCheck:
     ok_group = current_group == "kvm"
 
     if ok_perms and ok_group:
-        return DoctorCheck(
-            name=name,
-            status="pass",
-            detail=f"/dev/kvm is {current_mode} group={current_group}",
-        )
+        return DoctorCheck(name=name, status="pass", detail=f"{current_mode} group={current_group}")
+
     problems = []
     if not ok_perms:
-        problems.append(f"mode={current_mode} (want 0o660); fix: chmod 660 /dev/kvm")
+        problems.append(f"mode={current_mode}")
     if not ok_group:
-        problems.append(f"group={current_group} (want kvm); fix: chgrp kvm /dev/kvm")
-    return DoctorCheck(name=name, status="fail", detail="; ".join(problems))
+        problems.append(f"group={current_group}")
+
+    return DoctorCheck(
+        name=name,
+        status="fail",
+        detail="Incorrect permissions: " + " and ".join(problems),
+        fix="sudo chmod 660 /dev/kvm && sudo chgrp kvm /dev/kvm",
+    )
 
 
 def check_worker_node_security() -> list[DoctorCheck]:
@@ -324,7 +320,13 @@ def check_worker_node_security() -> list[DoctorCheck]:
 
     non_passing = [c for c in checks if c.status != "pass"]
     if non_passing:
-        lines = "; ".join(f"{c.name} [{c.status}]: {c.detail}" for c in non_passing)
+        msg_parts = []
+        for c in non_passing:
+            part = f"{c.name} ({c.status}): {c.detail}"
+            if c.fix:
+                part += f" - Fix: {c.fix}"
+            msg_parts.append(part)
+        lines = " | ".join(msg_parts)
         raise WorkerNodeSecurityError(
             f"Worker node security checks failed ({len(non_passing)}/{len(checks)}): {lines}"
         )
@@ -482,29 +484,39 @@ def generate_doctor_report(backend: str | None = None) -> DoctorReport:
 
 
 def _print_human_report(report: DoctorReport, strict: bool) -> None:
-    print("SmolVM Doctor")
-    print(f"Backend: {report.backend_resolved} (requested: {report.backend_requested})")
+    print(f"SmolVM Doctor (Backend: {report.backend_resolved})")
     print(f"Platform: {report.system} {report.arch}")
     print("")
 
     markers = {
-        "pass": "PASS",
-        "warn": "WARN",
-        "fail": "FAIL",
+        "pass": "✓",
+        "warn": "!",
+        "fail": "✗",
+    }
+
+    colors = {
+        "pass": "\033[92m",
+        "warn": "\033[93m",
+        "fail": "\033[91m",
+        "reset": "\033[0m",
     }
 
     for check in report.checks:
-        print(f"[{markers[check.status]}] {check.name}: {check.detail}")
+        color = colors[check.status]
+        reset = colors["reset"]
+        print(f" [{color}{markers[check.status]}{reset}] {check.name}: {check.detail}")
+        if check.fix and check.status != "pass":
+            print(f"     {color}Fix: {check.fix}{reset}")
 
     print("")
     failures = len(report.failures)
     warnings = len(report.warnings)
     if failures == 0 and (warnings == 0 or not strict):
-        print("Doctor result: OK")
+        print("Doctor result: \033[92mOK\033[0m")
     elif strict and warnings and not failures:
-        print("Doctor result: FAIL (strict mode treats warnings as failures)")
+        print("Doctor result: \033[91mFAIL\033[0m (strict mode treats warnings as failures)")
     else:
-        print("Doctor result: FAIL")
+        print("Doctor result: \033[91mFAIL\033[0m")
 
 
 def run_doctor(

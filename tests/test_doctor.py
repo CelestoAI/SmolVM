@@ -145,5 +145,5 @@ class TestWorkerNodeSecurityChecks:
     @patch("smolvm.doctor._check_swap_disabled", new=lambda: _pass("worker:swap-disabled"))
     def test_check_worker_node_security_raises_on_warn(self) -> None:
         """Startup guard should reject non-pass security checks, including warnings."""
-        with pytest.raises(WorkerNodeSecurityError, match="worker:kvm-nx-huge-pages \\[warn\\]"):
+        with pytest.raises(WorkerNodeSecurityError, match=r"worker:kvm-nx-huge-pages \(warn\)"):
             check_worker_node_security()
