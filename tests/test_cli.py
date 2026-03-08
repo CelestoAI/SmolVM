@@ -389,9 +389,7 @@ class TestCliUi:
         capsys: pytest.CaptureFixture,
     ) -> None:
         """Stable smolvm version should NOT auto-enable beta UI assets."""
-        import smolvm.cli as cli_module
-
-        monkeypatch.setattr(cli_module, "_current_version_is_prerelease", lambda: False)
+        monkeypatch.setattr("smolvm.cli._current_version_is_prerelease", lambda: False)
         mock_uvicorn = MagicMock()
         mock_import.return_value = mock_uvicorn
 
