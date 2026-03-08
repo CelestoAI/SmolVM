@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""SmolVM — A Python SDK runtime for AI agents and untrusted code execution."""
+"""SmolVM — A Python SDK for running AI agents and executing untrusted code in a secure, sandboxed environment."""
 
 from smolvm.build import SSH_BOOT_ARGS, ImageBuilder
 from smolvm.exceptions import (
