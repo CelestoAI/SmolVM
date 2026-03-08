@@ -20,6 +20,28 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from smolvm.cli import DASHBOARD_ALLOW_BETA_ENV, main
+from smolvm.types import NetworkConfig, VMState
+
+
+def _make_vm_info(
+    vm_id: str = "vm-abc123",
+    status: VMState = VMState.RUNNING,
+    guest_ip: str = "172.16.0.2",
+    ssh_host_port: int | None = 2200,
+    pid: int | None = 12345,
+) -> MagicMock:
+    """Build a lightweight VMInfo-like mock for list tests."""
+    vm = MagicMock()
+    vm.vm_id = vm_id
+    vm.status = status
+    vm.pid = pid
+    if guest_ip:
+        vm.network = MagicMock(spec=NetworkConfig)
+        vm.network.guest_ip = guest_ip
+        vm.network.ssh_host_port = ssh_host_port
+    else:
+        vm.network = None
+    return vm
 
 
 class TestCliEnv:
@@ -290,3 +312,109 @@ class TestCliUi:
 
         assert ret == 2
         assert "invalid port" in capsys.readouterr().out
+
+
+class TestCliList:
+    """Tests for `smolvm list`."""
+
+    @pytest.fixture
+    def mock_sdk_cls(self) -> MagicMock:
+        with patch("smolvm.vm.SmolVMManager") as m:
+            yield m
+
+    def test_list_empty(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm list` with no VMs should print a friendly message."""
+        mock_sdk_cls.return_value.list_vms.return_value = []
+
+        ret = main(["list"])
+
+        assert ret == 0
+        assert "No VMs found" in capsys.readouterr().out
+        mock_sdk_cls.return_value.close.assert_called_once()
+
+    def test_list_shows_vms(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm list` should print a table with VM details."""
+        vms = [
+            _make_vm_info("vm-abc123", VMState.RUNNING, "172.16.0.2", 2200, 12345),
+            _make_vm_info("vm-def456", VMState.STOPPED, "172.16.0.3", None, None),
+        ]
+        mock_sdk_cls.return_value.list_vms.return_value = vms
+
+        ret = main(["list"])
+
+        assert ret == 0
+        out = capsys.readouterr().out
+        assert "vm-abc123" in out
+        assert "running" in out
+        assert "172.16.0.2" in out
+        assert "2200" in out
+        assert "12345" in out
+        assert "vm-def456" in out
+        assert "stopped" in out
+        assert "Total: 2 VM(s)." in out
+
+    def test_list_no_network(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm list` should show '-' for missing network/PID fields."""
+        vms = [_make_vm_info("vm-abc123", VMState.CREATED, "", None, None)]
+        vms[0].network = None
+        mock_sdk_cls.return_value.list_vms.return_value = vms
+
+        ret = main(["list"])
+
+        assert ret == 0
+        out = capsys.readouterr().out
+        assert "vm-abc123" in out
+        assert "created" in out
+        # Network and PID unavailable
+        assert out.count("-") >= 3
+
+    def test_list_status_filter(
+        self,
+        mock_sdk_cls: MagicMock,
+    ) -> None:
+        """`smolvm list --status running` passes status to list_vms."""
+        mock_sdk_cls.return_value.list_vms.return_value = []
+
+        ret = main(["list", "--status", "running"])
+
+        assert ret == 0
+        mock_sdk_cls.return_value.list_vms.assert_called_once_with(status=VMState.RUNNING)
+
+    def test_list_status_filter_empty(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm list --status stopped` with no results shows filtered message."""
+        mock_sdk_cls.return_value.list_vms.return_value = []
+
+        ret = main(["list", "--status", "stopped"])
+
+        assert ret == 0
+        assert "stopped" in capsys.readouterr().out
+
+    def test_list_sdk_error(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm list` prints error and returns 1 on unexpected failure."""
+        mock_sdk_cls.return_value.list_vms.side_effect = RuntimeError("db unavailable")
+
+        ret = main(["list"])
+
+        assert ret == 1
+        assert "Error: db unavailable" in capsys.readouterr().out
+        mock_sdk_cls.return_value.close.assert_called_once()
