@@ -35,7 +35,7 @@ from smolvm.ssh import SSHClient
 from smolvm.types import CommandResult, NetworkConfig, VMConfig, VMInfo, VMState
 from smolvm.vm import SmolVMManager
 
-__version__ = "0.0.5.a0"
+__version__ = "0.0.5.a1"
 
 __all__ = [
     # Core classes
