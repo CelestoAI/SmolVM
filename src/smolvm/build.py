@@ -748,6 +748,30 @@ done
         if not rootfs_path.exists():
             raise ImageError(f"Expected rootfs image not produced: {rootfs_path}")
 
+        # Restore ownership of rootfs_dir to the current user so that Python's
+        # TemporaryDirectory cleanup can remove it.  Docker runs as root inside
+        # the container and, despite the :ro bind-mount, there may be residual
+        # root-owned files left over from a previous failed build run in the
+        # same /tmp directory.  A cheap chown pass ensures cleanup never fails
+        # with PermissionError regardless of prior state.
+        uid, gid = os.getuid(), os.getgid()
+        subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "-v",
+                f"{rootfs_dir.resolve()}:/work/rootfs",
+                "alpine:3.19",
+                "sh",
+                "-c",
+                f"chown -R {uid}:{gid} /work/rootfs 2>/dev/null || true",
+            ],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
     def _do_build(
         self,
         name: str,
