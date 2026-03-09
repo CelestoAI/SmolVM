@@ -164,8 +164,8 @@ def boot_one(
     disk_mode: str,
     backend: str | None,
     socket_dir: Path,
-) -> tuple[SmolVM | None, float, dict[str, Any]]:
-    """Boot a single VM. Returns (vm_or_None, boot_seconds, error_dict)."""
+) -> tuple[int, SmolVM | None, float, dict[str, Any]]:
+    """Boot a single VM. Returns (seq, vm_or_None, boot_seconds, error_dict)."""
     start_t = time.time()
     vm: SmolVM | None = None
     try:
@@ -182,7 +182,7 @@ def boot_one(
         vm = SmolVM(config, ssh_key_path=ssh_key_path, socket_dir=socket_dir)
         vm.start()
         vm.wait_for_ssh(timeout=30.0)
-        return vm, time.time() - start_t, {}
+        return seq, vm, time.time() - start_t, {}
     except Exception as e:
         fc_log = _read_vm_log(vm) if vm is not None else "(VM object not created)"
         err: dict[str, Any] = {"error": str(e), "fc_log": fc_log}
@@ -191,7 +191,7 @@ def boot_one(
                 vm.delete()
             except Exception as cleanup_exc:
                 err["cleanup_error"] = str(cleanup_exc)
-        return None, time.time() - start_t, err
+        return seq, None, time.time() - start_t, err
 
 
 def check_vm_alive(vm: SmolVM, seq: int) -> tuple[int, bool, str]:
@@ -285,11 +285,12 @@ if __name__ == "__main__":
             batch_size = min(args.parallel, args.max_attempts - i)
 
             # Boot one batch (serial or parallel).
-            # Each result is a 4-tuple (vm, boot_t, err, snap) where snap is
-            # captured immediately when the boot completes — not post-batch —
+            # Each result is a 5-tuple (seq, vm, boot_t, err, snap) where snap
+            # is captured immediately when the boot completes — not post-batch —
             # so parallel runs record per-VM resource state accurately.
+            # Results are sorted by seq before processing to preserve launch order.
             if batch_size == 1:
-                vm, boot_t, err = boot_one(
+                seq_r, vm, boot_t, err = boot_one(
                     i + 1,
                     kernel,
                     rootfs,
@@ -300,7 +301,7 @@ if __name__ == "__main__":
                     args.socket_dir,
                 )
                 density = len(running_vms) + (1 if vm is not None else 0)
-                batch_results = [(vm, boot_t, err, Metrics.snapshot(density, args.socket_dir))]
+                batch_results = [(seq_r, vm, boot_t, err, Metrics.snapshot(density, args.socket_dir))]
             else:
                 with ThreadPoolExecutor(max_workers=batch_size) as ex:
                     futures = [
@@ -318,20 +319,23 @@ if __name__ == "__main__":
                         for j in range(batch_size)
                     ]
                     batch_results = []
+                    batch_ok_so_far = 0
                     for f in as_completed(futures):
-                        vm, boot_t, err = f.result()
-                        density = len(running_vms) + (1 if vm is not None else 0)
+                        seq_r, vm, boot_t, err = f.result()
+                        if vm is not None:
+                            batch_ok_so_far += 1
+                        density = len(running_vms) + batch_ok_so_far
                         snap = Metrics.snapshot(density, args.socket_dir)
-                        batch_results.append((vm, boot_t, err, snap))
+                        batch_results.append((seq_r, vm, boot_t, err, snap))
 
             failed_this_batch = 0
-            for vm, boot_t, err, snap in batch_results:
+            for seq_r, vm, boot_t, err, snap in sorted(batch_results):
                 i += 1
 
                 if vm is not None:
                     running_vms.append(vm)
                     print(
-                        f"VM {i}: boot={boot_t:.2f}s | "
+                        f"VM {seq_r}: boot={boot_t:.2f}s | "
                         f"mem={snap.host_mem_used_gb:.2f}GB "
                         f"disk={snap.host_disk_used_gb:.2f}GB "
                         f"tap={snap.tap_count} "
@@ -340,14 +344,14 @@ if __name__ == "__main__":
                     results.append(
                         {
                             "event": "boot_ok",
-                            "vm_seq": i,
+                            "vm_seq": seq_r,
                             "boot_time_s": round(boot_t, 3),
                             "density_at_boot": len(running_vms),
                             **asdict(snap),
                         }
                     )
                 else:
-                    print(f"FAIL @ VM {i}: {err.get('error', '?')}")
+                    print(f"FAIL @ VM {seq_r}: {err.get('error', '?')}")
                     if not _diag_printed and err.get("fc_log"):
                         _diag_printed = True
                         print("--- Firecracker log (first failure) ---")
@@ -356,7 +360,7 @@ if __name__ == "__main__":
                     results.append(
                         {
                             "event": "boot_fail",
-                            "vm_seq": i,
+                            "vm_seq": seq_r,
                             **err,
                             **asdict(snap),
                         }
