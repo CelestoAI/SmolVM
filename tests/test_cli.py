@@ -357,15 +357,15 @@ class TestCliUi:
         assert ret == 2
         assert "invalid port" in capsys.readouterr().out
 
-    @patch("smolvm.cli._current_version_is_prerelease", return_value=True)
     @patch("smolvm.cli.importlib.import_module")
     def test_ui_auto_beta_for_prerelease_version(
         self,
         mock_import: MagicMock,
-        _mock_prerelease: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture,
     ) -> None:
         """Pre-release smolvm version should auto-enable beta UI assets."""
+        monkeypatch.setattr("smolvm.cli._current_version_is_prerelease", lambda: True)
         mock_uvicorn = MagicMock()
 
         def _run(*args: object, **kwargs: object) -> None:
