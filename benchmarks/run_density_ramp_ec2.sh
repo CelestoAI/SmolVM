@@ -28,9 +28,9 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Defaults (override via environment variables)
 # ---------------------------------------------------------------------------
-REGION="${REGION:-us-east-1}"
-INSTANCE_TYPE="${INSTANCE_TYPE:-c5.metal}"
-KEY_NAME="${KEY_NAME:-}"
+REGION="${REGION:-us-east-2}"
+INSTANCE_TYPE="${INSTANCE_TYPE:-c5d.metal}"
+KEY_NAME="smolvm-benchmark"  #"${KEY_NAME:-}"
 KEY_PATH="${KEY_PATH:-}"
 SECURITY_GROUP="${SECURITY_GROUP:-}"
 SUBNET_ID="${SUBNET_ID:-}"
@@ -224,6 +224,17 @@ for i in $(seq 1 30); do
 done
 
 # ---------------------------------------------------------------------------
+# Package smolvm source for upload
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Packaging smolvm source ---"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SOURCE_TAR="$(mktemp -d)/smolvm-src.tar.gz"
+(cd "$REPO_ROOT" && git archive --format=tar.gz HEAD -- src pyproject.toml README.md > "$SOURCE_TAR")
+echo "Packaged source: $(basename "$SOURCE_TAR")"
+
+# ---------------------------------------------------------------------------
 # Install dependencies on the instance
 # ---------------------------------------------------------------------------
 echo ""
@@ -235,16 +246,53 @@ set -euo pipefail
 sudo usermod -aG kvm ec2-user || true
 sudo chmod 666 /dev/kvm
 
-# Install Python and pip
-sudo dnf install -y python3 python3-pip --quiet
+# Raise open-file and process limits for high-density VM runs
+echo "ec2-user soft nofile 65536" | sudo tee -a /etc/security/limits.conf
+echo "ec2-user hard nofile 65536" | sudo tee -a /etc/security/limits.conf
+echo "ec2-user soft nproc  65536" | sudo tee -a /etc/security/limits.conf
+echo "ec2-user hard nproc  65536" | sudo tee -a /etc/security/limits.conf
+# Allow a large number of concurrent TCP connections
+sudo sysctl -w net.ipv4.ip_local_port_range="1024 65535" >/dev/null
+sudo sysctl -w net.core.somaxconn=65535 >/dev/null
 
-# Install smolvm and psutil
-pip3 install --quiet smolvm psutil
+# Disable firewalld — it uses the nftables backend and can conflict with
+# SmolVM's own nftables rules, blocking TAP device forwarding.
+sudo systemctl stop firewalld 2>/dev/null || true
+sudo systemctl disable firewalld 2>/dev/null || true
 
-# Trigger Firecracker binary download
-smolvm demo list 2>/dev/null || true
+# Install Python 3.11, pip, and Docker
+sudo dnf install -y python3.11 python3.11-pip docker nftables --quiet
+sudo systemctl start docker
+sudo usermod -aG docker ec2-user
+
+# Mount NVMe instance store and redirect all smolvm data to it
+sudo mkfs.ext4 -F /dev/nvme1n1
+sudo mkdir -p /mnt/nvme
+sudo mount /dev/nvme1n1 /mnt/nvme
+sudo mkdir -p /mnt/nvme/smolvm-images /mnt/nvme/smolvm-state
+sudo chown ec2-user:ec2-user /mnt/nvme /mnt/nvme/smolvm-images /mnt/nvme/smolvm-state
+# Image cache (~/.smolvm/images/) → NVMe
+ln -sfn /mnt/nvme/smolvm-images /home/ec2-user/.smolvm
+# Disk clones (~/.local/state/smolvm/disks/) → NVMe
+mkdir -p /home/ec2-user/.local/state
+ln -sfn /mnt/nvme/smolvm-state /home/ec2-user/.local/state/smolvm
 REMOTE
 
+scp -i "$KEY_PATH" -o StrictHostKeyChecking=no \
+  "$SOURCE_TAR" \
+  "ec2-user@$PUBLIC_IP:~/smolvm-src.tar.gz"
+
+$SSH bash <<'REMOTE'
+set -euo pipefail
+
+# Install smolvm from source and psutil
+pip3.11 install --quiet ~/smolvm-src.tar.gz psutil
+
+# Download Firecracker binary
+python3.11 -c "from smolvm.host import HostManager; HostManager().install_firecracker()"
+REMOTE
+
+rm -rf "$(dirname "$SOURCE_TAR")"
 echo "Dependencies installed."
 
 # ---------------------------------------------------------------------------
@@ -252,7 +300,6 @@ echo "Dependencies installed."
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Uploading benchmark ---"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 scp -i "$KEY_PATH" -o StrictHostKeyChecking=no \
   "$SCRIPT_DIR/density_ramp.py" \
   "ec2-user@$PUBLIC_IP:~/density_ramp.py"
@@ -262,7 +309,7 @@ echo "Uploaded density_ramp.py"
 # Run benchmark
 # ---------------------------------------------------------------------------
 REMOTE_OUTPUT="density.json"
-BENCHMARK_CMD="python3 ~/density_ramp.py \
+BENCHMARK_CMD="python3.11 ~/density_ramp.py \
   --tier $TIER \
   --max-attempts $MAX_ATTEMPTS \
   --sustain-sec $SUSTAIN_SEC \
@@ -280,6 +327,36 @@ $SSH -t "$BENCHMARK_CMD" || {
   echo ""
   echo "WARNING: Benchmark exited with a non-zero status (may be expected at resource limit)."
 }
+
+# ---------------------------------------------------------------------------
+# Post-run diagnostics (network state + first VM log)
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Post-run diagnostics ---"
+$SSH bash <<'DIAG' || true
+set -uo pipefail
+
+echo "=== Network interfaces (TAP devices) ==="
+ip -o link show | grep -E "tap|lo|eth" || true
+
+echo ""
+echo "=== Routes ==="
+ip route show
+
+echo ""
+echo "=== nftables ruleset ==="
+sudo nft list ruleset 2>/dev/null || echo "(nft list failed)"
+
+echo ""
+echo "=== Most recent Firecracker VM log (last 60 lines) ==="
+LOG=$(ls -t ~/.local/state/smolvm/vm-*.log 2>/dev/null | head -1)
+if [ -n "$LOG" ]; then
+  echo "Log: $LOG"
+  tail -60 "$LOG"
+else
+  echo "(no VM log files found under ~/.local/state/smolvm/)"
+fi
+DIAG
 
 # ---------------------------------------------------------------------------
 # Collect results

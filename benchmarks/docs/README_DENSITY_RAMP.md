@@ -7,69 +7,121 @@
 ## Purpose
 
 This benchmark helps answer key questions about SmolVM:
+
 - **Maximum concurrent VMs**: How many VMs can run simultaneously on a given system?
 - **Performance degradation**: How do boot times and system metrics change as density increases?
 - **Resource utilization**: What are the per-VM resource costs (CPU, memory)?
 - **Failure modes**: What resource limits cause deployments to fail?
 
-## Usage
+## Running on EC2 (Recommended)
+
+The easiest way to run this benchmark is with the provided `run_density_ramp_ec2.sh` script, which handles provisioning, setup, execution, and cleanup automatically.
+
+### Prerequisites
+
+- AWS CLI configured (`aws configure` or IAM role)
+- An EC2 key pair with the `.pem` file accessible locally
+- The key pair name set in the script or via `KEY_NAME` environment variable
+
+### Usage
+
+```bash
+cd benchmarks/
+./run_density_ramp_ec2.sh [--tier tiny|small|med] [--max-attempts N] \
+                           [--sustain-sec N] [--parallel N] [--shared-disk] \
+                           [--output FILE]
+```
+
+The script will:
+
+1. Launch a `c5d.metal` instance (96 vCPUs, 192 GB RAM, 2x 900 GB NVMe)
+2. Install all dependencies (Python 3.11, Docker, nftables)
+3. Mount the NVMe drive and redirect all SmolVM data to it
+4. Upload and run the benchmark
+5. Download results to `./density_YYYYMMDD_HHMMSS.json`
+6. Print a quick summary
+7. Terminate the instance and clean up the security group
+
+### Environment Variable Overrides
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `KEY_NAME` | `smolvm-benchmark` | EC2 key pair name |
+| `KEY_PATH` | `~/.ssh/${KEY_NAME}.pem` | Path to `.pem` file |
+| `INSTANCE_TYPE` | `c5d.metal` | EC2 instance type |
+| `REGION` | `us-east-2` | AWS region |
+| `SECURITY_GROUP` | _(auto-created)_ | Existing security group ID |
+| `SUBNET_ID` | _(default VPC)_ | Subnet ID |
+| `AMI_ID` | _(latest AL2023)_ | AMI to use |
+
+### Instance Type Notes
+
+The default `c5d.metal` provides:
+
+- 96 vCPUs, 192 GB RAM
+- **2x 900 GB NVMe instance store** — the NVMe is required for disk-intensive runs (isolated mode uses up to 126 GB for 253 tiny VMs)
+
+To override to a different instance type: `INSTANCE_TYPE=c5.metal ./run_density_ramp_ec2.sh` — but you will need to add a large EBS volume separately or use `--shared-disk`.
+
+---
+
+## Running Locally
 
 ### Basic Invocation
 
 ```bash
-python density_ramp.py --tier tiny --max_attempts 500
+python density_ramp.py --tier tiny --max-attempts 500
 ```
 
 ### Arguments
 
 | Argument | Type | Default | Description |
-|----------|------|---------|-------------|
+| -------- | ---- | ------- | ----------- |
 | `--tier` | `{tiny, small, med}` | `tiny` | VM size configuration tier |
-| `--max_attempts` | int | `500` | Maximum number of VMs to launch |
-| `--sustain_sec` | int | `60` | Idle duration (seconds) to wait between VM boots for stability check |
+| `--max-attempts` | int | `500` | Maximum number of VMs to launch |
+| `--sustain-sec` | int | `60` | Idle duration (seconds) after peak density before health-checking all VMs |
+| `--parallel` | int | `1` | Number of VMs to boot concurrently per batch |
+| `--shared-disk` | flag | off | Use `disk_mode=shared` (no per-VM rootfs clone); saves disk, less isolation |
+| `--backend` | string | `auto` | Backend override: `firecracker`, `qemu`, or `auto` |
+| `--socket-dir` | path | `/tmp` | Firecracker socket directory |
 | `--output` | string | `density.json` | Output file path for results (JSON format) |
 
 ### VM Tiers
 
 Each tier defines VM memory and disk size:
 
-| Tier | Memory | Disk |
-|------|--------|------|
-| `tiny` | 128 MiB | 512 MiB |
-| `small` | 512 MiB | 1 GiB |
-| `med` | 2048 MiB | 4 GiB |
+| Tier | Memory | Disk | Max disk (isolated, 253 VMs) |
+| ---- | ------ | ---- | ---------------------------- |
+| `tiny` | 128 MiB | 512 MiB | ~126 GB |
+| `small` | 512 MiB | 1 GiB | ~253 GB |
+| `med` | 2048 MiB | 4 GiB | ~1 TB |
+
+> **Tip**: Use `--shared-disk` to eliminate per-VM disk clones entirely when disk space is limited.
 
 ## How It Works
 
-1. **Boot Loop**: For each iteration (up to `--max_attempts`):
+1. **Boot Loop**: For each iteration (up to `--max-attempts`):
    - Create a new VM with the specified tier configuration
-   - Boot it and record boot time
-   - Keep it running (append to active VM list)
-   - Wait `--sustain_sec` seconds
-   - Run a quick liveness check (`sleep 1 && uptime`)
+   - Boot it and wait for SSH to become ready (up to 30 s)
+   - Record boot time (includes SSH readiness — this is the true "ready to serve" latency)
+   - Keep it running with the SSH connection pre-established (append to active VM list)
    - Capture host metrics (CPU, memory, Firecracker RSS, KVM VM count)
 
-2. **Failure Handling**: If any VM fails to boot or fails the liveness check, the test stops and records the failure point.
+2. **Sustain Check**: After the ramp completes (or hits `--max-attempts`), wait `--sustain-sec` seconds then run a liveness check (`uptime`) on all surviving VMs. Because SSH connections are pre-established during boot, the sustain check reuses existing paramiko transports rather than opening 64+ new connections concurrently.
 
-3. **Metrics Collection**: For each successful VM, the benchmark captures:
-   - Boot time (seconds)
-   - Timestamp
-   - Number of VMs running
-   - Host CPU utilization (%)
-   - Host memory used (GB)
-   - Active KVM VM count
-   - Total Firecracker RSS memory (MB)
+3. **Failure Handling**: If any VM fails to boot, the batch is considered failed and the ramp stops.
 
 4. **Cleanup**: On exit (success, failure, or interrupt), all VMs are stopped gracefully.
 
 ## Output Format
 
-Results are written to a JSON file (default: `density.json`):
+Results are written to a JSON file (default: `density.json`). Each entry represents an event:
 
 ```json
 [
   {
-    "vm_id": 1,
+    "event": "boot_ok",
+    "seq": 1,
     "boot_time_s": 0.45,
     "timestamp": 1699564800.123,
     "vms_running": 1,
@@ -78,95 +130,131 @@ Results are written to a JSON file (default: `density.json`):
     "kvm_vms": 1,
     "firecracker_rss_mb": 156.2
   },
-  ...
   {
-    "failure_at": 245,
+    "event": "boot_fail",
+    "seq": 245,
     "error": "Out of memory",
-    "timestamp": 1699564900.456,
-    "vms_running": 244,
-    "host_cpu_pct": 85.0,
-    "host_mem_used_gb": 15.8,
-    "kvm_vms": 244,
-    "firecracker_rss_mb": 15200.0
+    "timestamp": 1699564900.456
+  },
+  {
+    "event": "sustain_check",
+    "vms_checked": 244,
+    "vms_alive": 244,
+    "timestamp": 1699564960.789
   }
 ]
 ```
 
-## Prerequisites
+## Prerequisites (Local)
 
-- Linux system with KVM support
+- Linux system with KVM support (`/dev/kvm` accessible)
+- Python 3.10+
 - SmolVM installed: `pip install smolvm psutil`
-- Sufficient disk space for the rootfs/kernel images
-- Firecracker binary available on the system
+- Docker (for building the Alpine SSH image on first run)
+- `nftables` (`nft` command) for VM networking
+- Firecracker binary (downloaded automatically via `smolvm.host.HostManager().install_firecracker()`)
+- Sufficient disk space (see tier table above; use `--shared-disk` to reduce requirements)
 
 ## Example Runs
 
 ### Tiny VMs (Max Capacity Test)
+
 ```bash
-python density_ramp.py --tier tiny --max_attempts 1000 --sustain_sec 30 --output tiny_density.json
+python density_ramp.py --tier tiny --max-attempts 253 --sustain-sec 30 --output tiny_density.json
 ```
+
 Good for finding absolute maximum concurrent VM count with minimal overhead.
 
-### Small VMs (Realistic Mixed Workload)
+### Tiny VMs, Parallel Boot
+
 ```bash
-python density_ramp.py --tier small --max_attempts 100 --sustain_sec 60 --output small_density.json
+python density_ramp.py --tier tiny --max-attempts 253 --parallel 10 --sustain-sec 30
 ```
+
+Boot 10 VMs at a time to reduce ramp-up time.
+
+### Small VMs (Realistic Mixed Workload)
+
+```bash
+python density_ramp.py --tier small --max-attempts 100 --sustain-sec 60 --output small_density.json
+```
+
 Realistic for typical application workloads.
 
 ### Medium VMs (Headroom Test)
+
 ```bash
-python density_ramp.py --tier med --max_attempts 50 --sustain_sec 60 --output med_density.json
+python density_ramp.py --tier med --max-attempts 50 --sustain-sec 60 --output med_density.json
 ```
+
 Tests system behavior under heavier individual VM loads.
+
+### Shared Disk (Disk-Constrained Systems)
+
+```bash
+python density_ramp.py --tier tiny --max-attempts 253 --shared-disk
+```
+
+All VMs boot from the same rootfs — no per-VM clone needed.
 
 ## Analysis & Interpretation
 
 After running the benchmark:
 
 1. **Look at the final record** to identify the failure point and surrounding metrics
-2. **Bootstrap time trend**: Is boot time degrading as VMs accumulate?
+2. **Boot time trend**: Is boot time degrading as VMs accumulate?
 3. **Memory usage**: How does host memory consumption scale with VM count?
 4. **Firecracker RSS**: Individual Firecracker process overhead
 5. **CPU contention**: Does CPU utilization increase as density rises?
 
 Example analysis (Python):
+
 ```python
 import json
 
 with open('density.json') as f:
     data = json.load(f)
 
-# Find where it failed
-if 'failure_at' in data[-1]:
-    print(f"Max VMs: {data[-1]['failure_at']}")
-else:
-    print(f"Max VMs: {len(data)}")
+boots = [d for d in data if d.get('event') == 'boot_ok']
+fails = [d for d in data if d.get('event') == 'boot_fail']
+sustain = next((d for d in data if d.get('event') == 'sustain_check'), None)
 
-# Boot time trend
-boot_times = [d.get('boot_time_s') for d in data if 'boot_time_s' in d]
-print(f"Avg boot: {sum(boot_times) / len(boot_times):.2f}s")
-print(f"Max boot: {max(boot_times):.2f}s")
+print(f"Peak VMs       : {len(boots)}")
+print(f"Failed boots   : {len(fails)}")
+if boots:
+    times = [d['boot_time_s'] for d in boots]
+    print(f"Avg boot time  : {sum(times)/len(times):.2f}s")
+    print(f"Max boot time  : {max(times):.2f}s")
+    print(f"Peak mem used  : {boots[-1]['host_mem_used_gb']:.2f} GB")
+if sustain:
+    print(f"Sustain alive  : {sustain['vms_alive']}/{sustain['vms_checked']} VMs")
 ```
 
 ## Notes
 
-- This is a "first draft" benchmark and is maintained in "skepticism mode", meaning results should be interpreted carefully and may vary significantly based on host system configuration
-- The liveness check (`sleep 1 && uptime`) ensures VMs remain responsive, not just that they booted
+- This is a "first draft" benchmark maintained in "skepticism mode" — results should be interpreted carefully and may vary based on host configuration
+- `boot_time_s` includes the time to SSH readiness (not just Firecracker start), making it a true end-to-end "ready to serve" latency
+- SSH connections are pre-established during the boot loop; the sustain check reuses these connections via persistent paramiko transports
+- The liveness check (`uptime`) ensures VMs remain responsive, not just that they booted
 - Firecracker RSS includes all Firecracker processes, not per-VM attribution
-- The test does not perform VM cleanup between iterations—all VMs remain running until the end
-- On macOS, this test will not run (KVM is Linux-only); use a Linux system for density testing
+- The test does not perform VM cleanup between iterations — all VMs remain running until the end
+- On macOS, this test will not run (KVM is Linux-only); use the EC2 script or a Linux system
 
 ## Troubleshooting
 
 | Issue | Cause | Solution |
-|-------|-------|----------|
-| "ERROR: pip install smolvm" | SmolVM not installed | `pip install smolvm psutil` |
-| Quick failure (VM 1 or 2) | Missing Firecracker binary | Run `smolvm demo list` to trigger setup |
-| High failure rate | Insufficient disk space | Free up space or use smaller tier |
-| Inconsistent results | System load variation | Run test with minimal background processes |
-| KVM device errors | Permissions issue | Check KVM device permissions (`/dev/kvm`) |
+| ----- | ----- | -------- |
+| `smolvm` not found | Package not installed | `pip3.11 install smolvm psutil` |
+| `nft: command not found` | nftables not installed | `sudo dnf install -y nftables` |
+| `Docker is required` | Docker not installed or not running | `sudo dnf install -y docker && sudo systemctl start docker` |
+| `Firecracker binary not found` | Firecracker not downloaded | `python3 -c "from smolvm.host import HostManager; HostManager().install_firecracker()"` |
+| Quick failure (VM 1) | KVM permissions | `sudo chmod 666 /dev/kvm` and add user to `kvm` group |
+| Disk exhaustion warning | Isolated mode fills disk | Use `--shared-disk` or provision more disk (NVMe on `c5d.metal`) |
+| All VMs dead in sustain check: `SSH did not become ready` | 64+ concurrent SSH connections opened simultaneously overwhelm paramiko or nftables DNAT under load | Fixed: SSH is now pre-established during the boot loop |
+| Inconsistent results | System load variation | Run with minimal background processes |
 
 ## See Also
 
 - [SmolVM Documentation](../README.md)
+- [EC2 Benchmark Script](../run_density_ramp_ec2.sh)
 - [Other Benchmarks](../)

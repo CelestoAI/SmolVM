@@ -138,6 +138,18 @@ def build_image(
     return kernel, rootfs, str(priv_key)
 
 
+def _read_vm_log(vm: SmolVM, tail_lines: int = 60) -> str:
+    """Read the Firecracker/QEMU log for a VM (last N lines)."""
+    try:
+        log_path = vm.data_dir / f"{vm.vm_id}.log"
+        if log_path.exists():
+            lines = log_path.read_text(errors="replace").splitlines()
+            return "\n".join(lines[-tail_lines:]) if lines else "(log file is empty)"
+        return f"(log not found: {log_path})"
+    except Exception as exc:
+        return f"(could not read log: {exc})"
+
+
 def boot_one(
     seq: int,
     kernel: Path,
@@ -150,6 +162,7 @@ def boot_one(
 ) -> tuple[SmolVM | None, float, dict[str, Any]]:
     """Boot a single VM. Returns (vm_or_None, boot_seconds, error_dict)."""
     start_t = time.time()
+    vm: SmolVM | None = None
     try:
         config = VMConfig(
             vm_id=f"vm-{uuid.uuid4().hex[:8]}",
@@ -163,9 +176,16 @@ def boot_one(
         )
         vm = SmolVM(config, ssh_key_path=ssh_key_path, socket_dir=socket_dir)
         vm.start()
+        vm.wait_for_ssh(timeout=30.0)
         return vm, time.time() - start_t, {}
     except Exception as e:
-        return None, time.time() - start_t, {"error": str(e)}
+        fc_log = _read_vm_log(vm) if vm is not None else "(VM object not created)"
+        if vm is not None:
+            try:
+                vm.stop()
+            except Exception:
+                pass
+        return None, time.time() - start_t, {"error": str(e), "fc_log": fc_log}
 
 
 def check_vm_alive(vm: SmolVM, seq: int) -> tuple[int, bool, str]:
@@ -249,6 +269,7 @@ if __name__ == "__main__":
     kernel, rootfs, ssh_key_path = build_image(tier_config, args.backend)
 
     results: list[dict[str, Any]] = []
+    _diag_printed = False  # Print Firecracker log only for the first failure
 
     try:
         i = 0
@@ -313,6 +334,11 @@ if __name__ == "__main__":
                     )
                 else:
                     print(f"FAIL @ VM {i}: {err.get('error', '?')}")
+                    if not _diag_printed and err.get("fc_log"):
+                        _diag_printed = True
+                        print("--- Firecracker log (first failure) ---")
+                        print(err["fc_log"])
+                        print("--- End Firecracker log ---")
                     results.append(
                         {
                             "event": "boot_fail",

@@ -703,6 +703,15 @@ done
         shell_cmd = (
             "set -e; "
             "apk add --no-cache e2fsprogs >/dev/null; "
+            # When tarball extraction runs as a non-root host user, files that
+            # should be root-owned (uid=0) end up owned by the host user's uid.
+            # Fix ownership of sshd-critical paths before mke2fs reads them so
+            # the resulting ext4 image has the correct inodes.
+            # /var/empty: sshd privsep dir — must be root:root, not g/o-writable.
+            # /etc/ssh:   host key dir — must be root-owned.
+            "chown root:root /work/rootfs/var/empty 2>/dev/null || true; "
+            "chmod 755 /work/rootfs/var/empty 2>/dev/null || true; "
+            "chown -R root:root /work/rootfs/etc/ssh 2>/dev/null || true; "
             f"mke2fs -d /work/rootfs -t ext4 -F /work/out/{rootfs_name} "
             f"{rootfs_size_mb}M >/dev/null"
         )
@@ -714,7 +723,9 @@ done
                     "run",
                     "--rm",
                     "-v",
-                    f"{rootfs_dir.resolve()}:/work/rootfs:ro",
+                    # Not :ro — the chown step above must be able to modify
+                    # file ownership before mke2fs reads the source tree.
+                    f"{rootfs_dir.resolve()}:/work/rootfs",
                     "-v",
                     f"{rootfs_path.parent.resolve()}:/work/out",
                     "alpine:3.19",
