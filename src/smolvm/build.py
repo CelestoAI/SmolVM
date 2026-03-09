@@ -20,6 +20,7 @@ Automatically builds VM images with SSH using Docker.
 import hashlib
 import json
 import logging
+import os
 import platform
 import re
 import shlex
