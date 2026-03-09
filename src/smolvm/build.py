@@ -678,9 +678,7 @@ done
         """
         logger.info("  [3/4] Creating ext4 filesystem via Docker helper (%dMB)...", rootfs_size_mb)
 
-        rootfs_dir = tmpdir / "rootfs-dir"
-        rootfs_dir.mkdir()
-
+        # Security check: scan tar member paths before Docker extracts them.
         with tarfile.open(tar_path, "r") as tar:
             for member in tar.getmembers():
                 member_path = Path(member.name)
@@ -689,31 +687,28 @@ done
                         f"Refusing to extract suspicious tar path from docker export: {member.name}"
                     )
 
-            # Python 3.14 defaults to a restrictive extraction filter that rejects
-            # absolute symlink targets commonly present in container rootfs archives.
-            # We already validated member names above, so trusted extraction is safe here.
-            try:
-                tar.extractall(path=rootfs_dir, filter="fully_trusted")
-            except TypeError:
-                # Python <3.12 does not support the 'filter' argument.
-                tar.extractall(path=rootfs_dir)
-
+        # Let Docker (running as root) extract the tarball and build the ext4
+        # image in a single pass.  This preserves the correct uid/gid for every
+        # file in the container image — Python's tarfile.extractall() silently
+        # drops root ownership when the host user is non-root, which causes sshd
+        # to reject /root/.ssh/authorized_keys and crash on /var/empty.
+        #
+        # We exclude ./dev to avoid device-node creation (CAP_MKNOD is not
+        # available without --privileged); the guest init mounts devtmpfs at
+        # boot so device nodes in the rootfs are not required.
         rootfs_path.unlink(missing_ok=True)
         rootfs_name = shlex.quote(rootfs_path.name)
+        tar_name = shlex.quote(tar_path.name)
         shell_cmd = (
             "set -e; "
             "apk add --no-cache e2fsprogs >/dev/null; "
-            # When tarball extraction runs as a non-root host user, files that
-            # should be root-owned (uid=0) end up owned by the host user's uid.
-            # Copy to an internal path first so we don't modify the host bind-mount
-            # (which would make the temp dir unremovable by the non-root host user).
-            # /var/empty: sshd privsep dir — must be root:root, not g/o-writable.
-            # /etc/ssh:   host key dir — must be root-owned.
-            "cp -a /work/rootfs /work/rootfs-fixed; "
-            "chown root:root /work/rootfs-fixed/var/empty 2>/dev/null || true; "
-            "chmod 755 /work/rootfs-fixed/var/empty 2>/dev/null || true; "
-            "chown -R root:root /work/rootfs-fixed/etc/ssh 2>/dev/null || true; "
-            f"mke2fs -d /work/rootfs-fixed -t ext4 -F /work/out/{rootfs_name} "
+            "mkdir /work/rootfs; "
+            f"tar xf /work/tar/{tar_name} -C /work/rootfs --exclude=./dev; "
+            "mkdir -p /work/rootfs/dev; "
+            # Defensive: guard against edge cases in the Alpine base image.
+            "chown root:root /work/rootfs/var/empty 2>/dev/null || true; "
+            "chmod 755 /work/rootfs/var/empty 2>/dev/null || true; "
+            f"mke2fs -d /work/rootfs -t ext4 -F /work/out/{rootfs_name} "
             f"{rootfs_size_mb}M >/dev/null"
         )
 
@@ -724,7 +719,9 @@ done
                     "run",
                     "--rm",
                     "-v",
-                    f"{rootfs_dir.resolve()}:/work/rootfs:ro",
+                    # tar_path lives inside tmpdir; mount tmpdir read-only so
+                    # Docker can read the tarball without touching the host tree.
+                    f"{tar_path.parent.resolve()}:/work/tar:ro",
                     "-v",
                     f"{rootfs_path.parent.resolve()}:/work/out",
                     "alpine:3.19",
@@ -747,30 +744,6 @@ done
 
         if not rootfs_path.exists():
             raise ImageError(f"Expected rootfs image not produced: {rootfs_path}")
-
-        # Restore ownership of rootfs_dir to the current user so that Python's
-        # TemporaryDirectory cleanup can remove it.  Docker runs as root inside
-        # the container and, despite the :ro bind-mount, there may be residual
-        # root-owned files left over from a previous failed build run in the
-        # same /tmp directory.  A cheap chown pass ensures cleanup never fails
-        # with PermissionError regardless of prior state.
-        uid, gid = os.getuid(), os.getgid()
-        subprocess.run(
-            [
-                "docker",
-                "run",
-                "--rm",
-                "-v",
-                f"{rootfs_dir.resolve()}:/work/rootfs",
-                "alpine:3.19",
-                "sh",
-                "-c",
-                f"chown -R {uid}:{gid} /work/rootfs 2>/dev/null || true",
-            ],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
 
     def _do_build(
         self,
