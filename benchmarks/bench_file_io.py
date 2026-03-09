@@ -163,13 +163,15 @@ def run_benchmark() -> dict:
         print_result("Stats", format_stats(vm_bulk_w_stats))
         results["vm_bulk_write"] = vm_bulk_w_stats
 
-        # Bulk read reading via vm.run("cat ...")
-        print_subheader("SmolVM: Bulk read (~10MB via cat)")
+        # Bulk read: use dd to /dev/null so only guest disk I/O is measured,
+        # not SSH/stdout transport overhead (cat would send ~10 MB through the
+        # command channel, distorting the result vs the host baseline).
+        print_subheader("SmolVM: Bulk read (~10MB, guest disk only)")
         # First ensure the file exists
         vm.run("dd if=/dev/zero of=/tmp/bench_read.dat bs=1024 count=10240 2>/dev/null", timeout=60)
         vm_bulk_r_times = []
         for _ in range(3):
-            t = time_call(lambda: vm.run("cat /tmp/bench_read.dat", timeout=60))
+            t = time_call(lambda: vm.run("dd if=/tmp/bench_read.dat of=/dev/null bs=1024 2>/dev/null", timeout=60))
             vm_bulk_r_times.append(t)
         vm_bulk_r_stats = stats_summary(vm_bulk_r_times)
         print_result("Stats", format_stats(vm_bulk_r_stats))
