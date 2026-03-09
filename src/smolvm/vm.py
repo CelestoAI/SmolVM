@@ -617,11 +617,20 @@ class SmolVMManager:
                 is_root_device=True,
                 is_read_only=False,
             )
+            for index, drive_path in enumerate(vm_info.config.extra_drives):
+                drive_id = "data_drive" if index == 0 else f"data_drive_{index}"
+                client.add_drive(
+                    drive_id,
+                    drive_path,
+                    is_root_device=False,
+                    is_read_only=False,
+                )
             assert vm_info.network is not None
             client.add_network_interface(
                 "eth0",
                 vm_info.network.tap_device,
                 vm_info.network.guest_mac,
+                rate_limit_mbps=vm_info.config.network_rate_limit_mbps,
             )
 
             # Start the instance
@@ -1163,6 +1172,8 @@ class SmolVMManager:
 
                 if backend == BACKEND_FIRECRACKER:
                     # Cleanup Linux TAP/NAT only for Firecracker backend.
+                    with suppress(Exception):
+                        self.network.remove_egress_rules(tap_device)
                     self.network.cleanup_nat_rules(tap_device)
                     self.network.cleanup_tap(tap_device)
 

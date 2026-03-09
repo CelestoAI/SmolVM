@@ -19,7 +19,29 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from smolvm.cli import DASHBOARD_ALLOW_BETA_ENV, main
+from smolvm.cli import DASHBOARD_ALLOW_BETA_ENV, _current_version_is_prerelease, main
+from smolvm.types import NetworkConfig, VMState
+
+
+def _make_vm_info(
+    vm_id: str = "vm-abc123",
+    status: VMState = VMState.RUNNING,
+    guest_ip: str = "172.16.0.2",
+    ssh_host_port: int | None = 2200,
+    pid: int | None = 12345,
+) -> MagicMock:
+    """Build a lightweight VMInfo-like mock for list tests."""
+    vm = MagicMock()
+    vm.vm_id = vm_id
+    vm.status = status
+    vm.pid = pid
+    if guest_ip:
+        vm.network = MagicMock(spec=NetworkConfig)
+        vm.network.guest_ip = guest_ip
+        vm.network.ssh_host_port = ssh_host_port
+    else:
+        vm.network = None
+    return vm
 
 
 class TestCliEnv:
@@ -214,6 +236,50 @@ class TestCliDoctor:
         )
 
 
+class TestCurrentVersionIsPrerelease:
+    """Tests for _current_version_is_prerelease helper."""
+
+    @patch("smolvm.cli.importlib.metadata.version", return_value="0.0.5.a1")
+    def test_alpha_version_is_prerelease(self, _: MagicMock) -> None:
+        """Alpha versions (e.g. 0.0.5.a1) should be detected as pre-release."""
+        assert _current_version_is_prerelease() is True
+
+    @patch("smolvm.cli.importlib.metadata.version", return_value="0.0.5.dev1")
+    def test_dev_version_is_prerelease(self, _: MagicMock) -> None:
+        """Dev versions (e.g. 0.0.5.dev1) should be detected as pre-release."""
+        assert _current_version_is_prerelease() is True
+
+    @patch("smolvm.cli.importlib.metadata.version", return_value="0.0.5b2")
+    def test_beta_version_is_prerelease(self, _: MagicMock) -> None:
+        """Beta versions (e.g. 0.0.5b2) should be detected as pre-release."""
+        assert _current_version_is_prerelease() is True
+
+    @patch("smolvm.cli.importlib.metadata.version", return_value="0.0.5rc1")
+    def test_rc_version_is_prerelease(self, _: MagicMock) -> None:
+        """Release candidates (e.g. 0.0.5rc1) should be detected as pre-release."""
+        assert _current_version_is_prerelease() is True
+
+    @patch("smolvm.cli.importlib.metadata.version", return_value="0.0.5")
+    def test_stable_version_is_not_prerelease(self, _: MagicMock) -> None:
+        """Stable versions (e.g. 0.0.5) should NOT be detected as pre-release."""
+        assert _current_version_is_prerelease() is False
+
+    @patch("smolvm.cli.importlib.metadata.version", return_value="1.2.3")
+    def test_stable_semver_is_not_prerelease(self, _: MagicMock) -> None:
+        """Stable semantic versions (e.g. 1.2.3) should NOT be detected as pre-release."""
+        assert _current_version_is_prerelease() is False
+
+    def test_package_not_found_returns_false(self) -> None:
+        """PackageNotFoundError should be handled gracefully by returning False."""
+        import importlib.metadata
+
+        with patch(
+            "smolvm.cli.importlib.metadata.version",
+            side_effect=importlib.metadata.PackageNotFoundError("smolvm"),
+        ):
+            assert _current_version_is_prerelease() is False
+
+
 class TestCliUi:
     """Tests for `smolvm ui`."""
 
@@ -290,3 +356,152 @@ class TestCliUi:
 
         assert ret == 2
         assert "invalid port" in capsys.readouterr().out
+
+    @patch("smolvm.cli.importlib.import_module")
+    def test_ui_auto_beta_for_prerelease_version(
+        self,
+        mock_import: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Pre-release smolvm version should auto-enable beta UI assets."""
+        monkeypatch.setattr("smolvm.cli._current_version_is_prerelease", lambda: True)
+        mock_uvicorn = MagicMock()
+
+        def _run(*args: object, **kwargs: object) -> None:
+            assert os.environ.get(DASHBOARD_ALLOW_BETA_ENV) == "1"
+
+        mock_uvicorn.run.side_effect = _run
+        mock_import.return_value = mock_uvicorn
+
+        os.environ.pop(DASHBOARD_ALLOW_BETA_ENV, None)
+        ret = main(["ui"])
+
+        assert ret == 0
+        assert DASHBOARD_ALLOW_BETA_ENV not in os.environ
+        assert "auto-enabled" in capsys.readouterr().out
+
+    @patch("smolvm.cli.importlib.import_module")
+    def test_ui_no_auto_beta_for_stable_version(
+        self,
+        mock_import: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Stable smolvm version should NOT auto-enable beta UI assets."""
+        monkeypatch.setattr("smolvm.cli._current_version_is_prerelease", lambda: False)
+        mock_uvicorn = MagicMock()
+        mock_import.return_value = mock_uvicorn
+
+        os.environ.pop(DASHBOARD_ALLOW_BETA_ENV, None)
+        ret = main(["ui"])
+
+        assert ret == 0
+        assert DASHBOARD_ALLOW_BETA_ENV not in os.environ
+        assert "auto-enabled" not in capsys.readouterr().out
+
+
+class TestCliList:
+    """Tests for `smolvm list`."""
+
+    @pytest.fixture
+    def mock_sdk_cls(self) -> MagicMock:
+        with patch("smolvm.vm.SmolVMManager") as m:
+            yield m
+
+    def test_list_empty(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm list` with no VMs should print a friendly message."""
+        mock_sdk_cls.return_value.list_vms.return_value = []
+
+        ret = main(["list"])
+
+        assert ret == 0
+        assert "No VMs found" in capsys.readouterr().out
+        mock_sdk_cls.return_value.close.assert_called_once()
+
+    def test_list_shows_vms(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm list` should print a table with VM details."""
+        vms = [
+            _make_vm_info("vm-abc123", VMState.RUNNING, "172.16.0.2", 2200, 12345),
+            _make_vm_info("vm-def456", VMState.STOPPED, "172.16.0.3", None, None),
+        ]
+        mock_sdk_cls.return_value.list_vms.return_value = vms
+
+        ret = main(["list"])
+
+        assert ret == 0
+        out = capsys.readouterr().out
+        assert "vm-abc123" in out
+        assert "running" in out
+        assert "172.16.0.2" in out
+        assert "2200" in out
+        assert "12345" in out
+        assert "vm-def456" in out
+        assert "stopped" in out
+        assert "Total: 2 VM(s)." in out
+
+    def test_list_no_network(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm list` should show '-' for missing network/PID fields."""
+        vms = [_make_vm_info("vm-abc123", VMState.CREATED, "", None, None)]
+        vms[0].network = None
+        mock_sdk_cls.return_value.list_vms.return_value = vms
+
+        ret = main(["list"])
+
+        assert ret == 0
+        out = capsys.readouterr().out
+        assert "vm-abc123" in out
+        assert "created" in out
+        # Network and PID unavailable
+        assert out.count("-") >= 3
+
+    def test_list_status_filter(
+        self,
+        mock_sdk_cls: MagicMock,
+    ) -> None:
+        """`smolvm list --status running` passes status to list_vms."""
+        mock_sdk_cls.return_value.list_vms.return_value = []
+
+        ret = main(["list", "--status", "running"])
+
+        assert ret == 0
+        mock_sdk_cls.return_value.list_vms.assert_called_once_with(status=VMState.RUNNING)
+
+    def test_list_status_filter_empty(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm list --status stopped` with no results shows filtered message."""
+        mock_sdk_cls.return_value.list_vms.return_value = []
+
+        ret = main(["list", "--status", "stopped"])
+
+        assert ret == 0
+        assert "stopped" in capsys.readouterr().out
+
+    def test_list_sdk_error(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm list` prints error and returns 1 on unexpected failure."""
+        mock_sdk_cls.return_value.list_vms.side_effect = RuntimeError("db unavailable")
+
+        ret = main(["list"])
+
+        assert ret == 1
+        assert "Error: db unavailable" in capsys.readouterr().out
+        mock_sdk_cls.return_value.close.assert_called_once()

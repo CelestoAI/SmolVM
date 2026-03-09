@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import platform
+import re
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -39,6 +40,7 @@ class DoctorCheck:
     name: str
     status: DoctorStatus
     detail: str
+    fix: str | None = None
 
 
 @dataclass(frozen=True)
@@ -66,7 +68,8 @@ def _check_command(binary: str, package_hint: str) -> DoctorCheck:
         return DoctorCheck(
             name=f"command:{binary}",
             status="fail",
-            detail=f"'{binary}' not found (install {package_hint})",
+            detail="Not found",
+            fix=f"Install {package_hint}",
         )
     return DoctorCheck(
         name=f"command:{binary}",
@@ -113,6 +116,222 @@ def _check_nft_table(family: str, table: str) -> DoctorCheck:
             status="warn",
             detail=f"could not inspect table: {e}",
         )
+
+
+class WorkerNodeSecurityError(SmolVMError):
+    """Raised when one or more host-level security checks fail.
+
+    The reconciler must refuse to start when this is raised rather than
+    running in a degraded security posture (C2: Defence in Depth).
+    """
+
+
+# ---------------------------------------------------------------------------
+# Worker-node security invariants (Decision 1.1.5)
+# ---------------------------------------------------------------------------
+
+_KSM_RUN = Path("/sys/kernel/mm/ksm/run")
+_THP_ENABLED = Path("/sys/kernel/mm/transparent_hugepage/enabled")
+_KVM_NX_PARAM = Path("/sys/module/kvm/parameters/nx_huge_pages")
+_KVM_DEV = Path("/dev/kvm")
+_PROC_MEMINFO = Path("/proc/meminfo")
+_FSTAB = Path("/etc/fstab")
+
+
+def _check_swap_disabled() -> DoctorCheck:
+    """C1: swap off prevents guest memory pages (potentially containing secrets) from
+    being written to the host disk."""
+    name = "worker:swap-disabled"
+
+    # 1. Is swap inactive right now?
+    try:
+        meminfo = _PROC_MEMINFO.read_text()
+    except OSError as exc:
+        return DoctorCheck(name=name, status="fail", detail=f"Cannot read /proc/meminfo: {exc}")
+
+    match = re.search(r"^SwapTotal:\s+(\d+)", meminfo, re.MULTILINE)
+    swap_total_kb = int(match.group(1)) if match else 0
+    if swap_total_kb != 0:
+        return DoctorCheck(
+            name=name,
+            status="fail",
+            detail=f"Active ({swap_total_kb} kB)",
+            fix="sudo swapoff -a",
+        )
+
+    # 2. Will it stay off after a reboot (/etc/fstab)?
+    try:
+        fstab_text = _FSTAB.read_text()
+    except OSError:
+        fstab_text = ""
+
+    swap_entries = [
+        line
+        for line in fstab_text.splitlines()
+        if line.strip() and not line.strip().startswith("#") and "swap" in line
+    ]
+    if swap_entries:
+        return DoctorCheck(
+            name=name,
+            status="fail",
+            detail="Swap entries found in /etc/fstab",
+            fix="sudo sed -i '/\\bswap\\b/d' /etc/fstab",
+        )
+
+    return DoctorCheck(name=name, status="pass", detail="Inactive and absent from /etc/fstab")
+
+
+def _check_ksm_disabled() -> DoctorCheck:
+    """KSM off: prevents cross-VM memory-page timing side-channels."""
+    name = "worker:ksm-disabled"
+    if not _KSM_RUN.exists():
+        # KSM not compiled in; that is fine — it cannot be used.
+        return DoctorCheck(name=name, status="pass", detail="Not compiled in kernel")
+    try:
+        value = _KSM_RUN.read_text().strip()
+    except OSError as exc:
+        return DoctorCheck(name=name, status="fail", detail=f"Cannot read {_KSM_RUN}: {exc}")
+
+    if value == "0":
+        return DoctorCheck(name=name, status="pass", detail="Disabled")
+    return DoctorCheck(
+        name=name,
+        status="fail",
+        detail=f"Active (run={value})",
+        fix="sudo sh -c 'echo 0 > /sys/kernel/mm/ksm/run'",
+    )
+
+
+def _check_thp_disabled() -> DoctorCheck:
+    """THP=never: prevents latency spikes that could disrupt VM timing guarantees."""
+    name = "worker:thp-disabled"
+    if not _THP_ENABLED.exists():
+        return DoctorCheck(name=name, status="pass", detail="Not compiled in kernel")
+    try:
+        raw = _THP_ENABLED.read_text()
+    except OSError as exc:
+        return DoctorCheck(name=name, status="fail", detail=f"Cannot read {_THP_ENABLED}: {exc}")
+
+    # File content looks like: "always madvise [never]"
+    bracket_match = re.search(r"\[(\w+)\]", raw)
+    active = bracket_match.group(1) if bracket_match else raw.split()[0]
+
+    if active == "never":
+        return DoctorCheck(name=name, status="pass", detail="Disabled ('never')")
+    return DoctorCheck(
+        name=name,
+        status="fail",
+        detail=f"Active ('{active}')",
+        fix="sudo sh -c 'echo never > /sys/kernel/mm/transparent_hugepage/enabled'",
+    )
+
+
+def _check_kvm_nx_huge_pages() -> DoctorCheck:
+    """CVE-2021-3737 / KVM iTLB multihit: nx_huge_pages must be 'never'."""
+    name = "worker:kvm-nx-huge-pages"
+    if not _KVM_NX_PARAM.exists():
+        return DoctorCheck(
+            name=name,
+            status="warn",
+            detail="Module parameter absent (kvm module not loaded?)",
+            fix="sudo modprobe kvm nx_huge_pages=never",
+        )
+    try:
+        value = _KVM_NX_PARAM.read_text().strip().lower()
+    except OSError as exc:
+        return DoctorCheck(name=name, status="fail", detail=f"Cannot read {_KVM_NX_PARAM}: {exc}")
+
+    # Kernel exposes this as "never" or "N" depending on version.
+    if value in {"never", "n"}:
+        return DoctorCheck(name=name, status="pass", detail=f"Mitigated ('{value}')")
+
+    return DoctorCheck(
+        name=name,
+        status="fail",
+        detail=f"nx_huge_pages='{value}'",
+        fix="sudo modprobe -r kvm_intel kvm && sudo modprobe kvm nx_huge_pages=never",
+    )
+
+
+def _check_kvm_permissions() -> DoctorCheck:
+    """Firecracker (jailer) needs /dev/kvm with 660 + kvm group ownership."""
+    name = "worker:kvm-permissions"
+    if not _KVM_DEV.exists():
+        return DoctorCheck(name=name, status="fail", detail="/dev/kvm not found")
+
+    stat = _KVM_DEV.stat()
+    # Mode bits: 0o660 means rw-rw----
+    current_mode = oct(stat.st_mode & 0o777)
+    import grp as _grp  # stdlib; import locally to avoid top-level overhead
+
+    try:
+        current_group = _grp.getgrgid(stat.st_gid).gr_name
+    except KeyError:
+        current_group = str(stat.st_gid)
+
+    ok_perms = (stat.st_mode & 0o777) == 0o660
+    ok_group = current_group == "kvm"
+
+    if ok_perms and ok_group:
+        return DoctorCheck(name=name, status="pass", detail=f"{current_mode} group={current_group}")
+
+    problems = []
+    if not ok_perms:
+        problems.append(f"mode={current_mode}")
+    if not ok_group:
+        problems.append(f"group={current_group}")
+
+    return DoctorCheck(
+        name=name,
+        status="fail",
+        detail="Incorrect permissions: " + " and ".join(problems),
+        fix="sudo chmod 660 /dev/kvm && sudo chgrp kvm /dev/kvm",
+    )
+
+
+def check_worker_node_security() -> list[DoctorCheck]:
+    """Run all host-level security invariants required before starting the reconciler.
+
+    Returns a list of :class:`DoctorCheck` results. Raises
+    :class:`WorkerNodeSecurityError` if **any** check is non-passing.
+
+    Design rationale (C2 — Defence in Depth):
+    These checks operate at the host kernel level.  No amount of application
+    code can compensate for a wrong setting here.  The reconciler must call
+    this function at startup and abort if it raises.
+
+    Example usage in a reconciler entrypoint::
+
+        from smolvm.doctor import check_worker_node_security, WorkerNodeSecurityError
+
+        try:
+            check_worker_node_security()
+        except WorkerNodeSecurityError as exc:
+            logger.critical("Worker node security check failed: %s", exc)
+            sys.exit(1)
+    """
+    checks: list[DoctorCheck] = [
+        _check_swap_disabled(),
+        _check_ksm_disabled(),
+        _check_thp_disabled(),
+        _check_kvm_nx_huge_pages(),
+        _check_kvm_permissions(),
+    ]
+
+    non_passing = [c for c in checks if c.status != "pass"]
+    if non_passing:
+        msg_parts = []
+        for c in non_passing:
+            part = f"{c.name} ({c.status}): {c.detail}"
+            if c.fix:
+                part += f" - Fix: {c.fix}"
+            msg_parts.append(part)
+        lines = " | ".join(msg_parts)
+        raise WorkerNodeSecurityError(
+            f"Worker node security checks failed ({len(non_passing)}/{len(checks)}): {lines}"
+        )
+
+    return checks
 
 
 def generate_doctor_report(backend: str | None = None) -> DoctorReport:
@@ -173,6 +392,20 @@ def generate_doctor_report(backend: str | None = None) -> DoctorReport:
         checks.append(_check_nft_table("ip", "smolvm_nat"))
         checks.append(_check_nft_table("inet", "smolvm_filter"))
 
+        # Worker-node host-level security invariants (Decision 1.1.5).
+        # These are included as informational checks in the doctor report;
+        # the reconciler startup guard calls check_worker_node_security()
+        # separately and refuses to start on failure.
+        checks.extend(
+            [
+                _check_swap_disabled(),
+                _check_ksm_disabled(),
+                _check_thp_disabled(),
+                _check_kvm_nx_huge_pages(),
+                _check_kvm_permissions(),
+            ]
+        )
+
     elif resolved == BACKEND_QEMU:
         qemu = _find_qemu_binary()
         if qemu is None:
@@ -181,8 +414,7 @@ def generate_doctor_report(backend: str | None = None) -> DoctorReport:
                     name="qemu",
                     status="fail",
                     detail=(
-                        "QEMU not found. Install one of: qemu-system-aarch64, "
-                        "qemu-system-x86_64"
+                        "QEMU not found. Install one of: qemu-system-aarch64, qemu-system-x86_64"
                     ),
                 )
             )
@@ -252,29 +484,39 @@ def generate_doctor_report(backend: str | None = None) -> DoctorReport:
 
 
 def _print_human_report(report: DoctorReport, strict: bool) -> None:
-    print("SmolVM Doctor")
-    print(f"Backend: {report.backend_resolved} (requested: {report.backend_requested})")
+    print(f"SmolVM Doctor (Backend: {report.backend_resolved})")
     print(f"Platform: {report.system} {report.arch}")
     print("")
 
     markers = {
-        "pass": "PASS",
-        "warn": "WARN",
-        "fail": "FAIL",
+        "pass": "✓",
+        "warn": "!",
+        "fail": "✗",
+    }
+
+    colors = {
+        "pass": "\033[92m",
+        "warn": "\033[93m",
+        "fail": "\033[91m",
+        "reset": "\033[0m",
     }
 
     for check in report.checks:
-        print(f"[{markers[check.status]}] {check.name}: {check.detail}")
+        color = colors[check.status]
+        reset = colors["reset"]
+        print(f" [{color}{markers[check.status]}{reset}] {check.name}: {check.detail}")
+        if check.fix and check.status != "pass":
+            print(f"     {color}Fix: {check.fix}{reset}")
 
     print("")
     failures = len(report.failures)
     warnings = len(report.warnings)
     if failures == 0 and (warnings == 0 or not strict):
-        print("Doctor result: OK")
+        print("Doctor result: \033[92mOK\033[0m")
     elif strict and warnings and not failures:
-        print("Doctor result: FAIL (strict mode treats warnings as failures)")
+        print("Doctor result: \033[91mFAIL\033[0m (strict mode treats warnings as failures)")
     else:
-        print("Doctor result: FAIL")
+        print("Doctor result: \033[91mFAIL\033[0m")
 
 
 def run_doctor(

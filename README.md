@@ -5,7 +5,7 @@
 
 # SmolVM
 
-**Secure runtime for AI agents and tools**
+**Secure runtime for AI agents to execute untrusted code**
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)

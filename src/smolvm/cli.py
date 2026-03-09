@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import importlib.metadata
 import os
+import re
 from collections.abc import Sequence
 
 from smolvm.cleanup import run_cleanup
@@ -26,6 +28,29 @@ from smolvm.doctor import run_doctor
 
 DASHBOARD_ALLOW_BETA_ENV = "SMOLVM_DASHBOARD_ALLOW_BETA"
 DASHBOARD_URL_ENV = "SMOLVM_DASHBOARD_URL"
+
+# Matches PEP 440 pre-release and dev-release version suffixes,
+# e.g. "0.0.5.a1", "0.0.5b2", "0.0.5.dev1", "0.0.5rc1".
+_PRERELEASE_RE = re.compile(r"[._]?(a|b|rc|alpha|beta|dev)\d*", re.IGNORECASE)
+
+
+def _current_version_is_prerelease() -> bool:
+    """Return True if the installed smolvm package version is a pre-release.
+
+    Uses ``packaging.version.Version`` when available for accurate PEP 440
+    parsing, and falls back to a regex heuristic otherwise.
+    """
+    try:
+        ver = importlib.metadata.version("smolvm")
+    except importlib.metadata.PackageNotFoundError:
+        return False
+
+    try:
+        from packaging.version import InvalidVersion, Version
+
+        return Version(ver).is_prerelease
+    except (ImportError, InvalidVersion):  # packaging not installed or parse error
+        return bool(_PRERELEASE_RE.search(ver))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -100,6 +125,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Start the SmolVM dashboard UI server",
     )
     _add_ui_args(ui)
+
+    # ── list subcommand ───────────────────────────────────────────────
+    list_parser = subparsers.add_parser(
+        "list",
+        help="List all SmolVMs and their status",
+    )
+    list_parser.add_argument(
+        "--status",
+        choices=["created", "running", "stopped", "error"],
+        default=None,
+        help="Filter VMs by status (created, running, stopped, error).",
+    )
 
     # ── env subcommand group ──────────────────────────────────────────
     env_parser = subparsers.add_parser(
@@ -266,6 +303,54 @@ def _run_env(args: argparse.Namespace) -> int:
             vm.close()
 
 
+def _run_list(status_filter: str | None) -> int:
+    """Handle ``smolvm list``."""
+    from smolvm.types import VMState
+    from smolvm.vm import SmolVMManager
+
+    sdk = SmolVMManager()
+    try:
+        state = VMState(status_filter) if status_filter else None
+        vms = sdk.list_vms(status=state)
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+    finally:
+        sdk.close()
+
+    if not vms:
+        if status_filter:
+            print(f"No VMs found with status '{status_filter}'.")
+        else:
+            print("No VMs found.")
+        return 0
+
+    headers = ["VM ID", "STATUS", "IP ADDRESS", "SSH PORT", "PID"]
+
+    rows = []
+    for vm in vms:
+        ip = vm.network.guest_ip if vm.network else "-"
+        ssh_port = (
+            str(vm.network.ssh_host_port) if (vm.network and vm.network.ssh_host_port) else "-"
+        )
+        pid = str(vm.pid) if vm.pid else "-"
+        rows.append([vm.vm_id, vm.status.value, ip, ssh_port, pid])
+
+    col_widths = [len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            col_widths[i] = max(col_widths[i], len(cell))
+
+    fmt = "  ".join(f"{{:<{w}}}" for w in col_widths)
+    print(fmt.format(*headers))
+    print("  ".join("-" * w for w in col_widths))
+    for row in rows:
+        print(fmt.format(*row))
+
+    print(f"\nTotal: {len(vms)} VM(s).")
+    return 0
+
+
 def _run_ui(host: str, port: int, allow_beta: bool) -> int:
     """Start the dashboard UI server with optional beta asset allowance."""
     try:
@@ -281,6 +366,12 @@ def _run_ui(host: str, port: int, allow_beta: bool) -> int:
         print(f"Error: invalid port {port}. Expected 1-65535.")
         return 2
 
+    # Automatically allow beta/prerelease UI assets when running a
+    # pre-release version of smolvm (e.g. 0.0.5.a1, 0.0.5.dev).
+    auto_beta = not allow_beta and _current_version_is_prerelease()
+    if auto_beta:
+        allow_beta = True
+
     display_host = "localhost" if host in {"0.0.0.0", "::"} else host
     dashboard_url = f"http://{display_host}:{port}"
 
@@ -294,7 +385,13 @@ def _run_ui(host: str, port: int, allow_beta: bool) -> int:
     print(f"Starting SmolVM UI on http://{host}:{port} ...")
     print(f"Once started, open {dashboard_url} in your browser.")
     if allow_beta:
-        print("Using prerelease dashboard UI assets (--allow-beta enabled).")
+        if auto_beta:
+            print(
+                "Using prerelease dashboard UI assets "
+                "(auto-enabled for pre-release version)."
+            )
+        else:
+            print("Using prerelease dashboard UI assets (--allow-beta enabled).")
 
     try:
         uvicorn.run("smolvm.dashboard.server:app", host=host, port=port)
@@ -324,6 +421,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "cleanup":
         return run_cleanup(delete_all=args.all, prefix=args.prefix, dry_run=args.dry_run)
+
+    if args.command == "list":
+        return _run_list(status_filter=args.status)
 
     if args.command == "doctor":
         return run_doctor(

@@ -17,7 +17,7 @@
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -363,6 +363,7 @@ class TestSmolVMDelete:
         smol_vm.delete("vm001")
 
         mock_network.cleanup_all_local_port_forwards.assert_called_once_with("vm001")
+        mock_network.remove_egress_rules.assert_called_once_with("tap2")
 
 
 class TestIPBasedTAPNaming:
@@ -564,6 +565,47 @@ class TestSmolVMBootArgsAndSSHCommands:
 
         boot_args = mock_client.set_boot_source.call_args[0][1]
         assert boot_args == config.boot_args
+
+    @patch("smolvm.vm.FirecrackerClient")
+    @patch.object(SmolVMManager, "_start_firecracker")
+    @patch("smolvm.vm.NetworkManager")
+    def test_start_attaches_extra_drives(
+        self,
+        mock_network_class: MagicMock,
+        mock_start_fc: MagicMock,
+        mock_client_cls: MagicMock,
+        smol_vm: SmolVMManager,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        """Test start() attaches configured extra drives via Firecracker drives API."""
+        mock_network = MagicMock()
+        mock_network.host_ip = "172.16.0.1"
+        mock_network.generate_mac.return_value = "AA:FC:00:00:00:02"
+        mock_network_class.return_value = mock_network
+        smol_vm.network = mock_network
+
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+        mock_start_fc.return_value = mock_process
+
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+
+        data_drive = tmp_path / "data.ext4"
+        data_drive.touch()
+        config = sample_config.model_copy(update={"extra_drives": [data_drive]})
+
+        smol_vm.create(config)
+        smol_vm.start("vm001")
+
+        assert mock_client.add_drive.call_count == 2
+        assert mock_client.add_drive.call_args_list[1] == call(
+            "data_drive",
+            data_drive,
+            is_root_device=False,
+            is_read_only=False,
+        )
 
     @patch("smolvm.vm.NetworkManager")
     def test_get_ssh_commands_returns_private_and_forwarded(

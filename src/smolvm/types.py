@@ -46,6 +46,7 @@ class VMConfig(BaseModel):
         mem_size_mib: Memory size in MiB (128-16384).
         kernel_path: Path to the kernel image.
         rootfs_path: Path to the root filesystem image.
+        extra_drives: Additional block-device image paths to attach at boot.
         boot_args: Kernel boot arguments.
         backend: Optional runtime backend override ("firecracker" or "qemu").
         disk_mode: Disk lifecycle mode:
@@ -61,18 +62,20 @@ class VMConfig(BaseModel):
         str,
         Field(
             default_factory=_generate_vm_id,
-            pattern=r"^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$",
+            pattern=r"^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$|^[a-z0-9]$",
         ),
     ]
     vcpu_count: Annotated[int, Field(ge=1, le=32)] = 2
     mem_size_mib: Annotated[int, Field(ge=128, le=16384)] = 512
     kernel_path: Path
     rootfs_path: Path
+    extra_drives: list[Path] = []
     boot_args: str = "console=ttyS0 reboot=k panic=1 pci=off"
     backend: str | None = None
     disk_mode: Literal["isolated", "shared"] = "isolated"
     retain_disk_on_delete: bool = False
     env_vars: dict[str, str] = {}
+    network_rate_limit_mbps: Annotated[int, Field(ge=1)] | None = None
 
     @field_validator("vm_id", mode="before")
     @classmethod
@@ -86,6 +89,19 @@ class VMConfig(BaseModel):
     @classmethod
     def validate_path_exists(cls, v: Path) -> Path:
         """Ensure paths exist on the filesystem."""
+        return cls._validate_file_path(v)
+
+    @field_validator("extra_drives")
+    @classmethod
+    def validate_extra_drives(cls, v: list[Path]) -> list[Path]:
+        """Ensure all extra drive paths exist and are files."""
+        for path in v:
+            cls._validate_file_path(path)
+        return v
+
+    @staticmethod
+    def _validate_file_path(v: Path) -> Path:
+        """Validate a filesystem path points to an existing file."""
         if not v.exists():
             raise ValueError(f"Path does not exist: {v}")
         if not v.is_file():
