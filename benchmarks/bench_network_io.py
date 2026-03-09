@@ -103,14 +103,16 @@ def run_benchmark() -> dict:
         print_subheader("Host: HTTP request to localhost")
         host_http_times = []
         for _ in range(100):
-            t = time_call(
-                lambda: subprocess.run(
+            with timer() as t:
+                proc = subprocess.run(
                     ["curl", "-s", f"http://127.0.0.1:{host_port}/health"],
                     capture_output=True,
                     timeout=5,
                 )
-            )
-            host_http_times.append(t)
+            if proc.returncode == 0 and proc.stdout:
+                host_http_times.append(t.elapsed_ms)
+            else:
+                print(f"  [warn] curl failed (rc={proc.returncode}), skipping sample")
         host_http_stats = stats_summary(host_http_times)
         print_result("Stats (100 iters)", format_stats(host_http_stats))
         results["host_http"] = host_http_stats
@@ -125,10 +127,15 @@ def run_benchmark() -> dict:
                 timeout=10,
             )
         host_sse_lines = result.stdout.count("data:")
-        print_result("Duration", f"{t.elapsed_ms:.0f}ms")
-        print_result("Events received", str(host_sse_lines))
-        results["host_sse_ms"] = t.elapsed_ms
-        results["host_sse_events"] = host_sse_lines
+        if result.returncode == 0 and host_sse_lines > 0:
+            print_result("Duration", f"{t.elapsed_ms:.0f}ms")
+            print_result("Events received", str(host_sse_lines))
+            results["host_sse_ms"] = t.elapsed_ms
+            results["host_sse_events"] = host_sse_lines
+        else:
+            print(f"  [warn] SSE curl failed (rc={result.returncode}, events={host_sse_lines}), skipping")
+            results["host_sse_ms"] = None
+            results["host_sse_events"] = host_sse_lines
 
         # now we bench SmolVM
         print_subheader("SmolVM: Starting VM start up")
@@ -189,8 +196,12 @@ def run_benchmark() -> dict:
             print_subheader("SmolVM: HTTP request (VM -> host)")
             vm_http_times = []
             for _ in range(100):
-                t = time_call(lambda: vm.run(fetch_cmd, timeout=10))
-                vm_http_times.append(t)
+                with timer() as t:
+                    r = vm.run(fetch_cmd, timeout=10)
+                if r.returncode == 0 and r.stdout.strip():
+                    vm_http_times.append(t.elapsed_ms)
+                else:
+                    print(f"  [warn] VM HTTP request failed (rc={r.returncode}), skipping sample")
             vm_http_stats = stats_summary(vm_http_times)
             print_result("Stats (100 iters)", format_stats(vm_http_stats))
             results["vm_http"] = vm_http_stats
@@ -204,10 +215,15 @@ def run_benchmark() -> dict:
                         timeout=15,
                     )
                 vm_sse_lines = sse_result.stdout.count("data:")
-                print_result("Duration", f"{t.elapsed_ms:.0f}ms")
-                print_result("Events received", str(vm_sse_lines))
-                results["vm_sse_ms"] = t.elapsed_ms
-                results["vm_sse_events"] = vm_sse_lines
+                if sse_result.returncode == 0 and vm_sse_lines > 0:
+                    print_result("Duration", f"{t.elapsed_ms:.0f}ms")
+                    print_result("Events received", str(vm_sse_lines))
+                    results["vm_sse_ms"] = t.elapsed_ms
+                    results["vm_sse_events"] = vm_sse_lines
+                else:
+                    print(f"  [warn] VM SSE failed (rc={sse_result.returncode}, events={vm_sse_lines}), skipping")
+                    results["vm_sse_ms"] = None
+                    results["vm_sse_events"] = vm_sse_lines
             else:
                 print("\n  Skipping SSE test (curl not available in VM)")
                 results["vm_sse_ms"] = None
