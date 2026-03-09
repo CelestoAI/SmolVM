@@ -212,9 +212,20 @@ set -euo pipefail
 sudo usermod -aG kvm "$USER" || true
 sudo setfacl -m u:"$USER":rw /dev/kvm 2>/dev/null || sudo chmod 666 /dev/kvm
 
-# Install Python and pip
+# Raise open-file and process limits for high-density VM runs
+echo "$USER soft nofile 65536" | sudo tee -a /etc/security/limits.conf
+echo "$USER hard nofile 65536" | sudo tee -a /etc/security/limits.conf
+echo "$USER soft nproc  65536" | sudo tee -a /etc/security/limits.conf
+echo "$USER hard nproc  65536" | sudo tee -a /etc/security/limits.conf
+# Allow a large number of concurrent TCP connections
+sudo sysctl -w net.ipv4.ip_local_port_range="1024 65535" >/dev/null
+sudo sysctl -w net.core.somaxconn=65535 >/dev/null
+
+# Install Python, pip, Docker, and nftables
 sudo apt-get update -qq
-sudo apt-get install -y -qq python3 python3-pip python3-venv
+sudo apt-get install -y -qq python3 python3-pip python3-venv docker.io nftables
+sudo systemctl start docker
+sudo usermod -aG docker "$USER"
 
 # Install smolvm and psutil into a venv (avoids PEP 668 externally-managed-env error)
 python3 -m venv ~/venv
@@ -259,6 +270,36 @@ echo ""
   echo ""
   echo "WARNING: Benchmark exited with a non-zero status (may be expected at resource limit)."
 }
+
+# ---------------------------------------------------------------------------
+# Post-run diagnostics (network state + first VM log)
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Post-run diagnostics ---"
+"${GSSH[@]}" --command="bash -s" <<'DIAG' || true
+set -uo pipefail
+
+echo "=== Network interfaces (TAP devices) ==="
+ip -o link show | grep -E "tap|lo|eth" || true
+
+echo ""
+echo "=== Routes ==="
+ip route show
+
+echo ""
+echo "=== nftables ruleset ==="
+sudo nft list ruleset 2>/dev/null || echo "(nft list failed)"
+
+echo ""
+echo "=== Most recent Firecracker VM log (last 60 lines) ==="
+LOG=$(ls -t ~/.local/state/smolvm/vm-*.log 2>/dev/null | head -1)
+if [ -n "$LOG" ]; then
+  echo "Log: $LOG"
+  tail -60 "$LOG"
+else
+  echo "(no VM log files found under ~/.local/state/smolvm/)"
+fi
+DIAG
 
 # ---------------------------------------------------------------------------
 # Collect results
