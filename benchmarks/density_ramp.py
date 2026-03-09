@@ -185,12 +185,13 @@ def boot_one(
         return vm, time.time() - start_t, {}
     except Exception as e:
         fc_log = _read_vm_log(vm) if vm is not None else "(VM object not created)"
+        err: dict[str, Any] = {"error": str(e), "fc_log": fc_log}
         if vm is not None:
             try:
                 vm.delete()
-            except Exception:
-                pass
-        return None, time.time() - start_t, {"error": str(e), "fc_log": fc_log}
+            except Exception as cleanup_exc:
+                err["cleanup_error"] = str(cleanup_exc)
+        return None, time.time() - start_t, err
 
 
 def check_vm_alive(vm: SmolVM, seq: int) -> tuple[int, bool, str]:
