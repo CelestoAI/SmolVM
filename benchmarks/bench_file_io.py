@@ -11,15 +11,26 @@ import os
 import sys
 import tempfile
 
-from helpers import (
-    format_stats,
-    overhead_str,
-    print_header,
-    print_result,
-    print_subheader,
-    stats_summary,
-    time_call,
-)
+try:
+    from .helpers import (
+        format_stats,
+        overhead_str,
+        print_header,
+        print_result,
+        print_subheader,
+        stats_summary,
+        time_call,
+    )
+except ImportError:
+    from helpers import (  # type: ignore[no-redef]
+        format_stats,
+        overhead_str,
+        print_header,
+        print_result,
+        print_subheader,
+        stats_summary,
+        time_call,
+    )
 
 # A 1KB line simulating a JSONL event
 _1KB_LINE = '{"ts":1234567890,"event":"prompt","session":"abc123","data":' + '"x' * 470 + '"}\n'

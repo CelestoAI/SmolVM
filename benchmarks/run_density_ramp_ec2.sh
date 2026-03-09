@@ -30,7 +30,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 REGION="${REGION:-us-east-2}"
 INSTANCE_TYPE="${INSTANCE_TYPE:-c5d.metal}"
-KEY_NAME="smolvm-benchmark"  #"${KEY_NAME:-}"
+KEY_NAME="${KEY_NAME:-smolvm-benchmark}"
 KEY_PATH="${KEY_PATH:-}"
 SECURITY_GROUP="${SECURITY_GROUP:-}"
 SUBNET_ID="${SUBNET_ID:-}"
@@ -120,13 +120,22 @@ if [[ -z "$SECURITY_GROUP" ]]; then
     --query "GroupId" \
     --output text)
 
-  # Allow SSH from anywhere (scope this down if your environment allows it)
+  # Allow SSH only from the caller's public IP
+  CALLER_IP=$(curl -sf https://checkip.amazonaws.com 2>/dev/null \
+    || curl -sf https://ifconfig.me 2>/dev/null \
+    || echo "")
+  if [[ -n "$CALLER_IP" ]]; then
+    SSH_CIDR="${CALLER_IP}/32"
+  else
+    echo "WARNING: could not determine public IP; opening SSH to 0.0.0.0/0"
+    SSH_CIDR="0.0.0.0/0"
+  fi
   aws ec2 authorize-security-group-ingress \
     --region "$REGION" \
     --group-id "$SECURITY_GROUP" \
     --protocol tcp \
     --port 22 \
-    --cidr 0.0.0.0/0 \
+    --cidr "$SSH_CIDR" \
     >/dev/null
 
   CREATED_SG="$SECURITY_GROUP"
@@ -265,17 +274,21 @@ sudo dnf install -y python3.11 python3.11-pip docker nftables --quiet
 sudo systemctl start docker
 sudo usermod -aG docker ec2-user
 
-# Mount NVMe instance store and redirect all smolvm data to it
-sudo mkfs.ext4 -F /dev/nvme1n1
-sudo mkdir -p /mnt/nvme
-sudo mount /dev/nvme1n1 /mnt/nvme
-sudo mkdir -p /mnt/nvme/smolvm-images /mnt/nvme/smolvm-state
-sudo chown ec2-user:ec2-user /mnt/nvme /mnt/nvme/smolvm-images /mnt/nvme/smolvm-state
-# Image cache (~/.smolvm/images/) → NVMe
-ln -sfn /mnt/nvme/smolvm-images /home/ec2-user/.smolvm
-# Disk clones (~/.local/state/smolvm/disks/) → NVMe
-mkdir -p /home/ec2-user/.local/state
-ln -sfn /mnt/nvme/smolvm-state /home/ec2-user/.local/state/smolvm
+# Mount NVMe instance store and redirect all smolvm data to it (if present)
+if test -b /dev/nvme1n1; then
+  sudo mkfs.ext4 -F /dev/nvme1n1
+  sudo mkdir -p /mnt/nvme
+  sudo mount /dev/nvme1n1 /mnt/nvme
+  sudo mkdir -p /mnt/nvme/smolvm-images /mnt/nvme/smolvm-state
+  sudo chown ec2-user:ec2-user /mnt/nvme /mnt/nvme/smolvm-images /mnt/nvme/smolvm-state
+  # Image cache (~/.smolvm/images/) → NVMe
+  ln -sfn /mnt/nvme/smolvm-images /home/ec2-user/.smolvm
+  # Disk clones (~/.local/state/smolvm/disks/) → NVMe
+  mkdir -p /home/ec2-user/.local/state
+  ln -sfn /mnt/nvme/smolvm-state /home/ec2-user/.local/state/smolvm
+else
+  echo "WARNING: /dev/nvme1n1 not found; using root volume for SmolVM data."
+fi
 REMOTE
 
 scp -i "$KEY_PATH" -o StrictHostKeyChecking=no \

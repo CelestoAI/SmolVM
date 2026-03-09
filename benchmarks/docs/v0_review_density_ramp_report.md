@@ -22,10 +22,12 @@ three terminal conditions is reached:
   limit of SmolVM's IP pool) is hit before failure.
 - **The user interrupts** — `finally` ensures cleanup regardless.
 
-Each boot is timed from `SmolVM(config).start()` call to return. The sequence number at
-which each VM was booted (`density_at_boot`) is recorded alongside the boot time, so a
-plot of `boot_time_s` vs `density_at_boot` shows whether boot latency degrades under
-load.
+Each boot is timed end-to-end: from `SmolVM(config)` construction through `vm.start()`
+and `vm.wait_for_ssh(timeout=30.0)`. `boot_time_s` therefore represents the true
+"ready to serve" latency — the time until SSH is responsive, not just until the
+Firecracker process starts. The sequence number at which each VM was booted
+(`density_at_boot`) is recorded alongside the boot time, so a plot of `boot_time_s` vs
+`density_at_boot` shows whether boot latency degrades under load.
 
 The three tiers define the per-VM footprint:
 
@@ -62,7 +64,7 @@ At every boot event and at the sustain/teardown checkpoints, the following are r
 | `host_disk_used_gb`  | `psutil.disk_usage(home).used`        | Tracks rootfs clone growth in isolated mode; should recover after teardown |
 | `host_cpu_pct`       | `psutil.cpu_percent(interval=0.1)`    | Transient boot-time CPU; sustained high values indicate host saturation |
 | `tap_count`          | `ip -o link show \| grep tap`         | Each Firecracker VM owns one TAP device; should equal `vms_running`    |
-| `fc_socket_count`    | `glob("/tmp/fc-*.sock")`              | Number of live Firecracker API sockets; cross-checks `vms_running`     |
+| `fc_socket_count`    | `glob("<socket-dir>/fc-*.sock")`      | Live FC API sockets; cross-checks `vms_running`. Dir: `--socket-dir`   |
 | `firecracker_rss_mb` | Sum of RSS for all `firecracker` PIDs | Hypervisor overhead per VM independent of guest memory allocation      |
 | `sqlite_db_kb`       | `stat(~/.local/state/smolvm/smolvm.db)` | State DB grows with each VM record; large size risks lock contention  |
 

@@ -60,7 +60,12 @@ class Metrics:
         ts = time.time()
         cpu = psutil.cpu_percent(interval=0.1)
         mem = psutil.virtual_memory().used / (1024**3)
-        disk = psutil.disk_usage(str(Path.home())).used / (1024**3)
+        # Measure the filesystem that actually holds SmolVM disk clones and images.
+        # On EC2 this is /mnt/nvme (symlinked from ~/.local/state/smolvm); fall back
+        # to the home filesystem when the SmolVM state dir doesn't exist yet.
+        _smolvm_state = Path.home() / ".local" / "state" / "smolvm"
+        _disk_probe = _smolvm_state if _smolvm_state.exists() else Path.home()
+        disk = psutil.disk_usage(str(_disk_probe.resolve())).used / (1024**3)
 
         # Count live Firecracker API sockets (accurate VM count proxy)
         fc_sockets = len(list(socket_dir.glob("fc-*.sock")))
@@ -102,13 +107,13 @@ running_vms: list[SmolVM] = []
 
 
 def cleanup() -> float:
-    """Stop all running VMs; return elapsed teardown seconds."""
+    """Delete all running VMs; return elapsed teardown seconds."""
     start = time.time()
     for vm in running_vms:
         try:
-            vm.stop()
-        except Exception:
-            pass
+            vm.delete()
+        except Exception as exc:
+            print(f"WARNING: failed to delete VM {getattr(vm, 'vm_id', '?')}: {exc}")
     return time.time() - start
 
 
@@ -182,7 +187,7 @@ def boot_one(
         fc_log = _read_vm_log(vm) if vm is not None else "(VM object not created)"
         if vm is not None:
             try:
-                vm.stop()
+                vm.delete()
             except Exception:
                 pass
         return None, time.time() - start_t, {"error": str(e), "fc_log": fc_log}
@@ -255,7 +260,9 @@ if __name__ == "__main__":
     # Warn about disk usage in isolated mode
     if disk_mode == "isolated":
         est_disk_gb = (args.max_attempts * tier_config["disk_size_mib"]) / 1024
-        free_gb = psutil.disk_usage(str(Path.home())).free / (1024**3)
+        _smolvm_state = Path.home() / ".local" / "state" / "smolvm"
+        _disk_probe = _smolvm_state if _smolvm_state.exists() else Path.home()
+        free_gb = psutil.disk_usage(str(_disk_probe.resolve())).free / (1024**3)
         print(
             f"INFO: isolated mode — up to {est_disk_gb:.0f} GB disk needed; "
             f"{free_gb:.1f} GB free on home filesystem."
@@ -276,20 +283,23 @@ if __name__ == "__main__":
         while i < args.max_attempts:
             batch_size = min(args.parallel, args.max_attempts - i)
 
-            # Boot one batch (serial or parallel)
+            # Boot one batch (serial or parallel).
+            # Each result is a 4-tuple (vm, boot_t, err, snap) where snap is
+            # captured immediately when the boot completes — not post-batch —
+            # so parallel runs record per-VM resource state accurately.
             if batch_size == 1:
-                batch_results = [
-                    boot_one(
-                        i + 1,
-                        kernel,
-                        rootfs,
-                        ssh_key_path,
-                        tier_config,
-                        disk_mode,
-                        args.backend,
-                        args.socket_dir,
-                    )
-                ]
+                vm, boot_t, err = boot_one(
+                    i + 1,
+                    kernel,
+                    rootfs,
+                    ssh_key_path,
+                    tier_config,
+                    disk_mode,
+                    args.backend,
+                    args.socket_dir,
+                )
+                density = len(running_vms) + (1 if vm is not None else 0)
+                batch_results = [(vm, boot_t, err, Metrics.snapshot(density, args.socket_dir))]
             else:
                 with ThreadPoolExecutor(max_workers=batch_size) as ex:
                     futures = [
@@ -306,13 +316,16 @@ if __name__ == "__main__":
                         )
                         for j in range(batch_size)
                     ]
-                    batch_results = [f.result() for f in as_completed(futures)]
+                    batch_results = []
+                    for f in as_completed(futures):
+                        vm, boot_t, err = f.result()
+                        density = len(running_vms) + (1 if vm is not None else 0)
+                        snap = Metrics.snapshot(density, args.socket_dir)
+                        batch_results.append((vm, boot_t, err, snap))
 
             failed_this_batch = 0
-            for vm, boot_t, err in batch_results:
+            for vm, boot_t, err, snap in batch_results:
                 i += 1
-                density = len(running_vms) + (1 if vm is not None else 0)
-                snap = Metrics.snapshot(density, args.socket_dir)
 
                 if vm is not None:
                     running_vms.append(vm)

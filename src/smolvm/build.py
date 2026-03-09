@@ -974,7 +974,7 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
         """
         logger.info("  [3/4] Creating ext4 filesystem via Docker helper (%dMB)...", rootfs_size_mb)
 
-        # Security check: scan tar member paths before Docker extracts them.
+        # Security check: scan tar member paths and link targets before Docker extracts them.
         with tarfile.open(tar_path, "r") as tar:
             for member in tar.getmembers():
                 member_path = Path(member.name)
@@ -982,6 +982,13 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
                     raise ImageError(
                         f"Refusing to extract suspicious tar path from docker export: {member.name}"
                     )
+                if member.issym() or member.islnk():
+                    link_path = Path(member.linkname)
+                    if link_path.is_absolute() or ".." in link_path.parts:
+                        raise ImageError(
+                            "Refusing to extract suspicious tar link from docker export: "
+                            f"{member.name} -> {member.linkname}"
+                        )
 
         # Let Docker (running as root) extract the tarball and build the ext4
         # image in a single pass.  This preserves the correct uid/gid for every
@@ -995,6 +1002,7 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
         rootfs_path.unlink(missing_ok=True)
         rootfs_name = shlex.quote(rootfs_path.name)
         tar_name = shlex.quote(tar_path.name)
+        uid, gid = os.getuid(), os.getgid()
         shell_cmd = (
             "set -e; "
             "apk add --no-cache e2fsprogs >/dev/null; "
@@ -1005,7 +1013,10 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
             "chown root:root /work/rootfs/var/empty 2>/dev/null || true; "
             "chmod 755 /work/rootfs/var/empty 2>/dev/null || true; "
             f"mke2fs -d /work/rootfs -t ext4 -F /work/out/{rootfs_name} "
-            f"{rootfs_size_mb}M >/dev/null"
+            f"{rootfs_size_mb}M >/dev/null; "
+            # Restore ownership of the output file so the calling (non-root) user
+            # can read, cache, and clean up the ext4 image on Linux with rootful Docker.
+            f"chown {uid}:{gid} /work/out/{rootfs_name} 2>/dev/null || true"
         )
 
         try:

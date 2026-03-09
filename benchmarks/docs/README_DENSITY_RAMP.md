@@ -105,13 +105,13 @@ Each tier defines VM memory and disk size:
    - Boot it and wait for SSH to become ready (up to 30 s)
    - Record boot time (includes SSH readiness — this is the true "ready to serve" latency)
    - Keep it running with the SSH connection pre-established (append to active VM list)
-   - Capture host metrics (CPU, memory, Firecracker RSS, KVM VM count)
+   - Capture host metrics (CPU, memory, disk, Firecracker RSS, TAP count, socket count)
 
 2. **Sustain Check**: After the ramp completes (or hits `--max-attempts`), wait `--sustain-sec` seconds then run a liveness check (`uptime`) on all surviving VMs. Because SSH connections are pre-established during boot, the sustain check reuses existing paramiko transports rather than opening 64+ new connections concurrently.
 
-3. **Failure Handling**: If any VM fails to boot, the batch is considered failed and the ramp stops.
+3. **Failure Handling**: If an **entire batch** fails to boot, the ramp stops. A single failure within a larger batch does not halt the run.
 
-4. **Cleanup**: On exit (success, failure, or interrupt), all VMs are stopped gracefully.
+4. **Cleanup**: On exit (success, failure, or interrupt), all VMs are deleted gracefully.
 
 ## Output Format
 
@@ -121,26 +121,37 @@ Results are written to a JSON file (default: `density.json`). Each entry represe
 [
   {
     "event": "boot_ok",
-    "seq": 1,
+    "vm_seq": 1,
     "boot_time_s": 0.45,
+    "density_at_boot": 1,
     "timestamp": 1699564800.123,
     "vms_running": 1,
     "host_cpu_pct": 12.5,
     "host_mem_used_gb": 2.3,
-    "kvm_vms": 1,
-    "firecracker_rss_mb": 156.2
+    "host_disk_used_gb": 2.1,
+    "tap_count": 1,
+    "firecracker_rss_mb": 46.9,
+    "fc_socket_count": 1,
+    "sqlite_db_kb": 52.0
   },
   {
     "event": "boot_fail",
-    "seq": 245,
+    "vm_seq": 245,
     "error": "Out of memory",
     "timestamp": 1699564900.456
   },
   {
     "event": "sustain_check",
+    "sustain_sec": 60,
     "vms_checked": 244,
     "vms_alive": 244,
+    "vms_dead": [],
     "timestamp": 1699564960.789
+  },
+  {
+    "event": "teardown",
+    "teardown_time_s": 45.2,
+    "timestamp": 1699565010.0
   }
 ]
 ```
@@ -149,7 +160,7 @@ Results are written to a JSON file (default: `density.json`). Each entry represe
 
 - Linux system with KVM support (`/dev/kvm` accessible)
 - Python 3.10+
-- SmolVM installed: `pip install smolvm psutil`
+- SmolVM installed: `pip install smolvm[benchmarks]`
 - Docker (for building the Alpine SSH image on first run)
 - `nftables` (`nft` command) for VM networking
 - Firecracker binary (downloaded automatically via `smolvm.host.HostManager().install_firecracker()`)

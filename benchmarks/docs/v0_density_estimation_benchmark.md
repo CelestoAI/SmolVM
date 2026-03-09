@@ -10,19 +10,27 @@ SmolVM: Firecracker/KVM backend, ~572ms boot, low overhead. Firecracker hits 100
 
 1. Density (Max VMs)
 Local Test First (your host equiv Ryzen 7):
-```from smolvm import SmolVM
+```python
+from smolvm import SmolVM
 vms = []
 i = 0
-while True:
-    try:
-        vm = SmolVM(mem_size_mib=128, disk_size_mib=512)  # Minimal
-        vm.start()
-        vms.append(vm)
-        i += 1
-        print(f"VM {i} OK")
-    except Exception as e:
-        print(f"Max: {i}, Fail: {e}")
-        break
+try:
+    while True:
+        try:
+            vm = SmolVM(mem_size_mib=128, disk_size_mib=512)  # Minimal
+            vm.start()
+            vms.append(vm)
+            i += 1
+            print(f"VM {i} OK")
+        except Exception as e:
+            print(f"Max: {i}, Fail: {e}")
+            break
+finally:
+    for vm in vms:
+        try:
+            vm.delete()
+        except Exception:
+            pass
 ```
 Ramp until OOM/KVM slots (~host vCPUs). 
 

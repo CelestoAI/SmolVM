@@ -80,13 +80,23 @@ CREATED_FIREWALL_RULE=""
 
 if [[ -z "$FIREWALL_RULE" ]]; then
   FIREWALL_RULE="$NETWORK_TAG-ssh"
-  echo "Creating temporary firewall rule $FIREWALL_RULE..."
+  # Restrict SSH to the caller's public IP
+  CALLER_IP=$(curl -sf https://ifconfig.me 2>/dev/null \
+    || curl -sf https://checkip.amazonaws.com 2>/dev/null \
+    || echo "")
+  if [[ -n "$CALLER_IP" ]]; then
+    SSH_SOURCE_RANGE="${CALLER_IP}/32"
+  else
+    echo "WARNING: could not determine public IP; opening SSH to 0.0.0.0/0"
+    SSH_SOURCE_RANGE="0.0.0.0/0"
+  fi
+  echo "Creating temporary firewall rule $FIREWALL_RULE (source: $SSH_SOURCE_RANGE)..."
   gcloud compute firewall-rules create "$FIREWALL_RULE" \
     --project="$PROJECT" \
     --direction=INGRESS \
     --action=ALLOW \
     --rules=tcp:22 \
-    --source-ranges=0.0.0.0/0 \
+    --source-ranges="$SSH_SOURCE_RANGE" \
     --target-tags="$NETWORK_TAG" \
     --quiet
   CREATED_FIREWALL_RULE="$FIREWALL_RULE"
@@ -200,17 +210,18 @@ set -euo pipefail
 
 # Enable KVM access
 sudo usermod -aG kvm "$USER" || true
-sudo chmod 666 /dev/kvm
+sudo setfacl -m u:"$USER":rw /dev/kvm 2>/dev/null || sudo chmod 666 /dev/kvm
 
 # Install Python and pip
 sudo apt-get update -qq
-sudo apt-get install -y -qq python3 python3-pip
+sudo apt-get install -y -qq python3 python3-pip python3-venv
 
-# Install smolvm and psutil
-pip3 install --quiet smolvm psutil
+# Install smolvm and psutil into a venv (avoids PEP 668 externally-managed-env error)
+python3 -m venv ~/venv
+~/venv/bin/pip install --quiet smolvm psutil
 
 # Trigger Firecracker binary download
-smolvm demo list 2>/dev/null || true
+~/venv/bin/smolvm demo list 2>/dev/null || true
 REMOTE
 
 echo "Dependencies installed."
@@ -230,7 +241,7 @@ echo "Uploaded density_ramp.py"
 # Run benchmark
 # ---------------------------------------------------------------------------
 REMOTE_OUTPUT="density.json"
-BENCHMARK_CMD="python3 ~/density_ramp.py \
+BENCHMARK_CMD="~/venv/bin/python ~/density_ramp.py \
   --tier $TIER \
   --max-attempts $MAX_ATTEMPTS \
   --sustain-sec $SUSTAIN_SEC \

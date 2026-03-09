@@ -169,13 +169,17 @@ fails   = [d for d in data if d["event"] == "boot_fail"]
 sustain = next((d for d in data if d["event"] == "sustain_check"), None)
 teardown = next((d for d in data if d["event"] == "teardown"), None)
 
-times = [d["boot_time_s"] for d in boots]
 print(f"Peak VMs        : {len(boots)}")
 print(f"Failed boots    : {len(fails)}")
-print(f"Avg boot time   : {sum(times)/len(times):.2f}s")
-print(f"Max boot time   : {max(times):.2f}s")
-print(f"Peak mem used   : {boots[-1]['host_mem_used_gb']:.2f} GB")
-print(f"RSS per VM      : {boots[-1]['firecracker_rss_mb'] / len(boots):.1f} MB")
+if boots:
+    times = [d["boot_time_s"] for d in boots]
+    print(f"Avg boot time   : {sum(times)/len(times):.2f}s")
+    print(f"Max boot time   : {max(times):.2f}s")
+    print(f"Peak mem used   : {boots[-1]['host_mem_used_gb']:.2f} GB")
+    print(f"RSS per VM      : {boots[-1]['firecracker_rss_mb'] / len(boots):.1f} MB")
+else:
+    if fails:
+        print(f"First failure   : {fails[0].get('error', '?')}")
 if sustain:
     print(f"Sustain result  : {sustain['vms_alive']}/{sustain['vms_checked']} alive")
 if teardown:

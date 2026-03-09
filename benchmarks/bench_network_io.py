@@ -13,16 +13,28 @@ import sys
 import threading
 import time
 
-from helpers import (
-    format_stats,
-    overhead_str,
-    print_header,
-    print_result,
-    print_subheader,
-    stats_summary,
-    time_call,
-    timer,
-)
+try:
+    from .helpers import (
+        format_stats,
+        overhead_str,
+        print_header,
+        print_result,
+        print_subheader,
+        stats_summary,
+        time_call,
+        timer,
+    )
+except ImportError:
+    from helpers import (  # type: ignore[no-redef]
+        format_stats,
+        overhead_str,
+        print_header,
+        print_result,
+        print_subheader,
+        stats_summary,
+        time_call,
+        timer,
+    )
 
 
 def _find_free_port() -> int:
@@ -133,8 +145,15 @@ def run_benchmark() -> dict:
                 # Install curl in the VM
                 print("  Installing curl in VM...")
                 vm.run("apk add --no-cache curl 2>/dev/null || true", timeout=60)
-                curl_check = vm.run("which curl")
-                has_curl = "curl" in curl_check.stdout
+                curl_check = vm.run("which curl 2>/dev/null || which wget 2>/dev/null || echo 'none'")
+                has_curl = "curl" in curl_check.stdout and "none" not in curl_check.stdout
+                has_wget = "wget" in curl_check.stdout and "none" not in curl_check.stdout
+
+            if not has_curl and not has_wget:
+                raise RuntimeError(
+                    "VM has no HTTP client (curl or wget) and apk install failed; "
+                    "cannot run network benchmark."
+                )
 
             # Get the VM's gateway IP
             gateway_result = vm.run("ip route | grep default | awk '{print $3}'")

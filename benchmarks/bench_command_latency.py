@@ -7,17 +7,30 @@ from __future__ import annotations
 import subprocess
 import sys
 
-from helpers import (
-    format_stats,
-    is_sandbox_exec_available,
-    overhead_str,
-    print_header,
-    print_result,
-    print_subheader,
-    run_sandboxed,
-    stats_summary,
-    time_call_n,
-)
+try:
+    from .helpers import (
+        format_stats,
+        is_sandbox_exec_available,
+        overhead_str,
+        print_header,
+        print_result,
+        print_subheader,
+        run_sandboxed,
+        stats_summary,
+        time_call_n,
+    )
+except ImportError:
+    from helpers import (  # type: ignore[no-redef]
+        format_stats,
+        is_sandbox_exec_available,
+        overhead_str,
+        print_header,
+        print_result,
+        print_subheader,
+        run_sandboxed,
+        stats_summary,
+        time_call_n,
+    )
 
 ITERATIONS = 100
 WARMUP = 2
@@ -127,6 +140,4 @@ def run_benchmark() -> dict:
 
 
 if __name__ == "__main__":
-    if "benchmarks" in __file__:
-        sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
     run_benchmark()

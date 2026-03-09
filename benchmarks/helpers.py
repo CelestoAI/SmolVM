@@ -35,9 +35,11 @@ def timer():
     """
     t = _TimerResult()
     t.start = time.perf_counter()
-    yield t
-    t.end = time.perf_counter()
-    t.elapsed_ms = (t.end - t.start) * 1000.0
+    try:
+        yield t
+    finally:
+        t.end = time.perf_counter()
+        t.elapsed_ms = (t.end - t.start) * 1000.0
 
 
 class _TimerResult:
