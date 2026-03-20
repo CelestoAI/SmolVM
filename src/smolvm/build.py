@@ -99,15 +99,20 @@ class ImageBuilder:
 
     def check_docker(self) -> bool:
         """Check if Docker is available and the daemon is reachable."""
+        docker_bin = shutil.which("docker")
+        if docker_bin is None:
+            return False
+
         try:
             subprocess.run(
-                ["docker", "info"],
+                [docker_bin, "info"],
                 check=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                timeout=10,
             )
             return True
-        except (subprocess.CalledProcessError, FileNotFoundError):
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
             return False
 
     def docker_requirement_error(self) -> ImageError:
@@ -122,21 +127,31 @@ class ImageBuilder:
             "Make sure Docker Desktop is running or grant access to /var/run/docker.sock."
         )
 
-        if shutil.which("docker") is None:
+        docker_bin = shutil.which("docker")
+        if docker_bin is None:
             return ImageError(f"Docker is required to build images. {install_hint}")
 
         try:
             subprocess.run(
-                ["docker", "info"],
+                [docker_bin, "info"],
                 check=True,
                 capture_output=True,
                 text=True,
+                timeout=10,
             )
         except FileNotFoundError:
             return ImageError(f"Docker is required to build images. {install_hint}")
+        except subprocess.TimeoutExpired:
+            return ImageError(
+                f"{start_hint} Original Docker error: timed out while contacting Docker."
+            )
         except subprocess.CalledProcessError as exc:
             details = "\n".join(part.strip() for part in (exc.stderr, exc.stdout) if part).strip()
             details_lower = details.lower()
+            if "permission denied" in details_lower and "docker.sock" in details_lower:
+                return ImageError(
+                    f"{permission_hint} Original Docker error: {details or 'unknown error.'}"
+                )
             if (
                 "cannot connect to the docker daemon" in details_lower
                 or "is the docker daemon running" in details_lower
@@ -144,10 +159,6 @@ class ImageBuilder:
             ):
                 return ImageError(
                     f"{start_hint} Original Docker error: {details or 'unknown error.'}"
-                )
-            if "permission denied" in details_lower and "docker.sock" in details_lower:
-                return ImageError(
-                    f"{permission_hint} Original Docker error: {details or 'unknown error.'}"
                 )
             return ImageError(
                 "Docker is required to build images, but Docker could not be used successfully. "

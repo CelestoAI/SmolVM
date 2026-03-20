@@ -68,6 +68,25 @@ class TestDockerDiagnostics:
         assert "Start Docker Desktop or the Docker service" in str(error)
         assert "Cannot connect to the Docker daemon" in str(error)
 
+    @patch("smolvm.build.subprocess.run")
+    def test_docker_requirement_error_when_socket_permission_denied(
+        self, mock_subprocess_run: MagicMock, tmp_path: Path
+    ) -> None:
+        builder = ImageBuilder(cache_dir=tmp_path / "images")
+        mock_subprocess_run.side_effect = subprocess.CalledProcessError(
+            1,
+            ["docker", "info"],
+            stderr=(
+                "error during connect: permission denied while trying to connect "
+                "to the Docker daemon socket at unix:///var/run/docker.sock"
+            ),
+        )
+
+        with patch("smolvm.build.shutil.which", return_value="/usr/bin/docker"):
+            error = builder.docker_requirement_error()
+
+        assert "cannot access the Docker daemon socket" in str(error)
+        assert "docker.sock" in str(error)
 
 
 class TestImageBuilderLoopFs:
