@@ -244,8 +244,6 @@ class _DummyNetwork:
 
 class _DummyVMInfo:
     vm_id = "vm-test01"
-    status: object = None
-    network: object = None
     pid = 1234
 
     def __init__(self, *, status: object, network: object = None) -> None:

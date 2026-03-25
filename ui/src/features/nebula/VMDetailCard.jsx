@@ -265,8 +265,8 @@ export default function VMDetailCard({ vm, onClose }) {
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {processes.map((proc, i) => (
-                                            <tr key={`${proc.pid}-${i}`} className="border-b border-slate-100 dark:border-white/[0.03] last:border-0 hover:bg-slate-100 dark:hover:bg-white/[0.03]">
+                                        {processes.map((proc) => (
+                                            <tr key={proc.pid} className="border-b border-slate-100 dark:border-white/[0.03] last:border-0 hover:bg-slate-100 dark:hover:bg-white/[0.03]">
                                                 <td className="px-2 py-1 text-cyan-600 dark:text-cyan-300">{proc.pid}</td>
                                                 <td className="px-1 py-1 text-slate-600 dark:text-white/60">{proc.user}</td>
                                                 <td className="px-1 py-1 text-right text-slate-500 dark:text-white/40">{proc.vsz}</td>
