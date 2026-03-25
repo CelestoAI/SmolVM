@@ -33,6 +33,62 @@ def _ok_subprocess_run(
     return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
 
+class TestDockerDiagnostics:
+    """Tests for Docker availability diagnostics."""
+
+    def test_docker_requirement_error_when_docker_missing(self, tmp_path: Path) -> None:
+        builder = ImageBuilder(cache_dir=tmp_path / "images")
+
+        with patch("smolvm.build.shutil.which", return_value=None):
+            error = builder.docker_requirement_error()
+
+        assert str(error) == (
+            "Docker is required to build images. "
+            "Install Docker Desktop (macOS) or docker.io (Linux)."
+        )
+
+    @patch("smolvm.build.subprocess.run")
+    def test_docker_requirement_error_when_daemon_unreachable(
+        self, mock_subprocess_run: MagicMock, tmp_path: Path
+    ) -> None:
+        builder = ImageBuilder(cache_dir=tmp_path / "images")
+        mock_subprocess_run.side_effect = subprocess.CalledProcessError(
+            1,
+            ["docker", "info"],
+            stderr=(
+                "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. "
+                "Is the docker daemon running?"
+            ),
+        )
+
+        with patch("smolvm.build.shutil.which", return_value="/usr/bin/docker"):
+            error = builder.docker_requirement_error()
+
+        assert "could not reach the Docker daemon" in str(error)
+        assert "Start Docker Desktop or the Docker service" in str(error)
+        assert "Cannot connect to the Docker daemon" in str(error)
+
+    @patch("smolvm.build.subprocess.run")
+    def test_docker_requirement_error_when_socket_permission_denied(
+        self, mock_subprocess_run: MagicMock, tmp_path: Path
+    ) -> None:
+        builder = ImageBuilder(cache_dir=tmp_path / "images")
+        mock_subprocess_run.side_effect = subprocess.CalledProcessError(
+            1,
+            ["docker", "info"],
+            stderr=(
+                "error during connect: permission denied while trying to connect "
+                "to the Docker daemon socket at unix:///var/run/docker.sock"
+            ),
+        )
+
+        with patch("smolvm.build.shutil.which", return_value="/usr/bin/docker"):
+            error = builder.docker_requirement_error()
+
+        assert "cannot access the Docker daemon socket" in str(error)
+        assert "docker.sock" in str(error)
+
+
 class TestImageBuilderLoopFs:
     """Tests for image builder loopfs helper integration."""
 

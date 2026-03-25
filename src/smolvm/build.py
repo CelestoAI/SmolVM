@@ -98,17 +98,77 @@ class ImageBuilder:
         self.cache_dir = cache_dir or (Path.home() / ".smolvm" / "images")
 
     def check_docker(self) -> bool:
-        """Check if Docker is available."""
+        """Check if Docker is available and the daemon is reachable."""
+        docker_bin = shutil.which("docker")
+        if docker_bin is None:
+            return False
+
         try:
             subprocess.run(
-                ["docker", "version"],
+                [docker_bin, "info"],
                 check=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                timeout=10,
             )
             return True
-        except (subprocess.CalledProcessError, FileNotFoundError):
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
             return False
+
+    def docker_requirement_error(self) -> ImageError:
+        """Create a helpful Docker availability error."""
+        install_hint = "Install Docker Desktop (macOS) or docker.io (Linux)."
+        start_hint = (
+            "Docker is installed, but SmolVM could not reach the Docker daemon. "
+            "Start Docker Desktop or the Docker service and try again."
+        )
+        permission_hint = (
+            "Docker is installed, but this user cannot access the Docker daemon socket. "
+            "Make sure Docker Desktop is running or grant access to /var/run/docker.sock."
+        )
+
+        docker_bin = shutil.which("docker")
+        if docker_bin is None:
+            return ImageError(f"Docker is required to build images. {install_hint}")
+
+        try:
+            subprocess.run(
+                [docker_bin, "info"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except FileNotFoundError:
+            return ImageError(f"Docker is required to build images. {install_hint}")
+        except subprocess.TimeoutExpired:
+            return ImageError(
+                f"{start_hint} Original Docker error: timed out while contacting Docker."
+            )
+        except subprocess.CalledProcessError as exc:
+            details = "\n".join(part.strip() for part in (exc.stderr, exc.stdout) if part).strip()
+            details_lower = details.lower()
+            if "permission denied" in details_lower and "docker.sock" in details_lower:
+                return ImageError(
+                    f"{permission_hint} Original Docker error: {details or 'unknown error.'}"
+                )
+            if (
+                "cannot connect to the docker daemon" in details_lower
+                or "is the docker daemon running" in details_lower
+                or "error during connect" in details_lower
+            ):
+                return ImageError(
+                    f"{start_hint} Original Docker error: {details or 'unknown error.'}"
+                )
+            return ImageError(
+                "Docker is required to build images, but Docker could not be used successfully. "
+                f"{install_hint} Original Docker error: {details or 'unknown error.'}"
+            )
+
+        return ImageError(
+            "Docker is required to build images, but an unexpected Docker availability "
+            "check failed."
+        )
 
     def build_alpine_ssh(
         self,
@@ -142,10 +202,7 @@ class ImageBuilder:
             ImageError: If Docker is not available or build fails.
         """
         if not self.check_docker():
-            raise ImageError(
-                "Docker is required to build images. "
-                "Install Docker Desktop (macOS) or docker.io (Linux)."
-            )
+            raise self.docker_requirement_error()
 
         image_dir = self.cache_dir / name
         kernel_path = image_dir / "vmlinux.bin"
@@ -239,10 +296,7 @@ RUN chmod +x /init
             Tuple of (kernel_path, rootfs_path).
         """
         if not self.check_docker():
-            raise ImageError(
-                "Docker is required to build images. "
-                "Install Docker Desktop (macOS) or docker.io (Linux)."
-            )
+            raise self.docker_requirement_error()
 
         key_value = self._resolve_public_key(ssh_public_key)
 
@@ -341,10 +395,7 @@ RUN chmod +x /init
             Tuple of (kernel_path, rootfs_path).
         """
         if not self.check_docker():
-            raise ImageError(
-                "Docker is required to build images. "
-                "Install Docker Desktop (macOS) or docker.io (Linux)."
-            )
+            raise self.docker_requirement_error()
 
         key_value = self._resolve_public_key(ssh_public_key)
 
@@ -466,10 +517,7 @@ RUN chmod +x /init
             ImageError: If Docker is not available or build fails.
         """
         if not self.check_docker():
-            raise ImageError(
-                "Docker is required to build images. "
-                "Install Docker Desktop (macOS) or docker.io (Linux)."
-            )
+            raise self.docker_requirement_error()
 
         if extra_packages is None:
             extra_packages = ["git"]
