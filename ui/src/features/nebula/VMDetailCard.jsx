@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react'
+import React, { useMemo, useState, useCallback } from 'react'
 import { normalizeStatus } from '@/utils/status'
 
 function getApiBaseUrl() {
@@ -25,16 +25,57 @@ export default function VMDetailCard({ vm, onClose }) {
     const apiBase = useMemo(() => getApiBaseUrl(), [])
     const [pendingAction, setPendingAction] = useState(null)
     const [actionError, setActionError] = useState('')
+    const [processes, setProcesses] = useState(null)
+    const [processesLoading, setProcessesLoading] = useState(false)
+    const [processesError, setProcessesError] = useState('')
+    const [showProcesses, setShowProcesses] = useState(false)
     const normalizedStatus = normalizeStatus(vm.status)
     const statusLabel = normalizedStatus.toUpperCase()
     const cpuPercent = Math.min(Math.round(((Number(vm.vcpu) || 0) / 32) * 100), 100)
     const memoryPercent = Math.min(Math.round(((Number(vm.memory) || 0) / 16384) * 100), 100)
     const isStopped = normalizedStatus === 'stopped'
+    const isActive = normalizedStatus === 'active'
     const isBusy = pendingAction !== null
     const safeValue = (value, fallback = 'N/A') => {
         if (value === null || value === undefined || value === '') return fallback
         return value
     }
+
+    const fetchProcesses = useCallback(async () => {
+        setProcessesLoading(true)
+        setProcessesError('')
+        try {
+            const vmId = encodeURIComponent(vm.id)
+            const response = await fetch(`${apiBase}/api/vms/${vmId}/processes`, {
+                headers: { Accept: 'application/json' },
+            })
+            if (!response.ok) {
+                let detail = `Request failed (${response.status})`
+                try {
+                    const payload = await response.json()
+                    if (payload?.detail) detail = String(payload.detail)
+                } catch {
+                    // ignore
+                }
+                throw new Error(detail)
+            }
+            const data = await response.json()
+            setProcesses(data.processes || [])
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to fetch processes'
+            setProcessesError(message)
+        } finally {
+            setProcessesLoading(false)
+        }
+    }, [apiBase, vm.id])
+
+    const toggleProcesses = useCallback(() => {
+        const next = !showProcesses
+        setShowProcesses(next)
+        if (next && processes === null && !processesLoading) {
+            fetchProcesses()
+        }
+    }, [showProcesses, processes, processesLoading, fetchProcesses])
 
     const runAction = async (kind) => {
         if (isBusy) return
@@ -158,6 +199,86 @@ export default function VMDetailCard({ vm, onClose }) {
                             />
                         </div>
                     </div>
+                </div>
+
+                {/* Processes */}
+                <div className="pt-2 border-t border-slate-200 dark:border-white/5">
+                    <button
+                        onClick={toggleProcesses}
+                        disabled={!isActive}
+                        className={`w-full flex items-center justify-between text-[10px] uppercase tracking-wider mb-2 ${
+                            isActive
+                                ? 'text-slate-500 dark:text-white/40 hover:text-slate-700 dark:hover:text-white/60 cursor-pointer'
+                                : 'text-slate-300 dark:text-white/20 cursor-not-allowed'
+                        }`}
+                    >
+                        <span>Processes</span>
+                        <div className="flex items-center gap-1.5">
+                            {showProcesses && isActive && (
+                                <button
+                                    onClick={(e) => { e.stopPropagation(); fetchProcesses() }}
+                                    disabled={processesLoading}
+                                    className="text-slate-400 dark:text-white/30 hover:text-cyan-500 dark:hover:text-cyan-300 transition-colors"
+                                    title="Refresh processes"
+                                >
+                                    <svg width="10" height="10" viewBox="0 0 16 16" fill="none" className={processesLoading ? 'animate-spin' : ''}>
+                                        <path d="M14 8A6 6 0 1 1 8 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                                        <path d="M8 0L10 2L8 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                                    </svg>
+                                </button>
+                            )}
+                            <svg width="8" height="8" viewBox="0 0 8 8" fill="none" className={`transition-transform ${showProcesses ? 'rotate-180' : ''}`}>
+                                <path d="M1 3L4 6L7 3" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                        </div>
+                    </button>
+
+                    {showProcesses && isActive && (
+                        <div className="max-h-48 overflow-y-auto rounded bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/5">
+                            {processesLoading && !processes && (
+                                <div className="flex items-center justify-center py-4 text-[10px] text-slate-400 dark:text-white/30">
+                                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" className="animate-spin mr-2">
+                                        <path d="M14 8A6 6 0 1 1 8 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                                    </svg>
+                                    Loading processes...
+                                </div>
+                            )}
+                            {processesError && (
+                                <div className="px-2 py-3 text-[10px] text-rose-500 dark:text-rose-300 font-mono">
+                                    {processesError}
+                                </div>
+                            )}
+                            {processes && processes.length === 0 && !processesError && (
+                                <div className="px-2 py-3 text-[10px] text-slate-400 dark:text-white/30 font-mono text-center">
+                                    No processes found
+                                </div>
+                            )}
+                            {processes && processes.length > 0 && (
+                                <table className="w-full text-[9px] font-mono">
+                                    <thead>
+                                        <tr className="text-slate-400 dark:text-white/30 uppercase tracking-wider border-b border-slate-200 dark:border-white/5">
+                                            <th className="text-left px-2 py-1.5">PID</th>
+                                            <th className="text-left px-1 py-1.5">User</th>
+                                            <th className="text-right px-1 py-1.5">VSZ</th>
+                                            <th className="text-center px-1 py-1.5">Stat</th>
+                                            <th className="text-left px-2 py-1.5">Command</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {processes.map((proc, i) => (
+                                            <tr key={`${proc.pid}-${i}`} className="border-b border-slate-100 dark:border-white/[0.03] last:border-0 hover:bg-slate-100 dark:hover:bg-white/[0.03]">
+                                                <td className="px-2 py-1 text-cyan-600 dark:text-cyan-300">{proc.pid}</td>
+                                                <td className="px-1 py-1 text-slate-600 dark:text-white/60">{proc.user}</td>
+                                                <td className="px-1 py-1 text-right text-slate-500 dark:text-white/40">{proc.vsz}</td>
+                                                <td className="px-1 py-1 text-center text-slate-500 dark:text-white/40">{proc.stat}</td>
+                                                <td className="px-2 py-1 text-slate-700 dark:text-white/70 truncate max-w-[120px]" title={proc.command}>{proc.command}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            )}
+                        </div>
+                    )}
                 </div>
 
                 {/* Actions */}

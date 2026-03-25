@@ -241,9 +241,7 @@ def _ensure_latest_dashboard_ui_dist(target_dist: Path, *, allow_prerelease: boo
     tag_file = target_root / ".dashboard-ui-tag"
 
     try:
-        latest_tag, asset_url = _latest_dashboard_release_asset(
-            allow_prerelease=allow_prerelease
-        )
+        latest_tag, asset_url = _latest_dashboard_release_asset(allow_prerelease=allow_prerelease)
     except Exception:
         logger.warning("Failed to discover latest dashboard UI release asset", exc_info=True)
         return False
@@ -448,6 +446,19 @@ def _vm_info_to_dict(vm: VMInfo) -> dict[str, Any]:
     }
 
 
+def _resolve_ssh_key_path() -> str | None:
+    """Resolve the SmolVM SSH private key for guest connections."""
+    home = Path.home()
+    candidates = [
+        home / ".smolvm" / "keys" / "id_ed25519",
+        home / ".smolvm" / "id_ed25519",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
 # =====================================================================
 # REST Endpoints
 # =====================================================================
@@ -500,6 +511,86 @@ async def get_vm(vm_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"VM not found: {vm_id}") from None
 
     return _vm_info_to_dict(vm)
+
+
+@app.get("/api/vms/{vm_id}/processes")
+async def get_vm_processes(vm_id: str) -> dict[str, Any]:
+    """Get running processes inside a VM via SSH.
+
+    Connects to the guest over SSH, runs ``ps``, and returns a structured
+    list of processes.  The VM must be in the *running* state.
+    """
+    sm = _get_state_manager(app)
+    try:
+        vm_info = await asyncio.to_thread(sm.get_vm, vm_id)
+    except VMNotFoundError:
+        raise HTTPException(status_code=404, detail=f"VM not found: {vm_id}") from None
+
+    if vm_info.status != VMState.RUNNING:
+        raise HTTPException(
+            status_code=409,
+            detail=f"VM is not running (status: {vm_info.status.value})",
+        )
+
+    if vm_info.network is None:
+        raise HTTPException(status_code=409, detail="VM has no network configuration")
+
+    network = vm_info.network  # capture for the thread closure
+
+    def _fetch() -> list[dict[str, str]]:
+        from smolvm.ssh import SSHClient
+
+        # Prefer localhost forwarded port when available.
+        if network.ssh_host_port:
+            host = "127.0.0.1"
+            port = network.ssh_host_port
+        else:
+            host = network.guest_ip
+            port = 22
+
+        key_path = _resolve_ssh_key_path()
+        client = SSHClient(host=host, port=port, key_path=key_path, connect_timeout=5)
+        try:
+            result = client.run(
+                "ps -eo pid,user,vsz,stat,args",
+                timeout=10,
+                shell="raw",
+            )
+            if result.exit_code != 0:
+                return []
+
+            lines = result.stdout.strip().splitlines()
+            # Skip header line
+            if len(lines) <= 1:
+                return []
+
+            processes: list[dict[str, str]] = []
+            for line in lines[1:]:
+                parts = line.split(None, 4)
+                if len(parts) >= 4:
+                    processes.append(
+                        {
+                            "pid": parts[0],
+                            "user": parts[1],
+                            "vsz": parts[2],
+                            "stat": parts[3],
+                            "command": parts[4] if len(parts) > 4 else "",
+                        }
+                    )
+            return processes
+        finally:
+            client.close()
+
+    try:
+        processes = await asyncio.to_thread(_fetch)
+    except Exception as e:
+        logger.warning("Failed to fetch processes for VM %s: %s", vm_id, e)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to retrieve processes from VM: {e}",
+        ) from None
+
+    return {"vm_id": vm_id, "processes": processes}
 
 
 @app.delete("/api/vms/{vm_id}")
