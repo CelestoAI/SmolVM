@@ -179,58 +179,56 @@ def run_cleanup(
     """Clean stale/auto-created VMs and related resources."""
     warn_not_root = os.geteuid() != 0
 
-    sdk = SmolVMManager()
     try:
-        stale_ids = sorted(set(sdk.reconcile()))
+        with SmolVMManager() as sdk:
+            stale_ids = sorted(set(sdk.reconcile()))
 
-        vms = sdk.list_vms()
-        if delete_all:
-            target_ids = [vm.vm_id for vm in vms]
-        else:
-            target_ids = sorted(
-                {vm.vm_id for vm in vms if vm.vm_id.startswith(prefix) or vm.vm_id in stale_ids}
+            vms = sdk.list_vms()
+            if delete_all:
+                target_ids = [vm.vm_id for vm in vms]
+            else:
+                target_ids = sorted(
+                    {vm.vm_id for vm in vms if vm.vm_id.startswith(prefix) or vm.vm_id in stale_ids}
+                )
+
+            deleted: list[str] = []
+            failed: list[CleanupFailure] = []
+            if not dry_run:
+                for vm_id in target_ids:
+                    try:
+                        sdk.delete(vm_id)
+                        deleted.append(vm_id)
+                    except Exception as exc:
+                        failed.append(CleanupFailure(vm_id=vm_id, error=str(exc)))
+
+            result = CleanupResult(
+                delete_all=delete_all,
+                prefix=prefix,
+                dry_run=dry_run,
+                reconciled_stale_ids=stale_ids,
+                targets=target_ids,
+                deleted=deleted,
+                failed=failed,
+                summary=CleanupSummary(
+                    target_count=len(target_ids),
+                    deleted_count=len(deleted),
+                    failed_count=len(failed),
+                ),
             )
+            exit_code = 1 if failed else 0
 
-        deleted: list[str] = []
-        failed: list[CleanupFailure] = []
-        if not dry_run:
-            for vm_id in target_ids:
-                try:
-                    sdk.delete(vm_id)
-                    deleted.append(vm_id)
-                except Exception as exc:
-                    failed.append(CleanupFailure(vm_id=vm_id, error=str(exc)))
+            if json_output:
+                emit_json("cleanup", exit_code, data=asdict(result))
+            else:
+                _render_cleanup_result(result, warn_not_root=warn_not_root)
 
-        result = CleanupResult(
-            delete_all=delete_all,
-            prefix=prefix,
-            dry_run=dry_run,
-            reconciled_stale_ids=stale_ids,
-            targets=target_ids,
-            deleted=deleted,
-            failed=failed,
-            summary=CleanupSummary(
-                target_count=len(target_ids),
-                deleted_count=len(deleted),
-                failed_count=len(failed),
-            ),
-        )
-        exit_code = 1 if failed else 0
-
-        if json_output:
-            emit_json("cleanup", exit_code, data=asdict(result))
-        else:
-            _render_cleanup_result(result, warn_not_root=warn_not_root)
-
-        return exit_code
+            return exit_code
     except Exception as exc:
         if json_output:
             emit_json("cleanup", 1, data=None, error=_cleanup_error_payload(exc))
         else:
             render_error(f"Error: {exc}")
         return 1
-    finally:
-        sdk.close()
 
 
 def build_parser() -> argparse.ArgumentParser:

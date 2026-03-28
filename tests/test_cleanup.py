@@ -35,7 +35,10 @@ class TestCleanup:
     @pytest.fixture
     def mock_sdk_cls(self) -> MagicMock:
         with patch("smolvm.cleanup.SmolVMManager") as mock_cls:
-            yield mock_cls
+            sdk = MagicMock()
+            mock_cls.return_value.__enter__.return_value = sdk
+            mock_cls.return_value.__exit__.return_value = None
+            yield sdk
 
     @patch("smolvm.cleanup.os.geteuid", return_value=1000)
     def test_run_cleanup_dry_run_human(
@@ -45,7 +48,7 @@ class TestCleanup:
         capsys: pytest.CaptureFixture,
     ) -> None:
         """Dry runs should show warning, targets, and a summary."""
-        sdk = mock_sdk_cls.return_value
+        sdk = mock_sdk_cls
         sdk.reconcile.return_value = []
         sdk.list_vms.return_value = [_make_vm("vm-abc123"), _make_vm("vm-def456")]
 
@@ -68,7 +71,7 @@ class TestCleanup:
         capsys: pytest.CaptureFixture,
     ) -> None:
         """Cleanup should render failed deletions in the human results table."""
-        sdk = mock_sdk_cls.return_value
+        sdk = mock_sdk_cls
         sdk.reconcile.return_value = []
         sdk.list_vms.return_value = [_make_vm("vm-abc123"), _make_vm("vm-def456")]
 
@@ -95,7 +98,7 @@ class TestCleanup:
         capsys: pytest.CaptureFixture,
     ) -> None:
         """`run_cleanup(..., json_output=True)` should emit the shared envelope."""
-        sdk = mock_sdk_cls.return_value
+        sdk = mock_sdk_cls
         sdk.reconcile.return_value = ["vm-stale"]
         sdk.list_vms.return_value = [_make_vm("vm-stale"), _make_vm("vm-other")]
 
