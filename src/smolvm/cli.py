@@ -415,17 +415,13 @@ def _run_list(*, include_all: bool, status_filter: str | None, json_output: bool
         return 0
 
     table = Table(title="SmolVM Instances")
-    table.add_column("VM ID")
+    table.add_column("Name")
     table.add_column("Status")
-    table.add_column("IP Address")
-    table.add_column("SSH Port", justify="right")
     table.add_column("PID", justify="right")
     for row in rows:
         table.add_row(
             str(row["vm_id"]),
             str(row["status"]),
-            str(row["ip_address"] or "-"),
-            str(row["ssh_port"] or "-"),
             str(row["pid"] or "-"),
         )
 

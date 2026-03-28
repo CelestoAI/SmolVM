@@ -692,7 +692,7 @@ class TestCliList:
         mock_sdk_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm list` should print a Rich table with running VM details."""
+        """`smolvm list` should print a Rich table with name, status, and pid."""
         vms = [_make_vm_info("vm-abc123", VMState.RUNNING, "172.16.0.2", 2200, 12345)]
         mock_sdk_cls.return_value.list_vms.return_value = vms
 
@@ -702,10 +702,11 @@ class TestCliList:
         out = capsys.readouterr().out
         assert "vm-abc123" in out
         assert "running" in out
-        assert "172.16.0.2" in out
-        assert "2200" in out
         assert "12345" in out
         assert "SmolVM Instances" in out
+        assert "Name" in out
+        assert "Status" in out
+        assert "PID" in out
         assert "Total: 1 VM(s)." in out
         mock_sdk_cls.return_value.list_vms.assert_called_once_with(status=VMState.RUNNING)
 
@@ -736,7 +737,7 @@ class TestCliList:
         mock_sdk_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm list` should show '-' for missing network/PID fields."""
+        """`smolvm list` should show '-' for a missing PID."""
         vms = [_make_vm_info("vm-abc123", VMState.CREATED, "", None, None)]
         vms[0].network = None
         mock_sdk_cls.return_value.list_vms.return_value = vms
@@ -748,8 +749,8 @@ class TestCliList:
         assert "vm-abc123" in out
         assert "created" in out
         mock_sdk_cls.return_value.list_vms.assert_called_once_with(status=VMState.RUNNING)
-        # Network and PID unavailable
-        assert out.count("-") >= 3
+        assert "PID" in out
+        assert "-" in out
 
     def test_list_status_filter(
         self,
