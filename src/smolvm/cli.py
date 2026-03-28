@@ -368,38 +368,37 @@ def _run_list(*, include_all: bool, status_filter: str | None, json_output: bool
     """Handle ``smolvm list``."""
     from smolvm.vm import SmolVMManager
 
-    sdk = SmolVMManager()
-    try:
-        effective_status = status_filter or (None if include_all else VMState.RUNNING.value)
-        state = VMState(effective_status) if effective_status else None
-        vms = sdk.list_vms(status=state)
-        data = {
-            "filters": {
-                "all": include_all,
-                "status": effective_status,
-            },
-            "vms": _vm_rows(vms),
-        }
-        if json_output:
-            emit_json("list", 0, data=data)
-            return 0
+    with SmolVMManager() as sdk:
+        try:
+            effective_status = status_filter or (None if include_all else VMState.RUNNING.value)
+            state = VMState(effective_status) if effective_status else None
+            vms = sdk.list_vms(status=state)
+            data = {
+                "filters": {
+                    "all": include_all,
+                    "status": effective_status,
+                },
+                "vms": _vm_rows(vms),
+            }
+            if json_output:
+                emit_json("list", 0, data=data)
+                return 0
 
-        if not vms:
-            if status_filter:
-                message = f"No VMs found with status '{status_filter}'."
-            elif include_all:
-                message = "No VMs found."
-            else:
-                message = "No running VMs found."
-            render_empty("SmolVM Instances", message)
-            return 0
+            if not vms:
+                if status_filter:
+                    message = f"No VMs found with status '{status_filter}'."
+                elif include_all:
+                    message = "No VMs found."
+                else:
+                    message = "No running VMs found."
+                render_empty("SmolVM Instances", message)
+                return 0
 
-        _render_list(data["vms"])
-        return 0
-    except Exception as exc:
-        return _emit_cli_error("list", 1, exc, json_output=json_output)
-    finally:
-        sdk.close()
+            _render_list(data["vms"])
+            return 0
+        except Exception as exc:
+            return _emit_cli_error("list", 1, exc, json_output=json_output)
+
 
 
 def _render_create_result(data: dict[str, object]) -> None:
