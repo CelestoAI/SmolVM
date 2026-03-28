@@ -204,6 +204,268 @@ class TestCliEnv:
         vm.close.assert_called_once()
 
 
+class TestCliCreate:
+    """Tests for `smolvm create`."""
+
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_create_success(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm create` should build, start, and report a named VM."""
+        config = MagicMock(vm_id="project-spacex")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+
+        vm = MagicMock()
+        vm.vm_id = "project-spacex"
+        vm.info.config.backend = "qemu"
+        vm.info.network = MagicMock(spec=NetworkConfig)
+        vm.info.network.guest_ip = "172.16.0.2"
+        vm.info.network.ssh_host_port = 2200
+        mock_vm_cls.return_value = vm
+
+        ret = main(
+            [
+                "create",
+                "--name",
+                "project-spacex",
+                "--memory-mib",
+                "1024",
+                "--disk-size-mib",
+                "2048",
+                "--backend",
+                "qemu",
+                "--boot-timeout",
+                "45",
+            ]
+        )
+
+        assert ret == 0
+        mock_build_auto_config.assert_called_once_with(
+            vm_name="project-spacex",
+            backend="qemu",
+            mem_size_mib=1024,
+            disk_size_mib=2048,
+            ssh_key_path=None,
+        )
+        mock_vm_cls.assert_called_once_with(config, ssh_key_path="/tmp/id_ed25519")
+        vm.start.assert_called_once_with(boot_timeout=45.0)
+        vm.wait_for_ssh.assert_called_once_with(timeout=45.0)
+        vm.stop.assert_not_called()
+        vm.delete.assert_not_called()
+        vm.close.assert_called_once()
+        out = capsys.readouterr().out
+        assert "Created VM 'project-spacex'." in out
+        assert "Backend: qemu" in out
+        assert "172.16.0.2" in out
+        assert "2200" in out
+        assert "smolvm ssh project-spacex" in out
+
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_create_duplicate_name_failure(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Duplicate VM names should fail cleanly."""
+        mock_build_auto_config.return_value = (MagicMock(vm_id="project-spacex"), "/tmp/id_ed25519")
+        mock_vm_cls.side_effect = Exception("VM 'project-spacex' already exists")
+
+        ret = main(["create", "--name", "project-spacex"])
+
+        assert ret == 1
+        assert "already exists" in capsys.readouterr().out
+
+    @patch("smolvm.facade._build_auto_config")
+    def test_create_invalid_name_failure(
+        self,
+        mock_build_auto_config: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Invalid VM IDs should be reported to the user."""
+        mock_build_auto_config.side_effect = Exception("1 validation error for VMConfig")
+
+        ret = main(["create", "--name", "Project SpaceX"])
+
+        assert ret == 1
+        assert "validation error" in capsys.readouterr().out
+
+    @patch("smolvm.facade._build_auto_config")
+    def test_create_image_build_failure(
+        self,
+        mock_build_auto_config: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Image build failures should surface actionable output."""
+        mock_build_auto_config.side_effect = Exception("Docker is required to build images")
+
+        ret = main(["create", "--name", "project-spacex"])
+
+        assert ret == 1
+        assert "Docker is required" in capsys.readouterr().out
+
+
+class TestCliSSH:
+    """Tests for `smolvm ssh`."""
+
+    @patch("smolvm.cli.subprocess.run")
+    @patch("smolvm.facade.SmolVM")
+    def test_ssh_running_vm_launches_subprocess(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_run: MagicMock,
+    ) -> None:
+        """`smolvm ssh` should attach to a running VM without restarting it."""
+        vm = MagicMock()
+        vm.status = VMState.RUNNING
+        vm._ssh_attach_command.return_value = [
+            "ssh",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-p",
+            "2200",
+            "-i",
+            "/custom/key",
+            "-o",
+            "IdentitiesOnly=yes",
+            "custom-user@127.0.0.1",
+        ]
+        mock_vm_cls.from_id.return_value = vm
+        mock_run.return_value = MagicMock(returncode=0)
+
+        ret = main(
+            [
+                "ssh",
+                "vm001",
+                "--ssh-user",
+                "custom-user",
+                "--ssh-key",
+                "/custom/key",
+                "--boot-timeout",
+                "15",
+            ]
+        )
+
+        assert ret == 0
+        mock_vm_cls.from_id.assert_called_once_with(
+            "vm001",
+            ssh_user="custom-user",
+            ssh_key_path="/custom/key",
+        )
+        vm.start.assert_not_called()
+        vm.wait_for_ssh.assert_called_once_with(timeout=15.0)
+        vm._ssh_attach_command.assert_called_once_with()
+        mock_run.assert_called_once_with(vm._ssh_attach_command.return_value, check=False)
+        vm.close.assert_called_once()
+
+    @pytest.mark.parametrize("status", [VMState.CREATED, VMState.STOPPED])
+    @patch("smolvm.cli.subprocess.run")
+    @patch("smolvm.facade.SmolVM")
+    def test_ssh_auto_starts_created_or_stopped_vm(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_run: MagicMock,
+        status: VMState,
+    ) -> None:
+        """`smolvm ssh` should auto-start attachable non-running VMs."""
+        vm = MagicMock()
+        vm.status = status
+        vm._ssh_attach_command.return_value = ["ssh", "root@127.0.0.1"]
+        mock_vm_cls.from_id.return_value = vm
+        mock_run.return_value = MagicMock(returncode=0)
+
+        ret = main(["ssh", "vm001"])
+
+        assert ret == 0
+        vm.start.assert_called_once_with(boot_timeout=30.0)
+        vm.wait_for_ssh.assert_called_once_with(timeout=30.0)
+        mock_run.assert_called_once_with(["ssh", "root@127.0.0.1"], check=False)
+
+    @patch("smolvm.cli.subprocess.run")
+    @patch("smolvm.facade.SmolVM")
+    def test_ssh_error_state_fails_fast(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_run: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """VMs in ERROR should not be auto-started or attached."""
+        vm = MagicMock()
+        vm.status = VMState.ERROR
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(["ssh", "vm001"])
+
+        assert ret == 1
+        vm.start.assert_not_called()
+        vm.wait_for_ssh.assert_not_called()
+        mock_run.assert_not_called()
+        vm.close.assert_called_once()
+        assert "error state" in capsys.readouterr().out
+
+    @patch("smolvm.cli.subprocess.run")
+    @patch("smolvm.facade.SmolVM")
+    def test_ssh_missing_vm_prints_error(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_run: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Missing VMs should surface a clean error."""
+        mock_vm_cls.from_id.side_effect = Exception("VM 'missing' not found")
+
+        ret = main(["ssh", "missing"])
+
+        assert ret == 1
+        mock_run.assert_not_called()
+        assert "VM 'missing' not found" in capsys.readouterr().out
+
+    @patch("smolvm.cli.subprocess.run", side_effect=FileNotFoundError)
+    @patch("smolvm.facade.SmolVM")
+    def test_ssh_missing_local_ssh_binary(
+        self,
+        mock_vm_cls: MagicMock,
+        _: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Missing host ssh binary should produce an actionable error."""
+        vm = MagicMock()
+        vm.status = VMState.RUNNING
+        vm._ssh_attach_command.return_value = ["ssh", "root@127.0.0.1"]
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(["ssh", "vm001"])
+
+        assert ret == 1
+        assert "openssh-client" in capsys.readouterr().out
+        vm.close.assert_called_once()
+
+    @patch("smolvm.cli.subprocess.run")
+    @patch("smolvm.facade.SmolVM")
+    def test_ssh_propagates_child_exit_code(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_run: MagicMock,
+    ) -> None:
+        """Nonzero ssh child exit codes should be returned unchanged."""
+        vm = MagicMock()
+        vm.status = VMState.RUNNING
+        vm._ssh_attach_command.return_value = ["ssh", "root@127.0.0.1"]
+        mock_vm_cls.from_id.return_value = vm
+        mock_run.return_value = MagicMock(returncode=255)
+
+        ret = main(["ssh", "vm001"])
+
+        assert ret == 255
+
+
 class TestCliDoctor:
     """Tests for `smolvm doctor`."""
 

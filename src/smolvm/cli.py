@@ -21,10 +21,12 @@ import importlib
 import importlib.metadata
 import os
 import re
+import subprocess
 from collections.abc import Sequence
 
 from smolvm.cleanup import run_cleanup
 from smolvm.doctor import run_doctor
+from smolvm.types import VMState
 
 DASHBOARD_ALLOW_BETA_ENV = "SMOLVM_DASHBOARD_ALLOW_BETA"
 DASHBOARD_URL_ENV = "SMOLVM_DASHBOARD_URL"
@@ -51,6 +53,38 @@ def _current_version_is_prerelease() -> bool:
         return Version(ver).is_prerelease
     except (ImportError, InvalidVersion):  # packaging not installed or parse error
         return bool(_PRERELEASE_RE.search(ver))
+
+
+def _positive_float(value: str) -> float:
+    """argparse type enforcing a strictly positive floating-point number."""
+    parsed = float(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be > 0")
+    return parsed
+
+
+def _add_ssh_auth_args(command_parser: argparse.ArgumentParser) -> None:
+    """Add common SSH identity arguments to a command parser."""
+    command_parser.add_argument(
+        "--ssh-key",
+        default=None,
+        help="SSH private key path (default fallback: ~/.smolvm/keys/id_ed25519).",
+    )
+    command_parser.add_argument(
+        "--ssh-user",
+        default="root",
+        help="SSH user (default: root).",
+    )
+
+
+def _add_boot_timeout_arg(command_parser: argparse.ArgumentParser) -> None:
+    """Add a shared boot/SSH readiness timeout flag."""
+    command_parser.add_argument(
+        "--boot-timeout",
+        type=_positive_float,
+        default=30.0,
+        help="Seconds to wait for VM boot and SSH readiness (default: 30).",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -138,6 +172,43 @@ def build_parser() -> argparse.ArgumentParser:
         help="Filter VMs by status (created, running, stopped, error).",
     )
 
+    create_parser = subparsers.add_parser(
+        "create",
+        help="Create a named SSH-ready VM and leave it running",
+    )
+    create_parser.add_argument(
+        "--name",
+        required=True,
+        help="VM identifier to create.",
+    )
+    create_parser.add_argument(
+        "--memory-mib",
+        type=int,
+        default=None,
+        help="Guest memory in MiB (default: 512).",
+    )
+    create_parser.add_argument(
+        "--disk-size-mib",
+        type=int,
+        default=None,
+        help="Root filesystem size in MiB (default: 512).",
+    )
+    create_parser.add_argument(
+        "--backend",
+        choices=["auto", "firecracker", "qemu"],
+        default=None,
+        help="Backend override (default: auto).",
+    )
+    _add_boot_timeout_arg(create_parser)
+
+    ssh_parser = subparsers.add_parser(
+        "ssh",
+        help="SSH into an existing VM, auto-starting it when needed",
+    )
+    ssh_parser.add_argument("vm_id", help="VM identifier")
+    _add_ssh_auth_args(ssh_parser)
+    _add_boot_timeout_arg(ssh_parser)
+
     # ── env subcommand group ──────────────────────────────────────────
     env_parser = subparsers.add_parser(
         "env",
@@ -157,16 +228,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="KEY=VALUE",
         help="One or more KEY=VALUE pairs",
     )
-    env_set.add_argument(
-        "--ssh-key",
-        default=None,
-        help="SSH private key path (default fallback: ~/.smolvm/keys/id_ed25519).",
-    )
-    env_set.add_argument(
-        "--ssh-user",
-        default="root",
-        help="SSH user (default: root).",
-    )
+    _add_ssh_auth_args(env_set)
 
     # smolvm env unset <vm_id> KEY ...
     env_unset = env_sub.add_parser(
@@ -180,16 +242,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="KEY",
         help="Variable names to remove",
     )
-    env_unset.add_argument(
-        "--ssh-key",
-        default=None,
-        help="SSH private key path (default fallback: ~/.smolvm/keys/id_ed25519).",
-    )
-    env_unset.add_argument(
-        "--ssh-user",
-        default="root",
-        help="SSH user (default: root).",
-    )
+    _add_ssh_auth_args(env_unset)
 
     # smolvm env list <vm_id>
     env_list = env_sub.add_parser(
@@ -202,16 +255,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Show values (they are masked by default).",
     )
-    env_list.add_argument(
-        "--ssh-key",
-        default=None,
-        help="SSH private key path (default fallback: ~/.smolvm/keys/id_ed25519).",
-    )
-    env_list.add_argument(
-        "--ssh-user",
-        default="root",
-        help="SSH user (default: root).",
-    )
+    _add_ssh_auth_args(env_list)
 
     return parser
 
@@ -351,6 +395,77 @@ def _run_list(status_filter: str | None) -> int:
     return 0
 
 
+def _run_create(args: argparse.Namespace) -> int:
+    """Handle ``smolvm create``."""
+    from smolvm.facade import SmolVM, _build_auto_config
+
+    vm: SmolVM | None = None
+    try:
+        config, ssh_key_path = _build_auto_config(
+            vm_name=args.name,
+            backend=args.backend,
+            mem_size_mib=args.memory_mib,
+            disk_size_mib=args.disk_size_mib,
+            ssh_key_path=None,
+        )
+        vm = SmolVM(config, ssh_key_path=ssh_key_path)
+        vm.start(boot_timeout=args.boot_timeout)
+        vm.wait_for_ssh(timeout=args.boot_timeout)
+
+        network = vm.info.network
+        guest_ip = network.guest_ip if network is not None else "-"
+        ssh_port = str(network.ssh_host_port) if network and network.ssh_host_port else "-"
+        backend = vm.info.config.backend or "auto"
+
+        print(f"Created VM '{vm.vm_id}'.")
+        print(f"  Backend: {backend}")
+        print(f"  IP address: {guest_ip}")
+        print(f"  SSH port: {ssh_port}")
+        print(f"  Next: smolvm ssh {vm.vm_id}")
+        return 0
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+    finally:
+        if vm is not None:
+            vm.close()
+
+
+def _run_ssh(args: argparse.Namespace) -> int:
+    """Handle ``smolvm ssh``."""
+    from smolvm.facade import SmolVM
+
+    vm: SmolVM | None = None
+    try:
+        vm = SmolVM.from_id(
+            args.vm_id,
+            ssh_user=args.ssh_user,
+            ssh_key_path=args.ssh_key,
+        )
+
+        if vm.status in {VMState.CREATED, VMState.STOPPED}:
+            vm.start(boot_timeout=args.boot_timeout)
+        elif vm.status == VMState.ERROR:
+            print(
+                f"Error: VM '{args.vm_id}' is in error state. "
+                "Recreate it or inspect the VM logs before attaching."
+            )
+            return 1
+
+        vm.wait_for_ssh(timeout=args.boot_timeout)
+        completed = subprocess.run(vm._ssh_attach_command(), check=False)
+        return completed.returncode
+    except FileNotFoundError:
+        print("Error: ssh binary not found. Install openssh-client.")
+        return 1
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+    finally:
+        if vm is not None:
+            vm.close()
+
+
 def _run_ui(host: str, port: int, allow_beta: bool) -> int:
     """Start the dashboard UI server with optional beta asset allowance."""
     try:
@@ -424,6 +539,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "list":
         return _run_list(status_filter=args.status)
+
+    if args.command == "create":
+        return _run_create(args)
+
+    if args.command == "ssh":
+        return _run_ssh(args)
 
     if args.command == "doctor":
         return run_doctor(
