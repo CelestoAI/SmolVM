@@ -444,6 +444,10 @@ def _run_ssh(args: argparse.Namespace) -> int:
         )
 
         if vm.status in {VMState.CREATED, VMState.STOPPED}:
+            print(
+                f"Notice: VM '{args.vm_id}' isn't running yet. "
+                "SSH may take a little longer while SmolVM starts it."
+            )
             vm.start(boot_timeout=args.boot_timeout)
         elif vm.status == VMState.ERROR:
             print(
