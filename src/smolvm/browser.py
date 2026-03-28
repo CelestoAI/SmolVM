@@ -576,18 +576,14 @@ class BrowserSession:
             )
 
     def _resolve_browser_host_port(self, guest_port: int) -> int:
-        """Return the host port that exposes a browser guest port."""
+        """Return a localhost port that exposes a browser guest port.
+
+        Browser services such as Chromium's DevTools endpoint can bind guest
+        loopback only. Route them through ``expose_local()`` so SmolVM can
+        fall back to an SSH tunnel when direct guest networking is not enough.
+        """
         if self._vm is None:
             raise SmolVMError("Browser session VM is unavailable.")
-
-        config = self._vm.info.config
-        if config.backend == BACKEND_QEMU:
-            for forward in config.port_forwards:
-                if forward.guest_port == guest_port and forward.host_address == "127.0.0.1":
-                    return forward.host_port
-            raise SmolVMError(
-                f"QEMU browser session is missing a host forward for guest port {guest_port}."
-            )
 
         return self._vm.expose_local(guest_port=guest_port)
 

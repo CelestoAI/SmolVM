@@ -22,7 +22,14 @@ import pytest
 from smolvm.boot_profiles import KernelBootProfile
 from smolvm.browser import BrowserSession, _browser_vm_id, _build_browser_vm_config
 from smolvm.exceptions import BrowserSessionNotFoundError
-from smolvm.types import BrowserSessionConfig, BrowserSessionState, CommandResult, VMConfig, VMState
+from smolvm.types import (
+    BrowserSessionConfig,
+    BrowserSessionState,
+    CommandResult,
+    PortForwardConfig,
+    VMConfig,
+    VMState,
+)
 
 
 @pytest.fixture
@@ -193,6 +200,53 @@ def test_browser_session_start_persists_ready_state(
     persisted = session.refresh().info
     assert persisted.status == BrowserSessionState.READY
     assert persisted.debug_port == 39222
+    session.close()
+
+
+@patch("smolvm.browser.SmolVM")
+@patch("smolvm.browser._build_browser_vm_config")
+def test_browser_session_start_uses_expose_local_for_qemu_cdp(
+    mock_build_browser_vm_config: MagicMock,
+    mock_vm_cls: MagicMock,
+    sample_vm_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """QEMU browser sessions should expose CDP through the localhost helper path."""
+    qemu_vm_config = sample_vm_config.model_copy(
+        update={
+            "backend": "qemu",
+            "port_forwards": [PortForwardConfig(host_port=39001, guest_port=9222)],
+        }
+    )
+    mock_build_browser_vm_config.return_value = (qemu_vm_config, str(tmp_path / "id_ed25519"))
+
+    vm = MagicMock()
+    vm.vm_id = "browser-abc123"
+    vm.status = VMState.CREATED
+    vm.expose_local.return_value = 39222
+
+    def _run_side_effect(command: str, timeout: int = 30, shell: str = "login") -> CommandResult:
+        del timeout, shell
+        if command.startswith("/usr/local/bin/smolvm-browser-wait-port 9222 1.0"):
+            return CommandResult(exit_code=1, stdout="", stderr="")
+        if command.startswith("/usr/local/bin/smolvm-browser-session start"):
+            return CommandResult(exit_code=0, stdout="", stderr="")
+        if command.startswith("/usr/local/bin/smolvm-browser-wait-port 9222"):
+            return CommandResult(exit_code=0, stdout="", stderr="")
+        return CommandResult(exit_code=0, stdout="", stderr="")
+
+    vm.run.side_effect = _run_side_effect
+    mock_vm_cls.return_value = vm
+
+    session = BrowserSession(
+        BrowserSessionConfig(session_id="browser-abc123", backend="qemu"),
+        data_dir=tmp_path,
+    )
+
+    session.start()
+
+    assert session.cdp_url == "http://127.0.0.1:39222"
+    vm.expose_local.assert_called_once_with(guest_port=9222)
     session.close()
 
 

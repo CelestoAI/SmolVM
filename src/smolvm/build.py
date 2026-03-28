@@ -515,7 +515,7 @@ RUN chmod +x /init
             "kernel_profile": kernel_profile.value,
             "ssh_public_key": key_value,
             "base_image": base_image,
-            "image_type": "browser-chromium-v2",
+            "image_type": "browser-chromium-v3",
         }
 
         if kernel_path.exists() and rootfs_path.exists():
@@ -687,7 +687,7 @@ start_session() {
             --password-store=basic \
             --use-mock-keychain \
             --remote-allow-origins=* \
-            --remote-debugging-address=127.0.0.1 \
+            --remote-debugging-address=0.0.0.0 \
             --remote-debugging-port="${debug_port}" \
             --user-data-dir="${profile_dir}" \
             --window-size="${width},${height}" \
@@ -706,7 +706,7 @@ start_session() {
             --password-store=basic \
             --use-mock-keychain \
             --remote-allow-origins=* \
-            --remote-debugging-address=127.0.0.1 \
+            --remote-debugging-address=0.0.0.0 \
             --remote-debugging-port="${debug_port}" \
             --user-data-dir="${profile_dir}" \
             --window-size="${width},${height}" \

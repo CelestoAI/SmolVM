@@ -270,10 +270,11 @@ Notes:
 
 SmolVM can be wrapped as an agent tool or function in common Python agent frameworks.
 
-- [LangChain `@tool` example](examples/agent_tools/langchain_tool.py): ephemeral SmolVM per tool call; install `langchain` and `langchain-openai`.
-- [OpenAI Agents SDK `@function_tool` example](examples/agent_tools/openai_agents_tool.py): ephemeral SmolVM per tool call; install `openai-agents`.
-- [PydanticAI `@agent.tool_plain` example](examples/agent_tools/pydanticai_tool.py): ephemeral SmolVM per tool call; install `pydantic-ai`.
-- [PydanticAI reusable sandbox example](examples/agent_tools/pydanticai_reusable_tool.py): reuse one SmolVM across runs with `RunContext` and `deps_type`; install `pydantic-ai`.
+- [LangChain `@tool` example](examples/agent_tools/langchain_tool.py): let a LangChain agent run shell commands in a safe sandbox; install `langchain` and `langchain-openai`.
+- [LangChain browser example](examples/agent_tools/langchain_browser_tool.py): let a LangChain agent open `celesto.ai`, click Blog, and read the first headline; install `langchain`, `langchain-openai`, and `playwright`.
+- [OpenAI Agents SDK `@function_tool` example](examples/agent_tools/openai_agents_tool.py): let an OpenAI Agents SDK agent run shell commands in a safe sandbox; install `openai-agents`.
+- [PydanticAI `@agent.tool_plain` example](examples/agent_tools/pydanticai_tool.py): let a PydanticAI agent run shell commands in a safe sandbox; install `pydantic-ai`.
+- [PydanticAI reusable sandbox example](examples/agent_tools/pydanticai_reusable_tool.py): keep one sandbox around across multiple PydanticAI runs; install `pydantic-ai`.
 
 Before trying these scripts:
 
