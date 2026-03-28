@@ -50,7 +50,7 @@ First install the `smolvm` package which comes with a CLI.
 pip install smolvm
 ```
 
-SmolVM support Linux and MacOS, depending on the system run one of the following commands for one time setup.
+SmolVM support Linux and macOS, depending on the system run one of the following commands for one time setup.
 
 Linux (Firecracker):
 
@@ -73,7 +73,7 @@ Use the default auto-configured, SSH-ready profile:
 
 ### 3.1 Using CLI
 
-```
+```bash
 smolvm create --name "project-spacex"
 smolvm ssh "project-spacex"
 ```
