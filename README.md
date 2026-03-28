@@ -165,6 +165,20 @@ smolvm doctor --backend qemu
 smolvm doctor --json --strict
 ```
 
+## Agent Framework Tool Examples
+
+SmolVM can be wrapped as an agent tool or function in common Python agent frameworks.
+
+- [LangChain `@tool` example](examples/agent_tools/langchain_tool.py): ephemeral SmolVM per tool call; install `langchain` and `langchain-openai`.
+- [OpenAI Agents SDK `@function_tool` example](examples/agent_tools/openai_agents_tool.py): ephemeral SmolVM per tool call; install `openai-agents`.
+- [PydanticAI `@agent.tool_plain` example](examples/agent_tools/pydanticai_tool.py): ephemeral SmolVM per tool call; install `pydantic-ai`.
+- [PydanticAI reusable sandbox example](examples/agent_tools/pydanticai_reusable_tool.py): reuse one SmolVM across runs with `RunContext` and `deps_type`; install `pydantic-ai`.
+
+Before trying these scripts:
+
+- Run `smolvm doctor` to confirm the local runtime is healthy.
+- Set `OPENAI_API_KEY` and any optional model override env vars referenced in the example docstrings.
+
 ## ⚡ Performance
 
 SmolVM is optimized for low-latency agent workflows. Latest lifecycle timings (p50) on a standard Linux host:
