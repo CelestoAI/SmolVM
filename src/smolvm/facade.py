@@ -33,6 +33,7 @@ import platform
 import socket
 import subprocess
 import time
+import uuid
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,6 +57,63 @@ _LOCAL_FORWARD_PROBE_TIMEOUT = 2.0
 _LOCAL_FORWARD_PROBE_INTERVAL = 0.2
 _LOCAL_TUNNEL_START_TIMEOUT = 10.0
 _LOCAL_FORWARD_MAX_PORT_ATTEMPTS = 10
+
+
+def _build_auto_config(
+    *,
+    vm_name: str | None = None,
+    backend: str | None = None,
+    mem_size_mib: int | None = None,
+    disk_size_mib: int | None = None,
+    ssh_key_path: str | None = None,
+) -> tuple[VMConfig, str | None]:
+    """Build the default SSH-ready VM config used by zero-config flows."""
+    from smolvm.build import SSH_BOOT_ARGS, ImageBuilder
+    from smolvm.utils import ensure_ssh_key
+
+    resolved_backend = resolve_backend(backend)
+    boot_args = SSH_BOOT_ARGS
+    if resolved_backend == BACKEND_QEMU:
+        arch = platform.machine().lower()
+        console = "ttyAMA0" if arch in {"arm64", "aarch64"} else "ttyS0"
+        boot_args = f"console={console} reboot=k panic=1 init=/init"
+
+    private_key, public_key = ensure_ssh_key()
+    resolved_ssh_key_path = ssh_key_path or str(private_key)
+
+    resolved_mem_size_mib = 512 if mem_size_mib is None else mem_size_mib
+    resolved_disk_size_mib = 512 if disk_size_mib is None else disk_size_mib
+    if resolved_disk_size_mib < 64:
+        raise ValueError("disk_size_mib must be >= 64")
+
+    builder = ImageBuilder()
+    # Keep backend/arch specific cache names to avoid stale cross-arch reuse.
+    image_name = "alpine-ssh-key"
+    if resolved_backend == BACKEND_QEMU:
+        arch = platform.machine().lower()
+        image_arch = "aarch64" if arch in {"arm64", "aarch64"} else "x86_64"
+        image_name = f"alpine-ssh-key-{image_arch}"
+    if resolved_disk_size_mib != 512:
+        image_name = f"{image_name}-{resolved_disk_size_mib}m"
+
+    kernel, rootfs = builder.build_alpine_ssh_key(
+        public_key,
+        name=image_name,
+        rootfs_size_mb=resolved_disk_size_mib,
+    )
+
+    resolved_vm_name = vm_name or f"vm-{uuid.uuid4().hex[:8]}"
+    config = VMConfig(
+        vm_id=resolved_vm_name,
+        vcpu_count=1,
+        mem_size_mib=resolved_mem_size_mib,
+        kernel_path=kernel,
+        rootfs_path=rootfs,
+        boot_args=boot_args,
+        backend=resolved_backend,
+    )
+    logger.info("Auto-configured VM: %s (backend=%s)", resolved_vm_name, resolved_backend)
+    return config, resolved_ssh_key_path
 
 
 @dataclass(slots=True)
@@ -120,61 +178,12 @@ class SmolVM:
         if config is None and vm_id is None:
             # Auto-configuration mode
             logger.info("No config provided; auto-configuring standard SSH VM...")
-
-            # Avoid circular imports (these are heavy/optional dependencies)
-            import uuid
-
-            from smolvm.build import SSH_BOOT_ARGS, ImageBuilder
-            from smolvm.utils import ensure_ssh_key
-
-            resolved_backend = resolve_backend(backend)
-            boot_args = SSH_BOOT_ARGS
-            if resolved_backend == BACKEND_QEMU:
-                arch = platform.machine().lower()
-                console = "ttyAMA0" if arch in {"arm64", "aarch64"} else "ttyS0"
-                boot_args = f"console={console} reboot=k panic=1 init=/init"
-
-            # 1. Ensure SSH keys
-            priv_key, pub_key = ensure_ssh_key()
-            if ssh_key_path is None:
-                ssh_key_path = str(priv_key)
-
-            resolved_mem_size_mib = 512 if mem_size_mib is None else mem_size_mib
-            resolved_disk_size_mib = 512 if disk_size_mib is None else disk_size_mib
-            if resolved_disk_size_mib < 64:
-                raise ValueError("disk_size_mib must be >= 64")
-
-            # 2. Ensure Image
-            builder = ImageBuilder()
-            # Keep backend/arch specific cache names to avoid stale cross-arch reuse.
-            image_name = "alpine-ssh-key"
-            if resolved_backend == BACKEND_QEMU:
-                arch = platform.machine().lower()
-                image_arch = "aarch64" if arch in {"arm64", "aarch64"} else "x86_64"
-                image_name = f"alpine-ssh-key-{image_arch}"
-            if resolved_disk_size_mib != 512:
-                image_name = f"{image_name}-{resolved_disk_size_mib}m"
-
-            # This will download/build if needed (cached otherwise)
-            kernel, rootfs = builder.build_alpine_ssh_key(
-                pub_key,
-                name=image_name,
-                rootfs_size_mb=resolved_disk_size_mib,
+            config, ssh_key_path = _build_auto_config(
+                backend=backend,
+                mem_size_mib=mem_size_mib,
+                disk_size_mib=disk_size_mib,
+                ssh_key_path=ssh_key_path,
             )
-
-            # 3. Create Config
-            # Use a unique ID to avoid conflicts with previous runs
-            auto_id = f"vm-{uuid.uuid4().hex[:8]}"
-            config = VMConfig(
-                vm_id=auto_id,
-                vcpu_count=1,
-                mem_size_mib=resolved_mem_size_mib,
-                kernel_path=kernel,
-                rootfs_path=rootfs,
-                boot_args=boot_args,
-                backend=resolved_backend,
-            )
-            logger.info("Auto-configured VM: %s (backend=%s)", auto_id, resolved_backend)
 
         self._ssh_user = ssh_user
         self._ssh_key_path = ssh_key_path
@@ -482,6 +491,28 @@ class SmolVM:
             key_path=key_path or self._ssh_key_path,
             public_host=public_host,
         )
+
+    def _ssh_attach_command(self) -> list[str]:
+        """Return an interactive SSH command using the resolved ready endpoint."""
+        if not self._ssh_ready or self._ssh is None:
+            raise SmolVMError(
+                "Cannot build interactive SSH command: SSH client is not initialized",
+                {"vm_id": self._vm_id},
+            )
+
+        command = [
+            "ssh",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-p",
+            str(self._ssh.port),
+        ]
+        if self._ssh.key_path:
+            command.extend(["-i", self._ssh.key_path, "-o", "IdentitiesOnly=yes"])
+        command.append(f"{self._ssh.user}@{self._ssh.host}")
+        return command
 
     def expose_local(self, guest_port: int, host_port: int | None = None) -> int:
         """Expose a guest TCP port on localhost only.

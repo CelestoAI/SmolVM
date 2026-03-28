@@ -24,7 +24,7 @@ from smolvm.exceptions import (
     OperationTimeoutError,
     SmolVMError,
 )
-from smolvm.facade import SmolVM
+from smolvm.facade import SmolVM, _build_auto_config
 from smolvm.types import VMConfig, VMState
 
 
@@ -178,6 +178,67 @@ class TestVMInit:
         """Custom auto sizing options are only valid in zero-config mode."""
         with pytest.raises(ValueError, match="auto-config mode"):
             SmolVM(sample_config, mem_size_mib=1024)
+
+    @patch("smolvm.build.ImageBuilder")
+    @patch("smolvm.utils.ensure_ssh_key")
+    def test_named_auto_config_preserves_vm_name(
+        self,
+        mock_ensure_ssh_key: MagicMock,
+        mock_builder_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Named auto-config should keep the caller-supplied VM name."""
+        kernel = tmp_path / "auto-kernel"
+        rootfs = tmp_path / "auto-rootfs.ext4"
+        private_key = tmp_path / "id_ed25519"
+        public_key = tmp_path / "id_ed25519.pub"
+        kernel.touch()
+        rootfs.touch()
+        private_key.touch()
+        public_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKey user@test\n")
+
+        mock_ensure_ssh_key.return_value = (private_key, public_key)
+        mock_builder = MagicMock()
+        mock_builder.build_alpine_ssh_key.return_value = (kernel, rootfs)
+        mock_builder_cls.return_value = mock_builder
+
+        config, ssh_key_path = _build_auto_config(vm_name="project-spacex")
+
+        assert config.vm_id == "project-spacex"
+        assert ssh_key_path == str(private_key)
+        assert "init=/init" in config.boot_args
+        mock_builder.build_alpine_ssh_key.assert_called_once()
+
+    @patch("smolvm.facade.platform.machine", return_value="arm64")
+    @patch("smolvm.build.ImageBuilder")
+    @patch("smolvm.utils.ensure_ssh_key")
+    def test_named_auto_config_qemu_keeps_backend_specific_settings(
+        self,
+        mock_ensure_ssh_key: MagicMock,
+        mock_builder_cls: MagicMock,
+        _: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Named auto-config should preserve QEMU boot args and cache naming."""
+        kernel = tmp_path / "auto-kernel"
+        rootfs = tmp_path / "auto-rootfs.ext4"
+        private_key = tmp_path / "id_ed25519"
+        public_key = tmp_path / "id_ed25519.pub"
+        kernel.touch()
+        rootfs.touch()
+        private_key.touch()
+        public_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKey user@test\n")
+
+        mock_ensure_ssh_key.return_value = (private_key, public_key)
+        mock_builder = MagicMock()
+        mock_builder.build_alpine_ssh_key.return_value = (kernel, rootfs)
+        mock_builder_cls.return_value = mock_builder
+
+        config, _ = _build_auto_config(vm_name="project-spacex", backend="qemu")
+
+        assert config.backend == "qemu"
+        assert config.boot_args == "console=ttyAMA0 reboot=k panic=1 init=/init"
+        assert mock_builder.build_alpine_ssh_key.call_args.kwargs["name"] == "alpine-ssh-key-aarch64"
 
     @patch("smolvm.facade.SmolVMManager")
     def test_from_id(self, mock_sdk_cls: MagicMock) -> None:
@@ -1124,6 +1185,41 @@ class TestVMProperties:
             key_path="/tmp/id_ed25519",
             public_host="203.0.113.10",
         )
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_ssh_attach_command_uses_resolved_client(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """Interactive SSH command should reuse the resolved SSH client endpoint."""
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = SmolVM(sample_config)
+        vm._ssh = MagicMock(
+            host="172.16.0.2",
+            port=22,
+            user="root",
+            key_path="/tmp/id_ed25519",
+        )
+        vm._ssh_ready = True
+
+        assert vm._ssh_attach_command() == [
+            "ssh",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-p",
+            "22",
+            "-i",
+            "/tmp/id_ed25519",
+            "-o",
+            "IdentitiesOnly=yes",
+            "root@172.16.0.2",
+        ]
 
 
 class TestVMEnvInjection:

@@ -43,10 +43,14 @@ AI agents often need to execute arbitrary code (Python, JS, shell scripts) gener
 
 ### 2. Installation
 
+First install the `smolvm` package which comes with a CLI.
+
 ```bash
 # Install the Python package
 pip install smolvm
 ```
+
+SmolVM support Linux and macOS, depending on the system run one of the following commands for one time setup.
 
 Linux (Firecracker):
 
@@ -54,7 +58,7 @@ Linux (Firecracker):
 sudo ./scripts/system-setup.sh --configure-runtime
 ```
 
-macOS (QEMU):
+MacOS (QEMU):
 
 ```bash
 ./scripts/system-setup-macos.sh
@@ -62,9 +66,20 @@ macOS (QEMU):
 # export SMOLVM_BACKEND=qemu
 ```
 
-### 3. Basic Usage
+## 3. Basic Usage
 
-Initialize a VM with no arguments for an auto-configured, SSH-ready environment:
+Use the default auto-configured, SSH-ready profile:
+
+
+### 3.1 Using CLI
+
+```bash
+smolvm create --name "project-spacex"
+smolvm ssh "project-spacex"
+```
+
+
+### 3.2 Using Python
 
 ```python
 from smolvm import SmolVM
@@ -91,7 +106,7 @@ with SmolVM(mem_size_mib=2048, disk_size_mib=4096) as vm:
     print(vm.run("free -m").output)
 ```
 
-### 4. Reconnect to an existing VM
+## 4. Reconnect to an existing VM
 
 You can also reconnect to a running VM by its ID:
 
@@ -116,7 +131,7 @@ from smolvm import VMConfig
 config = VMConfig(..., disk_mode="shared")
 ```
 
-### 5. Port Forwarding
+## 5. Port Forwarding
 
 Expose a guest application to your local machine securely. `expose_local` prefers host-local nftables forwarding and automatically falls back to an SSH tunnel when needed.
 
