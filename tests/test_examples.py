@@ -22,6 +22,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES_DIR = REPO_ROOT / "examples" / "agent_tools"
 EXPECTED_EXAMPLES = {
+    "langchain_browser_tool.py",
     "langchain_tool.py",
     "openai_agents_tool.py",
     "pydanticai_tool.py",
