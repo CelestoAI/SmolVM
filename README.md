@@ -76,6 +76,7 @@ Use the default auto-configured, SSH-ready profile:
 ```bash
 smolvm create --name "project-spacex"
 smolvm ssh "project-spacex"
+smolvm stop "project-spacex"
 
 # Human-friendly Rich output by default
 smolvm list

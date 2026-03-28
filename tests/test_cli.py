@@ -425,6 +425,65 @@ class TestCliCreate:
         assert "Docker is required" in capsys.readouterr().err
 
 
+class TestCliStop:
+    """Tests for `smolvm stop`."""
+
+    @patch("smolvm.facade.SmolVM")
+    def test_stop_success(
+        self,
+        mock_vm_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm stop` should stop an existing VM and report the result."""
+        vm = MagicMock()
+        vm.vm_id = "vm001"
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(["stop", "vm001", "--timeout", "7"])
+
+        assert ret == 0
+        mock_vm_cls.from_id.assert_called_once_with("vm001")
+        vm.stop.assert_called_once_with(timeout=7.0)
+        vm.close.assert_called_once()
+        out = capsys.readouterr().out
+        assert "Stopped VM 'vm001'." in out
+        assert "stopped" in out
+
+    @patch("smolvm.facade.SmolVM")
+    def test_stop_json(
+        self,
+        mock_vm_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm stop --json` should emit the shared envelope."""
+        vm = MagicMock()
+        vm.vm_id = "vm001"
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(["stop", "vm001", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["command"] == "stop"
+        assert payload["ok"] is True
+        assert payload["data"]["vm"]["name"] == "vm001"
+        assert payload["data"]["vm"]["status"] == "stopped"
+
+    @patch("smolvm.facade.SmolVM")
+    def test_stop_missing_vm_prints_error(
+        self,
+        mock_vm_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Missing VMs should surface a clean error."""
+        mock_vm_cls.from_id.side_effect = Exception("VM 'missing' not found")
+
+        ret = main(["stop", "missing"])
+
+        assert ret == 1
+        assert "VM 'missing' not found" in capsys.readouterr().err
+
+
 class TestCliSSH:
     """Tests for `smolvm ssh`."""
 

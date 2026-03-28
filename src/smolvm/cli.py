@@ -93,6 +93,19 @@ class CreatePayload(TypedDict):
     next: CreateNextPayload
 
 
+class StopVmPayload(TypedDict):
+    """Machine-readable VM details for ``smolvm stop``."""
+
+    name: str
+    status: str
+
+
+class StopPayload(TypedDict):
+    """JSON payload for ``smolvm stop``."""
+
+    vm: StopVmPayload
+
+
 class BrowserRow(TypedDict):
     """Machine-readable data for a listed browser session."""
 
@@ -293,6 +306,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit machine-readable JSON output.",
     )
     _add_boot_timeout_arg(create_parser)
+
+    stop_parser = subparsers.add_parser(
+        "stop",
+        help="Stop an existing VM",
+    )
+    stop_parser.add_argument("vm_id", help="VM identifier")
+    stop_parser.add_argument(
+        "--timeout",
+        type=_positive_float,
+        default=3.0,
+        help="Seconds to wait for graceful shutdown (default: 3).",
+    )
+    stop_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output.",
+    )
 
     ssh_parser = subparsers.add_parser(
         "ssh",
@@ -698,6 +728,58 @@ def _run_create(args: argparse.Namespace) -> int:
         return 0
     except Exception as exc:
         return _emit_cli_error("create", 1, exc, json_output=args.json)
+    finally:
+        if vm is not None:
+            vm.close()
+
+
+def _render_stop_result(data: StopPayload) -> None:
+    """Render the human-facing stop result."""
+    console = console_stdout()
+    vm_data = data["vm"]
+
+    console.print(
+        Panel.fit(
+            f"Stopped VM '{vm_data['name']}'.",
+            title="VM Stopped",
+            border_style="yellow",
+        )
+    )
+
+    details = Table(title="VM Details", show_header=False)
+    details.add_column("Field")
+    details.add_column("Value")
+    details.add_row("Name", str(vm_data["name"]))
+    details.add_row(
+        "Status",
+        Text(str(vm_data["status"]), style=status_style(str(vm_data["status"]))),
+    )
+    console.print(details)
+
+
+def _run_stop(args: argparse.Namespace) -> int:
+    """Handle ``smolvm stop``."""
+    from smolvm.facade import SmolVM
+
+    vm: SmolVM | None = None
+    try:
+        vm = SmolVM.from_id(args.vm_id)
+        vm.stop(timeout=args.timeout)
+
+        data: StopPayload = {
+            "vm": {
+                "name": vm.vm_id,
+                "status": VMState.STOPPED.value,
+            }
+        }
+
+        if args.json:
+            emit_json("stop", 0, data=data)
+        else:
+            _render_stop_result(data)
+        return 0
+    except Exception as exc:
+        return _emit_cli_error("stop", 1, exc, json_output=args.json)
     finally:
         if vm is not None:
             vm.close()
@@ -1215,6 +1297,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "create":
         return _run_create(args)
+
+    if args.command == "stop":
+        return _run_stop(args)
 
     if args.command == "ssh":
         return _run_ssh(args)
