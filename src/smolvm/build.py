@@ -32,6 +32,12 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from smolvm.boot_profiles import (
+    QEMU_DESKTOP_KERNEL_URLS,
+    KernelBootProfile,
+    normalize_arch,
+    resolve_kernel_url,
+)
 from smolvm.exceptions import ImageError, SmolVMError
 from smolvm.utils import RUNTIME_PRIVILEGE_SETUP_HINT, run_command
 
@@ -45,23 +51,7 @@ SSH_BOOT_ARGS = "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/i
 # 200+ VMs.  No console= since we don't need serial output in production.
 OPENCLAW_BOOT_ARGS = "reboot=k panic=1 pci=off init=/init 8250.nr_uarts=0"
 
-# Firecracker-compatible uncompressed kernels.
-FIRECRACKER_KERNEL_URLS = {
-    "x86_64": "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.6/x86_64/vmlinux-5.10.198",
-    "aarch64": "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.6/aarch64/vmlinux-5.10.198",
-}
-
-# QEMU-compatible kernels (Ubuntu cloud kernels, unpacked).
-QEMU_KERNEL_URLS = {
-    "x86_64": (
-        "https://cloud-images.ubuntu.com/jammy/current/unpacked/"
-        "jammy-server-cloudimg-amd64-vmlinuz-generic"
-    ),
-    "aarch64": (
-        "https://cloud-images.ubuntu.com/jammy/current/unpacked/"
-        "jammy-server-cloudimg-arm64-vmlinuz-generic"
-    ),
-}
+QEMU_KERNEL_URLS = QEMU_DESKTOP_KERNEL_URLS
 
 LOOPFS_HELPER_PATH = Path("/usr/local/libexec/smolvm-loopfs-helper")
 
@@ -176,6 +166,7 @@ class ImageBuilder:
         ssh_password: str = "smolvm",
         rootfs_size_mb: int = 512,
         kernel_url: str | None = None,
+        kernel_profile: KernelBootProfile = KernelBootProfile.MICROVM_DIRECT,
     ) -> tuple[Path, Path]:
         """Build Alpine Linux image with SSH server.
 
@@ -209,9 +200,12 @@ class ImageBuilder:
         rootfs_path = image_dir / "rootfs.ext4"
 
         # Check fingerprint cache
+        resolved_kernel_url = self._resolve_kernel_url(kernel_profile, kernel_url)
+
         fingerprint_data = {
             "rootfs_size_mb": rootfs_size_mb,
-            "kernel_url": kernel_url,
+            "kernel_url": resolved_kernel_url,
+            "kernel_profile": kernel_profile.value,
             "ssh_password": ssh_password,
         }
         if (
@@ -261,7 +255,7 @@ RUN chmod +x /init
                 rootfs_path,
                 rootfs_size_mb,
                 build_args={"SSH_PASSWORD": ssh_password},
-                kernel_url=kernel_url,
+                kernel_url=resolved_kernel_url,
                 fingerprint_data=fingerprint_data,
             )
         except (subprocess.CalledProcessError, ImageError) as e:
@@ -283,6 +277,7 @@ RUN chmod +x /init
         name: str = "alpine-ssh-key",
         rootfs_size_mb: int = 512,
         kernel_url: str | None = None,
+        kernel_profile: KernelBootProfile = KernelBootProfile.MICROVM_DIRECT,
     ) -> tuple[Path, Path]:
         """Build Alpine Linux image with key-only SSH access.
 
@@ -304,9 +299,12 @@ RUN chmod +x /init
         kernel_path = image_dir / "vmlinux.bin"
         rootfs_path = image_dir / "rootfs.ext4"
 
+        resolved_kernel_url = self._resolve_kernel_url(kernel_profile, kernel_url)
+
         fingerprint_data = {
             "rootfs_size_mb": rootfs_size_mb,
-            "kernel_url": kernel_url,
+            "kernel_url": resolved_kernel_url,
+            "kernel_profile": kernel_profile.value,
             "ssh_public_key": key_value,
         }
 
@@ -359,7 +357,7 @@ RUN chmod +x /init
                 rootfs_path,
                 rootfs_size_mb,
                 extra_files={"authorized_keys": f"{key_value}\n"},
-                kernel_url=kernel_url,
+                kernel_url=resolved_kernel_url,
                 fingerprint_data=fingerprint_data,
             )
         except (subprocess.CalledProcessError, ImageError) as e:
@@ -381,6 +379,7 @@ RUN chmod +x /init
         rootfs_size_mb: int = 2048,
         base_image: str = "debian:bookworm-slim",
         kernel_url: str | None = None,
+        kernel_profile: KernelBootProfile = KernelBootProfile.MICROVM_DIRECT,
     ) -> tuple[Path, Path]:
         """Build Debian Linux image with key-only SSH access.
 
@@ -403,9 +402,12 @@ RUN chmod +x /init
         kernel_path = image_dir / "vmlinux.bin"
         rootfs_path = image_dir / "rootfs.ext4"
 
+        resolved_kernel_url = self._resolve_kernel_url(kernel_profile, kernel_url)
+
         fingerprint_data = {
             "rootfs_size_mb": rootfs_size_mb,
-            "kernel_url": kernel_url,
+            "kernel_url": resolved_kernel_url,
+            "kernel_profile": kernel_profile.value,
             "ssh_public_key": key_value,
             "base_image": base_image,
         }
@@ -463,7 +465,7 @@ RUN chmod +x /init
                 rootfs_path,
                 rootfs_size_mb,
                 extra_files={"authorized_keys": f"{key_value}\n"},
-                kernel_url=kernel_url,
+                kernel_url=resolved_kernel_url,
                 fingerprint_data=fingerprint_data,
             )
         except (subprocess.CalledProcessError, ImageError) as e:
@@ -485,6 +487,7 @@ RUN chmod +x /init
         rootfs_size_mb: int = 4096,
         base_image: str = "debian:bookworm-slim",
         kernel_url: str | None = None,
+        kernel_profile: KernelBootProfile = KernelBootProfile.MICROVM_DIRECT,
     ) -> tuple[Path, Path]:
         """Build a Chromium browser image with optional live-view tooling.
 
@@ -504,9 +507,12 @@ RUN chmod +x /init
         kernel_path = image_dir / "vmlinux.bin"
         rootfs_path = image_dir / "rootfs.ext4"
 
+        resolved_kernel_url = self._resolve_kernel_url(kernel_profile, kernel_url)
+
         fingerprint_data = {
             "rootfs_size_mb": rootfs_size_mb,
-            "kernel_url": kernel_url,
+            "kernel_url": resolved_kernel_url,
+            "kernel_profile": kernel_profile.value,
             "ssh_public_key": key_value,
             "base_image": base_image,
             "image_type": "browser-chromium-v1",
@@ -817,7 +823,7 @@ RUN chmod +x /init
                     "smolvm-browser-session": browser_session_sh,
                     "smolvm-browser-wait-port": wait_port_py,
                 },
-                kernel_url=kernel_url,
+                kernel_url=resolved_kernel_url,
                 fingerprint_data=fingerprint_data,
             )
         except (subprocess.CalledProcessError, ImageError) as e:
@@ -1260,21 +1266,28 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
     def _host_arch_key() -> str:
         """Normalize host architecture to SmolVM kernel key."""
         arch = platform.machine().lower()
-        if arch in {"x86_64", "amd64"}:
-            return "x86_64"
-        if arch in {"arm64", "aarch64"}:
-            return "aarch64"
-        raise ImageError(f"Unsupported host architecture '{arch}'")
+        try:
+            return normalize_arch(arch)
+        except ValueError as exc:
+            raise ImageError(str(exc)) from exc
 
     def _kernel_url_for_host(self) -> str:
         """Return a Firecracker-compatible kernel URL for the current host arch."""
-        arch_key = self._host_arch_key()
-        return FIRECRACKER_KERNEL_URLS[arch_key]
+        return self._resolve_kernel_url(KernelBootProfile.MICROVM_DIRECT)
 
     def qemu_kernel_url_for_host(self) -> str:
-        """Return a QEMU-compatible kernel URL for the current host arch."""
-        arch_key = self._host_arch_key()
-        return QEMU_KERNEL_URLS[arch_key]
+        """Return the future desktop/initramfs QEMU kernel URL for the host arch."""
+        return self._resolve_kernel_url(KernelBootProfile.QEMU_DESKTOP_INITRAMFS)
+
+    def _resolve_kernel_url(
+        self,
+        kernel_profile: KernelBootProfile,
+        kernel_url: str | None = None,
+    ) -> str:
+        """Return the effective kernel URL for an image build."""
+        if kernel_url is not None:
+            return kernel_url
+        return resolve_kernel_url(kernel_profile, self._host_arch_key())
 
     def _check_fingerprint(self, image_dir: Path, data: dict[str, typing.Any]) -> bool:
         """Check if the cached image fingerprint matches the current build inputs."""

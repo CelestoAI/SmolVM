@@ -14,6 +14,10 @@ from pathlib import Path
 from typing import Any
 
 from smolvm.backends import BACKEND_QEMU, resolve_backend
+from smolvm.boot_profiles import (
+    KernelBootProfile,
+    get_boot_profile_spec,
+)
 from smolvm.exceptions import BrowserSessionNotFoundError, SmolVMError
 from smolvm.facade import SmolVM
 from smolvm.storage import StateManager
@@ -36,6 +40,7 @@ _BROWSER_GUEST_PROFILE_ROOT = f"{_BROWSER_GUEST_ROOT}/profiles"
 _BROWSER_GUEST_DOWNLOAD_ROOT = f"{_BROWSER_GUEST_ROOT}/downloads"
 _BROWSER_GUEST_ARTIFACT_ROOT = f"{_BROWSER_GUEST_ROOT}/artifacts"
 _BROWSER_GUEST_LOG_ROOT = "/var/log/smolvm-browser"
+_BROWSER_KERNEL_PROFILE = KernelBootProfile.MICROVM_DIRECT
 
 
 def _generate_browser_session_id() -> str:
@@ -71,14 +76,9 @@ def _browser_vm_id(session_id: str, config: BrowserSessionConfig) -> str:
 
 def _browser_boot_args_for_backend(backend: str) -> str:
     """Return backend-specific kernel boot arguments for browser images."""
-    if backend != BACKEND_QEMU:
-        from smolvm.build import SSH_BOOT_ARGS
-
-        return SSH_BOOT_ARGS
-
     arch = platform.machine().lower()
-    console = "ttyAMA0" if arch in {"arm64", "aarch64"} else "ttyS0"
-    return f"console={console} reboot=k panic=1 init=/init"
+    profile = get_boot_profile_spec(_BROWSER_KERNEL_PROFILE)
+    return profile.base_boot_args_for_backend(backend, arch)
 
 
 def _build_browser_vm_config(
@@ -96,12 +96,10 @@ def _build_browser_vm_config(
     resolved_ssh_key_path = ssh_key_path or str(private_key)
 
     builder = ImageBuilder()
-    kernel_url: str | None = None
     image_arch = "aarch64" if platform.machine().lower() in {"arm64", "aarch64"} else "x86_64"
     image_name = f"browser-chromium-{image_arch}"
     if resolved_backend == BACKEND_QEMU:
         image_name = f"{image_name}-qemu"
-        kernel_url = builder.qemu_kernel_url_for_host()
     if browser_config.disk_size_mib != 4096:
         image_name = f"{image_name}-{browser_config.disk_size_mib}m"
 
@@ -109,7 +107,7 @@ def _build_browser_vm_config(
         public_key,
         name=image_name,
         rootfs_size_mb=browser_config.disk_size_mib,
-        kernel_url=kernel_url,
+        kernel_profile=_BROWSER_KERNEL_PROFILE,
     )
 
     config = VMConfig(

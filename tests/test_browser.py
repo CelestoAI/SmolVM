@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from smolvm.boot_profiles import KernelBootProfile
 from smolvm.browser import BrowserSession, _browser_vm_id, _build_browser_vm_config
 from smolvm.exceptions import BrowserSessionNotFoundError
 from smolvm.types import BrowserSessionConfig, BrowserSessionState, CommandResult, VMConfig, VMState
@@ -68,6 +69,9 @@ def test_build_browser_vm_config_uses_persistent_disk_reuse(
     mock_ensure_ssh_key.return_value = (private_key, public_key)
     mock_builder = MagicMock()
     mock_builder.build_browser_rootfs.return_value = (kernel, rootfs)
+    mock_builder.qemu_kernel_url_for_host.side_effect = AssertionError(
+        "browser QEMU path should not use the desktop kernel helper"
+    )
     mock_builder_cls.return_value = mock_builder
 
     browser_config = BrowserSessionConfig(
@@ -87,6 +91,11 @@ def test_build_browser_vm_config_uses_persistent_disk_reuse(
     assert vm_config.vm_id.startswith("browser-prof-acct-1-")
     assert ssh_key_path == str(private_key)
     mock_builder.build_browser_rootfs.assert_called_once()
+    assert (
+        mock_builder.build_browser_rootfs.call_args.kwargs["kernel_profile"]
+        == KernelBootProfile.MICROVM_DIRECT
+    )
+    assert "kernel_url" not in mock_builder.build_browser_rootfs.call_args.kwargs
 
 
 @patch("smolvm.browser.SmolVM")
