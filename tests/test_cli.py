@@ -14,6 +14,7 @@
 
 """Tests for SmolVM CLI commands."""
 
+import json
 import os
 from unittest.mock import MagicMock, patch
 
@@ -676,13 +677,14 @@ class TestCliList:
         mock_sdk_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm list` with no VMs should print a friendly message."""
+        """`smolvm list` with no running VMs should print a friendly message."""
         mock_sdk_cls.return_value.list_vms.return_value = []
 
         ret = main(["list"])
 
         assert ret == 0
-        assert "No VMs found" in capsys.readouterr().out
+        assert "No running VMs found." in capsys.readouterr().out
+        mock_sdk_cls.return_value.list_vms.assert_called_once_with(status=VMState.RUNNING)
         mock_sdk_cls.return_value.close.assert_called_once()
 
     def test_list_shows_vms(
@@ -690,11 +692,8 @@ class TestCliList:
         mock_sdk_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm list` should print a table with VM details."""
-        vms = [
-            _make_vm_info("vm-abc123", VMState.RUNNING, "172.16.0.2", 2200, 12345),
-            _make_vm_info("vm-def456", VMState.STOPPED, "172.16.0.3", None, None),
-        ]
+        """`smolvm list` should print a Rich table with running VM details."""
+        vms = [_make_vm_info("vm-abc123", VMState.RUNNING, "172.16.0.2", 2200, 12345)]
         mock_sdk_cls.return_value.list_vms.return_value = vms
 
         ret = main(["list"])
@@ -706,9 +705,31 @@ class TestCliList:
         assert "172.16.0.2" in out
         assert "2200" in out
         assert "12345" in out
+        assert "SmolVM Instances" in out
+        assert "Total: 1 VM(s)." in out
+        mock_sdk_cls.return_value.list_vms.assert_called_once_with(status=VMState.RUNNING)
+
+    def test_list_all_shows_running_and_stopped_vms(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm list --all` should include stopped VMs."""
+        vms = [
+            _make_vm_info("vm-abc123", VMState.RUNNING, "172.16.0.2", 2200, 12345),
+            _make_vm_info("vm-def456", VMState.STOPPED, "172.16.0.3", None, None),
+        ]
+        mock_sdk_cls.return_value.list_vms.return_value = vms
+
+        ret = main(["list", "--all"])
+
+        assert ret == 0
+        out = capsys.readouterr().out
+        assert "vm-abc123" in out
         assert "vm-def456" in out
         assert "stopped" in out
         assert "Total: 2 VM(s)." in out
+        mock_sdk_cls.return_value.list_vms.assert_called_once_with(status=None)
 
     def test_list_no_network(
         self,
@@ -726,6 +747,7 @@ class TestCliList:
         out = capsys.readouterr().out
         assert "vm-abc123" in out
         assert "created" in out
+        mock_sdk_cls.return_value.list_vms.assert_called_once_with(status=VMState.RUNNING)
         # Network and PID unavailable
         assert out.count("-") >= 3
 
@@ -740,6 +762,65 @@ class TestCliList:
 
         assert ret == 0
         mock_sdk_cls.return_value.list_vms.assert_called_once_with(status=VMState.RUNNING)
+
+    def test_list_json(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm list --json` should emit structured data for running VMs."""
+        mock_sdk_cls.return_value.list_vms.return_value = [
+            _make_vm_info("vm-abc123", VMState.RUNNING, "172.16.0.2", 2200, 12345),
+        ]
+
+        ret = main(["list", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload == [
+            {
+                "vm_id": "vm-abc123",
+                "status": "running",
+                "ip_address": "172.16.0.2",
+                "ssh_port": 2200,
+                "pid": 12345,
+            }
+        ]
+        mock_sdk_cls.return_value.list_vms.assert_called_once_with(status=VMState.RUNNING)
+
+    def test_list_json_empty(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm list --json` should emit an empty JSON array when nothing matches."""
+        mock_sdk_cls.return_value.list_vms.return_value = []
+
+        ret = main(["list", "--json"])
+
+        assert ret == 0
+        assert json.loads(capsys.readouterr().out) == []
+        mock_sdk_cls.return_value.list_vms.assert_called_once_with(status=VMState.RUNNING)
+
+    def test_list_all_json(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm list --all --json` should emit all VM rows."""
+        mock_sdk_cls.return_value.list_vms.return_value = [
+            _make_vm_info("vm-abc123", VMState.RUNNING, "172.16.0.2", 2200, 12345),
+            _make_vm_info("vm-def456", VMState.STOPPED, "172.16.0.3", None, None),
+        ]
+
+        ret = main(["list", "--all", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload[0]["vm_id"] == "vm-abc123"
+        assert payload[1]["status"] == "stopped"
+        assert payload[1]["ssh_port"] is None
+        mock_sdk_cls.return_value.list_vms.assert_called_once_with(status=None)
 
     def test_list_status_filter_empty(
         self,

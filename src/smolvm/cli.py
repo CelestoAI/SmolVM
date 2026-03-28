@@ -19,14 +19,19 @@ from __future__ import annotations
 import argparse
 import importlib
 import importlib.metadata
+import json
 import os
 import re
 import subprocess
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from smolvm.cleanup import run_cleanup
 from smolvm.doctor import run_doctor
 from smolvm.types import VMState
+
+if TYPE_CHECKING:
+    from smolvm.types import VMInfo
 
 DASHBOARD_ALLOW_BETA_ENV = "SMOLVM_DASHBOARD_ALLOW_BETA"
 DASHBOARD_URL_ENV = "SMOLVM_DASHBOARD_URL"
@@ -163,13 +168,24 @@ def build_parser() -> argparse.ArgumentParser:
     # ── list subcommand ───────────────────────────────────────────────
     list_parser = subparsers.add_parser(
         "list",
-        help="List all SmolVMs and their status",
+        help="List SmolVMs and their status",
     )
-    list_parser.add_argument(
+    list_filters = list_parser.add_mutually_exclusive_group()
+    list_filters.add_argument(
+        "--all",
+        action="store_true",
+        help="Include stopped, created, and error VMs in addition to running ones.",
+    )
+    list_filters.add_argument(
         "--status",
         choices=["created", "running", "stopped", "error"],
         default=None,
         help="Filter VMs by status (created, running, stopped, error).",
+    )
+    list_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print VM data as JSON instead of a Rich table.",
     )
 
     create_parser = subparsers.add_parser(
@@ -347,14 +363,33 @@ def _run_env(args: argparse.Namespace) -> int:
             vm.close()
 
 
-def _run_list(status_filter: str | None) -> int:
+def _vm_rows(vms: Sequence[VMInfo]) -> list[dict[str, object | None]]:
+    """Normalize VM info objects into CLI list rows."""
+    rows: list[dict[str, object | None]] = []
+    for vm in vms:
+        network = vm.network
+        rows.append(
+            {
+                "vm_id": vm.vm_id,
+                "status": vm.status.value,
+                "ip_address": network.guest_ip if network else None,
+                "ssh_port": network.ssh_host_port if network else None,
+                "pid": vm.pid,
+            }
+        )
+    return rows
+
+
+def _run_list(*, include_all: bool, status_filter: str | None, json_output: bool) -> int:
     """Handle ``smolvm list``."""
     from smolvm.types import VMState
     from smolvm.vm import SmolVMManager
+    from rich.console import Console
+    from rich.table import Table
 
     sdk = SmolVMManager()
     try:
-        state = VMState(status_filter) if status_filter else None
+        state = None if include_all else VMState(status_filter or VMState.RUNNING.value)
         vms = sdk.list_vms(status=state)
     except Exception as e:
         print(f"Error: {e}")
@@ -363,35 +398,40 @@ def _run_list(status_filter: str | None) -> int:
         sdk.close()
 
     if not vms:
+        if json_output:
+            print("[]")
+            return 0
         if status_filter:
             print(f"No VMs found with status '{status_filter}'.")
-        else:
+        elif include_all:
             print("No VMs found.")
+        else:
+            print("No running VMs found.")
         return 0
 
-    headers = ["VM ID", "STATUS", "IP ADDRESS", "SSH PORT", "PID"]
+    rows = _vm_rows(vms)
+    if json_output:
+        print(json.dumps(rows, indent=2))
+        return 0
 
-    rows = []
-    for vm in vms:
-        ip = vm.network.guest_ip if vm.network else "-"
-        ssh_port = (
-            str(vm.network.ssh_host_port) if (vm.network and vm.network.ssh_host_port) else "-"
+    table = Table(title="SmolVM Instances")
+    table.add_column("VM ID")
+    table.add_column("Status")
+    table.add_column("IP Address")
+    table.add_column("SSH Port", justify="right")
+    table.add_column("PID", justify="right")
+    for row in rows:
+        table.add_row(
+            str(row["vm_id"]),
+            str(row["status"]),
+            str(row["ip_address"] or "-"),
+            str(row["ssh_port"] or "-"),
+            str(row["pid"] or "-"),
         )
-        pid = str(vm.pid) if vm.pid else "-"
-        rows.append([vm.vm_id, vm.status.value, ip, ssh_port, pid])
 
-    col_widths = [len(h) for h in headers]
-    for row in rows:
-        for i, cell in enumerate(row):
-            col_widths[i] = max(col_widths[i], len(cell))
-
-    fmt = "  ".join(f"{{:<{w}}}" for w in col_widths)
-    print(fmt.format(*headers))
-    print("  ".join("-" * w for w in col_widths))
-    for row in rows:
-        print(fmt.format(*row))
-
-    print(f"\nTotal: {len(vms)} VM(s).")
+    console = Console()
+    console.print(table)
+    console.print(f"Total: {len(rows)} VM(s).")
     return 0
 
 
@@ -538,7 +578,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_cleanup(delete_all=args.all, prefix=args.prefix, dry_run=args.dry_run)
 
     if args.command == "list":
-        return _run_list(status_filter=args.status)
+        return _run_list(
+            include_all=args.all,
+            status_filter=args.status,
+            json_output=args.json,
+        )
 
     if args.command == "create":
         return _run_create(args)

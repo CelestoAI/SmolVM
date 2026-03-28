@@ -29,6 +29,7 @@ classifiers = [
 dependencies = [
     "paramiko>=3.0",
     "pydantic>=2.0",
+    "rich>=13.0",
     "requests>=2.28",
     "requests-unixsocket>=0.3",
 ]
