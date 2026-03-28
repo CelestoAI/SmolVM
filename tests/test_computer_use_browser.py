@@ -73,6 +73,24 @@ def test_normalize_key_maps_common_names() -> None:
     assert module._normalize_key("a") == "a"
 
 
+def test_describe_action_formats_click_and_type() -> None:
+    module = _load_module()
+
+    class ClickAction:
+        type = "click"
+        button = "left"
+        x = 120
+        y = 45
+        keys = ["CTRL"]
+
+    class TypeAction:
+        type = "type"
+        text = "hello world"
+
+    assert module._describe_action(ClickAction()) == "Control+click left @ (120, 45)"
+    assert module._describe_action(TypeAction()) == "type 'hello world'"
+
+
 def test_format_result_omits_missing_optional_fields() -> None:
     module = _load_module()
     result = module.ComputerUseResult(

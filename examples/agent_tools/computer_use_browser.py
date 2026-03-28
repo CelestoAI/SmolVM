@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import base64
 import os
+import sys
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
@@ -109,6 +110,10 @@ class ComputerUseResult:
     cdp_url: str | None
     live_url: str | None
     artifacts_dir: str | None
+
+
+def _log(message: str) -> None:
+    print(f"[smolvm-computer-use] {message}", file=sys.stderr, flush=True)
 
 
 def _normalized_host(url: str) -> str:
@@ -262,6 +267,48 @@ def _click_button(button: str) -> str:
     return "left" if button in {"back", "forward"} else button
 
 
+def _format_keys(keys: list[str] | None) -> str:
+    normalized = [_normalize_key(key) for key in keys or [] if key.strip()]
+    return "+".join(normalized)
+
+
+def _describe_action(action: Any) -> str:
+    action_type = getattr(action, "type", "unknown")
+    keys = _format_keys(getattr(action, "keys", None))
+    keys_prefix = f"{keys}+" if keys else ""
+
+    if action_type == "click":
+        button = getattr(action, "button", "left")
+        return f"{keys_prefix}click {button} @ ({action.x}, {action.y})"
+    if action_type == "double_click":
+        return f"{keys_prefix}double_click @ ({action.x}, {action.y})"
+    if action_type == "move":
+        return f"{keys_prefix}move -> ({action.x}, {action.y})"
+    if action_type == "scroll":
+        return (
+            f"{keys_prefix}scroll @ ({action.x}, {action.y}) "
+            f"delta=({action.scroll_x}, {action.scroll_y})"
+        )
+    if action_type == "keypress":
+        return f"keypress {_format_keys(getattr(action, 'keys', None)) or '<none>'}"
+    if action_type == "type":
+        text = getattr(action, "text", "")
+        preview = text if len(text) <= 40 else f"{text[:37]}..."
+        return f"type {preview!r}"
+    if action_type == "drag":
+        path = list(getattr(action, "path", []) or [])
+        if not path:
+            return "drag <empty path>"
+        start = path[0]
+        end = path[-1]
+        return f"{keys_prefix}drag ({start.x}, {start.y}) -> ({end.x}, {end.y})"
+    if action_type == "wait":
+        return "wait"
+    if action_type == "screenshot":
+        return "screenshot"
+    return action_type
+
+
 def _run_action(page: Page, action: Any) -> None:
     action_type = getattr(action, "type", None)
     held_keys = _hold_keys(page, getattr(action, "keys", None))
@@ -339,14 +386,19 @@ def _enforce_allowed_pages(
     config: ComputerUseConfig,
 ) -> Page:
     allowed_pages: list[Page] = []
+    blocked_urls: list[str] = []
     for candidate in list(context.pages):
         if candidate.is_closed():
             continue
         if _is_allowed_url(candidate.url, config.allowed_domains):
             allowed_pages.append(candidate)
             continue
+        blocked_urls.append(candidate.url)
         with suppress(Exception):
             candidate.close()
+
+    if blocked_urls:
+        _log("closed blocked page(s): " + ", ".join(blocked_urls))
 
     if allowed_pages:
         selected = _active_page(context, current_page if current_page in allowed_pages else None)
@@ -356,6 +408,7 @@ def _enforce_allowed_pages(
 
     recovered_page = context.new_page()
     recovered_page.goto(config.start_url, wait_until="domcontentloaded")
+    _log(f"reopened allowed start URL: {config.start_url}")
     return recovered_page
 
 
@@ -364,6 +417,7 @@ def _check_safety(computer_call: ResponseComputerToolCall) -> None:
     if not checks:
         return
     messages = [check.message for check in checks if getattr(check, "message", None)]
+    _log("model requested human review: " + "; ".join(messages or ["pending safety checks"]))
     raise RuntimeError(
         "The model requested a guarded action that needs human review: "
         + "; ".join(messages or ["pending safety checks"])
@@ -380,8 +434,15 @@ def _run_task(config: ComputerUseConfig) -> ComputerUseResult:
             viewport={"width": config.viewport_width, "height": config.viewport_height},
         )
     ) as session:
+        _log(
+            f"session started id={session.session_id} mode={config.browser_mode} "
+            f"start_url={config.start_url}"
+        )
         if session.cdp_url is None:
             raise SmolVMError("Browser session did not expose a CDP URL.")
+        _log(f"cdp_url={session.cdp_url}")
+        if session.live_url:
+            _log(f"live_url={session.live_url}")
 
         browser: Browser = session.connect_playwright()
         context = browser.contexts[0] if browser.contexts else browser.new_context(
@@ -390,20 +451,24 @@ def _run_task(config: ComputerUseConfig) -> ComputerUseResult:
         page = context.pages[0] if context.pages else context.new_page()
         page.goto(config.start_url, wait_until="domcontentloaded")
         page = _enforce_allowed_pages(context, page, config)
+        _log(f"loaded {page.url}")
 
         response = client.responses.create(
             model=config.model,
             tools=[{"type": "computer"}],
             input=_task_prompt(config),
         )
+        _log(f"submitted task to model={config.model}")
 
-        for _ in range(config.max_steps):
+        for step_number in range(1, config.max_steps + 1):
+            _log(f"step {step_number}/{config.max_steps}")
             computer_call = _first_computer_call(response)
             if computer_call is None:
                 final_answer = _extract_text(response)
                 if not final_answer:
                     raise RuntimeError("The model stopped without returning a final answer.")
                 page = _enforce_allowed_pages(context, page, config)
+                _log(f"final answer: {final_answer}")
                 return ComputerUseResult(
                     final_answer=final_answer,
                     session_id=session.session_id,
@@ -415,8 +480,17 @@ def _run_task(config: ComputerUseConfig) -> ComputerUseResult:
 
             _check_safety(computer_call)
             actions = list(getattr(computer_call, "actions", []) or [])
+            if actions:
+                _log("actions: " + " | ".join(_describe_action(action) for action in actions))
+            else:
+                _log("actions: <none>")
+            previous_url = page.url
             _run_actions(page, actions)
             page = _enforce_allowed_pages(context, _active_page(context, page), config)
+            if page.url != previous_url:
+                _log(f"url changed: {previous_url} -> {page.url}")
+            else:
+                _log(f"url unchanged: {page.url}")
             screenshot_data_url = _capture_data_url(page)
 
             response = client.responses.create(
