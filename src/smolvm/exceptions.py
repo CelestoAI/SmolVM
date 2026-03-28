@@ -46,6 +46,28 @@ class VMNotFoundError(SmolVMError):
         self.vm_id = vm_id
 
 
+class BrowserSessionAlreadyExistsError(SmolVMError):
+    """Raised when attempting to create a browser session with an existing ID."""
+
+    def __init__(self, session_id: str) -> None:
+        super().__init__(
+            f"Browser session '{session_id}' already exists",
+            {"session_id": session_id},
+        )
+        self.session_id = session_id
+
+
+class BrowserSessionNotFoundError(SmolVMError):
+    """Raised when a browser session is not found."""
+
+    def __init__(self, session_id: str) -> None:
+        super().__init__(
+            f"Browser session '{session_id}' not found",
+            {"session_id": session_id},
+        )
+        self.session_id = session_id
+
+
 class NetworkError(SmolVMError):
     """Raised when network operations fail (TAP, NAT, IP allocation)."""
 

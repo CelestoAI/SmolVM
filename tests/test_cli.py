@@ -16,12 +16,13 @@
 
 import json
 import os
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from smolvm.cli import DASHBOARD_ALLOW_BETA_ENV, _current_version_is_prerelease, main
-from smolvm.types import NetworkConfig, VMState
+from smolvm.types import BrowserSessionState, NetworkConfig, VMState
 
 
 def _make_vm_info(
@@ -387,9 +388,12 @@ class TestCliSSH:
 
         assert ret == 0
         out = capsys.readouterr().out
+        notice = (
+            "Notice: VM 'vm001' isn't running yet. "
+            "SSH may take a little longer while SmolVM starts it."
+        )
         assert (
-            "Notice: VM 'vm001' isn't running yet. SSH may take a little longer while SmolVM starts it."
-            in out
+            notice in out
         )
         vm.start.assert_called_once_with(boot_timeout=30.0)
         vm.wait_for_ssh.assert_called_once_with(timeout=30.0)
@@ -517,6 +521,77 @@ class TestCurrentVersionIsPrerelease:
     def test_dev_version_is_prerelease(self, _: MagicMock) -> None:
         """Dev versions (e.g. 0.0.5.dev1) should be detected as pre-release."""
         assert _current_version_is_prerelease() is True
+
+
+class TestCliBrowser:
+    """Tests for `smolvm browser` commands."""
+
+    @patch("smolvm.browser.BrowserSession")
+    def test_browser_start_json(
+        self, mock_browser_cls: MagicMock, capsys: pytest.CaptureFixture
+    ) -> None:
+        """`smolvm browser start --json` should emit machine-readable session details."""
+        session = MagicMock()
+        session.session_id = "browser-abc123"
+        session.vm_id = "browser-abc123"
+        session.status = BrowserSessionState.READY
+        session.cdp_url = "http://127.0.0.1:39222"
+        session.live_url = "http://127.0.0.1:36080/vnc.html"
+        session.info.profile_id = None
+        session.artifacts_dir = Path("/tmp/browser-abc123")
+        mock_browser_cls.return_value = session
+
+        ret = main(["browser", "start", "--json"])
+
+        assert ret == 0
+        mock_browser_cls.assert_called_once()
+        session.start.assert_called_once_with(boot_timeout=30.0)
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["session_id"] == "browser-abc123"
+        assert payload["cdp_url"] == "http://127.0.0.1:39222"
+
+    @patch("smolvm.browser.BrowserSession")
+    def test_browser_open_requires_live_url(
+        self,
+        mock_browser_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm browser open` should fail cleanly for headless sessions."""
+        session = MagicMock()
+        session.live_url = None
+        mock_browser_cls.from_id.return_value = session
+
+        ret = main(["browser", "open", "browser-abc123"])
+
+        assert ret == 1
+        assert "does not have a live_url" in capsys.readouterr().out
+
+    @patch("smolvm.vm.resolve_data_dir", return_value=Path("/tmp"))
+    @patch("smolvm.storage.StateManager")
+    def test_browser_list_json(
+        self,
+        mock_state_manager_cls: MagicMock,
+        _mock_resolve_data_dir: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm browser list --json` should serialize stored sessions."""
+        state_manager = MagicMock()
+        session = MagicMock()
+        session.session_id = "browser-abc123"
+        session.vm_id = "browser-abc123"
+        session.status = BrowserSessionState.READY
+        session.cdp_url = "http://127.0.0.1:39222"
+        session.live_url = "http://127.0.0.1:36080/vnc.html"
+        session.profile_id = None
+        state_manager.list_browser_sessions.return_value = [session]
+        mock_state_manager_cls.return_value = state_manager
+
+        ret = main(["browser", "list", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload[0]["session_id"] == "browser-abc123"
+        assert payload[0]["status"] == "ready"
 
     @patch("smolvm.cli.importlib.metadata.version", return_value="0.0.5b2")
     def test_beta_version_is_prerelease(self, _: MagicMock) -> None:

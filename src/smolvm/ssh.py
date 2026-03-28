@@ -24,6 +24,8 @@ import logging
 import shlex
 import socket
 import time
+from contextlib import suppress
+from pathlib import Path
 from typing import Literal
 
 import paramiko
@@ -147,11 +149,46 @@ class SSHClient:
     def close(self) -> None:
         """Close the SSH connection and release resources."""
         if self._client is not None:
-            try:
+            with suppress(Exception):
                 self._client.close()
-            except Exception:
-                pass
             self._client = None
+
+    def get_file(self, remote_path: str, local_path: str | Path) -> Path:
+        """Download a file from the guest VM using SFTP."""
+        if not remote_path:
+            raise ValueError("remote_path cannot be empty")
+
+        destination = Path(local_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+
+        client = self._ensure_connected()
+        sftp = client.open_sftp()
+        try:
+            sftp.get(remote_path, str(destination))
+        except Exception as e:
+            raise SmolVMError(f"Failed to download guest file '{remote_path}': {e}") from e
+        finally:
+            sftp.close()
+
+        return destination
+
+    def put_file(self, local_path: str | Path, remote_path: str) -> None:
+        """Upload a file into the guest VM using SFTP."""
+        if not remote_path:
+            raise ValueError("remote_path cannot be empty")
+
+        source = Path(local_path)
+        if not source.exists():
+            raise ValueError(f"local_path does not exist: {source}")
+
+        client = self._ensure_connected()
+        sftp = client.open_sftp()
+        try:
+            sftp.put(str(source), remote_path)
+        except Exception as e:
+            raise SmolVMError(f"Failed to upload file to guest '{remote_path}': {e}") from e
+        finally:
+            sftp.close()
 
     # ── Command execution ───────────────────────────────────────
 
@@ -225,7 +262,7 @@ class SSHClient:
                 stdout=stdout,
                 stderr=stderr,
             )
-        except socket.timeout as e:
+        except TimeoutError as e:
             raise OperationTimeoutError(
                 f"ssh {self.host}:{self.port}: {command}",
                 timeout,
@@ -253,7 +290,7 @@ class SSHClient:
                 sock.settimeout(timeout)
                 data = sock.recv(32)
                 return data.startswith(b"SSH-")
-        except (OSError, socket.timeout):
+        except (OSError, TimeoutError):
             return False
 
     def wait_for_ssh(self, timeout: float = 60.0, interval: float = 0.1) -> None:

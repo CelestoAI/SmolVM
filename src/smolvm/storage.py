@@ -25,8 +25,22 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from smolvm.exceptions import NetworkError, VMAlreadyExistsError, VMNotFoundError
-from smolvm.types import NetworkConfig, VMConfig, VMInfo, VMState
+from smolvm.exceptions import (
+    BrowserSessionAlreadyExistsError,
+    BrowserSessionNotFoundError,
+    NetworkError,
+    VMAlreadyExistsError,
+    VMNotFoundError,
+)
+from smolvm.types import (
+    BrowserSessionConfig,
+    BrowserSessionInfo,
+    BrowserSessionState,
+    NetworkConfig,
+    VMConfig,
+    VMInfo,
+    VMState,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +136,26 @@ class StateManager:
 
                 CREATE INDEX IF NOT EXISTS idx_ssh_forwards_vm_id ON ssh_forwards(vm_id);
                 CREATE INDEX IF NOT EXISTS idx_ssh_forwards_host_port ON ssh_forwards(host_port);
+
+                CREATE TABLE IF NOT EXISTS browser_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    vm_id TEXT NOT NULL UNIQUE,
+                    config TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    cdp_url TEXT,
+                    live_url TEXT,
+                    debug_port INTEGER,
+                    profile_id TEXT,
+                    expires_at TEXT,
+                    artifacts_dir TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_browser_sessions_status
+                    ON browser_sessions(status);
+                CREATE INDEX IF NOT EXISTS idx_browser_sessions_profile_id
+                    ON browser_sessions(profile_id);
             """
             )
 
@@ -323,6 +357,206 @@ class StateManager:
                 )
             )
         return result
+
+    @staticmethod
+    def _browser_session_info_from_row(row: sqlite3.Row) -> BrowserSessionInfo:
+        """Convert a browser_sessions row into BrowserSessionInfo."""
+        expires_at = datetime.fromisoformat(row["expires_at"]) if row["expires_at"] else None
+        artifacts_dir = Path(row["artifacts_dir"]) if row["artifacts_dir"] else None
+        return BrowserSessionInfo(
+            session_id=row["session_id"],
+            vm_id=row["vm_id"],
+            status=BrowserSessionState(row["status"]),
+            cdp_url=row["cdp_url"],
+            live_url=row["live_url"],
+            debug_port=row["debug_port"],
+            profile_id=row["profile_id"],
+            expires_at=expires_at,
+            artifacts_dir=artifacts_dir,
+        )
+
+    def create_browser_session(
+        self,
+        info: BrowserSessionInfo,
+        config: BrowserSessionConfig,
+    ) -> BrowserSessionInfo:
+        """Create a new browser session record."""
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self._get_connection(exclusive=True) as conn:
+            existing = conn.execute(
+                "SELECT session_id FROM browser_sessions WHERE session_id = ?",
+                (info.session_id,),
+            ).fetchone()
+            if existing:
+                raise BrowserSessionAlreadyExistsError(info.session_id)
+
+            conn.execute(
+                """
+                INSERT INTO browser_sessions (
+                    session_id,
+                    vm_id,
+                    config,
+                    status,
+                    cdp_url,
+                    live_url,
+                    debug_port,
+                    profile_id,
+                    expires_at,
+                    artifacts_dir,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    info.session_id,
+                    info.vm_id,
+                    config.model_dump_json(),
+                    info.status.value,
+                    info.cdp_url,
+                    info.live_url,
+                    info.debug_port,
+                    info.profile_id,
+                    info.expires_at.isoformat() if info.expires_at else None,
+                    str(info.artifacts_dir) if info.artifacts_dir else None,
+                    now,
+                    now,
+                ),
+            )
+
+        logger.info("Created browser session record: %s", info.session_id)
+        return info
+
+    def get_browser_session(self, session_id: str) -> BrowserSessionInfo:
+        """Get browser session info by session ID."""
+        if not session_id:
+            raise ValueError("session_id cannot be empty")
+
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM browser_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+
+        if not row:
+            raise BrowserSessionNotFoundError(session_id)
+
+        return self._browser_session_info_from_row(row)
+
+    def get_browser_session_config(self, session_id: str) -> BrowserSessionConfig:
+        """Get the stored browser session config."""
+        if not session_id:
+            raise ValueError("session_id cannot be empty")
+
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT config FROM browser_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+
+        if not row:
+            raise BrowserSessionNotFoundError(session_id)
+
+        return BrowserSessionConfig.model_validate_json(row["config"])
+
+    def update_browser_session(
+        self,
+        session_id: str,
+        *,
+        status: BrowserSessionState | None = None,
+        cdp_url: str | None = None,
+        live_url: str | None = None,
+        debug_port: int | None = None,
+        profile_id: str | None = None,
+        expires_at: datetime | None = None,
+        artifacts_dir: Path | None = None,
+        config: BrowserSessionConfig | None = None,
+    ) -> BrowserSessionInfo:
+        """Update a browser session record."""
+        if not session_id:
+            raise ValueError("session_id cannot be empty")
+
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self._get_connection(exclusive=True) as conn:
+            existing = conn.execute(
+                "SELECT session_id FROM browser_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if not existing:
+                raise BrowserSessionNotFoundError(session_id)
+
+            updates = ["updated_at = ?"]
+            params: list[object] = [now]
+
+            if status is not None:
+                updates.append("status = ?")
+                params.append(status.value)
+            if cdp_url is not None:
+                updates.append("cdp_url = ?")
+                params.append(cdp_url)
+            if live_url is not None:
+                updates.append("live_url = ?")
+                params.append(live_url)
+            if debug_port is not None:
+                updates.append("debug_port = ?")
+                params.append(debug_port)
+            if profile_id is not None:
+                updates.append("profile_id = ?")
+                params.append(profile_id)
+            if expires_at is not None:
+                updates.append("expires_at = ?")
+                params.append(expires_at.isoformat())
+            if artifacts_dir is not None:
+                updates.append("artifacts_dir = ?")
+                params.append(str(artifacts_dir))
+            if config is not None:
+                updates.append("config = ?")
+                params.append(config.model_dump_json())
+
+            params.append(session_id)
+            conn.execute(
+                f"UPDATE browser_sessions SET {', '.join(updates)} WHERE session_id = ?",
+                params,
+            )
+
+        logger.info("Updated browser session: %s", session_id)
+        return self.get_browser_session(session_id)
+
+    def delete_browser_session(self, session_id: str) -> None:
+        """Delete a browser session record."""
+        if not session_id:
+            raise ValueError("session_id cannot be empty")
+
+        with self._get_connection(exclusive=True) as conn:
+            result = conn.execute(
+                "DELETE FROM browser_sessions WHERE session_id = ?",
+                (session_id,),
+            )
+            if result.rowcount == 0:
+                raise BrowserSessionNotFoundError(session_id)
+
+        logger.info("Deleted browser session: %s", session_id)
+
+    def list_browser_sessions(
+        self, status: BrowserSessionState | None = None
+    ) -> list[BrowserSessionInfo]:
+        """List browser sessions, optionally filtered by status."""
+        with self._get_connection() as conn:
+            if status is not None:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM browser_sessions
+                    WHERE status = ?
+                    ORDER BY created_at
+                    """,
+                    (status.value,),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM browser_sessions ORDER BY created_at").fetchall()
+
+        return [self._browser_session_info_from_row(row) for row in rows]
 
     def allocate_ip(self, vm_id: str, tap_device: str) -> str:
         """Atomically allocate the next available IP address.

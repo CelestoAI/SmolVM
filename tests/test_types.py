@@ -20,7 +20,16 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from smolvm.types import CommandResult, NetworkConfig, VMConfig, VMInfo, VMState
+from smolvm.types import (
+    BrowserSessionConfig,
+    BrowserSessionState,
+    BrowserViewport,
+    CommandResult,
+    NetworkConfig,
+    VMConfig,
+    VMInfo,
+    VMState,
+)
 
 
 class TestVMConfig:
@@ -330,6 +339,49 @@ class TestVMState:
         assert VMState.RUNNING.value == "running"
         assert VMState.STOPPED.value == "stopped"
         assert VMState.ERROR.value == "error"
+
+
+class TestBrowserSessionConfig:
+    """Tests for BrowserSessionConfig validation."""
+
+    def test_defaults(self) -> None:
+        """Browser sessions should default to a headless ephemeral Chromium profile."""
+        config = BrowserSessionConfig()
+
+        assert config.backend == "auto"
+        assert config.browser == "chromium"
+        assert config.mode == "headless"
+        assert config.profile_mode == "ephemeral"
+        assert config.timeout_minutes == 30
+        assert config.viewport == BrowserViewport(width=1280, height=720)
+
+    def test_viewport_object_normalizes_width_and_height(self) -> None:
+        """Nested viewport input should populate width/height fields."""
+        config = BrowserSessionConfig(
+            viewport={"width": 1440, "height": 900},
+        )
+
+        assert config.viewport_width == 1440
+        assert config.viewport_height == 900
+        assert config.viewport == BrowserViewport(width=1440, height=900)
+
+    def test_persistent_profile_requires_profile_id(self) -> None:
+        """Persistent browser sessions must declare a profile ID."""
+        with pytest.raises(ValidationError, match="profile_id is required"):
+            BrowserSessionConfig(profile_mode="persistent")
+
+    def test_record_video_requires_live_mode(self) -> None:
+        """Video recording is only valid for live-mode sessions."""
+        with pytest.raises(ValidationError, match="record_video requires mode='live'"):
+            BrowserSessionConfig(record_video=True)
+
+    def test_session_state_values(self) -> None:
+        """All browser session lifecycle states should exist."""
+        assert BrowserSessionState.CREATED.value == "created"
+        assert BrowserSessionState.STARTING.value == "starting"
+        assert BrowserSessionState.READY.value == "ready"
+        assert BrowserSessionState.STOPPING.value == "stopping"
+        assert BrowserSessionState.ERROR.value == "error"
 
 
 class TestNetworkConfig:

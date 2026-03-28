@@ -14,13 +14,21 @@
 
 """Tests for SmolVM storage module."""
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
-from smolvm.exceptions import VMAlreadyExistsError, VMNotFoundError
+from smolvm.exceptions import BrowserSessionNotFoundError, VMAlreadyExistsError, VMNotFoundError
 from smolvm.storage import StateManager
-from smolvm.types import NetworkConfig, VMConfig, VMState
+from smolvm.types import (
+    BrowserSessionConfig,
+    BrowserSessionInfo,
+    BrowserSessionState,
+    NetworkConfig,
+    VMConfig,
+    VMState,
+)
 
 
 @pytest.fixture
@@ -326,3 +334,81 @@ class TestReconciliation:
         vm_info = state_manager.get_vm("vm001")
         assert vm_info.status == VMState.ERROR
         assert vm_info.pid is None
+
+
+class TestBrowserSessionStorage:
+    """Tests for browser session persistence."""
+
+    def test_create_get_and_update_browser_session(
+        self,
+        state_manager: StateManager,
+    ) -> None:
+        """Browser session records should round-trip through SQLite."""
+        config = BrowserSessionConfig(
+            session_id="browser-abc123",
+            mode="live",
+            profile_mode="persistent",
+            profile_id="acct-1",
+            record_video=True,
+        )
+        expires_at = datetime.now(timezone.utc)
+        info = BrowserSessionInfo(
+            session_id="browser-abc123",
+            vm_id="browser-prof-acct-1-deadbeef",
+            status=BrowserSessionState.CREATED,
+            profile_id="acct-1",
+            expires_at=expires_at,
+            artifacts_dir=Path("/tmp/browser-abc123"),
+        )
+
+        created = state_manager.create_browser_session(info, config)
+        fetched = state_manager.get_browser_session("browser-abc123")
+        fetched_config = state_manager.get_browser_session_config("browser-abc123")
+
+        assert created == info
+        assert fetched == info
+        assert fetched_config == config
+
+        updated = state_manager.update_browser_session(
+            "browser-abc123",
+            status=BrowserSessionState.READY,
+            cdp_url="http://127.0.0.1:39222",
+            live_url="http://127.0.0.1:36080/vnc.html",
+            debug_port=39222,
+        )
+
+        assert updated.status == BrowserSessionState.READY
+        assert updated.cdp_url == "http://127.0.0.1:39222"
+        assert updated.live_url == "http://127.0.0.1:36080/vnc.html"
+
+    def test_list_and_delete_browser_sessions(self, state_manager: StateManager) -> None:
+        """Browser sessions should be listable and removable."""
+        first = BrowserSessionInfo(
+            session_id="browser-001",
+            vm_id="browser-001",
+            status=BrowserSessionState.CREATED,
+        )
+        second = BrowserSessionInfo(
+            session_id="browser-002",
+            vm_id="browser-002",
+            status=BrowserSessionState.READY,
+        )
+
+        state_manager.create_browser_session(
+            first,
+            BrowserSessionConfig(session_id="browser-001"),
+        )
+        state_manager.create_browser_session(
+            second,
+            BrowserSessionConfig(session_id="browser-002"),
+        )
+
+        sessions = state_manager.list_browser_sessions()
+        ready_only = state_manager.list_browser_sessions(status=BrowserSessionState.READY)
+
+        assert len(sessions) == 2
+        assert [session.session_id for session in ready_only] == ["browser-002"]
+
+        state_manager.delete_browser_session("browser-001")
+        with pytest.raises(BrowserSessionNotFoundError):
+            state_manager.get_browser_session("browser-001")

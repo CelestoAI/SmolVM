@@ -166,6 +166,66 @@ smolvm env list <vm_id> --show-values
 smolvm env unset <vm_id> DEBUG
 ```
 
+## 7. Browser Sessions
+
+SmolVM can now provision disposable Chromium sessions inside isolated VMs and expose:
+
+- A localhost CDP endpoint for Playwright or other browser automation clients.
+- An optional localhost noVNC live view for human takeover.
+- Per-session artifacts for downloads, logs, and recordings.
+
+CLI:
+
+```bash
+# Start a live browser session and print the CDP/live URLs
+smolvm browser start --mode live --json
+
+# List active browser sessions
+smolvm browser list
+
+# Open the live view in your default browser
+smolvm browser open <session_id>
+
+# Tail guest/browser logs
+smolvm browser logs <session_id>
+
+# Tear the session down and remove its persisted state
+smolvm browser stop <session_id>
+```
+
+Python:
+
+```python
+from smolvm import BrowserSession, BrowserSessionConfig
+
+with BrowserSession(
+    BrowserSessionConfig(
+        mode="live",
+        record_video=True,
+        viewport={"width": 1440, "height": 900},
+    )
+) as session:
+    print(session.cdp_url)
+    print(session.live_url)
+```
+
+Persistent browser profiles are also supported:
+
+```python
+from smolvm import BrowserSession, BrowserSessionConfig
+
+session = BrowserSession(
+    BrowserSessionConfig(
+        profile_mode="persistent",
+        profile_id="acct-1",
+        mode="headless",
+    )
+)
+session.start()
+print(session.session_id, session.vm_id, session.cdp_url)
+session.stop()
+```
+
 Diagnostics:
 
 ```bash

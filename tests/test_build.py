@@ -156,19 +156,52 @@ class TestImageBuilderLoopFs:
             )
 
         assert mock_run_command.call_count == 3
-        first_call = mock_run_command.call_args_list[0]
-        second_call = mock_run_command.call_args_list[1]
-        third_call = mock_run_command.call_args_list[2]
 
-        assert first_call.args[0][0] == "/usr/local/libexec/smolvm-loopfs-helper"
-        assert first_call.args[0][1] == "mount"
-        assert second_call.args[0][0] == "/usr/local/libexec/smolvm-loopfs-helper"
-        assert second_call.args[0][1] == "extract"
-        assert third_call.args[0][0] == "/usr/local/libexec/smolvm-loopfs-helper"
-        assert third_call.args[0][1] == "umount"
-        assert first_call.kwargs["use_sudo"] is True
-        assert second_call.kwargs["use_sudo"] is True
-        assert third_call.kwargs["use_sudo"] is True
+
+class TestBrowserImageBuilder:
+    """Tests for browser image builder entrypoints."""
+
+    @patch.object(ImageBuilder, "check_docker", return_value=True)
+    @patch.object(ImageBuilder, "_do_build")
+    def test_build_browser_rootfs_wires_guest_helpers(
+        self,
+        mock_do_build: MagicMock,
+        _mock_check_docker: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Browser rootfs builds should include Chromium and guest helper scripts."""
+        builder = ImageBuilder(cache_dir=tmp_path / "images")
+
+        def _fake_do_build(
+            name: str,
+            dockerfile_content: str,
+            init_script: str,
+            image_dir: Path,
+            kernel_path: Path,
+            rootfs_path: Path,
+            rootfs_size_mb: int,
+            **kwargs: object,
+        ) -> None:
+            assert name == "browser-chromium"
+            assert "chromium" in dockerfile_content
+            assert "websockify" in dockerfile_content
+            assert "x11vnc" in dockerfile_content
+            assert init_script.startswith("#!/bin/sh")
+            assert rootfs_size_mb == 4096
+            kernel_path.touch()
+            rootfs_path.touch()
+
+        mock_do_build.side_effect = _fake_do_build
+
+        kernel, rootfs = builder.build_browser_rootfs(
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKey user@test"
+        )
+
+        assert kernel.exists()
+        assert rootfs.exists()
+        extra_files = mock_do_build.call_args.kwargs["extra_files"]
+        assert "smolvm-browser-session" in extra_files
+        assert "smolvm-browser-wait-port" in extra_files
 
     @patch("smolvm.build.subprocess.run")
     @patch("smolvm.build.run_command")

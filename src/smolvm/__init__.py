@@ -12,10 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""SmolVM — A Python SDK for running AI agents and executing untrusted code in a secure, sandboxed environment."""
+"""SmolVM.
 
+A Python SDK for running AI agents and executing untrusted code in a secure,
+sandboxed environment.
+"""
+
+from smolvm.browser import BrowserSession
 from smolvm.build import SSH_BOOT_ARGS, ImageBuilder
 from smolvm.exceptions import (
+    BrowserSessionAlreadyExistsError,
+    BrowserSessionNotFoundError,
     CommandExecutionUnavailableError,
     FirecrackerAPIError,
     HostError,
@@ -32,7 +39,17 @@ from smolvm.facade import SmolVM
 from smolvm.host import HostManager
 from smolvm.images import ImageManager, ImageSource, LocalImage
 from smolvm.ssh import SSHClient
-from smolvm.types import CommandResult, NetworkConfig, VMConfig, VMInfo, VMState
+from smolvm.types import (
+    BrowserSessionConfig,
+    BrowserSessionInfo,
+    BrowserSessionState,
+    BrowserViewport,
+    CommandResult,
+    NetworkConfig,
+    VMConfig,
+    VMInfo,
+    VMState,
+)
 from smolvm.vm import SmolVMManager
 
 __version__ = "0.0.5"
@@ -40,6 +57,7 @@ __version__ = "0.0.5"
 __all__ = [
     # Core classes
     "SmolVM",
+    "BrowserSession",
     "SmolVMManager",
     # Image management
     "ImageManager",
@@ -57,8 +75,14 @@ __all__ = [
     "VMState",
     "NetworkConfig",
     "CommandResult",
+    "BrowserViewport",
+    "BrowserSessionConfig",
+    "BrowserSessionInfo",
+    "BrowserSessionState",
     # Exceptions
     "SmolVMError",
+    "BrowserSessionAlreadyExistsError",
+    "BrowserSessionNotFoundError",
     "CommandExecutionUnavailableError",
     "ValidationError",
     "VMAlreadyExistsError",
