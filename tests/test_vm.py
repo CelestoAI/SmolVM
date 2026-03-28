@@ -26,7 +26,7 @@ from smolvm.exceptions import (
     VMAlreadyExistsError,
     VMNotFoundError,
 )
-from smolvm.types import PortForwardConfig, VMConfig, VMState
+from smolvm.types import VMConfig, VMState
 from smolvm.vm import SmolVMManager
 
 
