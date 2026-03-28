@@ -47,6 +47,25 @@ dashboard = [
     "uvicorn[standard]>=0.34.0",
     "websockets>=14.0",
 ]
+examples = [
+    "langchain",
+    "langchain-openai",
+    "openai",
+    "openai-agents",
+    "playwright",
+    "pydantic-ai",
+]
+all = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "websockets>=14.0",
+    "langchain",
+    "langchain-openai",
+    "openai",
+    "openai-agents",
+    "playwright",
+    "pydantic-ai",
+]
 
 [project.scripts]
 smolvm = "smolvm.cli:main"

@@ -22,6 +22,8 @@ import sys
 import warnings
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES_DIR = REPO_ROOT / "examples" / "agent_tools"
 EXPECTED_EXAMPLES = {
@@ -53,6 +55,12 @@ def _load_module(path: Path):
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize("example_name", sorted(EXPECTED_EXAMPLES))
+def test_agent_tool_examples_import_without_optional_dependencies(example_name: str) -> None:
+    """Import agent-tool examples without requiring optional dependencies."""
+    _load_module(EXAMPLES_DIR / example_name)
 
 
 def test_langchain_tool_import_without_pydantic_v1_warning() -> None:

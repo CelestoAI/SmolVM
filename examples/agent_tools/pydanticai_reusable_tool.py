@@ -36,10 +36,12 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-
-from pydantic_ai import Agent, RunContext
+from typing import TYPE_CHECKING, Any
 
 from smolvm import SmolVM
+
+if TYPE_CHECKING:
+    from pydantic_ai import RunContext
 
 DEFAULT_MODEL = "openai:gpt-4.1"
 
@@ -51,15 +53,16 @@ class SandboxDeps:
     vm_id: str | None = None
 
 
-agent = Agent(
-    os.environ.get("PYDANTICAI_MODEL", DEFAULT_MODEL),
-    deps_type=SandboxDeps,
-    instructions=(
-        "You are a coding assistant with access to a reusable SmolVM sandbox. "
-        "For shell and file-system tasks, call run_in_reusable_smolvm exactly "
-        "once and then summarize the result."
-    ),
-)
+def _require_dependency(import_path: str, install_hint: str) -> Any:
+    """Import an optional dependency lazily with a useful installation hint."""
+    module_name, _, attr_name = import_path.partition(":")
+    try:
+        module = __import__(module_name, fromlist=[attr_name] if attr_name else [])
+    except ImportError as exc:
+        raise RuntimeError(
+            f"Missing dependency '{module_name}'. Install it with: {install_hint}"
+        ) from exc
+    return getattr(module, attr_name) if attr_name else module
 
 
 def _format_command_result(exit_code: int, stdout: str, stderr: str) -> str:
@@ -93,7 +96,6 @@ def _cleanup_vm(vm_id: str | None) -> None:
         vm.close()
 
 
-@agent.tool(docstring_format="google", require_parameter_descriptions=True)
 def run_in_reusable_smolvm(
     ctx: RunContext[SandboxDeps],
     command: str,
@@ -113,8 +115,26 @@ def run_in_reusable_smolvm(
         vm.close()
 
 
+def _build_agent() -> Any:
+    agent_cls = _require_dependency("pydantic_ai:Agent", "pip install pydantic-ai")
+    agent = agent_cls(
+        os.environ.get("PYDANTICAI_MODEL", DEFAULT_MODEL),
+        deps_type=SandboxDeps,
+        instructions=(
+            "You are a coding assistant with access to a reusable SmolVM sandbox. "
+            "For shell and file-system tasks, call run_in_reusable_smolvm exactly "
+            "once and then summarize the result."
+        ),
+    )
+    agent.tool(docstring_format="google", require_parameter_descriptions=True)(
+        run_in_reusable_smolvm
+    )
+    return agent
+
+
 def main() -> None:
     """Run two turns against the same SmolVM-backed sandbox."""
+    agent = _build_agent()
     deps = SandboxDeps()
     try:
         first_prompt = (

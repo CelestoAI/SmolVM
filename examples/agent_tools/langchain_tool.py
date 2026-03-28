@@ -39,7 +39,6 @@ from pprint import pprint
 from typing import Any
 
 from smolvm import SmolVM
-from langchain.tools import tool
 
 DEFAULT_MODEL = "openai:gpt-5.4"
 
@@ -81,6 +80,10 @@ def main() -> None:
     """Run a minimal LangChain agent that can call SmolVM as a tool."""
     create_agent = _require_dependency(
         "langchain.agents:create_agent",
+        "pip install langchain langchain-openai",
+    )
+    tool = _require_dependency(
+        "langchain.tools:tool",
         "pip install langchain langchain-openai",
     )
     agent = create_agent(

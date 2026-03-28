@@ -36,12 +36,23 @@ from __future__ import annotations
 
 import asyncio
 import os
-
-from agents import Agent, Runner, function_tool
+from typing import Any
 
 from smolvm import SmolVM
 
 DEFAULT_MODEL = "gpt-4.1"
+
+
+def _require_dependency(import_path: str, install_hint: str) -> Any:
+    """Import an optional dependency lazily with a useful installation hint."""
+    module_name, _, attr_name = import_path.partition(":")
+    try:
+        module = __import__(module_name, fromlist=[attr_name] if attr_name else [])
+    except ImportError as exc:
+        raise RuntimeError(
+            f"Missing dependency '{module_name}'. Install it with: {install_hint}"
+        ) from exc
+    return getattr(module, attr_name) if attr_name else module
 
 
 def _format_command_result(exit_code: int, stdout: str, stderr: str) -> str:
@@ -53,7 +64,6 @@ def _format_command_result(exit_code: int, stdout: str, stderr: str) -> str:
     )
 
 
-@function_tool
 def run_in_smolvm(command: str, timeout: int = 30) -> str:
     """Run a shell command inside an ephemeral SmolVM sandbox.
 
@@ -68,7 +78,13 @@ def run_in_smolvm(command: str, timeout: int = 30) -> str:
 
 async def main() -> None:
     """Run a minimal OpenAI Agents SDK example with SmolVM as a tool."""
-    agent = Agent(
+    agent_cls = _require_dependency("agents:Agent", "pip install openai-agents")
+    runner_cls = _require_dependency("agents:Runner", "pip install openai-agents")
+    function_tool = _require_dependency(
+        "agents:function_tool",
+        "pip install openai-agents",
+    )
+    agent = agent_cls(
         name="SmolVM Assistant",
         model=os.environ.get("OPENAI_AGENTS_MODEL", DEFAULT_MODEL),
         instructions=(
@@ -76,13 +92,13 @@ async def main() -> None:
             "For shell or Python inspection requests, call run_in_smolvm exactly "
             "once and then summarize the result."
         ),
-        tools=[run_in_smolvm],
+        tools=[function_tool(run_in_smolvm)],
     )
     prompt = (
         "Use run_in_smolvm to run this exact command inside the sandbox: "
         "`uname -a && python3 --version`. Then summarize what you found."
     )
-    result = await Runner.run(agent, prompt)
+    result = await runner_cls.run(agent, prompt)
     print(result.final_output)
 
 

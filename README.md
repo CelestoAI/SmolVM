@@ -270,6 +270,8 @@ Notes:
 ## Agent Framework Tool Examples
 
 SmolVM can be wrapped as an agent tool or function in common Python agent frameworks.
+Install every example dependency with `pip install 'smolvm[examples]'`.
+Use `pip install 'smolvm[all]'` if you also want dashboard dependencies.
 
 - [Computer-use browser example](examples/agent_tools/computer_use_browser.py): let a model drive a real browser visually to answer a question on a site, with SmolVM handling isolation and live view.
 - [LangChain `@tool` example](examples/agent_tools/langchain_tool.py): let a LangChain agent run shell commands in a safe sandbox.
