@@ -270,9 +270,9 @@ Notes:
 
 SmolVM can be wrapped as an agent tool or function in common Python agent frameworks.
 
-- [LangChain `@tool` example](examples/agent_tools/langchain_tool.py): let a LangChain agent run shell commands in a safe sandbox; install `langchain` and `langchain-openai`.
-- [Computer-use browser example](examples/agent_tools/computer_use_browser.py): let a model drive a real browser visually to answer a question on a site, with SmolVM handling isolation and live view; install `openai` and `playwright`.
-- [OpenAI Agents SDK `@function_tool` example](examples/agent_tools/openai_agents_tool.py): let an OpenAI Agents SDK agent run shell commands in a safe sandbox; install `openai-agents`.
+- [Computer-use browser example](examples/agent_tools/computer_use_browser.py): let a model drive a real browser visually to answer a question on a site, with SmolVM handling isolation and live view.
+- [LangChain `@tool` example](examples/agent_tools/langchain_tool.py): let a LangChain agent run shell commands in a safe sandbox.
+- [OpenAI Agents SDK `@function_tool` example](examples/agent_tools/openai_agents_tool.py): let an OpenAI Agents SDK agent run shell commands in a safe sandbox.
 - [PydanticAI `@agent.tool_plain` example](examples/agent_tools/pydanticai_tool.py): let a PydanticAI agent run shell commands in a safe sandbox; install `pydantic-ai`.
 - [PydanticAI reusable sandbox example](examples/agent_tools/pydanticai_reusable_tool.py): keep one sandbox around across multiple PydanticAI runs; install `pydantic-ai`.
 
