@@ -514,12 +514,10 @@ class BrowserSession:
         return self
 
     def __exit__(self, *args: object) -> None:
-        try:
-            if self._owns_session:
-                with suppress(Exception):
-                    self.stop()
-        finally:
-            self.close()
+        if self._owns_session:
+            with suppress(Exception):
+                self.stop()
+        self.close()
 
     def _start_guest_browser(self) -> None:
         if self._vm is None:
