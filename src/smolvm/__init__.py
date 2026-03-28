@@ -52,7 +52,7 @@ from smolvm.types import (
 )
 from smolvm.vm import SmolVMManager
 
-__version__ = "0.0.5"
+__version__ = "0.0.6"
 
 __all__ = [
     # Core classes
