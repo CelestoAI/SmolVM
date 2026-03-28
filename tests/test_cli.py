@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from smolvm.cli import DASHBOARD_ALLOW_BETA_ENV, _current_version_is_prerelease, main
+from smolvm.cli import DASHBOARD_ALLOW_BETA_ENV, _current_version_is_prerelease, build_parser, main
 from smolvm.types import BrowserSessionState, NetworkConfig, VMState
 
 
@@ -44,6 +44,15 @@ def _make_vm_info(
     else:
         vm.network = None
     return vm
+
+
+def test_top_level_help_mentions_json_for_agents() -> None:
+    """Top-level help should describe the machine-readable JSON mode."""
+    help_text = build_parser().format_help()
+
+    assert "--json" in help_text
+    assert "machine-readable output" in help_text
+    assert "LLMs, agents, and automation" in help_text
 
 
 class TestCliEnv:
@@ -94,15 +103,17 @@ class TestCliEnv:
         assert ret == 0
         vm.set_env_vars.assert_called_once_with({"A": "1", "B": "2"})
 
-    def test_env_set_malformed_pair_fails(self, mock_vm_cls: MagicMock) -> None:
+    def test_env_set_malformed_pair_fails(
+        self,
+        mock_vm_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
         """Test execution fails on malformed key=value pair."""
-        vm = self._setup_vm(mock_vm_cls)
+        ret = main(["env", "set", "vm001", "BADPAIR"])
 
-        with pytest.raises(SystemExit) as exc:
-            main(["env", "set", "vm001", "BADPAIR"])
-
-        assert "malformed pair" in str(exc.value.code)
-        vm.close.assert_called_once()
+        assert ret == 1
+        mock_vm_cls.from_id.assert_not_called()
+        assert "malformed pair" in capsys.readouterr().err
 
     def test_env_unset_success(
         self,
@@ -132,8 +143,9 @@ class TestCliEnv:
 
         assert ret == 0
         out = capsys.readouterr().out
-        assert "FOO=****" in out
-        assert "SECRET=****" in out
+        assert "FOO" in out
+        assert "SECRET" in out
+        assert "****" in out
         assert "bar" not in out  # Values hidden
 
     def test_env_list_show_values(
@@ -149,7 +161,78 @@ class TestCliEnv:
 
         assert ret == 0
         out = capsys.readouterr().out
-        assert "FOO=bar" in out
+        assert "FOO" in out
+        assert "bar" in out
+
+    def test_env_set_json(
+        self,
+        mock_vm_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm env set --json` should emit the shared envelope."""
+        vm = self._setup_vm(mock_vm_cls)
+        vm.set_env_vars.return_value = ["FOO"]
+
+        ret = main(["env", "set", "vm001", "FOO=bar", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["command"] == "env.set"
+        assert payload["ok"] is True
+        assert payload["data"]["vm_id"] == "vm001"
+        assert payload["data"]["requested_keys"] == ["FOO"]
+        assert payload["data"]["present_keys"] == ["FOO"]
+        assert "source /etc/profile.d/smolvm_env.sh" in payload["data"]["reload_hint"]
+
+    def test_env_unset_json(
+        self,
+        mock_vm_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm env unset --json` should emit removed and missing keys."""
+        vm = self._setup_vm(mock_vm_cls)
+        vm.unset_env_vars.return_value = {"FOO": "bar"}
+
+        ret = main(["env", "unset", "vm001", "FOO", "MISSING", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["command"] == "env.unset"
+        assert payload["data"]["removed_keys"] == ["FOO"]
+        assert payload["data"]["missing_keys"] == ["MISSING"]
+
+    def test_env_list_json_masked(
+        self,
+        mock_vm_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm env list --json` should mask values by default."""
+        vm = self._setup_vm(mock_vm_cls)
+        vm.list_env_vars.return_value = {"FOO": "bar"}
+
+        ret = main(["env", "list", "vm001", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["command"] == "env.list"
+        assert payload["data"]["masked"] is True
+        assert payload["data"]["variables"] == {"FOO": "****"}
+
+    def test_env_list_json_show_values(
+        self,
+        mock_vm_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm env list --json --show-values` should reveal values."""
+        vm = self._setup_vm(mock_vm_cls)
+        vm.list_env_vars.return_value = {"FOO": "bar"}
+
+        ret = main(["env", "list", "vm001", "--show-values", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["data"]["masked"] is False
+        assert payload["data"]["variables"] == {"FOO": "bar"}
 
     def test_explicit_ssh_key_args(
         self,
@@ -188,7 +271,7 @@ class TestCliEnv:
         ret = main(["env", "list", "missing-vm"])
 
         assert ret == 1
-        assert "Error: VM not found" in capsys.readouterr().out
+        assert "Error: VM not found" in capsys.readouterr().err
 
     def test_vm_no_network_prints_error(
         self,
@@ -202,7 +285,7 @@ class TestCliEnv:
         ret = main(["env", "list", "vm001"])
 
         assert ret == 1
-        assert "no network configuration" in capsys.readouterr().out
+        assert "no network configuration" in capsys.readouterr().err
         vm.close.assert_called_once()
 
 
@@ -261,10 +344,40 @@ class TestCliCreate:
         vm.close.assert_called_once()
         out = capsys.readouterr().out
         assert "Created VM 'project-spacex'." in out
-        assert "Backend: qemu" in out
+        assert "Backend" in out
+        assert "qemu" in out
         assert "172.16.0.2" in out
         assert "2200" in out
         assert "smolvm ssh project-spacex" in out
+
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_create_json(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm create --json` should emit the shared envelope."""
+        config = MagicMock(vm_id="project-spacex")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+
+        vm = MagicMock()
+        vm.vm_id = "project-spacex"
+        vm.info.config.backend = "qemu"
+        vm.info.network = MagicMock(spec=NetworkConfig)
+        vm.info.network.guest_ip = "172.16.0.2"
+        vm.info.network.ssh_host_port = 2200
+        mock_vm_cls.return_value = vm
+
+        ret = main(["create", "--name", "project-spacex", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["command"] == "create"
+        assert payload["data"]["vm"]["name"] == "project-spacex"
+        assert payload["data"]["vm"]["backend"] == "qemu"
+        assert payload["data"]["next"]["ssh_command"] == "smolvm ssh project-spacex"
 
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
@@ -281,7 +394,7 @@ class TestCliCreate:
         ret = main(["create", "--name", "project-spacex"])
 
         assert ret == 1
-        assert "already exists" in capsys.readouterr().out
+        assert "already exists" in capsys.readouterr().err
 
     @patch("smolvm.facade._build_auto_config")
     def test_create_invalid_name_failure(
@@ -295,7 +408,7 @@ class TestCliCreate:
         ret = main(["create", "--name", "Project SpaceX"])
 
         assert ret == 1
-        assert "validation error" in capsys.readouterr().out
+        assert "validation error" in capsys.readouterr().err
 
     @patch("smolvm.facade._build_auto_config")
     def test_create_image_build_failure(
@@ -309,7 +422,7 @@ class TestCliCreate:
         ret = main(["create", "--name", "project-spacex"])
 
         assert ret == 1
-        assert "Docker is required" in capsys.readouterr().out
+        assert "Docker is required" in capsys.readouterr().err
 
 
 class TestCliSSH:
@@ -419,7 +532,7 @@ class TestCliSSH:
         vm.wait_for_ssh.assert_not_called()
         mock_run.assert_not_called()
         vm.close.assert_called_once()
-        assert "error state" in capsys.readouterr().out
+        assert "error state" in capsys.readouterr().err
 
     @patch("smolvm.cli.subprocess.run")
     @patch("smolvm.facade.SmolVM")
@@ -436,7 +549,7 @@ class TestCliSSH:
 
         assert ret == 1
         mock_run.assert_not_called()
-        assert "VM 'missing' not found" in capsys.readouterr().out
+        assert "VM 'missing' not found" in capsys.readouterr().err
 
     @patch("smolvm.cli.subprocess.run", side_effect=FileNotFoundError)
     @patch("smolvm.facade.SmolVM")
@@ -455,7 +568,7 @@ class TestCliSSH:
         ret = main(["ssh", "vm001"])
 
         assert ret == 1
-        assert "openssh-client" in capsys.readouterr().out
+        assert "openssh-client" in capsys.readouterr().err
         vm.close.assert_called_once()
 
     @patch("smolvm.cli.subprocess.run")
@@ -547,8 +660,10 @@ class TestCliBrowser:
         mock_browser_cls.assert_called_once()
         session.start.assert_called_once_with(boot_timeout=30.0)
         payload = json.loads(capsys.readouterr().out)
-        assert payload["session_id"] == "browser-abc123"
-        assert payload["cdp_url"] == "http://127.0.0.1:39222"
+        assert payload["command"] == "browser.start"
+        assert payload["ok"] is True
+        assert payload["data"]["session_id"] == "browser-abc123"
+        assert payload["data"]["cdp_url"] == "http://127.0.0.1:39222"
 
     @patch("smolvm.browser.BrowserSession")
     def test_browser_open_requires_live_url(
@@ -564,7 +679,7 @@ class TestCliBrowser:
         ret = main(["browser", "open", "browser-abc123"])
 
         assert ret == 1
-        assert "does not have a live_url" in capsys.readouterr().out
+        assert "does not have a live_url" in capsys.readouterr().err
 
     @patch("smolvm.vm.resolve_data_dir", return_value=Path("/tmp"))
     @patch("smolvm.storage.StateManager")
@@ -590,8 +705,11 @@ class TestCliBrowser:
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload[0]["session_id"] == "browser-abc123"
-        assert payload[0]["status"] == "ready"
+        assert payload["command"] == "browser.list"
+        assert payload["ok"] is True
+        assert payload["data"]["filters"] == {"status": None}
+        assert payload["data"]["sessions"][0]["session_id"] == "browser-abc123"
+        assert payload["data"]["sessions"][0]["status"] == "ready"
 
     @patch("smolvm.cli.importlib.metadata.version", return_value="0.0.5b2")
     def test_beta_version_is_prerelease(self, _: MagicMock) -> None:
@@ -685,7 +803,7 @@ class TestCliUi:
         ret = main(["ui"])
 
         assert ret == 1
-        assert "smolvm[dashboard]" in capsys.readouterr().out
+        assert "smolvm[dashboard]" in capsys.readouterr().err
 
     @patch("smolvm.cli.importlib.import_module")
     def test_ui_invalid_port(
@@ -699,7 +817,7 @@ class TestCliUi:
         ret = main(["ui", "--port", "70000"])
 
         assert ret == 2
-        assert "invalid port" in capsys.readouterr().out
+        assert "invalid port" in capsys.readouterr().err
 
     @patch("smolvm.cli.importlib.import_module")
     def test_ui_auto_beta_for_prerelease_version(
@@ -751,6 +869,8 @@ class TestCliList:
     @pytest.fixture
     def mock_sdk_cls(self) -> MagicMock:
         with patch("smolvm.vm.SmolVMManager") as m:
+            m.return_value.__enter__.return_value = m.return_value
+            m.return_value.__exit__.side_effect = lambda *args: m.return_value.close()
             yield m
 
     def test_list_empty(
@@ -859,9 +979,12 @@ class TestCliList:
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload == [
+        assert payload["command"] == "list"
+        assert payload["ok"] is True
+        assert payload["data"]["filters"] == {"all": False, "status": "running"}
+        assert payload["data"]["vms"] == [
             {
-                "vm_id": "vm-abc123",
+                "name": "vm-abc123",
                 "status": "running",
                 "ip_address": "172.16.0.2",
                 "ssh_port": 2200,
@@ -881,7 +1004,9 @@ class TestCliList:
         ret = main(["list", "--json"])
 
         assert ret == 0
-        assert json.loads(capsys.readouterr().out) == []
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["data"]["vms"] == []
+        assert payload["data"]["filters"] == {"all": False, "status": "running"}
         mock_sdk_cls.return_value.list_vms.assert_called_once_with(status=VMState.RUNNING)
 
     def test_list_all_json(
@@ -899,9 +1024,10 @@ class TestCliList:
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload[0]["vm_id"] == "vm-abc123"
-        assert payload[1]["status"] == "stopped"
-        assert payload[1]["ssh_port"] is None
+        assert payload["data"]["filters"] == {"all": True, "status": None}
+        assert payload["data"]["vms"][0]["name"] == "vm-abc123"
+        assert payload["data"]["vms"][1]["status"] == "stopped"
+        assert payload["data"]["vms"][1]["ssh_port"] is None
         mock_sdk_cls.return_value.list_vms.assert_called_once_with(status=None)
 
     def test_list_status_filter_empty(
@@ -928,5 +1054,5 @@ class TestCliList:
         ret = main(["list"])
 
         assert ret == 1
-        assert "Error: db unavailable" in capsys.readouterr().out
+        assert "Error: db unavailable" in capsys.readouterr().err
         mock_sdk_cls.return_value.close.assert_called_once()

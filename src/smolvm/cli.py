@@ -19,14 +19,18 @@ from __future__ import annotations
 import argparse
 import importlib
 import importlib.metadata
-import json
 import os
 import re
 import subprocess
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
-from smolvm.cleanup import run_cleanup
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
+
+from smolvm.cleanup import add_cleanup_args, run_cleanup
+from smolvm.cli_output import console_stdout, emit_json, render_empty, render_error, status_style
 from smolvm.doctor import run_doctor
 from smolvm.types import BrowserSessionState, VMState
 
@@ -35,18 +39,98 @@ if TYPE_CHECKING:
 
 DASHBOARD_ALLOW_BETA_ENV = "SMOLVM_DASHBOARD_ALLOW_BETA"
 DASHBOARD_URL_ENV = "SMOLVM_DASHBOARD_URL"
+ENV_RELOAD_HINT = "source /etc/profile.d/smolvm_env.sh"
 
 # Matches PEP 440 pre-release and dev-release version suffixes,
 # e.g. "0.0.5.a1", "0.0.5b2", "0.0.5.dev1", "0.0.5rc1".
 _PRERELEASE_RE = re.compile(r"[._]?(a|b|rc|alpha|beta|dev)\d*", re.IGNORECASE)
 
 
-def _current_version_is_prerelease() -> bool:
-    """Return True if the installed smolvm package version is a pre-release.
+class VmRow(TypedDict):
+    """Machine-readable data for a listed VM."""
 
-    Uses ``packaging.version.Version`` when available for accurate PEP 440
-    parsing, and falls back to a regex heuristic otherwise.
-    """
+    name: str
+    status: str
+    pid: int | None
+    ip_address: str | None
+    ssh_port: int | None
+
+
+class ListFiltersPayload(TypedDict):
+    """Filter metadata included with list output."""
+
+    all: bool
+    status: str | None
+
+
+class ListPayload(TypedDict):
+    """JSON payload for ``smolvm list``."""
+
+    filters: ListFiltersPayload
+    vms: list[VmRow]
+
+
+class CreateVmPayload(TypedDict):
+    """Machine-readable VM details for ``smolvm create``."""
+
+    name: str
+    status: str
+    backend: str
+    ip_address: str | None
+    ssh_port: int | None
+
+
+class CreateNextPayload(TypedDict):
+    """Suggested follow-up action for ``smolvm create``."""
+
+    ssh_command: str
+
+
+class CreatePayload(TypedDict):
+    """JSON payload for ``smolvm create``."""
+
+    vm: CreateVmPayload
+    next: CreateNextPayload
+
+
+class BrowserRow(TypedDict):
+    """Machine-readable data for a listed browser session."""
+
+    session_id: str
+    vm_id: str
+    status: str
+    cdp_url: str | None
+    live_url: str | None
+    profile_id: str | None
+
+
+class BrowserListFiltersPayload(TypedDict):
+    """Filter metadata included with browser list output."""
+
+    status: str | None
+
+
+class BrowserListPayload(TypedDict):
+    """JSON payload for ``smolvm browser list``."""
+
+    filters: BrowserListFiltersPayload
+    sessions: list[BrowserRow]
+
+
+class BrowserSessionPayload(TypedDict):
+    """Machine-readable session details for ``smolvm browser start``."""
+
+    session_id: str
+    vm_id: str
+    status: str
+    cdp_url: str | None
+    live_url: str | None
+    profile_id: str | None
+    artifacts_dir: str | None
+
+
+def _current_version_is_prerelease() -> bool:
+    """Return True if the installed smolvm package version is a pre-release."""
     try:
         ver = importlib.metadata.version("smolvm")
     except importlib.metadata.PackageNotFoundError:
@@ -56,7 +140,7 @@ def _current_version_is_prerelease() -> bool:
         from packaging.version import InvalidVersion, Version
 
         return Version(ver).is_prerelease
-    except (ImportError, InvalidVersion):  # packaging not installed or parse error
+    except (ImportError, InvalidVersion):
         return bool(_PRERELEASE_RE.search(ver))
 
 
@@ -96,6 +180,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="smolvm",
         description="SmolVM command-line tools",
+        epilog=(
+            "Most non-interactive commands support --json to emit machine-readable "
+            "output for LLMs, agents, and automation."
+        ),
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -103,21 +191,7 @@ def build_parser() -> argparse.ArgumentParser:
         "cleanup",
         help="Clean stale SmolVM resources",
     )
-    cleanup.add_argument(
-        "--all",
-        action="store_true",
-        help="Delete all VMs (not just stale/auto-created ones).",
-    )
-    cleanup.add_argument(
-        "--prefix",
-        default="vm-",
-        help='Auto-VM prefix to clean (default: "vm-").',
-    )
-    cleanup.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Print targets without deleting.",
-    )
+    add_cleanup_args(cleanup)
 
     doctor = subparsers.add_parser(
         "doctor",
@@ -140,7 +214,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Treat warnings as failures.",
     )
 
-    # ── ui subcommand ─────────────────────────────────────────────────
     def _add_ui_args(command_parser: argparse.ArgumentParser) -> None:
         command_parser.add_argument(
             "--host",
@@ -165,7 +238,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_ui_args(ui)
 
-    # ── list subcommand ───────────────────────────────────────────────
     list_parser = subparsers.add_parser(
         "list",
         help="List SmolVMs and their status",
@@ -185,7 +257,7 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser.add_argument(
         "--json",
         action="store_true",
-        help="Print VM data as JSON instead of a Rich table.",
+        help="Emit machine-readable JSON output.",
     )
 
     create_parser = subparsers.add_parser(
@@ -214,6 +286,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["auto", "firecracker", "qemu"],
         default=None,
         help="Backend override (default: auto).",
+    )
+    create_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output.",
     )
     _add_boot_timeout_arg(create_parser)
 
@@ -350,14 +427,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of log lines to tail from each source (default: 100).",
     )
 
-    # ── env subcommand group ──────────────────────────────────────────
     env_parser = subparsers.add_parser(
         "env",
         help="Manage environment variables on a running VM",
     )
     env_sub = env_parser.add_subparsers(dest="env_action")
 
-    # smolvm env set <vm_id> KEY=VALUE ...
     env_set = env_sub.add_parser(
         "set",
         help="Set environment variables (merges with existing)",
@@ -369,9 +444,13 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="KEY=VALUE",
         help="One or more KEY=VALUE pairs",
     )
+    env_set.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output.",
+    )
     _add_ssh_auth_args(env_set)
 
-    # smolvm env unset <vm_id> KEY ...
     env_unset = env_sub.add_parser(
         "unset",
         help="Remove environment variables",
@@ -383,9 +462,13 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="KEY",
         help="Variable names to remove",
     )
+    env_unset.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output.",
+    )
     _add_ssh_auth_args(env_unset)
 
-    # smolvm env list <vm_id>
     env_list = env_sub.add_parser(
         "list",
         help="List current environment variables",
@@ -395,6 +478,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--show-values",
         action="store_true",
         help="Show values (they are masked by default).",
+    )
+    env_list.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output.",
     )
     _add_ssh_auth_args(env_list)
 
@@ -408,153 +496,154 @@ def _parse_env_pairs(pairs: list[str]) -> dict[str, str]:
     result: dict[str, str] = {}
     for pair in pairs:
         if "=" not in pair:
-            raise SystemExit(f"Error: malformed pair (expected KEY=VALUE): {pair!r}")
+            raise ValueError(f"malformed pair (expected KEY=VALUE): {pair!r}")
         key, _, value = pair.partition("=")
         if not key:
-            raise SystemExit(f"Error: empty key in pair: {pair!r}")
+            raise ValueError(f"empty key in pair: {pair!r}")
         try:
             validate_env_key(key)
-        except ValueError as e:
-            raise SystemExit(f"Error: {e}") from None
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
         result[key] = value
     return result
 
 
-def _env_reload_hint() -> None:
-    """Print hint about reloading env in existing sessions."""
-    print("  Note: Changes apply to new SSH sessions. In an existing session, run:")
-    print("    source /etc/profile.d/smolvm_env.sh")
+def _error_type(exc: Exception) -> str:
+    """Classify a CLI exception for JSON output."""
+    if isinstance(exc, (FileNotFoundError, ImportError)):
+        return "missing_dependency"
+    if isinstance(exc, ValueError):
+        return "invalid_input"
+    return "runtime_error"
 
 
-def _run_env(args: argparse.Namespace) -> int:
-    """Handle ``smolvm env set|unset|list``."""
-    from smolvm.facade import SmolVM
-
-    if args.env_action is None:
-        print("Usage: smolvm env {set,unset,list} <vm_id> ...")
-        return 2
-
-    vm: SmolVM | None = None
-    try:
-        vm = SmolVM.from_id(
-            args.vm_id,
-            ssh_user=args.ssh_user,
-            ssh_key_path=args.ssh_key,
+def _emit_cli_error(
+    command: str,
+    exit_code: int,
+    exc: Exception,
+    *,
+    json_output: bool,
+    hint: str | None = None,
+) -> int:
+    """Emit a CLI error in JSON or Rich form."""
+    if json_output:
+        emit_json(
+            command,
+            exit_code,
+            data=None,
+            error={
+                "message": str(exc),
+                "type": _error_type(exc),
+            },
         )
-
-        if args.env_action == "set":
-            env_vars = _parse_env_pairs(args.pairs)
-            injected = vm.set_env_vars(env_vars)
-            if injected:
-                print(f"✓ Set {len(injected)} env var(s) on '{args.vm_id}': {', '.join(injected)}")
-                _env_reload_hint()
-            else:
-                print("No variables to set.")
-            return 0
-
-        if args.env_action == "unset":
-            removed = vm.unset_env_vars(args.keys)
-            if removed:
-                keys = ", ".join(sorted(removed))
-                print(f"✓ Removed {len(removed)} env var(s) from '{args.vm_id}': {keys}")
-                _env_reload_hint()
-            else:
-                not_found = ", ".join(args.keys)
-                print(f"No matching variables found on '{args.vm_id}': {not_found}")
-            return 0
-
-        if args.env_action == "list":
-            current = vm.list_env_vars()
-            if not current:
-                print(f"No SmolVM-managed environment variables on '{args.vm_id}'.")
-                return 0
-            print(f"Environment variables for '{args.vm_id}':")
-            for key in sorted(current):
-                if args.show_values:
-                    print(f"  {key}={current[key]}")
-                else:
-                    print(f"  {key}=****")
-            if not args.show_values:
-                print("  (use --show-values to reveal)")
-            return 0
-
-        return 2
-
-    except Exception as e:
-        print(f"Error: {e}")
-        return 1
-    finally:
-        if vm is not None:
-            vm.close()
+    else:
+        render_error(f"Error: {exc}", hint=hint)
+    return exit_code
 
 
-def _vm_rows(vms: Sequence[VMInfo]) -> list[dict[str, object | None]]:
+def _vm_rows(vms: Sequence[VMInfo]) -> list[VmRow]:
     """Normalize VM info objects into CLI list rows."""
-    rows: list[dict[str, object | None]] = []
+    rows: list[VmRow] = []
     for vm in vms:
         network = vm.network
         rows.append(
             {
-                "vm_id": vm.vm_id,
+                "name": vm.vm_id,
                 "status": vm.status.value,
+                "pid": vm.pid,
                 "ip_address": network.guest_ip if network else None,
                 "ssh_port": network.ssh_host_port if network else None,
-                "pid": vm.pid,
             }
         )
     return rows
 
 
-def _run_list(*, include_all: bool, status_filter: str | None, json_output: bool) -> int:
-    """Handle ``smolvm list``."""
-    from rich.console import Console
-    from rich.table import Table
-
-    from smolvm.types import VMState
-    from smolvm.vm import SmolVMManager
-
-    sdk = SmolVMManager()
-    try:
-        state = None if include_all else VMState(status_filter or VMState.RUNNING.value)
-        vms = sdk.list_vms(status=state)
-    except Exception as e:
-        print(f"Error: {e}")
-        return 1
-    finally:
-        sdk.close()
-
-    if not vms:
-        if json_output:
-            print("[]")
-            return 0
-        if status_filter:
-            print(f"No VMs found with status '{status_filter}'.")
-        elif include_all:
-            print("No VMs found.")
-        else:
-            print("No running VMs found.")
-        return 0
-
-    rows = _vm_rows(vms)
-    if json_output:
-        print(json.dumps(rows, indent=2))
-        return 0
-
+def _render_list(rows: list[VmRow]) -> None:
+    """Render the human-facing VM list."""
     table = Table(title="SmolVM Instances")
     table.add_column("Name")
     table.add_column("Status")
     table.add_column("PID", justify="right")
     for row in rows:
         table.add_row(
-            str(row["vm_id"]),
-            str(row["status"]),
+            str(row["name"]),
+            Text(str(row["status"]), style=status_style(str(row["status"]))),
             str(row["pid"] or "-"),
         )
 
-    console = Console()
+    console = console_stdout()
     console.print(table)
     console.print(f"Total: {len(rows)} VM(s).")
-    return 0
+
+
+def _run_list(*, include_all: bool, status_filter: str | None, json_output: bool) -> int:
+    """Handle ``smolvm list``."""
+    from smolvm.vm import SmolVMManager
+
+    with SmolVMManager() as sdk:
+        try:
+            effective_status = status_filter or (None if include_all else VMState.RUNNING.value)
+            state = VMState(effective_status) if effective_status else None
+            vms = sdk.list_vms(status=state)
+            rows = _vm_rows(vms)
+            data: ListPayload = {
+                "filters": {
+                    "all": include_all,
+                    "status": effective_status,
+                },
+                "vms": rows,
+            }
+            if json_output:
+                emit_json("list", 0, data=data)
+                return 0
+
+            if not vms:
+                if status_filter:
+                    message = f"No VMs found with status '{status_filter}'."
+                elif include_all:
+                    message = "No VMs found."
+                else:
+                    message = "No running VMs found."
+                render_empty("SmolVM Instances", message)
+                return 0
+
+            _render_list(rows)
+            return 0
+        except Exception as exc:
+            return _emit_cli_error("list", 1, exc, json_output=json_output)
+
+
+
+def _render_create_result(data: CreatePayload) -> None:
+    """Render the human-facing create result."""
+    console = console_stdout()
+    vm_data = data["vm"]
+    next_step = data["next"]
+
+    console.print(
+        Panel.fit(
+            f"Created VM '{vm_data['name']}'.",
+            title="VM Created",
+            border_style="green",
+        )
+    )
+
+    details = Table(title="VM Details", show_header=False)
+    details.add_column("Field")
+    details.add_column("Value")
+    details.add_row("Name", str(vm_data["name"]))
+    details.add_row(
+        "Status",
+        Text(str(vm_data["status"]), style=status_style(str(vm_data["status"]))),
+    )
+    details.add_row("Backend", str(vm_data["backend"]))
+    details.add_row("IP Address", str(vm_data["ip_address"] or "-"))
+    details.add_row(
+        "SSH Port",
+        str(vm_data["ssh_port"]) if vm_data["ssh_port"] is not None else "-",
+    )
+    console.print(details)
+    console.print(f"Next: [bold]{next_step['ssh_command']}[/bold]")
 
 
 def _run_create(args: argparse.Namespace) -> int:
@@ -575,19 +664,186 @@ def _run_create(args: argparse.Namespace) -> int:
         vm.wait_for_ssh(timeout=args.boot_timeout)
 
         network = vm.info.network
-        guest_ip = network.guest_ip if network is not None else "-"
-        ssh_port = str(network.ssh_host_port) if network and network.ssh_host_port else "-"
-        backend = vm.info.config.backend or "auto"
+        data: CreatePayload = {
+            "vm": {
+                "name": vm.vm_id,
+                "status": (
+                    vm.info.status.value
+                    if isinstance(vm.info.status, VMState)
+                    else VMState.RUNNING.value
+                ),
+                "backend": vm.info.config.backend or "auto",
+                "ip_address": network.guest_ip if network else None,
+                "ssh_port": network.ssh_host_port if network else None,
+            },
+            "next": {
+                "ssh_command": f"smolvm ssh {vm.vm_id}",
+            },
+        }
 
-        print(f"Created VM '{vm.vm_id}'.")
-        print(f"  Backend: {backend}")
-        print(f"  IP address: {guest_ip}")
-        print(f"  SSH port: {ssh_port}")
-        print(f"  Next: smolvm ssh {vm.vm_id}")
+        if args.json:
+            emit_json("create", 0, data=data)
+        else:
+            _render_create_result(data)
         return 0
-    except Exception as e:
-        print(f"Error: {e}")
-        return 1
+    except Exception as exc:
+        return _emit_cli_error("create", 1, exc, json_output=args.json)
+    finally:
+        if vm is not None:
+            vm.close()
+
+
+def _render_env_change(
+    *,
+    title: str,
+    border_style: str,
+    message: str,
+    rows: list[tuple[str, str]],
+    show_reload_hint: bool,
+) -> None:
+    """Render a human-facing env set/unset result."""
+    console = console_stdout()
+    console.print(Panel.fit(message, title=title, border_style=border_style))
+    if rows:
+        table = Table(title="Environment Summary")
+        table.add_column("Key")
+        table.add_column("Result")
+        for key, result in rows:
+            table.add_row(key, result)
+        console.print(table)
+    if show_reload_hint:
+        console.print(f"Reload existing sessions: [bold]{ENV_RELOAD_HINT}[/bold]")
+
+
+def _render_env_list(vm_id: str, data: dict[str, object]) -> None:
+    """Render the human-facing env list."""
+    variables = data["variables"]
+    assert isinstance(variables, dict)
+    if not variables:
+        render_empty(
+            "Environment Variables",
+            f"No SmolVM-managed environment variables on '{vm_id}'.",
+        )
+        return
+
+    table = Table(title=f"Environment Variables for '{vm_id}'")
+    table.add_column("Key")
+    table.add_column("Value")
+    for key, value in variables.items():
+        table.add_row(key, str(value))
+
+    console = console_stdout()
+    console.print(table)
+    if data["masked"]:
+        console.print("Use --show-values to reveal values.")
+
+
+def _run_env(args: argparse.Namespace) -> int:
+    """Handle ``smolvm env set|unset|list``."""
+    from smolvm.facade import SmolVM
+
+    if args.env_action is None:
+        render_error("Usage: smolvm env {set,unset,list} <vm_id> ...")
+        return 2
+
+    vm: SmolVM | None = None
+    json_output = getattr(args, "json", False)
+    command_name = f"env.{args.env_action}"
+    try:
+        parsed_env_vars: dict[str, str] | None = None
+        if args.env_action == "set":
+            parsed_env_vars = _parse_env_pairs(args.pairs)
+
+        vm = SmolVM.from_id(
+            args.vm_id,
+            ssh_user=args.ssh_user,
+            ssh_key_path=args.ssh_key,
+        )
+
+        if args.env_action == "set":
+            assert parsed_env_vars is not None
+            present_keys = sorted(vm.set_env_vars(parsed_env_vars))
+            data = {
+                "vm_id": args.vm_id,
+                "requested_keys": sorted(parsed_env_vars),
+                "present_keys": present_keys,
+                "reload_hint": ENV_RELOAD_HINT,
+            }
+            if json_output:
+                emit_json(command_name, 0, data=data)
+            else:
+                rows = [(key, "present") for key in present_keys]
+                _render_env_change(
+                    title="Environment Updated",
+                    border_style="green",
+                    message=(
+                        f"Set {len(present_keys)} env var(s) on '{args.vm_id}': "
+                        f"{', '.join(present_keys)}"
+                    ),
+                    rows=rows,
+                    show_reload_hint=True,
+                )
+            return 0
+
+        if args.env_action == "unset":
+            removed = vm.unset_env_vars(args.keys)
+            removed_keys = sorted(removed)
+            missing_keys = sorted(set(args.keys) - set(removed_keys))
+            data = {
+                "vm_id": args.vm_id,
+                "requested_keys": sorted(args.keys),
+                "removed_keys": removed_keys,
+                "missing_keys": missing_keys,
+                "reload_hint": ENV_RELOAD_HINT,
+            }
+            if json_output:
+                emit_json(command_name, 0, data=data)
+            else:
+                if removed_keys:
+                    message = (
+                        f"Removed {len(removed_keys)} env var(s) from '{args.vm_id}': "
+                        f"{', '.join(removed_keys)}"
+                    )
+                    rows = [(key, "removed") for key in removed_keys] + [
+                        (key, "not found") for key in missing_keys
+                    ]
+                    _render_env_change(
+                        title="Environment Updated",
+                        border_style="green",
+                        message=message,
+                        rows=rows,
+                        show_reload_hint=True,
+                    )
+                else:
+                    _render_env_change(
+                        title="Environment Updated",
+                        border_style="yellow",
+                        message=(
+                            f"No matching variables found on '{args.vm_id}': "
+                            f"{', '.join(args.keys)}"
+                        ),
+                        rows=[],
+                        show_reload_hint=False,
+                    )
+            return 0
+
+        current = vm.list_env_vars()
+        variables = {
+            key: current[key] if args.show_values else "****"
+            for key in sorted(current)
+        }
+        data = {
+            "vm_id": args.vm_id,
+            "masked": not args.show_values,
+            "variables": variables,
+        }
+        if json_output:
+            emit_json(command_name, 0, data=data)
+        else:
+            _render_env_list(args.vm_id, data)
+        return 0
+    except Exception as exc:
+        return _emit_cli_error(command_name, 1, exc, json_output=json_output)
     finally:
         if vm is not None:
             vm.close()
@@ -612,24 +868,49 @@ def _run_ssh(args: argparse.Namespace) -> int:
             )
             vm.start(boot_timeout=args.boot_timeout)
         elif vm.status == VMState.ERROR:
-            print(
-                f"Error: VM '{args.vm_id}' is in error state. "
-                "Recreate it or inspect the VM logs before attaching."
+            raise RuntimeError(
+                f"VM '{args.vm_id}' is in error state. Recreate it or inspect the VM logs "
+                "before attaching."
             )
-            return 1
 
         vm.wait_for_ssh(timeout=args.boot_timeout)
         completed = subprocess.run(vm._ssh_attach_command(), check=False)
         return completed.returncode
     except FileNotFoundError:
-        print("Error: ssh binary not found. Install openssh-client.")
-        return 1
-    except Exception as e:
-        print(f"Error: {e}")
-        return 1
+        return _emit_cli_error(
+            "ssh",
+            1,
+            FileNotFoundError("ssh binary not found. Install openssh-client."),
+            json_output=False,
+        )
+    except Exception as exc:
+        return _emit_cli_error("ssh", 1, exc, json_output=False)
     finally:
         if vm is not None:
             vm.close()
+
+
+def _render_ui_startup(
+    host: str,
+    port: int,
+    dashboard_url: str,
+    *,
+    allow_beta: bool,
+    auto_beta: bool,
+) -> None:
+    """Render the UI startup panel."""
+    lines = [
+        f"Starting SmolVM UI on http://{host}:{port} ...",
+        f"Once started, open {dashboard_url} in your browser.",
+    ]
+    if allow_beta:
+        if auto_beta:
+            lines.append(
+                "Using prerelease dashboard UI assets (auto-enabled for pre-release version)."
+            )
+        else:
+            lines.append("Using prerelease dashboard UI assets (--allow-beta enabled).")
+    console_stdout().print(Panel.fit("\n".join(lines), title="SmolVM UI", border_style="cyan"))
 
 
 def _run_ui(host: str, port: int, allow_beta: bool) -> int:
@@ -637,18 +918,22 @@ def _run_ui(host: str, port: int, allow_beta: bool) -> int:
     try:
         uvicorn = importlib.import_module("uvicorn")
     except ImportError:
-        print(
-            "Error: Dashboard dependencies are not installed. "
-            "Install with: pip install 'smolvm[dashboard]'"
+        return _emit_cli_error(
+            "ui",
+            1,
+            ImportError("Dashboard dependencies are not installed."),
+            json_output=False,
+            hint="Install with: pip install 'smolvm[dashboard]'",
         )
-        return 1
 
     if port < 1 or port > 65535:
-        print(f"Error: invalid port {port}. Expected 1-65535.")
-        return 2
+        return _emit_cli_error(
+            "ui",
+            2,
+            ValueError(f"invalid port {port}. Expected 1-65535."),
+            json_output=False,
+        )
 
-    # Automatically allow beta/prerelease UI assets when running a
-    # pre-release version of smolvm (e.g. 0.0.5.a1, 0.0.5.dev).
     auto_beta = not allow_beta and _current_version_is_prerelease()
     if auto_beta:
         allow_beta = True
@@ -663,22 +948,20 @@ def _run_ui(host: str, port: int, allow_beta: bool) -> int:
         os.environ[DASHBOARD_ALLOW_BETA_ENV] = "1"
     os.environ[DASHBOARD_URL_ENV] = dashboard_url
 
-    print(f"Starting SmolVM UI on http://{host}:{port} ...")
-    print(f"Once started, open {dashboard_url} in your browser.")
-    if allow_beta:
-        if auto_beta:
-            print("Using prerelease dashboard UI assets (auto-enabled for pre-release version).")
-        else:
-            print("Using prerelease dashboard UI assets (--allow-beta enabled).")
+    _render_ui_startup(host, port, dashboard_url, allow_beta=allow_beta, auto_beta=auto_beta)
 
     try:
         uvicorn.run("smolvm.dashboard.server:app", host=host, port=port)
         return 0
     except KeyboardInterrupt:
         return 130
-    except Exception as e:
-        print(f"Error: failed to start UI: {e}")
-        return 1
+    except Exception as exc:
+        return _emit_cli_error(
+            "ui",
+            1,
+            RuntimeError(f"failed to start UI: {exc}"),
+            json_output=False,
+        )
     finally:
         if allow_beta:
             if previous_allow_beta is None:
@@ -692,9 +975,9 @@ def _run_ui(host: str, port: int, allow_beta: bool) -> int:
             os.environ[DASHBOARD_URL_ENV] = previous_dashboard_url
 
 
-def _browser_rows(sessions: Sequence[BrowserSessionInfo]) -> list[dict[str, object | None]]:
+def _browser_rows(sessions: Sequence[BrowserSessionInfo]) -> list[BrowserRow]:
     """Normalize browser session info objects into CLI rows."""
-    rows: list[dict[str, object | None]] = []
+    rows: list[BrowserRow] = []
     for session in sessions:
         rows.append(
             {
@@ -709,18 +992,38 @@ def _browser_rows(sessions: Sequence[BrowserSessionInfo]) -> list[dict[str, obje
     return rows
 
 
+def _render_browser_list(rows: list[BrowserRow]) -> None:
+    """Render the human-facing browser session list."""
+    table = Table(title="SmolVM Browser Sessions")
+    table.add_column("Session")
+    table.add_column("Status")
+    table.add_column("VM")
+    table.add_column("Live URL")
+    for row in rows:
+        table.add_row(
+            str(row["session_id"]),
+            Text(str(row["status"]), style=status_style(str(row["status"]))),
+            str(row["vm_id"]),
+            str(row["live_url"] or "-"),
+        )
+
+    console = console_stdout()
+    console.print(table)
+    console.print(f"Total: {len(rows)} session(s).")
+
+
 def _run_browser(args: argparse.Namespace) -> int:
     """Handle ``smolvm browser`` commands."""
-    from rich.console import Console
-    from rich.table import Table
-
     from smolvm.browser import BrowserSession
     from smolvm.storage import StateManager
     from smolvm.types import BrowserSessionConfig
     from smolvm.vm import resolve_data_dir
 
+    json_output = getattr(args, "json", False)
+    command_name = f"browser.{args.browser_action}" if args.browser_action else "browser"
+
     if args.browser_action is None:
-        print("Usage: smolvm browser {start,stop,list,open,logs} ...")
+        render_error("Usage: smolvm browser {start,stop,list,open,logs} ...")
         return 2
 
     if args.browser_action == "start":
@@ -744,7 +1047,7 @@ def _run_browser(args: argparse.Namespace) -> int:
             session = BrowserSession(config)
             session.start(boot_timeout=args.boot_timeout)
 
-            payload = {
+            data: BrowserSessionPayload = {
                 "session_id": session.session_id,
                 "vm_id": session.vm_id,
                 "status": session.status.value,
@@ -754,8 +1057,8 @@ def _run_browser(args: argparse.Namespace) -> int:
                 "artifacts_dir": str(session.artifacts_dir) if session.artifacts_dir else None,
             }
 
-            if args.json:
-                print(json.dumps(payload, indent=2))
+            if json_output:
+                emit_json(command_name, 0, data=data)
             else:
                 print(f"Started browser session '{session.session_id}'.")
                 print(f"  VM: {session.vm_id}")
@@ -766,9 +1069,8 @@ def _run_browser(args: argparse.Namespace) -> int:
                 if session.artifacts_dir:
                     print(f"  Artifacts: {session.artifacts_dir}")
             return 0
-        except Exception as e:
-            print(f"Error: {e}")
-            return 1
+        except Exception as exc:
+            return _emit_cli_error(command_name, 1, exc, json_output=json_output)
         finally:
             if session is not None:
                 session.close()
@@ -780,9 +1082,8 @@ def _run_browser(args: argparse.Namespace) -> int:
             session.stop()
             print(f"Stopped browser session '{args.session_id}'.")
             return 0
-        except Exception as e:
-            print(f"Error: {e}")
-            return 1
+        except Exception as exc:
+            return _emit_cli_error(command_name, 1, exc, json_output=False)
         finally:
             if session is not None:
                 session.close()
@@ -792,17 +1093,17 @@ def _run_browser(args: argparse.Namespace) -> int:
         try:
             session = BrowserSession.from_id(args.session_id)
             if session.live_url is None:
-                print(f"Error: Browser session '{args.session_id}' does not have a live_url.")
-                return 1
+                raise RuntimeError(
+                    f"Browser session '{args.session_id}' does not have a live_url."
+                )
             opened = session.open_live_view()
             if not opened:
                 print(f"Open this URL manually: {session.live_url}")
             else:
                 print(f"Opened {session.live_url}")
             return 0
-        except Exception as e:
-            print(f"Error: {e}")
-            return 1
+        except Exception as exc:
+            return _emit_cli_error(command_name, 1, exc, json_output=False)
         finally:
             if session is not None:
                 session.close()
@@ -815,9 +1116,8 @@ def _run_browser(args: argparse.Namespace) -> int:
             if output:
                 print(output)
             return 0
-        except Exception as e:
-            print(f"Error: {e}")
-            return 1
+        except Exception as exc:
+            return _emit_cli_error(command_name, 1, exc, json_output=False)
         finally:
             if session is not None:
                 session.close()
@@ -826,39 +1126,25 @@ def _run_browser(args: argparse.Namespace) -> int:
     try:
         status = BrowserSessionState(args.status) if args.status else None
         sessions = state.list_browser_sessions(status=status)
-    except Exception as e:
-        print(f"Error: {e}")
-        return 1
+        rows = _browser_rows(sessions)
+        data: BrowserListPayload = {
+            "filters": {
+                "status": args.status,
+            },
+            "sessions": rows,
+        }
+        if json_output:
+            emit_json(command_name, 0, data=data)
+            return 0
 
-    if not sessions:
-        if args.json:
-            print("[]")
-        else:
-            print("No browser sessions found.")
+        if not sessions:
+            render_empty("SmolVM Browser Sessions", "No browser sessions found.")
+            return 0
+
+        _render_browser_list(rows)
         return 0
-
-    rows = _browser_rows(sessions)
-    if args.json:
-        print(json.dumps(rows, indent=2))
-        return 0
-
-    table = Table(title="SmolVM Browser Sessions")
-    table.add_column("Session")
-    table.add_column("Status")
-    table.add_column("VM")
-    table.add_column("Live URL")
-    for row in rows:
-        table.add_row(
-            str(row["session_id"]),
-            str(row["status"]),
-            str(row["vm_id"]),
-            str(row["live_url"] or "-"),
-        )
-
-    console = Console()
-    console.print(table)
-    console.print(f"Total: {len(rows)} session(s).")
-    return 0
+    except Exception as exc:
+        return _emit_cli_error(command_name, 1, exc, json_output=json_output)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -867,7 +1153,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "cleanup":
-        return run_cleanup(delete_all=args.all, prefix=args.prefix, dry_run=args.dry_run)
+        return run_cleanup(
+            delete_all=args.all,
+            prefix=args.prefix,
+            dry_run=args.dry_run,
+            json_output=args.json,
+        )
 
     if args.command == "list":
         return _run_list(
