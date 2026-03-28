@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import json
 import platform
 import re
 import subprocess
@@ -24,7 +23,12 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
+
 from smolvm.backends import BACKEND_AUTO, BACKEND_FIRECRACKER, BACKEND_QEMU, resolve_backend
+from smolvm.cli_output import console_stdout, emit_json, render_error, status_style
 from smolvm.exceptions import SmolVMError
 from smolvm.host import HostManager
 from smolvm.network import check_network_prerequisites
@@ -483,40 +487,59 @@ def generate_doctor_report(backend: str | None = None) -> DoctorReport:
     )
 
 
-def _print_human_report(report: DoctorReport, strict: bool) -> None:
-    print(f"SmolVM Doctor (Backend: {report.backend_resolved})")
-    print(f"Platform: {report.system} {report.arch}")
-    print("")
-
-    markers = {
-        "pass": "✓",
-        "warn": "!",
-        "fail": "✗",
+def _doctor_payload(report: DoctorReport, strict: bool, exit_code: int) -> dict[str, object]:
+    """Build the structured doctor data payload."""
+    return {
+        "backend_requested": report.backend_requested,
+        "backend_resolved": report.backend_resolved,
+        "system": report.system,
+        "arch": report.arch,
+        "checks": [asdict(check) for check in report.checks],
+        "summary": {
+            "failures": len(report.failures),
+            "warnings": len(report.warnings),
+            "ok": exit_code == 0,
+            "strict": strict,
+        },
     }
 
-    colors = {
-        "pass": "\033[92m",
-        "warn": "\033[93m",
-        "fail": "\033[91m",
-        "reset": "\033[0m",
-    }
 
-    for check in report.checks:
-        color = colors[check.status]
-        reset = colors["reset"]
-        print(f" [{color}{markers[check.status]}{reset}] {check.name}: {check.detail}")
-        if check.fix and check.status != "pass":
-            print(f"     {color}Fix: {check.fix}{reset}")
-
-    print("")
+def _print_human_report(report: DoctorReport, strict: bool, exit_code: int) -> None:
+    """Render the doctor report with Rich."""
+    console = console_stdout()
     failures = len(report.failures)
     warnings = len(report.warnings)
-    if failures == 0 and (warnings == 0 or not strict):
-        print("Doctor result: \033[92mOK\033[0m")
-    elif strict and warnings and not failures:
-        print("Doctor result: \033[91mFAIL\033[0m (strict mode treats warnings as failures)")
-    else:
-        print("Doctor result: \033[91mFAIL\033[0m")
+    result_text = "OK" if exit_code == 0 else "FAIL"
+    summary_lines = [
+        f"Backend: {report.backend_resolved}",
+        f"Platform: {report.system} {report.arch}",
+        f"Result: {result_text}",
+        f"Failures: {failures}",
+        f"Warnings: {warnings}",
+    ]
+    if strict and warnings and not failures and exit_code == 1:
+        summary_lines.append("strict mode treats warnings as failures.")
+    console.print(
+        Panel.fit(
+            "\n".join(summary_lines),
+            title="SmolVM Doctor",
+            border_style="green" if exit_code == 0 else "red",
+        )
+    )
+
+    checks_table = Table(title="Checks")
+    checks_table.add_column("Check")
+    checks_table.add_column("Status")
+    checks_table.add_column("Detail")
+    checks_table.add_column("Fix")
+    for check in report.checks:
+        checks_table.add_row(
+            check.name,
+            Text(check.status, style=status_style(check.status)),
+            check.detail,
+            check.fix or "-",
+        )
+    console.print(checks_table)
 
 
 def run_doctor(
@@ -526,28 +549,27 @@ def run_doctor(
     strict: bool = False,
 ) -> int:
     """Run host diagnostics and return a process-style exit code."""
-    report = generate_doctor_report(backend=backend)
+    try:
+        report = generate_doctor_report(backend=backend)
+        failures = len(report.failures)
+        warnings = len(report.warnings)
+        exit_code = 1 if failures > 0 or (strict and warnings > 0) else 0
+        data = _doctor_payload(report, strict, exit_code)
 
-    failures = len(report.failures)
-    warnings = len(report.warnings)
-    exit_code = 1 if failures > 0 or (strict and warnings > 0) else 0
+        if json_output:
+            emit_json("doctor", exit_code, data=data)
+        else:
+            _print_human_report(report, strict=strict, exit_code=exit_code)
 
-    if json_output:
-        payload = {
-            "backend_requested": report.backend_requested,
-            "backend_resolved": report.backend_resolved,
-            "system": report.system,
-            "arch": report.arch,
-            "checks": [asdict(check) for check in report.checks],
-            "summary": {
-                "failures": failures,
-                "warnings": warnings,
-                "ok": exit_code == 0,
-                "strict": strict,
-            },
-        }
-        print(json.dumps(payload, indent=2))
-    else:
-        _print_human_report(report, strict=strict)
-
-    return exit_code
+        return exit_code
+    except Exception as exc:
+        if json_output:
+            emit_json(
+                "doctor",
+                1,
+                data=None,
+                error={"message": str(exc), "type": "runtime_error"},
+            )
+        else:
+            render_error(f"Error: {exc}")
+        return 1

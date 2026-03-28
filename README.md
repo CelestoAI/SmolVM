@@ -76,6 +76,13 @@ Use the default auto-configured, SSH-ready profile:
 ```bash
 smolvm create --name "project-spacex"
 smolvm ssh "project-spacex"
+
+# Human-friendly Rich output by default
+smolvm list
+
+# Agent-friendly JSON envelope
+smolvm create --name "project-spacex" --json
+smolvm list --json
 ```
 
 
@@ -164,6 +171,9 @@ CLI:
 smolvm env set <vm_id> API_KEY=sk-... DEBUG=1
 smolvm env list <vm_id> --show-values
 smolvm env unset <vm_id> DEBUG
+
+# Agent-friendly JSON output (values stay masked unless --show-values is added)
+smolvm env list <vm_id> --json
 ```
 
 Diagnostics:
@@ -179,6 +189,22 @@ smolvm doctor --backend qemu
 # CI-friendly mode
 smolvm doctor --json --strict
 ```
+
+Cleanup:
+
+```bash
+# Human-friendly preview
+smolvm cleanup --dry-run
+
+# Agent-friendly JSON envelope
+smolvm cleanup --json
+```
+
+Notes:
+
+- Non-interactive commands default to Rich-rendered human output and support `--json` for agent workflows.
+- `smolvm ssh` and `smolvm ui` remain human-only interactive flows.
+- `--json` output now uses a shared envelope: `{ok, command, exit_code, data, error}`.
 
 ## Agent Framework Tool Examples
 

@@ -14,6 +14,7 @@
 
 """Tests for SmolVM doctor diagnostics."""
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -21,6 +22,7 @@ import pytest
 
 from smolvm.doctor import (
     DoctorCheck,
+    DoctorReport,
     WorkerNodeSecurityError,
     check_worker_node_security,
     generate_doctor_report,
@@ -108,7 +110,31 @@ class TestDoctorFirecracker:
         assert ret_normal == 0
         assert ret_strict == 1
         output = capsys.readouterr().out
+        assert "SmolVM Doctor" in output
+        assert "Checks" in output
         assert "strict mode treats warnings as failures" in output
+        assert "\033[" not in output
+
+    def test_run_doctor_json_envelope(self, capsys: pytest.CaptureFixture) -> None:
+        """JSON doctor output should use the shared envelope."""
+        report = DoctorReport(
+            backend_requested="auto",
+            backend_resolved="qemu",
+            system="Darwin",
+            arch="arm64",
+            checks=[DoctorCheck(name="qemu", status="pass", detail="/usr/bin/qemu")],
+        )
+
+        with patch("smolvm.doctor.generate_doctor_report", return_value=report):
+            ret = run_doctor(json_output=True, strict=False)
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["command"] == "doctor"
+        assert payload["ok"] is True
+        assert payload["data"]["backend_resolved"] == "qemu"
+        assert payload["data"]["checks"][0]["name"] == "qemu"
+        assert payload["data"]["summary"]["ok"] is True
 
 
 class TestDoctorQemu:
