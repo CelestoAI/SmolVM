@@ -40,7 +40,7 @@ from typing import Any
 
 from smolvm import SmolVM
 
-DEFAULT_MODEL = "openai:gpt-4.1"
+DEFAULT_MODEL = "openai:gpt-5.4"
 
 
 def _require_dependency(import_path: str, install_hint: str) -> Any:
