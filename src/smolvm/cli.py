@@ -354,17 +354,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Backend override (default: auto).",
     )
     browser_start.add_argument(
-        "--mode",
-        choices=["headless", "live"],
-        default="headless",
-        help="Browser mode (default: headless).",
-    )
-    browser_start.add_argument(
         "--live",
-        action="store_const",
-        const="live",
-        dest="mode",
-        help="Shortcut for `--mode live`.",
+        action="store_true",
+        help="Start the browser session in live mode.",
     )
     browser_start.add_argument(
         "--profile-mode",
@@ -1131,7 +1123,7 @@ def _run_browser(args: argparse.Namespace) -> int:
             config = BrowserSessionConfig(
                 session_id=args.session_id,
                 backend=args.backend,
-                mode=args.mode,
+                mode="live" if args.live else "headless",
                 profile_mode=args.profile_mode,
                 profile_id=args.profile_id,
                 timeout_minutes=args.timeout_minutes,
