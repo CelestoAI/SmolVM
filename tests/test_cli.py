@@ -99,12 +99,10 @@ class TestCliEnv:
         capsys: pytest.CaptureFixture,
     ) -> None:
         """Test execution fails on malformed key=value pair."""
-        vm = self._setup_vm(mock_vm_cls)
-
         ret = main(["env", "set", "vm001", "BADPAIR"])
 
         assert ret == 1
-        vm.close.assert_called_once()
+        mock_vm_cls.from_id.assert_not_called()
         assert "malformed pair" in capsys.readouterr().err
 
     def test_env_unset_success(
@@ -782,6 +780,8 @@ class TestCliList:
     @pytest.fixture
     def mock_sdk_cls(self) -> MagicMock:
         with patch("smolvm.vm.SmolVMManager") as m:
+            m.return_value.__enter__.return_value = m.return_value
+            m.return_value.__exit__.side_effect = lambda *args: m.return_value.close()
             yield m
 
     def test_list_empty(

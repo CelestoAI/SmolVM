@@ -23,7 +23,7 @@ import os
 import re
 import subprocess
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 from rich.panel import Panel
 from rich.table import Table
@@ -44,6 +44,53 @@ ENV_RELOAD_HINT = "source /etc/profile.d/smolvm_env.sh"
 # Matches PEP 440 pre-release and dev-release version suffixes,
 # e.g. "0.0.5.a1", "0.0.5b2", "0.0.5.dev1", "0.0.5rc1".
 _PRERELEASE_RE = re.compile(r"[._]?(a|b|rc|alpha|beta|dev)\d*", re.IGNORECASE)
+
+
+class VmRow(TypedDict):
+    """Machine-readable data for a listed VM."""
+
+    name: str
+    status: str
+    pid: int | None
+    ip_address: str | None
+    ssh_port: int | None
+
+
+class ListFiltersPayload(TypedDict):
+    """Filter metadata included with list output."""
+
+    all: bool
+    status: str | None
+
+
+class ListPayload(TypedDict):
+    """JSON payload for ``smolvm list``."""
+
+    filters: ListFiltersPayload
+    vms: list[VmRow]
+
+
+class CreateVmPayload(TypedDict):
+    """Machine-readable VM details for ``smolvm create``."""
+
+    name: str
+    status: str
+    backend: str
+    ip_address: str | None
+    ssh_port: int | None
+
+
+class CreateNextPayload(TypedDict):
+    """Suggested follow-up action for ``smolvm create``."""
+
+    ssh_command: str
+
+
+class CreatePayload(TypedDict):
+    """JSON payload for ``smolvm create``."""
+
+    vm: CreateVmPayload
+    next: CreateNextPayload
 
 
 def _current_version_is_prerelease() -> bool:
@@ -329,9 +376,9 @@ def _emit_cli_error(
     return exit_code
 
 
-def _vm_rows(vms: Sequence[VMInfo]) -> list[dict[str, object | None]]:
+def _vm_rows(vms: Sequence[VMInfo]) -> list[VmRow]:
     """Normalize VM info objects into CLI list rows."""
-    rows: list[dict[str, object | None]] = []
+    rows: list[VmRow] = []
     for vm in vms:
         network = vm.network
         rows.append(
@@ -346,7 +393,7 @@ def _vm_rows(vms: Sequence[VMInfo]) -> list[dict[str, object | None]]:
     return rows
 
 
-def _render_list(rows: list[dict[str, object | None]]) -> None:
+def _render_list(rows: list[VmRow]) -> None:
     """Render the human-facing VM list."""
     table = Table(title="SmolVM Instances")
     table.add_column("Name")
@@ -373,12 +420,13 @@ def _run_list(*, include_all: bool, status_filter: str | None, json_output: bool
             effective_status = status_filter or (None if include_all else VMState.RUNNING.value)
             state = VMState(effective_status) if effective_status else None
             vms = sdk.list_vms(status=state)
-            data = {
+            rows = _vm_rows(vms)
+            data: ListPayload = {
                 "filters": {
                     "all": include_all,
                     "status": effective_status,
                 },
-                "vms": _vm_rows(vms),
+                "vms": rows,
             }
             if json_output:
                 emit_json("list", 0, data=data)
@@ -394,14 +442,14 @@ def _run_list(*, include_all: bool, status_filter: str | None, json_output: bool
                 render_empty("SmolVM Instances", message)
                 return 0
 
-            _render_list(data["vms"])
+            _render_list(rows)
             return 0
         except Exception as exc:
             return _emit_cli_error("list", 1, exc, json_output=json_output)
 
 
 
-def _render_create_result(data: dict[str, object]) -> None:
+def _render_create_result(data: CreatePayload) -> None:
     """Render the human-facing create result."""
     console = console_stdout()
     vm_data = data["vm"]
@@ -448,7 +496,7 @@ def _run_create(args: argparse.Namespace) -> int:
         vm.wait_for_ssh(timeout=args.boot_timeout)
 
         network = vm.info.network
-        data = {
+        data: CreatePayload = {
             "vm": {
                 "name": vm.vm_id,
                 "status": (
@@ -534,6 +582,10 @@ def _run_env(args: argparse.Namespace) -> int:
     json_output = getattr(args, "json", False)
     command_name = f"env.{args.env_action}"
     try:
+        parsed_env_vars: dict[str, str] | None = None
+        if args.env_action == "set":
+            parsed_env_vars = _parse_env_pairs(args.pairs)
+
         vm = SmolVM.from_id(
             args.vm_id,
             ssh_user=args.ssh_user,
@@ -541,11 +593,11 @@ def _run_env(args: argparse.Namespace) -> int:
         )
 
         if args.env_action == "set":
-            env_vars = _parse_env_pairs(args.pairs)
-            present_keys = sorted(vm.set_env_vars(env_vars))
+            assert parsed_env_vars is not None
+            present_keys = sorted(vm.set_env_vars(parsed_env_vars))
             data = {
                 "vm_id": args.vm_id,
-                "requested_keys": sorted(env_vars),
+                "requested_keys": sorted(parsed_env_vars),
                 "present_keys": present_keys,
                 "reload_hint": ENV_RELOAD_HINT,
             }
