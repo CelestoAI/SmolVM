@@ -45,7 +45,7 @@ from langchain.tools import tool
 
 from smolvm import BrowserSession, BrowserSessionConfig
 
-DEFAULT_MODEL = "openai:gpt-4.1"
+DEFAULT_MODEL = "openai:gpt-5.4"
 DEFAULT_HOME_URL = "https://celesto.ai"
 
 
