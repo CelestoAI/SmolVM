@@ -681,6 +681,59 @@ class TestCliBrowser:
         assert ret == 1
         assert "does not have a live_url" in capsys.readouterr().err
 
+    @patch("smolvm.browser.BrowserSession")
+    @patch("smolvm.vm.resolve_data_dir", return_value=Path("/tmp"))
+    @patch("smolvm.storage.StateManager")
+    def test_browser_stop_all(
+        self,
+        mock_state_manager_cls: MagicMock,
+        _mock_resolve_data_dir: MagicMock,
+        mock_browser_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm browser stop --all` should stop every persisted session."""
+        state_manager = MagicMock()
+        state_manager.list_browser_sessions.return_value = [
+            MagicMock(session_id="browser-001"),
+            MagicMock(session_id="browser-002"),
+        ]
+        mock_state_manager_cls.return_value = state_manager
+
+        first_session = MagicMock()
+        second_session = MagicMock()
+        mock_browser_cls.from_id.side_effect = [first_session, second_session]
+
+        ret = main(["browser", "stop", "--all"])
+
+        assert ret == 0
+        state_manager.list_browser_sessions.assert_called_once_with()
+        assert mock_browser_cls.from_id.call_args_list[0].args == ("browser-001",)
+        assert mock_browser_cls.from_id.call_args_list[1].args == ("browser-002",)
+        first_session.stop.assert_called_once_with()
+        second_session.stop.assert_called_once_with()
+        first_session.close.assert_called_once_with()
+        second_session.close.assert_called_once_with()
+        assert "Stopped 2 browser session(s)." in capsys.readouterr().out
+
+    @patch("smolvm.vm.resolve_data_dir", return_value=Path("/tmp"))
+    @patch("smolvm.storage.StateManager")
+    def test_browser_stop_all_empty(
+        self,
+        mock_state_manager_cls: MagicMock,
+        _mock_resolve_data_dir: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm browser stop --all` should be a no-op when nothing is persisted."""
+        state_manager = MagicMock()
+        state_manager.list_browser_sessions.return_value = []
+        mock_state_manager_cls.return_value = state_manager
+
+        ret = main(["browser", "stop", "--all"])
+
+        assert ret == 0
+        state_manager.list_browser_sessions.assert_called_once_with()
+        assert "No browser sessions found." in capsys.readouterr().out
+
     @patch("smolvm.vm.resolve_data_dir", return_value=Path("/tmp"))
     @patch("smolvm.storage.StateManager")
     def test_browser_list_json(

@@ -391,7 +391,17 @@ def build_parser() -> argparse.ArgumentParser:
         "stop",
         help="Stop and delete a browser session",
     )
-    browser_stop.add_argument("session_id", help="Browser session identifier")
+    browser_stop_target = browser_stop.add_mutually_exclusive_group(required=True)
+    browser_stop_target.add_argument(
+        "session_id",
+        nargs="?",
+        help="Browser session identifier",
+    )
+    browser_stop_target.add_argument(
+        "--all",
+        action="store_true",
+        help="Stop and delete all persisted browser sessions.",
+    )
 
     browser_list = browser_sub.add_parser(
         "list",
@@ -1076,8 +1086,44 @@ def _run_browser(args: argparse.Namespace) -> int:
                 session.close()
 
     if args.browser_action == "stop":
+        if args.all:
+            state = StateManager(resolve_data_dir() / "smolvm.db")
+            try:
+                sessions = state.list_browser_sessions()
+            except Exception as exc:
+                return _emit_cli_error(command_name, 1, exc, json_output=False)
+
+            if not sessions:
+                render_empty("SmolVM Browser Sessions", "No browser sessions found.")
+                return 0
+
+            failures: list[str] = []
+            stopped_session_ids: list[str] = []
+            for session_info in sessions:
+                session: BrowserSession | None = None
+                try:
+                    session = BrowserSession.from_id(session_info.session_id)
+                    session.stop()
+                    stopped_session_ids.append(session_info.session_id)
+                except Exception as exc:
+                    failures.append(f"{session_info.session_id}: {exc}")
+                finally:
+                    if session is not None:
+                        session.close()
+
+            if failures:
+                render_error(
+                    "Failed to stop one or more browser sessions.",
+                    hint="; ".join(failures),
+                )
+                return 1
+
+            print(f"Stopped {len(stopped_session_ids)} browser session(s).")
+            return 0
+
         session: BrowserSession | None = None
         try:
+            assert args.session_id is not None
             session = BrowserSession.from_id(args.session_id)
             session.stop()
             print(f"Stopped browser session '{args.session_id}'.")
