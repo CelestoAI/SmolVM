@@ -12,20 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for the LangChain browser example helpers."""
+"""Unit tests for the OpenAI computer-use browser example helpers."""
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = REPO_ROOT / "examples" / "agent_tools" / "langchain_browser_tool.py"
+MODULE_PATH = REPO_ROOT / "examples" / "agent_tools" / "computer_use_browser.py"
 
 
 def _load_module():
-    spec = importlib.util.spec_from_file_location("langchain_browser_tool", MODULE_PATH)
+    spec = importlib.util.spec_from_file_location("computer_use_browser", MODULE_PATH)
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -36,16 +37,22 @@ def _load_module():
 
 def test_build_config_uses_env_overrides(monkeypatch) -> None:
     module = _load_module()
-    monkeypatch.setenv("LANGCHAIN_MODEL", "openai:gpt-5.4-mini")
     monkeypatch.setenv("COMPUTER_USE_MODEL", "gpt-5.4-mini")
     monkeypatch.setenv("SMOLVM_BROWSER_MODE", "headless")
 
-    config = module._build_config("https://example.com")
+    args = argparse.Namespace(
+        task="Summarize the homepage.",
+        start_url="https://example.com",
+        allowed_domain=["docs.example.com"],
+        mode=None,
+        max_steps=5,
+    )
+
+    config = module._build_config(args)
 
     assert config.browser_mode == "headless"
-    assert config.langchain_model == "openai:gpt-5.4-mini"
-    assert config.computer_use_model == "gpt-5.4-mini"
-    assert "example.com" in config.allowed_domains
+    assert config.model == "gpt-5.4-mini"
+    assert config.allowed_domains == ("example.com", "docs.example.com")
 
 
 def test_is_allowed_url_only_accepts_allowlisted_hosts() -> None:
@@ -58,15 +65,12 @@ def test_is_allowed_url_only_accepts_allowlisted_hosts() -> None:
     assert module._is_allowed_url("https://example.com", allowed) is False
 
 
-def test_find_blocked_url_literals_reports_external_urls() -> None:
+def test_normalize_key_maps_common_names() -> None:
     module = _load_module()
 
-    blocked = module._find_blocked_url_literals(
-        'await page.goto("https://example.com"); await page.goto("https://celesto.ai/blog")',
-        ("celesto.ai", "www.celesto.ai"),
-    )
-
-    assert blocked == ["https://example.com"]
+    assert module._normalize_key("CTRL") == "Control"
+    assert module._normalize_key("SPACE") == " "
+    assert module._normalize_key("a") == "a"
 
 
 def test_format_result_omits_missing_optional_fields() -> None:

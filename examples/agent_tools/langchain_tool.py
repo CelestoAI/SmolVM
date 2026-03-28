@@ -36,13 +36,23 @@ from __future__ import annotations
 
 import os
 from pprint import pprint
-
-from langchain.agents import create_agent
-from langchain.tools import tool
+from typing import Any
 
 from smolvm import SmolVM
 
 DEFAULT_MODEL = "openai:gpt-4.1"
+
+
+def _require_dependency(import_path: str, install_hint: str) -> Any:
+    """Import an optional dependency lazily with a useful installation hint."""
+    module_name, _, attr_name = import_path.partition(":")
+    try:
+        module = __import__(module_name, fromlist=[attr_name] if attr_name else [])
+    except ImportError as exc:
+        raise RuntimeError(
+            f"Missing dependency '{module_name}'. Install it with: {install_hint}"
+        ) from exc
+    return getattr(module, attr_name) if attr_name else module
 
 
 def _format_command_result(exit_code: int, stdout: str, stderr: str) -> str:
@@ -54,7 +64,6 @@ def _format_command_result(exit_code: int, stdout: str, stderr: str) -> str:
     )
 
 
-@tool
 def run_in_smolvm(command: str, timeout: int = 30) -> str:
     """Run a shell command inside an ephemeral SmolVM sandbox.
 
@@ -69,9 +78,17 @@ def run_in_smolvm(command: str, timeout: int = 30) -> str:
 
 def main() -> None:
     """Run a minimal LangChain agent that can call SmolVM as a tool."""
+    create_agent = _require_dependency(
+        "langchain.agents:create_agent",
+        "pip install langchain langchain-openai",
+    )
+    tool = _require_dependency(
+        "langchain.tools:tool",
+        "pip install langchain langchain-openai",
+    )
     agent = create_agent(
         model=os.environ.get("LANGCHAIN_MODEL", DEFAULT_MODEL),
-        tools=[run_in_smolvm],
+        tools=[tool(run_in_smolvm)],
         system_prompt=(
             "You are a coding assistant with access to a secure SmolVM sandbox. "
             "For shell or Python inspection requests, call run_in_smolvm exactly "
