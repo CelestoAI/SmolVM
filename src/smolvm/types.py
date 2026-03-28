@@ -64,6 +64,16 @@ class BrowserViewport(BaseModel):
     model_config = {"frozen": True}
 
 
+class PortForwardConfig(BaseModel):
+    """Host-to-guest TCP port forwarding configuration."""
+
+    host_port: Annotated[int, Field(ge=1, le=65535)]
+    guest_port: Annotated[int, Field(ge=1, le=65535)]
+    host_address: str = "127.0.0.1"
+
+    model_config = {"frozen": True}
+
+
 class VMConfig(BaseModel):
     """Configuration for creating a microVM.
 
@@ -84,6 +94,7 @@ class VMConfig(BaseModel):
             create with the same VM ID can reuse prior state.
         env_vars: Environment variables to inject into the guest
             after boot via SSH. Keys must be valid shell identifiers.
+        port_forwards: Optional host TCP forwards configured at VM launch.
     """
 
     vm_id: Annotated[
@@ -104,6 +115,7 @@ class VMConfig(BaseModel):
     retain_disk_on_delete: bool = False
     env_vars: dict[str, str] = {}
     network_rate_limit_mbps: Annotated[int, Field(ge=1)] | None = None
+    port_forwards: list[PortForwardConfig] = []
 
     @field_validator("vm_id", mode="before")
     @classmethod
@@ -144,6 +156,21 @@ class VMConfig(BaseModel):
 
         for key in v:
             validate_env_key(key)
+        return v
+
+    @field_validator("port_forwards")
+    @classmethod
+    def validate_port_forwards(cls, v: list[PortForwardConfig]) -> list[PortForwardConfig]:
+        """Ensure port-forward definitions do not reuse host or guest ports."""
+        seen_host_ports: set[int] = set()
+        seen_guest_ports: set[int] = set()
+        for forward in v:
+            if forward.host_port in seen_host_ports:
+                raise ValueError(f"Duplicate host port in port_forwards: {forward.host_port}")
+            if forward.guest_port in seen_guest_ports:
+                raise ValueError(f"Duplicate guest port in port_forwards: {forward.guest_port}")
+            seen_host_ports.add(forward.host_port)
+            seen_guest_ports.add(forward.guest_port)
         return v
 
     model_config = {"frozen": True}

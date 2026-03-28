@@ -905,7 +905,12 @@ class SmolVMManager:
         system = platform.system()
 
         drive_arg = f"file={vm_info.config.rootfs_path},if=none,format=raw,id=hd0"
-        netdev_arg = f"user,id=net0,hostfwd=tcp:127.0.0.1:{ssh_port}-:22"
+        hostfwd_rules = [f"hostfwd=tcp:127.0.0.1:{ssh_port}-:22"]
+        for forward in vm_info.config.port_forwards:
+            hostfwd_rules.append(
+                f"hostfwd=tcp:{forward.host_address}:{forward.host_port}-:{forward.guest_port}"
+            )
+        netdev_arg = f"user,id=net0,{','.join(hostfwd_rules)}"
 
         cmd = [
             str(qemu_bin),

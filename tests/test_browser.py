@@ -51,7 +51,9 @@ def test_browser_vm_id_uses_stable_profile_id() -> None:
 
 @patch("smolvm.utils.ensure_ssh_key")
 @patch("smolvm.build.ImageBuilder")
+@patch("smolvm.browser._allocate_browser_host_port", side_effect=[39001])
 def test_build_browser_vm_config_uses_persistent_disk_reuse(
+    mock_allocate_host_port: MagicMock,
     mock_builder_cls: MagicMock,
     mock_ensure_ssh_key: MagicMock,
     tmp_path: Path,
@@ -90,12 +92,58 @@ def test_build_browser_vm_config_uses_persistent_disk_reuse(
     assert vm_config.backend == "qemu"
     assert vm_config.vm_id.startswith("browser-prof-acct-1-")
     assert ssh_key_path == str(private_key)
+    assert len(vm_config.port_forwards) == 1
+    assert vm_config.port_forwards[0].host_port == 39001
+    assert vm_config.port_forwards[0].guest_port == 9222
     mock_builder.build_browser_rootfs.assert_called_once()
     assert (
         mock_builder.build_browser_rootfs.call_args.kwargs["kernel_profile"]
         == KernelBootProfile.MICROVM_DIRECT
     )
     assert "kernel_url" not in mock_builder.build_browser_rootfs.call_args.kwargs
+    mock_allocate_host_port.assert_called_once()
+
+
+@patch("smolvm.utils.ensure_ssh_key")
+@patch("smolvm.build.ImageBuilder")
+@patch("smolvm.browser._allocate_browser_host_port", side_effect=[39011, 39012])
+def test_build_browser_vm_config_allocates_qemu_live_port_forwards(
+    mock_allocate_host_port: MagicMock,
+    mock_builder_cls: MagicMock,
+    mock_ensure_ssh_key: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """Live QEMU sessions should preallocate host forwards for CDP and noVNC."""
+    kernel = tmp_path / "kernel"
+    rootfs = tmp_path / "rootfs.ext4"
+    private_key = tmp_path / "id_ed25519"
+    public_key = tmp_path / "id_ed25519.pub"
+    kernel.touch()
+    rootfs.touch()
+    private_key.touch()
+    public_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMock user@test\n")
+
+    mock_ensure_ssh_key.return_value = (private_key, public_key)
+    mock_builder = MagicMock()
+    mock_builder.build_browser_rootfs.return_value = (kernel, rootfs)
+    mock_builder_cls.return_value = mock_builder
+
+    browser_config = BrowserSessionConfig(
+        session_id="browser-live123",
+        backend="qemu",
+        mode="live",
+    )
+
+    vm_config, _ = _build_browser_vm_config(
+        session_id="browser-live123",
+        browser_config=browser_config,
+    )
+
+    assert [(forward.host_port, forward.guest_port) for forward in vm_config.port_forwards] == [
+        (39011, 9222),
+        (39012, 6080),
+    ]
+    assert mock_allocate_host_port.call_count == 2
 
 
 @patch("smolvm.browser.SmolVM")

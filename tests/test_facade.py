@@ -928,6 +928,44 @@ class TestVMLocalExpose:
         )
 
     @patch("smolvm.facade.SmolVMManager")
+    @patch("smolvm.facade.SmolVM._start_local_tunnel")
+    def test_expose_local_skips_nftables_for_qemu_backend(
+        self,
+        mock_start_tunnel: MagicMock,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """QEMU localhost exposure should go straight to SSH tunneling."""
+        mock_network = MagicMock()
+        mock_network.guest_ip = "10.0.2.15"
+
+        mock_config = MagicMock()
+        mock_config.backend = "qemu"
+
+        mock_info = MagicMock()
+        mock_info.vm_id = "vm001"
+        mock_info.status = VMState.RUNNING
+        mock_info.network = mock_network
+        mock_info.config = mock_config
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        mock_sdk.get.return_value = mock_info
+        mock_sdk.network = MagicMock()
+        mock_sdk_cls.return_value = mock_sdk
+
+        tunnel_proc = MagicMock()
+        mock_start_tunnel.return_value = tunnel_proc
+
+        vm = SmolVM(sample_config)
+        host_port = vm.expose_local(guest_port=8080, host_port=18080)
+
+        assert host_port == 18080
+        mock_start_tunnel.assert_called_once_with(host_port=18080, guest_port=8080)
+        mock_sdk.network.setup_local_port_forward.assert_not_called()
+        mock_sdk.network.cleanup_local_port_forward.assert_not_called()
+
+    @patch("smolvm.facade.SmolVMManager")
     @patch("smolvm.facade.SmolVM._allocate_local_port", return_value=18081)
     @patch("smolvm.facade.SmolVM._start_local_tunnel")
     @patch("smolvm.facade.SmolVM._probe_local_forward", return_value=False)

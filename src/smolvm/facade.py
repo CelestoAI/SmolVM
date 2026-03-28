@@ -562,6 +562,7 @@ class SmolVM:
 
         guest_ip = self._info.network.guest_ip
         attempts: list[str] = []
+        should_try_nftables = self._should_try_nftables_local_forward()
 
         for candidate in candidate_ports:
             key = (candidate, guest_port)
@@ -575,45 +576,46 @@ class SmolVM:
 
             nftables_configured = False
             keep_nftables = False
-            try:
-                self._sdk.network.setup_local_port_forward(
-                    vm_id=self._vm_id,
-                    guest_ip=guest_ip,
-                    host_port=candidate,
-                    guest_port=guest_port,
-                )
-                nftables_configured = True
-                if self._probe_local_forward(candidate):
-                    self._local_forwards[key] = _LocalForward(
+            if should_try_nftables:
+                try:
+                    self._sdk.network.setup_local_port_forward(
+                        vm_id=self._vm_id,
+                        guest_ip=guest_ip,
                         host_port=candidate,
                         guest_port=guest_port,
-                        transport="nftables",
                     )
-                    keep_nftables = True
-                    logger.info(
-                        "VM %s exposed localhost:%d -> guest:%d (transport=nftables)",
-                        self._vm_id,
-                        candidate,
-                        guest_port,
-                    )
-                    return candidate
-                attempts.append(
-                    f"nftables forward localhost:{candidate} -> guest:{guest_port} "
-                    "was configured but not reachable"
-                )
-            except Exception as e:
-                attempts.append(
-                    f"nftables forward localhost:{candidate} -> guest:{guest_port} failed: {e}"
-                )
-            finally:
-                if nftables_configured and not keep_nftables:
-                    with suppress(Exception):
-                        self._sdk.network.cleanup_local_port_forward(
-                            vm_id=self._vm_id,
-                            guest_ip=guest_ip,
+                    nftables_configured = True
+                    if self._probe_local_forward(candidate):
+                        self._local_forwards[key] = _LocalForward(
                             host_port=candidate,
                             guest_port=guest_port,
+                            transport="nftables",
                         )
+                        keep_nftables = True
+                        logger.info(
+                            "VM %s exposed localhost:%d -> guest:%d (transport=nftables)",
+                            self._vm_id,
+                            candidate,
+                            guest_port,
+                        )
+                        return candidate
+                    attempts.append(
+                        f"nftables forward localhost:{candidate} -> guest:{guest_port} "
+                        "was configured but not reachable"
+                    )
+                except Exception as e:
+                    attempts.append(
+                        f"nftables forward localhost:{candidate} -> guest:{guest_port} failed: {e}"
+                    )
+                finally:
+                    if nftables_configured and not keep_nftables:
+                        with suppress(Exception):
+                            self._sdk.network.cleanup_local_port_forward(
+                                vm_id=self._vm_id,
+                                guest_ip=guest_ip,
+                                host_port=candidate,
+                                guest_port=guest_port,
+                            )
 
             try:
                 tunnel_proc = self._start_local_tunnel(
@@ -1033,6 +1035,12 @@ class SmolVM:
                 )
             finally:
                 self._local_forwards.pop(key, None)
+
+    def _should_try_nftables_local_forward(self) -> bool:
+        """Return whether localhost exposure should attempt host nftables first."""
+        config = getattr(self._info, "config", None)
+        backend = getattr(config, "backend", None)
+        return backend != BACKEND_QEMU
 
     @staticmethod
     def _find_available_local_port() -> int:

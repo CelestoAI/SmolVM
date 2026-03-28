@@ -6,6 +6,7 @@ import hashlib
 import logging
 import platform
 import shlex
+import socket
 import uuid
 import webbrowser
 from contextlib import suppress
@@ -25,6 +26,7 @@ from smolvm.types import (
     BrowserSessionConfig,
     BrowserSessionInfo,
     BrowserSessionState,
+    PortForwardConfig,
     VMConfig,
     VMState,
 )
@@ -74,6 +76,30 @@ def _browser_vm_id(session_id: str, config: BrowserSessionConfig) -> str:
     return session_id
 
 
+def _allocate_browser_host_port(exclude: set[int] | None = None) -> int:
+    """Allocate an available localhost TCP port for browser forwarding."""
+    excluded = set(exclude or ())
+    for _ in range(20):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = int(sock.getsockname()[1])
+        if port not in excluded:
+            return port
+    raise SmolVMError("Failed to allocate a localhost port for browser forwarding.")
+
+
+def _qemu_browser_port_forwards(config: BrowserSessionConfig) -> list[PortForwardConfig]:
+    """Return stable QEMU host forwards for browser endpoints."""
+    reserved: set[int] = set()
+    debug_port = _allocate_browser_host_port(reserved)
+    reserved.add(debug_port)
+    forwards = [PortForwardConfig(host_port=debug_port, guest_port=_BROWSER_DEBUG_PORT)]
+    if config.mode == "live":
+        live_port = _allocate_browser_host_port(reserved)
+        forwards.append(PortForwardConfig(host_port=live_port, guest_port=_BROWSER_LIVE_PORT))
+    return forwards
+
+
 def _browser_boot_args_for_backend(backend: str) -> str:
     """Return backend-specific kernel boot arguments for browser images."""
     arch = platform.machine().lower()
@@ -96,10 +122,15 @@ def _build_browser_vm_config(
     resolved_ssh_key_path = ssh_key_path or str(private_key)
 
     builder = ImageBuilder()
+    # TODO: Make the browser runtime pluggable so BrowserSessionConfig.browser
+    # can select alternative engines (for example Lightpanda) without changing
+    # the surrounding session lifecycle or backend abstractions.
     image_arch = "aarch64" if platform.machine().lower() in {"arm64", "aarch64"} else "x86_64"
     image_name = f"browser-chromium-{image_arch}"
+    port_forwards: list[PortForwardConfig] = []
     if resolved_backend == BACKEND_QEMU:
         image_name = f"{image_name}-qemu"
+        port_forwards = _qemu_browser_port_forwards(browser_config)
     if browser_config.disk_size_mib != 4096:
         image_name = f"{image_name}-{browser_config.disk_size_mib}m"
 
@@ -120,6 +151,7 @@ def _build_browser_vm_config(
         backend=resolved_backend,
         retain_disk_on_delete=browser_config.profile_mode == "persistent",
         env_vars=browser_config.env_vars,
+        port_forwards=port_forwards,
     )
     return config, resolved_ssh_key_path
 
@@ -323,7 +355,7 @@ class BrowserSession:
                 raise SmolVMError(
                     f"Browser session '{self.session_id}' did not expose a CDP port in time."
                 )
-            debug_host_port = self._vm.expose_local(guest_port=_BROWSER_DEBUG_PORT)
+            debug_host_port = self._resolve_browser_host_port(_BROWSER_DEBUG_PORT)
             cdp_url = f"http://127.0.0.1:{debug_host_port}"
 
             live_url: str | None = None
@@ -332,7 +364,7 @@ class BrowserSession:
                     raise SmolVMError(
                         f"Browser session '{self.session_id}' did not expose a live view in time."
                     )
-                live_host_port = self._vm.expose_local(guest_port=_BROWSER_LIVE_PORT)
+                live_host_port = self._resolve_browser_host_port(_BROWSER_LIVE_PORT)
                 live_url = f"http://127.0.0.1:{live_host_port}/vnc.html?autoconnect=1&resize=scale"
 
             self._info = self._state.update_browser_session(
@@ -542,6 +574,22 @@ class BrowserSession:
             raise SmolVMError(
                 f"Failed to launch guest browser: {result.stderr.strip() or result.stdout}"
             )
+
+    def _resolve_browser_host_port(self, guest_port: int) -> int:
+        """Return the host port that exposes a browser guest port."""
+        if self._vm is None:
+            raise SmolVMError("Browser session VM is unavailable.")
+
+        config = self._vm.info.config
+        if config.backend == BACKEND_QEMU:
+            for forward in config.port_forwards:
+                if forward.guest_port == guest_port and forward.host_address == "127.0.0.1":
+                    return forward.host_port
+            raise SmolVMError(
+                f"QEMU browser session is missing a host forward for guest port {guest_port}."
+            )
+
+        return self._vm.expose_local(guest_port=guest_port)
 
     def _wait_for_guest_port(self, port: int, *, timeout: float) -> bool:
         if self._vm is None:

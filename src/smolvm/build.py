@@ -515,7 +515,7 @@ RUN chmod +x /init
             "kernel_profile": kernel_profile.value,
             "ssh_public_key": key_value,
             "base_image": base_image,
-            "image_type": "browser-chromium-v1",
+            "image_type": "browser-chromium-v2",
         }
 
         if kernel_path.exists() and rootfs_path.exists():
@@ -623,7 +623,7 @@ start_live_stack() {
         >"${LOG_DIR}/x11vnc.log" 2>&1 &
     echo $! >"${RUNTIME_DIR}/x11vnc.pid"
 
-    nohup websockify --web="${NOVNC_WEB_ROOT}" "${live_port}" localhost:5900 \
+    nohup websockify --web="${NOVNC_WEB_ROOT}" "${live_port}" 127.0.0.1:5900 \
         >"${LOG_DIR}/websockify.log" 2>&1 &
     echo $! >"${RUNTIME_DIR}/websockify.pid"
 
