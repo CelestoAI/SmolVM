@@ -189,7 +189,7 @@ CLI:
 
 ```bash
 # Start a live browser session and print the CDP/live URLs
-smolvm browser start --mode live --json
+smolvm browser start --live --json
 
 # List active browser sessions
 smolvm browser list

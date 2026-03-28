@@ -360,6 +360,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Browser mode (default: headless).",
     )
     browser_start.add_argument(
+        "--live",
+        action="store_const",
+        const="live",
+        dest="mode",
+        help="Shortcut for `--mode live`.",
+    )
+    browser_start.add_argument(
         "--profile-mode",
         choices=["ephemeral", "persistent"],
         default="ephemeral",

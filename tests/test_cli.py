@@ -725,6 +725,29 @@ class TestCliBrowser:
         assert payload["data"]["cdp_url"] == "http://127.0.0.1:39222"
 
     @patch("smolvm.browser.BrowserSession")
+    def test_browser_start_live_shortcut(
+        self, mock_browser_cls: MagicMock
+    ) -> None:
+        """`smolvm browser start --live` should map to live mode."""
+        session = MagicMock()
+        session.session_id = "browser-abc123"
+        session.vm_id = "browser-abc123"
+        session.status = BrowserSessionState.READY
+        session.cdp_url = "http://127.0.0.1:39222"
+        session.live_url = "http://127.0.0.1:36080/vnc.html"
+        session.info.profile_id = None
+        session.artifacts_dir = Path("/tmp/browser-abc123")
+        mock_browser_cls.return_value = session
+
+        ret = main(["browser", "start", "--live", "--json"])
+
+        assert ret == 0
+        mock_browser_cls.assert_called_once()
+        config = mock_browser_cls.call_args.args[0]
+        assert config.mode == "live"
+        session.start.assert_called_once_with(boot_timeout=30.0)
+
+    @patch("smolvm.browser.BrowserSession")
     def test_browser_open_requires_live_url(
         self,
         mock_browser_cls: MagicMock,
