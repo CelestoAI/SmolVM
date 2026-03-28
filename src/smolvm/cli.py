@@ -144,6 +144,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="smolvm",
         description="SmolVM command-line tools",
+        epilog=(
+            "Most non-interactive commands support --json to emit machine-readable "
+            "output for LLMs, agents, and automation."
+        ),
     )
     subparsers = parser.add_subparsers(dest="command")
 

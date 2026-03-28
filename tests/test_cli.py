@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from smolvm.cli import DASHBOARD_ALLOW_BETA_ENV, _current_version_is_prerelease, main
+from smolvm.cli import DASHBOARD_ALLOW_BETA_ENV, _current_version_is_prerelease, build_parser, main
 from smolvm.types import NetworkConfig, VMState
 
 
@@ -43,6 +43,15 @@ def _make_vm_info(
     else:
         vm.network = None
     return vm
+
+
+def test_top_level_help_mentions_json_for_agents() -> None:
+    """Top-level help should describe the machine-readable JSON mode."""
+    help_text = build_parser().format_help()
+
+    assert "--json" in help_text
+    assert "machine-readable output" in help_text
+    assert "LLMs, agents, and automation" in help_text
 
 
 class TestCliEnv:
