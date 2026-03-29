@@ -153,4 +153,13 @@ Measured on AMD Ryzen 7 7800X3D (8C/16T), Ubuntu Linux, KVM/Firecracker backend.
 - [Security](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
 - [Slack](https://join.slack.com/t/celestoai/shared_invite/zt-3qc7h8gno-Nb5_PElEWHDNnGqdVzC~4Q)
-- [License](LICENSE)
+
+
+## 📄 License
+
+Apache 2.0 License - see [LICENSE](LICENSE) for details.
+
+---
+<div align="center">
+Built with 🧡 in London by <a href="https://celesto.ai">Celesto AI</a>
+</div>
