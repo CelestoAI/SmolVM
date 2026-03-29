@@ -29,7 +29,7 @@ Before running:
     smolvm doctor
 
 Example:
-    python examples/agent_tools/openai_agents_tool.py
+    python3 examples/agent_tools/openai_agents_tool.py
 """
 
 from __future__ import annotations

@@ -17,7 +17,7 @@
 """Start a disposable SmolVM browser session.
 
 Run:
-    python examples/browser_session.py
+    python3 examples/browser_session.py
 
 Optional:
     pip install playwright
