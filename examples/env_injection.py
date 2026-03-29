@@ -17,7 +17,7 @@
 """Simple manual example for SmolVM environment variable management.
 
 Run:
-    python3 examples/env_injection.py
+    python examples/env_injection.py
 
 This demonstrates the high-level facade methods:
 - ``vm.set_env_vars``

@@ -30,8 +30,8 @@ Before running:
     smolvm doctor
 
 Examples:
-    python3 examples/agent_tools/computer_use_browser.py
-    python3 examples/agent_tools/computer_use_browser.py \
+    python examples/agent_tools/computer_use_browser.py
+    python examples/agent_tools/computer_use_browser.py \
         --start-url https://example.com \
         --task "Open the page and summarize the main heading."
 """

@@ -29,7 +29,7 @@ Before running:
     smolvm doctor
 
 Example:
-    python3 examples/agent_tools/langchain_tool.py
+    python examples/agent_tools/langchain_tool.py
 """
 
 from __future__ import annotations

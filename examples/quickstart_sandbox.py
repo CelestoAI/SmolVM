@@ -20,7 +20,7 @@ Before running:
     smolvm doctor
 
 Run:
-    python3 examples/quickstart_sandbox.py
+    python examples/quickstart_sandbox.py
 """
 
 from smolvm import SmolVM

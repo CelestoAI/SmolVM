@@ -65,7 +65,7 @@ with SmolVM() as vm:
 Run the full example:
 
 ```bash
-python3 examples/quickstart_sandbox.py
+python examples/quickstart_sandbox.py
 ```
 
 ## From the CLI: Start an isolated browser
