@@ -114,7 +114,9 @@ Each script shows its own `pip install ...` line when it needs extra packages.
 
 ## SDK or CLI?
 
-Use the SDK when SmolVM is part of your app or agent loop and you want to create sandboxes from Python code. Use the CLI when you want to inspect the runtime manually, start a browser from the terminal, or script local workflows around `smolvm doctor`, `smolvm browser`, `smolvm env`, `smolvm create`, and `smolvm list`.
+Use the SDK when SmolVM is part of your app or agent loop and you want to create sandboxes from Python code. 
+
+Use the CLI when you want to inspect the runtime manually, start a browser from the terminal, or script local workflows around `smolvm doctor`, `smolvm browser`, `smolvm env`, `smolvm create`, and `smolvm list`.
 
 ## Why isolation matters
 
