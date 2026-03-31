@@ -57,6 +57,8 @@ ARTIFACTS_DIR = REPO_ROOT / "artifacts" / "pydanticai-agent-browser"
 FINAL_SCREENSHOT_PATH = "artifacts/pydanticai-agent-browser/final.png"
 SYSTEM_INSTRUCTIONS = (
     "You automate one SmolVM browser session from the host.\n"
+    "First read `agent-browser --help`.\n"
+    "Decide on the exact commands before you run them.\n"
     "Follow this workflow exactly:\n"
     "1. First run `smolvm browser start --live --json`.\n"
     "2. Read `cdp_port` from the `parsed_browser_session` section in the tool output.\n"
@@ -69,15 +71,17 @@ SYSTEM_INSTRUCTIONS = (
 )
 DEMO_PROMPT = (
     "Use run_host_bash to complete this exact demo:\n"
-    "1. Open https://celesto.ai\n"
-    "2. Capture a snapshot\n"
-    "3. Click the `Get started...` link\n"
-    "4. Wait for the destination page to load\n"
-    "5. Capture another snapshot\n"
-    "6. Scroll down a bit\n"
-    f"7. Save a screenshot to `{FINAL_SCREENSHOT_PATH}`\n"
-    "8. Fetch the current title and URL\n"
-    "9. Stop the session\n"
+    "1. Read `agent-browser --help`\n"
+    "2. Make a short plan\n"
+    "3. Open https://celesto.ai\n"
+    "4. Capture a snapshot\n"
+    "5. Click the `Get started...` link\n"
+    "6. Wait for the destination page to load\n"
+    "7. Capture another snapshot\n"
+    "8. Scroll down a bit\n"
+    f"9. Save a screenshot to `{FINAL_SCREENSHOT_PATH}`\n"
+    "10. Fetch the current title and URL\n"
+    "11. Stop the session\n"
     "Return only the final title, URL, page summary, screenshot path, and session ID."
 )
 
@@ -186,6 +190,7 @@ def run_host_bash(
         command: Shell command to execute on the host.
         timeout: Maximum number of seconds to wait for the command.
     """
+    print(f"Running command: {command}", file=sys.stderr)
     try:
         result = subprocess.run(
             ["bash", "-lc", command],
@@ -203,7 +208,9 @@ def run_host_bash(
             stderr = f"{timeout_message}\n{stderr}"
         else:
             stderr = timeout_message
-        return _format_command_result(124, stdout, stderr)
+        formatted = _format_command_result(124, stdout, stderr)
+        print(f"Command result:\n{formatted}", file=sys.stderr)
+        return formatted
 
     parsed_browser_session: dict[str, Any] | None = None
     if (
@@ -215,12 +222,14 @@ def run_host_bash(
         if parsed_browser_session is not None:
             ctx.deps.session = parsed_browser_session
 
-    return _format_command_result(
+    formatted = _format_command_result(
         result.returncode,
         result.stdout,
         result.stderr,
         parsed_browser_session=parsed_browser_session,
     )
+    print(f"Command result:\n{formatted}", file=sys.stderr)
+    return formatted
 
 
 def _build_agent() -> Any:
