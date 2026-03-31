@@ -38,7 +38,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
-from pydantic_ai import Agent
 
 try:
     from pydantic_ai import RunContext
@@ -88,6 +87,18 @@ class BrowserCliDeps:
     """Hold the active browser session so cleanup can happen outside the agent."""
 
     session: dict[str, Any] | None = None
+
+
+def _require_dependency(import_path: str, install_hint: str) -> Any:
+    """Import an optional dependency lazily with a useful installation hint."""
+    module_name, _, attr_name = import_path.partition(":")
+    try:
+        module = __import__(module_name, fromlist=[attr_name] if attr_name else [])
+    except ImportError as exc:
+        raise RuntimeError(
+            f"Missing dependency '{module_name}'. Install it with: {install_hint}"
+        ) from exc
+    return getattr(module, attr_name) if attr_name else module
 
 
 def _parse_browser_start_output(stdout: str) -> dict[str, Any] | None:
@@ -213,7 +224,8 @@ def run_host_bash(
 
 
 def _build_agent() -> Any:
-    agent = Agent(
+    agent_cls = _require_dependency("pydantic_ai:Agent", "pip install pydantic-ai")
+    agent = agent_cls(
         os.environ.get("PYDANTICAI_MODEL", DEFAULT_MODEL),
         deps_type=BrowserCliDeps,
         instructions=SYSTEM_INSTRUCTIONS,
