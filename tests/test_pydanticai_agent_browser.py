@@ -123,9 +123,9 @@ def test_run_host_bash_logs_command_and_result(monkeypatch, capsys) -> None:
     result = module.run_host_bash(ctx, "echo hi")
 
     captured = capsys.readouterr()
-    assert "Running command: echo hi" in captured.err
-    assert "Command result:" in captured.err
-    assert "stdout:\nhello" in captured.err
+    assert "Running command: echo hi" in captured.out
+    assert "Command result:" in captured.out
+    assert "stdout:\nhello" in captured.out
     assert result.startswith("exit_code: 0")
 
 

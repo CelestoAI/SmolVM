@@ -93,6 +93,11 @@ class BrowserCliDeps:
     session: dict[str, Any] | None = None
 
 
+def _log_progress(message: str) -> None:
+    """Print progress updates immediately so the demo does not look stuck."""
+    print(message, flush=True)
+
+
 def _require_dependency(import_path: str, install_hint: str) -> Any:
     """Import an optional dependency lazily with a useful installation hint."""
     module_name, _, attr_name = import_path.partition(":")
@@ -190,7 +195,7 @@ def run_host_bash(
         command: Shell command to execute on the host.
         timeout: Maximum number of seconds to wait for the command.
     """
-    print(f"Running command: {command}", file=sys.stderr)
+    _log_progress(f"Running command: {command}")
     try:
         result = subprocess.run(
             ["bash", "-lc", command],
@@ -209,7 +214,7 @@ def run_host_bash(
         else:
             stderr = timeout_message
         formatted = _format_command_result(124, stdout, stderr)
-        print(f"Command result:\n{formatted}", file=sys.stderr)
+        _log_progress(f"Command result:\n{formatted}")
         return formatted
 
     parsed_browser_session: dict[str, Any] | None = None
@@ -228,7 +233,7 @@ def run_host_bash(
         result.stderr,
         parsed_browser_session=parsed_browser_session,
     )
-    print(f"Command result:\n{formatted}", file=sys.stderr)
+    _log_progress(f"Command result:\n{formatted}")
     return formatted
 
 
