@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
 import sys
@@ -136,3 +137,19 @@ def test_prompt_tells_model_to_read_help_and_plan_first() -> None:
     assert "Decide on the exact commands before you run them." in module.SYSTEM_INSTRUCTIONS
     assert "Read `agent-browser --help`" in module.DEMO_PROMPT
     assert "Make a short plan" in module.DEMO_PROMPT
+
+
+def test_build_parser_accepts_optional_input_override() -> None:
+    module = _load_module()
+
+    args = module._build_parser().parse_args(["--input", "Open example.com"])
+
+    assert isinstance(args, argparse.Namespace)
+    assert args.input == "Open example.com"
+
+
+def test_resolve_prompt_falls_back_to_demo_prompt() -> None:
+    module = _load_module()
+
+    assert module._resolve_prompt(None) == module.DEMO_PROMPT
+    assert module._resolve_prompt("Open example.com") == "Open example.com"

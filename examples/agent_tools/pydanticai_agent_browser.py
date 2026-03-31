@@ -25,10 +25,12 @@ Prerequisites:
 
 Example:
     python examples/agent_tools/pydanticai_agent_browser.py
+    python examples/agent_tools/pydanticai_agent_browser.py --input "Open example.com"
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shutil
@@ -51,11 +53,13 @@ except ImportError:
         def __class_getitem__(cls, _item: Any) -> type["RunContext"]:
             return cls
 
-DEFAULT_MODEL = "openai:gpt-4.1"
+DEFAULT_MODEL = "openai:gpt-5.4"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ARTIFACTS_DIR = REPO_ROOT / "artifacts" / "pydanticai-agent-browser"
 FINAL_SCREENSHOT_PATH = "artifacts/pydanticai-agent-browser/final.png"
 SYSTEM_INSTRUCTIONS = (
+    "You are an agent who has access to control browser using some tools and CLIs.\n"
+    "You must reason and plan before act.\n"
     "You automate one SmolVM browser session from the host.\n"
     "First read `agent-browser --help`.\n"
     "Decide on the exact commands before you run them.\n"
@@ -67,21 +71,21 @@ SYSTEM_INSTRUCTIONS = (
     f"5. Save the final screenshot to `{FINAL_SCREENSHOT_PATH}`.\n"
     "6. Stop the browser with `smolvm browser stop <session_id>` when done.\n"
     "7. Return only these four lines: title, url, screenshot_path, session_id.\n"
-    "Only use the `run_host_bash` tool, and keep each command simple."
+    "Only use the `run_host_bash` tool, and keep each command simple.\n"
+    "Your final output must contain a human readable summary."
 )
 DEMO_PROMPT = (
     "Use run_host_bash to complete this exact demo:\n"
     "1. Read `agent-browser --help`\n"
     "2. Make a short plan\n"
-    "3. Open https://celesto.ai\n"
+    "3. Open bbc news and tell the news\n"
     "4. Capture a snapshot\n"
-    "5. Click the `Get started...` link\n"
-    "6. Wait for the destination page to load\n"
-    "7. Capture another snapshot\n"
-    "8. Scroll down a bit\n"
-    f"9. Save a screenshot to `{FINAL_SCREENSHOT_PATH}`\n"
-    "10. Fetch the current title and URL\n"
-    "11. Stop the session\n"
+    "5. Wait for the destination page to load\n"
+    "6. Capture another snapshot\n"
+    "7. Scroll down a bit\n"
+    f"8. Save a screenshot to `{FINAL_SCREENSHOT_PATH}`\n"
+    "9. Fetch the current title and URL\n"
+    "10. Stop the session\n"
     "Return only the final title, URL, page summary, screenshot path, and session ID."
 )
 
@@ -248,14 +252,31 @@ def _build_agent() -> Any:
     return agent
 
 
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run the minimal SmolVM plus agent-browser PydanticAI demo."
+    )
+    parser.add_argument(
+        "--input",
+        default=None,
+        help="Optional prompt to run instead of the built-in demo prompt.",
+    )
+    return parser
+
+
+def _resolve_prompt(input_prompt: str | None) -> str:
+    return DEMO_PROMPT if input_prompt is None else input_prompt
+
+
 def main() -> None:
     """Run the minimal SmolVM plus agent-browser PydanticAI demo."""
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
+    args = _build_parser().parse_args()
     agent = _build_agent()
     deps = BrowserCliDeps()
     try:
-        result = agent.run_sync(DEMO_PROMPT, deps=deps)
+        result = agent.run_sync(_resolve_prompt(args.input), deps=deps)
         print(result.output)
         if deps.session is not None and deps.session.get("live_url"):
             print(f"live_url: {deps.session['live_url']}")
