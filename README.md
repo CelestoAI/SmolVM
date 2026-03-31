@@ -85,6 +85,8 @@ smolvm browser start --live --json
 
 The JSON response includes the `session_id` plus local browser URLs. Use the session ID in the next commands.
 
+The `cdp_url` can also be passed to external CDP clients. [examples/agent_tools/pydanticai_agent_browser.py](examples/agent_tools/pydanticai_agent_browser.py) shows a minimal flow that extracts the localhost port from that URL and hands it to `agent-browser --cdp`.
+
 ```bash
 smolvm browser list
 smolvm browser stop <session_id>
@@ -111,6 +113,7 @@ Other useful CLI commands:
 | Run code in a clean sandbox | [examples/quickstart_sandbox.py](examples/quickstart_sandbox.py) |
 | Start a disposable browser session | [examples/browser_session.py](examples/browser_session.py) |
 | Let a model click and type on websites | [examples/agent_tools/computer_use_browser.py](examples/agent_tools/computer_use_browser.py) |
+| Let PydanticAI drive the browser through `agent-browser` | [examples/agent_tools/pydanticai_agent_browser.py](examples/agent_tools/pydanticai_agent_browser.py) |
 | Give an agent a shell tool | [examples/agent_tools/openai_agents_tool.py](examples/agent_tools/openai_agents_tool.py), [examples/agent_tools/langchain_tool.py](examples/agent_tools/langchain_tool.py), [examples/agent_tools/pydanticai_tool.py](examples/agent_tools/pydanticai_tool.py) |
 | Keep one sandbox across turns | [examples/agent_tools/pydanticai_reusable_tool.py](examples/agent_tools/pydanticai_reusable_tool.py) |
 | Pass env vars into the guest | [examples/env_injection.py](examples/env_injection.py) |

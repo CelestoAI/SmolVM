@@ -40,8 +40,17 @@ from typing import TYPE_CHECKING, Any
 
 from smolvm import SmolVM
 
-if TYPE_CHECKING:
+try:
     from pydantic_ai import RunContext
+except ImportError:
+    if TYPE_CHECKING:
+        raise
+
+    class RunContext:
+        """Fallback used so runtime annotation evaluation does not fail."""
+
+        def __class_getitem__(cls, _item: Any) -> type["RunContext"]:
+            return cls
 
 DEFAULT_MODEL = "openai:gpt-4.1"
 

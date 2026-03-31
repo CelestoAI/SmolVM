@@ -39,6 +39,7 @@ EXPECTED_AGENT_TOOL_EXAMPLES = {
     "computer_use_browser.py",
     "langchain_tool.py",
     "openai_agents_tool.py",
+    "pydanticai_agent_browser.py",
     "pydanticai_tool.py",
     "pydanticai_reusable_tool.py",
 }
@@ -48,6 +49,7 @@ README_USE_CASE_LINKS = {
     "examples/agent_tools/computer_use_browser.py",
     "examples/agent_tools/openai_agents_tool.py",
     "examples/agent_tools/langchain_tool.py",
+    "examples/agent_tools/pydanticai_agent_browser.py",
     "examples/agent_tools/pydanticai_tool.py",
     "examples/agent_tools/pydanticai_reusable_tool.py",
     "examples/env_injection.py",
@@ -110,6 +112,25 @@ def test_langchain_tool_import_without_pydantic_v1_warning() -> None:
 
     messages = [str(warning.message) for warning in caught]
     assert not any("Pydantic V1 functionality" in message for message in messages)
+
+
+@pytest.mark.parametrize(
+    ("example_name", "annotation"),
+    [
+        ("pydanticai_agent_browser.py", "RunContext[BrowserCliDeps]"),
+        ("pydanticai_reusable_tool.py", "RunContext[SandboxDeps]"),
+    ],
+)
+def test_pydanticai_examples_support_runtime_run_context_evaluation(
+    example_name: str,
+    annotation: str,
+) -> None:
+    """PydanticAI examples should not fail when runtime code evaluates annotations."""
+    module = _load_module(AGENT_TOOL_EXAMPLES_DIR / example_name)
+
+    evaluated = eval(annotation, module.__dict__, module.__dict__)
+
+    assert evaluated is not None
 
 
 def _readme_section(title: str) -> str:
