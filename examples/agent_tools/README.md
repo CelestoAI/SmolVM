@@ -27,12 +27,6 @@ flowchart TD
     N --> O((Done))
     
     X --> M
-
-    style A fill:#e1f5fe
-    style O fill:#c8e6c9
-    style D fill:#fff3e0
-    style M fill:#fff3e0
-    style N fill:#c8e6c9
 ```
 
 ## What It Does
