@@ -174,6 +174,22 @@ def test_create_snapshot_rolls_back_metadata_on_resume_failure(
     assert smol_vm.get("vm001").status == VMState.RUNNING
 
 
+@pytest.mark.parametrize("snapshot_id", ["/tmp/escape", "../escape", r"..\escape", "snap/001"])
+def test_create_snapshot_rejects_unsafe_snapshot_id(
+    smol_vm: SmolVMManager,
+    sample_config: VMConfig,
+    tmp_path: Path,
+    snapshot_id: str,
+) -> None:
+    """Snapshot creation should reject IDs that could escape the snapshot directory."""
+    _running_vm(smol_vm, sample_config, tmp_path)
+
+    with pytest.raises(ValueError, match="snapshot_id"):
+        smol_vm.create_snapshot("vm001", snapshot_id=snapshot_id)
+
+    assert not any(smol_vm.snapshot_dir.iterdir())
+
+
 def test_restore_snapshot_rehydrates_deleted_vm(
     smol_vm: SmolVMManager,
     sample_config: VMConfig,
@@ -343,3 +359,13 @@ def test_delete_snapshot_preserves_metadata_when_disk_cleanup_fails(
         smol_vm.delete_snapshot("snap-001")
 
     assert smol_vm.state.get_snapshot("snap-001").snapshot_id == "snap-001"
+
+
+@pytest.mark.parametrize("snapshot_id", ["/tmp/escape", "../escape", r"..\escape", "snap/001"])
+def test_delete_snapshot_rejects_unsafe_snapshot_id(
+    smol_vm: SmolVMManager,
+    snapshot_id: str,
+) -> None:
+    """Snapshot deletion should reject IDs that could escape the snapshot directory."""
+    with pytest.raises(ValueError, match="snapshot_id"):
+        smol_vm.delete_snapshot(snapshot_id)

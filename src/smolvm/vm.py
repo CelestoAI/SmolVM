@@ -21,6 +21,7 @@ import logging
 import os
 import platform
 import pwd
+import re
 import shlex
 import shutil
 import signal
@@ -57,6 +58,7 @@ DEFAULT_SOCKET_DIR = Path("/tmp")
 QEMU_GUEST_IP = "10.0.2.15"
 QEMU_GATEWAY_IP = "10.0.2.2"
 QEMU_NETMASK = "255.255.255.0"
+SNAPSHOT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$|^[a-z0-9]$")
 
 
 def _get_sudo_user_info() -> pwd.struct_passwd | None:
@@ -359,6 +361,24 @@ class SmolVMManager:
                 free_bytes,
                 required_bytes,
             )
+
+    def _snapshot_root_for_id(self, snapshot_id: str) -> Path:
+        """Return a validated snapshot directory path under ``self.snapshot_dir``."""
+        if not snapshot_id:
+            raise ValueError("snapshot_id cannot be empty")
+        if not SNAPSHOT_ID_PATTERN.fullmatch(snapshot_id):
+            raise ValueError(
+                "snapshot_id must contain only lowercase letters, numbers, hyphens, "
+                "or underscores"
+            )
+
+        snapshot_root = (self.snapshot_dir / snapshot_id).resolve(strict=False)
+        snapshot_dir = self.snapshot_dir.resolve()
+        try:
+            snapshot_root.relative_to(snapshot_dir)
+        except ValueError as exc:
+            raise ValueError("snapshot_id must resolve within the snapshot directory") from exc
+        return snapshot_root
 
     def _ensure_firecracker_network_for_restore(self, vm_id: str, network: NetworkConfig) -> None:
         """Ensure host-side network resources exist for a restored Firecracker VM."""
@@ -907,7 +927,7 @@ class SmolVMManager:
             )
 
         snapshot_id = snapshot_id or f"snap-{vm_id}-{int(time.time())}"
-        snapshot_root = self.snapshot_dir / snapshot_id
+        snapshot_root = self._snapshot_root_for_id(snapshot_id)
         if snapshot_root.exists():
             raise SnapshotAlreadyExistsError(snapshot_id)
         with suppress(SnapshotNotFoundError):
@@ -1112,8 +1132,7 @@ class SmolVMManager:
 
     def delete_snapshot(self, snapshot_id: str) -> None:
         """Delete snapshot files and metadata."""
-        if not snapshot_id:
-            raise ValueError("snapshot_id cannot be empty")
+        snapshot_root = self._snapshot_root_for_id(snapshot_id)
 
         snapshot = self.state.get_snapshot(snapshot_id)
         if snapshot.restored and snapshot.restored_vm_id:
@@ -1128,7 +1147,6 @@ class SmolVMManager:
                         },
                     )
 
-        snapshot_root = self.snapshot_dir / snapshot_id
         with suppress(FileNotFoundError):
             shutil.rmtree(snapshot_root)
         self.state.delete_snapshot(snapshot_id)
