@@ -226,11 +226,9 @@ def test_qmp_connect_can_retry_after_capabilities_handshake_failure(tmp_path: Pa
     }
     recovered_thread = _start_qmp_server(socket_path, recovered_responses, recovered_requests)
 
-    try:
+    with QMPClient(socket_path) as client:
         client.connect()
         status = client.query_status()
-    finally:
-        client.close()
 
     recovered_thread.join(timeout=2.0)
     if socket_path.exists():

@@ -85,8 +85,9 @@ class QemuRuntimeAdapter(RuntimeAdapter):
 
                 os.kill(vm_info.pid, signal.SIGTERM)
                 self._context.wait_for_process(vm_info.pid, timeout)
-            except Exception:
-                pass
+            except (OSError, SmolVMError):
+                # Best-effort graceful shutdown failed; fall back to hard kill below.
+                ...
 
         if vm_info.pid and self._context.is_process_running(vm_info.pid):
             self._context.kill_process(vm_info.pid)

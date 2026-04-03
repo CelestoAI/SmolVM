@@ -47,7 +47,7 @@ from smolvm.runtime import RuntimeContext, SnapshotCreateRequest, SnapshotRestor
 from smolvm.runtime_firecracker import FirecrackerRuntimeAdapter
 from smolvm.runtime_qemu import QEMU_ROOT_NODE_NAME, QemuRuntimeAdapter
 from smolvm.storage import StateManager
-from smolvm.types import NetworkConfig, SnapshotArtifacts, SnapshotInfo, VMConfig, VMInfo, VMState
+from smolvm.types import NetworkConfig, SnapshotInfo, VMConfig, VMInfo, VMState
 from smolvm.utils import RUNTIME_PRIVILEGE_SETUP_HINT, which
 
 logger = logging.getLogger(__name__)

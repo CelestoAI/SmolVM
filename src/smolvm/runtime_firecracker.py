@@ -20,6 +20,7 @@ import shutil
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
+import logging
 
 from smolvm.api import FirecrackerClient
 from smolvm.backends import BACKEND_FIRECRACKER
@@ -33,6 +34,8 @@ from smolvm.runtime import (
     SnapshotRestoreRequest,
 )
 from smolvm.types import SnapshotArtifacts, VMInfo, VMState
+
+logger = logging.getLogger(__name__)
 
 
 class FirecrackerRuntimeAdapter(RuntimeAdapter):
@@ -107,7 +110,10 @@ class FirecrackerRuntimeAdapter(RuntimeAdapter):
                 if vm_info.pid:
                     self._context.wait_for_process(vm_info.pid, timeout)
             except Exception:
-                pass
+                logger.exception(
+                    "Failed to gracefully stop Firecracker VM %s via control socket",
+                    vm_info.vm_id,
+                )
 
         if vm_info.pid and self._context.is_process_running(vm_info.pid):
             self._context.kill_process(vm_info.pid)
