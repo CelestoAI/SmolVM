@@ -29,6 +29,7 @@ from smolvm.types import (
     CommandResult,
     GuestOS,
     NetworkConfig,
+    SnapshotArtifacts,
     SnapshotInfo,
     VMConfig,
     VMInfo,
@@ -373,15 +374,20 @@ class TestSnapshotInfo:
         snapshot = SnapshotInfo(
             snapshot_id="snap-1234",
             vm_id="vm001",
-            snapshot_path=snapshot_path,
-            mem_file_path=mem_file_path,
-            disk_path=disk_path,
+            backend="firecracker",
+            artifacts=SnapshotArtifacts(
+                state_path=snapshot_path,
+                memory_path=mem_file_path,
+                disk_path=disk_path,
+            ),
             vm_config=config,
             network_config=network,
             created_at=datetime.now(timezone.utc),
         )
 
         assert snapshot.snapshot_id == "snap-1234"
+        assert snapshot.backend == "firecracker"
+        assert snapshot.artifacts.disk_path == disk_path
         assert snapshot.vm_config.vm_id == "vm001"
         assert snapshot.network_config.tap_device == "tap2"
 

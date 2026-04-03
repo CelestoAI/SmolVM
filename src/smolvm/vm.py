@@ -42,8 +42,11 @@ from smolvm.exceptions import (
 )
 from smolvm.host import HostCapability, HostManager
 from smolvm.network import NetworkManager, check_network_prerequisites
+from smolvm.runtime import RuntimeContext, SnapshotCreateRequest, SnapshotRestoreRequest
+from smolvm.runtime_firecracker import FirecrackerRuntimeAdapter
+from smolvm.runtime_qemu import QEMU_ROOT_NODE_NAME, QemuRuntimeAdapter
 from smolvm.storage import StateManager
-from smolvm.types import NetworkConfig, SnapshotInfo, VMConfig, VMInfo, VMState
+from smolvm.types import NetworkConfig, SnapshotArtifacts, SnapshotInfo, VMConfig, VMInfo, VMState
 from smolvm.utils import RUNTIME_PRIVILEGE_SETUP_HINT, which
 
 logger = logging.getLogger(__name__)
@@ -275,9 +278,82 @@ class SmolVMManager:
             return self._resolve_vm_backend(vm_info.config.backend)
         return self.backend
 
-    def _instance_disk_path(self, vm_id: str) -> Path:
-        """Return managed isolated disk path for a VM ID."""
-        return self.disk_dir / f"{vm_id}.ext4"
+    def _runtime_context(self) -> RuntimeContext:
+        """Build a shared adapter context from manager-owned helpers."""
+        return RuntimeContext(
+            data_dir=self.data_dir,
+            socket_dir=self.socket_dir,
+            log_files=self._log_files,
+            resolve_boot_args=self._resolve_boot_args,
+            start_firecracker=self._start_firecracker,
+            start_qemu=self._start_qemu,
+            unlink_socket=self._unlink_socket,
+            kill_process=self._kill_process,
+            wait_for_process=self._wait_for_process,
+            is_process_running=self._is_process_running,
+            find_qemu_binary=self._find_qemu_binary,
+        )
+
+    def _runtime_adapter_for_backend(self, backend: str) -> FirecrackerRuntimeAdapter | QemuRuntimeAdapter:
+        """Construct a runtime adapter for the requested backend."""
+        context = self._runtime_context()
+        if backend == BACKEND_FIRECRACKER:
+            return FirecrackerRuntimeAdapter(context)
+        if backend == BACKEND_QEMU:
+            return QemuRuntimeAdapter(context)
+        raise SmolVMError("Unsupported backend", {"backend": backend})
+
+    def _runtime_adapter_for_vm(self, vm_info: VMInfo) -> FirecrackerRuntimeAdapter | QemuRuntimeAdapter:
+        """Resolve the runtime adapter for a persisted VM."""
+        return self._runtime_adapter_for_backend(self._backend_for_vm(vm_info))
+
+    def _runtime_adapter_for_snapshot(
+        self,
+        snapshot: SnapshotInfo,
+    ) -> FirecrackerRuntimeAdapter | QemuRuntimeAdapter:
+        """Resolve the runtime adapter for a persisted snapshot."""
+        return self._runtime_adapter_for_backend(snapshot.backend)
+
+    def _instance_disk_path(self, vm_id: str, backend: str) -> Path:
+        """Return the backend-specific managed isolated disk path for a VM ID."""
+        suffix = ".qcow2" if backend == BACKEND_QEMU else ".ext4"
+        return self.disk_dir / f"{vm_id}{suffix}"
+
+    def _find_qemu_img_binary(self) -> Path | None:
+        """Find an available ``qemu-img`` binary."""
+        return which("qemu-img")
+
+    def _convert_qemu_managed_disk(self, source_path: Path, target_path: Path) -> None:
+        """Create a managed qcow2 disk for the QEMU backend."""
+        qemu_img = self._find_qemu_img_binary()
+        if qemu_img is None:
+            raise SmolVMError("QEMU backend requires qemu-img to materialize managed disks")
+
+        source_format = "qcow2" if source_path.suffix == ".qcow2" else "raw"
+        result = subprocess.run(
+            [
+                str(qemu_img),
+                "convert",
+                "-f",
+                source_format,
+                "-O",
+                "qcow2",
+                str(source_path),
+                str(target_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise SmolVMError(
+                "qemu-img convert failed while creating a managed disk",
+                {
+                    "source_path": str(source_path),
+                    "target_path": str(target_path),
+                    "stderr": result.stderr.strip(),
+                },
+            )
 
     def _materialize_rootfs(self, config: VMConfig) -> VMConfig:
         """Materialize the effective rootfs path for a VM create request.
@@ -289,7 +365,8 @@ class SmolVMManager:
         if config.disk_mode == "shared":
             return config
 
-        instance_rootfs = self._instance_disk_path(config.vm_id)
+        backend = self._backend_for_config(config)
+        instance_rootfs = self._instance_disk_path(config.vm_id, backend)
         if not instance_rootfs.exists():
             logger.info(
                 "Creating isolated disk for VM %s from %s -> %s",
@@ -297,7 +374,10 @@ class SmolVMManager:
                 config.rootfs_path,
                 instance_rootfs,
             )
-            shutil.copy2(config.rootfs_path, instance_rootfs)
+            if backend == BACKEND_QEMU:
+                self._convert_qemu_managed_disk(config.rootfs_path, instance_rootfs)
+            else:
+                shutil.copy2(config.rootfs_path, instance_rootfs)
         else:
             logger.info(
                 "Reusing isolated disk for VM %s at %s",
@@ -314,39 +394,20 @@ class SmolVMManager:
         if vm_info.config.disk_mode != "isolated":
             return None
 
-        expected = self._instance_disk_path(vm_info.vm_id).resolve()
+        expected = self._instance_disk_path(vm_info.vm_id, self._backend_for_vm(vm_info)).resolve()
         actual = vm_info.config.rootfs_path.resolve()
         if actual != expected:
             return None
         return expected
 
-    def _ensure_firecracker_runtime_supported(self, vm_info: VMInfo) -> None:
-        """Validate whether a VM can be managed through the Firecracker API."""
-        backend = self._backend_for_vm(vm_info)
-        if backend != BACKEND_FIRECRACKER:
-            raise SmolVMError("This operation is only supported with the Firecracker backend")
-
-    def _ensure_firecracker_snapshot_supported(self, vm_info: VMInfo) -> None:
+    def _ensure_snapshot_supported(self, vm_info: VMInfo) -> None:
         """Validate whether snapshot operations are supported for a VM."""
-        self._ensure_firecracker_runtime_supported(vm_info)
         if vm_info.config.disk_mode != "isolated":
             raise SmolVMError("Snapshotting currently supports only isolated-disk VMs")
         if vm_info.config.extra_drives:
             raise SmolVMError("Snapshotting currently supports only VMs without extra drives")
         if vm_info.network is None:
             raise SmolVMError("VM has no network configuration", {"vm_id": vm_info.vm_id})
-
-    def _require_firecracker_client(self, vm_info: VMInfo) -> FirecrackerClient:
-        """Return a Firecracker client for a running or paused VM."""
-        self._ensure_firecracker_runtime_supported(vm_info)
-        if vm_info.socket_path is None:
-            raise SmolVMError("VM has no Firecracker socket path", {"vm_id": vm_info.vm_id})
-        if not vm_info.socket_path.exists():
-            raise SmolVMError(
-                "Firecracker socket is not available",
-                {"vm_id": vm_info.vm_id, "socket_path": str(vm_info.socket_path)},
-            )
-        return FirecrackerClient(vm_info.socket_path)
 
     def _warn_low_disk_space_for_snapshot(self, vm_info: VMInfo) -> None:
         """Warn when snapshot creation looks likely to exhaust local disk space."""
@@ -433,6 +494,26 @@ class SmolVMManager:
                 return path
         return None
 
+    def _qemu_version(self, qemu_bin: Path) -> tuple[int, int, int] | None:
+        """Return the parsed qemu-system version."""
+        try:
+            result = subprocess.run(
+                [str(qemu_bin), "--version"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+            )
+        except Exception:
+            logger.debug("Could not probe qemu version", exc_info=True)
+            return None
+
+        match = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", f"{result.stdout}\n{result.stderr}")
+        if match is None:
+            return None
+        major, minor, micro = match.groups()
+        return int(major), int(minor), int(micro or 0)
+
     def _check_qemu_prerequisites(self) -> list[str]:
         """Check host prerequisites for the qemu backend."""
         errors: list[str] = []
@@ -442,7 +523,7 @@ class SmolVMManager:
             errors.append(
                 "QEMU not found. Install one of: qemu-system-aarch64, qemu-system-x86_64 "
                 "(macOS/Homebrew: brew install qemu)."
-            )
+                )
         elif platform.system() == "Darwin":
             try:
                 result = subprocess.run(
@@ -460,6 +541,19 @@ class SmolVMManager:
                     )
             except Exception:
                 logger.debug("Could not probe qemu accelerators", exc_info=True)
+
+        if qemu_bin is not None:
+            version = self._qemu_version(qemu_bin)
+            if version is None:
+                errors.append("Could not determine QEMU version.")
+            elif version < (6, 0, 0):
+                errors.append(
+                    f"QEMU {version[0]}.{version[1]}.{version[2]} is too old. "
+                    "Install QEMU 6.0 or newer."
+                )
+
+        if self._find_qemu_img_binary() is None:
+            errors.append("'qemu-img' command not found (install qemu)")
 
         if which("ssh") is None:
             errors.append("'ssh' command not found (install openssh-client)")
@@ -655,124 +749,32 @@ class SmolVMManager:
             )
 
         backend = self._backend_for_vm(vm_info)
-
-        if backend == BACKEND_QEMU:
-            log_path = self.data_dir / f"{vm_id}.log"
-            process = self._start_qemu(vm_info, log_path)
-
-            try:
-                # Ensure qemu did not crash immediately due invalid args/kernel.
-                warmup_deadline = time.time() + min(boot_timeout, 2.0)
-                while time.time() < warmup_deadline:
-                    exit_code = process.poll()
-                    if exit_code is not None:
-                        raise SmolVMError(
-                            f"QEMU exited early while booting VM '{vm_id}' (exit={exit_code})."
-                        )
-                    time.sleep(0.05)
-
-                vm_info = self.state.update_vm(
-                    vm_id,
-                    status=VMState.RUNNING,
-                    pid=process.pid,
-                    socket_path=None,
-                )
-                logger.info(
-                    "VM started: %s (backend=%s, PID: %d, ssh localhost:%s)",
-                    vm_id,
-                    backend,
-                    process.pid,
-                    vm_info.network.ssh_host_port if vm_info.network else "unknown",
-                )
-                return vm_info
-            except Exception as e:
-                logger.error("Failed to start VM %s: %s", vm_id, e)
-                self._kill_process(process.pid)
-                self.state.update_vm(
-                    vm_id,
-                    status=VMState.ERROR,
-                    clear_pid=True,
-                    clear_socket_path=True,
-                )
-                raise
-
-        # Firecracker path
-        socket_path = self.socket_dir / f"fc-{vm_id}.sock"
-        if socket_path.exists():
-            self._unlink_socket(socket_path)
-
-        # Start Firecracker process
         log_path = self.data_dir / f"{vm_id}.log"
-        process = self._start_firecracker(socket_path, log_path)
-
+        adapter = self._runtime_adapter_for_backend(backend)
         try:
-            # Wait for socket and configure
-            client = FirecrackerClient(socket_path)
-            client.wait_for_socket(timeout=boot_timeout)
-
-            # Configure the VM
-            boot_args = self._resolve_boot_args(vm_info)
-            client.set_boot_source(
-                vm_info.config.kernel_path,
-                boot_args,
-            )
-            client.set_machine_config(
-                vm_info.config.vcpu_count,
-                vm_info.config.mem_size_mib,
-            )
-            client.add_drive(
-                "rootfs",
-                vm_info.config.rootfs_path,
-                is_root_device=True,
-                is_read_only=False,
-            )
-            for index, drive_path in enumerate(vm_info.config.extra_drives):
-                drive_id = "data_drive" if index == 0 else f"data_drive_{index}"
-                client.add_drive(
-                    drive_id,
-                    drive_path,
-                    is_root_device=False,
-                    is_read_only=False,
-                )
-            assert vm_info.network is not None
-            client.add_network_interface(
-                "eth0",
-                vm_info.network.tap_device,
-                vm_info.network.guest_mac,
-                rate_limit_mbps=vm_info.config.network_rate_limit_mbps,
-            )
-
-            # Start the instance
-            client.start_instance()
-            client.close()
-
-            # Update state
+            launch = adapter.start(vm_info, log_path=log_path, boot_timeout=boot_timeout)
             vm_info = self.state.update_vm(
                 vm_id,
-                status=VMState.RUNNING,
-                pid=process.pid,
-                socket_path=socket_path,
+                status=launch.status,
+                pid=launch.pid,
+                control_socket_path=launch.control_socket_path,
             )
-
-            guest_ip = vm_info.network.guest_ip if vm_info.network else "unknown"
             logger.info(
-                "VM started: %s (PID: %d, IP: %s)",
+                "VM started: %s (backend=%s, PID: %d)",
                 vm_id,
-                process.pid,
-                guest_ip,
+                backend,
+                launch.pid,
             )
             return vm_info
-
         except Exception as e:
-            # Kill process on failure
             logger.error("Failed to start VM %s: %s", vm_id, e)
-            self._kill_process(process.pid)
             self.state.update_vm(
                 vm_id,
                 status=VMState.ERROR,
                 clear_pid=True,
                 clear_socket_path=True,
             )
+            self._close_runtime_log(vm_id, backend, vm_info.control_socket_path)
             raise
 
     def stop(self, vm_id: str, timeout: float = 10.0) -> VMInfo:
@@ -800,73 +802,19 @@ class SmolVMManager:
             return vm_info
 
         backend = self._backend_for_vm(vm_info)
-
-        if backend == BACKEND_QEMU:
-            if vm_info.pid and self._is_process_running(vm_info.pid):
-                try:
-                    os.kill(vm_info.pid, signal.SIGTERM)
-                    self._wait_for_process(vm_info.pid, timeout)
-                except Exception as e:
-                    logger.warning("Graceful QEMU shutdown failed for %s: %s", vm_id, e)
-
-            if vm_info.pid and self._is_process_running(vm_info.pid):
-                self._kill_process(vm_info.pid)
-
-            qemu_key = f"qemu:{vm_id}"
-            fh = self._log_files.pop(qemu_key, None)
-            if fh is not None:
-                with suppress(Exception):
-                    fh.close()
-
-            vm_info = self.state.update_vm(
-                vm_id,
-                status=VMState.STOPPED,
-                clear_pid=True,
-                clear_socket_path=True,
-            )
-            logger.info("VM stopped: %s (backend=%s)", vm_id, backend)
-            return vm_info
-
-        # Firecracker shutdown — fast path for ephemeral sandbox VMs.
-        # These VMs use isolated disk copies and host-side cleanup happens
-        # in delete(), so there's no meaningful state to preserve.
-        # Try CtrlAltDel with a brief grace window for running guests, then SIGKILL.
-        if (
-            vm_info.status == VMState.RUNNING
-            and vm_info.socket_path
-            and vm_info.socket_path.exists()
-        ):
-            try:
-                client = FirecrackerClient(vm_info.socket_path)
-                client.send_ctrl_alt_del()
-                client.close()
-                # Brief wait — if guest handles it, great
-                if vm_info.pid:
-                    self._wait_for_process(vm_info.pid, min(timeout, 0.5))
-            except Exception as e:
-                logger.debug("CtrlAltDel failed for %s: %s", vm_id, e)
-
-        # Kill the Firecracker process directly
-        if vm_info.pid and self._is_process_running(vm_info.pid):
-            self._kill_process(vm_info.pid)
-
-        # Cleanup socket
-        if vm_info.socket_path and vm_info.socket_path.exists():
-            vm_info.socket_path.unlink()
-
-        # Update state
+        self._runtime_adapter_for_backend(backend).stop(vm_info, timeout=timeout)
+        self._close_runtime_log(vm_id, backend, vm_info.control_socket_path)
         vm_info = self.state.update_vm(
             vm_id,
             status=VMState.STOPPED,
             clear_pid=True,
             clear_socket_path=True,
         )
-
-        logger.info("VM stopped: %s", vm_id)
+        logger.info("VM stopped: %s (backend=%s)", vm_id, backend)
         return vm_info
 
     def pause(self, vm_id: str) -> VMInfo:
-        """Pause a running Firecracker VM."""
+        """Pause a running VM."""
         if not vm_id:
             raise ValueError("vm_id cannot be empty")
 
@@ -878,16 +826,11 @@ class SmolVMManager:
                 {"vm_id": vm_id, "current_status": vm_info.status.value},
             )
 
-        client = self._require_firecracker_client(vm_info)
-        try:
-            client.pause_vm()
-        finally:
-            client.close()
-
+        self._runtime_adapter_for_vm(vm_info).pause(vm_info)
         return self.state.update_vm(vm_id, status=VMState.PAUSED)
 
     def resume(self, vm_id: str) -> VMInfo:
-        """Resume a paused Firecracker VM."""
+        """Resume a paused VM."""
         if not vm_id:
             raise ValueError("vm_id cannot be empty")
 
@@ -899,12 +842,7 @@ class SmolVMManager:
                 {"vm_id": vm_id, "current_status": vm_info.status.value},
             )
 
-        client = self._require_firecracker_client(vm_info)
-        try:
-            client.resume_vm()
-        finally:
-            client.close()
-
+        self._runtime_adapter_for_vm(vm_info).resume(vm_info)
         return self.state.update_vm(vm_id, status=VMState.RUNNING)
 
     def create_snapshot(
@@ -914,12 +852,12 @@ class SmolVMManager:
         *,
         resume_source: bool = False,
     ) -> SnapshotInfo:
-        """Create a full Firecracker snapshot for a paused or running VM."""
+        """Create a full snapshot for a paused or running VM."""
         if not vm_id:
             raise ValueError("vm_id cannot be empty")
 
         vm_info = self.state.get_vm(vm_id)
-        self._ensure_firecracker_snapshot_supported(vm_info)
+        self._ensure_snapshot_supported(vm_info)
         if vm_info.status not in (VMState.RUNNING, VMState.PAUSED):
             raise SmolVMError(
                 f"Cannot snapshot VM in state '{vm_info.status.value}'",
@@ -935,40 +873,44 @@ class SmolVMManager:
             raise SnapshotAlreadyExistsError(snapshot_id)
 
         original_status = vm_info.status
-        client = self._require_firecracker_client(vm_info)
+        backend = self._backend_for_vm(vm_info)
+        managed_disk_path = self._managed_disk_for_vm(vm_info)
+        if managed_disk_path is None:
+            raise SmolVMError("Snapshotting requires a managed isolated disk", {"vm_id": vm_id})
+
+        adapter = self._runtime_adapter_for_backend(backend)
         snapshot_persisted = False
 
         try:
             snapshot_root.mkdir(parents=True, exist_ok=False)
-            snapshot_path = snapshot_root / "vmstate.bin"
-            mem_file_path = snapshot_root / "mem.bin"
-            disk_path = snapshot_root / "disk.ext4"
-
-            if original_status == VMState.RUNNING:
-                client.pause_vm()
-                vm_info = self.state.update_vm(vm_id, status=VMState.PAUSED)
-
             self._warn_low_disk_space_for_snapshot(vm_info)
-            client.create_snapshot(snapshot_path, mem_file_path, snapshot_type="Full")
-            shutil.copy2(vm_info.config.rootfs_path, disk_path)
+            result = adapter.create_snapshot(
+                SnapshotCreateRequest(
+                    vm_info=vm_info,
+                    snapshot_id=snapshot_id,
+                    snapshot_root=snapshot_root,
+                    managed_disk_path=managed_disk_path,
+                    resume_source=resume_source,
+                    original_status=original_status,
+                )
+            )
 
             snapshot_info = SnapshotInfo(
                 snapshot_id=snapshot_id,
                 vm_id=vm_info.vm_id,
-                snapshot_path=snapshot_path,
-                mem_file_path=mem_file_path,
-                disk_path=disk_path,
+                backend=backend,
+                artifacts=result.artifacts,
                 vm_config=vm_info.config,
                 network_config=vm_info.network,
                 created_at=datetime.now(timezone.utc),
             )
             self.state.create_snapshot(snapshot_info)
             snapshot_persisted = True
-
+            source_status = VMState.PAUSED
             if original_status == VMState.RUNNING and resume_source:
-                client.resume_vm()
-                self.state.update_vm(vm_id, status=VMState.RUNNING)
-
+                adapter.resume(vm_info)
+                source_status = VMState.RUNNING
+            self.state.update_vm(vm_id, status=source_status)
             return snapshot_info
         except Exception as original_error:
             snapshot_dir_removed = False
@@ -990,13 +932,11 @@ class SmolVMManager:
                     self.state.delete_snapshot(snapshot_id)
             if original_status == VMState.RUNNING:
                 with suppress(Exception):
-                    client.resume_vm()
+                    adapter.resume(vm_info)
                     self.state.update_vm(vm_id, status=VMState.RUNNING)
             if rollback_error is not None:
                 raise rollback_error from original_error
             raise
-        finally:
-            client.close()
 
     def restore_snapshot(
         self,
@@ -1048,79 +988,81 @@ class SmolVMManager:
                     "kernel_path": str(snapshot.vm_config.kernel_path),
                 },
             )
-        for required_path, label in (
-            (snapshot.snapshot_path, "snapshot_path"),
-            (snapshot.mem_file_path, "mem_file_path"),
-            (snapshot.disk_path, "disk_path"),
-        ):
+        required_artifacts: list[tuple[Path | None, str]] = [
+            (snapshot.artifacts.disk_path, "disk_path"),
+            (snapshot.artifacts.state_path, "snapshot_path"),
+            (snapshot.artifacts.memory_path, "mem_file_path"),
+        ]
+        for required_path, label in required_artifacts:
+            if required_path is None:
+                if snapshot.backend == BACKEND_QEMU and label != "disk_path":
+                    continue
+                raise SmolVMError(
+                    f"Snapshot restore requires {label} to exist",
+                    {"snapshot_id": snapshot_id, label: None},
+                )
             if not required_path.exists():
                 raise SmolVMError(
                     f"Snapshot restore requires {label} to exist",
                     {"snapshot_id": snapshot_id, label: str(required_path)},
                 )
 
-        snapshot.vm_config.rootfs_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(snapshot.disk_path, snapshot.vm_config.rootfs_path)
-
-        socket_path = self.socket_dir / f"fc-{restore_vm_id}.sock"
+        managed_disk_path = self._instance_disk_path(restore_vm_id, snapshot.backend)
+        effective_vm_config = snapshot.vm_config.model_copy(
+            update={
+                "rootfs_path": managed_disk_path,
+                "backend": snapshot.backend,
+            }
+        )
+        managed_disk_path.parent.mkdir(parents=True, exist_ok=True)
+        managed_disk_path.touch(exist_ok=True)
+        effective_snapshot = snapshot.model_copy(update={"vm_config": effective_vm_config})
+        adapter = self._runtime_adapter_for_snapshot(effective_snapshot)
         created_vm_record = False
-        process: Any | None = None
-        client: FirecrackerClient | None = None
 
         try:
             if existing_vm is None:
-                self.state.create_vm(snapshot.vm_config)
+                self.state.create_vm(effective_vm_config)
                 created_vm_record = True
-            self.state.allocate_ip(
-                restore_vm_id,
-                snapshot.network_config.tap_device,
-                requested_ip=snapshot.network_config.guest_ip,
-            )
-            if snapshot.network_config.ssh_host_port is not None:
+            if effective_snapshot.backend == BACKEND_FIRECRACKER:
+                self.state.allocate_ip(
+                    restore_vm_id,
+                    effective_snapshot.network_config.tap_device,
+                    requested_ip=effective_snapshot.network_config.guest_ip,
+                )
+            if effective_snapshot.network_config.ssh_host_port is not None:
                 self.state.reserve_ssh_port(
                     restore_vm_id,
-                    host_port=snapshot.network_config.ssh_host_port,
+                    host_port=effective_snapshot.network_config.ssh_host_port,
                 )
-            self.state.update_vm(restore_vm_id, network=snapshot.network_config)
-
-            self._ensure_firecracker_network_for_restore(restore_vm_id, snapshot.network_config)
-
-            if socket_path.exists():
-                self._unlink_socket(socket_path)
-
+            self.state.update_vm(restore_vm_id, network=effective_snapshot.network_config)
+            if effective_snapshot.backend == BACKEND_FIRECRACKER:
+                self._ensure_firecracker_network_for_restore(
+                    restore_vm_id,
+                    effective_snapshot.network_config,
+                )
             log_path = self.data_dir / f"{restore_vm_id}.log"
-            process = self._start_firecracker(socket_path, log_path)
-            client = FirecrackerClient(socket_path)
-            client.wait_for_socket()
-            client.load_snapshot(
-                snapshot.snapshot_path,
-                snapshot.mem_file_path,
-                resume_vm=resume_vm,
+            launch = adapter.restore_snapshot(
+                SnapshotRestoreRequest(
+                    snapshot=effective_snapshot,
+                    managed_disk_path=managed_disk_path,
+                    log_path=log_path,
+                    resume_vm=resume_vm,
+                    boot_timeout=30.0,
+                )
             )
             vm_info = self.state.update_vm(
                 restore_vm_id,
-                status=VMState.RUNNING if resume_vm else VMState.PAUSED,
-                pid=process.pid,
-                socket_path=socket_path,
+                status=launch.status,
+                pid=launch.pid,
+                control_socket_path=launch.control_socket_path,
             )
             self.state.mark_snapshot_restored(snapshot_id, restore_vm_id)
             return vm_info
         except Exception:
-            if process is not None:
-                with suppress(Exception):
-                    self._kill_process(process.pid)
-            if socket_path.exists():
-                with suppress(Exception):
-                    self._unlink_socket(socket_path)
-
             if created_vm_record:
-                self._teardown_firecracker_network_for_restore(
-                    restore_vm_id,
-                    snapshot.network_config,
-                )
                 with suppress(Exception):
-                    if snapshot.vm_config.rootfs_path.exists():
-                        snapshot.vm_config.rootfs_path.unlink()
+                    self._cleanup_resources(restore_vm_id)
                 with suppress(Exception):
                     self.state.delete_vm(restore_vm_id)
             else:
@@ -1130,11 +1072,12 @@ class SmolVMManager:
                     clear_pid=True,
                     clear_socket_path=True,
                 )
+                self._close_runtime_log(
+                    restore_vm_id,
+                    effective_snapshot.backend,
+                    existing_vm.control_socket_path if existing_vm else None,
+                )
             raise
-        finally:
-            if client is not None:
-                with suppress(Exception):
-                    client.close()
 
     def delete_snapshot(self, snapshot_id: str) -> None:
         """Delete snapshot files and metadata."""
@@ -1294,12 +1237,19 @@ class SmolVMManager:
         self,
         vm_info: VMInfo,
         log_path: Path,
+        *,
+        control_socket_path: Path | None = None,
+        start_paused: bool = False,
+        root_node_name: str = QEMU_ROOT_NODE_NAME,
     ) -> subprocess.Popen[bytes]:
         """Start a QEMU process for the qemu backend.
 
         Args:
             vm_info: VM info with persisted configuration/network.
             log_path: Path for combined stdout/stderr log output.
+            control_socket_path: Optional QMP control socket path.
+            start_paused: Whether to start QEMU paused.
+            root_node_name: QEMU block graph node name for the primary disk.
 
         Returns:
             The started QEMU process.
@@ -1324,7 +1274,11 @@ class SmolVMManager:
         qemu_name = qemu_bin.name
         system = platform.system()
 
-        drive_arg = f"file={vm_info.config.rootfs_path},if=none,format=raw,id=hd0"
+        disk_format = "qcow2" if vm_info.config.rootfs_path.suffix == ".qcow2" else "raw"
+        drive_arg = (
+            f"file={vm_info.config.rootfs_path},if=none,format={disk_format},"
+            f"id={root_node_name},node-name={root_node_name}"
+        )
         hostfwd_rules = [f"hostfwd=tcp:127.0.0.1:{ssh_port}-:22"]
         for forward in vm_info.config.port_forwards:
             hostfwd_rules.append(
@@ -1349,6 +1303,15 @@ class SmolVMManager:
             "-nographic",
             "-no-reboot",
         ]
+        if control_socket_path is not None:
+            cmd.extend(
+                [
+                    "-qmp",
+                    f"unix:{control_socket_path},server=on,wait=off",
+                ]
+            )
+        if start_paused:
+            cmd.append("-S")
 
         if "aarch64" in qemu_name:
             machine = "virt,accel=hvf" if system == "Darwin" else "virt"
@@ -1360,7 +1323,7 @@ class SmolVMManager:
                     "-cpu",
                     cpu,
                     "-device",
-                    "virtio-blk-device,drive=hd0",
+                    f"virtio-blk-device,drive={root_node_name}",
                     "-device",
                     f"virtio-net-device,netdev=net0,mac={guest_mac}",
                 ]
@@ -1375,7 +1338,7 @@ class SmolVMManager:
                     "-cpu",
                     cpu,
                     "-device",
-                    "virtio-blk-pci,drive=hd0",
+                    f"virtio-blk-pci,drive={root_node_name}",
                     "-device",
                     f"virtio-net-pci,netdev=net0,mac={guest_mac}",
                 ]
@@ -1527,6 +1490,26 @@ class SmolVMManager:
                 return
             time.sleep(0.1)
 
+    def _close_runtime_log(
+        self,
+        vm_id: str,
+        backend: str,
+        control_socket_path: Path | None = None,
+    ) -> None:
+        """Close tracked runtime log handles for a VM."""
+        keys: list[str] = []
+        if backend == BACKEND_FIRECRACKER:
+            socket_path = control_socket_path or (self.socket_dir / f"fc-{vm_id}.sock")
+            keys.append(str(socket_path))
+        elif backend == BACKEND_QEMU:
+            keys.append(f"qemu:{vm_id}")
+
+        for key in keys:
+            fh = self._log_files.pop(key, None)
+            if fh is not None:
+                with suppress(Exception):
+                    fh.close()
+
     def _resolve_boot_args(self, vm_info: VMInfo) -> str:
         """Resolve final boot args, injecting static IP config when absent."""
         args = vm_info.config.boot_args.strip()
@@ -1608,19 +1591,15 @@ class SmolVMManager:
             if ssh_host_port is not None:
                 self.state.release_ssh_port(vm_id)
 
-            # Cleanup Firecracker socket artifacts.
-            socket_path = self.socket_dir / f"fc-{vm_id}.sock"
-            if socket_path.exists():
-                self._unlink_socket(socket_path)
+            for socket_path in (
+                self.socket_dir / f"fc-{vm_id}.sock",
+                self.socket_dir / f"qmp-{vm_id}.sock",
+            ):
+                if socket_path.exists():
+                    self._unlink_socket(socket_path)
 
-            # Close tracked log file handles.
-            firecracker_key = str(socket_path)
-            qemu_key = f"qemu:{vm_id}"
-            for key in (firecracker_key, qemu_key):
-                fh = self._log_files.pop(key, None)
-                if fh is not None:
-                    with suppress(Exception):
-                        fh.close()
+            self._close_runtime_log(vm_id, BACKEND_FIRECRACKER)
+            self._close_runtime_log(vm_id, BACKEND_QEMU)
 
             managed_disk = self._managed_disk_for_vm(vm_info)
             if managed_disk and managed_disk.exists():

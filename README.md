@@ -130,6 +130,14 @@ Use the CLI when you want to inspect the runtime manually, start a browser from 
 
 SmolVM keeps risky work off your host by running it inside a separate guest system. On Linux it uses Firecracker microVMs, which are very small virtual machines backed by KVM. On macOS it uses QEMU. You still get a simple Python SDK and CLI, but the work happens in its own environment instead of sharing your main machine directly.
 
+## Snapshots
+
+SmolVM snapshots are backend-aware but exposed through one shared SDK and CLI surface:
+
+- Firecracker snapshots persist state, memory, and managed disk artifacts.
+- QEMU snapshots use QMP snapshot APIs plus managed qcow2 disks, and require QEMU 6.0+ with `qemu-img` available.
+- QEMU snapshot support currently targets isolated-disk VMs without extra drives.
+
 ## Security notes
 
 SmolVM is built for local, agent-style workflows. By default, SSH host keys are accepted on first connection to keep setup simple. Use it on trusted machines and networks, and avoid exposing guest SSH endpoints publicly without extra controls. See [SECURITY.md](SECURITY.md) for the full policy and scope.

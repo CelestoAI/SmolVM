@@ -99,6 +99,47 @@ def _find_qemu_binary() -> tuple[str, Path] | None:
     return None
 
 
+def _check_qemu_version(qemu_path: Path) -> DoctorCheck:
+    """Check that the selected QEMU binary supports snapshot QMP APIs."""
+    try:
+        result = subprocess.run(
+            [str(qemu_path), "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except Exception as exc:
+        return DoctorCheck(
+            name="qemu-version",
+            status="warn",
+            detail=f"could not probe QEMU version: {exc}",
+        )
+
+    match = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", f"{result.stdout}\n{result.stderr}")
+    if match is None:
+        return DoctorCheck(
+            name="qemu-version",
+            status="warn",
+            detail="could not parse QEMU version output",
+        )
+
+    major, minor, micro = match.groups()
+    version = f"{major}.{minor}.{micro or '0'}"
+    if (int(major), int(minor), int(micro or 0)) < (6, 0, 0):
+        return DoctorCheck(
+            name="qemu-version",
+            status="fail",
+            detail=f"{version} detected",
+            fix="Install QEMU 6.0 or newer",
+        )
+    return DoctorCheck(
+        name="qemu-version",
+        status="pass",
+        detail=version,
+    )
+
+
 def _check_nft_table(family: str, table: str) -> DoctorCheck:
     try:
         run_command(["nft", "list", "table", family, table], use_sudo=True)
@@ -430,8 +471,9 @@ def generate_doctor_report(backend: str | None = None) -> DoctorReport:
                     status="pass",
                     detail=f"{qemu_name} ({qemu_path})",
                 )
-            )
+                    )
 
+            checks.append(_check_qemu_version(qemu_path))
             if platform.system() == "Darwin":
                 try:
                     result = subprocess.run(
@@ -467,6 +509,7 @@ def generate_doctor_report(backend: str | None = None) -> DoctorReport:
                         )
                     )
 
+        checks.append(_check_command("qemu-img", "qemu"))
         checks.append(_check_command("ssh", "openssh-client"))
 
     else:

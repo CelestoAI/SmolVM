@@ -493,7 +493,7 @@ class TestSmolVMFromId:
 class TestSmolVMBootArgsAndSSHCommands:
     """Tests for boot-arg injection and SSH helper commands."""
 
-    @patch("smolvm.vm.FirecrackerClient")
+    @patch("smolvm.runtime_firecracker.FirecrackerClient")
     @patch.object(SmolVMManager, "_start_firecracker")
     @patch("smolvm.vm.NetworkManager")
     def test_start_injects_ip_boot_arg_when_missing(
@@ -524,7 +524,7 @@ class TestSmolVMBootArgsAndSSHCommands:
         boot_args = mock_client.set_boot_source.call_args[0][1]
         assert "ip=172.16.0.2::172.16.0.1:255.255.255.0::eth0:off" in boot_args
 
-    @patch("smolvm.vm.FirecrackerClient")
+    @patch("smolvm.runtime_firecracker.FirecrackerClient")
     @patch.object(SmolVMManager, "_start_firecracker")
     @patch("smolvm.vm.NetworkManager")
     def test_start_preserves_existing_ip_boot_arg(
@@ -566,7 +566,7 @@ class TestSmolVMBootArgsAndSSHCommands:
         boot_args = mock_client.set_boot_source.call_args[0][1]
         assert boot_args == config.boot_args
 
-    @patch("smolvm.vm.FirecrackerClient")
+    @patch("smolvm.runtime_firecracker.FirecrackerClient")
     @patch.object(SmolVMManager, "_start_firecracker")
     @patch("smolvm.vm.NetworkManager")
     def test_start_attaches_extra_drives(

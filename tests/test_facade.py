@@ -408,9 +408,11 @@ class TestVMInit:
         """from_snapshot() should restore the snapshot before attaching to the VM."""
         restore_manager = MagicMock()
         restore_manager.__enter__.return_value = restore_manager
+        restore_manager.get_snapshot.return_value = MagicMock(backend="firecracker")
         restore_manager.restore_snapshot.return_value = MagicMock(
             vm_id="vm001",
             status=VMState.PAUSED,
+            config=MagicMock(backend="firecracker"),
         )
         attach_manager = MagicMock()
         attach_manager.get.return_value = MagicMock(vm_id="vm001", status=VMState.PAUSED)
@@ -427,6 +429,17 @@ class TestVMInit:
             force=False,
         )
         mock_sdk_cls.from_id.assert_called_once()
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_from_snapshot_rejects_mismatched_backend(self, mock_sdk_cls: MagicMock) -> None:
+        """from_snapshot() should reject an explicit backend that disagrees with the snapshot."""
+        restore_manager = MagicMock()
+        restore_manager.__enter__.return_value = restore_manager
+        restore_manager.get_snapshot.return_value = MagicMock(backend="firecracker")
+        mock_sdk_cls.return_value = restore_manager
+
+        with pytest.raises(SmolVMError, match="does not match the snapshot backend"):
+            SmolVM.from_snapshot("snap-001", backend="qemu")
 
 
 class TestVMLifecycle:

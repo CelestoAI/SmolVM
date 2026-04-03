@@ -108,17 +108,24 @@ class StopPayload(TypedDict):
     vm: StopVmPayload
 
 
+class SnapshotArtifactsRow(TypedDict):
+    """Machine-readable snapshot artifact paths."""
+
+    state_path: str | None
+    memory_path: str | None
+    disk_path: str
+
+
 class SnapshotRow(TypedDict):
     """Machine-readable data for a listed snapshot."""
 
     snapshot_id: str
     vm_id: str
+    backend: str
     restored: bool
     restored_vm_id: str | None
     created_at: str
-    snapshot_path: str
-    mem_file_path: str
-    disk_path: str
+    artifacts: SnapshotArtifactsRow
 
 
 class SnapshotListFiltersPayload(TypedDict):
@@ -457,7 +464,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     resume_parser = subparsers.add_parser(
         "resume",
-        help="Resume a paused Firecracker VM",
+        help="Resume a paused VM",
     )
     resume_parser.add_argument("vm_id", help="VM identifier")
     resume_parser.add_argument(
@@ -468,7 +475,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     snapshot_parser = subparsers.add_parser(
         "snapshot",
-        help="Manage Firecracker VM snapshots",
+        help="Manage VM snapshots",
     )
     snapshot_sub = snapshot_parser.add_subparsers(dest="snapshot_action")
 
@@ -1032,12 +1039,17 @@ def _snapshot_row(snapshot: SnapshotInfo) -> SnapshotRow:
     return {
         "snapshot_id": snapshot.snapshot_id,
         "vm_id": snapshot.vm_id,
+        "backend": snapshot.backend,
         "restored": snapshot.restored,
         "restored_vm_id": snapshot.restored_vm_id,
         "created_at": snapshot.created_at.isoformat(),
-        "snapshot_path": str(snapshot.snapshot_path),
-        "mem_file_path": str(snapshot.mem_file_path),
-        "disk_path": str(snapshot.disk_path),
+        "artifacts": {
+            "state_path": str(snapshot.artifacts.state_path) if snapshot.artifacts.state_path else None,
+            "memory_path": (
+                str(snapshot.artifacts.memory_path) if snapshot.artifacts.memory_path else None
+            ),
+            "disk_path": str(snapshot.artifacts.disk_path),
+        },
     }
 
 
@@ -1046,12 +1058,14 @@ def _render_snapshot_list(rows: list[SnapshotRow]) -> None:
     table = Table(title="SmolVM Snapshots")
     table.add_column("Snapshot")
     table.add_column("VM")
+    table.add_column("Backend")
     table.add_column("Restored")
     table.add_column("Restored VM")
     for row in rows:
         table.add_row(
             row["snapshot_id"],
             row["vm_id"],
+            row["backend"],
             "yes" if row["restored"] else "no",
             row["restored_vm_id"] or "-",
         )

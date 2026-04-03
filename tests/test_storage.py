@@ -31,6 +31,7 @@ from smolvm.types import (
     BrowserSessionInfo,
     BrowserSessionState,
     NetworkConfig,
+    SnapshotArtifacts,
     SnapshotInfo,
     VMConfig,
     VMState,
@@ -339,13 +340,18 @@ class TestSnapshotStorage:
         snapshot = SnapshotInfo(
             snapshot_id="snap-001",
             vm_id="vm001",
-            snapshot_path=snapshot_dir / "vmstate.bin",
-            mem_file_path=snapshot_dir / "mem.bin",
-            disk_path=snapshot_dir / "disk.ext4",
+            backend="firecracker",
+            artifacts=SnapshotArtifacts(
+                state_path=snapshot_dir / "vmstate.bin",
+                memory_path=snapshot_dir / "mem.bin",
+                disk_path=snapshot_dir / "disk.ext4",
+            ),
             vm_config=sample_config,
             network_config=network,
             created_at=datetime.now(timezone.utc),
         )
+        assert snapshot.snapshot_path is not None
+        assert snapshot.mem_file_path is not None
         snapshot.snapshot_path.touch()
         snapshot.mem_file_path.touch()
         snapshot.disk_path.touch()
@@ -355,6 +361,7 @@ class TestSnapshotStorage:
         listed = state_manager.list_snapshots(vm_id="vm001")
 
         assert created.snapshot_id == "snap-001"
+        assert fetched.backend == "firecracker"
         assert fetched.vm_config.rootfs_path == sample_config.rootfs_path
         assert fetched.network_config.tap_device == "tap2"
         assert [item.snapshot_id for item in listed] == ["snap-001"]

@@ -153,6 +153,54 @@ class TestDoctorQemu:
         assert report.backend_resolved == "qemu"
         assert any(check.name == "qemu" and check.status == "fail" for check in report.checks)
 
+    @patch("smolvm.doctor.platform.system", return_value="Linux")
+    @patch("smolvm.doctor.subprocess.run")
+    @patch("smolvm.doctor.which")
+    @patch(
+        "smolvm.doctor._find_qemu_binary",
+        return_value=("qemu-system-x86_64", Path("/usr/bin/qemu-system-x86_64")),
+    )
+    def test_generate_report_qemu_ok_with_qemu_img_and_supported_version(
+        self,
+        _mock_find_qemu: MagicMock,
+        mock_which: MagicMock,
+        mock_run: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """QEMU doctor should pass when qemu-img exists and QEMU is new enough."""
+        mock_which.side_effect = lambda binary: Path(f"/usr/bin/{binary}")
+        mock_run.return_value = MagicMock(stdout="QEMU emulator version 8.2.0", stderr="")
+
+        report = generate_doctor_report(backend="qemu")
+        checks = {check.name: check for check in report.checks}
+
+        assert checks["qemu-version"].status == "pass"
+        assert checks["command:qemu-img"].status == "pass"
+
+    @patch("smolvm.doctor.platform.system", return_value="Linux")
+    @patch("smolvm.doctor.subprocess.run")
+    @patch("smolvm.doctor.which")
+    @patch(
+        "smolvm.doctor._find_qemu_binary",
+        return_value=("qemu-system-x86_64", Path("/usr/bin/qemu-system-x86_64")),
+    )
+    def test_generate_report_qemu_fails_for_missing_qemu_img_and_old_version(
+        self,
+        _mock_find_qemu: MagicMock,
+        mock_which: MagicMock,
+        mock_run: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """QEMU doctor should fail when qemu-img is missing or QEMU is too old."""
+        mock_which.side_effect = lambda binary: Path("/usr/bin/ssh") if binary == "ssh" else None
+        mock_run.return_value = MagicMock(stdout="QEMU emulator version 5.2.0", stderr="")
+
+        report = generate_doctor_report(backend="qemu")
+        checks = {check.name: check for check in report.checks}
+
+        assert checks["qemu-version"].status == "fail"
+        assert checks["command:qemu-img"].status == "fail"
+
 
 class TestWorkerNodeSecurityChecks:
     """Tests for strict worker-node startup guard behavior."""

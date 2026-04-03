@@ -51,6 +51,7 @@ def _make_snapshot_info(
     snapshot_id: str = "snap-001",
     vm_id: str = "vm001",
     *,
+    backend: str = "firecracker",
     restored: bool = False,
     restored_vm_id: str | None = None,
 ) -> MagicMock:
@@ -58,12 +59,14 @@ def _make_snapshot_info(
     snapshot = MagicMock()
     snapshot.snapshot_id = snapshot_id
     snapshot.vm_id = vm_id
+    snapshot.backend = backend
     snapshot.restored = restored
     snapshot.restored_vm_id = restored_vm_id
     snapshot.created_at = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
-    snapshot.snapshot_path = Path(f"/tmp/{snapshot_id}/vmstate.bin")
-    snapshot.mem_file_path = Path(f"/tmp/{snapshot_id}/mem.bin")
-    snapshot.disk_path = Path(f"/tmp/{snapshot_id}/disk.ext4")
+    snapshot.artifacts = MagicMock()
+    snapshot.artifacts.state_path = Path(f"/tmp/{snapshot_id}/vmstate.bin")
+    snapshot.artifacts.memory_path = Path(f"/tmp/{snapshot_id}/mem.bin")
+    snapshot.artifacts.disk_path = Path(f"/tmp/{snapshot_id}/disk.ext4")
     return snapshot
 
 
@@ -681,6 +684,8 @@ class TestCliSnapshot:
         assert payload["command"] == "snapshot.create"
         assert payload["data"]["snapshot"]["snapshot_id"] == "snap-001"
         assert payload["data"]["snapshot"]["vm_id"] == "vm001"
+        assert payload["data"]["snapshot"]["backend"] == "firecracker"
+        assert payload["data"]["snapshot"]["artifacts"]["disk_path"].endswith("disk.ext4")
 
     @patch("smolvm.facade.SmolVM")
     @patch("smolvm.vm.SmolVMManager")
@@ -713,6 +718,7 @@ class TestCliSnapshot:
         payload = json.loads(capsys.readouterr().out)
         assert payload["command"] == "snapshot.restore"
         assert payload["data"]["snapshot"]["restored"] is True
+        assert payload["data"]["snapshot"]["backend"] == "firecracker"
         assert payload["data"]["vm"]["name"] == "vm001"
         assert payload["data"]["vm"]["status"] == "paused"
 
@@ -758,6 +764,7 @@ class TestCliSnapshot:
         assert payload["command"] == "snapshot.list"
         assert payload["data"]["filters"] == {"vm_id": None}
         assert payload["data"]["snapshots"][0]["snapshot_id"] == "snap-001"
+        assert payload["data"]["snapshots"][0]["backend"] == "firecracker"
         assert payload["data"]["snapshots"][1]["restored"] is True
 
 

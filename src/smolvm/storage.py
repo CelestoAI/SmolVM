@@ -40,6 +40,7 @@ from smolvm.types import (
     BrowserSessionInfo,
     BrowserSessionState,
     NetworkConfig,
+    SnapshotArtifacts,
     SnapshotInfo,
     VMConfig,
     VMInfo,
@@ -167,6 +168,8 @@ class StateManager:
                     snapshot_path TEXT NOT NULL,
                     mem_file_path TEXT NOT NULL,
                     disk_path TEXT NOT NULL,
+                    backend TEXT,
+                    artifacts TEXT,
                     vm_config TEXT NOT NULL,
                     network_config TEXT NOT NULL,
                     created_at TEXT NOT NULL,
@@ -177,6 +180,13 @@ class StateManager:
                 CREATE INDEX IF NOT EXISTS idx_snapshots_vm_id ON snapshots(vm_id);
             """
             )
+            snapshot_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(snapshots)").fetchall()
+            }
+            if "backend" not in snapshot_columns:
+                conn.execute("ALTER TABLE snapshots ADD COLUMN backend TEXT")
+            if "artifacts" not in snapshot_columns:
+                conn.execute("ALTER TABLE snapshots ADD COLUMN artifacts TEXT")
 
     def create_vm(self, config: VMConfig) -> VMInfo:
         """Create a new VM record.
@@ -242,7 +252,7 @@ class StateManager:
 
         config = VMConfig.model_validate_json(row["config"])
         network = NetworkConfig.model_validate_json(row["network"]) if row["network"] else None
-        socket_path = Path(row["socket_path"]) if row["socket_path"] else None
+        control_socket_path = Path(row["socket_path"]) if row["socket_path"] else None
 
         return VMInfo(
             vm_id=row["id"],
@@ -250,7 +260,7 @@ class StateManager:
             config=config,
             network=network,
             pid=row["pid"],
-            socket_path=socket_path,
+            control_socket_path=control_socket_path,
         )
 
     def update_vm(
@@ -260,6 +270,7 @@ class StateManager:
         status: VMState | None = None,
         network: NetworkConfig | None = None,
         pid: int | None = None,
+        control_socket_path: Path | None = None,
         socket_path: Path | None = None,
         clear_pid: bool = False,
         clear_socket_path: bool = False,
@@ -271,7 +282,8 @@ class StateManager:
             status: New status (optional).
             network: Network configuration (optional).
             pid: Process ID (optional).
-            socket_path: API socket path (optional).
+            control_socket_path: Runtime control socket path (optional).
+            socket_path: Deprecated alias for ``control_socket_path``.
             clear_pid: If True, set pid to NULL.
             clear_socket_path: If True, set socket_path to NULL.
 
@@ -310,9 +322,13 @@ class StateManager:
             elif clear_pid:
                 updates.append("pid = NULL")
 
-            if socket_path is not None:
+            effective_control_socket_path = control_socket_path
+            if effective_control_socket_path is None and socket_path is not None:
+                effective_control_socket_path = socket_path
+
+            if effective_control_socket_path is not None:
                 updates.append("socket_path = ?")
-                params.append(str(socket_path))
+                params.append(str(effective_control_socket_path))
             elif clear_socket_path:
                 updates.append("socket_path = NULL")
 
@@ -368,7 +384,7 @@ class StateManager:
         for row in rows:
             config = VMConfig.model_validate_json(row["config"])
             network = NetworkConfig.model_validate_json(row["network"]) if row["network"] else None
-            socket_path = Path(row["socket_path"]) if row["socket_path"] else None
+            control_socket_path = Path(row["socket_path"]) if row["socket_path"] else None
             result.append(
                 VMInfo(
                     vm_id=row["id"],
@@ -376,7 +392,7 @@ class StateManager:
                     config=config,
                     network=network,
                     pid=row["pid"],
-                    socket_path=socket_path,
+                    control_socket_path=control_socket_path,
                 )
             )
         return result
@@ -393,12 +409,20 @@ class StateManager:
     @staticmethod
     def _snapshot_info_from_row(row: sqlite3.Row) -> SnapshotInfo:
         """Convert a snapshots row into SnapshotInfo."""
+        backend = row["backend"] if "backend" in row.keys() and row["backend"] else "firecracker"
+        if "artifacts" in row.keys() and row["artifacts"]:
+            artifacts = SnapshotArtifacts.model_validate_json(row["artifacts"])
+        else:
+            artifacts = SnapshotArtifacts(
+                state_path=Path(row["snapshot_path"]) if row["snapshot_path"] else None,
+                memory_path=Path(row["mem_file_path"]) if row["mem_file_path"] else None,
+                disk_path=Path(row["disk_path"]),
+            )
         return SnapshotInfo(
             snapshot_id=row["snapshot_id"],
             vm_id=row["vm_id"],
-            snapshot_path=Path(row["snapshot_path"]),
-            mem_file_path=Path(row["mem_file_path"]),
-            disk_path=Path(row["disk_path"]),
+            backend=backend,
+            artifacts=artifacts,
             vm_config=StateManager._snapshot_vm_config_from_json(row["vm_config"]),
             network_config=NetworkConfig.model_validate_json(row["network_config"]),
             created_at=datetime.fromisoformat(row["created_at"]),
@@ -427,20 +451,24 @@ class StateManager:
                     snapshot_path,
                     mem_file_path,
                     disk_path,
+                    backend,
+                    artifacts,
                     vm_config,
                     network_config,
                     created_at,
                     restored,
                     restored_vm_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     info.snapshot_id,
                     info.vm_id,
-                    str(info.snapshot_path),
-                    str(info.mem_file_path),
-                    str(info.disk_path),
+                    str(info.artifacts.state_path) if info.artifacts.state_path else "",
+                    str(info.artifacts.memory_path) if info.artifacts.memory_path else "",
+                    str(info.artifacts.disk_path),
+                    info.backend,
+                    info.artifacts.model_dump_json(),
                     info.vm_config.model_dump_json(),
                     info.network_config.model_dump_json(),
                     info.created_at.isoformat(),

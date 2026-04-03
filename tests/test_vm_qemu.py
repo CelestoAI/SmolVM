@@ -51,7 +51,9 @@ def test_start_qemu_includes_configured_hostfwd_rules(
     )
 
     sdk = SmolVMManager(data_dir=tmp_path / "data", socket_dir=tmp_path / "sockets", backend="qemu")
-    vm_info = sdk.create(config)
+    with patch.object(SmolVMManager, "_convert_qemu_managed_disk") as mock_convert:
+        mock_convert.side_effect = lambda source, target: target.touch()
+        vm_info = sdk.create(config)
 
     proc = MagicMock()
     proc.pid = 12345
@@ -65,3 +67,55 @@ def test_start_qemu_includes_configured_hostfwd_rules(
     assert "hostfwd=tcp:127.0.0.1:2200-:22" in netdev_arg
     assert "hostfwd=tcp:127.0.0.1:39011-:9222" in netdev_arg
     assert "hostfwd=tcp:127.0.0.1:39012-:6080" in netdev_arg
+
+
+def test_create_qemu_uses_managed_qcow2_disk(tmp_path: Path) -> None:
+    """QEMU isolated disks should be materialized as managed qcow2 files."""
+    kernel = tmp_path / "vmlinux"
+    rootfs = tmp_path / "rootfs.ext4"
+    kernel.touch()
+    rootfs.write_text("rootfs-data")
+
+    config = VMConfig(
+        vm_id="vm-qemu2",
+        kernel_path=kernel,
+        rootfs_path=rootfs,
+        backend="qemu",
+        boot_args="console=ttyAMA0 reboot=k panic=1 init=/init",
+    )
+
+    sdk = SmolVMManager(data_dir=tmp_path / "data", socket_dir=tmp_path / "sockets", backend="qemu")
+    with patch.object(SmolVMManager, "_convert_qemu_managed_disk") as mock_convert:
+        mock_convert.side_effect = lambda source, target: target.write_text("managed-qcow2")
+        vm_info = sdk.create(config)
+
+    expected_disk = sdk.data_dir / "disks" / "vm-qemu2.qcow2"
+    assert vm_info.config.rootfs_path == expected_disk
+    assert expected_disk.read_text() == "managed-qcow2"
+
+
+def test_delete_qemu_retains_isolated_disk_when_enabled(tmp_path: Path) -> None:
+    """retain_disk_on_delete should preserve managed qcow2 disks for QEMU VMs."""
+    kernel = tmp_path / "vmlinux"
+    rootfs = tmp_path / "rootfs.ext4"
+    kernel.touch()
+    rootfs.write_text("rootfs-data")
+
+    config = VMConfig(
+        vm_id="vm-qemu3",
+        kernel_path=kernel,
+        rootfs_path=rootfs,
+        backend="qemu",
+        boot_args="console=ttyAMA0 reboot=k panic=1 init=/init",
+        retain_disk_on_delete=True,
+    )
+
+    sdk = SmolVMManager(data_dir=tmp_path / "data", socket_dir=tmp_path / "sockets", backend="qemu")
+    with patch.object(SmolVMManager, "_convert_qemu_managed_disk") as mock_convert:
+        mock_convert.side_effect = lambda source, target: target.write_text("managed-qcow2")
+        sdk.create(config)
+
+    disk_path = sdk.data_dir / "disks" / "vm-qemu3.qcow2"
+    sdk.delete("vm-qemu3")
+
+    assert disk_path.exists()

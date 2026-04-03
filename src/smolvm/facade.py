@@ -325,6 +325,10 @@ class SmolVM:
         ssh_key_path: str | None = None,
     ) -> SmolVM:
         """Restore a snapshot and attach a facade to the restored VM."""
+        requested_backend = None
+        if backend not in (None, "auto"):
+            requested_backend = resolve_backend(backend)
+
         sdk_kwargs: dict[str, Any] = {}
         if data_dir is not None:
             sdk_kwargs["data_dir"] = data_dir
@@ -334,17 +338,39 @@ class SmolVM:
             sdk_kwargs["backend"] = backend
 
         with SmolVMManager(**sdk_kwargs) as sdk:
+            if requested_backend is not None:
+                snapshot = sdk.get_snapshot(snapshot_id)
+                if snapshot.backend != requested_backend:
+                    raise SmolVMError(
+                        "Requested backend does not match the snapshot backend",
+                        {
+                            "snapshot_id": snapshot_id,
+                            "requested_backend": requested_backend,
+                            "snapshot_backend": snapshot.backend,
+                        },
+                    )
             vm_info = sdk.restore_snapshot(
                 snapshot_id,
                 resume_vm=resume_vm,
                 force=force,
+            )
+            restored_backend = resolve_backend(vm_info.config.backend)
+
+        if requested_backend is not None and restored_backend != requested_backend:
+            raise SmolVMError(
+                "Requested backend does not match the restored VM backend",
+                {
+                    "snapshot_id": snapshot_id,
+                    "requested_backend": requested_backend,
+                    "restored_backend": restored_backend,
+                },
             )
 
         return cls(
             vm_id=vm_info.vm_id,
             data_dir=data_dir,
             socket_dir=socket_dir,
-            backend=backend,
+            backend=restored_backend,
             ssh_user=ssh_user,
             ssh_key_path=ssh_key_path,
         )
