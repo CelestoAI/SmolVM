@@ -275,12 +275,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     create_parser = subparsers.add_parser(
         "create",
-        help="Create a named SSH-ready VM and leave it running",
+        help="Create an SSH-ready VM and leave it running",
     )
     create_parser.add_argument(
         "--name",
-        required=True,
-        help="VM identifier to create.",
+        help="VM identifier to create (default: auto-generated).",
     )
     create_parser.add_argument(
         "--memory-mib",
