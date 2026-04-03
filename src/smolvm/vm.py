@@ -1135,6 +1135,14 @@ class SmolVMManager:
         """
         return self.state.list_vms(status)
 
+    def get_snapshot(self, snapshot_id: str) -> SnapshotInfo:
+        """Get snapshot metadata."""
+        return self.state.get_snapshot(snapshot_id)
+
+    def list_snapshots(self, vm_id: str | None = None) -> list[SnapshotInfo]:
+        """List snapshots, optionally filtered by source VM ID."""
+        return self.state.list_snapshots(vm_id=vm_id)
+
     def reconcile(self) -> list[str]:
         """Reconcile state with actual system state.
 

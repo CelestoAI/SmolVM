@@ -35,7 +35,7 @@ from smolvm.doctor import run_doctor
 from smolvm.types import BrowserSessionState, VMState
 
 if TYPE_CHECKING:
-    from smolvm.types import BrowserSessionInfo, VMInfo
+    from smolvm.types import BrowserSessionInfo, SnapshotInfo, VMInfo
 
 DASHBOARD_ALLOW_BETA_ENV = "SMOLVM_DASHBOARD_ALLOW_BETA"
 DASHBOARD_URL_ENV = "SMOLVM_DASHBOARD_URL"
@@ -94,16 +94,64 @@ class CreatePayload(TypedDict):
 
 
 class StopVmPayload(TypedDict):
-    """Machine-readable VM details for ``smolvm stop``."""
+    """Machine-readable VM details for lifecycle commands."""
 
     name: str
     status: str
 
 
 class StopPayload(TypedDict):
-    """JSON payload for ``smolvm stop``."""
+    """JSON payload for VM lifecycle commands."""
 
     vm: StopVmPayload
+
+
+class SnapshotRow(TypedDict):
+    """Machine-readable data for a listed snapshot."""
+
+    snapshot_id: str
+    vm_id: str
+    restored: bool
+    restored_vm_id: str | None
+    created_at: str
+    snapshot_path: str
+    mem_file_path: str
+    disk_path: str
+
+
+class SnapshotListFiltersPayload(TypedDict):
+    """Filter metadata included with snapshot list output."""
+
+    vm_id: str | None
+
+
+class SnapshotListPayload(TypedDict):
+    """JSON payload for ``smolvm snapshot list``."""
+
+    filters: SnapshotListFiltersPayload
+    snapshots: list[SnapshotRow]
+
+
+class SnapshotPayload(TypedDict):
+    """JSON payload for snapshot create/restore/delete operations."""
+
+    snapshot: SnapshotRow
+
+
+class SnapshotRestoreVmPayload(TypedDict):
+    """Machine-readable VM details for ``smolvm snapshot restore``."""
+
+    name: str
+    status: str
+    ip_address: str | None
+    ssh_port: int | None
+
+
+class SnapshotRestorePayload(TypedDict):
+    """JSON payload for ``smolvm snapshot restore``."""
+
+    snapshot: SnapshotRow
+    vm: SnapshotRestoreVmPayload
 
 
 class BrowserRow(TypedDict):
@@ -259,7 +307,7 @@ def build_parser() -> argparse.ArgumentParser:
     list_filters.add_argument(
         "--all",
         action="store_true",
-        help="Include stopped, created, and error VMs in addition to running ones.",
+        help="Include paused, stopped, created, and error VMs in addition to running ones.",
     )
     list_filters.add_argument(
         "--status",
@@ -319,6 +367,102 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds to wait for graceful shutdown (default: 3).",
     )
     stop_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output.",
+    )
+
+    pause_parser = subparsers.add_parser(
+        "pause",
+        help="Pause a running Firecracker VM",
+    )
+    pause_parser.add_argument("vm_id", help="VM identifier")
+    pause_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output.",
+    )
+
+    resume_parser = subparsers.add_parser(
+        "resume",
+        help="Resume a paused Firecracker VM",
+    )
+    resume_parser.add_argument("vm_id", help="VM identifier")
+    resume_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output.",
+    )
+
+    snapshot_parser = subparsers.add_parser(
+        "snapshot",
+        help="Manage Firecracker VM snapshots",
+    )
+    snapshot_sub = snapshot_parser.add_subparsers(dest="snapshot_action")
+
+    snapshot_create = snapshot_sub.add_parser(
+        "create",
+        help="Create a full snapshot for a VM",
+    )
+    snapshot_create.add_argument("vm_id", help="VM identifier")
+    snapshot_create.add_argument(
+        "--snapshot-id",
+        default=None,
+        help="Optional snapshot identifier.",
+    )
+    snapshot_create.add_argument(
+        "--resume-source",
+        action="store_true",
+        help="Resume the source VM after snapshot creation.",
+    )
+    snapshot_create.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output.",
+    )
+
+    snapshot_restore = snapshot_sub.add_parser(
+        "restore",
+        help="Restore a snapshot back into its original VM identity",
+    )
+    snapshot_restore.add_argument("snapshot_id", help="Snapshot identifier")
+    snapshot_restore.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume the restored VM immediately.",
+    )
+    snapshot_restore.add_argument(
+        "--force",
+        action="store_true",
+        help="Allow restoring a snapshot that was already restored before.",
+    )
+    snapshot_restore.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output.",
+    )
+
+    snapshot_delete = snapshot_sub.add_parser(
+        "delete",
+        help="Delete a snapshot and its files",
+    )
+    snapshot_delete.add_argument("snapshot_id", help="Snapshot identifier")
+    snapshot_delete.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output.",
+    )
+
+    snapshot_list = snapshot_sub.add_parser(
+        "list",
+        help="List snapshots",
+    )
+    snapshot_list.add_argument(
+        "--vm-id",
+        default=None,
+        help="Filter snapshots by source VM identifier.",
+    )
+    snapshot_list.add_argument(
         "--json",
         action="store_true",
         help="Emit machine-readable JSON output.",
@@ -732,16 +876,22 @@ def _run_create(args: argparse.Namespace) -> int:
             vm.close()
 
 
-def _render_stop_result(data: StopPayload) -> None:
-    """Render the human-facing stop result."""
+def _render_vm_lifecycle_result(
+    data: StopPayload,
+    *,
+    message: str,
+    title: str,
+    border_style: str,
+) -> None:
+    """Render the human-facing VM lifecycle result."""
     console = console_stdout()
     vm_data = data["vm"]
 
     console.print(
         Panel.fit(
-            f"Stopped VM '{vm_data['name']}'.",
-            title="VM Stopped",
-            border_style="yellow",
+            message,
+            title=title,
+            border_style=border_style,
         )
     )
 
@@ -756,6 +906,88 @@ def _render_stop_result(data: StopPayload) -> None:
     console.print(details)
 
 
+def _vm_lifecycle_payload(vm_id: str, status: VMState) -> StopPayload:
+    """Build a standard payload for VM lifecycle commands."""
+    return {
+        "vm": {
+            "name": vm_id,
+            "status": status.value,
+        }
+    }
+
+
+def _snapshot_row(snapshot: SnapshotInfo) -> SnapshotRow:
+    """Normalize SnapshotInfo into a CLI row."""
+    return {
+        "snapshot_id": snapshot.snapshot_id,
+        "vm_id": snapshot.vm_id,
+        "restored": snapshot.restored,
+        "restored_vm_id": snapshot.restored_vm_id,
+        "created_at": snapshot.created_at.isoformat(),
+        "snapshot_path": str(snapshot.snapshot_path),
+        "mem_file_path": str(snapshot.mem_file_path),
+        "disk_path": str(snapshot.disk_path),
+    }
+
+
+def _render_snapshot_list(rows: list[SnapshotRow]) -> None:
+    """Render the human-facing snapshot list."""
+    table = Table(title="SmolVM Snapshots")
+    table.add_column("Snapshot")
+    table.add_column("VM")
+    table.add_column("Restored")
+    table.add_column("Restored VM")
+    for row in rows:
+        table.add_row(
+            row["snapshot_id"],
+            row["vm_id"],
+            "yes" if row["restored"] else "no",
+            row["restored_vm_id"] or "-",
+        )
+
+    console = console_stdout()
+    console.print(table)
+    console.print(f"Total: {len(rows)} snapshot(s).")
+
+
+def _render_snapshot_create(snapshot: SnapshotRow) -> None:
+    """Render a created snapshot."""
+    console = console_stdout()
+    console.print(
+        Panel.fit(
+            f"Created snapshot '{snapshot['snapshot_id']}' from VM '{snapshot['vm_id']}'.",
+            title="Snapshot Created",
+            border_style="cyan",
+        )
+    )
+
+
+def _render_snapshot_restore(data: SnapshotRestorePayload) -> None:
+    """Render a restored snapshot result."""
+    console = console_stdout()
+    snapshot = data["snapshot"]
+    vm_data = data["vm"]
+    console.print(
+        Panel.fit(
+            f"Restored snapshot '{snapshot['snapshot_id']}' into VM '{vm_data['name']}'.",
+            title="Snapshot Restored",
+            border_style="green",
+        )
+    )
+
+    details = Table(title="Restore Details", show_header=False)
+    details.add_column("Field")
+    details.add_column("Value")
+    details.add_row("VM", vm_data["name"])
+    details.add_row("Status", Text(vm_data["status"], style=status_style(vm_data["status"])))
+    details.add_row("IP Address", str(vm_data["ip_address"] or "-"))
+    details.add_row(
+        "SSH Port",
+        str(vm_data["ssh_port"]) if vm_data["ssh_port"] is not None else "-",
+    )
+    console.print(details)
+
+
 def _run_stop(args: argparse.Namespace) -> int:
     """Handle ``smolvm stop``."""
     from smolvm.facade import SmolVM
@@ -765,23 +997,188 @@ def _run_stop(args: argparse.Namespace) -> int:
         vm = SmolVM.from_id(args.vm_id)
         vm.stop(timeout=args.timeout)
 
-        data: StopPayload = {
-            "vm": {
-                "name": vm.vm_id,
-                "status": VMState.STOPPED.value,
-            }
-        }
+        data = _vm_lifecycle_payload(vm.vm_id, VMState.STOPPED)
 
         if args.json:
             emit_json("stop", 0, data=data)
         else:
-            _render_stop_result(data)
+            _render_vm_lifecycle_result(
+                data,
+                message=f"Stopped VM '{vm.vm_id}'.",
+                title="VM Stopped",
+                border_style="yellow",
+            )
         return 0
     except Exception as exc:
         return _emit_cli_error("stop", 1, exc, json_output=args.json)
     finally:
         if vm is not None:
             vm.close()
+
+
+def _run_pause(args: argparse.Namespace) -> int:
+    """Handle ``smolvm pause``."""
+    from smolvm.facade import SmolVM
+
+    vm: SmolVM | None = None
+    try:
+        vm = SmolVM.from_id(args.vm_id)
+        vm.pause()
+
+        data = _vm_lifecycle_payload(vm.vm_id, VMState.PAUSED)
+        if args.json:
+            emit_json("pause", 0, data=data)
+        else:
+            _render_vm_lifecycle_result(
+                data,
+                message=f"Paused VM '{vm.vm_id}'.",
+                title="VM Paused",
+                border_style="blue",
+            )
+        return 0
+    except Exception as exc:
+        return _emit_cli_error("pause", 1, exc, json_output=args.json)
+    finally:
+        if vm is not None:
+            vm.close()
+
+
+def _run_resume(args: argparse.Namespace) -> int:
+    """Handle ``smolvm resume``."""
+    from smolvm.facade import SmolVM
+
+    vm: SmolVM | None = None
+    try:
+        vm = SmolVM.from_id(args.vm_id)
+        vm.resume()
+
+        data = _vm_lifecycle_payload(vm.vm_id, VMState.RUNNING)
+        if args.json:
+            emit_json("resume", 0, data=data)
+        else:
+            _render_vm_lifecycle_result(
+                data,
+                message=f"Resumed VM '{vm.vm_id}'.",
+                title="VM Resumed",
+                border_style="green",
+            )
+        return 0
+    except Exception as exc:
+        return _emit_cli_error("resume", 1, exc, json_output=args.json)
+    finally:
+        if vm is not None:
+            vm.close()
+
+
+def _run_snapshot(args: argparse.Namespace) -> int:
+    """Handle ``smolvm snapshot`` commands."""
+    from smolvm.facade import SmolVM
+    from smolvm.vm import SmolVMManager
+
+    json_output = getattr(args, "json", False)
+    command_name = f"snapshot.{args.snapshot_action}" if args.snapshot_action else "snapshot"
+
+    if args.snapshot_action is None:
+        render_error("Usage: smolvm snapshot {create,restore,delete,list} ...")
+        return 2
+
+    if args.snapshot_action == "create":
+        vm: SmolVM | None = None
+        try:
+            vm = SmolVM.from_id(args.vm_id)
+            snapshot = vm.snapshot(
+                snapshot_id=args.snapshot_id,
+                resume_source=args.resume_source,
+            )
+            row = _snapshot_row(snapshot)
+            data: SnapshotPayload = {"snapshot": row}
+            if json_output:
+                emit_json(command_name, 0, data=data)
+            else:
+                _render_snapshot_create(row)
+            return 0
+        except Exception as exc:
+            return _emit_cli_error(command_name, 1, exc, json_output=json_output)
+        finally:
+            if vm is not None:
+                vm.close()
+
+    if args.snapshot_action == "restore":
+        vm: SmolVM | None = None
+        try:
+            vm = SmolVM.from_snapshot(
+                args.snapshot_id,
+                resume_vm=args.resume,
+                force=args.force,
+            )
+            with SmolVMManager() as sdk:
+                snapshot = sdk.get_snapshot(args.snapshot_id)
+            row = _snapshot_row(snapshot)
+            network = vm.info.network
+            data: SnapshotRestorePayload = {
+                "snapshot": row,
+                "vm": {
+                    "name": vm.vm_id,
+                    "status": vm.status.value,
+                    "ip_address": network.guest_ip if network else None,
+                    "ssh_port": network.ssh_host_port if network else None,
+                },
+            }
+            if json_output:
+                emit_json(command_name, 0, data=data)
+            else:
+                _render_snapshot_restore(data)
+            return 0
+        except Exception as exc:
+            return _emit_cli_error(command_name, 1, exc, json_output=json_output)
+        finally:
+            if vm is not None:
+                vm.close()
+
+    if args.snapshot_action == "delete":
+        try:
+            with SmolVMManager() as sdk:
+                snapshot = sdk.get_snapshot(args.snapshot_id)
+                sdk.delete_snapshot(args.snapshot_id)
+            row = _snapshot_row(snapshot)
+            data: SnapshotPayload = {"snapshot": row}
+            if json_output:
+                emit_json(command_name, 0, data=data)
+            else:
+                console_stdout().print(
+                    Panel.fit(
+                        f"Deleted snapshot '{args.snapshot_id}'.",
+                        title="Snapshot Deleted",
+                        border_style="yellow",
+                    )
+                )
+            return 0
+        except Exception as exc:
+            return _emit_cli_error(command_name, 1, exc, json_output=json_output)
+
+    try:
+        with SmolVMManager() as sdk:
+            snapshots = sdk.list_snapshots(vm_id=args.vm_id)
+        rows = [_snapshot_row(snapshot) for snapshot in snapshots]
+        data: SnapshotListPayload = {
+            "filters": {"vm_id": args.vm_id},
+            "snapshots": rows,
+        }
+        if json_output:
+            emit_json(command_name, 0, data=data)
+            return 0
+
+        if not rows:
+            if args.vm_id:
+                render_empty("SmolVM Snapshots", f"No snapshots found for VM '{args.vm_id}'.")
+            else:
+                render_empty("SmolVM Snapshots", "No snapshots found.")
+            return 0
+
+        _render_snapshot_list(rows)
+        return 0
+    except Exception as exc:
+        return _emit_cli_error(command_name, 1, exc, json_output=json_output)
 
 
 def _render_env_change(
@@ -1302,6 +1699,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "stop":
         return _run_stop(args)
+
+    if args.command == "pause":
+        return _run_pause(args)
+
+    if args.command == "resume":
+        return _run_resume(args)
+
+    if args.command == "snapshot":
+        return _run_snapshot(args)
 
     if args.command == "ssh":
         return _run_ssh(args)

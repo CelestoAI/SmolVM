@@ -16,6 +16,7 @@
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -44,6 +45,26 @@ def _make_vm_info(
     else:
         vm.network = None
     return vm
+
+
+def _make_snapshot_info(
+    snapshot_id: str = "snap-001",
+    vm_id: str = "vm001",
+    *,
+    restored: bool = False,
+    restored_vm_id: str | None = None,
+) -> MagicMock:
+    """Build a lightweight SnapshotInfo-like mock for CLI tests."""
+    snapshot = MagicMock()
+    snapshot.snapshot_id = snapshot_id
+    snapshot.vm_id = vm_id
+    snapshot.restored = restored
+    snapshot.restored_vm_id = restored_vm_id
+    snapshot.created_at = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
+    snapshot.snapshot_path = Path(f"/tmp/{snapshot_id}/vmstate.bin")
+    snapshot.mem_file_path = Path(f"/tmp/{snapshot_id}/mem.bin")
+    snapshot.disk_path = Path(f"/tmp/{snapshot_id}/disk.ext4")
+    return snapshot
 
 
 def test_top_level_help_mentions_json_for_agents() -> None:
@@ -482,6 +503,172 @@ class TestCliStop:
 
         assert ret == 1
         assert "VM 'missing' not found" in capsys.readouterr().err
+
+
+class TestCliPauseResume:
+    """Tests for `smolvm pause` and `smolvm resume`."""
+
+    @patch("smolvm.facade.SmolVM")
+    def test_pause_success(
+        self,
+        mock_vm_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm pause` should pause an existing VM and report the result."""
+        vm = MagicMock()
+        vm.vm_id = "vm001"
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(["pause", "vm001"])
+
+        assert ret == 0
+        mock_vm_cls.from_id.assert_called_once_with("vm001")
+        vm.pause.assert_called_once_with()
+        vm.close.assert_called_once()
+        out = capsys.readouterr().out
+        assert "Paused VM 'vm001'." in out
+        assert "paused" in out
+
+    @patch("smolvm.facade.SmolVM")
+    def test_resume_json(
+        self,
+        mock_vm_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm resume --json` should emit the shared envelope."""
+        vm = MagicMock()
+        vm.vm_id = "vm001"
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(["resume", "vm001", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["command"] == "resume"
+        assert payload["ok"] is True
+        assert payload["data"]["vm"]["name"] == "vm001"
+        assert payload["data"]["vm"]["status"] == "running"
+
+
+class TestCliSnapshot:
+    """Tests for `smolvm snapshot` subcommands."""
+
+    @patch("smolvm.facade.SmolVM")
+    def test_snapshot_create_success(
+        self,
+        mock_vm_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm snapshot create` should create a snapshot from an existing VM."""
+        vm = MagicMock()
+        vm.snapshot.return_value = _make_snapshot_info()
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(["snapshot", "create", "vm001", "--snapshot-id", "snap-001"])
+
+        assert ret == 0
+        mock_vm_cls.from_id.assert_called_once_with("vm001")
+        vm.snapshot.assert_called_once_with(snapshot_id="snap-001", resume_source=False)
+        vm.close.assert_called_once()
+        out = capsys.readouterr().out
+        assert "Created snapshot 'snap-001'" in out
+
+    @patch("smolvm.facade.SmolVM")
+    def test_snapshot_create_json(
+        self,
+        mock_vm_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm snapshot create --json` should emit snapshot metadata."""
+        vm = MagicMock()
+        vm.snapshot.return_value = _make_snapshot_info()
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(["snapshot", "create", "vm001", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["command"] == "snapshot.create"
+        assert payload["data"]["snapshot"]["snapshot_id"] == "snap-001"
+        assert payload["data"]["snapshot"]["vm_id"] == "vm001"
+
+    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.vm.SmolVMManager")
+    def test_snapshot_restore_json(
+        self,
+        mock_sdk_cls: MagicMock,
+        mock_vm_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm snapshot restore --json` should report both snapshot and VM state."""
+        sdk = mock_sdk_cls.return_value
+        sdk.__enter__.return_value = sdk
+        sdk.__exit__.side_effect = lambda *args: sdk.close()
+        sdk.get_snapshot.return_value = _make_snapshot_info(restored=True, restored_vm_id="vm001")
+
+        vm = MagicMock()
+        vm.vm_id = "vm001"
+        vm.status = VMState.PAUSED
+        vm.info = _make_vm_info("vm001", VMState.PAUSED, "172.16.0.2", 2200, 999)
+        mock_vm_cls.from_snapshot.return_value = vm
+
+        ret = main(["snapshot", "restore", "snap-001", "--json"])
+
+        assert ret == 0
+        mock_vm_cls.from_snapshot.assert_called_once_with(
+            "snap-001",
+            resume_vm=False,
+            force=False,
+        )
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["command"] == "snapshot.restore"
+        assert payload["data"]["snapshot"]["restored"] is True
+        assert payload["data"]["vm"]["name"] == "vm001"
+        assert payload["data"]["vm"]["status"] == "paused"
+
+    @patch("smolvm.vm.SmolVMManager")
+    def test_snapshot_delete_success(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm snapshot delete` should delete snapshot metadata and files."""
+        sdk = mock_sdk_cls.return_value
+        sdk.__enter__.return_value = sdk
+        sdk.__exit__.side_effect = lambda *args: sdk.close()
+        sdk.get_snapshot.return_value = _make_snapshot_info()
+
+        ret = main(["snapshot", "delete", "snap-001"])
+
+        assert ret == 0
+        sdk.get_snapshot.assert_called_once_with("snap-001")
+        sdk.delete_snapshot.assert_called_once_with("snap-001")
+        assert "Deleted snapshot 'snap-001'." in capsys.readouterr().out
+
+    @patch("smolvm.vm.SmolVMManager")
+    def test_snapshot_list_json(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm snapshot list --json` should emit snapshot rows."""
+        sdk = mock_sdk_cls.return_value
+        sdk.__enter__.return_value = sdk
+        sdk.__exit__.side_effect = lambda *args: sdk.close()
+        sdk.list_snapshots.return_value = [
+            _make_snapshot_info(),
+            _make_snapshot_info("snap-002", restored=True, restored_vm_id="vm001"),
+        ]
+
+        ret = main(["snapshot", "list", "--json"])
+
+        assert ret == 0
+        sdk.list_snapshots.assert_called_once_with(vm_id=None)
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["command"] == "snapshot.list"
+        assert payload["data"]["filters"] == {"vm_id": None}
+        assert payload["data"]["snapshots"][0]["snapshot_id"] == "snap-001"
+        assert payload["data"]["snapshots"][1]["restored"] is True
 
 
 class TestCliSSH:
