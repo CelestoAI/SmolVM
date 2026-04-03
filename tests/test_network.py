@@ -94,6 +94,57 @@ class TestSSHPortForwarding:
         assert "delete rule inet smolvm_filter forward handle 12" in scripts
 
 
+class TestTapManagement:
+    """Tests for TAP device create behavior."""
+
+    @patch("smolvm.network.run_command")
+    def test_create_tap_is_idempotent_when_existing(self, mock_run_command: MagicMock) -> None:
+        """'File exists' errors should be treated as success."""
+        mock_run_command.side_effect = SmolVMError("RTNETLINK answers: File exists")
+
+        nm = NetworkManager()
+        nm.create_tap("tap42", "alice")
+
+        mock_run_command.assert_called_once_with(
+            ["ip", "tuntap", "add", "tap42", "mode", "tap", "user", "alice"]
+        )
+
+    @patch("smolvm.network.time.sleep")
+    @patch("smolvm.network.run_command")
+    def test_create_tap_retries_busy_then_succeeds(
+        self, mock_run_command: MagicMock, mock_sleep: MagicMock
+    ) -> None:
+        """Transient busy errors should be retried."""
+        mock_run_command.side_effect = [
+            SmolVMError("ioctl(TUNSETIFF): Device or resource busy"),
+            MagicMock(stdout=""),
+        ]
+
+        nm = NetworkManager()
+        nm.create_tap("tap7", "alice")
+
+        assert mock_run_command.call_count == 2
+        mock_sleep.assert_called_once_with(0.1)
+
+    @patch("smolvm.network.time.sleep")
+    @patch("smolvm.network.run_command")
+    def test_create_tap_raises_after_busy_retries(
+        self, mock_run_command: MagicMock, mock_sleep: MagicMock
+    ) -> None:
+        """Persistent busy errors should still fail after retries."""
+        mock_run_command.side_effect = SmolVMError("ioctl(TUNSETIFF): Device or resource busy")
+
+        nm = NetworkManager()
+        try:
+            nm.create_tap("tap7", "alice")
+            raise AssertionError("Expected SmolVMError")
+        except SmolVMError:
+            pass
+
+        assert mock_run_command.call_count == 4
+        assert mock_sleep.call_count == 3
+
+
 class TestLocalPortForwarding:
     """Tests for localhost-only forwarding rule setup/cleanup."""
 

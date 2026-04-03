@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from pathlib import Path
 
 from smolvm.exceptions import NetworkError, SmolVMError
@@ -94,12 +95,30 @@ class NetworkManager:
 
         logger.info("Creating TAP device: %s (user: %s)", tap_name, user)
 
-        try:
-            run_command(["ip", "tuntap", "add", tap_name, "mode", "tap", "user", user])
-        except SmolVMError as e:
-            if "File exists" in str(e) or "EEXIST" in str(e):
-                logger.debug("TAP device %s already exists", tap_name)
-            else:
+        max_busy_retries = 3
+        for attempt in range(max_busy_retries + 1):
+            try:
+                run_command(["ip", "tuntap", "add", tap_name, "mode", "tap", "user", user])
+                return
+            except SmolVMError as e:
+                err = str(e)
+                if "File exists" in err or "EEXIST" in err:
+                    logger.debug("TAP device %s already exists", tap_name)
+                    return
+
+                is_busy = "Device or resource busy" in err or "EBUSY" in err
+                if is_busy and attempt < max_busy_retries:
+                    # Kernel/device cleanup can be briefly asynchronous. Retry.
+                    delay = 0.1 * (attempt + 1)
+                    logger.warning(
+                        "TAP %s busy during creation (attempt %d/%d), retrying in %.2fs",
+                        tap_name,
+                        attempt + 1,
+                        max_busy_retries + 1,
+                        delay,
+                    )
+                    time.sleep(delay)
+                    continue
                 raise
 
     def configure_tap(
