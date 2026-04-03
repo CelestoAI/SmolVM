@@ -56,6 +56,16 @@ with SmolVM() as vm:
     print(result.stdout.strip())
 ```
 
+Default zero-config guests use Alpine. If you want a Debian guest instead:
+
+```python
+from smolvm import SmolVM
+
+with SmolVM(os="debian") as vm:
+    result = vm.run("cat /etc/os-release | head -n 1")
+    print(result.stdout.strip())
+```
+
 Run the full example:
 
 ```bash
@@ -88,6 +98,7 @@ smolvm browser open <session_id>
 Other useful CLI commands:
 
 - `smolvm create --name my-sandbox`
+- `smolvm create --os debian --name my-debian-sandbox`
 - `smolvm ssh my-sandbox`
 - `smolvm env list <vm_id>`
 - `smolvm list`

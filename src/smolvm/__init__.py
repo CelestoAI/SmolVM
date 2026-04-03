@@ -47,6 +47,7 @@ from smolvm.types import (
     BrowserSessionState,
     BrowserViewport,
     CommandResult,
+    GuestOS,
     NetworkConfig,
     SnapshotInfo,
     VMConfig,
@@ -83,6 +84,7 @@ __all__ = [
     "BrowserSessionConfig",
     "BrowserSessionInfo",
     "BrowserSessionState",
+    "GuestOS",
     # Exceptions
     "SmolVMError",
     "BrowserSessionAlreadyExistsError",

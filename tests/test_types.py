@@ -21,11 +21,13 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from smolvm import GuestOS as PublicGuestOS
 from smolvm.types import (
     BrowserSessionConfig,
     BrowserSessionState,
     BrowserViewport,
     CommandResult,
+    GuestOS,
     NetworkConfig,
     SnapshotInfo,
     VMConfig,
@@ -502,3 +504,10 @@ class TestCommandResult:
         )
 
         assert result.output == "Hello from the sandbox!"
+
+
+def test_guest_os_public_export() -> None:
+    """GuestOS should be importable from both public and types modules."""
+    assert PublicGuestOS is GuestOS
+    assert GuestOS.ALPINE.value == "alpine"
+    assert GuestOS.DEBIAN.value == "debian"

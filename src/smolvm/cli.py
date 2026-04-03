@@ -33,7 +33,7 @@ from rich.text import Text
 from smolvm.cleanup import add_cleanup_args, run_cleanup
 from smolvm.cli_output import console_stdout, emit_json, render_empty, render_error, status_style
 from smolvm.doctor import run_doctor
-from smolvm.types import BrowserSessionState, VMState
+from smolvm.types import BrowserSessionState, GuestOS, VMState
 
 if TYPE_CHECKING:
     from smolvm.types import BrowserSessionInfo, SnapshotInfo, VMInfo
@@ -76,6 +76,7 @@ class CreateVmPayload(TypedDict):
 
     name: str
     status: str
+    os: str
     backend: str
     ip_address: str | None
     ssh_port: int | None
@@ -394,6 +395,12 @@ def build_parser() -> argparse.ArgumentParser:
     create_parser.add_argument(
         "--name",
         help="VM identifier to create (default: auto-generated).",
+    )
+    create_parser.add_argument(
+        "--os",
+        choices=[guest_os.value for guest_os in GuestOS],
+        default=None,
+        help="Guest OS for the auto-configured VM (default: alpine).",
     )
     create_parser.add_argument(
         "--memory-mib",
@@ -919,6 +926,7 @@ def _render_create_result(data: CreatePayload) -> None:
         "Status",
         Text(str(vm_data["status"]), style=status_style(str(vm_data["status"]))),
     )
+    details.add_row("OS", str(vm_data["os"]))
     details.add_row("Backend", str(vm_data["backend"]))
     details.add_row("IP Address", str(vm_data["ip_address"] or "-"))
     details.add_row(
@@ -935,8 +943,10 @@ def _run_create(args: argparse.Namespace) -> int:
 
     vm: SmolVM | None = None
     try:
+        resolved_guest_os = GuestOS(args.os) if args.os is not None else GuestOS.ALPINE
         config, ssh_key_path = _build_auto_config(
             vm_name=args.name,
+            os=args.os,
             backend=args.backend,
             mem_size_mib=args.memory_mib,
             disk_size_mib=args.disk_size_mib,
@@ -955,6 +965,7 @@ def _run_create(args: argparse.Namespace) -> int:
                     if isinstance(vm.info.status, VMState)
                     else VMState.RUNNING.value
                 ),
+                "os": resolved_guest_os.value,
                 "backend": vm.info.config.backend or "auto",
                 "ip_address": network.guest_ip if network else None,
                 "ssh_port": network.ssh_host_port if network else None,

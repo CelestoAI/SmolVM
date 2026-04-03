@@ -25,7 +25,7 @@ from smolvm.exceptions import (
     SmolVMError,
 )
 from smolvm.facade import SmolVM, _build_auto_config
-from smolvm.types import VMConfig, VMState
+from smolvm.types import GuestOS, VMConfig, VMState
 
 
 @pytest.fixture
@@ -174,10 +174,124 @@ class TestVMInit:
         created_config = mock_sdk.create.call_args[0][0]
         assert created_config.mem_size_mib == 2048
 
+    @patch("smolvm.facade.SmolVMManager")
+    @patch("smolvm.build.ImageBuilder")
+    @patch("smolvm.utils.ensure_ssh_key")
+    def test_autoconfigure_with_debian_uses_debian_builder(
+        self,
+        mock_ensure_ssh_key: MagicMock,
+        mock_builder_cls: MagicMock,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Debian auto-config should use the Debian builder and defaults."""
+        kernel = tmp_path / "auto-kernel"
+        rootfs = tmp_path / "auto-rootfs.ext4"
+        private_key = tmp_path / "id_ed25519"
+        public_key = tmp_path / "id_ed25519.pub"
+        kernel.touch()
+        rootfs.touch()
+        private_key.touch()
+        public_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKey user@test\n")
+
+        mock_ensure_ssh_key.return_value = (private_key, public_key)
+        mock_builder = MagicMock()
+        mock_builder.build_debian_ssh_key.return_value = (kernel, rootfs)
+        mock_builder_cls.return_value = mock_builder
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = SmolVM(os="debian")
+
+        assert vm.vm_id.startswith("vm-")
+        mock_builder.build_debian_ssh_key.assert_called_once()
+        assert mock_builder.build_debian_ssh_key.call_args.args[0] == public_key
+        assert mock_builder.build_debian_ssh_key.call_args.kwargs["rootfs_size_mb"] == 2048
+        mock_builder.build_alpine_ssh_key.assert_not_called()
+        created_config = mock_sdk.create.call_args[0][0]
+        assert created_config.mem_size_mib == 512
+
+    @patch("smolvm.facade.SmolVMManager")
+    @patch("smolvm.build.ImageBuilder")
+    @patch("smolvm.utils.ensure_ssh_key")
+    def test_autoconfigure_with_debian_enum_works(
+        self,
+        mock_ensure_ssh_key: MagicMock,
+        mock_builder_cls: MagicMock,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """GuestOS enum values should work for auto-config."""
+        kernel = tmp_path / "auto-kernel"
+        rootfs = tmp_path / "auto-rootfs.ext4"
+        private_key = tmp_path / "id_ed25519"
+        public_key = tmp_path / "id_ed25519.pub"
+        kernel.touch()
+        rootfs.touch()
+        private_key.touch()
+        public_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKey user@test\n")
+
+        mock_ensure_ssh_key.return_value = (private_key, public_key)
+        mock_builder = MagicMock()
+        mock_builder.build_debian_ssh_key.return_value = (kernel, rootfs)
+        mock_builder_cls.return_value = mock_builder
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        mock_sdk_cls.return_value = mock_sdk
+
+        SmolVM(os=GuestOS.DEBIAN)
+
+        mock_builder.build_debian_ssh_key.assert_called_once()
+
+    @patch("smolvm.build.ImageBuilder")
+    @patch("smolvm.utils.ensure_ssh_key")
+    def test_build_auto_config_debian_disk_override(
+        self,
+        mock_ensure_ssh_key: MagicMock,
+        mock_builder_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Explicit disk sizes should override Debian defaults."""
+        kernel = tmp_path / "auto-kernel"
+        rootfs = tmp_path / "auto-rootfs.ext4"
+        private_key = tmp_path / "id_ed25519"
+        public_key = tmp_path / "id_ed25519.pub"
+        kernel.touch()
+        rootfs.touch()
+        private_key.touch()
+        public_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKey user@test\n")
+
+        mock_ensure_ssh_key.return_value = (private_key, public_key)
+        mock_builder = MagicMock()
+        mock_builder.build_debian_ssh_key.return_value = (kernel, rootfs)
+        mock_builder_cls.return_value = mock_builder
+
+        _build_auto_config(os="debian", disk_size_mib=4096)
+
+        assert mock_builder.build_debian_ssh_key.call_args.kwargs["rootfs_size_mb"] == 4096
+
     def test_custom_auto_sizing_with_config_raises(self, sample_config: VMConfig) -> None:
         """Custom auto sizing options are only valid in zero-config mode."""
         with pytest.raises(ValueError, match="auto-config mode"):
             SmolVM(sample_config, mem_size_mib=1024)
+
+    def test_os_with_config_raises(self, sample_config: VMConfig) -> None:
+        """Guest OS selection is only valid in zero-config mode."""
+        with pytest.raises(ValueError, match="auto-config mode"):
+            SmolVM(sample_config, os="debian")
+
+    def test_os_with_vm_id_raises(self) -> None:
+        """Guest OS selection should be rejected when reconnecting to a VM."""
+        with pytest.raises(ValueError, match="auto-config mode"):
+            SmolVM(vm_id="vm001", os="debian")
+
+    def test_invalid_os_raises(self) -> None:
+        """Unsupported guest OS names should raise a helpful error."""
+        with pytest.raises(ValueError, match="Valid values: alpine, debian"):
+            _build_auto_config(os="ubuntu")
 
     @patch("smolvm.build.ImageBuilder")
     @patch("smolvm.utils.ensure_ssh_key")
@@ -241,6 +355,40 @@ class TestVMInit:
         assert (
             mock_builder.build_alpine_ssh_key.call_args.kwargs["name"]
             == "alpine-ssh-key-aarch64"
+        )
+
+    @patch("smolvm.facade.platform.machine", return_value="arm64")
+    @patch("smolvm.build.ImageBuilder")
+    @patch("smolvm.utils.ensure_ssh_key")
+    def test_named_debian_auto_config_qemu_keeps_backend_specific_settings(
+        self,
+        mock_ensure_ssh_key: MagicMock,
+        mock_builder_cls: MagicMock,
+        _: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Debian auto-config should use the same backend-specific cache naming."""
+        kernel = tmp_path / "auto-kernel"
+        rootfs = tmp_path / "auto-rootfs.ext4"
+        private_key = tmp_path / "id_ed25519"
+        public_key = tmp_path / "id_ed25519.pub"
+        kernel.touch()
+        rootfs.touch()
+        private_key.touch()
+        public_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKey user@test\n")
+
+        mock_ensure_ssh_key.return_value = (private_key, public_key)
+        mock_builder = MagicMock()
+        mock_builder.build_debian_ssh_key.return_value = (kernel, rootfs)
+        mock_builder_cls.return_value = mock_builder
+
+        config, _ = _build_auto_config(vm_name="project-spacex", os="debian", backend="qemu")
+
+        assert config.backend == "qemu"
+        assert config.boot_args == "console=ttyAMA0 reboot=k panic=1 init=/init"
+        assert (
+            mock_builder.build_debian_ssh_key.call_args.kwargs["name"]
+            == "debian-ssh-key-aarch64"
         )
 
     @patch("smolvm.facade.SmolVMManager")

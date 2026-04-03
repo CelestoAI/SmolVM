@@ -43,6 +43,13 @@ class BrowserSessionState(str, Enum):
     ERROR = "error"
 
 
+class GuestOS(str, Enum):
+    """Supported guest operating systems for auto-configured VMs."""
+
+    ALPINE = "alpine"
+    DEBIAN = "debian"
+
+
 def _generate_vm_id() -> str:
     """Generate a VM identifier compatible with VMConfig validation."""
     return f"vm-{uuid4().hex[:8]}"

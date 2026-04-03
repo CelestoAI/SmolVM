@@ -48,7 +48,7 @@ from smolvm.exceptions import (
     SmolVMError,
 )
 from smolvm.ssh import SSHClient
-from smolvm.types import CommandResult, SnapshotInfo, VMConfig, VMInfo, VMState
+from smolvm.types import CommandResult, GuestOS, SnapshotInfo, VMConfig, VMInfo, VMState
 from smolvm.vm import SmolVMManager
 
 logger = logging.getLogger(__name__)
@@ -58,11 +58,48 @@ _LOCAL_FORWARD_PROBE_TIMEOUT = 2.0
 _LOCAL_FORWARD_PROBE_INTERVAL = 0.2
 _LOCAL_TUNNEL_START_TIMEOUT = 10.0
 _LOCAL_FORWARD_MAX_PORT_ATTEMPTS = 10
+_AUTO_CONFIG_DEFAULT_DISK_SIZE_MIB = {
+    GuestOS.ALPINE: 512,
+    GuestOS.DEBIAN: 2048,
+}
+
+
+def _normalize_guest_os(os: GuestOS | str | None) -> GuestOS:
+    """Normalize guest OS input for auto-config flows."""
+    if os is None:
+        return GuestOS.ALPINE
+    if isinstance(os, GuestOS):
+        return os
+    try:
+        return GuestOS(os)
+    except ValueError as exc:
+        valid_values = ", ".join(guest_os.value for guest_os in GuestOS)
+        raise ValueError(f"Unsupported guest OS {os!r}. Valid values: {valid_values}.") from exc
+
+
+def _build_auto_config_image_name(
+    guest_os: GuestOS,
+    *,
+    backend: str,
+    disk_size_mib: int,
+) -> str:
+    """Build an OS-aware cache key for auto-configured images."""
+    image_name = f"{guest_os.value}-ssh-key"
+    if backend == BACKEND_QEMU:
+        arch = platform.machine().lower()
+        image_arch = "aarch64" if arch in {"arm64", "aarch64"} else "x86_64"
+        image_name = f"{image_name}-{image_arch}"
+
+    default_disk_size_mib = _AUTO_CONFIG_DEFAULT_DISK_SIZE_MIB[guest_os]
+    if disk_size_mib != default_disk_size_mib:
+        image_name = f"{image_name}-{disk_size_mib}m"
+    return image_name
 
 
 def _build_auto_config(
     *,
     vm_name: str | None = None,
+    os: GuestOS | str | None = None,
     backend: str | None = None,
     mem_size_mib: int | None = None,
     disk_size_mib: int | None = None,
@@ -79,30 +116,37 @@ def _build_auto_config(
         platform.machine(),
     )
 
+    resolved_os = _normalize_guest_os(os)
     private_key, public_key = ensure_ssh_key()
     resolved_ssh_key_path = ssh_key_path or str(private_key)
 
     resolved_mem_size_mib = 512 if mem_size_mib is None else mem_size_mib
-    resolved_disk_size_mib = 512 if disk_size_mib is None else disk_size_mib
+    default_disk_size_mib = _AUTO_CONFIG_DEFAULT_DISK_SIZE_MIB[resolved_os]
+    resolved_disk_size_mib = default_disk_size_mib if disk_size_mib is None else disk_size_mib
     if resolved_disk_size_mib < 64:
         raise ValueError("disk_size_mib must be >= 64")
 
     builder = ImageBuilder()
-    # Keep backend/arch specific cache names to avoid stale cross-arch reuse.
-    image_name = "alpine-ssh-key"
-    if resolved_backend == BACKEND_QEMU:
-        arch = platform.machine().lower()
-        image_arch = "aarch64" if arch in {"arm64", "aarch64"} else "x86_64"
-        image_name = f"alpine-ssh-key-{image_arch}"
-    if resolved_disk_size_mib != 512:
-        image_name = f"{image_name}-{resolved_disk_size_mib}m"
-
-    kernel, rootfs = builder.build_alpine_ssh_key(
-        public_key,
-        name=image_name,
-        rootfs_size_mb=resolved_disk_size_mib,
-        kernel_profile=kernel_profile,
+    image_name = _build_auto_config_image_name(
+        resolved_os,
+        backend=resolved_backend,
+        disk_size_mib=resolved_disk_size_mib,
     )
+
+    if resolved_os is GuestOS.DEBIAN:
+        kernel, rootfs = builder.build_debian_ssh_key(
+            public_key,
+            name=image_name,
+            rootfs_size_mb=resolved_disk_size_mib,
+            kernel_profile=kernel_profile,
+        )
+    else:
+        kernel, rootfs = builder.build_alpine_ssh_key(
+            public_key,
+            name=image_name,
+            rootfs_size_mb=resolved_disk_size_mib,
+            kernel_profile=kernel_profile,
+        )
 
     resolved_vm_name = vm_name or f"vm-{uuid.uuid4().hex[:8]}"
     config = VMConfig(
@@ -114,7 +158,12 @@ def _build_auto_config(
         boot_args=boot_args,
         backend=resolved_backend,
     )
-    logger.info("Auto-configured VM: %s (backend=%s)", resolved_vm_name, resolved_backend)
+    logger.info(
+        "Auto-configured VM: %s (os=%s, backend=%s)",
+        resolved_vm_name,
+        resolved_os.value,
+        resolved_backend,
+    )
     return config, resolved_ssh_key_path
 
 
@@ -142,6 +191,7 @@ class SmolVM:
         data_dir: Override the default data directory.
         socket_dir: Override the default socket directory.
         backend: Runtime backend override (``firecracker``, ``qemu``, or ``auto``).
+        os: Guest OS for auto-config mode (``"alpine"`` or ``"debian"``).
         mem_size_mib: Guest memory in MiB for auto-config mode (``SmolVM()`` only).
         disk_size_mib: Root filesystem size in MiB for auto-config mode (``SmolVM()`` only).
         ssh_user: SSH user for :meth:`run` (default ``root``).
@@ -150,7 +200,8 @@ class SmolVM:
             ``~/.smolvm/keys/id_ed25519`` when needed.
 
     Raises:
-        ValueError: If both *config* and *vm_id* are given.
+        ValueError: If both *config* and *vm_id* are given, or if auto-config-only
+            options are used together with either of them.
     """
 
     def __init__(
@@ -161,6 +212,7 @@ class SmolVM:
         data_dir: Path | None = None,
         socket_dir: Path | None = None,
         backend: str | None = None,
+        os: GuestOS | str | None = None,
         mem_size_mib: int | None = None,
         disk_size_mib: int | None = None,
         ssh_user: str = "root",
@@ -170,10 +222,10 @@ class SmolVM:
             raise ValueError("Provide either config or vm_id, not both.")
 
         if (config is not None or vm_id is not None) and (
-            mem_size_mib is not None or disk_size_mib is not None
+            mem_size_mib is not None or disk_size_mib is not None or os is not None
         ):
             raise ValueError(
-                "mem_size_mib and disk_size_mib can only be set when both "
+                "mem_size_mib, disk_size_mib, and os can only be set when both "
                 "config and vm_id are omitted (auto-config mode)."
             )
 
@@ -181,6 +233,7 @@ class SmolVM:
             # Auto-configuration mode
             logger.info("No config provided; auto-configuring standard SSH VM...")
             config, ssh_key_path = _build_auto_config(
+                os=os,
                 backend=backend,
                 mem_size_mib=mem_size_mib,
                 disk_size_mib=disk_size_mib,
