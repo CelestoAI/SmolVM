@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://ik.imagekit.io/gradsflow/celestoai/logo/smol-vm-logo_j3f2cqqRcO.png" width=100px>
+<img src="https://ik.imagekit.io/gradsflow/celestoai/logo/smolvm_Es-VK398Q.png?updatedAt=1775222245588" width=100px>
 
 
 # SmolVM
