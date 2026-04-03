@@ -238,7 +238,10 @@ class TestVMInit:
 
         assert config.backend == "qemu"
         assert config.boot_args == "console=ttyAMA0 reboot=k panic=1 init=/init"
-        assert mock_builder.build_alpine_ssh_key.call_args.kwargs["name"] == "alpine-ssh-key-aarch64"
+        assert (
+            mock_builder.build_alpine_ssh_key.call_args.kwargs["name"]
+            == "alpine-ssh-key-aarch64"
+        )
 
     @patch("smolvm.facade.SmolVMManager")
     def test_from_id(self, mock_sdk_cls: MagicMock) -> None:
@@ -250,6 +253,31 @@ class TestVMInit:
         vm = SmolVM.from_id("vm001")
 
         assert vm.vm_id == "vm001"
+        mock_sdk_cls.from_id.assert_called_once()
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_from_snapshot(self, mock_sdk_cls: MagicMock) -> None:
+        """from_snapshot() should restore the snapshot before attaching to the VM."""
+        restore_manager = MagicMock()
+        restore_manager.__enter__.return_value = restore_manager
+        restore_manager.restore_snapshot.return_value = MagicMock(
+            vm_id="vm001",
+            status=VMState.PAUSED,
+        )
+        attach_manager = MagicMock()
+        attach_manager.get.return_value = MagicMock(vm_id="vm001", status=VMState.PAUSED)
+
+        mock_sdk_cls.return_value = restore_manager
+        mock_sdk_cls.from_id.return_value = attach_manager
+
+        vm = SmolVM.from_snapshot("snap-001")
+
+        assert vm.vm_id == "vm001"
+        restore_manager.restore_snapshot.assert_called_once_with(
+            "snap-001",
+            resume_vm=False,
+            force=False,
+        )
         mock_sdk_cls.from_id.assert_called_once()
 
 
@@ -297,6 +325,29 @@ class TestVMLifecycle:
         result = vm.start()
 
         assert result is vm
+        mock_sdk.start.assert_not_called()
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_start_resumes_paused_vm(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """start() should resume paused VMs."""
+        mock_sdk = MagicMock()
+        paused_info = MagicMock(vm_id="vm001", status=VMState.PAUSED)
+        paused_info.config.env_vars = {}
+        running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
+        running_info.config.env_vars = {}
+        mock_sdk.create.return_value = paused_info
+        mock_sdk.resume.return_value = running_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = SmolVM(sample_config)
+        result = vm.start()
+
+        assert result is vm
+        mock_sdk.resume.assert_called_once_with("vm001")
         mock_sdk.start.assert_not_called()
 
     @patch("smolvm.facade.SmolVMManager")

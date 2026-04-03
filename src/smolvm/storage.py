@@ -18,6 +18,7 @@ Provides persistent storage for VM metadata, lifecycle states, and IP allocation
 Uses exclusive transactions to prevent race conditions in IP assignment.
 """
 
+import json
 import logging
 import sqlite3
 from collections.abc import Iterator
@@ -29,6 +30,8 @@ from smolvm.exceptions import (
     BrowserSessionAlreadyExistsError,
     BrowserSessionNotFoundError,
     NetworkError,
+    SnapshotAlreadyExistsError,
+    SnapshotNotFoundError,
     VMAlreadyExistsError,
     VMNotFoundError,
 )
@@ -37,6 +40,7 @@ from smolvm.types import (
     BrowserSessionInfo,
     BrowserSessionState,
     NetworkConfig,
+    SnapshotInfo,
     VMConfig,
     VMInfo,
     VMState,
@@ -156,6 +160,21 @@ class StateManager:
                     ON browser_sessions(status);
                 CREATE INDEX IF NOT EXISTS idx_browser_sessions_profile_id
                     ON browser_sessions(profile_id);
+
+                CREATE TABLE IF NOT EXISTS snapshots (
+                    snapshot_id TEXT PRIMARY KEY,
+                    vm_id TEXT NOT NULL,
+                    snapshot_path TEXT NOT NULL,
+                    mem_file_path TEXT NOT NULL,
+                    disk_path TEXT NOT NULL,
+                    vm_config TEXT NOT NULL,
+                    network_config TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    restored INTEGER DEFAULT 0,
+                    restored_vm_id TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_snapshots_vm_id ON snapshots(vm_id);
             """
             )
 
@@ -243,6 +262,7 @@ class StateManager:
         pid: int | None = None,
         socket_path: Path | None = None,
         clear_pid: bool = False,
+        clear_socket_path: bool = False,
     ) -> VMInfo:
         """Update VM state.
 
@@ -253,6 +273,7 @@ class StateManager:
             pid: Process ID (optional).
             socket_path: API socket path (optional).
             clear_pid: If True, set pid to NULL.
+            clear_socket_path: If True, set socket_path to NULL.
 
         Returns:
             Updated VMInfo.
@@ -292,6 +313,8 @@ class StateManager:
             if socket_path is not None:
                 updates.append("socket_path = ?")
                 params.append(str(socket_path))
+            elif clear_socket_path:
+                updates.append("socket_path = NULL")
 
             params.append(vm_id)
             query = f"UPDATE vms SET {', '.join(updates)} WHERE id = ?"
@@ -357,6 +380,143 @@ class StateManager:
                 )
             )
         return result
+
+    @staticmethod
+    def _snapshot_vm_config_from_json(raw: str) -> VMConfig:
+        """Deserialize snapshot VM config without filesystem validation."""
+        data = json.loads(raw)
+        data["kernel_path"] = Path(data["kernel_path"])
+        data["rootfs_path"] = Path(data["rootfs_path"])
+        data["extra_drives"] = [Path(path) for path in data.get("extra_drives", [])]
+        return VMConfig.model_construct(**data)
+
+    @staticmethod
+    def _snapshot_info_from_row(row: sqlite3.Row) -> SnapshotInfo:
+        """Convert a snapshots row into SnapshotInfo."""
+        return SnapshotInfo(
+            snapshot_id=row["snapshot_id"],
+            vm_id=row["vm_id"],
+            snapshot_path=Path(row["snapshot_path"]),
+            mem_file_path=Path(row["mem_file_path"]),
+            disk_path=Path(row["disk_path"]),
+            vm_config=StateManager._snapshot_vm_config_from_json(row["vm_config"]),
+            network_config=NetworkConfig.model_validate_json(row["network_config"]),
+            created_at=datetime.fromisoformat(row["created_at"]),
+            restored=bool(row["restored"]),
+            restored_vm_id=row["restored_vm_id"],
+        )
+
+    def create_snapshot(self, info: SnapshotInfo) -> SnapshotInfo:
+        """Persist snapshot metadata."""
+        if info is None:
+            raise ValueError("info cannot be None")
+
+        with self._get_connection(exclusive=True) as conn:
+            existing = conn.execute(
+                "SELECT snapshot_id FROM snapshots WHERE snapshot_id = ?",
+                (info.snapshot_id,),
+            ).fetchone()
+            if existing:
+                raise SnapshotAlreadyExistsError(info.snapshot_id)
+
+            conn.execute(
+                """
+                INSERT INTO snapshots (
+                    snapshot_id,
+                    vm_id,
+                    snapshot_path,
+                    mem_file_path,
+                    disk_path,
+                    vm_config,
+                    network_config,
+                    created_at,
+                    restored,
+                    restored_vm_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    info.snapshot_id,
+                    info.vm_id,
+                    str(info.snapshot_path),
+                    str(info.mem_file_path),
+                    str(info.disk_path),
+                    info.vm_config.model_dump_json(),
+                    info.network_config.model_dump_json(),
+                    info.created_at.isoformat(),
+                    int(info.restored),
+                    info.restored_vm_id,
+                ),
+            )
+
+        logger.info("Created snapshot record: %s", info.snapshot_id)
+        return info
+
+    def get_snapshot(self, snapshot_id: str) -> SnapshotInfo:
+        """Get snapshot metadata by ID."""
+        if not snapshot_id:
+            raise ValueError("snapshot_id cannot be empty")
+
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM snapshots WHERE snapshot_id = ?",
+                (snapshot_id,),
+            ).fetchone()
+
+        if not row:
+            raise SnapshotNotFoundError(snapshot_id)
+
+        return self._snapshot_info_from_row(row)
+
+    def list_snapshots(self, vm_id: str | None = None) -> list[SnapshotInfo]:
+        """List snapshots, optionally filtered by source VM ID."""
+        with self._get_connection() as conn:
+            if vm_id:
+                rows = conn.execute(
+                    "SELECT * FROM snapshots WHERE vm_id = ? ORDER BY created_at",
+                    (vm_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM snapshots ORDER BY created_at").fetchall()
+
+        return [self._snapshot_info_from_row(row) for row in rows]
+
+    def mark_snapshot_restored(self, snapshot_id: str, restored_vm_id: str) -> SnapshotInfo:
+        """Mark a snapshot as restored."""
+        if not snapshot_id:
+            raise ValueError("snapshot_id cannot be empty")
+        if not restored_vm_id:
+            raise ValueError("restored_vm_id cannot be empty")
+
+        with self._get_connection(exclusive=True) as conn:
+            result = conn.execute(
+                """
+                UPDATE snapshots
+                SET restored = 1, restored_vm_id = ?
+                WHERE snapshot_id = ?
+                """,
+                (restored_vm_id, snapshot_id),
+            )
+            if result.rowcount == 0:
+                raise SnapshotNotFoundError(snapshot_id)
+
+        logger.info("Marked snapshot %s as restored to VM %s", snapshot_id, restored_vm_id)
+        return self.get_snapshot(snapshot_id)
+
+    def delete_snapshot(self, snapshot_id: str) -> None:
+        """Delete a snapshot metadata record."""
+        if not snapshot_id:
+            raise ValueError("snapshot_id cannot be empty")
+
+        with self._get_connection(exclusive=True) as conn:
+            result = conn.execute(
+                "DELETE FROM snapshots WHERE snapshot_id = ?",
+                (snapshot_id,),
+            )
+            if result.rowcount == 0:
+                raise SnapshotNotFoundError(snapshot_id)
+
+        logger.info("Deleted snapshot record: %s", snapshot_id)
 
     @staticmethod
     def _browser_session_info_from_row(row: sqlite3.Row) -> BrowserSessionInfo:
@@ -558,12 +718,18 @@ class StateManager:
 
         return [self._browser_session_info_from_row(row) for row in rows]
 
-    def allocate_ip(self, vm_id: str, tap_device: str) -> str:
+    def allocate_ip(
+        self,
+        vm_id: str,
+        tap_device: str,
+        requested_ip: str | None = None,
+    ) -> str:
         """Atomically allocate the next available IP address.
 
         Args:
             vm_id: The VM to allocate for.
             tap_device: The TAP device name.
+            requested_ip: Specific IP to reserve (optional).
 
         Returns:
             The allocated IP address (e.g., "172.16.0.2").
@@ -579,24 +745,40 @@ class StateManager:
         now = datetime.now(timezone.utc).isoformat()
 
         with self._get_connection(exclusive=True) as conn:
+            existing = conn.execute(
+                "SELECT ip FROM ip_leases WHERE vm_id = ?",
+                (vm_id,),
+            ).fetchone()
+            if existing:
+                existing_ip = str(existing["ip"])
+                if requested_ip and existing_ip != requested_ip:
+                    raise NetworkError(
+                        f"VM {vm_id} already has IP {existing_ip}, cannot reserve {requested_ip}"
+                    )
+                return existing_ip
+
             # Find all allocated IPs
             allocated = conn.execute("SELECT ip FROM ip_leases").fetchall()
             allocated_set = {row["ip"] for row in allocated}
 
-            # Find first available
-            for i in range(IP_POOL_START, IP_POOL_END + 1):
-                ip = f"{IP_PREFIX}{i}"
-                if ip not in allocated_set:
-                    conn.execute(
-                        """
-                        INSERT INTO ip_leases (ip, vm_id, tap_device, created_at)
-                        VALUES (?, ?, ?, ?)
-                        """,
-                        (ip, vm_id, tap_device, now),
-                    )
-                    logger.info("Allocated IP %s to VM %s", ip, vm_id)
-                    return ip
+            candidate_ips = [requested_ip] if requested_ip else [
+                f"{IP_PREFIX}{i}" for i in range(IP_POOL_START, IP_POOL_END + 1)
+            ]
+            for ip in candidate_ips:
+                if ip is None or ip in allocated_set:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO ip_leases (ip, vm_id, tap_device, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (ip, vm_id, tap_device, now),
+                )
+                logger.info("Allocated IP %s to VM %s", ip, vm_id)
+                return ip
 
+        if requested_ip:
+            raise NetworkError(f"Requested IP address {requested_ip} is not available")
         raise NetworkError("No IP addresses available in pool")
 
     def release_ip(self, vm_id: str) -> None:
@@ -657,12 +839,18 @@ class StateManager:
             )
             logger.debug("Updated TAP device for VM %s to %s", vm_id, tap_device)
 
-    def reserve_ssh_port(self, vm_id: str, guest_port: int = 22) -> int:
+    def reserve_ssh_port(
+        self,
+        vm_id: str,
+        guest_port: int = 22,
+        host_port: int | None = None,
+    ) -> int:
         """Reserve a host port for forwarding to guest SSH.
 
         Args:
             vm_id: The VM identifier.
             guest_port: Guest-side TCP port (default: 22).
+            host_port: Specific host port to reserve (optional).
 
         Returns:
             Reserved host TCP port.
@@ -684,24 +872,35 @@ class StateManager:
                 (vm_id,),
             ).fetchone()
             if existing:
-                return int(existing["host_port"])
+                existing_host_port = int(existing["host_port"])
+                if host_port is not None and existing_host_port != host_port:
+                    raise NetworkError(
+                        f"VM {vm_id} already has SSH host port {existing_host_port}, "
+                        f"cannot reserve {host_port}"
+                    )
+                return existing_host_port
 
             allocated = conn.execute("SELECT host_port FROM ssh_forwards").fetchall()
             allocated_set = {int(row["host_port"]) for row in allocated}
 
-            for host_port in range(SSH_PORT_START, SSH_PORT_END + 1):
-                if host_port in allocated_set:
+            candidate_ports = [host_port] if host_port is not None else range(
+                SSH_PORT_START, SSH_PORT_END + 1
+            )
+            for candidate_port in candidate_ports:
+                if candidate_port in allocated_set:
                     continue
                 conn.execute(
                     """
                     INSERT INTO ssh_forwards (vm_id, host_port, guest_port, created_at)
                     VALUES (?, ?, ?, ?)
                     """,
-                    (vm_id, host_port, guest_port, now),
+                    (vm_id, candidate_port, guest_port, now),
                 )
-                logger.info("Reserved SSH host port %d for VM %s", host_port, vm_id)
-                return host_port
+                logger.info("Reserved SSH host port %d for VM %s", candidate_port, vm_id)
+                return candidate_port
 
+        if host_port is not None:
+            raise NetworkError(f"Requested SSH host port {host_port} is not available")
         raise NetworkError("No SSH host ports available in pool")
 
     def get_ssh_port(self, vm_id: str) -> int | None:
@@ -741,7 +940,7 @@ class StateManager:
                 logger.info("Released SSH host port for VM: %s", vm_id)
 
     def reconcile(self) -> list[str]:
-        """Check for stale VMs (marked RUNNING but process is dead).
+        """Check for stale VMs (marked RUNNING/PAUSED but process is dead).
 
         Returns:
             List of VM IDs that were marked as ERROR.
@@ -752,8 +951,8 @@ class StateManager:
 
         with self._get_connection(exclusive=True) as conn:
             running = conn.execute(
-                "SELECT id, pid FROM vms WHERE status = ?",
-                (VMState.RUNNING.value,),
+                "SELECT id, pid FROM vms WHERE status IN (?, ?)",
+                (VMState.RUNNING.value, VMState.PAUSED.value),
             ).fetchall()
 
             for row in running:

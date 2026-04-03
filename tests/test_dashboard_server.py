@@ -187,10 +187,10 @@ def test_list_vms_invalid_status_returns_400(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(server, "_get_state_manager", lambda _app: DummyStateManager())
 
     with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(server.list_vms(status="paused"))
+        asyncio.run(server.list_vms(status="bogus"))
 
     assert exc_info.value.status_code == 400
-    assert exc_info.value.detail == "Invalid status: paused"
+    assert exc_info.value.detail == "Invalid status: bogus"
 
 
 def test_execute_command_route_uses_command_response_model() -> None:

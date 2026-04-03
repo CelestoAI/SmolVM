@@ -28,6 +28,7 @@ class VMState(str, Enum):
 
     CREATED = "created"
     RUNNING = "running"
+    PAUSED = "paused"
     STOPPED = "stopped"
     ERROR = "error"
 
@@ -50,6 +51,11 @@ def _generate_vm_id() -> str:
 def _generate_browser_session_id() -> str:
     """Generate a browser session identifier."""
     return f"browser-{uuid4().hex[:8]}"
+
+
+def _generate_snapshot_id() -> str:
+    """Generate a snapshot identifier."""
+    return f"snap-{uuid4().hex[:8]}"
 
 
 _IDENTIFIER_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$|^[a-z0-9]$"
@@ -317,6 +323,26 @@ class VMInfo(BaseModel):
     network: NetworkConfig | None = None
     pid: int | None = None
     socket_path: Path | None = None
+
+    model_config = {"frozen": True}
+
+
+class SnapshotInfo(BaseModel):
+    """Persisted metadata for a VM snapshot."""
+
+    snapshot_id: Annotated[
+        str,
+        Field(default_factory=_generate_snapshot_id, pattern=_IDENTIFIER_PATTERN),
+    ]
+    vm_id: Annotated[str, Field(pattern=_IDENTIFIER_PATTERN)]
+    snapshot_path: Path
+    mem_file_path: Path
+    disk_path: Path
+    vm_config: VMConfig
+    network_config: NetworkConfig
+    created_at: datetime
+    restored: bool = False
+    restored_vm_id: str | None = None
 
     model_config = {"frozen": True}
 

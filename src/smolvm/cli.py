@@ -263,9 +263,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     list_filters.add_argument(
         "--status",
-        choices=["created", "running", "stopped", "error"],
+        choices=[state.value for state in VMState],
         default=None,
-        help="Filter VMs by status (created, running, stopped, error).",
+        help="Filter VMs by lifecycle status.",
     )
     list_parser.add_argument(
         "--json",
@@ -958,6 +958,9 @@ def _run_ssh(args: argparse.Namespace) -> int:
                 "SSH may take a little longer while SmolVM starts it."
             )
             vm.start(boot_timeout=args.boot_timeout)
+        elif vm.status == VMState.PAUSED:
+            print(f"Notice: VM '{args.vm_id}' is paused. Resuming it before attaching.")
+            vm.resume()
         elif vm.status == VMState.ERROR:
             raise RuntimeError(
                 f"VM '{args.vm_id}' is in error state. Recreate it or inspect the VM logs "

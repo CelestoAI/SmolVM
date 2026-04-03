@@ -48,7 +48,7 @@ from smolvm.exceptions import (
     SmolVMError,
 )
 from smolvm.ssh import SSHClient
-from smolvm.types import CommandResult, VMConfig, VMInfo, VMState
+from smolvm.types import CommandResult, SnapshotInfo, VMConfig, VMInfo, VMState
 from smolvm.vm import SmolVMManager
 
 logger = logging.getLogger(__name__)
@@ -258,6 +258,44 @@ class SmolVM:
             ssh_key_path=ssh_key_path,
         )
 
+    @classmethod
+    def from_snapshot(
+        cls,
+        snapshot_id: str,
+        *,
+        data_dir: Path | None = None,
+        socket_dir: Path | None = None,
+        backend: str | None = None,
+        resume_vm: bool = False,
+        force: bool = False,
+        ssh_user: str = "root",
+        ssh_key_path: str | None = None,
+    ) -> SmolVM:
+        """Restore a snapshot and attach a facade to the restored VM."""
+        sdk_kwargs: dict[str, Any] = {}
+        if data_dir is not None:
+            sdk_kwargs["data_dir"] = data_dir
+        if socket_dir is not None:
+            sdk_kwargs["socket_dir"] = socket_dir
+        if backend is not None:
+            sdk_kwargs["backend"] = backend
+
+        with SmolVMManager(**sdk_kwargs) as sdk:
+            vm_info = sdk.restore_snapshot(
+                snapshot_id,
+                resume_vm=resume_vm,
+                force=force,
+            )
+
+        return cls(
+            vm_id=vm_info.vm_id,
+            data_dir=data_dir,
+            socket_dir=socket_dir,
+            backend=backend,
+            ssh_user=ssh_user,
+            ssh_key_path=ssh_key_path,
+        )
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -281,9 +319,11 @@ class SmolVM:
         if self._info.status == VMState.RUNNING:
             logger.info("VM %s already running; start() is a no-op", self._vm_id)
             return self
+        if self._info.status == VMState.PAUSED:
+            return self.resume()
 
         self._info = self._sdk.start(self._vm_id, boot_timeout=boot_timeout)
-        self._ssh_ready = False
+        self._reset_runtime_state(close_ssh=False)
         logger.info("VM %s started", self._vm_id)
 
         # Inject environment variables after boot if configured.
@@ -326,21 +366,46 @@ class SmolVM:
         """
         self._cleanup_local_forwards()
         self._info = self._sdk.stop(self._vm_id, timeout=timeout)
-        if self._ssh is not None:
-            self._ssh.close()
-        self._ssh = None
-        self._ssh_ready = False
+        self._reset_runtime_state()
         logger.info("VM %s stopped", self._vm_id)
         return self
+
+    def pause(self) -> SmolVM:
+        """Pause the VM."""
+        self._cleanup_local_forwards()
+        self._info = self._sdk.pause(self._vm_id)
+        self._reset_runtime_state()
+        logger.info("VM %s paused", self._vm_id)
+        return self
+
+    def resume(self) -> SmolVM:
+        """Resume the VM."""
+        self._info = self._sdk.resume(self._vm_id)
+        self._reset_runtime_state(close_ssh=False)
+        logger.info("VM %s resumed", self._vm_id)
+        return self
+
+    def snapshot(
+        self,
+        snapshot_id: str | None = None,
+        *,
+        resume_source: bool = False,
+    ) -> SnapshotInfo:
+        """Create a snapshot for the VM."""
+        snapshot_info = self._sdk.create_snapshot(
+            self._vm_id,
+            snapshot_id=snapshot_id,
+            resume_source=resume_source,
+        )
+        self._refresh_info()
+        self._reset_runtime_state()
+        return snapshot_info
 
     def delete(self) -> None:
         """Delete the VM and release all resources."""
         self._cleanup_local_forwards()
         self._sdk.delete(self._vm_id)
-        if self._ssh is not None:
-            self._ssh.close()
-        self._ssh = None
-        self._ssh_ready = False
+        self._reset_runtime_state()
         logger.info("VM %s deleted", self._vm_id)
 
     # ------------------------------------------------------------------
@@ -773,6 +838,16 @@ class SmolVM:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _reset_runtime_state(self, *, close_ssh: bool = True) -> None:
+        """Clear cached runtime connection state after lifecycle changes."""
+        if close_ssh and self._ssh is not None:
+            self._ssh.close()
+        if close_ssh:
+            self._ssh = None
+        self._ssh_ready = False
+        if hasattr(self, "_probed_endpoint"):
+            self._probed_endpoint = None
 
     def _ensure_ssh_for_env(self) -> SSHClient:
         """Return a ready SSH client for env operations on a running VM."""

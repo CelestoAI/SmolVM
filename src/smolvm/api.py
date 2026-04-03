@@ -264,6 +264,73 @@ class FirecrackerClient:
         )
         logger.info("Instance started")
 
+    def pause_vm(self) -> None:
+        """Pause a running microVM."""
+        self._request(
+            "PATCH",
+            "/vm",
+            json={"state": "Paused"},
+        )
+        logger.info("VM paused")
+
+    def resume_vm(self) -> None:
+        """Resume a paused microVM."""
+        self._request(
+            "PATCH",
+            "/vm",
+            json={"state": "Resumed"},
+        )
+        logger.info("VM resumed")
+
+    def create_snapshot(
+        self,
+        snapshot_path: Path,
+        mem_file_path: Path,
+        snapshot_type: str = "Full",
+    ) -> None:
+        """Create a Firecracker snapshot."""
+        self._request(
+            "PUT",
+            "/snapshot/create",
+            json={
+                "snapshot_path": str(snapshot_path),
+                "mem_file_path": str(mem_file_path),
+                "snapshot_type": snapshot_type,
+            },
+        )
+        logger.info("Snapshot created: %s", snapshot_path)
+
+    def load_snapshot(
+        self,
+        snapshot_path: Path,
+        mem_backend_path: Path,
+        *,
+        backend_type: str = "File",
+        resume_vm: bool = False,
+        track_dirty_pages: bool | None = None,
+        network_overrides: list[dict[str, str]] | None = None,
+    ) -> None:
+        """Load a Firecracker snapshot before boot."""
+        payload: dict[str, Any] = {
+            "snapshot_path": str(snapshot_path),
+            "mem_backend": {
+                "backend_path": str(mem_backend_path),
+                "backend_type": backend_type,
+            },
+            "resume_vm": resume_vm,
+        }
+        if track_dirty_pages is not None:
+            payload["track_dirty_pages"] = track_dirty_pages
+        if network_overrides:
+            payload["network_overrides"] = network_overrides
+
+        self._request(
+            "PUT",
+            "/snapshot/load",
+            json=payload,
+        )
+        logger.info("Snapshot loaded: %s", snapshot_path)
+
     def get_instance_info(self) -> dict[str, Any]:
         """Get instance information.
 

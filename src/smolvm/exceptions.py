@@ -46,6 +46,28 @@ class VMNotFoundError(SmolVMError):
         self.vm_id = vm_id
 
 
+class SnapshotAlreadyExistsError(SmolVMError):
+    """Raised when attempting to create a snapshot with an existing ID."""
+
+    def __init__(self, snapshot_id: str) -> None:
+        super().__init__(
+            f"Snapshot '{snapshot_id}' already exists",
+            {"snapshot_id": snapshot_id},
+        )
+        self.snapshot_id = snapshot_id
+
+
+class SnapshotNotFoundError(SmolVMError):
+    """Raised when a snapshot is not found."""
+
+    def __init__(self, snapshot_id: str) -> None:
+        super().__init__(
+            f"Snapshot '{snapshot_id}' not found",
+            {"snapshot_id": snapshot_id},
+        )
+        self.snapshot_id = snapshot_id
+
+
 class BrowserSessionAlreadyExistsError(SmolVMError):
     """Raised when attempting to create a browser session with an existing ID."""
 

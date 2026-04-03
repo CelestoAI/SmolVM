@@ -15,6 +15,7 @@
 """Tests for SmolVM types module."""
 
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,7 @@ from smolvm.types import (
     BrowserViewport,
     CommandResult,
     NetworkConfig,
+    SnapshotInfo,
     VMConfig,
     VMInfo,
     VMState,
@@ -337,8 +339,49 @@ class TestVMState:
         """Test all state values exist."""
         assert VMState.CREATED.value == "created"
         assert VMState.RUNNING.value == "running"
+        assert VMState.PAUSED.value == "paused"
         assert VMState.STOPPED.value == "stopped"
         assert VMState.ERROR.value == "error"
+
+
+class TestSnapshotInfo:
+    """Tests for snapshot metadata."""
+
+    def test_snapshot_info_creation(self, tmp_path: Path) -> None:
+        """SnapshotInfo should preserve source VM config and file paths."""
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        snapshot_path = tmp_path / "vmstate.bin"
+        mem_file_path = tmp_path / "mem.bin"
+        disk_path = tmp_path / "disk.ext4"
+        kernel.touch()
+        rootfs.touch()
+        snapshot_path.touch()
+        mem_file_path.touch()
+        disk_path.touch()
+
+        config = VMConfig(vm_id="vm001", kernel_path=kernel, rootfs_path=rootfs)
+        network = NetworkConfig(
+            guest_ip="172.16.0.2",
+            tap_device="tap2",
+            guest_mac="AA:FC:00:00:00:02",
+            ssh_host_port=2200,
+        )
+
+        snapshot = SnapshotInfo(
+            snapshot_id="snap-1234",
+            vm_id="vm001",
+            snapshot_path=snapshot_path,
+            mem_file_path=mem_file_path,
+            disk_path=disk_path,
+            vm_config=config,
+            network_config=network,
+            created_at=datetime.now(timezone.utc),
+        )
+
+        assert snapshot.snapshot_id == "snap-1234"
+        assert snapshot.vm_config.vm_id == "vm001"
+        assert snapshot.network_config.tap_device == "tap2"
 
 
 class TestBrowserSessionConfig:

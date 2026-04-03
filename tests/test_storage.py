@@ -19,13 +19,19 @@ from pathlib import Path
 
 import pytest
 
-from smolvm.exceptions import BrowserSessionNotFoundError, VMAlreadyExistsError, VMNotFoundError
+from smolvm.exceptions import (
+    BrowserSessionNotFoundError,
+    SnapshotNotFoundError,
+    VMAlreadyExistsError,
+    VMNotFoundError,
+)
 from smolvm.storage import StateManager
 from smolvm.types import (
     BrowserSessionConfig,
     BrowserSessionInfo,
     BrowserSessionState,
     NetworkConfig,
+    SnapshotInfo,
     VMConfig,
     VMState,
 )
@@ -307,6 +313,73 @@ class TestSSHPortAllocation:
         state_manager.create_vm(config2)
         p2 = state_manager.reserve_ssh_port("vm002")
         assert p2 == 2200
+
+
+class TestSnapshotStorage:
+    """Tests for snapshot persistence."""
+
+    def test_create_get_list_and_delete_snapshot(
+        self,
+        state_manager: StateManager,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        """Snapshot metadata should round-trip through SQLite."""
+        state_manager.create_vm(sample_config)
+        network = NetworkConfig(
+            guest_ip="172.16.0.2",
+            tap_device="tap2",
+            guest_mac="AA:FC:00:00:00:02",
+            ssh_host_port=2200,
+        )
+        state_manager.update_vm("vm001", network=network)
+
+        snapshot_dir = tmp_path / "snapshots" / "snap-001"
+        snapshot_dir.mkdir(parents=True)
+        snapshot = SnapshotInfo(
+            snapshot_id="snap-001",
+            vm_id="vm001",
+            snapshot_path=snapshot_dir / "vmstate.bin",
+            mem_file_path=snapshot_dir / "mem.bin",
+            disk_path=snapshot_dir / "disk.ext4",
+            vm_config=sample_config,
+            network_config=network,
+            created_at=datetime.now(timezone.utc),
+        )
+        snapshot.snapshot_path.touch()
+        snapshot.mem_file_path.touch()
+        snapshot.disk_path.touch()
+
+        created = state_manager.create_snapshot(snapshot)
+        fetched = state_manager.get_snapshot("snap-001")
+        listed = state_manager.list_snapshots(vm_id="vm001")
+
+        assert created.snapshot_id == "snap-001"
+        assert fetched.vm_config.rootfs_path == sample_config.rootfs_path
+        assert fetched.network_config.tap_device == "tap2"
+        assert [item.snapshot_id for item in listed] == ["snap-001"]
+
+        restored = state_manager.mark_snapshot_restored("snap-001", "vm001")
+        assert restored.restored is True
+        assert restored.restored_vm_id == "vm001"
+
+        state_manager.delete_snapshot("snap-001")
+        with pytest.raises(SnapshotNotFoundError):
+            state_manager.get_snapshot("snap-001")
+
+    def test_allocate_specific_ip_and_ssh_port(
+        self,
+        state_manager: StateManager,
+        sample_config: VMConfig,
+    ) -> None:
+        """Restore flows should be able to rehydrate exact network resources."""
+        state_manager.create_vm(sample_config)
+
+        ip = state_manager.allocate_ip("vm001", "tap22", requested_ip="172.16.0.22")
+        ssh_port = state_manager.reserve_ssh_port("vm001", host_port=2222)
+
+        assert ip == "172.16.0.22"
+        assert ssh_port == 2222
 
 
 class TestReconciliation:

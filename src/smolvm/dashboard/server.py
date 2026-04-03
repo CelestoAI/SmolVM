@@ -475,7 +475,7 @@ async def list_vms(status: str | None = None) -> list[dict[str, Any]]:
     """List all VMs, optionally filtered by status.
 
     Args:
-        status: Filter by VM status (created/running/stopped/error).
+        status: Filter by VM status (created/running/paused/stopped/error).
     """
     sm = _get_state_manager(app)
     filter_state: VMState | None = None
@@ -694,7 +694,7 @@ def _resolve_targets(vms: list[VMInfo], target: str) -> list[str]:
 
     Handles:
     - "all" → all VMs
-    - "error"/"running"/"stopped"/"created" → filter by status
+    - "error"/"running"/"paused"/"stopped"/"created" → filter by status
     - specific VM ID → single VM (case-sensitive)
     """
     target = target.strip()

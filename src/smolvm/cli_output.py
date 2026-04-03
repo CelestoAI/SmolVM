@@ -81,6 +81,7 @@ def status_style(status: str) -> str:
         "warn": "bold yellow",
         "warning": "bold yellow",
         "stopped": "bold yellow",
+        "paused": "bold blue",
         "fail": "bold red",
         "failed": "bold red",
         "error": "bold red",
