@@ -97,7 +97,7 @@ smolvm browser open <session_id>
 
 Other useful CLI commands:
 
-- `smolvm create -n my-sandbox`
+- `smolvm create --name my-sandbox`
 - `smolvm create --os debian --name my-debian-sandbox`
 - `smolvm ssh my-sandbox`
 - `smolvm env list <vm_id>`
