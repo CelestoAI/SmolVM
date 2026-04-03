@@ -62,7 +62,7 @@ Default zero-config guests use Alpine. If you want a Debian guest instead:
 from smolvm import SmolVM
 
 with SmolVM(os="debian") as vm:
-    result = vm.run("cat /etc/os-release | head -n 1")
+    result = vm.run("echo 'Hello from the sandbox'")
     print(result.stdout.strip())
 ```
 
