@@ -174,6 +174,52 @@ def test_create_snapshot_rolls_back_metadata_on_resume_failure(
     assert smol_vm.get("vm001").status == VMState.RUNNING
 
 
+def test_create_snapshot_does_not_create_dir_when_client_lookup_fails(
+    smol_vm: SmolVMManager,
+    sample_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """Snapshot creation should not leave an empty directory on client setup failure."""
+    socket_path = _running_vm(smol_vm, sample_config, tmp_path)
+    socket_path.unlink()
+
+    with pytest.raises(SmolVMError, match="socket"):
+        smol_vm.create_snapshot("vm001", snapshot_id="snap-001")
+
+    assert not (smol_vm.snapshot_dir / "snap-001").exists()
+
+
+def test_create_snapshot_preserves_metadata_when_rollback_dir_cleanup_fails(
+    smol_vm: SmolVMManager,
+    sample_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """Rollback should not delete metadata if the snapshot directory cannot be removed."""
+    _running_vm(smol_vm, sample_config, tmp_path)
+    managed_disk = smol_vm.data_dir / "disks" / "vm001.ext4"
+    managed_disk.write_text("managed-disk")
+
+    def _write_snapshot(snapshot_path: Path, mem_path: Path, snapshot_type: str = "Full") -> None:
+        snapshot_path.write_text("vmstate")
+        mem_path.write_text("memory")
+
+    with patch("smolvm.vm.FirecrackerClient") as mock_client_cls:
+        mock_client = MagicMock()
+        mock_client.create_snapshot.side_effect = _write_snapshot
+        mock_client.resume_vm.side_effect = [SmolVMError("resume failed"), None]
+        mock_client_cls.return_value = mock_client
+
+        with (
+            patch("smolvm.vm.shutil.rmtree", side_effect=PermissionError("cleanup denied")),
+            pytest.raises(PermissionError, match="cleanup denied"),
+        ):
+            smol_vm.create_snapshot("vm001", snapshot_id="snap-001", resume_source=True)
+
+    assert smol_vm.state.get_snapshot("snap-001").snapshot_id == "snap-001"
+    assert (smol_vm.snapshot_dir / "snap-001").exists()
+    assert smol_vm.get("vm001").status == VMState.RUNNING
+
+
 @pytest.mark.parametrize("snapshot_id", ["/tmp/escape", "../escape", r"..\escape", "snap/001"])
 def test_create_snapshot_rejects_unsafe_snapshot_id(
     smol_vm: SmolVMManager,

@@ -934,16 +934,16 @@ class SmolVMManager:
             self.state.get_snapshot(snapshot_id)
             raise SnapshotAlreadyExistsError(snapshot_id)
 
-        snapshot_root.mkdir(parents=True, exist_ok=False)
-        snapshot_path = snapshot_root / "vmstate.bin"
-        mem_file_path = snapshot_root / "mem.bin"
-        disk_path = snapshot_root / "disk.ext4"
-
         original_status = vm_info.status
         client = self._require_firecracker_client(vm_info)
         snapshot_persisted = False
 
         try:
+            snapshot_root.mkdir(parents=True, exist_ok=False)
+            snapshot_path = snapshot_root / "vmstate.bin"
+            mem_file_path = snapshot_root / "mem.bin"
+            disk_path = snapshot_root / "disk.ext4"
+
             if original_status == VMState.RUNNING:
                 client.pause_vm()
                 vm_info = self.state.update_vm(vm_id, status=VMState.PAUSED)
@@ -970,24 +970,30 @@ class SmolVMManager:
                 self.state.update_vm(vm_id, status=VMState.RUNNING)
 
             return snapshot_info
-        except Exception:
+        except Exception as original_error:
+            snapshot_dir_removed = False
+            rollback_error: Exception | None = None
             try:
                 shutil.rmtree(snapshot_root)
+                snapshot_dir_removed = True
             except FileNotFoundError:
-                pass
+                snapshot_dir_removed = True
             except Exception as cleanup_error:
                 logger.warning(
                     "Failed to remove snapshot directory during rollback for %s: %s",
                     snapshot_id,
                     cleanup_error,
                 )
-            if snapshot_persisted:
+                rollback_error = cleanup_error
+            if snapshot_persisted and snapshot_dir_removed:
                 with suppress(Exception):
                     self.state.delete_snapshot(snapshot_id)
             if original_status == VMState.RUNNING:
                 with suppress(Exception):
                     client.resume_vm()
                     self.state.update_vm(vm_id, status=VMState.RUNNING)
+            if rollback_error is not None:
+                raise rollback_error from original_error
             raise
         finally:
             client.close()
