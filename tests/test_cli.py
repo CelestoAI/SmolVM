@@ -930,6 +930,53 @@ class TestCliDoctor:
         )
 
 
+class TestCliSetup:
+    """Tests for `smolvm setup` CLI wiring."""
+
+    @patch("smolvm.cli._run_setup")
+    @patch("smolvm.cli.platform.system", return_value="Linux")
+    def test_setup_dispatches_to_runner(
+        self,
+        mock_platform_system: MagicMock,
+        mock_run_setup: MagicMock,
+    ) -> None:
+        """`smolvm setup` should dispatch through the setup handler."""
+        mock_run_setup.return_value = 0
+
+        ret = main(["setup"])
+
+        assert ret == 0
+        mock_run_setup.assert_called_once()
+
+    @patch("smolvm.cli.platform.system", return_value="Darwin")
+    def test_setup_rejects_linux_only_flags_on_macos(
+        self,
+        mock_platform_system: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Linux-only setup flags should fail at argparse time on macOS."""
+        with pytest.raises(SystemExit) as exc_info:
+            main(["setup", "--skip-deps"])
+
+        assert exc_info.value.code == 2
+        assert mock_platform_system.called
+        assert "only supported on Linux" in capsys.readouterr().err
+
+    @patch("smolvm.cli.platform.system", return_value="Linux")
+    def test_setup_remove_runtime_config_conflicts_with_other_modes(
+        self,
+        mock_platform_system: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Removal mode should reject provisioning flags via argparse."""
+        with pytest.raises(SystemExit) as exc_info:
+            main(["setup", "--remove-runtime-config", "--with-docker"])
+
+        assert exc_info.value.code == 2
+        assert mock_platform_system.called
+        assert "not allowed with --with-docker" in capsys.readouterr().err
+
+
 class TestCurrentVersionIsPrerelease:
     """Tests for _current_version_is_prerelease helper."""
 

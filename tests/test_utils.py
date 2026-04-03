@@ -85,7 +85,7 @@ class TestRunCommand:
             stderr="sudo: a password is required",
         )
 
-        with pytest.raises(SmolVMError, match="--configure-runtime"):
+        with pytest.raises(SmolVMError, match="smolvm setup"):
             run_command(["ip", "link", "show"], use_sudo=True)
 
     @patch("smolvm.utils.os.geteuid", return_value=0)

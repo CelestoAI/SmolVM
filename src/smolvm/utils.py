@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 RUNTIME_PRIVILEGE_SETUP_HINT = (
     "Configure non-interactive runtime privileges once:\n"
-    "  sudo ./scripts/system-setup.sh --configure-runtime"
+    "  smolvm setup"
 )
 
 

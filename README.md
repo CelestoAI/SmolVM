@@ -32,28 +32,15 @@ SmolVM is a Python SDK and CLI for running code and browser tasks inside disposa
 pip install smolvm
 ```
 
-2. Clone this repository to get the setup scripts.
+2. Run the one-time setup for your machine.
 
 ```bash
-git clone https://github.com/CelestoAI/SmolVM.git
-cd SmolVM
+smolvm setup
 ```
 
-3. Run the one-time setup for your machine.
+Linux may prompt for `sudo` during setup so it can install host dependencies and configure runtime permissions.
 
-Linux:
-
-```bash
-sudo ./scripts/system-setup.sh --configure-runtime
-```
-
-macOS:
-
-```bash
-./scripts/system-setup-macos.sh
-```
-
-4. Check that the runtime is ready.
+3. Check that the runtime is ready.
 
 ```bash
 smolvm doctor

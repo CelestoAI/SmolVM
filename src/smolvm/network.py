@@ -858,6 +858,6 @@ def check_network_prerequisites() -> list[str]:
             try:
                 run_command(cmd, use_sudo=True)
             except SmolVMError:
-                errors.append(f"{label} missing (run setup script)")
+                errors.append(f"{label} missing (run `smolvm setup`)")
 
     return errors

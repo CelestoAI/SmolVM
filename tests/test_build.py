@@ -98,7 +98,7 @@ class TestImageBuilderLoopFs:
 
         with (
             patch.object(ImageBuilder, "_loopfs_helper_path", return_value=None),
-            pytest.raises(ImageError, match="--configure-runtime"),
+            pytest.raises(ImageError, match="smolvm setup"),
         ):
             builder._run_loopfs("mount", Path("/tmp/rootfs.ext4"), Path("/tmp/mnt"))
 
@@ -115,7 +115,7 @@ class TestImageBuilderLoopFs:
                 "_loopfs_helper_path",
                 return_value=Path("/usr/local/libexec/smolvm-loopfs-helper"),
             ),
-            pytest.raises(ImageError, match="--configure-runtime"),
+            pytest.raises(ImageError, match="smolvm setup"),
         ):
             builder._run_loopfs("mount", Path("/tmp/rootfs.ext4"), Path("/tmp/mnt"))
 

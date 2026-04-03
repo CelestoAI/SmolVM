@@ -39,17 +39,11 @@ uv sync --extra dev --extra dashboard
 
 ### Runtime Prerequisites (for backend/runtime work)
 
-Linux (Firecracker):
-
 ```bash
-sudo ./scripts/system-setup.sh --configure-runtime
+uv run smolvm setup
 ```
 
-macOS (QEMU):
-
-```bash
-./scripts/system-setup-macos.sh
-```
+The repo-level shell scripts in `scripts/` remain the implementation detail behind `smolvm setup`; use them directly only if you are intentionally working on the setup flow itself.
 
 Health check:
 

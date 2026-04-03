@@ -20,6 +20,7 @@ import argparse
 import importlib
 import importlib.metadata
 import os
+import platform
 import re
 import subprocess
 from collections.abc import Sequence
@@ -213,6 +214,26 @@ def _positive_float(value: str) -> float:
     return parsed
 
 
+class _LinuxOnlyOption(argparse.Action):
+    """Reject setup flags that are only valid on Linux when used on macOS."""
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: str | Sequence[str] | None,
+        option_string: str | None = None,
+    ) -> None:
+        if platform.system() == "Darwin":
+            parser.error(f"argument {option_string}: only supported on Linux")
+
+        if self.nargs == 0:
+            setattr(namespace, self.dest, self.const if self.const is not None else True)
+            return
+
+        setattr(namespace, self.dest, values)
+
+
 def _add_ssh_auth_args(command_parser: argparse.ArgumentParser) -> None:
     """Add common SSH identity arguments to a command parser."""
     command_parser.add_argument(
@@ -273,6 +294,51 @@ def build_parser() -> argparse.ArgumentParser:
         "--strict",
         action="store_true",
         help="Treat warnings as failures.",
+    )
+
+    setup = subparsers.add_parser(
+        "setup",
+        help="Install or validate one-time host prerequisites",
+    )
+    setup.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Validate prerequisites without installing anything.",
+    )
+    setup.add_argument(
+        "--with-docker",
+        action="store_true",
+        help="Install or validate Docker too.",
+    )
+    setup.add_argument(
+        "--no-configure-runtime",
+        action=_LinuxOnlyOption,
+        nargs=0,
+        const=True,
+        default=False,
+        help="Skip scoped runtime sudoers setup (Linux only).",
+    )
+    setup.add_argument(
+        "--skip-deps",
+        action=_LinuxOnlyOption,
+        nargs=0,
+        const=True,
+        default=False,
+        help="Skip Linux package dependency installation (Linux only).",
+    )
+    setup.add_argument(
+        "--runtime-user",
+        action=_LinuxOnlyOption,
+        default=None,
+        help="Target user for Linux runtime privilege configuration (Linux only).",
+    )
+    setup.add_argument(
+        "--remove-runtime-config",
+        action=_LinuxOnlyOption,
+        nargs=0,
+        const=True,
+        default=False,
+        help="Remove Linux runtime privilege configuration (Linux only).",
     )
 
     def _add_ui_args(command_parser: argparse.ArgumentParser) -> None:
@@ -756,6 +822,41 @@ def _render_list(rows: list[VmRow]) -> None:
     console = console_stdout()
     console.print(table)
     console.print(f"Total: {len(rows)} VM(s).")
+
+
+def _run_setup(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    """Handle ``smolvm setup``."""
+    from smolvm.setup import SetupOptions, run_setup
+
+    invalid_remove_runtime_flags: list[str] = []
+    if args.check_only:
+        invalid_remove_runtime_flags.append("--check-only")
+    if args.with_docker:
+        invalid_remove_runtime_flags.append("--with-docker")
+    if args.no_configure_runtime:
+        invalid_remove_runtime_flags.append("--no-configure-runtime")
+    if args.skip_deps:
+        invalid_remove_runtime_flags.append("--skip-deps")
+
+    if args.remove_runtime_config and invalid_remove_runtime_flags:
+        parser.error(
+            "argument --remove-runtime-config: not allowed with "
+            + ", ".join(invalid_remove_runtime_flags)
+        )
+
+    options = SetupOptions(
+        check_only=args.check_only,
+        with_docker=args.with_docker,
+        configure_runtime=not args.no_configure_runtime,
+        skip_deps=args.skip_deps,
+        runtime_user=args.runtime_user,
+        remove_runtime_config=args.remove_runtime_config,
+    )
+
+    try:
+        return run_setup(options)
+    except Exception as exc:
+        return _emit_cli_error("setup", 1, exc, json_output=False)
 
 
 def _run_list(*, include_all: bool, status_filter: str | None, json_output: bool) -> int:
@@ -1685,6 +1786,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             dry_run=args.dry_run,
             json_output=args.json,
         )
+
+    if args.command == "setup":
+        return _run_setup(parser, args)
 
     if args.command == "list":
         return _run_list(
