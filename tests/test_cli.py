@@ -760,6 +760,30 @@ class TestCliSSH:
 
     @patch("smolvm.cli.subprocess.run")
     @patch("smolvm.facade.SmolVM")
+    def test_ssh_resumes_paused_vm(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_run: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """`smolvm ssh` should resume paused VMs before attaching."""
+        vm = MagicMock()
+        vm.status = VMState.PAUSED
+        vm._ssh_attach_command.return_value = ["ssh", "root@127.0.0.1"]
+        mock_vm_cls.from_id.return_value = vm
+        mock_run.return_value = MagicMock(returncode=0)
+
+        ret = main(["ssh", "vm001"])
+
+        assert ret == 0
+        assert "is paused. Resuming it before attaching." in capsys.readouterr().out
+        vm.resume.assert_called_once_with()
+        vm.start.assert_not_called()
+        vm.wait_for_ssh.assert_called_once_with(timeout=30.0)
+        mock_run.assert_called_once_with(["ssh", "root@127.0.0.1"], check=False)
+
+    @patch("smolvm.cli.subprocess.run")
+    @patch("smolvm.facade.SmolVM")
     def test_ssh_error_state_fails_fast(
         self,
         mock_vm_cls: MagicMock,

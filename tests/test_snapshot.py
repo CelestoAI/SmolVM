@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from smolvm.exceptions import SmolVMError
+from smolvm.exceptions import SmolVMError, SnapshotNotFoundError, VMNotFoundError
 from smolvm.types import SnapshotInfo, VMConfig, VMState
 from smolvm.vm import SmolVMManager
 
@@ -92,6 +92,28 @@ def test_pause_and_resume_firecracker_vm(
     mock_client.resume_vm.assert_called_once()
 
 
+def test_pause_and_resume_support_shared_disk_firecracker_vm(
+    smol_vm: SmolVMManager,
+    sample_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """Pause/resume should not enforce snapshot-only disk restrictions."""
+    shared_config = sample_config.model_copy(update={"disk_mode": "shared"})
+    _running_vm(smol_vm, shared_config, tmp_path)
+
+    with patch("smolvm.vm.FirecrackerClient") as mock_client_cls:
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+
+        paused = smol_vm.pause("vm001")
+        resumed = smol_vm.resume("vm001")
+
+    assert paused.status == VMState.PAUSED
+    assert resumed.status == VMState.RUNNING
+    mock_client.pause_vm.assert_called_once()
+    mock_client.resume_vm.assert_called_once()
+
+
 def test_create_snapshot_pauses_vm_and_persists_metadata(
     smol_vm: SmolVMManager,
     sample_config: VMConfig,
@@ -121,6 +143,35 @@ def test_create_snapshot_pauses_vm_and_persists_metadata(
     assert smol_vm.get("vm001").status == VMState.PAUSED
     mock_client.pause_vm.assert_called_once()
     mock_client.create_snapshot.assert_called_once()
+
+
+def test_create_snapshot_rolls_back_metadata_on_resume_failure(
+    smol_vm: SmolVMManager,
+    sample_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """Snapshot rollback should remove persisted metadata after a late failure."""
+    _running_vm(smol_vm, sample_config, tmp_path)
+    managed_disk = smol_vm.data_dir / "disks" / "vm001.ext4"
+    managed_disk.write_text("managed-disk")
+
+    def _write_snapshot(snapshot_path: Path, mem_path: Path, snapshot_type: str = "Full") -> None:
+        snapshot_path.write_text("vmstate")
+        mem_path.write_text("memory")
+
+    with patch("smolvm.vm.FirecrackerClient") as mock_client_cls:
+        mock_client = MagicMock()
+        mock_client.create_snapshot.side_effect = _write_snapshot
+        mock_client.resume_vm.side_effect = [SmolVMError("resume failed"), None]
+        mock_client_cls.return_value = mock_client
+
+        with pytest.raises(SmolVMError, match="resume failed"):
+            smol_vm.create_snapshot("vm001", snapshot_id="snap-001", resume_source=True)
+
+    with pytest.raises(SnapshotNotFoundError):
+        smol_vm.state.get_snapshot("snap-001")
+    assert not (smol_vm.snapshot_dir / "snap-001").exists()
+    assert smol_vm.get("vm001").status == VMState.RUNNING
 
 
 def test_restore_snapshot_rehydrates_deleted_vm(
@@ -178,6 +229,58 @@ def test_restore_snapshot_rehydrates_deleted_vm(
     mock_client.load_snapshot.assert_called_once()
 
 
+def test_restore_snapshot_rolls_back_new_vm_resources_on_failure(
+    smol_vm: SmolVMManager,
+    sample_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """Failed restores should unwind resources for a newly recreated VM."""
+    smol_vm.create(sample_config)
+    managed_disk = smol_vm.data_dir / "disks" / "vm001.ext4"
+    managed_disk.write_text("managed-disk")
+    vm_info = smol_vm.get("vm001")
+
+    snapshot_dir = smol_vm.snapshot_dir / "snap-001"
+    snapshot_dir.mkdir(parents=True)
+    snapshot = SnapshotInfo(
+        snapshot_id="snap-001",
+        vm_id="vm001",
+        snapshot_path=snapshot_dir / "vmstate.bin",
+        mem_file_path=snapshot_dir / "mem.bin",
+        disk_path=snapshot_dir / "disk.ext4",
+        vm_config=vm_info.config,
+        network_config=vm_info.network,
+        created_at=datetime.now(timezone.utc),
+    )
+    snapshot.snapshot_path.write_text("vmstate")
+    snapshot.mem_file_path.write_text("memory")
+    snapshot.disk_path.write_text("snapshotted-disk")
+    smol_vm.state.create_snapshot(snapshot)
+
+    smol_vm.delete("vm001")
+    smol_vm.network.reset_mock()
+
+    with (
+        patch.object(smol_vm, "_start_firecracker", return_value=SimpleNamespace(pid=98765)),
+        patch("smolvm.vm.FirecrackerClient") as mock_client_cls,
+    ):
+        mock_client = MagicMock()
+        mock_client.load_snapshot.side_effect = SmolVMError("load failed")
+        mock_client_cls.return_value = mock_client
+
+        with pytest.raises(SmolVMError, match="load failed"):
+            smol_vm.restore_snapshot("snap-001")
+
+    with pytest.raises(VMNotFoundError):
+        smol_vm.state.get_vm("vm001")
+    assert smol_vm.state.get_ip_lease("vm001") is None
+    assert smol_vm.state.get_ssh_port("vm001") is None
+    assert not managed_disk.exists()
+    smol_vm.network.cleanup_ssh_port_forward.assert_called_once()
+    smol_vm.network.cleanup_nat_rules.assert_called_once()
+    smol_vm.network.cleanup_tap.assert_called_once()
+
+
 def test_delete_snapshot_rejects_active_restored_vm(
     smol_vm: SmolVMManager,
     sample_config: VMConfig,
@@ -208,3 +311,35 @@ def test_delete_snapshot_rejects_active_restored_vm(
 
     with pytest.raises(SmolVMError, match="active"):
         smol_vm.delete_snapshot("snap-001")
+
+
+def test_delete_snapshot_preserves_metadata_when_disk_cleanup_fails(
+    smol_vm: SmolVMManager,
+    sample_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """Snapshot metadata should remain when filesystem deletion fails."""
+    smol_vm.create(sample_config)
+    vm_info = smol_vm.get("vm001")
+
+    snapshot_dir = smol_vm.snapshot_dir / "snap-001"
+    snapshot_dir.mkdir(parents=True)
+    snapshot = SnapshotInfo(
+        snapshot_id="snap-001",
+        vm_id="vm001",
+        snapshot_path=snapshot_dir / "vmstate.bin",
+        mem_file_path=snapshot_dir / "mem.bin",
+        disk_path=snapshot_dir / "disk.ext4",
+        vm_config=vm_info.config,
+        network_config=vm_info.network,
+        created_at=datetime.now(timezone.utc),
+    )
+    smol_vm.state.create_snapshot(snapshot)
+
+    with (
+        patch("smolvm.vm.shutil.rmtree", side_effect=PermissionError("denied")),
+        pytest.raises(PermissionError, match="denied"),
+    ):
+        smol_vm.delete_snapshot("snap-001")
+
+    assert smol_vm.state.get_snapshot("snap-001").snapshot_id == "snap-001"
