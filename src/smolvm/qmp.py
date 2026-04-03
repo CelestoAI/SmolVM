@@ -87,13 +87,17 @@ class QMPClient:
                     qmp_socket.close()
                 time.sleep(0.05)
 
-        greeting = self._read_message()
-        if "QMP" not in greeting:
-            raise SmolVMError(
-                "Invalid QMP greeting",
-                {"socket_path": str(self.socket_path), "greeting": greeting},
-            )
-        self.execute("qmp_capabilities")
+        try:
+            greeting = self._read_message()
+            if "QMP" not in greeting:
+                raise SmolVMError(
+                    "Invalid QMP greeting",
+                    {"socket_path": str(self.socket_path), "greeting": greeting},
+                )
+            self.execute("qmp_capabilities")
+        except Exception:
+            self.close()
+            raise
 
     def execute(
         self,

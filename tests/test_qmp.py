@@ -193,3 +193,52 @@ def test_qmp_wait_for_job_raises_on_job_error(tmp_path: Path) -> None:
         "snapshot-delete",
         "query-jobs",
     ]
+
+
+def test_qmp_connect_can_retry_after_capabilities_handshake_failure(tmp_path: Path) -> None:
+    """Failed capability negotiation should not leave the client half-connected."""
+    socket_path = Path("/tmp") / f"smolvm-qmp-{uuid4().hex}.sock"
+    failed_requests: list[dict[str, object]] = []
+    failed_responses: dict[str, list[dict[str, object] | list[dict[str, object]]]] = {
+        "qmp_capabilities": [
+            {
+                "error": {
+                    "class": "GenericError",
+                    "desc": "capabilities negotiation failed",
+                }
+            }
+        ]
+    }
+    failed_thread = _start_qmp_server(socket_path, failed_responses, failed_requests)
+
+    client = QMPClient(socket_path)
+    with pytest.raises(SmolVMError, match="qmp_capabilities"):
+        client.connect()
+
+    failed_thread.join(timeout=2.0)
+    if socket_path.exists():
+        socket_path.unlink()
+
+    recovered_requests: list[dict[str, object]] = []
+    recovered_responses: dict[str, list[dict[str, object] | list[dict[str, object]]]] = {
+        "qmp_capabilities": [{"return": {}}],
+        "query-status": [{"return": {"running": False, "status": "paused"}}],
+    }
+    recovered_thread = _start_qmp_server(socket_path, recovered_responses, recovered_requests)
+
+    try:
+        client.connect()
+        status = client.query_status()
+    finally:
+        client.close()
+
+    recovered_thread.join(timeout=2.0)
+    if socket_path.exists():
+        socket_path.unlink()
+
+    assert status["status"] == "paused"
+    assert [request["execute"] for request in failed_requests] == ["qmp_capabilities"]
+    assert [request["execute"] for request in recovered_requests] == [
+        "qmp_capabilities",
+        "query-status",
+    ]

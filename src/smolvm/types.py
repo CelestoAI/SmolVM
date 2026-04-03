@@ -394,9 +394,11 @@ class SnapshotInfo(BaseModel):
         else:
             return data
 
-        artifacts_data.setdefault("state_path", data.pop("snapshot_path", None))
-        artifacts_data.setdefault("memory_path", data.pop("mem_file_path", None))
-        if "disk_path" not in artifacts_data and "disk_path" in data:
+        if artifacts_data.get("state_path") is None:
+            artifacts_data["state_path"] = data.pop("snapshot_path", None)
+        if artifacts_data.get("memory_path") is None:
+            artifacts_data["memory_path"] = data.pop("mem_file_path", None)
+        if artifacts_data.get("disk_path") is None and "disk_path" in data:
             artifacts_data["disk_path"] = data.pop("disk_path")
         data["artifacts"] = artifacts_data
         return data

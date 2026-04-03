@@ -160,7 +160,7 @@ class QemuRuntimeAdapter(RuntimeAdapter):
             network=snapshot.network_config,
         )
 
-        snapshot.vm_config.rootfs_path.parent.mkdir(parents=True, exist_ok=True)
+        request.managed_disk_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(snapshot.artifacts.disk_path, request.managed_disk_path)
 
         control_socket_path = self._control_socket_path(snapshot.vm_id)

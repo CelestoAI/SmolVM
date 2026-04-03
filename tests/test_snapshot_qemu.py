@@ -263,6 +263,49 @@ def test_restore_qemu_snapshot_rolls_back_new_vm_resources_on_failure(
     assert not (qemu_smol_vm.data_dir / "disks" / "vm001.qcow2").exists()
 
 
+def test_restore_qemu_snapshot_preserves_existing_managed_disk_on_failure(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+) -> None:
+    """Failed restores should not clobber an existing QEMU managed disk."""
+    _create_qemu_vm(qemu_smol_vm, qemu_config)
+    managed_disk = qemu_smol_vm.data_dir / "disks" / "vm001.qcow2"
+    managed_disk.write_text("original-managed-qcow2")
+    vm_info = qemu_smol_vm.get("vm001")
+
+    snapshot_dir = qemu_smol_vm.snapshot_dir / "snap-001"
+    snapshot_dir.mkdir(parents=True)
+    snapshot = SnapshotInfo(
+        snapshot_id="snap-001",
+        vm_id="vm001",
+        backend="qemu",
+        artifacts=SnapshotArtifacts(disk_path=snapshot_dir / "disk.qcow2"),
+        vm_config=vm_info.config,
+        network_config=vm_info.network,
+        created_at=datetime.now(timezone.utc),
+    )
+    snapshot.disk_path.write_text("snapshotted-qcow2")
+    qemu_smol_vm.state.create_snapshot(snapshot)
+
+    process = MagicMock()
+    process.pid = 98765
+    process.poll.return_value = None
+
+    with (
+        patch.object(qemu_smol_vm, "_start_qemu", return_value=process),
+        patch("smolvm.runtime_qemu.QMPClient") as mock_client_cls,
+    ):
+        mock_client = _mock_qmp_client()
+        mock_client.wait_for_job.side_effect = SmolVMError("load failed")
+        mock_client_cls.return_value = mock_client
+
+        with pytest.raises(SmolVMError, match="load failed"):
+            qemu_smol_vm.restore_snapshot("snap-001")
+
+    assert managed_disk.read_text() == "original-managed-qcow2"
+    assert qemu_smol_vm.get("vm001").status == VMState.ERROR
+
+
 def test_delete_qemu_snapshot_rejects_active_restored_vm(
     qemu_smol_vm: SmolVMManager,
     qemu_config: VMConfig,

@@ -40,6 +40,7 @@ from smolvm.types import (
     BrowserSessionInfo,
     BrowserSessionState,
     NetworkConfig,
+    PortForwardConfig,
     SnapshotArtifacts,
     SnapshotInfo,
     VMConfig,
@@ -404,6 +405,9 @@ class StateManager:
         data["kernel_path"] = Path(data["kernel_path"])
         data["rootfs_path"] = Path(data["rootfs_path"])
         data["extra_drives"] = [Path(path) for path in data.get("extra_drives", [])]
+        data["port_forwards"] = [
+            PortForwardConfig.model_validate(item) for item in data.get("port_forwards", [])
+        ]
         return VMConfig.model_construct(**data)
 
     @staticmethod

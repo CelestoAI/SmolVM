@@ -109,7 +109,13 @@ def _check_qemu_version(qemu_path: Path) -> DoctorCheck:
             check=False,
             timeout=5,
         )
-    except Exception as exc:
+    except subprocess.TimeoutExpired as exc:
+        return DoctorCheck(
+            name="qemu-version",
+            status="warn",
+            detail=f"could not probe QEMU version: {exc}",
+        )
+    except (FileNotFoundError, OSError) as exc:
         return DoctorCheck(
             name="qemu-version",
             status="warn",

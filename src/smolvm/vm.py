@@ -31,6 +31,7 @@ from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
+from uuid import uuid4
 
 from smolvm.api import FirecrackerClient
 from smolvm.backends import BACKEND_FIRECRACKER, BACKEND_QEMU, resolve_backend
@@ -318,6 +319,16 @@ class SmolVMManager:
         """Return the backend-specific managed isolated disk path for a VM ID."""
         suffix = ".qcow2" if backend == BACKEND_QEMU else ".ext4"
         return self.disk_dir / f"{vm_id}{suffix}"
+
+    @staticmethod
+    def _restore_staging_disk_path(managed_disk_path: Path) -> Path:
+        """Return a unique temporary disk path used while restoring a snapshot."""
+        return managed_disk_path.with_name(f"{managed_disk_path.name}.restore-{uuid4().hex}")
+
+    @staticmethod
+    def _restore_backup_disk_path(managed_disk_path: Path) -> Path:
+        """Return a unique backup path for an existing managed disk during restore."""
+        return managed_disk_path.with_name(f"{managed_disk_path.name}.backup-{uuid4().hex}")
 
     def _find_qemu_img_binary(self) -> Path | None:
         """Find an available ``qemu-img`` binary."""
@@ -1008,21 +1019,37 @@ class SmolVMManager:
                 )
 
         managed_disk_path = self._instance_disk_path(restore_vm_id, snapshot.backend)
-        effective_vm_config = snapshot.vm_config.model_copy(
+        persisted_vm_config = snapshot.vm_config.model_copy(
             update={
                 "rootfs_path": managed_disk_path,
                 "backend": snapshot.backend,
             }
         )
-        managed_disk_path.parent.mkdir(parents=True, exist_ok=True)
-        managed_disk_path.touch(exist_ok=True)
-        effective_snapshot = snapshot.model_copy(update={"vm_config": effective_vm_config})
+        restore_disk_path = managed_disk_path
+        if snapshot.backend == BACKEND_QEMU:
+            restore_disk_path = self._restore_staging_disk_path(managed_disk_path)
+        restore_vm_config = persisted_vm_config
+        if restore_disk_path != managed_disk_path:
+            restore_vm_config = persisted_vm_config.model_copy(update={"rootfs_path": restore_disk_path})
+        effective_snapshot = snapshot.model_copy(update={"vm_config": restore_vm_config})
         adapter = self._runtime_adapter_for_snapshot(effective_snapshot)
         created_vm_record = False
+        existing_disk_backup_path: Path | None = None
+        launch = None
+
+        managed_disk_path.parent.mkdir(parents=True, exist_ok=True)
+        if restore_disk_path != managed_disk_path:
+            restore_disk_path.parent.mkdir(parents=True, exist_ok=True)
+            if restore_disk_path.exists():
+                restore_disk_path.unlink()
+        if managed_disk_path.exists():
+            existing_disk_backup_path = self._restore_backup_disk_path(managed_disk_path)
+            os.replace(managed_disk_path, existing_disk_backup_path)
+        managed_disk_path.touch(exist_ok=True)
 
         try:
             if existing_vm is None:
-                self.state.create_vm(effective_vm_config)
+                self.state.create_vm(persisted_vm_config)
                 created_vm_record = True
             if effective_snapshot.backend == BACKEND_FIRECRACKER:
                 self.state.allocate_ip(
@@ -1045,12 +1072,14 @@ class SmolVMManager:
             launch = adapter.restore_snapshot(
                 SnapshotRestoreRequest(
                     snapshot=effective_snapshot,
-                    managed_disk_path=managed_disk_path,
+                    managed_disk_path=restore_disk_path,
                     log_path=log_path,
                     resume_vm=resume_vm,
                     boot_timeout=30.0,
                 )
             )
+            if restore_disk_path != managed_disk_path:
+                os.replace(restore_disk_path, managed_disk_path)
             vm_info = self.state.update_vm(
                 restore_vm_id,
                 status=launch.status,
@@ -1058,14 +1087,30 @@ class SmolVMManager:
                 control_socket_path=launch.control_socket_path,
             )
             self.state.mark_snapshot_restored(snapshot_id, restore_vm_id)
+            if existing_disk_backup_path is not None and existing_disk_backup_path.exists():
+                with suppress(Exception):
+                    existing_disk_backup_path.unlink()
             return vm_info
         except Exception:
+            if launch is not None:
+                with suppress(Exception):
+                    adapter.stop(
+                        VMInfo(
+                            vm_id=restore_vm_id,
+                            status=launch.status,
+                            config=persisted_vm_config,
+                            network=effective_snapshot.network_config,
+                            pid=launch.pid,
+                            control_socket_path=launch.control_socket_path,
+                        ),
+                        timeout=5.0,
+                    )
             if created_vm_record:
                 with suppress(Exception):
                     self._cleanup_resources(restore_vm_id)
                 with suppress(Exception):
                     self.state.delete_vm(restore_vm_id)
-            else:
+            elif existing_vm is not None:
                 self.state.update_vm(
                     restore_vm_id,
                     status=VMState.ERROR,
@@ -1077,6 +1122,14 @@ class SmolVMManager:
                     effective_snapshot.backend,
                     existing_vm.control_socket_path if existing_vm else None,
                 )
+            if restore_disk_path != managed_disk_path and restore_disk_path.exists():
+                with suppress(Exception):
+                    restore_disk_path.unlink()
+            if existing_disk_backup_path is not None and existing_disk_backup_path.exists():
+                with suppress(Exception):
+                    if managed_disk_path.exists():
+                        managed_disk_path.unlink()
+                    os.replace(existing_disk_backup_path, managed_disk_path)
             raise
 
     def delete_snapshot(self, snapshot_id: str) -> None:

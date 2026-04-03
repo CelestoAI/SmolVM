@@ -343,6 +343,48 @@ def test_restore_snapshot_rolls_back_new_vm_resources_on_failure(
     smol_vm.network.cleanup_tap.assert_called_once()
 
 
+def test_restore_snapshot_preserves_existing_managed_disk_on_failure(
+    smol_vm: SmolVMManager,
+    sample_config: VMConfig,
+) -> None:
+    """Failed restores should not clobber an existing Firecracker managed disk."""
+    smol_vm.create(sample_config)
+    managed_disk = smol_vm.data_dir / "disks" / "vm001.ext4"
+    managed_disk.write_text("original-managed-disk")
+    vm_info = smol_vm.get("vm001")
+
+    snapshot_dir = smol_vm.snapshot_dir / "snap-001"
+    snapshot_dir.mkdir(parents=True)
+    snapshot = SnapshotInfo(
+        snapshot_id="snap-001",
+        vm_id="vm001",
+        snapshot_path=snapshot_dir / "vmstate.bin",
+        mem_file_path=snapshot_dir / "mem.bin",
+        disk_path=snapshot_dir / "disk.ext4",
+        vm_config=vm_info.config,
+        network_config=vm_info.network,
+        created_at=datetime.now(timezone.utc),
+    )
+    snapshot.snapshot_path.write_text("vmstate")
+    snapshot.mem_file_path.write_text("memory")
+    snapshot.disk_path.write_text("snapshotted-disk")
+    smol_vm.state.create_snapshot(snapshot)
+
+    with (
+        patch.object(smol_vm, "_start_firecracker", return_value=SimpleNamespace(pid=98765)),
+        patch("smolvm.runtime_firecracker.FirecrackerClient") as mock_client_cls,
+    ):
+        mock_client = MagicMock()
+        mock_client.load_snapshot.side_effect = SmolVMError("load failed")
+        mock_client_cls.return_value = mock_client
+
+        with pytest.raises(SmolVMError, match="load failed"):
+            smol_vm.restore_snapshot("snap-001")
+
+    assert managed_disk.read_text() == "original-managed-disk"
+    assert smol_vm.get("vm001").status == VMState.ERROR
+
+
 def test_delete_snapshot_rejects_active_restored_vm(
     smol_vm: SmolVMManager,
     sample_config: VMConfig,

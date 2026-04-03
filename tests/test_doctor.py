@@ -201,6 +201,49 @@ class TestDoctorQemu:
         assert checks["qemu-version"].status == "fail"
         assert checks["command:qemu-img"].status == "fail"
 
+    @patch("smolvm.doctor.platform.system", return_value="Linux")
+    @patch("smolvm.doctor.subprocess.run", side_effect=OSError("probe failed"))
+    @patch("smolvm.doctor.which")
+    @patch(
+        "smolvm.doctor._find_qemu_binary",
+        return_value=("qemu-system-x86_64", Path("/usr/bin/qemu-system-x86_64")),
+    )
+    def test_generate_report_qemu_warns_when_version_probe_fails(
+        self,
+        _mock_find_qemu: MagicMock,
+        mock_which: MagicMock,
+        mock_run: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """Expected subprocess probe failures should produce a warning."""
+        mock_which.side_effect = lambda binary: Path(f"/usr/bin/{binary}")
+
+        report = generate_doctor_report(backend="qemu")
+        checks = {check.name: check for check in report.checks}
+
+        assert checks["qemu-version"].status == "warn"
+        assert "probe failed" in checks["qemu-version"].detail
+
+    @patch("smolvm.doctor.platform.system", return_value="Linux")
+    @patch("smolvm.doctor.subprocess.run", side_effect=RuntimeError("boom"))
+    @patch("smolvm.doctor.which")
+    @patch(
+        "smolvm.doctor._find_qemu_binary",
+        return_value=("qemu-system-x86_64", Path("/usr/bin/qemu-system-x86_64")),
+    )
+    def test_generate_report_qemu_propagates_unexpected_probe_errors(
+        self,
+        _mock_find_qemu: MagicMock,
+        mock_which: MagicMock,
+        mock_run: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """Unexpected probe errors should propagate rather than being swallowed."""
+        mock_which.side_effect = lambda binary: Path(f"/usr/bin/{binary}")
+
+        with pytest.raises(RuntimeError, match="boom"):
+            generate_doctor_report(backend="qemu")
+
 
 class TestWorkerNodeSecurityChecks:
     """Tests for strict worker-node startup guard behavior."""

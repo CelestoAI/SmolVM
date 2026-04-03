@@ -31,6 +31,7 @@ from smolvm.types import (
     BrowserSessionInfo,
     BrowserSessionState,
     NetworkConfig,
+    PortForwardConfig,
     SnapshotArtifacts,
     SnapshotInfo,
     VMConfig,
@@ -326,7 +327,14 @@ class TestSnapshotStorage:
         tmp_path: Path,
     ) -> None:
         """Snapshot metadata should round-trip through SQLite."""
-        state_manager.create_vm(sample_config)
+        config_with_forwards = sample_config.model_copy(
+            update={
+                "port_forwards": [
+                    PortForwardConfig(host_port=39011, guest_port=9222),
+                ]
+            }
+        )
+        state_manager.create_vm(config_with_forwards)
         network = NetworkConfig(
             guest_ip="172.16.0.2",
             tap_device="tap2",
@@ -346,15 +354,15 @@ class TestSnapshotStorage:
                 memory_path=snapshot_dir / "mem.bin",
                 disk_path=snapshot_dir / "disk.ext4",
             ),
-            vm_config=sample_config,
+            vm_config=config_with_forwards,
             network_config=network,
             created_at=datetime.now(timezone.utc),
         )
-        assert snapshot.snapshot_path is not None
-        assert snapshot.mem_file_path is not None
-        snapshot.snapshot_path.touch()
-        snapshot.mem_file_path.touch()
-        snapshot.disk_path.touch()
+        assert snapshot.artifacts.state_path is not None
+        assert snapshot.artifacts.memory_path is not None
+        snapshot.artifacts.state_path.write_bytes(b"")
+        snapshot.artifacts.memory_path.write_bytes(b"")
+        snapshot.artifacts.disk_path.write_bytes(b"")
 
         created = state_manager.create_snapshot(snapshot)
         fetched = state_manager.get_snapshot("snap-001")
@@ -362,7 +370,9 @@ class TestSnapshotStorage:
 
         assert created.snapshot_id == "snap-001"
         assert fetched.backend == "firecracker"
+        assert fetched.vm_config == config_with_forwards
         assert fetched.vm_config.rootfs_path == sample_config.rootfs_path
+        assert isinstance(fetched.vm_config.port_forwards[0], PortForwardConfig)
         assert fetched.network_config.tap_device == "tap2"
         assert [item.snapshot_id for item in listed] == ["snap-001"]
 

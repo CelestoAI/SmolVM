@@ -105,7 +105,7 @@ class FirecrackerRuntimeAdapter(RuntimeAdapter):
                 client.send_ctrl_alt_del()
                 client.close()
                 if vm_info.pid:
-                    self._context.wait_for_process(vm_info.pid, min(timeout, 0.5))
+                    self._context.wait_for_process(vm_info.pid, timeout)
             except Exception:
                 pass
 
@@ -168,7 +168,7 @@ class FirecrackerRuntimeAdapter(RuntimeAdapter):
                 {"snapshot_id": snapshot.snapshot_id},
             )
 
-        snapshot.vm_config.rootfs_path.parent.mkdir(parents=True, exist_ok=True)
+        request.managed_disk_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(snapshot.artifacts.disk_path, request.managed_disk_path)
 
         control_socket_path = self._context.socket_dir / f"fc-{snapshot.vm_id}.sock"
