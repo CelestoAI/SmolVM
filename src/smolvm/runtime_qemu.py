@@ -91,6 +91,13 @@ class QemuRuntimeAdapter(RuntimeAdapter):
 
         if vm_info.pid and self._context.is_process_running(vm_info.pid):
             self._context.kill_process(vm_info.pid)
+            self._context.wait_for_process(vm_info.pid, min(timeout, 5.0))
+
+        if vm_info.pid and self._context.is_process_running(vm_info.pid):
+            raise SmolVMError(
+                f"QEMU process did not exit for VM '{vm_info.vm_id}'",
+                {"pid": vm_info.pid},
+            )
 
         if vm_info.control_socket_path and vm_info.control_socket_path.exists():
             self._context.unlink_socket(vm_info.control_socket_path)
@@ -153,7 +160,9 @@ class QemuRuntimeAdapter(RuntimeAdapter):
     def restore_snapshot(self, request: SnapshotRestoreRequest) -> RuntimeLaunch:
         """Restore a QEMU snapshot from a copied managed qcow2 disk."""
         snapshot = request.snapshot
-        effective_config = snapshot.vm_config.model_copy(update={"rootfs_path": request.managed_disk_path})
+        effective_config = snapshot.vm_config.model_copy(
+            update={"rootfs_path": request.managed_disk_path}
+        )
         vm_info = VMInfo(
             vm_id=snapshot.vm_id,
             status=VMState.CREATED,

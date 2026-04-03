@@ -69,6 +69,51 @@ def test_start_qemu_includes_configured_hostfwd_rules(
     assert "hostfwd=tcp:127.0.0.1:39012-:6080" in netdev_arg
 
 
+@patch("smolvm.vm.subprocess.Popen")
+@patch.object(
+    SmolVMManager,
+    "_find_qemu_binary",
+    return_value=Path("/opt/homebrew/bin/qemu-system-aarch64"),
+)
+def test_start_qemu_uses_distinct_block_backend_and_node_names(
+    _mock_find_qemu_binary: MagicMock,
+    mock_popen: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """QEMU launch should not reuse the same name for backend id and block node."""
+    kernel = tmp_path / "vmlinux"
+    rootfs = tmp_path / "rootfs.ext4"
+    kernel.touch()
+    rootfs.touch()
+
+    config = VMConfig(
+        vm_id="vm-qemu-nodes",
+        kernel_path=kernel,
+        rootfs_path=rootfs,
+        backend="qemu",
+        boot_args="console=ttyAMA0 reboot=k panic=1 init=/init",
+    )
+
+    sdk = SmolVMManager(data_dir=tmp_path / "data", socket_dir=tmp_path / "sockets", backend="qemu")
+    with patch.object(SmolVMManager, "_convert_qemu_managed_disk") as mock_convert:
+        mock_convert.side_effect = lambda source, target: target.touch()
+        vm_info = sdk.create(config)
+
+    proc = MagicMock()
+    proc.pid = 12345
+    mock_popen.return_value = proc
+
+    with patch("smolvm.vm.platform.system", return_value="Darwin"):
+        sdk._start_qemu(vm_info, tmp_path / "vm-qemu-nodes.log")
+
+    cmd = mock_popen.call_args.args[0]
+    drive_arg = cmd[cmd.index("-drive") + 1]
+    block_device_arg = cmd[cmd.index("-device") + 1]
+    assert "id=rootdisk0-drive" in drive_arg
+    assert "node-name=rootdisk0" in drive_arg
+    assert block_device_arg == "virtio-blk-device,drive=rootdisk0-drive"
+
+
 def test_create_qemu_uses_managed_qcow2_disk(tmp_path: Path) -> None:
     """QEMU isolated disks should be materialized as managed qcow2 files."""
     kernel = tmp_path / "vmlinux"

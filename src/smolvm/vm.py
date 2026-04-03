@@ -33,7 +33,6 @@ from pathlib import Path
 from typing import Any, TextIO
 from uuid import uuid4
 
-from smolvm.api import FirecrackerClient
 from smolvm.backends import BACKEND_FIRECRACKER, BACKEND_QEMU, resolve_backend
 from smolvm.exceptions import (
     SmolVMError,
@@ -295,7 +294,9 @@ class SmolVMManager:
             find_qemu_binary=self._find_qemu_binary,
         )
 
-    def _runtime_adapter_for_backend(self, backend: str) -> FirecrackerRuntimeAdapter | QemuRuntimeAdapter:
+    def _runtime_adapter_for_backend(
+        self, backend: str
+    ) -> FirecrackerRuntimeAdapter | QemuRuntimeAdapter:
         """Construct a runtime adapter for the requested backend."""
         context = self._runtime_context()
         if backend == BACKEND_FIRECRACKER:
@@ -304,7 +305,9 @@ class SmolVMManager:
             return QemuRuntimeAdapter(context)
         raise SmolVMError("Unsupported backend", {"backend": backend})
 
-    def _runtime_adapter_for_vm(self, vm_info: VMInfo) -> FirecrackerRuntimeAdapter | QemuRuntimeAdapter:
+    def _runtime_adapter_for_vm(
+        self, vm_info: VMInfo
+    ) -> FirecrackerRuntimeAdapter | QemuRuntimeAdapter:
         """Resolve the runtime adapter for a persisted VM."""
         return self._runtime_adapter_for_backend(self._backend_for_vm(vm_info))
 
@@ -1030,7 +1033,9 @@ class SmolVMManager:
             restore_disk_path = self._restore_staging_disk_path(managed_disk_path)
         restore_vm_config = persisted_vm_config
         if restore_disk_path != managed_disk_path:
-            restore_vm_config = persisted_vm_config.model_copy(update={"rootfs_path": restore_disk_path})
+            restore_vm_config = persisted_vm_config.model_copy(
+                update={"rootfs_path": restore_disk_path}
+            )
         effective_snapshot = snapshot.model_copy(update={"vm_config": restore_vm_config})
         adapter = self._runtime_adapter_for_snapshot(effective_snapshot)
         created_vm_record = False
@@ -1328,9 +1333,10 @@ class SmolVMManager:
         system = platform.system()
 
         disk_format = "qcow2" if vm_info.config.rootfs_path.suffix == ".qcow2" else "raw"
+        root_drive_id = f"{root_node_name}-drive"
         drive_arg = (
             f"file={vm_info.config.rootfs_path},if=none,format={disk_format},"
-            f"id={root_node_name},node-name={root_node_name}"
+            f"id={root_drive_id},node-name={root_node_name}"
         )
         hostfwd_rules = [f"hostfwd=tcp:127.0.0.1:{ssh_port}-:22"]
         for forward in vm_info.config.port_forwards:
@@ -1376,7 +1382,7 @@ class SmolVMManager:
                     "-cpu",
                     cpu,
                     "-device",
-                    f"virtio-blk-device,drive={root_node_name}",
+                    f"virtio-blk-device,drive={root_drive_id}",
                     "-device",
                     f"virtio-net-device,netdev=net0,mac={guest_mac}",
                 ]
@@ -1391,7 +1397,7 @@ class SmolVMManager:
                     "-cpu",
                     cpu,
                     "-device",
-                    f"virtio-blk-pci,drive={root_node_name}",
+                    f"virtio-blk-pci,drive={root_drive_id}",
                     "-device",
                     f"virtio-net-pci,netdev=net0,mac={guest_mac}",
                 ]
