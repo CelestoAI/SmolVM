@@ -19,7 +19,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from smolvm.doctor import (
     DoctorCheck,
     DoctorReport,
@@ -76,6 +75,63 @@ class TestDoctorFirecracker:
 
     @patch("smolvm.doctor._check_kvm_permissions", new=lambda: _pass("worker:kvm-permissions"))
     @patch("smolvm.doctor._check_kvm_nx_huge_pages", new=lambda: _pass("worker:kvm-nx-huge-pages"))
+    @patch(
+        "smolvm.doctor._check_thp_disabled",
+        new=lambda: DoctorCheck(
+            name="worker:thp-disabled",
+            status="fail",
+            detail="Active ('madvise')",
+            fix="sudo sh -c 'echo never > /sys/kernel/mm/transparent_hugepage/enabled'",
+        ),
+    )
+    @patch("smolvm.doctor._check_ksm_disabled", new=lambda: _pass("worker:ksm-disabled"))
+    @patch(
+        "smolvm.doctor._check_swap_disabled",
+        new=lambda: DoctorCheck(
+            name="worker:swap-disabled",
+            status="fail",
+            detail="Active (8388604 kB)",
+            fix="sudo swapoff -a",
+        ),
+    )
+    @patch("smolvm.doctor.run_command")
+    @patch("smolvm.doctor.check_network_prerequisites", return_value=[])
+    @patch("smolvm.doctor.which")
+    @patch("smolvm.doctor.HostManager")
+    def test_generate_report_firecracker_warns_for_worker_hardening_gaps(
+        self,
+        mock_host_cls: MagicMock,
+        mock_which: MagicMock,
+        mock_net_checks: MagicMock,
+        mock_run_command: MagicMock,
+    ) -> None:
+        """Doctor should warn on worker hardening gaps during local evaluation."""
+        mock_host = MagicMock()
+        mock_host.check_kvm.return_value = True
+        mock_host.find_firecracker.return_value = Path("/usr/local/bin/firecracker")
+        mock_host_cls.return_value = mock_host
+
+        def _which_side_effect(binary: str) -> Path | None:
+            if binary in {"ip", "nft", "ssh"}:
+                return Path(f"/usr/bin/{binary}")
+            return None
+
+        mock_which.side_effect = _which_side_effect
+        mock_run_command.return_value = MagicMock(stdout="")
+
+        report = generate_doctor_report(backend="firecracker")
+        checks = {check.name: check for check in report.checks}
+
+        assert checks["worker:swap-disabled"].status == "warn"
+        assert checks["worker:thp-disabled"].status == "warn"
+        assert report.failures == []
+        assert {check.name for check in report.warnings} >= {
+            "worker:swap-disabled",
+            "worker:thp-disabled",
+        }
+
+    @patch("smolvm.doctor._check_kvm_permissions", new=lambda: _pass("worker:kvm-permissions"))
+    @patch("smolvm.doctor._check_kvm_nx_huge_pages", new=lambda: _pass("worker:kvm-nx-huge-pages"))
     @patch("smolvm.doctor._check_thp_disabled", new=lambda: _pass("worker:thp-disabled"))
     @patch("smolvm.doctor._check_ksm_disabled", new=lambda: _pass("worker:ksm-disabled"))
     @patch("smolvm.doctor._check_swap_disabled", new=lambda: _pass("worker:swap-disabled"))
@@ -114,6 +170,53 @@ class TestDoctorFirecracker:
         assert "Checks" in output
         assert "strict mode treats warnings as failures" in output
         assert "\033[" not in output
+
+    @patch("smolvm.doctor._check_kvm_permissions", new=lambda: _pass("worker:kvm-permissions"))
+    @patch("smolvm.doctor._check_kvm_nx_huge_pages", new=lambda: _pass("worker:kvm-nx-huge-pages"))
+    @patch(
+        "smolvm.doctor._check_thp_disabled",
+        new=lambda: DoctorCheck(
+            name="worker:thp-disabled",
+            status="fail",
+            detail="Active ('madvise')",
+        ),
+    )
+    @patch("smolvm.doctor._check_ksm_disabled", new=lambda: _pass("worker:ksm-disabled"))
+    @patch(
+        "smolvm.doctor._check_swap_disabled",
+        new=lambda: DoctorCheck(
+            name="worker:swap-disabled",
+            status="fail",
+            detail="Active (8388604 kB)",
+        ),
+    )
+    @patch("smolvm.doctor.run_command")
+    @patch("smolvm.doctor.check_network_prerequisites", return_value=[])
+    @patch("smolvm.doctor.which")
+    @patch("smolvm.doctor.HostManager")
+    def test_run_doctor_strict_fails_on_worker_hardening_warnings(
+        self,
+        mock_host_cls: MagicMock,
+        mock_which: MagicMock,
+        mock_net_checks: MagicMock,
+        mock_run_command: MagicMock,
+    ) -> None:
+        """Strict mode should still fail on worker-node hardening warnings."""
+        mock_host = MagicMock()
+        mock_host.check_kvm.return_value = True
+        mock_host.find_firecracker.return_value = Path("/usr/local/bin/firecracker")
+        mock_host_cls.return_value = mock_host
+
+        def _which_side_effect(binary: str) -> Path | None:
+            if binary in {"ip", "nft", "ssh"}:
+                return Path(f"/usr/bin/{binary}")
+            return None
+
+        mock_which.side_effect = _which_side_effect
+        mock_run_command.return_value = MagicMock(stdout="")
+
+        assert run_doctor(backend="firecracker", strict=False) == 0
+        assert run_doctor(backend="firecracker", strict=True) == 1
 
     def test_run_doctor_json_envelope(self, capsys: pytest.CaptureFixture) -> None:
         """JSON doctor output should use the shared envelope."""

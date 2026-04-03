@@ -177,6 +177,25 @@ class WorkerNodeSecurityError(SmolVMError):
     """
 
 
+def _doctorize_worker_security_check(check: DoctorCheck) -> DoctorCheck:
+    """Render worker hardening failures as warnings in the default doctor report.
+
+    Local users should be able to validate whether SmolVM can run on their
+    machine without first applying every host hardening setting expected of a
+    multi-tenant worker fleet. The dedicated worker startup guard remains
+    strict via ``check_worker_node_security()``.
+    """
+    if not check.name.startswith("worker:") or check.status != "fail":
+        return check
+
+    return DoctorCheck(
+        name=check.name,
+        status="warn",
+        detail=check.detail,
+        fix=check.fix,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Worker-node security invariants (Decision 1.1.5)
 # ---------------------------------------------------------------------------
@@ -444,16 +463,17 @@ def generate_doctor_report(backend: str | None = None) -> DoctorReport:
         checks.append(_check_nft_table("inet", "smolvm_filter"))
 
         # Worker-node host-level security invariants (Decision 1.1.5).
-        # These are included as informational checks in the doctor report;
-        # the reconciler startup guard calls check_worker_node_security()
-        # separately and refuses to start on failure.
+        # These are surfaced as warnings in the default doctor report so local
+        # evaluation does not require full worker-node hardening. The
+        # reconciler startup guard calls check_worker_node_security()
+        # separately and refuses to start on any non-pass result.
         checks.extend(
             [
-                _check_swap_disabled(),
-                _check_ksm_disabled(),
-                _check_thp_disabled(),
-                _check_kvm_nx_huge_pages(),
-                _check_kvm_permissions(),
+                _doctorize_worker_security_check(_check_swap_disabled()),
+                _doctorize_worker_security_check(_check_ksm_disabled()),
+                _doctorize_worker_security_check(_check_thp_disabled()),
+                _doctorize_worker_security_check(_check_kvm_nx_huge_pages()),
+                _doctorize_worker_security_check(_check_kvm_permissions()),
             ]
         )
 
