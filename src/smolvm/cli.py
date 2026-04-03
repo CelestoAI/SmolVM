@@ -400,6 +400,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Create an SSH-ready VM and leave it running",
     )
     create_parser.add_argument(
+        "-n",
         "--name",
         help="VM identifier to create (default: auto-generated).",
     )

@@ -420,6 +420,41 @@ class TestCliCreate:
 
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
+    def test_create_success_with_short_name_flag(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+    ) -> None:
+        """`smolvm create -n ...` should behave the same as `--name`."""
+        config = MagicMock(vm_id="computer")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+
+        vm = MagicMock()
+        vm.vm_id = "computer"
+        vm.info.config.backend = "qemu"
+        vm.info.network = MagicMock(spec=NetworkConfig)
+        vm.info.network.guest_ip = "172.16.0.2"
+        vm.info.network.ssh_host_port = 2200
+        mock_vm_cls.return_value = vm
+
+        ret = main(["create", "-n", "computer"])
+
+        assert ret == 0
+        mock_build_auto_config.assert_called_once_with(
+            vm_name="computer",
+            os=None,
+            backend=None,
+            mem_size_mib=None,
+            disk_size_mib=None,
+            ssh_key_path=None,
+        )
+        mock_vm_cls.assert_called_once_with(config, ssh_key_path="/tmp/id_ed25519")
+        vm.start.assert_called_once_with(boot_timeout=30.0)
+        vm.wait_for_ssh.assert_called_once_with(timeout=30.0)
+        vm.close.assert_called_once()
+
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
     def test_create_json(
         self,
         mock_vm_cls: MagicMock,
