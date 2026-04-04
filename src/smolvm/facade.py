@@ -58,6 +58,7 @@ _LOCAL_FORWARD_PROBE_TIMEOUT = 2.0
 _LOCAL_FORWARD_PROBE_INTERVAL = 0.2
 _LOCAL_TUNNEL_START_TIMEOUT = 10.0
 _LOCAL_FORWARD_MAX_PORT_ATTEMPTS = 10
+_LOCAL_FORWARD_RESERVATION_PURPOSE = "local-forward"
 
 
 def _build_auto_config(
@@ -70,7 +71,7 @@ def _build_auto_config(
 ) -> tuple[VMConfig, str | None]:
     """Build the default SSH-ready VM config used by zero-config flows."""
     from smolvm.build import ImageBuilder
-    from smolvm.utils import ensure_ssh_key
+    from smolvm.utils import resolve_ssh_key_pair
 
     resolved_backend = resolve_backend(backend)
     kernel_profile = KernelBootProfile.MICROVM_DIRECT
@@ -79,7 +80,7 @@ def _build_auto_config(
         platform.machine(),
     )
 
-    private_key, public_key = ensure_ssh_key()
+    private_key, public_key = resolve_ssh_key_pair(ssh_key_path)
     resolved_ssh_key_path = ssh_key_path or str(private_key)
 
     resolved_mem_size_mib = 512 if mem_size_mib is None else mem_size_mib
@@ -610,26 +611,59 @@ class SmolVM:
             raise ValueError("guest_port must be 1-65535")
 
         requested_port = host_port
-        if host_port is None:
-            host_port = self._allocate_local_port()
-        if host_port < 1 or host_port > 65535:
+        if host_port is not None and (host_port < 1 or host_port > 65535):
             raise ValueError("host_port must be 1-65535")
 
-        initial_key = (host_port, guest_port)
-        existing = self._local_forwards.get(initial_key)
-        if existing is not None:
-            return existing.host_port
-
-        candidate_ports = [host_port]
-        fallback_port = self._allocate_local_port({host_port})
-        if fallback_port != host_port:
-            candidate_ports.append(fallback_port)
+        if requested_port is None:
+            for tracked in self._local_forwards.values():
+                if tracked.guest_port == guest_port:
+                    return tracked.host_port
+        else:
+            existing = self._local_forwards.get((requested_port, guest_port))
+            if existing is not None:
+                return existing.host_port
 
         guest_ip = self._info.network.guest_ip
         attempts: list[str] = []
         should_try_nftables = self._should_try_nftables_local_forward()
 
+        candidate_ports: list[int] = []
+        if requested_port is not None:
+            candidate_ports.append(requested_port)
+            fallback_port = self._allocate_local_port({requested_port})
+            if fallback_port != requested_port:
+                candidate_ports.append(fallback_port)
+        else:
+            existing_reserved = self._sdk.state.get_host_port(
+                self._vm_id,
+                guest_port,
+                purpose=_LOCAL_FORWARD_RESERVATION_PURPOSE,
+            )
+            if isinstance(existing_reserved, int):
+                candidate_ports.append(existing_reserved)
+            else:
+                candidate_ports.append(self._allocate_local_port())
+            fallback_port = self._allocate_local_port(set(candidate_ports))
+            if fallback_port not in candidate_ports:
+                candidate_ports.append(fallback_port)
+
         for candidate in candidate_ports:
+            try:
+                reserved_port = self._sdk.state.reserve_host_port(
+                    self._vm_id,
+                    guest_port,
+                    purpose=_LOCAL_FORWARD_RESERVATION_PURPOSE,
+                    host_port=candidate,
+                )
+                if isinstance(reserved_port, int):
+                    candidate = reserved_port
+            except Exception as e:
+                attempts.append(
+                    "host-port reservation failed for "
+                    f"guest:{guest_port} request={candidate}: {e}"
+                )
+                continue
+
             key = (candidate, guest_port)
             existing = self._local_forwards.get(key)
             if existing is not None:
@@ -637,6 +671,7 @@ class SmolVM:
 
             if any(forward.host_port == candidate for forward in self._local_forwards.values()):
                 attempts.append(f"localhost:{candidate} already exposed by this VM instance")
+                self._release_local_forward_reservation(guest_port, host_port=candidate)
                 continue
 
             nftables_configured = False
@@ -704,6 +739,7 @@ class SmolVM:
                 attempts.append(
                     f"ssh tunnel localhost:{candidate} -> guest:{guest_port} failed: {e}"
                 )
+                self._release_local_forward_reservation(guest_port, host_port=candidate)
                 continue
 
         context = {
@@ -729,7 +765,7 @@ class SmolVM:
         key = (host_port, guest_port)
         tracked = self._local_forwards.pop(key, None)
         if tracked is not None:
-            self._cleanup_local_forward(tracked)
+            self._cleanup_local_forward(tracked, release_reservation=True)
             return self
 
         self._refresh_info()
@@ -745,6 +781,7 @@ class SmolVM:
             host_port=host_port,
             guest_port=guest_port,
         )
+        self._release_local_forward_reservation(guest_port, host_port=host_port)
         return self
 
     # ------------------------------------------------------------------
@@ -804,6 +841,7 @@ class SmolVM:
 
     def close(self) -> None:
         """Release underlying SDK resources for this facade instance."""
+        self._cleanup_local_forwards()
         self._sdk.close()
 
     # ------------------------------------------------------------------
@@ -1100,7 +1138,11 @@ class SmolVM:
 
         for key, tracked in list(self._local_forwards.items()):
             try:
-                self._cleanup_local_forward(tracked, guest_ip=guest_ip)
+                self._cleanup_local_forward(
+                    tracked,
+                    guest_ip=guest_ip,
+                    release_reservation=False,
+                )
             except Exception:
                 logger.warning(
                     "Failed to cleanup local forward localhost:%d -> guest:%d for VM %s",
@@ -1254,34 +1296,54 @@ class SmolVM:
         forward: _LocalForward,
         *,
         guest_ip: str | None = None,
+        release_reservation: bool = False,
     ) -> None:
         """Remove one tracked localhost exposure."""
         if forward.transport == "ssh_tunnel":
             self._stop_local_tunnel(forward.tunnel_proc)
-            return
+        else:
+            if guest_ip is None:
+                with suppress(Exception):
+                    self._refresh_info()
+                    if self._info.network is not None:
+                        guest_ip = self._info.network.guest_ip
 
-        if guest_ip is None:
-            with suppress(Exception):
-                self._refresh_info()
-                if self._info.network is not None:
-                    guest_ip = self._info.network.guest_ip
+            if guest_ip is None:
+                logger.warning(
+                    "Skipping nftables cleanup for localhost:%d -> guest:%d on VM %s "
+                    "because guest network info is unavailable",
+                    forward.host_port,
+                    forward.guest_port,
+                    self._vm_id,
+                )
+            else:
+                self._sdk.network.cleanup_local_port_forward(
+                    vm_id=self._vm_id,
+                    guest_ip=guest_ip,
+                    host_port=forward.host_port,
+                    guest_port=forward.guest_port,
+                )
 
-        if guest_ip is None:
-            logger.warning(
-                "Skipping nftables cleanup for localhost:%d -> guest:%d on VM %s "
-                "because guest network info is unavailable",
-                forward.host_port,
+        if release_reservation:
+            self._release_local_forward_reservation(
                 forward.guest_port,
-                self._vm_id,
+                host_port=forward.host_port,
             )
-            return
 
-        self._sdk.network.cleanup_local_port_forward(
-            vm_id=self._vm_id,
-            guest_ip=guest_ip,
-            host_port=forward.host_port,
-            guest_port=forward.guest_port,
-        )
+    def _release_local_forward_reservation(
+        self,
+        guest_port: int,
+        *,
+        host_port: int | None = None,
+    ) -> None:
+        """Release one reserved localhost exposure mapping."""
+        with suppress(Exception):
+            self._sdk.state.release_host_port(
+                self._vm_id,
+                guest_port,
+                purpose=_LOCAL_FORWARD_RESERVATION_PURPOSE,
+                host_port=host_port,
+            )
 
     def _command_exec_remediation(self) -> str:
         """Return actionable guidance when command execution is unavailable."""

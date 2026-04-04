@@ -223,3 +223,31 @@ def ensure_ssh_key(key_dir: Path | None = None) -> tuple[Path, Path]:
         os.chown(public_key, sudo_uid, sudo_gid)
 
     return private_key, public_key
+
+
+def resolve_ssh_keypair(ssh_key_path: str | Path | None = None) -> tuple[Path, Path]:
+    """Resolve the SSH key pair used for guest authorization and client access."""
+    if ssh_key_path is None:
+        return ensure_ssh_key()
+
+    private_key = Path(ssh_key_path).expanduser()
+    if not private_key.exists():
+        raise SmolVMError(f"SSH private key does not exist: {private_key}")
+    if not private_key.is_file():
+        raise SmolVMError(f"SSH private key is not a file: {private_key}")
+
+    public_key = private_key.with_name(f"{private_key.name}.pub")
+    if not public_key.exists():
+        raise SmolVMError(
+            "Custom ssh_key_path requires a matching public key file.\n"
+            f"Expected: {public_key}"
+        )
+    if not public_key.is_file():
+        raise SmolVMError(f"SSH public key is not a file: {public_key}")
+
+    return private_key, public_key
+
+
+def resolve_ssh_key_pair(ssh_key_path: str | Path | None = None) -> tuple[Path, Path]:
+    """Backward-compatible alias for :func:`resolve_ssh_keypair`."""
+    return resolve_ssh_keypair(ssh_key_path)

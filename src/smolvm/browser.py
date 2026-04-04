@@ -30,7 +30,7 @@ from smolvm.types import (
     VMConfig,
     VMState,
 )
-from smolvm.vm import resolve_data_dir
+from smolvm.vm import QEMU_HOST_PORT_FORWARD_PURPOSE, resolve_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,8 @@ _BROWSER_GUEST_DOWNLOAD_ROOT = f"{_BROWSER_GUEST_ROOT}/downloads"
 _BROWSER_GUEST_ARTIFACT_ROOT = f"{_BROWSER_GUEST_ROOT}/artifacts"
 _BROWSER_GUEST_LOG_ROOT = "/var/log/smolvm-browser"
 _BROWSER_KERNEL_PROFILE = KernelBootProfile.MICROVM_DIRECT
+_BROWSER_DEBUG_PORT_PURPOSE = "browser-cdp"
+_BROWSER_LIVE_PORT_PURPOSE = "browser-live"
 
 
 def _generate_browser_session_id() -> str:
@@ -89,7 +91,7 @@ def _allocate_browser_host_port(exclude: set[int] | None = None) -> int:
 
 
 def _qemu_browser_port_forwards(config: BrowserSessionConfig) -> list[PortForwardConfig]:
-    """Return stable QEMU host forwards for browser endpoints."""
+    """Return placeholder QEMU host forwards for browser endpoints."""
     reserved: set[int] = set()
     debug_port = _allocate_browser_host_port(reserved)
     reserved.add(debug_port)
@@ -115,10 +117,10 @@ def _build_browser_vm_config(
 ) -> tuple[VMConfig, str | None]:
     """Build the underlying VM config for a browser session."""
     from smolvm.build import ImageBuilder
-    from smolvm.utils import ensure_ssh_key
+    from smolvm.utils import resolve_ssh_key_pair
 
     resolved_backend = resolve_backend(browser_config.backend)
-    private_key, public_key = ensure_ssh_key()
+    private_key, public_key = resolve_ssh_key_pair(ssh_key_path)
     resolved_ssh_key_path = ssh_key_path or str(private_key)
 
     builder = ImageBuilder()
@@ -176,6 +178,7 @@ class BrowserSession:
         self._ssh_key_path = ssh_key_path
         self._state = _browser_state_manager(self._data_dir)
         self._owns_session = False
+        self._qemu_browser_forwards_stable = False
         self._vm: SmolVM | None = None
         self._playwright_runtime: Any | None = None
 
@@ -221,16 +224,23 @@ class BrowserSession:
                 ssh_key_path=self._ssh_key_path,
             )
             self._ssh_key_path = resolved_ssh_key_path
+            create_vm_config = self._prepare_browser_vm_create_config(vm_config)
             vm = SmolVM(
-                vm_config,
+                create_vm_config,
                 data_dir=self._data_dir,
                 socket_dir=self._socket_dir,
                 ssh_key_path=self._ssh_key_path,
+            )
+            vm_config = self._configure_browser_vm_port_forwards(
+                vm,
+                session_config,
+                initial_config=vm_config,
             )
             info = BrowserSessionInfo(
                 session_id=session_id,
                 vm_id=vm.vm_id,
                 status=BrowserSessionState.CREATED,
+                debug_port=self._configured_browser_port(vm_config, _BROWSER_DEBUG_PORT),
                 profile_id=session_config.profile_id,
                 expires_at=expires_at,
                 artifacts_dir=artifacts_dir,
@@ -268,6 +278,8 @@ class BrowserSession:
                 exc_info=True,
             )
             self._vm = None
+        else:
+            self._qemu_browser_forwards_stable = self._has_stable_qemu_browser_forwards()
 
     @property
     def session_id(self) -> str:
@@ -292,12 +304,14 @@ class BrowserSession:
     @property
     def cdp_url(self) -> str | None:
         """HTTP CDP endpoint exposed on localhost."""
-        return self._info.cdp_url
+        return self._current_browser_url(_BROWSER_DEBUG_PORT, ensure_exposed=False)
 
     @property
     def live_url(self) -> str | None:
         """Optional live-view URL exposed on localhost."""
-        return self._info.live_url
+        if self._session_config.mode != "live":
+            return None
+        return self._current_browser_url(_BROWSER_LIVE_PORT, ensure_exposed=False)
 
     @property
     def artifacts_dir(self) -> Path | None:
@@ -355,8 +369,11 @@ class BrowserSession:
                 raise SmolVMError(
                     f"Browser session '{self.session_id}' did not expose a CDP port in time."
                 )
-            debug_host_port = self._resolve_browser_host_port(_BROWSER_DEBUG_PORT)
-            cdp_url = f"http://127.0.0.1:{debug_host_port}"
+            debug_host_port = self._resolve_browser_host_port(
+                _BROWSER_DEBUG_PORT,
+                ensure_exposed=True,
+            )
+            cdp_url = self._browser_url(_BROWSER_DEBUG_PORT, debug_host_port)
 
             live_url: str | None = None
             if self._session_config.mode == "live":
@@ -364,8 +381,11 @@ class BrowserSession:
                     raise SmolVMError(
                         f"Browser session '{self.session_id}' did not expose a live view in time."
                     )
-                live_host_port = self._resolve_browser_host_port(_BROWSER_LIVE_PORT)
-                live_url = f"http://127.0.0.1:{live_host_port}/vnc.html?autoconnect=1&resize=scale"
+                live_host_port = self._resolve_browser_host_port(
+                    _BROWSER_LIVE_PORT,
+                    ensure_exposed=True,
+                )
+                live_url = self._browser_url(_BROWSER_LIVE_PORT, live_host_port)
 
             self._info = self._state.update_browser_session(
                 self.session_id,
@@ -415,7 +435,8 @@ class BrowserSession:
 
     def connect_playwright(self) -> Any:
         """Connect Playwright to the browser session over CDP."""
-        if self._info.cdp_url is None:
+        cdp_url = self._current_browser_url(_BROWSER_DEBUG_PORT, ensure_exposed=True)
+        if cdp_url is None:
             raise SmolVMError("Browser session is not ready; start it before connecting.")
 
         try:
@@ -428,7 +449,13 @@ class BrowserSession:
         if self._playwright_runtime is None:
             self._playwright_runtime = sync_playwright().start()
 
-        return self._playwright_runtime.chromium.connect_over_cdp(self._info.cdp_url)
+        if cdp_url != self._info.cdp_url:
+            self._info = self._state.update_browser_session(
+                self.session_id,
+                cdp_url=cdp_url,
+            )
+
+        return self._playwright_runtime.chromium.connect_over_cdp(cdp_url)
 
     def screenshot(
         self,
@@ -451,9 +478,15 @@ class BrowserSession:
 
     def open_live_view(self) -> bool:
         """Open the live-view URL in the local default browser."""
-        if self._info.live_url is None:
+        live_url = self._current_browser_url(_BROWSER_LIVE_PORT, ensure_exposed=True)
+        if live_url is None:
             raise SmolVMError("This browser session does not expose a live_url.")
-        return webbrowser.open(self._info.live_url)
+        if live_url != self._info.live_url:
+            self._info = self._state.update_browser_session(
+                self.session_id,
+                live_url=live_url,
+            )
+        return webbrowser.open(live_url)
 
     def push_file(self, local_path: str | Path, guest_path: str) -> None:
         """Upload a file into the guest using the session SSH channel."""
@@ -575,17 +608,166 @@ class BrowserSession:
                 f"Failed to launch guest browser: {result.stderr.strip() or result.stdout}"
             )
 
-    def _resolve_browser_host_port(self, guest_port: int) -> int:
-        """Return a localhost port that exposes a browser guest port.
+    @staticmethod
+    def _prepare_browser_vm_create_config(vm_config: VMConfig) -> VMConfig:
+        """Strip placeholder QEMU port forwards before VM creation."""
+        if resolve_backend(vm_config.backend) != BACKEND_QEMU or not vm_config.port_forwards:
+            return vm_config
+        return vm_config.model_copy(update={"port_forwards": []})
 
-        Browser services such as Chromium's DevTools endpoint can bind guest
-        loopback only. Route them through ``expose_local()`` so SmolVM can
-        fall back to an SSH tunnel when direct guest networking is not enough.
-        """
+    def _configure_browser_vm_port_forwards(
+        self,
+        vm: SmolVM,
+        session_config: BrowserSessionConfig,
+        *,
+        initial_config: VMConfig,
+    ) -> VMConfig:
+        """Persist stable browser endpoint forwards for QEMU-backed sessions."""
+        if resolve_backend(initial_config.backend) != BACKEND_QEMU:
+            return initial_config
+
+        try:
+            forwards = [
+                PortForwardConfig(
+                    host_port=self._state.reserve_host_port(
+                        vm.vm_id,
+                        _BROWSER_DEBUG_PORT,
+                        purpose=QEMU_HOST_PORT_FORWARD_PURPOSE,
+                    ),
+                    guest_port=_BROWSER_DEBUG_PORT,
+                )
+            ]
+            if session_config.mode == "live":
+                forwards.append(
+                    PortForwardConfig(
+                        host_port=self._state.reserve_host_port(
+                            vm.vm_id,
+                            _BROWSER_LIVE_PORT,
+                            purpose=QEMU_HOST_PORT_FORWARD_PURPOSE,
+                        ),
+                        guest_port=_BROWSER_LIVE_PORT,
+                    )
+                )
+
+            updated_config = initial_config.model_copy(update={"port_forwards": forwards})
+            self._state.update_vm(vm.vm_id, config=updated_config)
+            vm.refresh()
+            self._qemu_browser_forwards_stable = True
+            return updated_config
+        except Exception:
+            self._qemu_browser_forwards_stable = False
+            return initial_config
+
+    def _has_stable_qemu_browser_forwards(self) -> bool:
+        """Return whether this session can rely on persisted QEMU host forwards."""
+        if self._browser_backend() != BACKEND_QEMU or self._vm is None:
+            return False
+
+        try:
+            vm_config = self._vm.refresh().info.config
+        except Exception:
+            return False
+
+        required_ports = {_BROWSER_DEBUG_PORT}
+        if self._session_config.mode == "live":
+            required_ports.add(_BROWSER_LIVE_PORT)
+        forwarded_ports = {forward.guest_port for forward in vm_config.port_forwards}
+        return required_ports.issubset(forwarded_ports)
+
+    @staticmethod
+    def _configured_browser_port(vm_config: VMConfig, guest_port: int) -> int | None:
+        """Return one configured browser host port from persisted VM config."""
+        for forward in vm_config.port_forwards:
+            if forward.guest_port == guest_port:
+                return forward.host_port
+        return None
+
+    def _stable_qemu_browser_host_port(self, guest_port: int) -> int:
+        """Return a persisted QEMU browser host port."""
         if self._vm is None:
             raise SmolVMError("Browser session VM is unavailable.")
 
-        return self._vm.expose_local(guest_port=guest_port)
+        vm_info = self._vm.refresh().info
+        for forward in vm_info.config.port_forwards:
+            if forward.guest_port == guest_port:
+                return forward.host_port
+
+        raise SmolVMError(
+            f"Browser session '{self.session_id}' does not have a QEMU forward for guest port "
+            f"{guest_port}."
+        )
+
+    def _resolve_browser_host_port(self, guest_port: int, *, ensure_exposed: bool) -> int:
+        """Return the stable host port for a browser guest port."""
+        if self._vm is None:
+            raise SmolVMError("Browser session VM is unavailable.")
+
+        if self._browser_backend() == BACKEND_QEMU:
+            if self._qemu_browser_forwards_stable:
+                return self._stable_qemu_browser_host_port(guest_port)
+            if ensure_exposed:
+                return self._vm.expose_local(guest_port=guest_port)
+            raise SmolVMError(
+                f"Browser session '{self.session_id}' does not have a durable QEMU forward for "
+                f"guest port {guest_port}."
+            )
+
+        purpose = self._browser_port_purpose(guest_port)
+        host_port = self._state.get_host_port(self.vm_id, guest_port, purpose=purpose)
+        if host_port is None:
+            host_port = self._state.reserve_host_port(
+                self.vm_id,
+                guest_port,
+                purpose=purpose,
+            )
+        if ensure_exposed:
+            return self._vm.expose_local(guest_port=guest_port, host_port=host_port)
+        return host_port
+
+    def _current_browser_url(self, guest_port: int, *, ensure_exposed: bool) -> str | None:
+        """Return the current browser endpoint URL for a guest port."""
+        if guest_port == _BROWSER_LIVE_PORT and self._session_config.mode != "live":
+            return None
+
+        fallback = self._info.cdp_url if guest_port == _BROWSER_DEBUG_PORT else self._info.live_url
+        if self._info.status != BrowserSessionState.READY:
+            return fallback
+
+        try:
+            host_port = self._resolve_browser_host_port(
+                guest_port,
+                ensure_exposed=ensure_exposed,
+            )
+        except Exception:
+            if ensure_exposed:
+                raise
+            return fallback
+        return self._browser_url(guest_port, host_port)
+
+    def _browser_backend(self) -> str:
+        """Return the resolved runtime backend for this browser session."""
+        if self._vm is not None:
+            with suppress(Exception):
+                return resolve_backend(self._vm.info.config.backend)
+        return resolve_backend(self._session_config.backend)
+
+    @staticmethod
+    def _browser_port_purpose(guest_port: int) -> str:
+        """Return the reservation purpose label for one browser endpoint."""
+        if guest_port == _BROWSER_DEBUG_PORT:
+            return _BROWSER_DEBUG_PORT_PURPOSE
+        if guest_port == _BROWSER_LIVE_PORT:
+            return _BROWSER_LIVE_PORT_PURPOSE
+        raise ValueError(f"Unsupported browser guest port: {guest_port}")
+
+    @staticmethod
+    def _browser_url(guest_port: int, host_port: int) -> str:
+        """Build a host URL for a browser guest port."""
+        if guest_port == _BROWSER_DEBUG_PORT:
+            return f"http://127.0.0.1:{host_port}"
+        if guest_port == _BROWSER_LIVE_PORT:
+            return f"http://127.0.0.1:{host_port}/vnc.html?autoconnect=1&resize=scale"
+        raise ValueError(f"Unsupported browser guest port: {guest_port}")
 
     def _wait_for_guest_port(self, port: int, *, timeout: float) -> bool:
         if self._vm is None:

@@ -20,6 +20,7 @@ Uses exclusive transactions to prevent race conditions in IP assignment.
 
 import json
 import logging
+import socket
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -57,6 +58,10 @@ IP_PREFIX = "172.16.0."
 SSH_PORT_START = 2200
 SSH_PORT_END = 2999
 
+# Generic host-port reservation pool for non-SSH forwards.
+HOST_PORT_START = 39000
+HOST_PORT_END = 48999
+
 
 class StateManager:
     """Manages persistent state for VMs and IP allocations.
@@ -82,7 +87,7 @@ class StateManager:
         """Get a database connection with proper isolation.
 
         Args:
-            exclusive: If True, use exclusive transaction for writes.
+            exclusive: If True, acquire a write lock before any reads.
 
         Yields:
             SQLite connection with row factory set.
@@ -90,11 +95,12 @@ class StateManager:
         conn = sqlite3.connect(
             str(self.db_path),
             timeout=30.0,
-            isolation_level="EXCLUSIVE" if exclusive else "DEFERRED",
+            isolation_level=None,
         )
         conn.execute("PRAGMA foreign_keys = ON")
         conn.row_factory = sqlite3.Row
         try:
+            conn.execute("BEGIN IMMEDIATE" if exclusive else "BEGIN")
             yield conn
             conn.commit()
         except Exception:
@@ -141,6 +147,23 @@ class StateManager:
                 CREATE INDEX IF NOT EXISTS idx_ssh_forwards_vm_id ON ssh_forwards(vm_id);
                 CREATE INDEX IF NOT EXISTS idx_ssh_forwards_host_port ON ssh_forwards(host_port);
 
+                CREATE TABLE IF NOT EXISTS host_port_reservations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    vm_id TEXT NOT NULL,
+                    host_address TEXT NOT NULL,
+                    host_port INTEGER NOT NULL UNIQUE,
+                    guest_port INTEGER NOT NULL,
+                    purpose TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(vm_id, host_address, guest_port, purpose),
+                    FOREIGN KEY (vm_id) REFERENCES vms(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_host_port_reservations_vm_id
+                    ON host_port_reservations(vm_id);
+                CREATE INDEX IF NOT EXISTS idx_host_port_reservations_host_port
+                    ON host_port_reservations(host_port);
+
                 CREATE TABLE IF NOT EXISTS browser_sessions (
                     session_id TEXT PRIMARY KEY,
                     vm_id TEXT NOT NULL UNIQUE,
@@ -177,6 +200,29 @@ class StateManager:
                 CREATE INDEX IF NOT EXISTS idx_snapshots_vm_id ON snapshots(vm_id);
             """
             )
+
+    @staticmethod
+    def _is_host_port_available(host_address: str, host_port: int) -> bool:
+        """Return whether a TCP host port is currently bindable."""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.bind((host_address, host_port))
+        except OSError:
+            return False
+        return True
+
+    @staticmethod
+    def _allocated_host_ports(conn: sqlite3.Connection) -> set[int]:
+        """Return all host ports reserved across SSH and generic forwards."""
+        allocated = {
+            int(row["host_port"])
+            for row in conn.execute("SELECT host_port FROM ssh_forwards").fetchall()
+        }
+        allocated.update(
+            int(row["host_port"])
+            for row in conn.execute("SELECT host_port FROM host_port_reservations").fetchall()
+        )
+        return allocated
 
     def create_vm(self, config: VMConfig) -> VMInfo:
         """Create a new VM record.
@@ -257,6 +303,7 @@ class StateManager:
         self,
         vm_id: str,
         *,
+        config: VMConfig | None = None,
         status: VMState | None = None,
         network: NetworkConfig | None = None,
         pid: int | None = None,
@@ -268,6 +315,7 @@ class StateManager:
 
         Args:
             vm_id: The VM identifier.
+            config: Replacement VM configuration (optional).
             status: New status (optional).
             network: Network configuration (optional).
             pid: Process ID (optional).
@@ -295,6 +343,10 @@ class StateManager:
             # Build update query dynamically
             updates = ["updated_at = ?"]
             params: list = [now]
+
+            if config is not None:
+                updates.append("config = ?")
+                params.append(config.model_dump_json())
 
             if status is not None:
                 updates.append("status = ?")
@@ -880,8 +932,7 @@ class StateManager:
                     )
                 return existing_host_port
 
-            allocated = conn.execute("SELECT host_port FROM ssh_forwards").fetchall()
-            allocated_set = {int(row["host_port"]) for row in allocated}
+            allocated_set = self._allocated_host_ports(conn)
 
             candidate_ports = [host_port] if host_port is not None else range(
                 SSH_PORT_START, SSH_PORT_END + 1
@@ -889,13 +940,25 @@ class StateManager:
             for candidate_port in candidate_ports:
                 if candidate_port in allocated_set:
                     continue
-                conn.execute(
-                    """
-                    INSERT INTO ssh_forwards (vm_id, host_port, guest_port, created_at)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (vm_id, candidate_port, guest_port, now),
-                )
+                if not self._is_host_port_available("127.0.0.1", candidate_port):
+                    if host_port is not None:
+                        raise NetworkError(f"Requested SSH host port {host_port} is not available")
+                    continue
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO ssh_forwards (vm_id, host_port, guest_port, created_at)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (vm_id, candidate_port, guest_port, now),
+                    )
+                except sqlite3.IntegrityError:
+                    if host_port is not None:
+                        raise NetworkError(
+                            f"Requested SSH host port {host_port} is not available"
+                        ) from None
+                    allocated_set.add(candidate_port)
+                    continue
                 logger.info("Reserved SSH host port %d for VM %s", candidate_port, vm_id)
                 return candidate_port
 
@@ -938,6 +1001,233 @@ class StateManager:
             result = conn.execute("DELETE FROM ssh_forwards WHERE vm_id = ?", (vm_id,))
             if result.rowcount > 0:
                 logger.info("Released SSH host port for VM: %s", vm_id)
+
+    def reserve_host_port(
+        self,
+        vm_id: str,
+        guest_port: int,
+        *,
+        purpose: str,
+        host_port: int | None = None,
+        host_address: str = "127.0.0.1",
+        port_start: int = HOST_PORT_START,
+        port_end: int = HOST_PORT_END,
+        exclude_ports: set[int] | None = None,
+    ) -> int:
+        """Reserve a host TCP port for a non-SSH guest service."""
+        if not vm_id:
+            raise ValueError("vm_id cannot be empty")
+        if guest_port < 1 or guest_port > 65535:
+            raise ValueError("guest_port must be 1-65535")
+        if not purpose:
+            raise ValueError("purpose cannot be empty")
+        if not host_address:
+            raise ValueError("host_address cannot be empty")
+        if port_start < 1 or port_start > 65535 or port_end < 1 or port_end > 65535:
+            raise ValueError("port range must be 1-65535")
+        if port_start > port_end:
+            raise ValueError("port_start cannot be greater than port_end")
+        excluded_ports = set(exclude_ports or ())
+
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self._get_connection(exclusive=True) as conn:
+            existing = conn.execute(
+                """
+                SELECT host_port FROM host_port_reservations
+                WHERE vm_id = ? AND host_address = ? AND guest_port = ? AND purpose = ?
+                """,
+                (vm_id, host_address, guest_port, purpose),
+            ).fetchone()
+            if existing:
+                existing_host_port = int(existing["host_port"])
+                if host_port is not None and existing_host_port != host_port:
+                    raise NetworkError(
+                        f"VM {vm_id} already reserves host port {existing_host_port} "
+                        f"for guest port {guest_port} ({purpose}), cannot reserve {host_port}"
+                    )
+                return existing_host_port
+
+            allocated_set = self._allocated_host_ports(conn) | excluded_ports
+            candidate_ports = [host_port] if host_port is not None else range(port_start, port_end + 1)
+            for candidate_port in candidate_ports:
+                if candidate_port in allocated_set:
+                    continue
+                if not self._is_host_port_available(host_address, candidate_port):
+                    if host_port is not None:
+                        raise NetworkError(f"Requested host port {host_port} is not available")
+                    continue
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO host_port_reservations (
+                            vm_id, host_address, host_port, guest_port, purpose, created_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (vm_id, host_address, candidate_port, guest_port, purpose, now),
+                    )
+                except sqlite3.IntegrityError:
+                    if host_port is not None:
+                        raise NetworkError(
+                            f"Requested host port {host_port} is not available"
+                        ) from None
+                    allocated_set.add(candidate_port)
+                    continue
+                logger.info(
+                    "Reserved host port %d for VM %s (guest=%d, purpose=%s)",
+                    candidate_port,
+                    vm_id,
+                    guest_port,
+                    purpose,
+                )
+                return candidate_port
+
+        if host_port is not None:
+            raise NetworkError(f"Requested host port {host_port} is not available")
+        raise NetworkError("No host ports available in pool")
+
+    def get_host_port(
+        self,
+        vm_id: str,
+        guest_port: int,
+        *,
+        purpose: str,
+        host_address: str = "127.0.0.1",
+    ) -> int | None:
+        """Return the reserved host port for a guest port/purpose mapping."""
+        if not vm_id:
+            raise ValueError("vm_id cannot be empty")
+        if guest_port < 1 or guest_port > 65535:
+            raise ValueError("guest_port must be 1-65535")
+        if not purpose:
+            raise ValueError("purpose cannot be empty")
+        if not host_address:
+            raise ValueError("host_address cannot be empty")
+
+        with self._get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT host_port FROM host_port_reservations
+                WHERE vm_id = ? AND host_address = ? AND guest_port = ? AND purpose = ?
+                """,
+                (vm_id, host_address, guest_port, purpose),
+            ).fetchone()
+
+        if row:
+            return int(row["host_port"])
+        return None
+
+    def list_host_ports(
+        self,
+        vm_id: str,
+        *,
+        purpose: str | None = None,
+    ) -> list[tuple[int, int, str, str]]:
+        """List reserved non-SSH host ports for a VM."""
+        if not vm_id:
+            raise ValueError("vm_id cannot be empty")
+
+        with self._get_connection() as conn:
+            if purpose is None:
+                rows = conn.execute(
+                    """
+                    SELECT host_port, guest_port, purpose, host_address
+                    FROM host_port_reservations
+                    WHERE vm_id = ?
+                    ORDER BY host_port
+                    """,
+                    (vm_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT host_port, guest_port, purpose, host_address
+                    FROM host_port_reservations
+                    WHERE vm_id = ? AND purpose = ?
+                    ORDER BY host_port
+                    """,
+                    (vm_id, purpose),
+                ).fetchall()
+
+        return [
+            (int(row["host_port"]), int(row["guest_port"]), str(row["purpose"]), str(row["host_address"]))
+            for row in rows
+        ]
+
+    def release_host_port(
+        self,
+        vm_id: str,
+        guest_port: int,
+        *,
+        purpose: str,
+        host_address: str = "127.0.0.1",
+        host_port: int | None = None,
+    ) -> None:
+        """Release one reserved non-SSH host port mapping."""
+        if not vm_id:
+            raise ValueError("vm_id cannot be empty")
+        if guest_port < 1 or guest_port > 65535:
+            raise ValueError("guest_port must be 1-65535")
+        if not purpose:
+            raise ValueError("purpose cannot be empty")
+        if not host_address:
+            raise ValueError("host_address cannot be empty")
+
+        with self._get_connection(exclusive=True) as conn:
+            if host_port is None:
+                result = conn.execute(
+                    """
+                    DELETE FROM host_port_reservations
+                    WHERE vm_id = ? AND host_address = ? AND guest_port = ? AND purpose = ?
+                    """,
+                    (vm_id, host_address, guest_port, purpose),
+                )
+            else:
+                result = conn.execute(
+                    """
+                    DELETE FROM host_port_reservations
+                    WHERE vm_id = ? AND host_address = ? AND guest_port = ?
+                      AND purpose = ? AND host_port = ?
+                    """,
+                    (vm_id, host_address, guest_port, purpose, host_port),
+                )
+            if result.rowcount > 0:
+                logger.info(
+                    "Released reserved host port mapping for VM %s "
+                    "(guest=%d, purpose=%s, host_port=%s)",
+                    vm_id,
+                    guest_port,
+                    purpose,
+                    "*" if host_port is None else host_port,
+                )
+
+    def release_host_ports(self, vm_id: str, *, purpose: str | None = None) -> None:
+        """Release reserved non-SSH host ports for a VM."""
+        if not vm_id:
+            raise ValueError("vm_id cannot be empty")
+
+        with self._get_connection(exclusive=True) as conn:
+            if purpose is None:
+                result = conn.execute(
+                    "DELETE FROM host_port_reservations WHERE vm_id = ?",
+                    (vm_id,),
+                )
+            else:
+                result = conn.execute(
+                    """
+                    DELETE FROM host_port_reservations
+                    WHERE vm_id = ? AND purpose = ?
+                    """,
+                    (vm_id, purpose),
+                )
+            if result.rowcount > 0:
+                logger.info(
+                    "Released %d reserved host port(s) for VM %s%s",
+                    result.rowcount,
+                    vm_id,
+                    "" if purpose is None else f" (purpose={purpose})",
+                )
 
     def reconcile(self) -> list[str]:
         """Check for stale VMs (marked RUNNING/PAUSED but process is dead).

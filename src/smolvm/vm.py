@@ -17,6 +17,7 @@
 Orchestrates VM lifecycle, networking, and state management across runtimes.
 """
 
+import json
 import logging
 import os
 import platform
@@ -25,6 +26,7 @@ import re
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import time
 from contextlib import suppress
@@ -58,6 +60,8 @@ DEFAULT_SOCKET_DIR = Path("/tmp")
 QEMU_GUEST_IP = "10.0.2.15"
 QEMU_GATEWAY_IP = "10.0.2.2"
 QEMU_NETMASK = "255.255.255.0"
+QEMU_HOST_PORT_FORWARD_PURPOSE = "qemu-port-forward"
+QEMU_QMP_TIMEOUT_SECONDS = 1.0
 SNAPSHOT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$|^[a-z0-9]$")
 
 
@@ -278,6 +282,10 @@ class SmolVMManager:
     def _instance_disk_path(self, vm_id: str) -> Path:
         """Return managed isolated disk path for a VM ID."""
         return self.disk_dir / f"{vm_id}.ext4"
+
+    def _qemu_qmp_socket_path(self, vm_id: str) -> Path:
+        """Return the QMP control socket path for a QEMU VM."""
+        return self.socket_dir / f"qmp-{vm_id}.sock"
 
     def _materialize_rootfs(self, config: VMConfig) -> VMConfig:
         """Materialize the effective rootfs path for a VM create request.
@@ -540,6 +548,14 @@ class SmolVMManager:
             ssh_host_port = self.state.reserve_ssh_port(effective_config.vm_id)
 
             if backend == BACKEND_QEMU:
+                for forward in effective_config.port_forwards:
+                    self.state.reserve_host_port(
+                        effective_config.vm_id,
+                        forward.guest_port,
+                        purpose=QEMU_HOST_PORT_FORWARD_PURPOSE,
+                        host_port=forward.host_port,
+                        host_address=forward.host_address,
+                    )
                 mac_seed = (ssh_host_port % 254) + 1
                 guest_mac = self.network.generate_mac(mac_seed)
                 network_config = NetworkConfig(
@@ -803,14 +819,17 @@ class SmolVMManager:
 
         if backend == BACKEND_QEMU:
             if vm_info.pid and self._is_process_running(vm_info.pid):
-                try:
-                    os.kill(vm_info.pid, signal.SIGTERM)
-                    self._wait_for_process(vm_info.pid, timeout)
-                except Exception as e:
-                    logger.warning("Graceful QEMU shutdown failed for %s: %s", vm_id, e)
+                self._shutdown_qemu(vm_id, vm_info.pid, timeout)
 
             if vm_info.pid and self._is_process_running(vm_info.pid):
                 self._kill_process(vm_info.pid)
+
+            qmp_socket_path = self._qemu_qmp_socket_path(vm_id)
+            if qmp_socket_path.exists():
+                try:
+                    self._unlink_socket(qmp_socket_path, socket_label="QEMU QMP")
+                except Exception as exc:
+                    logger.warning("Failed to remove QMP socket for %s: %s", vm_id, exc)
 
             qemu_key = f"qemu:{vm_id}"
             fh = self._log_files.pop(qemu_key, None)
@@ -1176,7 +1195,8 @@ class SmolVMManager:
             vm_info = self.state.get_vm(vm_id)
         except VMNotFoundError:
             # Best-effort cleanup of leaked artifacts, then propagate the lookup error.
-            self._cleanup_resources(vm_id)
+            with suppress(Exception):
+                self._cleanup_resources(vm_id)
             raise
 
         if vm_info.status in (VMState.RUNNING, VMState.PAUSED):
@@ -1323,6 +1343,7 @@ class SmolVMManager:
 
         qemu_name = qemu_bin.name
         system = platform.system()
+        qmp_socket_path = self._qemu_qmp_socket_path(vm_info.vm_id)
 
         drive_arg = f"file={vm_info.config.rootfs_path},if=none,format=raw,id=hd0"
         hostfwd_rules = [f"hostfwd=tcp:127.0.0.1:{ssh_port}-:22"]
@@ -1342,6 +1363,8 @@ class SmolVMManager:
             str(vm_info.config.kernel_path),
             "-append",
             boot_args,
+            "-qmp",
+            f"unix:{qmp_socket_path},server=on,wait=off",
             "-drive",
             drive_arg,
             "-netdev",
@@ -1350,9 +1373,12 @@ class SmolVMManager:
             "-no-reboot",
         ]
 
+        if qmp_socket_path.exists():
+            self._unlink_socket(qmp_socket_path, socket_label="QEMU QMP")
+
         if "aarch64" in qemu_name:
-            machine = "virt,accel=hvf" if system == "Darwin" else "virt"
-            cpu = "host" if system == "Darwin" else "cortex-a72"
+            machine = "virt,accel=hvf" if system == "Darwin" else "virt,accel=kvm"
+            cpu = "host" if system in {"Darwin", "Linux"} else "cortex-a72"
             cmd.extend(
                 [
                     "-machine",
@@ -1366,8 +1392,8 @@ class SmolVMManager:
                 ]
             )
         else:
-            machine = "q35,accel=hvf" if system == "Darwin" else "q35"
-            cpu = "host" if system == "Darwin" else "max"
+            machine = "q35,accel=hvf" if system == "Darwin" else "q35,accel=kvm"
+            cpu = "host" if system in {"Darwin", "Linux"} else "max"
             cmd.extend(
                 [
                     "-machine",
@@ -1452,7 +1478,7 @@ class SmolVMManager:
         logger.debug("Started Firecracker: PID=%d, socket=%s", process.pid, socket_path)
         return process
 
-    def _unlink_socket(self, socket_path: Path) -> None:
+    def _unlink_socket(self, socket_path: Path, *, socket_label: str = "runtime") -> None:
         """Best-effort socket cleanup with sudo fallback for stale root-owned sockets."""
         try:
             socket_path.unlink()
@@ -1471,13 +1497,105 @@ class SmolVMManager:
             if result.returncode != 0:
                 stderr = (result.stderr or "").strip()
                 raise SmolVMError(
-                    "Failed to remove stale Firecracker socket.\n"
+                    f"Failed to remove stale {socket_label} socket.\n"
                     f"Path: {socket_path}\n"
                     "Run one of the following:\n"
                     f"  sudo rm -f {socket_path}\n"
                     f"  {RUNTIME_PRIVILEGE_SETUP_HINT}\n"
                     f"sudo stderr: {stderr}"
                 ) from None
+
+    def _read_qmp_response(self, stream: Any) -> dict[str, Any]:
+        """Read a single JSON response from a QMP stream."""
+        raw = stream.readline()
+        if not raw:
+            raise SmolVMError("QMP socket closed unexpectedly")
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise SmolVMError("Received invalid JSON from QMP") from exc
+
+    def _wait_for_qmp_result(self, stream: Any, command: str) -> dict[str, Any]:
+        """Read QMP responses until the requested command returns or errors."""
+        while True:
+            message = self._read_qmp_response(stream)
+            if "event" in message:
+                continue
+            if "return" in message:
+                return message
+            if "error" in message:
+                error = message["error"]
+                desc = error.get("desc", "unknown error") if isinstance(error, dict) else str(error)
+                raise SmolVMError(
+                    f"QMP command '{command}' failed: {desc}",
+                    {"command": command, "error": error},
+                )
+
+    def _send_qmp_command(
+        self,
+        vm_id: str,
+        command: str,
+        *,
+        timeout: float = QEMU_QMP_TIMEOUT_SECONDS,
+    ) -> None:
+        """Connect to QMP and execute a single command."""
+        qmp_socket_path = self._qemu_qmp_socket_path(vm_id)
+        if not qmp_socket_path.exists():
+            raise SmolVMError(
+                "QMP socket is not available",
+                {"vm_id": vm_id, "qmp_socket_path": str(qmp_socket_path)},
+            )
+
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(timeout)
+            client.connect(str(qmp_socket_path))
+            with client.makefile("rwb") as stream:
+                greeting = self._read_qmp_response(stream)
+                if "QMP" not in greeting:
+                    raise SmolVMError(
+                        "QMP greeting not received",
+                        {"vm_id": vm_id, "qmp_socket_path": str(qmp_socket_path)},
+                    )
+
+                stream.write(json.dumps({"execute": "qmp_capabilities"}).encode("utf-8") + b"\n")
+                stream.flush()
+                self._wait_for_qmp_result(stream, "qmp_capabilities")
+
+                stream.write(json.dumps({"execute": command}).encode("utf-8") + b"\n")
+                stream.flush()
+                self._wait_for_qmp_result(stream, command)
+
+    def _shutdown_qemu(self, vm_id: str, pid: int, timeout: float) -> None:
+        """Stop QEMU with QMP first, then signals as fallback."""
+        if not self._is_process_running(pid):
+            return
+
+        deadline = time.time() + max(timeout, 0.0)
+
+        def remaining() -> float:
+            return max(0.0, deadline - time.time())
+
+        try:
+            self._send_qmp_command(vm_id, "system_powerdown")
+            self._wait_for_process(pid, remaining())
+            if not self._is_process_running(pid):
+                return
+        except Exception as exc:
+            logger.warning("QMP system_powerdown failed for %s: %s", vm_id, exc)
+
+        try:
+            self._send_qmp_command(vm_id, "quit")
+            self._wait_for_process(pid, min(remaining(), 2.0))
+            if not self._is_process_running(pid):
+                return
+        except Exception as exc:
+            logger.warning("QMP quit failed for %s: %s", vm_id, exc)
+
+        try:
+            os.kill(pid, signal.SIGTERM)
+            self._wait_for_process(pid, min(remaining(), 2.0))
+        except Exception as exc:
+            logger.warning("SIGTERM shutdown failed for %s: %s", vm_id, exc)
 
     def _kill_process(self, pid: int) -> None:
         """Kill a process.
@@ -1552,88 +1670,152 @@ class SmolVMManager:
         )
         return f"{args} {ip_arg}".strip()
 
+    def _record_cleanup_failure(
+        self,
+        vm_id: str,
+        step: str,
+        exc: Exception,
+        failures: list[str],
+    ) -> None:
+        """Track a cleanup failure without aborting later steps."""
+        message = f"{step}: {exc}"
+        failures.append(message)
+        logger.warning("Cleanup step failed for %s (%s): %s", vm_id, step, exc)
+
+    def _raise_cleanup_failures(self, vm_id: str, failures: list[str]) -> None:
+        """Raise a single error summarizing all cleanup failures."""
+        if not failures:
+            return
+        raise SmolVMError(
+            f"Failed to fully clean up VM '{vm_id}'",
+            {"vm_id": vm_id, "cleanup_failures": failures},
+        )
+
     def _cleanup_resources(self, vm_id: str) -> None:
         """Clean up resources for a VM.
 
         Args:
             vm_id: The VM identifier.
         """
+        failures: list[str] = []
+        vm_info: VMInfo | None = None
+        backend = self.backend
+        lease: tuple[str, str] | None = None
+        ssh_host_port: int | None = None
+        guest_ip: str | None = None
+
         try:
+            vm_info = self.state.get_vm(vm_id)
+        except VMNotFoundError:
             vm_info = None
-            with suppress(VMNotFoundError):
-                vm_info = self.state.get_vm(vm_id)
+        except Exception as exc:
+            self._record_cleanup_failure(vm_id, "load-vm-state", exc, failures)
 
-            backend = self.backend
-            if vm_info is not None:
-                with suppress(SmolVMError):
-                    backend = self._backend_for_vm(vm_info)
+        if vm_info is not None:
+            try:
+                backend = self._backend_for_vm(vm_info)
+            except Exception as exc:
+                self._record_cleanup_failure(vm_id, "resolve-backend", exc, failures)
 
+        try:
             lease = self.state.get_ip_lease(vm_id)
+        except Exception as exc:
+            self._record_cleanup_failure(vm_id, "load-ip-lease", exc, failures)
 
-            ssh_host_port: int | None = None
-            guest_ip: str | None = lease[0] if lease else None
-            if vm_info and vm_info.network:
-                ssh_host_port = vm_info.network.ssh_host_port
-                guest_ip = vm_info.network.guest_ip
-            else:
+        if lease:
+            guest_ip = lease[0]
+
+        if vm_info and vm_info.network:
+            ssh_host_port = vm_info.network.ssh_host_port
+            guest_ip = vm_info.network.guest_ip
+        else:
+            try:
                 ssh_host_port = self.state.get_ssh_port(vm_id)
+            except Exception as exc:
+                self._record_cleanup_failure(vm_id, "load-ssh-port", exc, failures)
 
-            if backend == BACKEND_FIRECRACKER and ssh_host_port is not None and guest_ip:
-                with suppress(Exception):
-                    self.network.cleanup_ssh_port_forward(
-                        vm_id=vm_id,
-                        guest_ip=guest_ip,
-                        host_port=ssh_host_port,
-                    )
+        if backend == BACKEND_FIRECRACKER and ssh_host_port is not None and guest_ip:
+            try:
+                self.network.cleanup_ssh_port_forward(
+                    vm_id=vm_id,
+                    guest_ip=guest_ip,
+                    host_port=ssh_host_port,
+                )
+            except Exception as exc:
+                self._record_cleanup_failure(vm_id, "cleanup-ssh-port-forward", exc, failures)
 
-            # Reconnect flows may not have in-memory local-forward state.
-            # Always remove any persisted localhost forwarding rules by vm_id.
-            with suppress(Exception):
-                self.network.cleanup_all_local_port_forwards(vm_id)
+        try:
+            self.network.cleanup_all_local_port_forwards(vm_id)
+        except Exception as exc:
+            self._record_cleanup_failure(vm_id, "cleanup-local-port-forwards", exc, failures)
 
-            # Get IP lease info
-            if lease:
-                _, tap_device = lease
+        if lease:
+            _, tap_device = lease
 
-                if backend == BACKEND_FIRECRACKER:
-                    # Cleanup Linux TAP/NAT only for Firecracker backend.
-                    with suppress(Exception):
-                        self.network.remove_egress_rules(tap_device)
+            if backend == BACKEND_FIRECRACKER:
+                try:
+                    self.network.remove_egress_rules(tap_device)
+                except Exception as exc:
+                    self._record_cleanup_failure(vm_id, "remove-egress-rules", exc, failures)
+                try:
                     self.network.cleanup_nat_rules(tap_device)
+                except Exception as exc:
+                    self._record_cleanup_failure(vm_id, "cleanup-nat-rules", exc, failures)
+                try:
                     self.network.cleanup_tap(tap_device)
+                except Exception as exc:
+                    self._record_cleanup_failure(vm_id, "cleanup-tap", exc, failures)
 
-                # Release IP lease regardless of backend.
+            try:
                 self.state.release_ip(vm_id)
+            except Exception as exc:
+                self._record_cleanup_failure(vm_id, "release-ip-lease", exc, failures)
 
-            if ssh_host_port is not None:
+        if ssh_host_port is not None:
+            try:
                 self.state.release_ssh_port(vm_id)
+            except Exception as exc:
+                self._record_cleanup_failure(vm_id, "release-ssh-port", exc, failures)
 
-            # Cleanup Firecracker socket artifacts.
-            socket_path = self.socket_dir / f"fc-{vm_id}.sock"
-            if socket_path.exists():
-                self._unlink_socket(socket_path)
+        try:
+            self.state.release_host_ports(vm_id)
+        except Exception as exc:
+            self._record_cleanup_failure(vm_id, "release-host-ports", exc, failures)
 
-            # Close tracked log file handles.
-            firecracker_key = str(socket_path)
-            qemu_key = f"qemu:{vm_id}"
-            for key in (firecracker_key, qemu_key):
-                fh = self._log_files.pop(key, None)
-                if fh is not None:
-                    with suppress(Exception):
-                        fh.close()
+        firecracker_socket_path = self.socket_dir / f"fc-{vm_id}.sock"
+        if firecracker_socket_path.exists():
+            try:
+                self._unlink_socket(firecracker_socket_path, socket_label="Firecracker")
+            except Exception as exc:
+                self._record_cleanup_failure(vm_id, "cleanup-firecracker-socket", exc, failures)
 
-            managed_disk = self._managed_disk_for_vm(vm_info)
-            if managed_disk and managed_disk.exists():
-                if vm_info.config.retain_disk_on_delete:
-                    logger.info(
-                        "Retaining isolated disk for VM %s at %s",
-                        vm_id,
-                        managed_disk,
-                    )
-                else:
-                    with suppress(Exception):
-                        managed_disk.unlink()
-                        logger.info("Removed isolated disk for VM %s: %s", vm_id, managed_disk)
+        qmp_socket_path = self._qemu_qmp_socket_path(vm_id)
+        if qmp_socket_path.exists():
+            try:
+                self._unlink_socket(qmp_socket_path, socket_label="QEMU QMP")
+            except Exception as exc:
+                self._record_cleanup_failure(vm_id, "cleanup-qmp-socket", exc, failures)
 
-        except Exception as e:
-            logger.warning("Error during cleanup for %s: %s", vm_id, e)
+        firecracker_key = str(firecracker_socket_path)
+        qemu_key = f"qemu:{vm_id}"
+        for key in (firecracker_key, qemu_key):
+            fh = self._log_files.pop(key, None)
+            if fh is None:
+                continue
+            try:
+                fh.close()
+            except Exception as exc:
+                self._record_cleanup_failure(vm_id, f"close-log-handle[{key}]", exc, failures)
+
+        managed_disk = self._managed_disk_for_vm(vm_info)
+        if managed_disk and managed_disk.exists():
+            if vm_info and vm_info.config.retain_disk_on_delete:
+                logger.info("Retaining isolated disk for VM %s at %s", vm_id, managed_disk)
+            else:
+                try:
+                    managed_disk.unlink()
+                    logger.info("Removed isolated disk for VM %s: %s", vm_id, managed_disk)
+                except Exception as exc:
+                    self._record_cleanup_failure(vm_id, "remove-managed-disk", exc, failures)
+
+        self._raise_cleanup_failures(vm_id, failures)
