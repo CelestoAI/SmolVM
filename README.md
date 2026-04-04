@@ -1,11 +1,12 @@
 <div align="center">
 
-<img src="https://ik.imagekit.io/gradsflow/celestoai/logo/smolvm_Es-VK398Q.png?updatedAt=1775222245588" width=100px>
-
-
 # SmolVM
 
 **Run AI code, start a browser, and give AI agents an isolated workspace**
+
+
+<img src="https://ik.imagekit.io/gradsflow/celestoai/logo/celesto%20cover_rbgjzSyOF.png">
+
 
 [![CodeQL](https://github.com/CelestoAI/SmolVM/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/CelestoAI/SmolVM/actions/workflows/github-code-scanning/codeql)
 [![Run Tests](https://github.com/CelestoAI/SmolVM/actions/workflows/pytest.yml/badge.svg)](https://github.com/CelestoAI/SmolVM/actions/workflows/pytest.yml)
