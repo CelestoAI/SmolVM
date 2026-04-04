@@ -437,6 +437,45 @@ class TestSnapshotStorage:
         assert ip == "172.16.0.22"
         assert ssh_port == 2222
 
+    def test_qemu_snapshot_round_trip_preserves_backend_and_optional_artifacts(
+        self,
+        state_manager: StateManager,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        """QEMU snapshots should not be rehydrated as Firecracker snapshots."""
+        qemu_config = sample_config.model_copy(update={"backend": "qemu"})
+        state_manager.create_vm(qemu_config)
+        network = NetworkConfig(
+            guest_ip="172.16.0.2",
+            tap_device="tap2",
+            guest_mac="AA:FC:00:00:00:02",
+            ssh_host_port=2200,
+        )
+        state_manager.update_vm("vm001", network=network)
+
+        snapshot_dir = tmp_path / "snapshots" / "snap-qemu"
+        snapshot_dir.mkdir(parents=True)
+        disk_path = snapshot_dir / "disk.qcow2"
+        disk_path.write_bytes(b"")
+        snapshot = SnapshotInfo(
+            snapshot_id="snap-qemu",
+            vm_id="vm001",
+            backend="qemu",
+            artifacts=SnapshotArtifacts(disk_path=disk_path),
+            vm_config=qemu_config,
+            network_config=network,
+            created_at=datetime.now(timezone.utc),
+        )
+
+        state_manager.create_snapshot(snapshot)
+        fetched = state_manager.get_snapshot("snap-qemu")
+
+        assert fetched.backend == "qemu"
+        assert fetched.artifacts.state_path is None
+        assert fetched.artifacts.memory_path is None
+        assert fetched.artifacts.disk_path == disk_path
+
 
 class TestReconciliation:
     """Tests for state reconciliation."""

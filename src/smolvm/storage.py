@@ -409,8 +409,8 @@ class StateManager:
     @staticmethod
     def _snapshot_info_from_row(row: sqlite3.Row) -> SnapshotInfo:
         """Convert a snapshots row into SnapshotInfo."""
-        backend = row["backend"] if "backend" in row and row["backend"] else "firecracker"
-        if "artifacts" in row and row["artifacts"]:
+        backend = row["backend"] if row["backend"] else "firecracker"
+        if row["artifacts"]:
             artifacts = SnapshotArtifacts.model_validate_json(row["artifacts"])
         else:
             artifacts = SnapshotArtifacts(
