@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from smolvm.cloud_init import seed_cache_key
 from smolvm.exceptions import (
     CommandExecutionUnavailableError,
     OperationTimeoutError,
@@ -371,9 +372,72 @@ class TestVMInit:
 
         assert config.backend == "qemu"
         assert config.initrd_path == initrd
+        assert config.ssh_capable is True
         assert "root=LABEL=cloudimg-rootfs" in config.boot_args
         assert config.extra_drives[0].suffix == ".iso"
         mock_image_manager.ensure_image.assert_called_once_with("ubuntu-jammy-qemu-aarch64")
+
+    @patch("smolvm.facade.platform.machine", return_value="arm64")
+    @patch("smolvm.facade.build_seed_iso")
+    @patch("smolvm.facade.ImageManager")
+    @patch("smolvm.utils.ensure_ssh_key")
+    def test_named_auto_config_qemu_uses_explicit_ssh_key_for_seed(
+        self,
+        mock_ensure_ssh_key: MagicMock,
+        mock_image_manager_cls: MagicMock,
+        mock_build_seed_iso: MagicMock,
+        _: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """QEMU auto-config should honor an explicit SSH key when building the seed ISO."""
+        kernel = tmp_path / "vmlinuz"
+        initrd = tmp_path / "initrd"
+        rootfs = tmp_path / "rootfs.qcow2"
+        default_private = tmp_path / "id_ed25519"
+        default_public = tmp_path / "id_ed25519.pub"
+        custom_private = tmp_path / "custom_id_ed25519"
+        custom_public = tmp_path / "custom_id_ed25519.pub"
+        kernel.touch()
+        initrd.touch()
+        rootfs.touch()
+        default_private.touch()
+        default_public.write_text("ssh-ed25519 AAAAC3NzaDefault user@test\n")
+        custom_private.touch()
+        custom_public.write_text("ssh-ed25519 AAAAC3NzaCustom user@test\n")
+
+        mock_ensure_ssh_key.return_value = (default_private, default_public)
+        mock_build_seed_iso.side_effect = lambda path, **kwargs: (
+            path.parent.mkdir(parents=True, exist_ok=True),
+            path.touch(),
+        )[-1]
+        mock_image_manager = MagicMock()
+        mock_image_manager.cache_dir = tmp_path
+        mock_image_manager.ensure_image.return_value = MagicMock(
+            kernel_path=kernel,
+            initrd_path=initrd,
+            rootfs_path=rootfs,
+        )
+        mock_image_manager_cls.return_value = mock_image_manager
+
+        config, ssh_key_path = _build_auto_config(
+            vm_name="project-spacex",
+            backend="qemu",
+            ssh_key_path=str(custom_private),
+        )
+
+        expected_seed_name = (
+            seed_cache_key(
+                ssh_public_key=custom_public.read_text().strip(),
+                instance_id="smolvm-20260320",
+                hostname="smolvm",
+            )
+            + ".iso"
+        )
+        assert ssh_key_path == str(custom_private)
+        assert config.extra_drives[0].name == expected_seed_name
+        assert config.ssh_capable is True
+        assert "AAAAC3NzaCustom" in mock_build_seed_iso.call_args.kwargs["user_data"]
+        mock_ensure_ssh_key.assert_not_called()
 
     @patch("smolvm.facade.platform.machine", return_value="arm64")
     @patch("smolvm.build.ImageBuilder")
@@ -566,6 +630,71 @@ class TestVMLifecycle:
 
 class TestVMRun:
     """Tests for command execution on the VM."""
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_can_run_commands_requires_explicit_ssh_capability_for_initrd(
+        self,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """An initrd alone should not imply SSH command execution support."""
+        kernel = tmp_path / "vmlinuz"
+        initrd = tmp_path / "initrd"
+        rootfs = tmp_path / "rootfs.qcow2"
+        kernel.touch()
+        initrd.touch()
+        rootfs.touch()
+        config = VMConfig(
+            vm_id="vm001",
+            kernel_path=kernel,
+            initrd_path=initrd,
+            rootfs_path=rootfs,
+        )
+
+        mock_info = MagicMock()
+        mock_info.vm_id = "vm001"
+        mock_info.status = VMState.CREATED
+        mock_info.config = config
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = mock_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = SmolVM(config)
+
+        assert vm.can_run_commands() is False
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_can_run_commands_allows_initrd_only_when_explicitly_ssh_capable(
+        self,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Initrd-backed configs must opt into SSH capability explicitly."""
+        kernel = tmp_path / "vmlinuz"
+        initrd = tmp_path / "initrd"
+        rootfs = tmp_path / "rootfs.qcow2"
+        kernel.touch()
+        initrd.touch()
+        rootfs.touch()
+        config = VMConfig(
+            vm_id="vm001",
+            kernel_path=kernel,
+            initrd_path=initrd,
+            rootfs_path=rootfs,
+            ssh_capable=True,
+        )
+
+        mock_info = MagicMock()
+        mock_info.vm_id = "vm001"
+        mock_info.status = VMState.CREATED
+        mock_info.config = config
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = mock_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = SmolVM(config)
+
+        assert vm.can_run_commands() is True
 
     @patch("smolvm.facade.SSHClient")
     @patch("smolvm.facade.SmolVMManager")

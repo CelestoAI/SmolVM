@@ -367,3 +367,46 @@ class TestBrowserImageBuilder:
             )
 
         assert mock_run_command.call_count == 3
+
+
+@pytest.mark.parametrize("method_name", ["build_alpine_ssh_key", "build_debian_ssh_key"])
+def test_rebuild_preserves_cached_artifacts_when_docker_is_unavailable(
+    method_name: str,
+    tmp_path: Path,
+) -> None:
+    """Rebuild paths should not evict cached files before Docker is confirmed available."""
+    builder = ImageBuilder(cache_dir=tmp_path / "images")
+    image_name = "cached-image"
+    image_dir = builder.cache_dir / image_name
+    image_dir.mkdir(parents=True)
+    kernel_path = image_dir / "vmlinux.bin"
+    rootfs_path = image_dir / "rootfs.ext4"
+    kernel_path.write_bytes(b"kernel")
+    rootfs_path.write_bytes(b"rootfs")
+
+    build_method = getattr(builder, method_name)
+
+    with (
+        patch.object(
+            ImageBuilder,
+            "_resolve_public_key",
+            return_value="ssh-ed25519 AAAA user@test",
+        ),
+        patch.object(
+            ImageBuilder,
+            "_resolve_kernel_url",
+            return_value="https://example.invalid/vmlinux",
+        ),
+        patch.object(ImageBuilder, "_check_fingerprint", return_value=False),
+        patch.object(ImageBuilder, "check_docker", return_value=False),
+        patch.object(
+            ImageBuilder,
+            "docker_requirement_error",
+            return_value=ImageError("docker unavailable"),
+        ),
+        pytest.raises(ImageError, match="docker unavailable"),
+    ):
+        build_method("ignored", name=image_name)
+
+    assert kernel_path.exists()
+    assert rootfs_path.exists()

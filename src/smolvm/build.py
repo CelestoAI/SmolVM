@@ -312,12 +312,14 @@ RUN chmod +x /init
                 )
                 return (kernel_path, rootfs_path)
 
+            if not self.check_docker():
+                raise self.docker_requirement_error()
+
             logger.info("SSH key or config changed for image '%s'. Rebuilding...", name)
             # Remove stale files
             kernel_path.unlink(missing_ok=True)
             rootfs_path.unlink(missing_ok=True)
-
-        if not self.check_docker():
+        elif not self.check_docker():
             raise self.docker_requirement_error()
 
         logger.info("Building Alpine key-only SSH image '%s'...", name)
@@ -416,12 +418,14 @@ RUN chmod +x /init
                 )
                 return (kernel_path, rootfs_path)
 
+            if not self.check_docker():
+                raise self.docker_requirement_error()
+
             logger.info("Inputs changed for image '%s'. Rebuilding...", name)
             # Remove stale files
             kernel_path.unlink(missing_ok=True)
             rootfs_path.unlink(missing_ok=True)
-
-        if not self.check_docker():
+        elif not self.check_docker():
             raise self.docker_requirement_error()
 
         logger.info("Building Debian key-only SSH image '%s'...", name)

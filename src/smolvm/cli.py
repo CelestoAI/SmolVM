@@ -395,6 +395,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit machine-readable JSON output.",
     )
 
+    from smolvm.backends import BACKEND_QEMU, resolve_backend
+    from smolvm.facade import _default_guest_os_for_backend
+
+    current_default_backend = resolve_backend(None)
+    current_default_guest_os = _default_guest_os_for_backend(current_default_backend)
+    qemu_default_guest_os = _default_guest_os_for_backend(BACKEND_QEMU)
+
     create_parser = subparsers.add_parser(
         "create",
         help="Create an SSH-ready VM and leave it running",
@@ -408,7 +415,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--os",
         choices=[guest_os.value for guest_os in GuestOS],
         default=None,
-        help="Guest OS for the auto-configured VM (default: alpine).",
+        help=(
+            "Guest OS for the auto-configured VM (default: backend-specific; "
+            f"{qemu_default_guest_os.value} for qemu-backed creates, "
+            f"{GuestOS.ALPINE.value} otherwise; current default backend: "
+            f"{current_default_backend} -> {current_default_guest_os.value})."
+        ),
     )
     create_parser.add_argument(
         "--memory-mib",

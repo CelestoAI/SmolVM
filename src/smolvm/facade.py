@@ -132,6 +132,23 @@ def _qemu_auto_config_image_name() -> str:
     return f"ubuntu-jammy-qemu-{image_arch}"
 
 
+def _resolve_auto_config_public_key(ssh_key_path: str | None) -> tuple[str, Path]:
+    """Resolve the SSH private key path and matching public key for auto-config."""
+    from smolvm.utils import ensure_ssh_key
+
+    if ssh_key_path is None:
+        private_key, public_key = ensure_ssh_key()
+        return str(private_key), public_key
+
+    public_key = Path(f"{ssh_key_path}.pub")
+    if not public_key.is_file():
+        raise ValueError(
+            "ssh_key_path must have a matching public key file at "
+            f"{public_key}"
+        )
+    return ssh_key_path, public_key
+
+
 def _build_auto_config_image_name(
     guest_os: GuestOS,
     *,
@@ -162,12 +179,11 @@ def _build_auto_config(
 ) -> tuple[VMConfig, str | None]:
     """Build the default SSH-ready VM config used by zero-config flows."""
     from smolvm.build import ImageBuilder
-    from smolvm.utils import ensure_ssh_key
 
     resolved_backend = resolve_backend(backend)
     resolved_os = _normalize_guest_os(os or _default_guest_os_for_backend(resolved_backend))
-    private_key, public_key = ensure_ssh_key()
-    resolved_ssh_key_path = ssh_key_path or str(private_key)
+    resolved_ssh_key_path, public_key_path = _resolve_auto_config_public_key(ssh_key_path)
+    public_key_value = public_key_path.read_text().strip()
 
     resolved_mem_size_mib = _AUTO_CONFIG_DEFAULT_MEM_SIZE_MIB[resolved_os]
     if mem_size_mib is not None:
@@ -203,7 +219,7 @@ def _build_auto_config(
         boot_args = f"{boot_args} root=LABEL=cloudimg-rootfs rw"
 
         seed_key = seed_cache_key(
-            ssh_public_key=public_key.read_text().strip(),
+            ssh_public_key=public_key_value,
             instance_id=f"smolvm-{_UBUNTU_CURRENT_RELEASE_DATE}",
             hostname="smolvm",
         )
@@ -212,7 +228,7 @@ def _build_auto_config(
         if not seed_path.exists():
             build_seed_iso(
                 seed_path,
-                user_data=default_user_data(public_key.read_text().strip()),
+                user_data=default_user_data(public_key_value),
                 meta_data=default_meta_data(
                     instance_id=f"smolvm-{_UBUNTU_CURRENT_RELEASE_DATE}",
                     hostname="smolvm",
@@ -229,6 +245,7 @@ def _build_auto_config(
             rootfs_path=image.rootfs_path,
             extra_drives=[seed_path],
             boot_args=boot_args,
+            ssh_capable=True,
             backend=resolved_backend,
         )
         logger.info(
@@ -253,14 +270,14 @@ def _build_auto_config(
 
     if resolved_os is GuestOS.DEBIAN:
         kernel, rootfs = builder.build_debian_ssh_key(
-            public_key,
+            public_key_path,
             name=image_name,
             rootfs_size_mb=resolved_disk_size_mib,
             kernel_profile=kernel_profile,
         )
     else:
         kernel, rootfs = builder.build_alpine_ssh_key(
-            public_key,
+            public_key_path,
             name=image_name,
             rootfs_size_mb=resolved_disk_size_mib,
             kernel_profile=kernel_profile,
@@ -998,7 +1015,10 @@ class SmolVM:
         bring up SSH inside the guest.
         """
         initrd_path = self._info.config.initrd_path
-        return "init=/init" in self._info.config.boot_args or isinstance(initrd_path, Path)
+        ssh_capable = getattr(self._info.config, "ssh_capable", False)
+        return "init=/init" in self._info.config.boot_args or (
+            isinstance(initrd_path, Path) and ssh_capable is True
+        )
 
     def close(self) -> None:
         """Release underlying SDK resources for this facade instance."""

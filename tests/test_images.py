@@ -77,6 +77,36 @@ class TestListAvailable:
         assert mgr.list_available() == ["alpha", "zeta"]
 
 
+class TestImageSourceValidation:
+    """Tests for ImageSource filename normalization and validation."""
+
+    def test_normalizes_cache_filenames_to_basenames(self) -> None:
+        """Cache filenames should be sanitized to their basename."""
+        source = ImageSource(
+            name="test-image",
+            kernel_url="https://example.com/vmlinux.bin",
+            kernel_filename="nested/kernel/vmlinux.bin",
+            initrd_url="https://example.com/initrd.img",
+            initrd_filename="nested/initrd/initrd.img",
+            rootfs_url="https://example.com/rootfs.ext4",
+            rootfs_filename="nested/rootfs/rootfs.ext4",
+        )
+
+        assert source.kernel_filename == "vmlinux.bin"
+        assert source.initrd_filename == "initrd.img"
+        assert source.rootfs_filename == "rootfs.ext4"
+
+    def test_rejects_absolute_cache_filenames(self) -> None:
+        """Absolute cache filenames should be rejected."""
+        with pytest.raises(ValueError, match="relative paths"):
+            ImageSource(
+                name="test-image",
+                kernel_url="https://example.com/vmlinux.bin",
+                kernel_filename="/tmp/vmlinux.bin",
+                rootfs_url="https://example.com/rootfs.ext4",
+            )
+
+
 class TestIsCached:
     """Tests for cache checking."""
 
@@ -120,6 +150,22 @@ class TestEnsureImage:
         """Test that empty image name raises ValueError."""
         with pytest.raises(ValueError, match="image name cannot be empty"):
             image_manager.ensure_image("")
+
+    def test_rejects_colliding_asset_filenames(self, tmp_path: Path) -> None:
+        """Image assets should not be allowed to collide inside one cache directory."""
+        registry = {
+            "colliding": ImageSource(
+                name="colliding",
+                kernel_url="https://example.com/vmlinux.bin",
+                kernel_filename="shared.bin",
+                rootfs_url="https://example.com/rootfs.ext4",
+                rootfs_filename="nested/shared.bin",
+            ),
+        }
+        mgr = ImageManager(cache_dir=tmp_path / "images", registry=registry)
+
+        with pytest.raises(ImageError, match="filenames collide"):
+            mgr.ensure_image("colliding")
 
     def test_returns_cached_without_download(
         self, image_manager: ImageManager, image_registry: dict[str, ImageSource]

@@ -101,6 +101,8 @@ class VMConfig(BaseModel):
         rootfs_path: Path to the root filesystem image.
         extra_drives: Additional block-device image paths to attach at boot.
         boot_args: Kernel boot arguments.
+        ssh_capable: Whether this boot path is expected to start guest SSH
+            without relying on ``init=/init``.
         backend: Optional runtime backend override ("firecracker" or "qemu").
         disk_mode: Disk lifecycle mode:
             - ``"isolated"`` (default): clone rootfs per VM for sandbox isolation.
@@ -126,6 +128,7 @@ class VMConfig(BaseModel):
     rootfs_path: Path
     extra_drives: list[Path] = []
     boot_args: str = "console=ttyS0 reboot=k panic=1 pci=off"
+    ssh_capable: bool = False
     backend: str | None = None
     disk_mode: Literal["isolated", "shared"] = "isolated"
     retain_disk_on_delete: bool = False

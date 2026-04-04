@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import io
 from pathlib import Path
+from uuid import uuid4
 
 from pycdlib import PyCdlib
 
@@ -72,18 +73,28 @@ def build_seed_iso(
 ) -> Path:
     """Create a NoCloud ISO image at *output_path*."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.unlink(missing_ok=True)
+    temp_output_path = output_path.with_name(
+        f".{output_path.name}.{uuid4().hex}.tmp"
+    )
 
     iso = PyCdlib()
-    iso.new(interchange_level=3, joliet=3, rock_ridge="1.09", vol_ident="CIDATA")
+    try:
+        try:
+            iso.new(interchange_level=3, joliet=3, rock_ridge="1.09", vol_ident="CIDATA")
 
-    _add_text_file(iso, "/USERDATA.;1", "user-data", user_data)
-    _add_text_file(iso, "/METADATA.;1", "meta-data", meta_data)
-    if vendor_data is not None:
-        _add_text_file(iso, "/VENDORDA.;1", "vendor-data", vendor_data)
+            _add_text_file(iso, "/USERDATA.;1", "user-data", user_data)
+            _add_text_file(iso, "/METADATA.;1", "meta-data", meta_data)
+            if vendor_data is not None:
+                _add_text_file(iso, "/VENDORDA.;1", "vendor-data", vendor_data)
 
-    iso.write(str(output_path))
-    iso.close()
+            iso.write(str(temp_output_path))
+        finally:
+            iso.close()
+
+        temp_output_path.replace(output_path)
+    except Exception:
+        temp_output_path.unlink(missing_ok=True)
+        raise
     return output_path
 
 

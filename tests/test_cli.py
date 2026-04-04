@@ -79,6 +79,20 @@ def test_top_level_help_mentions_json_for_agents() -> None:
     assert "LLMs, agents, and automation" in help_text
 
 
+def test_create_help_describes_backend_specific_guest_default(
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """Create help should describe the backend-specific guest OS default."""
+    with pytest.raises(SystemExit) as exc_info:
+        main(["create", "--help"])
+
+    assert exc_info.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "default: backend-" in help_text
+    assert "specific; ubuntu for qemu-backed creates" in help_text
+    assert "current default backend" in help_text
+
+
 class TestCliEnv:
     """Tests for `smolvm env` subcommands."""
 
@@ -324,9 +338,11 @@ class TestCliCreate:
         _: MagicMock,
         mock_vm_cls: MagicMock,
         mock_build_auto_config: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture,
     ) -> None:
         """`smolvm create` should auto-generate a VM name when omitted."""
+        monkeypatch.delenv("SMOLVM_BACKEND", raising=False)
         config = MagicMock(vm_id="vm-a1b2c3d4")
         mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
 
@@ -367,9 +383,11 @@ class TestCliCreate:
         _: MagicMock,
         mock_vm_cls: MagicMock,
         mock_build_auto_config: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture,
     ) -> None:
         """`smolvm create` should build, start, and report a named VM."""
+        monkeypatch.delenv("SMOLVM_BACKEND", raising=False)
         config = MagicMock(vm_id="project-spacex")
         mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
 
@@ -465,9 +483,11 @@ class TestCliCreate:
         _: MagicMock,
         mock_vm_cls: MagicMock,
         mock_build_auto_config: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture,
     ) -> None:
         """`smolvm create --json` should emit the shared envelope."""
+        monkeypatch.delenv("SMOLVM_BACKEND", raising=False)
         config = MagicMock(vm_id="project-spacex")
         mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
 

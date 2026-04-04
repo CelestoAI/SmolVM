@@ -23,7 +23,7 @@ import tempfile
 from pathlib import Path
 
 import requests
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from smolvm.exceptions import ImageError
 
@@ -61,6 +61,19 @@ class ImageSource(BaseModel):
     rootfs_url: str
     rootfs_sha256: str | None = None
     rootfs_filename: str = "rootfs.ext4"
+
+    @field_validator("kernel_filename", "initrd_filename", "rootfs_filename")
+    @classmethod
+    def normalize_cache_filename(cls, value: str) -> str:
+        """Normalize cache filenames to safe basenames."""
+        raw_path = Path(value)
+        if raw_path.is_absolute():
+            raise ValueError("image cache filenames must be relative paths")
+
+        normalized = raw_path.name
+        if not normalized or normalized in {".", ".."}:
+            raise ValueError("image cache filenames must resolve to a basename")
+        return normalized
 
     model_config = {"frozen": True}
 
@@ -158,9 +171,7 @@ class ImageManager:
         if source is None:
             return False
 
-        kernel = image_dir / source.kernel_filename
-        rootfs = image_dir / source.rootfs_filename
-        initrd = image_dir / source.initrd_filename if source.initrd_url else None
+        kernel, initrd, rootfs = self._resolve_asset_paths(image_dir, source)
 
         return kernel.is_file() and rootfs.is_file() and (initrd is None or initrd.is_file())
 
@@ -189,9 +200,7 @@ class ImageManager:
             raise ImageError(f"Unknown image: '{name}'. Available images: {available}")
 
         image_dir = self.cache_dir / name
-        kernel_path = image_dir / source.kernel_filename
-        initrd_path = image_dir / source.initrd_filename if source.initrd_url else None
-        rootfs_path = image_dir / source.rootfs_filename
+        kernel_path, initrd_path, rootfs_path = self._resolve_asset_paths(image_dir, source)
 
         # Check cache — re-download if SHA mismatch
         initrd_ready = initrd_path is None or initrd_path.is_file()
@@ -237,6 +246,44 @@ class ImageManager:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _resolve_asset_paths(
+        self,
+        image_dir: Path,
+        source: ImageSource,
+    ) -> tuple[Path, Path | None, Path]:
+        """Return validated cache destinations for image assets."""
+        filenames = {
+            "kernel": source.kernel_filename,
+            "rootfs": source.rootfs_filename,
+        }
+        if source.initrd_url is not None:
+            filenames["initrd"] = source.initrd_filename
+
+        labels_by_filename: dict[str, str] = {}
+        for label, filename in filenames.items():
+            existing_label = labels_by_filename.get(filename)
+            if existing_label is not None:
+                raise ImageError(
+                    "Image asset filenames collide within the cache directory: "
+                    f"{existing_label} and {label} both map to '{filename}'"
+                )
+            labels_by_filename[filename] = label
+
+        resolved_paths: dict[str, Path] = {}
+        for label, filename in filenames.items():
+            destination = image_dir / filename
+            if destination.name != filename or destination.parent != image_dir:
+                raise ImageError(
+                    f"Image asset '{label}' must stay within the cache directory: {filename!r}"
+                )
+            resolved_paths[label] = destination
+
+        return (
+            resolved_paths["kernel"],
+            resolved_paths.get("initrd"),
+            resolved_paths["rootfs"],
+        )
 
     def _download_file(self, url: str, dest: Path, expected_sha256: str | None = None) -> None:
         """Download a file with atomic write and optional SHA-256 verification.
