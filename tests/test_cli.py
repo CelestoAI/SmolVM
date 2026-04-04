@@ -502,7 +502,9 @@ class TestCliCreate:
         ret = main(["create", "--name", "project-spacex", "--json"])
 
         assert ret == 0
-        payload = json.loads(capsys.readouterr().out)
+        out = capsys.readouterr().out
+        assert "Preparing ubuntu operating system image" not in out
+        payload = json.loads(out)
         assert payload["command"] == "create"
         assert payload["data"]["vm"]["name"] == "project-spacex"
         assert payload["data"]["vm"]["os"] == "ubuntu"

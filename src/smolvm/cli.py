@@ -95,6 +95,19 @@ class CreatePayload(TypedDict):
     next: CreateNextPayload
 
 
+def _create_progress_message(backend: str, guest_os: GuestOS) -> str:
+    """Return the human-facing create progress message."""
+    if backend == "qemu" and guest_os == GuestOS.UBUNTU:
+        return (
+            "Preparing ubuntu operating system image "
+            "(first run may download the kernel, initrd, and rootfs)..."
+        )
+    return (
+        f"Preparing {guest_os.value} operating system image "
+        "(first run may build or download it)..."
+    )
+
+
 class StopVmPayload(TypedDict):
     """Machine-readable VM details for lifecycle commands."""
 
@@ -970,17 +983,34 @@ def _run_create(args: argparse.Namespace) -> int:
             if args.os is not None
             else _default_guest_os_for_backend(resolved_backend)
         )
-        config, ssh_key_path = _build_auto_config(
-            vm_name=args.name,
-            os=args.os,
-            backend=args.backend,
-            mem_size_mib=args.memory_mib,
-            disk_size_mib=args.disk_size_mib,
-            ssh_key_path=None,
-        )
-        vm = SmolVM(config, ssh_key_path=ssh_key_path)
-        vm.start(boot_timeout=args.boot_timeout)
-        vm.wait_for_ssh(timeout=args.boot_timeout)
+        if not args.json:
+            console = console_stdout()
+            progress_message = _create_progress_message(resolved_backend, resolved_guest_os)
+            with console.status(progress_message, spinner="dots") as status:
+                config, ssh_key_path = _build_auto_config(
+                    vm_name=args.name,
+                    os=args.os,
+                    backend=args.backend,
+                    mem_size_mib=args.memory_mib,
+                    disk_size_mib=args.disk_size_mib,
+                    ssh_key_path=None,
+                )
+                status.update("Booting VM and waiting for SSH...")
+                vm = SmolVM(config, ssh_key_path=ssh_key_path)
+                vm.start(boot_timeout=args.boot_timeout)
+                vm.wait_for_ssh(timeout=args.boot_timeout)
+        else:
+            config, ssh_key_path = _build_auto_config(
+                vm_name=args.name,
+                os=args.os,
+                backend=args.backend,
+                mem_size_mib=args.memory_mib,
+                disk_size_mib=args.disk_size_mib,
+                ssh_key_path=None,
+            )
+            vm = SmolVM(config, ssh_key_path=ssh_key_path)
+            vm.start(boot_timeout=args.boot_timeout)
+            vm.wait_for_ssh(timeout=args.boot_timeout)
 
         network = vm.info.network
         data: CreatePayload = {
