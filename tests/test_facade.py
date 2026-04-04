@@ -99,8 +99,10 @@ class TestVMInit:
     @patch("smolvm.facade.SmolVMManager")
     @patch("smolvm.build.ImageBuilder")
     @patch("smolvm.utils.ensure_ssh_key")
+    @patch("smolvm.backends.platform.system", return_value="Linux")
     def test_neither_config_nor_id_autoconfigures(
         self,
+        _: MagicMock,
         mock_ensure_ssh_key: MagicMock,
         mock_builder_cls: MagicMock,
         mock_sdk_cls: MagicMock,
@@ -139,8 +141,10 @@ class TestVMInit:
     @patch("smolvm.facade.SmolVMManager")
     @patch("smolvm.build.ImageBuilder")
     @patch("smolvm.utils.ensure_ssh_key")
+    @patch("smolvm.backends.platform.system", return_value="Linux")
     def test_autoconfigure_with_custom_mem_and_disk(
         self,
+        _: MagicMock,
         mock_ensure_ssh_key: MagicMock,
         mock_builder_cls: MagicMock,
         mock_sdk_cls: MagicMock,
@@ -290,13 +294,15 @@ class TestVMInit:
 
     def test_invalid_os_raises(self) -> None:
         """Unsupported guest OS names should raise a helpful error."""
-        with pytest.raises(ValueError, match="Valid values: alpine, debian"):
-            _build_auto_config(os="ubuntu")
+        with pytest.raises(ValueError, match="Valid values: alpine, debian, ubuntu"):
+            _build_auto_config(os="fedora")
 
     @patch("smolvm.build.ImageBuilder")
     @patch("smolvm.utils.ensure_ssh_key")
+    @patch("smolvm.backends.platform.system", return_value="Linux")
     def test_named_auto_config_preserves_vm_name(
         self,
+        _: MagicMock,
         mock_ensure_ssh_key: MagicMock,
         mock_builder_cls: MagicMock,
         tmp_path: Path,
@@ -324,38 +330,50 @@ class TestVMInit:
         mock_builder.build_alpine_ssh_key.assert_called_once()
 
     @patch("smolvm.facade.platform.machine", return_value="arm64")
-    @patch("smolvm.build.ImageBuilder")
+    @patch("smolvm.facade.build_seed_iso")
+    @patch("smolvm.facade.ImageManager")
     @patch("smolvm.utils.ensure_ssh_key")
     def test_named_auto_config_qemu_keeps_backend_specific_settings(
         self,
         mock_ensure_ssh_key: MagicMock,
-        mock_builder_cls: MagicMock,
+        mock_image_manager_cls: MagicMock,
+        mock_build_seed_iso: MagicMock,
         _: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """Named auto-config should preserve QEMU boot args and cache naming."""
-        kernel = tmp_path / "auto-kernel"
-        rootfs = tmp_path / "auto-rootfs.ext4"
+        """QEMU auto-config should use the prebuilt image path."""
+        kernel = tmp_path / "vmlinuz"
+        initrd = tmp_path / "initrd"
+        rootfs = tmp_path / "rootfs.qcow2"
         private_key = tmp_path / "id_ed25519"
         public_key = tmp_path / "id_ed25519.pub"
         kernel.touch()
+        initrd.touch()
         rootfs.touch()
         private_key.touch()
         public_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKey user@test\n")
 
         mock_ensure_ssh_key.return_value = (private_key, public_key)
-        mock_builder = MagicMock()
-        mock_builder.build_alpine_ssh_key.return_value = (kernel, rootfs)
-        mock_builder_cls.return_value = mock_builder
+        mock_build_seed_iso.side_effect = lambda path, **kwargs: (
+            path.parent.mkdir(parents=True, exist_ok=True),
+            path.touch(),
+        )[-1]
+        mock_image_manager = MagicMock()
+        mock_image_manager.cache_dir = tmp_path
+        mock_image_manager.ensure_image.return_value = MagicMock(
+            kernel_path=kernel,
+            initrd_path=initrd,
+            rootfs_path=rootfs,
+        )
+        mock_image_manager_cls.return_value = mock_image_manager
 
         config, _ = _build_auto_config(vm_name="project-spacex", backend="qemu")
 
         assert config.backend == "qemu"
-        assert config.boot_args == "console=ttyAMA0 reboot=k panic=1 init=/init"
-        assert (
-            mock_builder.build_alpine_ssh_key.call_args.kwargs["name"]
-            == "alpine-ssh-key-aarch64"
-        )
+        assert config.initrd_path == initrd
+        assert "root=LABEL=cloudimg-rootfs" in config.boot_args
+        assert config.extra_drives[0].suffix == ".iso"
+        mock_image_manager.ensure_image.assert_called_once_with("ubuntu-jammy-qemu-aarch64")
 
     @patch("smolvm.facade.platform.machine", return_value="arm64")
     @patch("smolvm.build.ImageBuilder")
@@ -901,7 +919,7 @@ class TestVMRun:
         mock_sdk_cls.return_value = mock_sdk
 
         vm = SmolVM(sample_config)
-        with pytest.raises(CommandExecutionUnavailableError, match="init=/init"):
+        with pytest.raises(CommandExecutionUnavailableError, match="SSH-capable boot path"):
             vm.run("echo test")
 
         mock_ssh_cls.assert_not_called()
@@ -1614,7 +1632,7 @@ class TestVMEnvInjection:
 
         vm = SmolVM(config)
 
-        with pytest.raises(SmolVMError, match="does not support SSH"):
+        with pytest.raises(SmolVMError, match="does not support guest SSH"):
             vm.start()
 
         mock_inject.assert_not_called()

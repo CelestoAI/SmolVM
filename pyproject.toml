@@ -28,6 +28,7 @@ classifiers = [
 ]
 dependencies = [
     "paramiko>=3.0",
+    "pycdlib>=1.14.0",
     "pydantic>=2.0",
     "rich>=13.0",
     "requests>=2.28",

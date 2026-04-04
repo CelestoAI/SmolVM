@@ -41,12 +41,14 @@ from typing import Any, Literal
 
 from smolvm.backends import BACKEND_QEMU, resolve_backend
 from smolvm.boot_profiles import KernelBootProfile, get_boot_profile_spec
+from smolvm.cloud_init import build_seed_iso, default_meta_data, default_user_data, seed_cache_key
 from smolvm.env import inject_env_vars, read_env_vars, remove_env_vars
 from smolvm.exceptions import (
     CommandExecutionUnavailableError,
     OperationTimeoutError,
     SmolVMError,
 )
+from smolvm.images import ImageManager, ImageSource
 from smolvm.ssh import SSHClient
 from smolvm.types import CommandResult, GuestOS, SnapshotInfo, VMConfig, VMInfo, VMState
 from smolvm.vm import SmolVMManager
@@ -58,9 +60,48 @@ _LOCAL_FORWARD_PROBE_TIMEOUT = 2.0
 _LOCAL_FORWARD_PROBE_INTERVAL = 0.2
 _LOCAL_TUNNEL_START_TIMEOUT = 10.0
 _LOCAL_FORWARD_MAX_PORT_ATTEMPTS = 10
+_AUTO_CONFIG_DEFAULT_MEM_SIZE_MIB = {
+    GuestOS.ALPINE: 512,
+    GuestOS.DEBIAN: 512,
+    GuestOS.UBUNTU: 1024,
+}
 _AUTO_CONFIG_DEFAULT_DISK_SIZE_MIB = {
     GuestOS.ALPINE: 512,
     GuestOS.DEBIAN: 2048,
+    GuestOS.UBUNTU: 2048,
+}
+_UBUNTU_CURRENT_RELEASE_DATE = "20260320"
+_QEMU_UBUNTU_AUTO_IMAGES: dict[str, ImageSource] = {
+    "ubuntu-jammy-qemu-x86_64": ImageSource(
+        name="ubuntu-jammy-qemu-x86_64",
+        kernel_url=(
+            "https://cloud-images.ubuntu.com/jammy/current/unpacked/"
+            "jammy-server-cloudimg-amd64-vmlinuz-generic"
+        ),
+        kernel_filename="vmlinuz",
+        initrd_url=(
+            "https://cloud-images.ubuntu.com/jammy/current/unpacked/"
+            "jammy-server-cloudimg-amd64-initrd-generic"
+        ),
+        initrd_filename="initrd",
+        rootfs_url="https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img",
+        rootfs_filename="rootfs.qcow2",
+    ),
+    "ubuntu-jammy-qemu-aarch64": ImageSource(
+        name="ubuntu-jammy-qemu-aarch64",
+        kernel_url=(
+            "https://cloud-images.ubuntu.com/jammy/current/unpacked/"
+            "jammy-server-cloudimg-arm64-vmlinuz-generic"
+        ),
+        kernel_filename="vmlinuz",
+        initrd_url=(
+            "https://cloud-images.ubuntu.com/jammy/current/unpacked/"
+            "jammy-server-cloudimg-arm64-initrd-generic"
+        ),
+        initrd_filename="initrd",
+        rootfs_url="https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-arm64.img",
+        rootfs_filename="rootfs.qcow2",
+    ),
 }
 
 
@@ -75,6 +116,20 @@ def _normalize_guest_os(os: GuestOS | str | None) -> GuestOS:
     except ValueError as exc:
         valid_values = ", ".join(guest_os.value for guest_os in GuestOS)
         raise ValueError(f"Unsupported guest OS {os!r}. Valid values: {valid_values}.") from exc
+
+
+def _default_guest_os_for_backend(backend: str) -> GuestOS:
+    """Return the default guest OS for the selected backend."""
+    if backend == BACKEND_QEMU:
+        return GuestOS.UBUNTU
+    return GuestOS.ALPINE
+
+
+def _qemu_auto_config_image_name() -> str:
+    """Return the prebuilt QEMU image cache key for the host architecture."""
+    arch = platform.machine().lower()
+    image_arch = "aarch64" if arch in {"arm64", "aarch64"} else "x86_64"
+    return f"ubuntu-jammy-qemu-{image_arch}"
 
 
 def _build_auto_config_image_name(
@@ -110,22 +165,85 @@ def _build_auto_config(
     from smolvm.utils import ensure_ssh_key
 
     resolved_backend = resolve_backend(backend)
-    kernel_profile = KernelBootProfile.MICROVM_DIRECT
-    boot_args = get_boot_profile_spec(kernel_profile).base_boot_args_for_backend(
-        resolved_backend,
-        platform.machine(),
-    )
-
-    resolved_os = _normalize_guest_os(os)
+    resolved_os = _normalize_guest_os(os or _default_guest_os_for_backend(resolved_backend))
     private_key, public_key = ensure_ssh_key()
     resolved_ssh_key_path = ssh_key_path or str(private_key)
 
-    resolved_mem_size_mib = 512 if mem_size_mib is None else mem_size_mib
+    resolved_mem_size_mib = _AUTO_CONFIG_DEFAULT_MEM_SIZE_MIB[resolved_os]
+    if mem_size_mib is not None:
+        resolved_mem_size_mib = mem_size_mib
     default_disk_size_mib = _AUTO_CONFIG_DEFAULT_DISK_SIZE_MIB[resolved_os]
     resolved_disk_size_mib = default_disk_size_mib if disk_size_mib is None else disk_size_mib
     if resolved_disk_size_mib < 64:
         raise ValueError("disk_size_mib must be >= 64")
 
+    if resolved_os is GuestOS.UBUNTU and resolved_backend != BACKEND_QEMU:
+        raise ValueError("ubuntu auto-config currently requires backend='qemu'")
+
+    if resolved_os is GuestOS.UBUNTU:
+        if resolved_disk_size_mib != default_disk_size_mib:
+            raise ValueError(
+                "ubuntu/qemu auto-config currently supports only the default disk size "
+                f"({default_disk_size_mib} MiB)"
+            )
+        image_name = _qemu_auto_config_image_name()
+        image_manager = ImageManager(registry=_QEMU_UBUNTU_AUTO_IMAGES)
+        image = image_manager.ensure_image(image_name)
+        if image.initrd_path is None:
+            raise SmolVMError(
+                "Prebuilt QEMU auto-config image is missing an initrd",
+                {"image_name": image_name},
+            )
+
+        boot_profile = KernelBootProfile.QEMU_DESKTOP_INITRAMFS
+        boot_args = get_boot_profile_spec(boot_profile).base_boot_args_for_backend(
+            resolved_backend,
+            platform.machine(),
+        )
+        boot_args = f"{boot_args} root=LABEL=cloudimg-rootfs rw"
+
+        seed_key = seed_cache_key(
+            ssh_public_key=public_key.read_text().strip(),
+            instance_id=f"smolvm-{_UBUNTU_CURRENT_RELEASE_DATE}",
+            hostname="smolvm",
+        )
+        seed_dir = image_manager.cache_dir / "cloud-init-seeds"
+        seed_path = seed_dir / f"{seed_key}.iso"
+        if not seed_path.exists():
+            build_seed_iso(
+                seed_path,
+                user_data=default_user_data(public_key.read_text().strip()),
+                meta_data=default_meta_data(
+                    instance_id=f"smolvm-{_UBUNTU_CURRENT_RELEASE_DATE}",
+                    hostname="smolvm",
+                ),
+            )
+
+        resolved_vm_name = vm_name or f"vm-{uuid.uuid4().hex[:8]}"
+        config = VMConfig(
+            vm_id=resolved_vm_name,
+            vcpu_count=1,
+            mem_size_mib=resolved_mem_size_mib,
+            kernel_path=image.kernel_path,
+            initrd_path=image.initrd_path,
+            rootfs_path=image.rootfs_path,
+            extra_drives=[seed_path],
+            boot_args=boot_args,
+            backend=resolved_backend,
+        )
+        logger.info(
+            "Auto-configured VM: %s (os=%s, backend=%s, source=prebuilt-qemu-image)",
+            resolved_vm_name,
+            resolved_os.value,
+            resolved_backend,
+        )
+        return config, resolved_ssh_key_path
+
+    kernel_profile = KernelBootProfile.MICROVM_DIRECT
+    boot_args = get_boot_profile_spec(kernel_profile).base_boot_args_for_backend(
+        resolved_backend,
+        platform.machine(),
+    )
     builder = ImageBuilder()
     image_name = _build_auto_config_image_name(
         resolved_os,
@@ -393,7 +511,7 @@ class SmolVM:
 
         Raises:
             SmolVMError: If ``env_vars`` is set but the image does not
-                support SSH (missing ``init=/init`` in boot args).
+                support SSH.
         """
         if self._info.status == VMState.RUNNING:
             logger.info("VM %s already running; start() is a no-op", self._vm_id)
@@ -411,9 +529,9 @@ class SmolVM:
             if not self.can_run_commands():
                 raise SmolVMError(
                     "Cannot inject environment variables: VM image does not "
-                    "support SSH (boot args missing 'init=/init'). Use an "
-                    "SSH-capable image built with ImageBuilder, or bake env "
-                    "vars into the rootfs at build time.",
+                    "support guest SSH. Use an SSH-capable prebuilt image or "
+                    "an image built with ImageBuilder, or bake env vars into "
+                    "the rootfs at build time.",
                     {"vm_id": self._vm_id},
                 )
             self.wait_for_ssh(timeout=boot_timeout)
@@ -526,7 +644,7 @@ class SmolVM:
             raise CommandExecutionUnavailableError(
                 vm_id=self._vm_id,
                 reason=(
-                    "VM boot args are missing 'init=/init', "
+                    "VM config does not advertise an SSH-capable boot path, "
                     "so guest SSH is not guaranteed to start."
                 ),
                 remediation=self._command_exec_remediation(),
@@ -876,10 +994,11 @@ class SmolVM:
     def can_run_commands(self) -> bool:
         """Whether this VM config supports command execution via SSH.
 
-        Command execution currently requires SmolVM's SSH init flow,
-        which is enabled by booting with ``init=/init``.
+        Command execution requires a boot path that is expected to
+        bring up SSH inside the guest.
         """
-        return "init=/init" in self._info.config.boot_args
+        initrd_path = self._info.config.initrd_path
+        return "init=/init" in self._info.config.boot_args or isinstance(initrd_path, Path)
 
     def close(self) -> None:
         """Release underlying SDK resources for this facade instance."""
@@ -941,7 +1060,7 @@ class SmolVM:
             raise CommandExecutionUnavailableError(
                 vm_id=self._vm_id,
                 reason=(
-                    "VM boot args are missing 'init=/init', "
+                    "VM config does not advertise an SSH-capable boot path, "
                     "so guest SSH is not guaranteed to start."
                 ),
                 remediation=self._command_exec_remediation(),
@@ -1366,7 +1485,7 @@ class SmolVM:
         """Return actionable guidance when command execution is unavailable."""
         return (
             "Use `SmolVM()` auto-config mode for an SSH-ready image, or build one with "
-            "`ImageBuilder.build_alpine_ssh_key(...)` and set `boot_args=SSH_BOOT_ARGS`."
+            "`ImageBuilder` when you need custom guest composition."
         )
 
     def __repr__(self) -> str:

@@ -1362,6 +1362,28 @@ class SmolVMManager:
             "-nographic",
             "-no-reboot",
         ]
+        if vm_info.config.initrd_path is not None:
+            cmd.extend(["-initrd", str(vm_info.config.initrd_path)])
+
+        extra_drive_ids: list[str] = []
+        for index, drive_path in enumerate(vm_info.config.extra_drives):
+            drive_id = f"extra{index}-drive"
+            node_name = f"extra{index}"
+            extra_drive_ids.append(drive_id)
+            drive_suffix = drive_path.suffix.lower()
+            drive_format = "qcow2" if drive_suffix == ".qcow2" else "raw"
+            readonly = ["readonly=on"] if drive_suffix == ".iso" else []
+            extra_drive_arg = ",".join(
+                [
+                    f"file={drive_path}",
+                    "if=none",
+                    f"format={drive_format}",
+                    *readonly,
+                    f"id={drive_id}",
+                    f"node-name={node_name}",
+                ]
+            )
+            cmd.extend(["-drive", extra_drive_arg])
         if control_socket_path is not None:
             cmd.extend(
                 [
@@ -1387,6 +1409,8 @@ class SmolVMManager:
                     f"virtio-net-device,netdev=net0,mac={guest_mac}",
                 ]
             )
+            for drive_id in extra_drive_ids:
+                cmd.extend(["-device", f"virtio-blk-device,drive={drive_id}"])
         else:
             machine = "q35,accel=hvf" if system == "Darwin" else "q35"
             cpu = "host" if system == "Darwin" else "max"
@@ -1402,6 +1426,8 @@ class SmolVMManager:
                     f"virtio-net-pci,netdev=net0,mac={guest_mac}",
                 ]
             )
+            for drive_id in extra_drive_ids:
+                cmd.extend(["-device", f"virtio-blk-pci,drive={drive_id}"])
 
         logger.debug("Starting QEMU: %s", " ".join(cmd))
 

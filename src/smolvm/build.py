@@ -192,9 +192,6 @@ class ImageBuilder:
         Raises:
             ImageError: If Docker is not available or build fails.
         """
-        if not self.check_docker():
-            raise self.docker_requirement_error()
-
         image_dir = self.cache_dir / name
         kernel_path = image_dir / "vmlinux.bin"
         rootfs_path = image_dir / "rootfs.ext4"
@@ -215,6 +212,9 @@ class ImageBuilder:
         ):
             logger.info("Image '%s' already exists and fingerprint matches at %s", name, image_dir)
             return (kernel_path, rootfs_path)
+
+        if not self.check_docker():
+            raise self.docker_requirement_error()
 
         logger.info("Building Alpine SSH image '%s'...", name)
         image_dir.mkdir(parents=True, exist_ok=True)
@@ -290,9 +290,6 @@ RUN chmod +x /init
         Returns:
             Tuple of (kernel_path, rootfs_path).
         """
-        if not self.check_docker():
-            raise self.docker_requirement_error()
-
         key_value = self._resolve_public_key(ssh_public_key)
 
         image_dir = self.cache_dir / name
@@ -319,6 +316,9 @@ RUN chmod +x /init
             # Remove stale files
             kernel_path.unlink(missing_ok=True)
             rootfs_path.unlink(missing_ok=True)
+
+        if not self.check_docker():
+            raise self.docker_requirement_error()
 
         logger.info("Building Alpine key-only SSH image '%s'...", name)
         image_dir.mkdir(parents=True, exist_ok=True)
@@ -393,9 +393,6 @@ RUN chmod +x /init
         Returns:
             Tuple of (kernel_path, rootfs_path).
         """
-        if not self.check_docker():
-            raise self.docker_requirement_error()
-
         key_value = self._resolve_public_key(ssh_public_key)
 
         image_dir = self.cache_dir / name
@@ -423,6 +420,9 @@ RUN chmod +x /init
             # Remove stale files
             kernel_path.unlink(missing_ok=True)
             rootfs_path.unlink(missing_ok=True)
+
+        if not self.check_docker():
+            raise self.docker_requirement_error()
 
         logger.info("Building Debian key-only SSH image '%s'...", name)
         image_dir.mkdir(parents=True, exist_ok=True)
