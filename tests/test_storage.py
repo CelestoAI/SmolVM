@@ -93,6 +93,20 @@ class TestStateManagerVMOperations:
         assert vm_info.vm_id == "vm001"
         assert vm_info.status == VMState.CREATED
 
+    def test_get_vm_allows_missing_persisted_paths(
+        self,
+        state_manager: StateManager,
+        sample_config: VMConfig,
+    ) -> None:
+        """Persisted VM metadata should remain readable after cache cleanup."""
+        state_manager.create_vm(sample_config)
+        sample_config.kernel_path.unlink()
+
+        vm_info = state_manager.get_vm("vm001")
+
+        assert vm_info.vm_id == "vm001"
+        assert vm_info.config.kernel_path == sample_config.kernel_path
+
     def test_get_nonexistent_vm_raises(self, state_manager: StateManager) -> None:
         """Test that getting a nonexistent VM raises an error."""
         with pytest.raises(VMNotFoundError) as exc_info:
@@ -149,6 +163,31 @@ class TestStateManagerVMOperations:
 
         vms = state_manager.list_vms()
         assert len(vms) == 3
+
+    def test_list_vms_allows_missing_persisted_paths(
+        self,
+        state_manager: StateManager,
+        tmp_path: Path,
+    ) -> None:
+        """Listing should tolerate stale image paths in persisted VM configs."""
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+
+        state_manager.create_vm(
+            VMConfig(
+                vm_id="vm001",
+                kernel_path=kernel,
+                rootfs_path=rootfs,
+            )
+        )
+        kernel.unlink()
+
+        vms = state_manager.list_vms()
+
+        assert [vm.vm_id for vm in vms] == ["vm001"]
+        assert vms[0].config.kernel_path == kernel
 
     def test_list_vms_by_status(self, state_manager: StateManager, sample_config: VMConfig) -> None:
         """Test listing VMs filtered by status."""

@@ -18,7 +18,6 @@ Provides persistent storage for VM metadata, lifecycle states, and IP allocation
 Uses exclusive transactions to prevent race conditions in IP assignment.
 """
 
-import json
 import logging
 import sqlite3
 from collections.abc import Iterator
@@ -40,7 +39,6 @@ from smolvm.types import (
     BrowserSessionInfo,
     BrowserSessionState,
     NetworkConfig,
-    PortForwardConfig,
     SnapshotArtifacts,
     SnapshotInfo,
     VMConfig,
@@ -251,7 +249,7 @@ class StateManager:
         if not row:
             raise VMNotFoundError(vm_id)
 
-        config = VMConfig.model_validate_json(row["config"])
+        config = self._vm_config_from_json(row["config"])
         network = NetworkConfig.model_validate_json(row["network"]) if row["network"] else None
         control_socket_path = Path(row["socket_path"]) if row["socket_path"] else None
 
@@ -383,7 +381,7 @@ class StateManager:
 
         result = []
         for row in rows:
-            config = VMConfig.model_validate_json(row["config"])
+            config = self._vm_config_from_json(row["config"])
             network = NetworkConfig.model_validate_json(row["network"]) if row["network"] else None
             control_socket_path = Path(row["socket_path"]) if row["socket_path"] else None
             result.append(
@@ -399,22 +397,20 @@ class StateManager:
         return result
 
     @staticmethod
+    def _vm_config_from_json(raw: str) -> VMConfig:
+        """Deserialize VM config while trusting persisted filesystem paths."""
+        return VMConfig.model_validate_json(raw, context={"validate_paths": False})
+
+    @staticmethod
     def _snapshot_vm_config_from_json(raw: str) -> VMConfig:
         """Deserialize snapshot VM config without filesystem validation."""
-        data = json.loads(raw)
-        data["kernel_path"] = Path(data["kernel_path"])
-        data["rootfs_path"] = Path(data["rootfs_path"])
-        data["extra_drives"] = [Path(path) for path in data.get("extra_drives", [])]
-        data["port_forwards"] = [
-            PortForwardConfig.model_validate(item) for item in data.get("port_forwards", [])
-        ]
-        return VMConfig.model_construct(**data)
+        return StateManager._vm_config_from_json(raw)
 
     @staticmethod
     def _snapshot_info_from_row(row: sqlite3.Row) -> SnapshotInfo:
         """Convert a snapshots row into SnapshotInfo."""
-        backend = row["backend"] if "backend" in row.keys() and row["backend"] else "firecracker"
-        if "artifacts" in row.keys() and row["artifacts"]:
+        backend = row["backend"] if "backend" in row and row["backend"] else "firecracker"
+        if "artifacts" in row and row["artifacts"]:
             artifacts = SnapshotArtifacts.model_validate_json(row["artifacts"])
         else:
             artifacts = SnapshotArtifacts(

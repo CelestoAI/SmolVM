@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 
 class VMState(str, Enum):
@@ -140,14 +140,18 @@ class VMConfig(BaseModel):
 
     @field_validator("kernel_path", "rootfs_path")
     @classmethod
-    def validate_path_exists(cls, v: Path) -> Path:
+    def validate_path_exists(cls, v: Path, info: ValidationInfo) -> Path:
         """Ensure paths exist on the filesystem."""
+        if not cls._should_validate_paths(info):
+            return v
         return cls._validate_file_path(v)
 
     @field_validator("extra_drives")
     @classmethod
-    def validate_extra_drives(cls, v: list[Path]) -> list[Path]:
+    def validate_extra_drives(cls, v: list[Path], info: ValidationInfo) -> list[Path]:
         """Ensure all extra drive paths exist and are files."""
+        if not cls._should_validate_paths(info):
+            return v
         for path in v:
             cls._validate_file_path(path)
         return v
@@ -160,6 +164,11 @@ class VMConfig(BaseModel):
         if not v.is_file():
             raise ValueError(f"Path is not a file: {v}")
         return v
+
+    @staticmethod
+    def _should_validate_paths(info: ValidationInfo) -> bool:
+        """Allow storage reads to skip filesystem existence checks."""
+        return bool((info.context or {}).get("validate_paths", True))
 
     @field_validator("env_vars")
     @classmethod
