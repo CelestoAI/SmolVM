@@ -5,7 +5,7 @@
 
 # SmolVM
 
-**Run code, start a browser, and give AI agents an isolated workspace**
+**Run AI code, start a browser, and give AI agents an isolated workspace**
 
 [![CodeQL](https://github.com/CelestoAI/SmolVM/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/CelestoAI/SmolVM/actions/workflows/github-code-scanning/codeql)
 [![Run Tests](https://github.com/CelestoAI/SmolVM/actions/workflows/pytest.yml/badge.svg)](https://github.com/CelestoAI/SmolVM/actions/workflows/pytest.yml)
@@ -18,15 +18,17 @@
 
 ---
 
-SmolVM is a Python SDK and CLI for running code and browser tasks inside disposable sandboxes. Use it when your app or agent needs a clean place to execute commands, open websites, or keep risky work away from your machine.
+SmolVM provides a instant disposable computers to AI agents to run code, browser tasks and any other tasks that require a computer.
 
-## What you can do
 
-- Run untrusted code in a clean sandbox instead of on your host.
-- Start a real browser session that you can automate or watch live.
-- Plug SmolVM into agent tools for shell use, browser use, and computer-use workflows.
+## Use cases
 
-## Start here
+- Run untrusted code and agents in a sandbox environment.
+- Start a virtual computer for agents to run tasks on (shell, browser, etc.)
+- Keep one sandbox across multiple turns for stateful workflows.
+
+
+## Quickstart
 
 1. Install the package.
 
@@ -48,53 +50,40 @@ Linux may prompt for `sudo` during setup so it can install host dependencies and
 smolvm doctor
 ```
 
-## Quickstart: Run a command in a sandbox
+### Start a sandbox in Python
 
 ```python
 from smolvm import SmolVM
 
 with SmolVM() as vm:
-    result = vm.run("echo 'Hello from the sandbox'")
+    result = vm.run("echo 'You can run risky code here without affecting the actual machine.'")
     print(result.stdout.strip())
 ```
 
-Default zero-config guests use Alpine. If you want a Debian guest instead:
 
-```python
-from smolvm import SmolVM
-
-with SmolVM(os="debian") as vm:
-    result = vm.run("echo 'Hello from the sandbox'")
-    print(result.stdout.strip())
-```
-
-Run the full example:
+### Create a sandbox from CLI
 
 ```bash
-python examples/quickstart_sandbox.py
+smolvm create --name my-sandbox
 ```
 
-## From the CLI: Start an isolated browser
-
-Start a disposable browser session and print the local URLs you can use for automation or live view.
+Start a disposable browser session (you can see the browser UI in real time)
 
 ```bash
-smolvm browser start --live --json
-```
-
-The JSON response includes the `session_id` plus local browser URLs. Use the session ID in the next commands.
-
-The `cdp_url` can also be passed to external CDP clients. [examples/agent_tools/pydanticai_agent_browser.py](examples/agent_tools/pydanticai_agent_browser.py) shows a minimal flow that extracts the localhost port from that URL and hands it to `agent-browser --cdp`.
-
-```bash
-smolvm browser list
-smolvm browser stop <session_id>
+smolvm browser start --live
 ```
 
 If you want to open the live browser view in your default browser:
 
 ```bash
 smolvm browser open <session_id>
+```
+
+List sandboxes and dispose them when you are done.
+
+```bash
+smolvm browser list
+smolvm browser stop <session_id>
 ```
 
 Other useful CLI commands:
@@ -106,7 +95,7 @@ Other useful CLI commands:
 - `smolvm list`
 - `smolvm stop my-sandbox`
 
-## Use cases
+## Examples
 
 | Outcome | Start here |
 | --- | --- |
@@ -122,23 +111,6 @@ Advanced example: [examples/openclaw.py](examples/openclaw.py)
 
 Each script shows its own `pip install ...` line when it needs extra packages.
 
-## SDK or CLI?
-
-Use the SDK when SmolVM is part of your app or agent loop and you want to create sandboxes from Python code. 
-
-Use the CLI when you want to inspect the runtime manually, start a browser from the terminal, or script local workflows around `smolvm doctor`, `smolvm browser`, `smolvm env`, `smolvm create`, and `smolvm list`.
-
-## Why isolation matters
-
-SmolVM keeps risky work off your host by running it inside a separate guest system. On Linux it uses Firecracker microVMs, which are very small virtual machines backed by KVM. On macOS it uses QEMU. You still get a simple Python SDK and CLI, but the work happens in its own environment instead of sharing your main machine directly.
-
-## Snapshots
-
-SmolVM snapshots are backend-aware but exposed through one shared SDK and CLI surface:
-
-- Firecracker snapshots persist state, memory, and managed disk artifacts.
-- QEMU snapshots use QMP snapshot APIs plus managed qcow2 disks, and require QEMU 6.0+ with `qemu-img` available.
-- QEMU snapshot support currently targets isolated-disk VMs without extra drives.
 
 ## Security notes
 
