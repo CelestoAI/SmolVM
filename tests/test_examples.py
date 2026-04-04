@@ -43,7 +43,7 @@ EXPECTED_AGENT_TOOL_EXAMPLES = {
     "pydanticai_tool.py",
     "pydanticai_reusable_tool.py",
 }
-README_USE_CASE_LINKS = {
+README_EXAMPLE_LINKS = {
     "examples/quickstart_sandbox.py",
     "examples/browser_session.py",
     "examples/agent_tools/computer_use_browser.py",
@@ -53,6 +53,7 @@ README_USE_CASE_LINKS = {
     "examples/agent_tools/pydanticai_tool.py",
     "examples/agent_tools/pydanticai_reusable_tool.py",
     "examples/env_injection.py",
+    "examples/openclaw.py",
 }
 
 
@@ -144,14 +145,14 @@ def _readme_section(title: str) -> str:
     return match.group(1)
 
 
-def test_readme_use_case_links_resolve_to_local_files() -> None:
-    """README use-case links should point to real repo files."""
-    section = _readme_section("Use cases")
+def test_readme_example_links_resolve_to_local_files() -> None:
+    """README example links should point to real repo files."""
+    section = _readme_section("Examples")
     links = {
         link
         for link in re.findall(r"\[[^\]]+\]\(([^)]+)\)", section)
         if not link.startswith(("http://", "https://", "#", "mailto:"))
     }
-    assert links >= README_USE_CASE_LINKS
+    assert links >= README_EXAMPLE_LINKS
     for link in links:
         assert (REPO_ROOT / link).exists(), f"README link target not found: {link}"
