@@ -18,7 +18,7 @@
 
 ---
 
-SmolVM provides a instant disposable computers to AI agents to run code, browser tasks and any other tasks that require a computer.
+SmolVM provides instant disposable computers to AI agents to run code, browser tasks and any other tasks that require a computer.
 
 
 ## Use cases
