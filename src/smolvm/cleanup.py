@@ -65,17 +65,17 @@ def add_cleanup_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Delete all VMs (not just stale/auto-created ones).",
+        help="Delete all sandboxes, not just stale ones.",
     )
     parser.add_argument(
         "--prefix",
         default="vm-",
-        help='Auto-VM prefix to clean (default: "vm-").',
+        help='Only clean sandboxes whose name starts with this prefix (default: "vm-").',
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print targets without deleting.",
+        help="Show what would be cleaned up without actually deleting.",
     )
     parser.add_argument(
         "--json",

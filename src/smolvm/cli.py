@@ -260,7 +260,7 @@ def _add_ssh_auth_args(command_parser: argparse.ArgumentParser) -> None:
     command_parser.add_argument(
         "--ssh-key",
         default=None,
-        help="SSH private key path (default fallback: ~/.smolvm/keys/id_ed25519).",
+        help="Path to SSH private key (default: ~/.smolvm/keys/id_ed25519).",
     )
     command_parser.add_argument(
         "--ssh-user",
@@ -275,14 +275,14 @@ def _add_boot_timeout_arg(command_parser: argparse.ArgumentParser) -> None:
         "--boot-timeout",
         type=_positive_float,
         default=30.0,
-        help="Seconds to wait for VM boot and SSH readiness (default: 30).",
+        help="Seconds to wait for the sandbox to be ready (default: 30).",
     )
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="smolvm",
-        description="SmolVM command-line tools",
+        description="Create, manage, and connect to disposable sandboxes for AI agents.",
         epilog=(
             "Most non-interactive commands support --json to emit machine-readable "
             "output for LLMs, agents, and automation."
@@ -292,19 +292,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     cleanup = subparsers.add_parser(
         "cleanup",
-        help="Clean stale SmolVM resources",
+        help="Clean up leftover sandboxes and resources.",
     )
     add_cleanup_args(cleanup)
 
     doctor = subparsers.add_parser(
         "doctor",
-        help="Run host diagnostics for the selected backend",
+        help="Run host diagnostics for the selected backend.",
     )
     doctor.add_argument(
         "--backend",
         choices=["auto", "firecracker", "qemu"],
         default=None,
-        help="Backend to validate (default: auto).",
+        help="Virtualization backend to check (default: auto-detected).",
     )
     doctor.add_argument(
         "--json",
@@ -314,22 +314,22 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument(
         "--strict",
         action="store_true",
-        help="Treat warnings as failures.",
+        help="Exit with an error if any check reports a warning.",
     )
 
     setup = subparsers.add_parser(
         "setup",
-        help="Install or validate one-time host prerequisites",
+        help="Install or validate one-time host prerequisites.",
     )
     setup.add_argument(
         "--check-only",
         action="store_true",
-        help="Validate prerequisites without installing anything.",
+        help="Check what's needed without installing anything.",
     )
     setup.add_argument(
         "--with-docker",
         action="store_true",
-        help="Install or validate Docker too.",
+        help="Also install or check Docker.",
     )
     setup.add_argument(
         "--no-configure-runtime",
@@ -337,7 +337,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs=0,
         const=True,
         default=False,
-        help="Skip scoped runtime sudoers setup (Linux only).",
+        help="Skip runtime permission setup (Linux only).",
     )
     setup.add_argument(
         "--skip-deps",
@@ -345,13 +345,13 @@ def build_parser() -> argparse.ArgumentParser:
         nargs=0,
         const=True,
         default=False,
-        help="Skip Linux package dependency installation (Linux only).",
+        help="Skip installing system packages (Linux only).",
     )
     setup.add_argument(
         "--runtime-user",
         action=_LinuxOnlyOption,
         default=None,
-        help="Target user for Linux runtime privilege configuration (Linux only).",
+        help="User to grant runtime permissions to (Linux only).",
     )
     setup.add_argument(
         "--remove-runtime-config",
@@ -359,7 +359,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs=0,
         const=True,
         default=False,
-        help="Remove Linux runtime privilege configuration (Linux only).",
+        help="Remove previously configured runtime permissions (Linux only).",
     )
 
     def _add_ui_args(command_parser: argparse.ArgumentParser) -> None:
@@ -382,25 +382,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     ui = subparsers.add_parser(
         "ui",
-        help="Start the SmolVM dashboard UI server",
+        help="Start the SmolVM dashboard UI server.",
     )
     _add_ui_args(ui)
 
     list_parser = subparsers.add_parser(
         "list",
-        help="List SmolVMs and their status",
+        help="List sandboxes and their status.",
     )
     list_filters = list_parser.add_mutually_exclusive_group()
     list_filters.add_argument(
         "--all",
         action="store_true",
-        help="Include paused, stopped, created, and error VMs in addition to running ones.",
+        help="Show all sandboxes, not just running ones.",
     )
     list_filters.add_argument(
         "--status",
         choices=[state.value for state in VMState],
         default=None,
-        help="Filter VMs by lifecycle status.",
+        help="Only show sandboxes with this status.",
     )
     list_parser.add_argument(
         "--json",
@@ -417,41 +417,36 @@ def build_parser() -> argparse.ArgumentParser:
 
     create_parser = subparsers.add_parser(
         "create",
-        help="Create an SSH-ready VM and leave it running",
+        help="Create a sandbox and leave it running.",
     )
     create_parser.add_argument(
         "-n",
         "--name",
-        help="VM identifier to create (default: auto-generated).",
+        help="Name for the sandbox (default: auto-generated).",
     )
     create_parser.add_argument(
         "--os",
         choices=[guest_os.value for guest_os in GuestOS],
         default=None,
-        help=(
-            "Guest OS for the auto-configured VM (default: backend-specific; "
-            f"{qemu_default_guest_os.value} for qemu-backed creates, "
-            f"{GuestOS.ALPINE.value} otherwise; current default backend: "
-            f"{current_default_backend} -> {current_default_guest_os.value})."
-        ),
+        help="Operating system image (default: auto-detected based on backend).",
     )
     create_parser.add_argument(
         "--memory-mib",
         type=int,
         default=None,
-        help="Guest memory in MiB (default: 512).",
+        help="Sandbox memory in MiB (default: 512).",
     )
     create_parser.add_argument(
         "--disk-size-mib",
         type=int,
         default=None,
-        help="Root filesystem size in MiB (default: 512).",
+        help="Sandbox disk size in MiB (default: 512).",
     )
     create_parser.add_argument(
         "--backend",
         choices=["auto", "firecracker", "qemu"],
         default=None,
-        help="Backend override (default: auto).",
+        help="Virtualization backend (default: auto-detected).",
     )
     create_parser.add_argument(
         "--json",
@@ -462,14 +457,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     stop_parser = subparsers.add_parser(
         "stop",
-        help="Stop an existing VM",
+        help="Stop a running sandbox.",
     )
-    stop_parser.add_argument("vm_id", help="VM identifier")
+    stop_parser.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
     stop_parser.add_argument(
         "--timeout",
         type=_positive_float,
         default=3.0,
-        help="Seconds to wait for graceful shutdown (default: 3).",
+        help="Seconds to wait before forcing shutdown (default: 3).",
     )
     stop_parser.add_argument(
         "--json",
@@ -479,9 +474,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     pause_parser = subparsers.add_parser(
         "pause",
-        help="Pause a running Firecracker VM",
+        help="Pause a running sandbox.",
     )
-    pause_parser.add_argument("vm_id", help="VM identifier")
+    pause_parser.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
     pause_parser.add_argument(
         "--json",
         action="store_true",
@@ -490,9 +485,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     resume_parser = subparsers.add_parser(
         "resume",
-        help="Resume a paused VM",
+        help="Resume a paused sandbox.",
     )
-    resume_parser.add_argument("vm_id", help="VM identifier")
+    resume_parser.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
     resume_parser.add_argument(
         "--json",
         action="store_true",
@@ -501,24 +496,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     snapshot_parser = subparsers.add_parser(
         "snapshot",
-        help="Manage VM snapshots",
+        help="Save and restore sandbox state.",
     )
     snapshot_sub = snapshot_parser.add_subparsers(dest="snapshot_action")
 
     snapshot_create = snapshot_sub.add_parser(
         "create",
-        help="Create a full snapshot for a VM",
+        help="Create a full snapshot for a sandbox.",
     )
-    snapshot_create.add_argument("vm_id", help="VM identifier")
+    snapshot_create.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
     snapshot_create.add_argument(
         "--snapshot-id",
         default=None,
-        help="Optional snapshot identifier.",
+        help="Custom snapshot name (default: auto-generated).",
     )
     snapshot_create.add_argument(
         "--resume-source",
         action="store_true",
-        help="Resume the source VM after snapshot creation.",
+        help="Keep the sandbox running after the snapshot is taken.",
     )
     snapshot_create.add_argument(
         "--json",
@@ -528,9 +523,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     snapshot_restore = snapshot_sub.add_parser(
         "restore",
-        help="Restore a snapshot back into its original VM identity",
+        help="Restore a snapshot back into its original sandbox.",
     )
-    snapshot_restore.add_argument("snapshot_id", help="Snapshot identifier")
+    snapshot_restore.add_argument("snapshot_id", metavar="snapshot", help="Name or ID of the snapshot.")
     snapshot_restore.add_argument(
         "--resume",
         action="store_true",
@@ -539,7 +534,7 @@ def build_parser() -> argparse.ArgumentParser:
     snapshot_restore.add_argument(
         "--force",
         action="store_true",
-        help="Allow restoring a snapshot that was already restored before.",
+        help="Allow restoring a snapshot that was already restored once.",
     )
     snapshot_restore.add_argument(
         "--json",
@@ -549,9 +544,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     snapshot_delete = snapshot_sub.add_parser(
         "delete",
-        help="Delete a snapshot and its files",
+        help="Delete a snapshot and its files.",
     )
-    snapshot_delete.add_argument("snapshot_id", help="Snapshot identifier")
+    snapshot_delete.add_argument("snapshot_id", metavar="snapshot", help="Name or ID of the snapshot.")
     snapshot_delete.add_argument(
         "--json",
         action="store_true",
@@ -560,12 +555,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     snapshot_list = snapshot_sub.add_parser(
         "list",
-        help="List snapshots",
+        help="List snapshots.",
     )
     snapshot_list.add_argument(
         "--vm-id",
         default=None,
-        help="Filter snapshots by source VM identifier.",
+        help="Only show snapshots from this sandbox.",
     )
     snapshot_list.add_argument(
         "--json",
@@ -575,54 +570,54 @@ def build_parser() -> argparse.ArgumentParser:
 
     ssh_parser = subparsers.add_parser(
         "ssh",
-        help="SSH into an existing VM, auto-starting it when needed",
+        help="Open a shell in a sandbox (starts it if stopped).",
     )
-    ssh_parser.add_argument("vm_id", help="VM identifier")
+    ssh_parser.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
     _add_ssh_auth_args(ssh_parser)
     _add_boot_timeout_arg(ssh_parser)
 
     browser_parser = subparsers.add_parser(
         "browser",
-        help="Manage disposable browser sessions",
+        help="Manage disposable browser sessions.",
     )
     browser_sub = browser_parser.add_subparsers(dest="browser_action")
 
     browser_start = browser_sub.add_parser(
         "start",
-        help="Create and start a browser session",
+        help="Create and start a browser session.",
     )
     browser_start.add_argument(
         "--session-id",
         default=None,
-        help="Optional browser session identifier.",
+        help="Custom session ID (default: auto-generated).",
     )
     browser_start.add_argument(
         "--backend",
         choices=["auto", "firecracker", "qemu"],
         default="auto",
-        help="Backend override (default: auto).",
+        help="Virtualization backend (default: auto-detected).",
     )
     browser_start.add_argument(
         "--live",
         action="store_true",
-        help="Start the browser session in live mode.",
+        help="Stream the browser UI so you can watch in real time.",
     )
     browser_start.add_argument(
         "--profile-mode",
         choices=["ephemeral", "persistent"],
         default="ephemeral",
-        help="Profile lifecycle mode (default: ephemeral).",
+        help="Browser profile mode: ephemeral (fresh each time) or persistent (default: ephemeral).",
     )
     browser_start.add_argument(
         "--profile-id",
         default=None,
-        help="Persistent profile identifier.",
+        help="Reuse a saved browser profile by its ID.",
     )
     browser_start.add_argument(
         "--timeout-minutes",
         type=int,
         default=30,
-        help="Session TTL metadata in minutes (default: 30).",
+        help="Auto-stop the session after this many minutes (default: 30).",
     )
     browser_start.add_argument(
         "--viewport-width",
@@ -640,23 +635,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--memory-mib",
         type=int,
         default=2048,
-        help="Guest memory in MiB (default: 2048).",
+        help="Sandbox memory in MiB (default: 2048).",
     )
     browser_start.add_argument(
         "--disk-size-mib",
         type=int,
         default=4096,
-        help="Root filesystem size in MiB (default: 4096).",
+        help="Sandbox disk size in MiB (default: 4096).",
     )
     browser_start.add_argument(
         "--record-video",
         action="store_true",
-        help="Record live sessions inside the guest artifact directory.",
+        help="Record a video of the browser session.",
     )
     browser_start.add_argument(
         "--no-downloads",
         action="store_true",
-        help="Disable writeable browser downloads inside the guest.",
+        help="Prevent the browser from saving downloaded files.",
     )
     browser_start.add_argument(
         "--json",
@@ -667,29 +662,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     browser_stop = browser_sub.add_parser(
         "stop",
-        help="Stop and delete a browser session",
+        help="Stop and delete a browser session.",
     )
     browser_stop_target = browser_stop.add_mutually_exclusive_group(required=True)
     browser_stop_target.add_argument(
         "session_id",
         nargs="?",
-        help="Browser session identifier",
+        metavar="session",
+        help="Session ID (printed by 'browser start').",
     )
     browser_stop_target.add_argument(
         "--all",
         action="store_true",
-        help="Stop and delete all persisted browser sessions.",
+        help="Stop all browser sessions.",
     )
 
     browser_list = browser_sub.add_parser(
         "list",
-        help="List browser sessions",
+        help="List browser sessions.",
     )
     browser_list.add_argument(
         "--status",
         choices=["created", "starting", "ready", "stopping", "error"],
         default=None,
-        help="Filter sessions by browser session status.",
+        help="Only show sessions with this status.",
     )
     browser_list.add_argument(
         "--json",
@@ -699,33 +695,33 @@ def build_parser() -> argparse.ArgumentParser:
 
     browser_open = browser_sub.add_parser(
         "open",
-        help="Open a live browser session in the local default browser",
+        help="Open a live browser session in your default browser.",
     )
-    browser_open.add_argument("session_id", help="Browser session identifier")
+    browser_open.add_argument("session_id", metavar="session", help="Session ID (printed by 'browser start').")
 
     browser_logs = browser_sub.add_parser(
         "logs",
-        help="Print browser session logs",
+        help="Print browser session logs.",
     )
-    browser_logs.add_argument("session_id", help="Browser session identifier")
+    browser_logs.add_argument("session_id", metavar="session", help="Session ID (printed by 'browser start').")
     browser_logs.add_argument(
         "--tail",
         type=int,
         default=100,
-        help="Number of log lines to tail from each source (default: 100).",
+        help="Number of recent log lines to show (default: 100).",
     )
 
     env_parser = subparsers.add_parser(
         "env",
-        help="Manage environment variables on a running VM",
+        help="Manage environment variables on a running sandbox.",
     )
     env_sub = env_parser.add_subparsers(dest="env_action")
 
     env_set = env_sub.add_parser(
         "set",
-        help="Set environment variables (merges with existing)",
+        help="Set environment variables (merges with existing).",
     )
-    env_set.add_argument("vm_id", help="VM identifier")
+    env_set.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
     env_set.add_argument(
         "pairs",
         nargs="+",
@@ -741,9 +737,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     env_unset = env_sub.add_parser(
         "unset",
-        help="Remove environment variables",
+        help="Remove environment variables.",
     )
-    env_unset.add_argument("vm_id", help="VM identifier")
+    env_unset.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
     env_unset.add_argument(
         "keys",
         nargs="+",
@@ -759,13 +755,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     env_list = env_sub.add_parser(
         "list",
-        help="List current environment variables",
+        help="List current environment variables.",
     )
-    env_list.add_argument("vm_id", help="VM identifier")
+    env_list.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
     env_list.add_argument(
         "--show-values",
         action="store_true",
-        help="Show values (they are masked by default).",
+        help="Show variable values (masked by default).",
     )
     env_list.add_argument(
         "--json",
