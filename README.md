@@ -66,12 +66,23 @@ The `with` block creates a sandbox, runs your command inside it, and tears the s
 
 ### Start a sandbox from the CLI
 
-Create a sandbox, run a command, and clean up:
+Create a sandbox, check that it's running, then stop it:
 
 ```bash
 smolvm create --name my-sandbox
+# my-sandbox  running  172.16.0.2
+
 smolvm list
+# NAME         STATUS   IP
+# my-sandbox   running  172.16.0.2
+
 smolvm stop my-sandbox
+```
+
+Open a shell inside a running sandbox:
+
+```bash
+smolvm ssh my-sandbox
 ```
 
 
@@ -83,15 +94,15 @@ Start a browser session with a live view you can watch in your own browser:
 
 ```bash
 smolvm browser start --live
+# Session:   sess_a1b2c3
+# Live view: http://localhost:6080
 ```
 
-The command prints a session ID and a URL. Open the URL to watch the browser in real time.
-
-When you're done, list and stop sessions:
+Open the URL to watch the browser in real time. When you're done, list and stop sessions:
 
 ```bash
 smolvm browser list
-smolvm browser stop <session_id>
+smolvm browser stop sess_a1b2c3
 ```
 
 See [examples/browser_session.py](examples/browser_session.py) for the Python equivalent.
