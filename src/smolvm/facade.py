@@ -674,7 +674,7 @@ class SmolVM:
 
         if not self._ssh_ready:
             try:
-                self._wait_for_ssh_with_fallback(timeout=_DEFAULT_RUN_READY_TIMEOUT)
+                self._wait_for_ssh(timeout=_DEFAULT_RUN_READY_TIMEOUT)
             except OperationTimeoutError as e:
                 raise CommandExecutionUnavailableError(
                     vm_id=self._vm_id,
@@ -755,7 +755,7 @@ class SmolVM:
                 {"vm_id": self._vm_id},
             )
 
-        self._wait_for_ssh_with_fallback(timeout=timeout)
+        self._wait_for_ssh(timeout=timeout)
         return self
 
     def ssh_commands(
@@ -1092,7 +1092,7 @@ class SmolVM:
             )
 
         if not self._ssh_ready:
-            self._wait_for_ssh_with_fallback(timeout=_DEFAULT_RUN_READY_TIMEOUT)
+            self._wait_for_ssh(timeout=_DEFAULT_RUN_READY_TIMEOUT)
 
         if self._ssh is None:
             raise SmolVMError(
@@ -1166,43 +1166,6 @@ class SmolVM:
             unique.append(endpoint)
         return unique
 
-    def _resolve_default_ssh_key_path(self) -> str | None:
-        """Resolve SmolVM's default SSH private key path.
-
-        Returns:
-            Path string if available, otherwise ``None``.
-        """
-        if self._default_ssh_key_path is not None:
-            return self._default_ssh_key_path
-
-        try:
-            from smolvm.utils import ensure_ssh_key
-
-            private_key, _ = ensure_ssh_key()
-            self._default_ssh_key_path = str(private_key)
-            return self._default_ssh_key_path
-        except Exception as e:
-            logger.debug("Failed to resolve default SSH key for VM %s: %s", self._vm_id, e)
-
-        # Compatibility fallback: if key generation/migration fails (e.g. permission
-        # issues), still try known on-disk locations.
-        home = Path.home()
-        candidates = [
-            home / ".smolvm" / "keys" / "id_ed25519",
-            home / ".smolvm" / "id_ed25519",
-        ]
-        for candidate in candidates:
-            if candidate.exists():
-                self._default_ssh_key_path = str(candidate)
-                logger.debug(
-                    "VM %s: using existing SSH key fallback path %s",
-                    self._vm_id,
-                    candidate,
-                )
-                return self._default_ssh_key_path
-
-        return None
-
     def _attempt_ssh_candidates(
         self,
         attempts: list[tuple[str, int, str | None]],
@@ -1243,7 +1206,7 @@ class SmolVM:
                 if self._ssh_key_path is None and key_path is not None:
                     self._ssh_key_path = key_path
                     logger.debug(
-                        "VM %s: SSH ready using fallback key path %s",
+                        "VM %s: SSH ready using key path %s",
                         self._vm_id,
                         key_path,
                     )
@@ -1254,8 +1217,8 @@ class SmolVM:
 
         return False
 
-    def _wait_for_ssh_with_fallback(self, timeout: float) -> None:
-        """Wait for SSH, with endpoint and key fallback strategies."""
+    def _wait_for_ssh(self, timeout: float) -> None:
+        """Wait for SSH across available network endpoints."""
         endpoints = self._ssh_endpoints()
 
         # Prefer the already selected client first, then try remaining candidates.
@@ -1269,7 +1232,7 @@ class SmolVM:
         if self._ssh is not None:
             attempts.append((self._ssh.host, self._ssh.port, self._ssh.key_path))
 
-        # First try explicit key if configured, otherwise default SSH auth (no -i).
+        # Try configured key, or default SSH auth (no -i).
         primary_key = self._ssh_key_path
         for host, port in ordered_endpoints:
             attempt = (host, port, primary_key)
@@ -1277,33 +1240,14 @@ class SmolVM:
                 continue
             attempts.append(attempt)
 
-        # If no explicit key was configured, also try SmolVM default key.
-        default_key = None
-        if self._ssh_key_path is None:
-            default_key = self._resolve_default_ssh_key_path()
-            if default_key is not None:
-                for host, port in ordered_endpoints:
-                    attempt = (host, port, default_key)
-                    if attempt in attempts:
-                        continue
-                    attempts.append(attempt)
-            else:
-                logger.debug(
-                    "VM %s: default SSH key fallback unavailable (~/.smolvm/keys/id_ed25519)",
-                    self._vm_id,
-                )
-
         errors: list[str] = []
         deadline = time.monotonic() + timeout
         if self._attempt_ssh_candidates(attempts, deadline=deadline, errors=errors):
             return
 
-        if self._ssh_key_path is None and default_key is None:
-            errors.append("default SSH key fallback unavailable (~/.smolvm/keys/id_ed25519)")
-
         self._ssh_ready = False
         detail = "; ".join(errors) if errors else "no endpoint attempts completed"
-        raise OperationTimeoutError(f"wait_for_ssh fallback: {detail}", timeout)
+        raise OperationTimeoutError(f"wait_for_ssh: {detail}", timeout)
 
     def _cleanup_local_forwards(self) -> None:
         """Best-effort cleanup for localhost-only guest port forwards."""

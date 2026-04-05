@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from smolvm.exceptions import SmolVMError, SnapshotNotFoundError, VMNotFoundError
-from smolvm.types import SnapshotInfo, VMConfig, VMState
+from smolvm.types import SnapshotArtifacts, SnapshotInfo, VMConfig, VMState
 from smolvm.vm import SmolVMManager
 
 
@@ -125,7 +125,7 @@ def test_create_snapshot_pauses_vm_and_persists_metadata(
     managed_disk.write_text("managed-disk")
 
     def _write_snapshot(snapshot_path: Path, mem_path: Path, snapshot_type: str = "Full") -> None:
-        artifacts.state_path.write_text("vmstate")
+        snapshot_path.write_text("vmstate")
         mem_path.write_text("memory")
 
     with patch("smolvm.runtime_firecracker.FirecrackerClient") as mock_client_cls:
@@ -156,7 +156,7 @@ def test_create_snapshot_rolls_back_metadata_on_resume_failure(
     managed_disk.write_text("managed-disk")
 
     def _write_snapshot(snapshot_path: Path, mem_path: Path, snapshot_type: str = "Full") -> None:
-        artifacts.state_path.write_text("vmstate")
+        snapshot_path.write_text("vmstate")
         mem_path.write_text("memory")
 
     with patch("smolvm.runtime_firecracker.FirecrackerClient") as mock_client_cls:
@@ -200,7 +200,7 @@ def test_create_snapshot_preserves_metadata_when_rollback_dir_cleanup_fails(
     managed_disk.write_text("managed-disk")
 
     def _write_snapshot(snapshot_path: Path, mem_path: Path, snapshot_type: str = "Full") -> None:
-        artifacts.state_path.write_text("vmstate")
+        snapshot_path.write_text("vmstate")
         mem_path.write_text("memory")
 
     with patch("smolvm.runtime_firecracker.FirecrackerClient") as mock_client_cls:
@@ -399,7 +399,7 @@ def test_delete_snapshot_rejects_active_restored_vm(
     managed_disk.write_text("managed-disk")
 
     def _write_snapshot(snapshot_path: Path, mem_path: Path, snapshot_type: str = "Full") -> None:
-        artifacts.state_path.write_text("vmstate")
+        snapshot_path.write_text("vmstate")
         mem_path.write_text("memory")
 
     with patch("smolvm.runtime_firecracker.FirecrackerClient") as mock_client_cls:

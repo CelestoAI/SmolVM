@@ -146,5 +146,3 @@ class CommandExecutionUnavailableError(SmolVMError):
         self.remediation = remediation
 
 
-# Backwards-compatible alias
-TimeoutError = OperationTimeoutError

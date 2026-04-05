@@ -25,7 +25,7 @@ from typing import Any
 import requests
 import requests_unixsocket
 
-from smolvm.exceptions import FirecrackerAPIError, TimeoutError
+from smolvm.exceptions import FirecrackerAPIError, OperationTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +127,7 @@ class FirecrackerClient:
             timeout: Maximum seconds to wait.
 
         Raises:
-            TimeoutError: If socket doesn't become available.
+            OperationTimeoutError: If socket doesn't become available.
         """
         start = time.time()
         while time.time() - start < timeout:
@@ -141,7 +141,7 @@ class FirecrackerClient:
                     pass
             time.sleep(0.1)
 
-        raise TimeoutError("wait_for_socket", timeout)
+        raise OperationTimeoutError("wait_for_socket", timeout)
 
     def set_boot_source(
         self,

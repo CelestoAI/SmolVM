@@ -54,7 +54,6 @@ logger = logging.getLogger(__name__)
 # Default paths
 DEFAULT_DATA_DIR_ENV = "SMOLVM_DATA_DIR"
 DEFAULT_SYSTEM_DATA_DIR = Path("/var/lib/smolvm")
-DEFAULT_DATA_DIR = DEFAULT_SYSTEM_DATA_DIR  # Backward-compatible constant.
 DEFAULT_SOCKET_DIR = Path("/tmp")
 
 # Backend-specific defaults

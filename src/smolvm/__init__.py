@@ -32,7 +32,6 @@ from smolvm.exceptions import (
     SmolVMError,
     SnapshotAlreadyExistsError,
     SnapshotNotFoundError,
-    TimeoutError,  # Backward compatibility alias
     ValidationError,
     VMAlreadyExistsError,
     VMNotFoundError,
@@ -102,5 +101,4 @@ __all__ = [
     "ImageError",
     "FirecrackerAPIError",
     "OperationTimeoutError",
-    "TimeoutError",  # Alias
 ]
