@@ -51,7 +51,7 @@ def test_start_qemu_includes_configured_hostfwd_rules(
     )
 
     sdk = SmolVMManager(data_dir=tmp_path / "data", socket_dir=tmp_path / "sockets", backend="qemu")
-    with patch.object(SmolVMManager, "_convert_qemu_managed_disk") as mock_convert:
+    with patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_convert:
         mock_convert.side_effect = lambda source, target: target.touch()
         vm_info = sdk.create(config)
 
@@ -95,7 +95,7 @@ def test_start_qemu_uses_distinct_block_backend_and_node_names(
     )
 
     sdk = SmolVMManager(data_dir=tmp_path / "data", socket_dir=tmp_path / "sockets", backend="qemu")
-    with patch.object(SmolVMManager, "_convert_qemu_managed_disk") as mock_convert:
+    with patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_convert:
         mock_convert.side_effect = lambda source, target: target.touch()
         vm_info = sdk.create(config)
 
@@ -130,7 +130,7 @@ def test_create_qemu_uses_managed_qcow2_disk(tmp_path: Path) -> None:
     )
 
     sdk = SmolVMManager(data_dir=tmp_path / "data", socket_dir=tmp_path / "sockets", backend="qemu")
-    with patch.object(SmolVMManager, "_convert_qemu_managed_disk") as mock_convert:
+    with patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_convert:
         mock_convert.side_effect = lambda source, target: target.write_text("managed-qcow2")
         vm_info = sdk.create(config)
 
@@ -156,7 +156,7 @@ def test_delete_qemu_retains_isolated_disk_when_enabled(tmp_path: Path) -> None:
     )
 
     sdk = SmolVMManager(data_dir=tmp_path / "data", socket_dir=tmp_path / "sockets", backend="qemu")
-    with patch.object(SmolVMManager, "_convert_qemu_managed_disk") as mock_convert:
+    with patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_convert:
         mock_convert.side_effect = lambda source, target: target.write_text("managed-qcow2")
         sdk.create(config)
 

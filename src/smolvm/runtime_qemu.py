@@ -16,7 +16,9 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
+import subprocess
 import time
 from contextlib import suppress
 from pathlib import Path
@@ -34,6 +36,9 @@ from smolvm.runtime import (
     SnapshotRestoreRequest,
 )
 from smolvm.types import SnapshotArtifacts, VMInfo, VMState
+from smolvm.utils import which
+
+logger = logging.getLogger(__name__)
 
 QEMU_ROOT_NODE_NAME = "rootdisk0"
 
@@ -132,7 +137,7 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                 snapshot_saved = True
 
                 disk_path = request.snapshot_root / "disk.qcow2"
-                shutil.copy2(request.managed_disk_path, disk_path)
+                self._copy_disk_standalone(request.managed_disk_path, disk_path)
 
                 delete_job_id = f"snapshot-delete-{request.snapshot_id}"
                 client.snapshot_delete(delete_job_id, request.snapshot_id, [QEMU_ROOT_NODE_NAME])
@@ -243,6 +248,57 @@ class QemuRuntimeAdapter(RuntimeAdapter):
     def _control_socket_path(self, vm_id: str) -> Path:
         """Return the persistent QMP socket path for a VM."""
         return self._context.socket_dir / f"qmp-{vm_id}.sock"
+
+    @staticmethod
+    def _copy_disk_standalone(source: Path, dest: Path) -> None:
+        """Copy a qcow2 disk, flattening any backing-file chain.
+
+        If the source has a backing file (i.e. it's a thin overlay), uses
+        ``qemu-img convert`` to produce a self-contained qcow2. Otherwise
+        falls back to a simple file copy.
+        """
+        qemu_img = which("qemu-img")
+        if qemu_img is not None:
+            # Check if the source has a backing file
+            info_result = subprocess.run(
+                [str(qemu_img), "info", "--output=json", str(source)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            has_backing = (
+                info_result.returncode == 0 and "backing-filename" in info_result.stdout
+            )
+
+            if has_backing:
+                logger.info(
+                    "Flattening overlay qcow2 for snapshot: %s -> %s",
+                    source,
+                    dest,
+                )
+                convert_result = subprocess.run(
+                    [
+                        str(qemu_img),
+                        "convert",
+                        "-f",
+                        "qcow2",
+                        "-O",
+                        "qcow2",
+                        str(source),
+                        str(dest),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if convert_result.returncode == 0:
+                    return
+                logger.warning(
+                    "qemu-img convert failed during snapshot, falling back to copy: %s",
+                    convert_result.stderr.strip(),
+                )
+
+        shutil.copy2(source, dest)
 
     def _client(self, control_socket_path: Path | None, timeout: float = 5.0) -> QMPClient:
         """Connect a QMP client for a runtime control socket."""

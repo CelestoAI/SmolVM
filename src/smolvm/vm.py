@@ -336,7 +336,7 @@ class SmolVMManager:
         return which("qemu-img")
 
     def _convert_qemu_managed_disk(self, source_path: Path, target_path: Path) -> None:
-        """Create a managed qcow2 disk for the QEMU backend."""
+        """Create a managed qcow2 disk for the QEMU backend (full copy)."""
         qemu_img = self._find_qemu_img_binary()
         if qemu_img is None:
             raise SmolVMError("QEMU backend requires qemu-img to materialize managed disks")
@@ -367,12 +367,82 @@ class SmolVMManager:
                 },
             )
 
+    def _create_qemu_overlay_disk(self, base_path: Path, overlay_path: Path) -> None:
+        """Create a thin qcow2 overlay backed by a shared base image.
+
+        The overlay file is near-instant to create and consumes negligible disk
+        space until the guest writes data. Reads that miss the overlay fall
+        through to the read-only base image.
+        """
+        qemu_img = self._find_qemu_img_binary()
+        if qemu_img is None:
+            raise SmolVMError("QEMU backend requires qemu-img to create overlay disks")
+
+        base_format = "qcow2" if base_path.suffix == ".qcow2" else "raw"
+        result = subprocess.run(
+            [
+                str(qemu_img),
+                "create",
+                "-f",
+                "qcow2",
+                "-b",
+                str(base_path.resolve()),
+                "-F",
+                base_format,
+                str(overlay_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise SmolVMError(
+                "qemu-img create (overlay) failed",
+                {
+                    "base_path": str(base_path),
+                    "overlay_path": str(overlay_path),
+                    "stderr": result.stderr.strip(),
+                },
+            )
+        logger.debug(
+            "Created thin qcow2 overlay: %s -> base %s",
+            overlay_path,
+            base_path,
+        )
+
+    @staticmethod
+    def _copy_with_reflink(source_path: Path, target_path: Path) -> None:
+        """Copy a file using reflink (CoW) when the filesystem supports it.
+
+        On btrfs and XFS with reflinks, this is near-instant regardless of
+        file size. On other filesystems it falls back to a regular copy.
+        """
+        result = subprocess.run(
+            ["cp", "--reflink=auto", str(source_path), str(target_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            # Fallback: --reflink=auto may not be supported on all platforms
+            # (e.g. macOS cp doesn't have this flag).
+            shutil.copy2(source_path, target_path)
+
     def _materialize_rootfs(self, config: VMConfig) -> VMConfig:
         """Materialize the effective rootfs path for a VM create request.
 
-        In ``isolated`` mode, clones the configured ``rootfs_path`` into a
-        per-VM disk file under ``data_dir/disks`` (or reuses an existing one
-        for the same VM ID). In ``shared`` mode, uses ``rootfs_path`` directly.
+        In ``isolated`` mode, creates a per-VM disk under ``data_dir/disks``
+        (or reuses an existing one for the same VM ID).
+
+        **QEMU:** Creates a thin qcow2 overlay backed by the shared base image.
+        Near-instant and consumes minimal disk — reads fall through to the
+        shared base, writes go to the per-VM overlay.
+
+        **Firecracker:** Copies the base image using ``cp --reflink=auto``.
+        On btrfs/XFS this is instant copy-on-write; on other filesystems it
+        falls back to a regular copy.
+
+        In ``shared`` mode, uses ``rootfs_path`` directly.
         """
         if config.disk_mode == "shared":
             return config
@@ -387,9 +457,9 @@ class SmolVMManager:
                 instance_rootfs,
             )
             if backend == BACKEND_QEMU:
-                self._convert_qemu_managed_disk(config.rootfs_path, instance_rootfs)
+                self._create_qemu_overlay_disk(config.rootfs_path, instance_rootfs)
             else:
-                shutil.copy2(config.rootfs_path, instance_rootfs)
+                self._copy_with_reflink(config.rootfs_path, instance_rootfs)
         else:
             logger.info(
                 "Reusing isolated disk for VM %s at %s",

@@ -9,7 +9,7 @@ SmolVM is specifically designed to provide a secure "sandbox" for AI agents to e
 
 - **Purpose:** Securely isolate untrusted code (like AI agent tools) using microVMs.
 - **Technology Stack:**
-    - **Language:** Python >= 3.10
+    - **Language:** Python >= 3.10 (we use uv)
     - **Orchestrator:** Firecracker
     - **Build System:** Hatchling
     - **Dependencies:** Pydantic (data validation), Requests (API/Unix socket interaction), SSH (for command execution).
