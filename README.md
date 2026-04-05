@@ -2,7 +2,7 @@
 
 # SmolVM
 
-**Run AI code, start a browser, and give AI agents an isolated workspace**
+**Disposable sandboxes for AI agents**
 
 
 <img src="https://ik.imagekit.io/gradsflow/celestoai/logo/celesto%20cover%20low_vFigbRaJI.png">
@@ -19,14 +19,14 @@
 
 ---
 
-SmolVM provides instant disposable computers to AI agents to run code, browser tasks and any other tasks that require a computer.
+SmolVM gives AI agents their own disposable computer. Each sandbox is a lightweight virtual machine that boots in seconds, runs any code or command you throw at it, and disappears when you're done — nothing touches your host.
 
 
 ## Use cases
 
-- Run untrusted code and agents in a sandbox environment.
-- Start a virtual computer for agents to run tasks on (shell, browser, etc.)
-- Keep one sandbox across multiple turns for stateful workflows.
+- **Run untrusted code safely.** Execute AI-generated code in an isolated sandbox instead of on your machine.
+- **Give agents a browser.** Spin up a full browser session that agents can see and control in real time.
+- **Keep state across turns.** Reuse the same sandbox throughout a multi-step workflow.
 
 
 ## Quickstart
@@ -57,77 +57,94 @@ smolvm doctor
 from smolvm import SmolVM
 
 with SmolVM() as vm:
-    result = vm.run("echo 'You can run risky code here without affecting the actual machine.'")
+    result = vm.run("echo 'Hello from the sandbox!'")
     print(result.stdout.strip())
 ```
 
+The `with` block creates a sandbox, runs your command inside it, and tears the sandbox down automatically when the block exits.
 
-### Create a sandbox from CLI
+
+### Start a sandbox from the CLI
+
+Create a sandbox, run a command, and clean up:
 
 ```bash
 smolvm create --name my-sandbox
+smolvm list
+smolvm stop my-sandbox
 ```
 
-Start a disposable browser session (you can see the browser UI in real time)
+
+## Browser sessions
+
+SmolVM can also start a full browser inside a sandbox. This is useful when agents need to navigate websites, fill out forms, or take screenshots.
+
+Start a browser session with a live view you can watch in your own browser:
 
 ```bash
 smolvm browser start --live
 ```
 
-If you want to open the live browser view in your default browser:
+The command prints a session ID and a URL. Open the URL to watch the browser in real time.
 
-```bash
-smolvm browser open <session_id>
-```
-
-List sandboxes and dispose them when you are done.
+When you're done, list and stop sessions:
 
 ```bash
 smolvm browser list
 smolvm browser stop <session_id>
 ```
 
-Other useful CLI commands:
+See [examples/browser_session.py](examples/browser_session.py) for the Python equivalent.
 
-- `smolvm create --name my-sandbox`
-- `smolvm create --os debian --name my-debian-sandbox`
-- `smolvm ssh my-sandbox`
-- `smolvm env list <vm_id>`
-- `smolvm list`
-- `smolvm stop my-sandbox`
 
 ## Examples
 
-| Outcome | Start here |
-| --- | --- |
-| Run code in a clean sandbox | [examples/quickstart_sandbox.py](examples/quickstart_sandbox.py) |
-| Start a disposable browser session | [examples/browser_session.py](examples/browser_session.py) |
-| Let a model click and type on websites | [examples/agent_tools/computer_use_browser.py](examples/agent_tools/computer_use_browser.py) |
-| Let PydanticAI drive the browser through `agent-browser` | [examples/agent_tools/pydanticai_agent_browser.py](examples/agent_tools/pydanticai_agent_browser.py) |
-| Give an agent a shell tool | [examples/agent_tools/openai_agents_tool.py](examples/agent_tools/openai_agents_tool.py), [examples/agent_tools/langchain_tool.py](examples/agent_tools/langchain_tool.py), [examples/agent_tools/pydanticai_tool.py](examples/agent_tools/pydanticai_tool.py) |
-| Keep one sandbox across turns | [examples/agent_tools/pydanticai_reusable_tool.py](examples/agent_tools/pydanticai_reusable_tool.py) |
-| Pass env vars into the guest | [examples/env_injection.py](examples/env_injection.py) |
+### Getting started
 
-Advanced example: [examples/openclaw.py](examples/openclaw.py)
+| What you'll learn | Example |
+| --- | --- |
+| Run code in a sandbox | [quickstart_sandbox.py](examples/quickstart_sandbox.py) |
+| Start a browser session | [browser_session.py](examples/browser_session.py) |
+| Pass environment variables into a sandbox | [env_injection.py](examples/env_injection.py) |
+
+### Agent framework integrations
+
+These examples show how to wrap SmolVM as a tool for popular agent frameworks, so an AI model can run shell commands or drive a browser through your sandbox.
+
+| Framework | Example |
+| --- | --- |
+| OpenAI Agents | [openai_agents_tool.py](examples/agent_tools/openai_agents_tool.py) |
+| LangChain | [langchain_tool.py](examples/agent_tools/langchain_tool.py) |
+| PydanticAI — shell tool | [pydanticai_tool.py](examples/agent_tools/pydanticai_tool.py) |
+| PydanticAI — reusable sandbox across turns | [pydanticai_reusable_tool.py](examples/agent_tools/pydanticai_reusable_tool.py) |
+| PydanticAI — browser automation | [pydanticai_agent_browser.py](examples/agent_tools/pydanticai_agent_browser.py) |
+| Computer use (click and type) | [computer_use_browser.py](examples/agent_tools/computer_use_browser.py) |
+
+### Advanced
+
+| What it does | Example |
+| --- | --- |
+| Install and run OpenClaw inside a Debian sandbox with a 4 GB root filesystem | [openclaw.py](examples/openclaw.py) |
 
 Each script shows its own `pip install ...` line when it needs extra packages.
 
 
-## Security notes
+## Security
 
-SmolVM is built for local, agent-style workflows. By default, SSH host keys are accepted on first connection to keep setup simple. Use it on trusted machines and networks, and avoid exposing guest SSH endpoints publicly without extra controls. See [SECURITY.md](SECURITY.md) for the full policy and scope.
+SmolVM automatically trusts new sandboxes on first connection to keep setup simple. This is safe for local development, but you should not expose sandbox network ports publicly without extra controls. See [SECURITY.md](SECURITY.md) for the full policy and scope.
+
 
 ## Performance
 
-Typical lifecycle timings (p50) on a standard Linux host:
+Median lifecycle timings on a standard Linux host:
 
 | Phase | Time |
 | --- | --- |
-| Create + Start | ~572ms |
-| SSH ready | ~2.1s |
-| Command execution | ~43ms |
-| Stop + Delete | ~751ms |
-| Full lifecycle (boot -> run -> teardown) | ~3.5s |
+| Create + Start | ~572 ms |
+| Ready to accept commands | ~2.1 s |
+| Command execution | ~43 ms |
+| Stop + Delete | ~751 ms |
+| **Full lifecycle (boot, run, teardown)** | **~3.5 s** |
 
 Run the benchmark yourself:
 
@@ -135,20 +152,17 @@ Run the benchmark yourself:
 python3 scripts/benchmarks/bench_subprocess.py --vms 10 -v
 ```
 
-Measured on AMD Ryzen 7 7800X3D (8C/16T), Ubuntu Linux, KVM/Firecracker backend.
-
-## More
-
-- [Docs](https://docs.celesto.ai)
-- [Examples](examples/)
-- [Security](SECURITY.md)
-- [Contributing](CONTRIBUTING.md)
-- [Slack](https://join.slack.com/t/celestoai/shared_invite/zt-3qc7h8gno-Nb5_PElEWHDNnGqdVzC~4Q)
+Measured on AMD Ryzen 7 7800X3D (8C/16T), Ubuntu Linux. SmolVM uses [Firecracker](https://firecracker-microvm.github.io/), a lightweight virtual machine manager built for running thousands of secure, fast micro-VMs.
 
 
-## 📄 License
+## Contributing
 
-Apache 2.0 License - see [LICENSE](LICENSE) for details.
+See [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
+
+
+## License
+
+Apache 2.0 — see [LICENSE](LICENSE) for details.
 
 ---
 <div align="center">
