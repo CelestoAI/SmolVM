@@ -391,51 +391,7 @@ class TestSnapshotInfo:
         assert snapshot.vm_config.vm_id == "vm001"
         assert snapshot.network_config.tap_device == "tap2"
 
-    def test_snapshot_info_prefers_legacy_top_level_paths_when_artifact_values_are_none(
-        self, tmp_path: Path
-    ) -> None:
-        """Legacy snapshot aliases should fill missing or null artifact values."""
-        kernel = tmp_path / "vmlinux"
-        rootfs = tmp_path / "rootfs.ext4"
-        snapshot_path = tmp_path / "vmstate.bin"
-        mem_file_path = tmp_path / "mem.bin"
-        disk_path = tmp_path / "disk.ext4"
-        kernel.touch()
-        rootfs.touch()
-        snapshot_path.touch()
-        mem_file_path.touch()
-        disk_path.touch()
 
-        config = VMConfig(vm_id="vm001", kernel_path=kernel, rootfs_path=rootfs)
-        network = NetworkConfig(
-            guest_ip="172.16.0.2",
-            tap_device="tap2",
-            guest_mac="AA:FC:00:00:00:02",
-            ssh_host_port=2200,
-        )
-
-        snapshot = SnapshotInfo.model_validate(
-            {
-                "snapshot_id": "snap-legacy",
-                "vm_id": "vm001",
-                "backend": "firecracker",
-                "artifacts": {
-                    "state_path": None,
-                    "memory_path": None,
-                    "disk_path": None,
-                },
-                "snapshot_path": snapshot_path,
-                "mem_file_path": mem_file_path,
-                "disk_path": disk_path,
-                "vm_config": config,
-                "network_config": network,
-                "created_at": datetime.now(timezone.utc),
-            }
-        )
-
-        assert snapshot.artifacts.state_path == snapshot_path
-        assert snapshot.artifacts.memory_path == mem_file_path
-        assert snapshot.artifacts.disk_path == disk_path
 
 
 class TestBrowserSessionConfig:

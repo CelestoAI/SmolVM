@@ -194,7 +194,7 @@ def test_restore_qemu_snapshot_rehydrates_deleted_vm(
         network_config=vm_info.network,
         created_at=datetime.now(timezone.utc),
     )
-    snapshot.disk_path.write_text("snapshotted-qcow2")
+    snapshot.artifacts.disk_path.write_text("snapshotted-qcow2")
     qemu_smol_vm.state.create_snapshot(snapshot)
 
     qemu_smol_vm.delete("vm001")
@@ -238,7 +238,7 @@ def test_restore_qemu_snapshot_rolls_back_new_vm_resources_on_failure(
         network_config=vm_info.network,
         created_at=datetime.now(timezone.utc),
     )
-    snapshot.disk_path.write_text("snapshotted-qcow2")
+    snapshot.artifacts.disk_path.write_text("snapshotted-qcow2")
     qemu_smol_vm.state.create_snapshot(snapshot)
 
     qemu_smol_vm.delete("vm001")
@@ -284,7 +284,7 @@ def test_restore_qemu_snapshot_preserves_existing_managed_disk_on_failure(
         network_config=vm_info.network,
         created_at=datetime.now(timezone.utc),
     )
-    snapshot.disk_path.write_text("snapshotted-qcow2")
+    snapshot.artifacts.disk_path.write_text("snapshotted-qcow2")
     qemu_smol_vm.state.create_snapshot(snapshot)
 
     process = MagicMock()
@@ -325,7 +325,7 @@ def test_delete_qemu_snapshot_rejects_active_restored_vm(
         network_config=vm_info.network,
         created_at=datetime.now(timezone.utc),
     )
-    snapshot.disk_path.write_text("snapshotted-qcow2")
+    snapshot.artifacts.disk_path.write_text("snapshotted-qcow2")
     qemu_smol_vm.state.create_snapshot(snapshot)
 
     qemu_smol_vm.delete("vm001")

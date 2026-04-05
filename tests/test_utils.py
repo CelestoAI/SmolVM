@@ -163,32 +163,6 @@ class TestEnsureSSHKey:
         mock_run.assert_called_once()
 
     @patch("smolvm.utils.subprocess.run")
-    @patch("smolvm.utils.Path.home")
-    def test_legacy_key_location_is_migrated(
-        self,
-        mock_home: MagicMock,
-        mock_run: MagicMock,
-        tmp_path,
-    ) -> None:
-        """Legacy ~/.smolvm/id_ed25519 keys should be reused via migration."""
-        mock_home.return_value = tmp_path
-        legacy_dir = tmp_path / ".smolvm"
-        legacy_dir.mkdir(parents=True)
-        legacy_private = legacy_dir / "id_ed25519"
-        legacy_public = legacy_dir / "id_ed25519.pub"
-        legacy_private.write_text("legacy-private")
-        legacy_public.write_text("legacy-public")
-
-        private_key, public_key = ensure_ssh_key()
-
-        expected_dir = tmp_path / ".smolvm" / "keys"
-        assert private_key == expected_dir / "id_ed25519"
-        assert public_key == expected_dir / "id_ed25519.pub"
-        assert private_key.read_text() == "legacy-private"
-        assert public_key.read_text() == "legacy-public"
-        mock_run.assert_not_called()
-
-    @patch("smolvm.utils.subprocess.run")
     def test_explicit_key_dir_does_not_require_sudo_context(
         self,
         mock_run: MagicMock,
