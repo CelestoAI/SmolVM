@@ -886,6 +886,74 @@ class TestVMRun:
 
     @patch("smolvm.facade.SSHClient")
     @patch("smolvm.facade.SmolVMManager")
+    def test_wait_for_ssh_falls_back_to_default_smolvm_key_when_no_key_configured(
+        self,
+        mock_sdk_cls: MagicMock,
+        mock_ssh_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        """wait_for_ssh() without an explicit key should retry with ~/.smolvm/keys/id_ed25519.
+
+        Regression test for: smolvm ssh <name> failing with 'Authentication failed'
+        after smolvm create, because from_id() sets ssh_key_path=None but the VM
+        was provisioned with the default SmolVM key.
+        """
+        mock_network = MagicMock()
+        mock_network.guest_ip = "172.16.0.2"
+        mock_network.ssh_host_port = 2201
+
+        mock_info = MagicMock()
+        mock_info.vm_id = "vm001"
+        mock_info.status = VMState.RUNNING
+        mock_info.network = mock_network
+        mock_info.config.boot_args = "console=ttyS0 reboot=k panic=1 pci=off init=/init"
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        mock_sdk.get.return_value = mock_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        default_key_path = tmp_path / "keys" / "id_ed25519"
+        default_key_path.parent.mkdir(parents=True)
+        default_key_path.touch()
+        (default_key_path.parent / "id_ed25519.pub").touch()
+
+        # Attempt order: (127.0.0.1:2201, None) → (172.16.0.2:22, None) → (127.0.0.1:2201, key)
+        # First two attempts (no key / agent auth) fail; third (default smolvm key) succeeds.
+        no_key_client_1 = MagicMock()
+        no_key_client_1.host = "127.0.0.1"
+        no_key_client_1.port = 2201
+        no_key_client_1.key_path = None
+        no_key_client_1.wait_for_ssh.side_effect = OperationTimeoutError("wait_for_ssh", 10.0)
+
+        no_key_client_2 = MagicMock()
+        no_key_client_2.host = "172.16.0.2"
+        no_key_client_2.port = 22
+        no_key_client_2.key_path = None
+        no_key_client_2.wait_for_ssh.side_effect = OperationTimeoutError("wait_for_ssh", 10.0)
+
+        key_client = MagicMock()
+        key_client.host = "127.0.0.1"
+        key_client.port = 2201
+        key_client.key_path = str(default_key_path)
+
+        mock_ssh_cls.side_effect = [no_key_client_1, no_key_client_2, key_client]
+
+        vm = SmolVM(sample_config)
+
+        with patch("smolvm.utils.ensure_ssh_key", return_value=(default_key_path, default_key_path.parent / "id_ed25519.pub")):
+            vm.wait_for_ssh(timeout=30.0)
+
+        # Should have tried the default smolvm key after both no-key attempts failed
+        assert mock_ssh_cls.call_count == 3
+        third_call_kwargs = mock_ssh_cls.call_args_list[2].kwargs
+        assert third_call_kwargs.get("key_path") == str(default_key_path)
+        assert vm._ssh is key_client
+        assert vm._ssh_ready is True
+
+    @patch("smolvm.facade.SSHClient")
+    @patch("smolvm.facade.SmolVMManager")
     def test_run_on_non_ssh_boot_profile_raises_clear_error(
         self,
         mock_sdk_cls: MagicMock,

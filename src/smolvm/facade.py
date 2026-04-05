@@ -1240,6 +1240,23 @@ class SmolVM:
                 continue
             attempts.append(attempt)
 
+        # When no explicit key was provided, also try the default SmolVM key
+        # (~/.smolvm/keys/id_ed25519). VMs created via auto-config always have
+        # this public key injected, so reconnecting via from_id() without an
+        # explicit ssh_key_path should still authenticate correctly.
+        if primary_key is None:
+            from smolvm.utils import ensure_ssh_key
+            try:
+                default_key, _ = ensure_ssh_key()
+                default_key_str = str(default_key)
+                for host, port in ordered_endpoints:
+                    attempt = (host, port, default_key_str)
+                    if attempt in attempts:
+                        continue
+                    attempts.append(attempt)
+            except Exception:
+                pass  # Key doesn't exist or can't be created — skip silently
+
         errors: list[str] = []
         deadline = time.monotonic() + timeout
         if self._attempt_ssh_candidates(attempts, deadline=deadline, errors=errors):
