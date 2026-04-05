@@ -138,7 +138,7 @@ def test_create_snapshot_pauses_vm_and_persists_metadata(
     persisted = smol_vm.state.get_snapshot("snap-001")
 
     assert snapshot.snapshot_id == "snap-001"
-    assert snapshot.disk_path.read_text() == "managed-disk"
+    assert snapshot.artifacts.disk_path.read_text() == "managed-disk"
     assert persisted.vm_config.rootfs_path == managed_disk
     assert smol_vm.get("vm001").status == VMState.PAUSED
     mock_client.pause_vm.assert_called_once()
@@ -251,6 +251,8 @@ def test_restore_snapshot_rehydrates_deleted_vm(
     snapshot_dir.mkdir(parents=True)
     snapshot = SnapshotInfo(
         snapshot_id="snap-001",
+        vm_id="vm001",
+        backend="firecracker",
         artifacts=SnapshotArtifacts(
             state_path=snapshot_dir / "vmstate.bin",
             memory_path=snapshot_dir / "mem.bin",
@@ -261,8 +263,8 @@ def test_restore_snapshot_rehydrates_deleted_vm(
         created_at=datetime.now(timezone.utc),
     )
     snapshot.artifacts.state_path.write_text("vmstate")
-    snapshot.mem_file_path.write_text("memory")
-    snapshot.disk_path.write_text("snapshotted-disk")
+    snapshot.artifacts.memory_path.write_text("memory")
+    snapshot.artifacts.disk_path.write_text("snapshotted-disk")
     smol_vm.state.create_snapshot(snapshot)
 
     smol_vm.delete("vm001")
@@ -307,6 +309,8 @@ def test_restore_snapshot_rolls_back_new_vm_resources_on_failure(
     snapshot_dir.mkdir(parents=True)
     snapshot = SnapshotInfo(
         snapshot_id="snap-001",
+        vm_id="vm001",
+        backend="firecracker",
         artifacts=SnapshotArtifacts(
             state_path=snapshot_dir / "vmstate.bin",
             memory_path=snapshot_dir / "mem.bin",
@@ -317,8 +321,8 @@ def test_restore_snapshot_rolls_back_new_vm_resources_on_failure(
         created_at=datetime.now(timezone.utc),
     )
     snapshot.artifacts.state_path.write_text("vmstate")
-    snapshot.mem_file_path.write_text("memory")
-    snapshot.disk_path.write_text("snapshotted-disk")
+    snapshot.artifacts.memory_path.write_text("memory")
+    snapshot.artifacts.disk_path.write_text("snapshotted-disk")
     smol_vm.state.create_snapshot(snapshot)
 
     smol_vm.delete("vm001")
@@ -359,6 +363,8 @@ def test_restore_snapshot_preserves_existing_managed_disk_on_failure(
     snapshot_dir.mkdir(parents=True)
     snapshot = SnapshotInfo(
         snapshot_id="snap-001",
+        vm_id="vm001",
+        backend="firecracker",
         artifacts=SnapshotArtifacts(
             state_path=snapshot_dir / "vmstate.bin",
             memory_path=snapshot_dir / "mem.bin",
@@ -369,8 +375,8 @@ def test_restore_snapshot_preserves_existing_managed_disk_on_failure(
         created_at=datetime.now(timezone.utc),
     )
     snapshot.artifacts.state_path.write_text("vmstate")
-    snapshot.mem_file_path.write_text("memory")
-    snapshot.disk_path.write_text("snapshotted-disk")
+    snapshot.artifacts.memory_path.write_text("memory")
+    snapshot.artifacts.disk_path.write_text("snapshotted-disk")
     smol_vm.state.create_snapshot(snapshot)
 
     with (
@@ -433,6 +439,8 @@ def test_delete_snapshot_preserves_metadata_when_disk_cleanup_fails(
     snapshot_dir.mkdir(parents=True)
     snapshot = SnapshotInfo(
         snapshot_id="snap-001",
+        vm_id="vm001",
+        backend="firecracker",
         artifacts=SnapshotArtifacts(
             state_path=snapshot_dir / "vmstate.bin",
             memory_path=snapshot_dir / "mem.bin",
