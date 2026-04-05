@@ -270,7 +270,6 @@ class StateManager:
         network: NetworkConfig | None = None,
         pid: int | None = None,
         control_socket_path: Path | None = None,
-        socket_path: Path | None = None,
         clear_pid: bool = False,
         clear_socket_path: bool = False,
     ) -> VMInfo:
@@ -282,7 +281,6 @@ class StateManager:
             network: Network configuration (optional).
             pid: Process ID (optional).
             control_socket_path: Runtime control socket path (optional).
-            socket_path: Deprecated alias for ``control_socket_path``.
             clear_pid: If True, set pid to NULL.
             clear_socket_path: If True, set socket_path to NULL.
 
@@ -321,13 +319,9 @@ class StateManager:
             elif clear_pid:
                 updates.append("pid = NULL")
 
-            effective_control_socket_path = control_socket_path
-            if effective_control_socket_path is None and socket_path is not None:
-                effective_control_socket_path = socket_path
-
-            if effective_control_socket_path is not None:
+            if control_socket_path is not None:
                 updates.append("socket_path = ?")
-                params.append(str(effective_control_socket_path))
+                params.append(str(control_socket_path))
             elif clear_socket_path:
                 updates.append("socket_path = NULL")
 

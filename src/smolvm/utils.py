@@ -158,27 +158,6 @@ def ensure_ssh_key(key_dir: Path | None = None) -> tuple[Path, Path]:
         base_dir = user_home / ".smolvm"
         key_dir = base_dir / "keys"
 
-        legacy_private = base_dir / "id_ed25519"
-        legacy_public = base_dir / "id_ed25519.pub"
-        migrated_private = key_dir / "id_ed25519"
-        migrated_public = key_dir / "id_ed25519.pub"
-
-        # Backward compatibility: reuse legacy key location if present by
-        # copying it into the new ~/.smolvm/keys layout.
-        if (
-            not migrated_private.exists()
-            and not migrated_public.exists()
-            and legacy_private.exists()
-            and legacy_public.exists()
-        ):
-            key_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(legacy_private, migrated_private)
-            shutil.copy2(legacy_public, migrated_public)
-            if sudo_uid is not None and sudo_gid is not None:
-                os.chown(key_dir, sudo_uid, sudo_gid)
-                os.chown(migrated_private, sudo_uid, sudo_gid)
-                os.chown(migrated_public, sudo_uid, sudo_gid)
-
     key_dir = Path(key_dir)
     if not key_dir.exists():
         key_dir.mkdir(parents=True, exist_ok=True)

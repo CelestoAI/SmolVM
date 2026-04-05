@@ -347,17 +347,6 @@ class VMInfo(BaseModel):
         control_socket_path: Path to the runtime control socket.
     """
 
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_control_socket_path(cls, raw: Any) -> Any:
-        """Accept the legacy ``socket_path`` field during the transition."""
-        if not isinstance(raw, dict):
-            return raw
-
-        data = dict(raw)
-        if "control_socket_path" not in data and "socket_path" in data:
-            data["control_socket_path"] = data.pop("socket_path")
-        return data
 
     vm_id: str
     status: VMState
@@ -367,11 +356,6 @@ class VMInfo(BaseModel):
     control_socket_path: Path | None = None
 
     model_config = {"frozen": True}
-
-    @property
-    def socket_path(self) -> Path | None:
-        """Deprecated compatibility alias for ``control_socket_path``."""
-        return self.control_socket_path
 
 
 class SnapshotArtifacts(BaseModel):
@@ -386,45 +370,6 @@ class SnapshotArtifacts(BaseModel):
 
 class SnapshotInfo(BaseModel):
     """Persisted metadata for a VM snapshot."""
-
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_legacy_snapshot_fields(cls, raw: Any) -> Any:
-        """Accept the legacy Firecracker-shaped snapshot payload."""
-        if not isinstance(raw, dict):
-            return raw
-
-        data = dict(raw)
-        if "backend" not in data:
-            data["backend"] = "firecracker"
-
-        artifacts = data.get("artifacts")
-        if artifacts is None:
-            disk_path = data.pop("disk_path", None)
-            if disk_path is None:
-                return data
-            data["artifacts"] = {
-                "state_path": data.pop("snapshot_path", None),
-                "memory_path": data.pop("mem_file_path", None),
-                "disk_path": disk_path,
-            }
-            return data
-
-        if isinstance(artifacts, dict):
-            artifacts_data = dict(artifacts)
-        elif isinstance(artifacts, SnapshotArtifacts):
-            artifacts_data = artifacts.model_dump()
-        else:
-            return data
-
-        if artifacts_data.get("state_path") is None:
-            artifacts_data["state_path"] = data.pop("snapshot_path", None)
-        if artifacts_data.get("memory_path") is None:
-            artifacts_data["memory_path"] = data.pop("mem_file_path", None)
-        if artifacts_data.get("disk_path") is None and "disk_path" in data:
-            artifacts_data["disk_path"] = data.pop("disk_path")
-        data["artifacts"] = artifacts_data
-        return data
 
     snapshot_id: Annotated[
         str,
@@ -441,20 +386,7 @@ class SnapshotInfo(BaseModel):
 
     model_config = {"frozen": True}
 
-    @property
-    def snapshot_path(self) -> Path | None:
-        """Deprecated compatibility alias for the state artifact path."""
-        return self.artifacts.state_path
 
-    @property
-    def mem_file_path(self) -> Path | None:
-        """Deprecated compatibility alias for the memory artifact path."""
-        return self.artifacts.memory_path
-
-    @property
-    def disk_path(self) -> Path:
-        """Deprecated compatibility alias for the disk artifact path."""
-        return self.artifacts.disk_path
 
 
 class BrowserSessionInfo(BaseModel):

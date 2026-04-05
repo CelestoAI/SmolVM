@@ -104,13 +104,12 @@ def _candidate_data_dirs() -> list[Path]:
             xdg_state_home = user_home / ".local" / "state"
 
     user_state_dir = xdg_state_home / "smolvm"
-    legacy_user_state_dir = user_home / ".smolvm" / "state"
 
     if os.geteuid() == 0 and sudo_user is None:
         # Direct root session: keep system path first.
-        return [DEFAULT_SYSTEM_DATA_DIR, user_state_dir, legacy_user_state_dir]
+        return [DEFAULT_SYSTEM_DATA_DIR, user_state_dir]
 
-    return [user_state_dir, legacy_user_state_dir, DEFAULT_SYSTEM_DATA_DIR]
+    return [user_state_dir, DEFAULT_SYSTEM_DATA_DIR]
 
 
 def resolve_data_dir(data_dir: Path | None = None) -> Path:
