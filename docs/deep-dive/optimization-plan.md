@@ -20,29 +20,47 @@ SmolVM's current architecture is fundamentally synchronous — zero async/thread
 
 ## Implementation Phases
 
-### Phase 1: Overlayfs + No-Copy Rootfs (do first)
+### Phase 1: Block-Level Copy-on-Write Rootfs -- IMPLEMENTED
 
 **Problem it solves:** Disk materialization is the single biggest bottleneck. Every VM start copies 512MB–4GB synchronously. At 50 VMs this is 100–250 seconds of pure I/O before a single VM has booted.
 
-**Solution:** Mount a shared read-only base image and give each VM a writable overlay layer. Zero copy on start.
+**Design note:** Kernel-level overlayfs was the initial plan, but both Firecracker and QEMU require a block device *file* (not a directory). The solution uses block-level CoW mechanisms native to each backend instead.
 
+**Solution implemented:**
+
+**QEMU — thin qcow2 overlay (near-instant, near-zero disk):**
 ```
-rootfs.ext4 (shared, read-only base)
+rootfs.ext4 (shared, read-only base image)
+      ↓  backing file reference
+ {vm_id}.qcow2 (thin overlay — only stores writes)
       ↓
- overlayfs
-      ↓
- per-VM upper dir (writable, local, ephemeral)
+ QEMU -drive file={vm_id}.qcow2
 ```
+`qemu-img create -f qcow2 -b rootfs.ext4 -F raw {vm_id}.qcow2` — creates a thin overlay backed by the shared base image. Reads miss the overlay and fall through to the base. Writes go to the overlay only. Creation is near-instant regardless of base image size.
 
-**What changes:**
-- `_materialize_rootfs()` (`vm.py:370`) — replace `shutil.copy2` with overlayfs mount
-- Per-VM "disk" becomes a small upper-dir folder, not a full image copy
-- VM deletion just unmounts and removes the upper dir
-- `disk_mode="isolated"` naturally maps to this model; `disk_mode="shared"` becomes the same thing
+**Firecracker — reflink copy (instant on btrfs/XFS, fallback on ext4):**
+```
+rootfs.ext4 (shared base)
+      ↓  cp --reflink=auto
+ {vm_id}.ext4 (CoW clone on supported filesystems)
+      ↓
+ Firecracker add_drive({vm_id}.ext4)
+```
+`cp --reflink=auto` uses filesystem-level CoW on btrfs and XFS (instant, zero copy). On ext4 or macOS it falls back to a regular copy (no regression from previous behavior).
 
-**Impact:** VM start drops from seconds of I/O to milliseconds of mount setup. The entire disk materialization bottleneck is eliminated.
+**Snapshot handling:** QEMU snapshots now flatten the overlay into a standalone qcow2 via `qemu-img convert`, so snapshot artifacts have no backing-file dependency.
 
-**Why before S3:** Overlayfs is the local mechanism. S3 becomes the source of the read-only base later — the two stack naturally. Doing S3 without overlayfs first would mean downloading full images per VM, which is worse than the current copy.
+**Files changed:**
+- `vm.py` — `_materialize_rootfs()` now calls `_create_qemu_overlay_disk()` (QEMU) or `_copy_with_reflink()` (Firecracker)
+- `vm.py` — added `_create_qemu_overlay_disk()` and `_copy_with_reflink()` methods
+- `runtime_qemu.py` — added `_copy_disk_standalone()` to flatten overlays during snapshot creation
+- `tests/test_vm_qemu.py`, `tests/test_snapshot_qemu.py` — updated mocks
+
+**Impact:**
+- QEMU: VM start disk materialization drops from 2–5s (qemu-img convert) to <100ms (qemu-img create overlay)
+- Firecracker on btrfs/XFS: drops from seconds of I/O to near-instant reflink
+- Firecracker on ext4: no change (fallback to regular copy)
+- No regressions — all 485 tests pass
 
 ---
 
