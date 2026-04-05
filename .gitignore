@@ -212,3 +212,4 @@ pnpm-debug.log*
 ui/package-lock.json
 ui/node_modules/.package-lock.json
 artifacts/
+play.ipynb
