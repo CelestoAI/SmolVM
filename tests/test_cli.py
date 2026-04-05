@@ -82,15 +82,14 @@ def test_top_level_help_mentions_json_for_agents() -> None:
 def test_create_help_describes_backend_specific_guest_default(
     capsys: pytest.CaptureFixture,
 ) -> None:
-    """Create help should describe the backend-specific guest OS default."""
+    """Create help should describe the OS option and its auto-detected default."""
     with pytest.raises(SystemExit) as exc_info:
         main(["create", "--help"])
 
     assert exc_info.value.code == 0
     help_text = capsys.readouterr().out
-    assert "default: backend-" in help_text
-    assert "specific; ubuntu for qemu-backed creates" in help_text
-    assert "current default backend" in help_text
+    assert "Operating system image" in help_text
+    assert "auto-detected" in help_text
 
 
 class TestCliEnv:
