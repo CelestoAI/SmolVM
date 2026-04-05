@@ -43,6 +43,9 @@ dev = [
     "mypy>=1.0",
     "pre-commit>=4.2.0",
 ]
+s3 = [
+    "boto3>=1.26",
+]
 dashboard = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.34.0",

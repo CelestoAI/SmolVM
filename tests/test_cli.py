@@ -601,6 +601,41 @@ class TestCliCreate:
         assert "invalid choice" in capsys.readouterr().err
 
 
+class TestCliCreateImage:
+    """Tests for `smolvm create --image`."""
+
+    def test_image_flag_parsed(self) -> None:
+        """--image flag should be recognized by the parser."""
+        parser = build_parser()
+        args = parser.parse_args(["create", "--image", "s3://bucket/images/test/"])
+        assert args.image == "s3://bucket/images/test/"
+        assert args.os is None
+
+    def test_image_and_os_mutually_exclusive(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Argparse should reject --image and --os together."""
+        with pytest.raises(SystemExit) as exc_info:
+            main(["create", "--image", "s3://bucket/img/", "--os", "alpine"])
+
+        assert exc_info.value.code == 2
+        assert "not allowed" in capsys.readouterr().err
+
+    def test_image_with_name_and_memory(self) -> None:
+        """--image should work alongside --name and --memory-mib."""
+        parser = build_parser()
+        args = parser.parse_args([
+            "create",
+            "--image", "s3://bucket/img/",
+            "--name", "my-vm",
+            "--memory-mib", "1024",
+        ])
+        assert args.image == "s3://bucket/img/"
+        assert args.name == "my-vm"
+        assert args.memory_mib == 1024
+
+
 class TestCliStop:
     """Tests for `smolvm stop`."""
 

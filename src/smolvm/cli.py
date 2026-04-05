@@ -424,11 +424,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--name",
         help="Name for the sandbox (default: auto-generated).",
     )
-    create_parser.add_argument(
+    image_group = create_parser.add_mutually_exclusive_group()
+    image_group.add_argument(
         "--os",
         choices=[guest_os.value for guest_os in GuestOS],
         default=None,
         help="Operating system image (default: auto-detected based on backend).",
+    )
+    image_group.add_argument(
+        "--image",
+        default=None,
+        help="Image URI (e.g. s3://bucket/path/to/image/).",
     )
     create_parser.add_argument(
         "--memory-mib",
@@ -969,20 +975,71 @@ def _render_create_result(data: CreatePayload) -> None:
 def _run_create(args: argparse.Namespace) -> int:
     """Handle ``smolvm create``."""
     from smolvm.backends import resolve_backend
-    from smolvm.facade import SmolVM, _build_auto_config, _default_guest_os_for_backend
+    from smolvm.facade import (
+        SmolVM,
+        _build_auto_config,
+        _build_s3_image_config,
+        _default_guest_os_for_backend,
+    )
 
     vm: SmolVM | None = None
     try:
         resolved_backend = resolve_backend(args.backend)
+        image_uri: str | None = getattr(args, "image", None)
+        use_s3_image = image_uri is not None
+
         resolved_guest_os = (
             GuestOS(args.os)
             if args.os is not None
             else _default_guest_os_for_backend(resolved_backend)
         )
-        if not args.json:
-            console = console_stdout()
-            progress_message = _create_progress_message(resolved_backend, resolved_guest_os)
-            with console.status(progress_message, spinner="dots") as status:
+
+        if use_s3_image:
+            # S3 image path
+            if not args.json:
+                console = console_stdout()
+                with console.status("Pulling image from S3...", spinner="dots") as status:
+                    config, ssh_key_path = _build_s3_image_config(
+                        image=image_uri,
+                        vm_name=args.name,
+                        backend=args.backend,
+                        mem_size_mib=args.memory_mib,
+                        ssh_key_path=None,
+                    )
+                    status.update("Booting computer and waiting for SSH...")
+                    vm = SmolVM(config, ssh_key_path=ssh_key_path)
+                    vm.start(boot_timeout=args.boot_timeout)
+                    vm.wait_for_ssh(timeout=args.boot_timeout)
+            else:
+                config, ssh_key_path = _build_s3_image_config(
+                    image=image_uri,
+                    vm_name=args.name,
+                    backend=args.backend,
+                    mem_size_mib=args.memory_mib,
+                    ssh_key_path=None,
+                )
+                vm = SmolVM(config, ssh_key_path=ssh_key_path)
+                vm.start(boot_timeout=args.boot_timeout)
+                vm.wait_for_ssh(timeout=args.boot_timeout)
+        else:
+            # Standard auto-config path
+            if not args.json:
+                console = console_stdout()
+                progress_message = _create_progress_message(resolved_backend, resolved_guest_os)
+                with console.status(progress_message, spinner="dots") as status:
+                    config, ssh_key_path = _build_auto_config(
+                        vm_name=args.name,
+                        os=args.os,
+                        backend=args.backend,
+                        mem_size_mib=args.memory_mib,
+                        disk_size_mib=args.disk_size_mib,
+                        ssh_key_path=None,
+                    )
+                    status.update("Booting computer and waiting for SSH...")
+                    vm = SmolVM(config, ssh_key_path=ssh_key_path)
+                    vm.start(boot_timeout=args.boot_timeout)
+                    vm.wait_for_ssh(timeout=args.boot_timeout)
+            else:
                 config, ssh_key_path = _build_auto_config(
                     vm_name=args.name,
                     os=args.os,
@@ -991,23 +1048,11 @@ def _run_create(args: argparse.Namespace) -> int:
                     disk_size_mib=args.disk_size_mib,
                     ssh_key_path=None,
                 )
-                status.update("Booting VM and waiting for SSH...")
                 vm = SmolVM(config, ssh_key_path=ssh_key_path)
                 vm.start(boot_timeout=args.boot_timeout)
                 vm.wait_for_ssh(timeout=args.boot_timeout)
-        else:
-            config, ssh_key_path = _build_auto_config(
-                vm_name=args.name,
-                os=args.os,
-                backend=args.backend,
-                mem_size_mib=args.memory_mib,
-                disk_size_mib=args.disk_size_mib,
-                ssh_key_path=None,
-            )
-            vm = SmolVM(config, ssh_key_path=ssh_key_path)
-            vm.start(boot_timeout=args.boot_timeout)
-            vm.wait_for_ssh(timeout=args.boot_timeout)
 
+        os_label = "s3-image" if use_s3_image else resolved_guest_os.value
         network = vm.info.network
         data: CreatePayload = {
             "vm": {
@@ -1017,7 +1062,7 @@ def _run_create(args: argparse.Namespace) -> int:
                     if isinstance(vm.info.status, VMState)
                     else VMState.RUNNING.value
                 ),
-                "os": resolved_guest_os.value,
+                "os": os_label,
                 "backend": vm.info.config.backend or "auto",
                 "ip_address": network.guest_ip if network else None,
                 "ssh_port": network.ssh_host_port if network else None,

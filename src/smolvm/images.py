@@ -15,17 +15,27 @@
 """Image management for SmolVM.
 
 Handles fetching, caching, and validating VM assets (kernels, rootfs).
+Supports both HTTP URLs and S3-hosted images via an optional ``boto3``
+dependency (install with ``pip install 'smolvm[s3]'``).
 """
 
+from __future__ import annotations
+
 import hashlib
+import json
 import logging
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 import requests
 from pydantic import BaseModel, field_validator
 
 from smolvm.exceptions import ImageError
+
+if TYPE_CHECKING:
+    from mypy_boto3_s3.client import S3Client
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +104,85 @@ class LocalImage(BaseModel):
     rootfs_path: Path
 
     model_config = {"frozen": True}
+
+
+class S3ImageRef(BaseModel):
+    """Parsed S3 image URI.
+
+    Attributes:
+        bucket: S3 bucket name.
+        prefix: Object key prefix (without trailing ``/``).
+        region: Optional AWS region override.
+    """
+
+    bucket: str
+    prefix: str
+    region: str | None = None
+
+    model_config = {"frozen": True}
+
+
+class S3ImageManifest(BaseModel):
+    """Schema for the ``smolvm-image.json`` manifest stored alongside
+    image assets in S3.
+
+    Attributes:
+        name: Human-readable image name.
+        kernel: Kernel filename relative to the manifest prefix.
+        kernel_sha256: Expected SHA-256 hex digest of the kernel, or None.
+        rootfs: Root filesystem filename relative to the manifest prefix.
+        rootfs_sha256: Expected SHA-256 hex digest of the rootfs, or None.
+        initrd: Optional initrd filename.
+        initrd_sha256: Expected SHA-256 hex digest of the initrd, or None.
+        boot_args: Optional override for kernel boot arguments.
+    """
+
+    name: str
+    kernel: str
+    kernel_sha256: str | None = None
+    rootfs: str
+    rootfs_sha256: str | None = None
+    initrd: str | None = None
+    initrd_sha256: str | None = None
+    boot_args: str | None = None
+
+    model_config = {"frozen": True}
+
+
+def parse_s3_image_uri(uri: str) -> S3ImageRef:
+    """Parse an ``s3://bucket/prefix`` URI into an :class:`S3ImageRef`.
+
+    Args:
+        uri: S3 URI string (e.g. ``s3://my-bucket/images/alpine/``).
+
+    Returns:
+        Parsed :class:`S3ImageRef`.
+
+    Raises:
+        ImageError: If the URI is not a valid ``s3://`` reference.
+    """
+    parsed = urlparse(uri)
+    if parsed.scheme != "s3":
+        raise ImageError(f"Expected an s3:// URI, got scheme {parsed.scheme!r}: {uri}")
+    bucket = parsed.netloc
+    if not bucket:
+        raise ImageError(f"S3 URI is missing a bucket name: {uri}")
+    prefix = parsed.path.strip("/")
+    if not prefix:
+        raise ImageError(f"S3 URI is missing an image prefix/path: {uri}")
+    return S3ImageRef(bucket=bucket, prefix=prefix)
+
+
+def _require_boto3() -> S3Client:
+    """Import boto3 and return an S3 client, or raise a helpful error."""
+    try:
+        import boto3  # type: ignore[import-untyped]
+    except ImportError:
+        raise ImageError(
+            "S3 image support requires boto3. Install it with:\n"
+            "  pip install 'smolvm[s3]'"
+        ) from None
+    return boto3.client("s3")  # type: ignore[no-any-return]
 
 
 # ---------------------------------------------------------------------------
@@ -368,3 +457,158 @@ class ImageManager:
             )
             return False
         return True
+
+    # ------------------------------------------------------------------
+    # S3 image support
+    # ------------------------------------------------------------------
+
+    def ensure_s3_image(self, uri: str) -> tuple[LocalImage, S3ImageManifest]:
+        """Download and cache an S3-hosted image.
+
+        The S3 prefix must contain a ``smolvm-image.json`` manifest that
+        declares the kernel, rootfs, and optional initrd filenames along
+        with their SHA-256 hashes.
+
+        Args:
+            uri: S3 URI pointing to the image prefix
+                (e.g. ``s3://bucket/images/alpine-ssh/``).
+
+        Returns:
+            A tuple of the cached :class:`LocalImage` and the parsed
+            :class:`S3ImageManifest`.
+
+        Raises:
+            ImageError: On invalid URI, missing manifest, download
+                failure, or checksum mismatch.
+        """
+        ref = parse_s3_image_uri(uri)
+        s3 = _require_boto3()
+
+        # Compute a stable cache directory from the URI
+        cache_key = hashlib.sha256(uri.encode()).hexdigest()[:16]
+        image_dir = self.cache_dir / "s3" / cache_key
+
+        manifest = self._fetch_s3_manifest(s3, ref, image_dir)
+
+        kernel_path = image_dir / manifest.kernel
+        rootfs_path = image_dir / manifest.rootfs
+        initrd_path = image_dir / manifest.initrd if manifest.initrd else None
+
+        # Check local cache
+        kernel_ok = (
+            kernel_path.is_file()
+            and self._verify_sha256(kernel_path, manifest.kernel_sha256)
+        )
+        rootfs_ok = (
+            rootfs_path.is_file()
+            and self._verify_sha256(rootfs_path, manifest.rootfs_sha256)
+        )
+        initrd_ok = (
+            initrd_path is None
+            or (initrd_path.is_file() and self._verify_sha256(initrd_path, manifest.initrd_sha256))
+        )
+
+        if kernel_ok and rootfs_ok and initrd_ok:
+            logger.info("S3 image '%s' found in cache: %s", manifest.name, image_dir)
+        else:
+            if not kernel_ok:
+                logger.info("Downloading S3 image '%s' kernel...", manifest.name)
+                s3_key = f"{ref.prefix}/{manifest.kernel}"
+                self._download_s3_file(s3, ref.bucket, s3_key, kernel_path, manifest.kernel_sha256)
+
+            if not rootfs_ok:
+                logger.info("Downloading S3 image '%s' rootfs...", manifest.name)
+                s3_key = f"{ref.prefix}/{manifest.rootfs}"
+                self._download_s3_file(s3, ref.bucket, s3_key, rootfs_path, manifest.rootfs_sha256)
+
+            if not initrd_ok and initrd_path is not None and manifest.initrd is not None:
+                logger.info("Downloading S3 image '%s' initrd...", manifest.name)
+                s3_key = f"{ref.prefix}/{manifest.initrd}"
+                self._download_s3_file(s3, ref.bucket, s3_key, initrd_path, manifest.initrd_sha256)
+
+            logger.info("S3 image '%s' ready at: %s", manifest.name, image_dir)
+
+        local = LocalImage(
+            name=manifest.name,
+            kernel_path=kernel_path,
+            initrd_path=initrd_path,
+            rootfs_path=rootfs_path,
+        )
+        return local, manifest
+
+    def _fetch_s3_manifest(
+        self,
+        s3: S3Client,
+        ref: S3ImageRef,
+        image_dir: Path,
+    ) -> S3ImageManifest:
+        """Download and parse the ``smolvm-image.json`` manifest."""
+        manifest_key = f"{ref.prefix}/smolvm-image.json"
+        manifest_dest = image_dir / "smolvm-image.json"
+        image_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            s3.download_file(ref.bucket, manifest_key, str(manifest_dest))
+        except Exception as exc:
+            raise ImageError(
+                f"Failed to download image manifest from "
+                f"s3://{ref.bucket}/{manifest_key}: {exc}"
+            ) from exc
+
+        try:
+            raw = json.loads(manifest_dest.read_text())
+            return S3ImageManifest(**raw)
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise ImageError(
+                f"Invalid smolvm-image.json in s3://{ref.bucket}/{ref.prefix}/: {exc}"
+            ) from exc
+
+    def _download_s3_file(
+        self,
+        s3: S3Client,
+        bucket: str,
+        key: str,
+        dest: Path,
+        expected_sha256: str | None = None,
+    ) -> None:
+        """Download a file from S3 with atomic write and SHA-256 verification.
+
+        Uses the same temp-file-then-rename pattern as :meth:`_download_file`.
+        """
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp_fd, tmp_path_str = tempfile.mkstemp(dir=dest.parent, suffix=".tmp")
+        tmp_path = Path(tmp_path_str)
+
+        try:
+            sha256 = hashlib.sha256() if expected_sha256 else None
+            with open(tmp_fd, "wb") as f:
+                s3.download_fileobj(bucket, key, f)
+
+            # SHA-256 verification requires re-reading the file since
+            # download_fileobj doesn't support streaming callbacks easily.
+            if sha256 is not None and expected_sha256 is not None:
+                with open(tmp_path, "rb") as f:
+                    while True:
+                        chunk = f.read(_DOWNLOAD_CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        sha256.update(chunk)
+                actual_hash = sha256.hexdigest()
+                if actual_hash != expected_sha256:
+                    raise ImageError(
+                        f"SHA-256 mismatch for s3://{bucket}/{key}\n"
+                        f"  expected: {expected_sha256}\n"
+                        f"  actual:   {actual_hash}"
+                    )
+
+            tmp_path.rename(dest)
+            logger.debug("Downloaded s3://%s/%s -> %s", bucket, key, dest)
+
+        except ImageError:
+            raise
+        except Exception as exc:
+            raise ImageError(
+                f"S3 download failed for s3://{bucket}/{key}: {exc}"
+            ) from exc
+        finally:
+            tmp_path.unlink(missing_ok=True)

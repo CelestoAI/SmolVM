@@ -15,13 +15,21 @@
 """Tests for SmolVM images module."""
 
 import hashlib
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from smolvm.exceptions import ImageError
-from smolvm.images import ImageManager, ImageSource, LocalImage
+from smolvm.images import (
+    ImageManager,
+    ImageSource,
+    LocalImage,
+    S3ImageManifest,
+    S3ImageRef,
+    parse_s3_image_uri,
+)
 
 
 @pytest.fixture
@@ -386,3 +394,281 @@ class TestImageManagerInit:
         mgr = ImageManager()
         names = mgr.list_available()
         assert "hello" in names
+
+
+# -----------------------------------------------------------------------
+# S3 image support
+# -----------------------------------------------------------------------
+
+
+class TestParseS3ImageUri:
+    """Tests for S3 URI parsing."""
+
+    def test_valid_uri(self) -> None:
+        ref = parse_s3_image_uri("s3://my-bucket/images/alpine-ssh/")
+        assert ref == S3ImageRef(bucket="my-bucket", prefix="images/alpine-ssh")
+
+    def test_valid_uri_no_trailing_slash(self) -> None:
+        ref = parse_s3_image_uri("s3://my-bucket/images/alpine-ssh")
+        assert ref.bucket == "my-bucket"
+        assert ref.prefix == "images/alpine-ssh"
+
+    def test_single_level_prefix(self) -> None:
+        ref = parse_s3_image_uri("s3://bucket/image")
+        assert ref.bucket == "bucket"
+        assert ref.prefix == "image"
+
+    def test_wrong_scheme_raises(self) -> None:
+        with pytest.raises(ImageError, match="Expected an s3:// URI"):
+            parse_s3_image_uri("https://bucket/key")
+
+    def test_missing_bucket_raises(self) -> None:
+        with pytest.raises(ImageError, match="missing a bucket"):
+            parse_s3_image_uri("s3:///just-a-key")
+
+    def test_missing_prefix_raises(self) -> None:
+        with pytest.raises(ImageError, match="missing an image prefix"):
+            parse_s3_image_uri("s3://bucket-only")
+
+    def test_missing_prefix_trailing_slash_raises(self) -> None:
+        with pytest.raises(ImageError, match="missing an image prefix"):
+            parse_s3_image_uri("s3://bucket-only/")
+
+
+class TestS3ImageManifest:
+    """Tests for S3 manifest model validation."""
+
+    def test_valid_manifest(self) -> None:
+        manifest = S3ImageManifest(
+            name="alpine-ssh",
+            kernel="vmlinux.bin",
+            kernel_sha256="abc123",
+            rootfs="rootfs.ext4",
+            rootfs_sha256="def456",
+        )
+        assert manifest.name == "alpine-ssh"
+        assert manifest.initrd is None
+        assert manifest.boot_args is None
+
+    def test_manifest_with_initrd(self) -> None:
+        manifest = S3ImageManifest(
+            name="ubuntu",
+            kernel="vmlinuz",
+            rootfs="rootfs.qcow2",
+            initrd="initrd.img",
+            initrd_sha256="aaa",
+        )
+        assert manifest.initrd == "initrd.img"
+
+    def test_manifest_with_boot_args(self) -> None:
+        manifest = S3ImageManifest(
+            name="custom",
+            kernel="vmlinux",
+            rootfs="rootfs.ext4",
+            boot_args="console=ttyS0 root=/dev/vda rw",
+        )
+        assert manifest.boot_args == "console=ttyS0 root=/dev/vda rw"
+
+    def test_manifest_missing_required_field(self) -> None:
+        with pytest.raises(Exception):
+            S3ImageManifest(name="bad", kernel="k")  # type: ignore[call-arg]
+
+
+def _make_s3_manifest_data(
+    *,
+    name: str = "test-image",
+    kernel: str = "vmlinux.bin",
+    rootfs: str = "rootfs.ext4",
+    kernel_sha256: str | None = None,
+    rootfs_sha256: str | None = None,
+) -> dict[str, object]:
+    return {
+        "name": name,
+        "kernel": kernel,
+        "kernel_sha256": kernel_sha256,
+        "rootfs": rootfs,
+        "rootfs_sha256": rootfs_sha256,
+    }
+
+
+class TestEnsureS3Image:
+    """Tests for S3 image download and caching."""
+
+    def _mock_s3_client(
+        self,
+        manifest_data: dict[str, object],
+        assets: dict[str, bytes],
+    ) -> MagicMock:
+        """Create a mock boto3 S3 client that serves a manifest + assets."""
+        client = MagicMock()
+
+        def download_file(bucket: str, key: str, dest: str) -> None:
+            Path(dest).write_text(json.dumps(manifest_data))
+
+        def download_fileobj(bucket: str, key: str, fileobj: object) -> None:
+            filename = key.rsplit("/", 1)[-1]
+            content = assets.get(filename, b"")
+            fileobj.write(content)  # type: ignore[union-attr]
+
+        client.download_file.side_effect = download_file
+        client.download_fileobj.side_effect = download_fileobj
+        return client
+
+    def test_downloads_and_caches(self, tmp_path: Path) -> None:
+        """First call should download all assets from S3."""
+        kernel_content = b"fake-kernel"
+        rootfs_content = b"fake-rootfs"
+        manifest = _make_s3_manifest_data(
+            kernel_sha256=hashlib.sha256(kernel_content).hexdigest(),
+            rootfs_sha256=hashlib.sha256(rootfs_content).hexdigest(),
+        )
+        mock_s3 = self._mock_s3_client(manifest, {
+            "vmlinux.bin": kernel_content,
+            "rootfs.ext4": rootfs_content,
+        })
+
+        mgr = ImageManager(cache_dir=tmp_path / "images")
+        with patch("smolvm.images._require_boto3", return_value=mock_s3):
+            local, parsed_manifest = mgr.ensure_s3_image("s3://bucket/images/test/")
+
+        assert local.name == "test-image"
+        assert local.kernel_path.exists()
+        assert local.rootfs_path.exists()
+        assert local.kernel_path.read_bytes() == kernel_content
+        assert local.rootfs_path.read_bytes() == rootfs_content
+        assert parsed_manifest.name == "test-image"
+
+    def test_cache_hit_skips_download(self, tmp_path: Path) -> None:
+        """Second call should use cache and not re-download assets."""
+        kernel_content = b"fake-kernel"
+        rootfs_content = b"fake-rootfs"
+        manifest = _make_s3_manifest_data(
+            kernel_sha256=hashlib.sha256(kernel_content).hexdigest(),
+            rootfs_sha256=hashlib.sha256(rootfs_content).hexdigest(),
+        )
+        mock_s3 = self._mock_s3_client(manifest, {
+            "vmlinux.bin": kernel_content,
+            "rootfs.ext4": rootfs_content,
+        })
+
+        mgr = ImageManager(cache_dir=tmp_path / "images")
+
+        with patch("smolvm.images._require_boto3", return_value=mock_s3):
+            # First call downloads
+            mgr.ensure_s3_image("s3://bucket/images/test/")
+            # Reset mock call count
+            mock_s3.download_fileobj.reset_mock()
+            # Second call should use cache
+            local, _ = mgr.ensure_s3_image("s3://bucket/images/test/")
+
+        assert local.kernel_path.exists()
+        mock_s3.download_fileobj.assert_not_called()
+
+    def test_sha_mismatch_re_downloads(self, tmp_path: Path) -> None:
+        """Corrupted cache should trigger re-download."""
+        kernel_content = b"fake-kernel"
+        rootfs_content = b"fake-rootfs"
+        manifest = _make_s3_manifest_data(
+            kernel_sha256=hashlib.sha256(kernel_content).hexdigest(),
+            rootfs_sha256=hashlib.sha256(rootfs_content).hexdigest(),
+        )
+        mock_s3 = self._mock_s3_client(manifest, {
+            "vmlinux.bin": kernel_content,
+            "rootfs.ext4": rootfs_content,
+        })
+
+        mgr = ImageManager(cache_dir=tmp_path / "images")
+
+        # First download to populate cache
+        with patch("smolvm.images._require_boto3", return_value=mock_s3):
+            local, _ = mgr.ensure_s3_image("s3://bucket/images/test/")
+
+        # Corrupt the cached kernel
+        local.kernel_path.write_bytes(b"corrupted")
+
+        with patch("smolvm.images._require_boto3", return_value=mock_s3):
+            mock_s3.download_fileobj.reset_mock()
+            local2, _ = mgr.ensure_s3_image("s3://bucket/images/test/")
+
+        # Kernel should have been re-downloaded (but rootfs cache hit)
+        assert mock_s3.download_fileobj.call_count == 1
+        assert local2.kernel_path.read_bytes() == kernel_content
+
+    def test_no_sha_still_caches(self, tmp_path: Path) -> None:
+        """Images without SHA-256 hashes should still cache and return."""
+        manifest = _make_s3_manifest_data()  # no sha256 fields
+        mock_s3 = self._mock_s3_client(manifest, {
+            "vmlinux.bin": b"kernel",
+            "rootfs.ext4": b"rootfs",
+        })
+
+        mgr = ImageManager(cache_dir=tmp_path / "images")
+        with patch("smolvm.images._require_boto3", return_value=mock_s3):
+            local, _ = mgr.ensure_s3_image("s3://bucket/images/nosha/")
+
+        assert local.kernel_path.exists()
+        assert local.rootfs_path.exists()
+
+    def test_manifest_download_failure_raises(self, tmp_path: Path) -> None:
+        """Failed manifest download should raise ImageError."""
+        mock_s3 = MagicMock()
+        mock_s3.download_file.side_effect = Exception("Access Denied")
+
+        mgr = ImageManager(cache_dir=tmp_path / "images")
+        with (
+            patch("smolvm.images._require_boto3", return_value=mock_s3),
+            pytest.raises(ImageError, match="Failed to download image manifest"),
+        ):
+            mgr.ensure_s3_image("s3://bucket/images/private/")
+
+    def test_invalid_manifest_json_raises(self, tmp_path: Path) -> None:
+        """Malformed manifest JSON should raise ImageError."""
+        mock_s3 = MagicMock()
+        mock_s3.download_file.side_effect = (
+            lambda bucket, key, dest: Path(dest).write_text("not-json{{{")
+        )
+
+        mgr = ImageManager(cache_dir=tmp_path / "images")
+        with (
+            patch("smolvm.images._require_boto3", return_value=mock_s3),
+            pytest.raises(ImageError, match="Invalid smolvm-image.json"),
+        ):
+            mgr.ensure_s3_image("s3://bucket/images/bad/")
+
+    def test_missing_boto3_raises_helpful_error(self, tmp_path: Path) -> None:
+        """Missing boto3 should produce a clear installation hint."""
+        mgr = ImageManager(cache_dir=tmp_path / "images")
+        with (
+            patch("smolvm.images._require_boto3", side_effect=ImageError("S3 image support requires boto3")),
+            pytest.raises(ImageError, match="requires boto3"),
+        ):
+            mgr.ensure_s3_image("s3://bucket/images/test/")
+
+    def test_with_initrd(self, tmp_path: Path) -> None:
+        """S3 images with an initrd should download all three assets."""
+        kernel_content = b"kernel"
+        rootfs_content = b"rootfs"
+        initrd_content = b"initrd"
+        manifest_data = {
+            "name": "with-initrd",
+            "kernel": "vmlinuz",
+            "rootfs": "rootfs.qcow2",
+            "initrd": "initrd.img",
+            "kernel_sha256": hashlib.sha256(kernel_content).hexdigest(),
+            "rootfs_sha256": hashlib.sha256(rootfs_content).hexdigest(),
+            "initrd_sha256": hashlib.sha256(initrd_content).hexdigest(),
+        }
+        mock_s3 = self._mock_s3_client(manifest_data, {
+            "vmlinuz": kernel_content,
+            "rootfs.qcow2": rootfs_content,
+            "initrd.img": initrd_content,
+        })
+
+        mgr = ImageManager(cache_dir=tmp_path / "images")
+        with patch("smolvm.images._require_boto3", return_value=mock_s3):
+            local, manifest = mgr.ensure_s3_image("s3://bucket/images/ubuntu/")
+
+        assert local.initrd_path is not None
+        assert local.initrd_path.exists()
+        assert local.initrd_path.read_bytes() == initrd_content
+        assert manifest.initrd == "initrd.img"

@@ -38,7 +38,7 @@ from smolvm.exceptions import (
 )
 from smolvm.facade import SmolVM
 from smolvm.host import HostManager
-from smolvm.images import ImageManager, ImageSource, LocalImage
+from smolvm.images import ImageManager, ImageSource, LocalImage, S3ImageManifest, S3ImageRef
 from smolvm.ssh import SSHClient
 from smolvm.types import (
     BrowserSessionConfig,
@@ -69,6 +69,8 @@ __all__ = [
     "SSH_BOOT_ARGS",
     "ImageSource",
     "LocalImage",
+    "S3ImageManifest",
+    "S3ImageRef",
     # Host setup
     "HostManager",
     # SSH

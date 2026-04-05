@@ -168,6 +168,63 @@ def _build_auto_config_image_name(
     return image_name
 
 
+def _build_s3_image_config(
+    *,
+    image: str,
+    vm_name: str | None = None,
+    backend: str | None = None,
+    mem_size_mib: int | None = None,
+    ssh_key_path: str | None = None,
+) -> tuple[VMConfig, str | None]:
+    """Build a VMConfig from an S3-hosted image.
+
+    Downloads the manifest and assets via :class:`ImageManager`, resolves
+    boot arguments, and returns a ready-to-use config.
+    """
+    resolved_backend = resolve_backend(backend)
+    resolved_ssh_key_path: str | None = ssh_key_path
+
+    image_manager = ImageManager()
+    local_image, manifest = image_manager.ensure_s3_image(image)
+
+    # Resolve SSH key for auto-config
+    if resolved_ssh_key_path is None:
+        from smolvm.utils import ensure_ssh_key
+
+        private_key, _ = ensure_ssh_key()
+        resolved_ssh_key_path = str(private_key)
+
+    # Resolve boot args: prefer manifest, fall back to backend default
+    if manifest.boot_args:
+        boot_args = manifest.boot_args
+    else:
+        boot_profile = KernelBootProfile.MICROVM_DIRECT
+        boot_args = get_boot_profile_spec(boot_profile).base_boot_args_for_backend(
+            resolved_backend,
+            platform.machine(),
+        )
+
+    resolved_vm_name = vm_name or f"vm-{uuid.uuid4().hex[:8]}"
+    config = VMConfig(
+        vm_id=resolved_vm_name,
+        vcpu_count=1,
+        mem_size_mib=mem_size_mib or 512,
+        kernel_path=local_image.kernel_path,
+        initrd_path=local_image.initrd_path,
+        rootfs_path=local_image.rootfs_path,
+        boot_args=boot_args,
+        ssh_capable=True,
+        backend=resolved_backend,
+    )
+    logger.info(
+        "Configured VM from S3 image: %s (image=%s, backend=%s)",
+        resolved_vm_name,
+        manifest.name,
+        resolved_backend,
+    )
+    return config, resolved_ssh_key_path
+
+
 def _build_auto_config(
     *,
     vm_name: str | None = None,
@@ -319,10 +376,13 @@ class SmolVM:
     or call ``SmolVM()`` for an auto-configured SSH-ready VM.
 
     Args:
-        config: VM configuration. Mutually exclusive with *vm_id*.
+        config: VM configuration. Mutually exclusive with *vm_id* and *image*.
             If omitted (and *vm_id* is omitted), SmolVM auto-creates
             a default SSH-capable VM configuration.
         vm_id: ID of an existing VM to reconnect to.
+        image: Image URI (e.g. ``s3://bucket/images/alpine/``).
+            Mutually exclusive with *config*, *vm_id*, and *os*.
+            The image is downloaded and cached locally before VM creation.
         data_dir: Override the default data directory.
         socket_dir: Override the default socket directory.
         backend: Runtime backend override (``firecracker``, ``qemu``, or ``auto``).
@@ -344,6 +404,7 @@ class SmolVM:
         config: VMConfig | None = None,
         *,
         vm_id: str | None = None,
+        image: str | None = None,
         data_dir: Path | None = None,
         socket_dir: Path | None = None,
         backend: str | None = None,
@@ -356,6 +417,17 @@ class SmolVM:
         if config is not None and vm_id is not None:
             raise ValueError("Provide either config or vm_id, not both.")
 
+        if image is not None and (config is not None or vm_id is not None):
+            raise ValueError(
+                "image cannot be combined with config or vm_id."
+            )
+
+        if image is not None and os is not None:
+            raise ValueError(
+                "image and os are mutually exclusive — the image already "
+                "defines the operating system."
+            )
+
         if (config is not None or vm_id is not None) and (
             mem_size_mib is not None or disk_size_mib is not None or os is not None
         ):
@@ -364,7 +436,16 @@ class SmolVM:
                 "config and vm_id are omitted (auto-config mode)."
             )
 
-        if config is None and vm_id is None:
+        if image is not None:
+            # S3 image mode
+            logger.info("Resolving image from %s...", image)
+            config, ssh_key_path = _build_s3_image_config(
+                image=image,
+                backend=backend,
+                mem_size_mib=mem_size_mib,
+                ssh_key_path=ssh_key_path,
+            )
+        elif config is None and vm_id is None:
             # Auto-configuration mode
             logger.info("No config provided; auto-configuring standard SSH VM...")
             config, ssh_key_path = _build_auto_config(

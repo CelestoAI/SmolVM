@@ -524,6 +524,99 @@ class TestVMInit:
             SmolVM.from_snapshot("snap-001", backend="qemu")
 
 
+class TestVMImageParam:
+    """Tests for the image parameter (S3-backed images)."""
+
+    def test_image_and_config_mutually_exclusive(self, sample_config: VMConfig) -> None:
+        """Passing both image and config should raise ValueError."""
+        with pytest.raises(ValueError, match="image cannot be combined"):
+            SmolVM(sample_config, image="s3://bucket/images/test/")
+
+    def test_image_and_vm_id_mutually_exclusive(self) -> None:
+        """Passing both image and vm_id should raise ValueError."""
+        with pytest.raises(ValueError, match="image cannot be combined"):
+            SmolVM(image="s3://bucket/images/test/", vm_id="existing-vm")
+
+    def test_image_and_os_mutually_exclusive(self) -> None:
+        """Passing both image and os should raise ValueError."""
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            SmolVM(image="s3://bucket/images/test/", os="alpine")
+
+    @patch("smolvm.facade.SmolVMManager")
+    @patch("smolvm.facade._build_s3_image_config")
+    def test_image_resolves_s3_and_creates_vm(
+        self,
+        mock_build_s3: MagicMock,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Providing an image URI should resolve it to a local config and create a VM."""
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+
+        config = VMConfig(
+            vm_id="vm-s3test",
+            kernel_path=kernel,
+            rootfs_path=rootfs,
+            boot_args="console=ttyS0",
+            backend="qemu",
+        )
+        mock_build_s3.return_value = (config, str(tmp_path / "key"))
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm-s3test", status=VMState.CREATED)
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = SmolVM(image="s3://bucket/images/alpine/")
+
+        mock_build_s3.assert_called_once_with(
+            image="s3://bucket/images/alpine/",
+            backend=None,
+            mem_size_mib=None,
+            ssh_key_path=None,
+        )
+        assert vm.vm_id == "vm-s3test"
+        mock_sdk.create.assert_called_once_with(config)
+
+    @patch("smolvm.facade.SmolVMManager")
+    @patch("smolvm.facade._build_s3_image_config")
+    def test_image_passes_backend_and_memory(
+        self,
+        mock_build_s3: MagicMock,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Backend and mem_size_mib should be forwarded to the S3 config builder."""
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+
+        config = VMConfig(
+            vm_id="vm-s3mem",
+            kernel_path=kernel,
+            rootfs_path=rootfs,
+            boot_args="console=ttyS0",
+            backend="qemu",
+        )
+        mock_build_s3.return_value = (config, None)
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm-s3mem", status=VMState.CREATED)
+        mock_sdk_cls.return_value = mock_sdk
+
+        SmolVM(image="s3://bucket/img/", backend="qemu", mem_size_mib=1024)
+
+        mock_build_s3.assert_called_once_with(
+            image="s3://bucket/img/",
+            backend="qemu",
+            mem_size_mib=1024,
+            ssh_key_path=None,
+        )
+
+
 class TestVMLifecycle:
     """Tests for VM lifecycle operations."""
 

@@ -64,33 +64,53 @@ rootfs.ext4 (shared base)
 
 ---
 
-### Phase 2: S3-Backed Image Registry (follows naturally from Phase 1)
+### Phase 2: S3-Backed Image Registry (follows naturally from Phase 1) -- IMPLEMENTED (Phase 2a)
 
 **Problem it solves:** In a multi-host fleet, every machine needs the rootfs image locally. Manual distribution doesn't scale. A 4GB browser image shipped to 20 hosts is 80GB of transfers per image update.
 
-**Solution:** Store canonical images in S3. Mount via FUSE (`mountpoint-s3` or `s3fs`) as the read-only base layer for overlayfs. VMs only fetch the blocks they actually read — lazy loading.
+**Solution implemented (Phase 2a — download-and-cache):**
+
+Images are stored in S3 as a prefix containing a `smolvm-image.json` manifest plus the kernel, rootfs, and optional initrd. SmolVM downloads and caches them locally on first use, then the existing CoW overlay layer (Phase 1) takes over.
 
 ```
-S3 bucket (image registry)
-      ↓
- FUSE mount (mountpoint-s3, read-only)
-      ↓
- overlayfs (per-VM writable upper dir)
-      ↓
- Firecracker / QEMU
+S3 bucket
+  └─ images/alpine-ssh/
+       ├─ smolvm-image.json   (manifest: filenames + SHA-256 hashes)
+       ├─ vmlinux.bin          (kernel)
+       └─ rootfs.ext4          (rootfs)
+           ↓  download + cache locally
+      ~/.smolvm/images/s3/<cache-key>/
+           ↓  qcow2 overlay / reflink copy (Phase 1)
+      per-VM isolated disk
 ```
 
-**What changes on top of Phase 1:**
-- `VMConfig.rootfs_path` needs to accept a URI (`s3://bucket/images/alpine-ssh/rootfs.ext4`) or an abstract `StorageRef` type alongside local `Path`
-- `_materialize_rootfs()` gains a "resolve" step: if source is remote, ensure FUSE mount exists before overlayfs setup
-- Snapshot artifacts (`disk.ext4`, `disk.qcow2`) would optionally push to S3
-- Image versioning is free via S3 object versioning
+**CLI:**
+```bash
+smolvm create --image s3://bucket/images/alpine-ssh/
+smolvm create --image s3://bucket/images/alpine-ssh/ --name my-vm --memory-mib 1024
+```
+`--image` and `--os` are mutually exclusive.
 
-**Code touch points:**
-- `types.py` — `VMConfig.rootfs_path`, `kernel_path`, `extra_drives`
-- `vm.py` — `_materialize_rootfs()`, `_instance_disk_path()`
-- `images.py` — image resolution and caching layer
-- `storage.py` — snapshot artifact paths need URI support
+**SDK:**
+```python
+vm = SmolVM(image="s3://bucket/images/alpine-ssh/")
+```
+
+**S3 client:** `boto3` as optional dependency (`pip install 'smolvm[s3]'`). Auth uses boto3's standard credential chain (env vars, `~/.aws/credentials`, IAM roles).
+
+**Files changed:**
+- `images.py` — `S3ImageRef`, `S3ImageManifest`, `parse_s3_image_uri()`, `ImageManager.ensure_s3_image()`, `_download_s3_file()`
+- `facade.py` — `_build_s3_image_config()`, `SmolVM.__init__()` gains `image` parameter
+- `cli.py` — `--image` flag in mutually exclusive group with `--os`
+- `pyproject.toml` — `[project.optional-dependencies] s3 = ["boto3>=1.26"]`
+- `__init__.py` — exports `S3ImageManifest`, `S3ImageRef`
+
+**Design decisions:**
+- `VMConfig` stays unchanged — S3 URIs resolve to local paths *before* config construction
+- Manifest-based discovery — single URI, self-describing, extensible
+- Download-and-cache first (not FUSE) — works on all platforms, no system dependencies
+
+**Phase 2b (future):** FUSE mount (`mountpoint-s3`) for lazy block-level loading. The architecture leaves a clean seam — `ensure_s3_image()` returns local paths today, a future `mount_s3_image()` would return FUSE mount paths. The rest of the pipeline works unchanged.
 
 ---
 
