@@ -473,6 +473,28 @@ class TestS3ImageManifest:
         with pytest.raises(Exception):
             S3ImageManifest(name="bad", kernel="k")  # type: ignore[call-arg]
 
+    def test_manifest_rejects_absolute_path(self) -> None:
+        with pytest.raises(ValueError, match="must be relative"):
+            S3ImageManifest(name="bad", kernel="/etc/passwd", rootfs="rootfs.ext4")
+
+    def test_manifest_rejects_path_traversal(self) -> None:
+        with pytest.raises(ValueError, match="must not contain"):
+            S3ImageManifest(name="bad", kernel="../../.ssh/keys", rootfs="rootfs.ext4")
+
+    def test_manifest_normalizes_nested_path_to_basename(self) -> None:
+        m = S3ImageManifest(name="ok", kernel="nested/vmlinux.bin", rootfs="rootfs.ext4")
+        assert m.kernel == "vmlinux.bin"
+
+    def test_manifest_rejects_colliding_filenames(self) -> None:
+        with pytest.raises(ValueError, match="collide"):
+            S3ImageManifest(name="bad", kernel="same.bin", rootfs="same.bin")
+
+    def test_manifest_rejects_colliding_filenames_with_initrd(self) -> None:
+        with pytest.raises(ValueError, match="collide"):
+            S3ImageManifest(
+                name="bad", kernel="vmlinux", rootfs="rootfs.ext4", initrd="vmlinux"
+            )
+
 
 def _make_s3_manifest_data(
     *,
@@ -672,3 +694,34 @@ class TestEnsureS3Image:
         assert local.initrd_path.exists()
         assert local.initrd_path.read_bytes() == initrd_content
         assert manifest.initrd == "initrd.img"
+
+    def test_offline_cache_fallback(self, tmp_path: Path) -> None:
+        """Fully cached image should work when S3 is unreachable."""
+        kernel_content = b"fake-kernel"
+        rootfs_content = b"fake-rootfs"
+        manifest = _make_s3_manifest_data(
+            kernel_sha256=hashlib.sha256(kernel_content).hexdigest(),
+            rootfs_sha256=hashlib.sha256(rootfs_content).hexdigest(),
+        )
+        mock_s3 = self._mock_s3_client(manifest, {
+            "vmlinux.bin": kernel_content,
+            "rootfs.ext4": rootfs_content,
+        })
+
+        mgr = ImageManager(cache_dir=tmp_path / "images")
+
+        # First call — populate cache
+        with patch("smolvm.images._require_boto3", return_value=mock_s3):
+            mgr.ensure_s3_image("s3://bucket/images/test/")
+
+        # Second call — S3 is down, should use cached manifest + assets
+        offline_s3 = MagicMock()
+        offline_s3.download_file.side_effect = Exception("Network unreachable")
+        offline_s3.download_fileobj.side_effect = Exception("Network unreachable")
+
+        with patch("smolvm.images._require_boto3", return_value=offline_s3):
+            local, _ = mgr.ensure_s3_image("s3://bucket/images/test/")
+
+        assert local.kernel_path.exists()
+        assert local.rootfs_path.exists()
+        assert local.kernel_path.read_bytes() == kernel_content

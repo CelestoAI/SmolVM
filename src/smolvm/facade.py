@@ -194,11 +194,16 @@ def _build_s3_image_config(
         private_key, _ = ensure_ssh_key()
         resolved_ssh_key_path = str(private_key)
 
-    # Resolve boot args: prefer manifest, fall back to backend default
+    # Resolve boot args: prefer manifest, fall back to backend default.
+    # Images with an initrd typically need the initramfs boot profile
+    # (e.g., Ubuntu cloud images), while direct-kernel images use MICROVM_DIRECT.
     if manifest.boot_args:
         boot_args = manifest.boot_args
     else:
-        boot_profile = KernelBootProfile.MICROVM_DIRECT
+        if local_image.initrd_path is not None:
+            boot_profile = KernelBootProfile.QEMU_DESKTOP_INITRAMFS
+        else:
+            boot_profile = KernelBootProfile.MICROVM_DIRECT
         boot_args = get_boot_profile_spec(boot_profile).base_boot_args_for_backend(
             resolved_backend,
             platform.machine(),

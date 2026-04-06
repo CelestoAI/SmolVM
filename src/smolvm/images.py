@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 import requests
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 from smolvm.exceptions import ImageError
 
@@ -145,6 +145,40 @@ class S3ImageManifest(BaseModel):
     initrd: str | None = None
     initrd_sha256: str | None = None
     boot_args: str | None = None
+
+    @field_validator("kernel", "rootfs", "initrd")
+    @classmethod
+    def validate_asset_filename(cls, value: str | None) -> str | None:
+        """Reject path traversal and ensure filenames stay in the cache dir."""
+        if value is None:
+            return None
+        path = Path(value)
+        if path.is_absolute():
+            raise ValueError(f"manifest asset path must be relative, got: {value!r}")
+        if ".." in path.parts:
+            raise ValueError(f"manifest asset path must not contain '..': {value!r}")
+        # Normalize to basename (same as ImageSource)
+        basename = path.name
+        if not basename or basename in {".", ".."}:
+            raise ValueError(f"manifest asset path must resolve to a filename: {value!r}")
+        return basename
+
+    @model_validator(mode="after")
+    def _check_unique_filenames(self) -> S3ImageManifest:
+        """Reject manifests where multiple assets map to the same filename."""
+        filenames: dict[str, str] = {}
+        for label in ("kernel", "rootfs", "initrd"):
+            fname = getattr(self, label)
+            if fname is None:
+                continue
+            existing = filenames.get(fname)
+            if existing is not None:
+                raise ValueError(
+                    f"manifest asset filenames collide: {existing} and "
+                    f"{label} both map to '{fname}'"
+                )
+            filenames[fname] = label
+        return self
 
     model_config = {"frozen": True}
 
@@ -542,18 +576,42 @@ class ImageManager:
         ref: S3ImageRef,
         image_dir: Path,
     ) -> S3ImageManifest:
-        """Download and parse the ``smolvm-image.json`` manifest."""
+        """Download and parse the ``smolvm-image.json`` manifest.
+
+        Uses an atomic temp-file-then-rename write to avoid partial
+        reads by concurrent callers.  If S3 is unreachable but a
+        previously cached manifest exists locally, falls back to the
+        cached copy so that fully-cached images work offline.
+        """
         manifest_key = f"{ref.prefix}/smolvm-image.json"
         manifest_dest = image_dir / "smolvm-image.json"
         image_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            s3.download_file(ref.bucket, manifest_key, str(manifest_dest))
+            # Atomic download: temp file → rename
+            tmp_fd, tmp_path_str = tempfile.mkstemp(
+                dir=image_dir, suffix=".tmp"
+            )
+            tmp_path = Path(tmp_path_str)
+            try:
+                import os as _os
+
+                _os.close(tmp_fd)
+                s3.download_file(ref.bucket, manifest_key, str(tmp_path))
+                tmp_path.rename(manifest_dest)
+            finally:
+                tmp_path.unlink(missing_ok=True)
         except Exception as exc:
-            raise ImageError(
-                f"Failed to download image manifest from "
-                f"s3://{ref.bucket}/{manifest_key}: {exc}"
-            ) from exc
+            if manifest_dest.is_file():
+                logger.warning(
+                    "S3 manifest refresh failed (%s); using cached copy",
+                    exc,
+                )
+            else:
+                raise ImageError(
+                    f"Failed to download image manifest from "
+                    f"s3://{ref.bucket}/{manifest_key}: {exc}"
+                ) from exc
 
         try:
             raw = json.loads(manifest_dest.read_text())
