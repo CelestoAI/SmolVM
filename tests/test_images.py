@@ -765,9 +765,13 @@ class TestS3CredentialResolution:
 
         mock_boto3 = MagicMock()
         mock_boto3.client.return_value = MagicMock()
+        mock_dotenv = MagicMock()
 
         env = {"SMOLVM_S3_ENDPOINT_URL": "https://r2.example.com"}
-        with patch.dict("os.environ", env), patch.dict(sys.modules, {"boto3": mock_boto3}):
+        with (
+            patch.dict("os.environ", env),
+            patch.dict(sys.modules, {"boto3": mock_boto3, "dotenv": mock_dotenv}),
+        ):
             os.environ.pop("SMOLVM_S3_ACCESS_KEY_ID", None)
             os.environ.pop("SMOLVM_S3_SECRET_ACCESS_KEY", None)
 
@@ -788,9 +792,11 @@ class TestS3CredentialResolution:
 
         mock_boto3 = MagicMock()
         mock_boto3.client.return_value = MagicMock()
+        mock_dotenv = MagicMock()
 
-        with patch.dict("os.environ", {}, clear=False), patch.dict(
-            sys.modules, {"boto3": mock_boto3}
+        with (
+            patch.dict("os.environ", {}, clear=False),
+            patch.dict(sys.modules, {"boto3": mock_boto3, "dotenv": mock_dotenv}),
         ):
             os.environ.pop("SMOLVM_S3_ENDPOINT_URL", None)
             os.environ.pop("SMOLVM_S3_ACCESS_KEY_ID", None)

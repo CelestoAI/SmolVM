@@ -252,6 +252,15 @@ def _require_boto3() -> S3Client:
             "  pip install 'smolvm[s3]'"
         ) from None
 
+    # Load .env file if present (walks up from cwd to find it).
+    # Only sets vars not already in os.environ, so explicit exports win.
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except ImportError:
+        pass
+
     kwargs: dict[str, str] = {}
 
     endpoint_url = os.environ.get(_S3_ENV_VARS["endpoint_url"])

@@ -45,6 +45,7 @@ dev = [
 ]
 s3 = [
     "boto3>=1.26",
+    "python-dotenv>=1.0",
 ]
 dashboard = [
     "fastapi>=0.115.0",
