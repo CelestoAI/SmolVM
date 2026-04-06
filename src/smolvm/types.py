@@ -18,6 +18,7 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Annotated, Any, Literal
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
@@ -110,7 +111,7 @@ class InternetSettings(BaseModel):
     @field_validator("allowed_domains")
     @classmethod
     def normalize_domains(cls, v: list[str]) -> list[str]:
-        """Strip whitespace, trailing slashes, and lowercase domain entries."""
+        """Extract and store only lowercased hostnames."""
         normalized: list[str] = []
         for entry in v:
             entry = entry.strip()
@@ -119,8 +120,29 @@ class InternetSettings(BaseModel):
             if entry == "*":
                 normalized.append(entry)
                 continue
-            entry = entry.rstrip("/")
-            normalized.append(entry)
+            if "://" in entry:
+                parsed = urlparse(entry)
+                if parsed.username or parsed.password:
+                    raise ValueError(
+                        f"allowed_domains entries must not contain credentials: {entry!r}"
+                    )
+                if parsed.path and parsed.path != "/":
+                    raise ValueError(
+                        f"allowed_domains entries must be hostnames, not URLs with paths: {entry!r}"
+                    )
+                if parsed.query or parsed.fragment or parsed.params:
+                    raise ValueError(
+                        f"allowed_domains entries must be hostnames, "
+                        f"not URLs with query/fragment: {entry!r}"
+                    )
+                hostname = parsed.hostname
+                if not hostname:
+                    raise ValueError(f"Could not extract hostname from: {entry!r}")
+                normalized.append(hostname.lower())
+            else:
+                # Bare hostname, possibly with a port like "example.com:8080"
+                hostname = entry.split(":")[0]
+                normalized.append(hostname.lower())
         if not normalized:
             raise ValueError("allowed_domains must contain at least one entry")
         return normalized

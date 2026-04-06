@@ -35,22 +35,38 @@ class TestInternetSettings:
 
     def test_specific_domains(self) -> None:
         settings = InternetSettings(allowed_domains=["https://example.com/"])
-        assert settings.allowed_domains == ["https://example.com"]
+        assert settings.allowed_domains == ["example.com"]
         assert settings.is_allow_all_domains is False
 
     def test_wildcard_in_domains(self) -> None:
         settings = InternetSettings(allowed_domains=["*", "https://example.com/"])
         assert settings.is_allow_all_domains is True
 
-    def test_trailing_slashes_stripped(self) -> None:
+    def test_url_extracts_hostname(self) -> None:
         settings = InternetSettings(
-            allowed_domains=["https://example.com///", "api.test.io/"]
+            allowed_domains=["https://Example.COM/", "http://api.test.io"]
         )
-        assert settings.allowed_domains == ["https://example.com", "api.test.io"]
+        assert settings.allowed_domains == ["example.com", "api.test.io"]
 
-    def test_whitespace_stripped(self) -> None:
-        settings = InternetSettings(allowed_domains=["  example.com  "])
+    def test_bare_domain_lowercased(self) -> None:
+        settings = InternetSettings(allowed_domains=["  Example.COM  "])
         assert settings.allowed_domains == ["example.com"]
+
+    def test_bare_domain_with_port(self) -> None:
+        settings = InternetSettings(allowed_domains=["example.com:8080"])
+        assert settings.allowed_domains == ["example.com"]
+
+    def test_url_with_path_raises(self) -> None:
+        with pytest.raises(ValidationError, match="paths"):
+            InternetSettings(allowed_domains=["https://example.com/some/path"])
+
+    def test_url_with_query_raises(self) -> None:
+        with pytest.raises(ValidationError, match="query"):
+            InternetSettings(allowed_domains=["https://example.com?q=1"])
+
+    def test_url_with_credentials_raises(self) -> None:
+        with pytest.raises(ValidationError, match="credentials"):
+            InternetSettings(allowed_domains=["https://user:pass@example.com/"])
 
     def test_empty_entries_filtered(self) -> None:
         settings = InternetSettings(allowed_domains=["example.com", "  ", "test.com"])
@@ -83,7 +99,7 @@ class TestInternetSettings:
 
     def test_from_dict(self) -> None:
         settings = InternetSettings(**{"allowed_domains": ["https://example.com/"]})
-        assert settings.allowed_domains == ["https://example.com"]
+        assert settings.allowed_domains == ["example.com"]
 
 
 class TestResolveDomains:
@@ -98,7 +114,7 @@ class TestResolveDomains:
         assert result == ["93.184.216.34"]
 
     @patch("smolvm.network.socket.getaddrinfo")
-    def test_resolves_url_with_scheme(self, mock_getaddrinfo: object) -> None:
+    def test_resolves_url_extracts_hostname(self, mock_getaddrinfo: object) -> None:
         mock_getaddrinfo.return_value = [  # type: ignore[union-attr]
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0)),
         ]
@@ -118,6 +134,15 @@ class TestResolveDomains:
         assert result == ["1.2.3.4"]
 
     @patch("smolvm.network.socket.getaddrinfo")
+    def test_skips_ipv6(self, mock_getaddrinfo: object) -> None:
+        mock_getaddrinfo.return_value = [  # type: ignore[union-attr]
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("1.2.3.4", 0)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 0, 0, 0)),
+        ]
+        result = resolve_domains_to_ips(["example.com"])
+        assert result == ["1.2.3.4"]
+
+    @patch("smolvm.network.socket.getaddrinfo")
     def test_multiple_domains(self, mock_getaddrinfo: object) -> None:
         def fake_resolve(host: str, *args: object, **kwargs: object) -> list:
             if host == "a.com":
@@ -125,7 +150,7 @@ class TestResolveDomains:
             return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("2.2.2.2", 0))]
 
         mock_getaddrinfo.side_effect = fake_resolve  # type: ignore[union-attr]
-        result = resolve_domains_to_ips(["https://a.com", "https://b.com"])
+        result = resolve_domains_to_ips(["a.com", "b.com"])
         assert result == ["1.1.1.1", "2.2.2.2"]
 
     @patch("smolvm.network.socket.getaddrinfo")

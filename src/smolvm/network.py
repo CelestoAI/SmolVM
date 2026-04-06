@@ -1541,10 +1541,12 @@ def resolve_domains_to_ips(domains: list[str]) -> list[str]:
         try:
             infos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
         except socket.gaierror:
-            logger.warning("Could not resolve domain %r — skipping", entry)
+            logger.warning("Could not resolve hostname %r — skipping", hostname)
             continue
 
-        for _family, _type, _proto, _canonname, sockaddr in infos:
+        for family, _type, _proto, _canonname, sockaddr in infos:
+            if family != socket.AF_INET:
+                continue
             ip = sockaddr[0]
             if ip not in seen:
                 seen.add(ip)

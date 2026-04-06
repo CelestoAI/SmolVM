@@ -508,7 +508,12 @@ class SmolVM:
                 )
             if isinstance(internet_settings, dict):
                 internet_settings = InternetSettings(**internet_settings)
-            if config is not None and config.internet_settings is None:
+            if config is not None and config.internet_settings is not None:
+                raise ValueError(
+                    "internet_settings is already set on the provided VMConfig; "
+                    "pass it in one place only (either on the config or as a keyword argument)."
+                )
+            if config is not None:
                 config = config.model_copy(update={"internet_settings": internet_settings})
 
         self._ssh_user = ssh_user
