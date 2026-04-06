@@ -259,7 +259,7 @@ def _require_boto3() -> S3Client:
 
         load_dotenv()
     except ImportError:
-        pass
+        logger.debug("python-dotenv not installed; skipping .env loading")
 
     kwargs: dict[str, str] = {}
 
