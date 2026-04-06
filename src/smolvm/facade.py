@@ -79,36 +79,42 @@ _AUTO_CONFIG_DEFAULT_DISK_SIZE_MIB = {
     GuestOS.DEBIAN: 2048,
     GuestOS.UBUNTU: 2048,
 }
-_UBUNTU_CURRENT_RELEASE_DATE = "20260320"
+_UBUNTU_CURRENT_RELEASE_DATE = "20260406"
 _QEMU_UBUNTU_AUTO_IMAGES: dict[str, ImageSource] = {
-    "ubuntu-jammy-qemu-x86_64": ImageSource(
-        name="ubuntu-jammy-qemu-x86_64",
+    "ubuntu-noble-minimal-qemu-x86_64": ImageSource(
+        name="ubuntu-noble-minimal-qemu-x86_64",
         kernel_url=(
-            "https://cloud-images.ubuntu.com/jammy/current/unpacked/"
-            "jammy-server-cloudimg-amd64-vmlinuz-generic"
+            "https://cloud-images.ubuntu.com/noble/current/unpacked/"
+            "noble-server-cloudimg-amd64-vmlinuz-generic"
         ),
         kernel_filename="vmlinuz",
         initrd_url=(
-            "https://cloud-images.ubuntu.com/jammy/current/unpacked/"
-            "jammy-server-cloudimg-amd64-initrd-generic"
+            "https://cloud-images.ubuntu.com/noble/current/unpacked/"
+            "noble-server-cloudimg-amd64-initrd-generic"
         ),
         initrd_filename="initrd",
-        rootfs_url="https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img",
+        rootfs_url=(
+            "https://cloud-images.ubuntu.com/minimal/releases/noble/release/"
+            "ubuntu-24.04-minimal-cloudimg-amd64.img"
+        ),
         rootfs_filename="rootfs.qcow2",
     ),
-    "ubuntu-jammy-qemu-aarch64": ImageSource(
-        name="ubuntu-jammy-qemu-aarch64",
+    "ubuntu-noble-minimal-qemu-aarch64": ImageSource(
+        name="ubuntu-noble-minimal-qemu-aarch64",
         kernel_url=(
-            "https://cloud-images.ubuntu.com/jammy/current/unpacked/"
-            "jammy-server-cloudimg-arm64-vmlinuz-generic"
+            "https://cloud-images.ubuntu.com/noble/current/unpacked/"
+            "noble-server-cloudimg-arm64-vmlinuz-generic"
         ),
         kernel_filename="vmlinuz",
         initrd_url=(
-            "https://cloud-images.ubuntu.com/jammy/current/unpacked/"
-            "jammy-server-cloudimg-arm64-initrd-generic"
+            "https://cloud-images.ubuntu.com/noble/current/unpacked/"
+            "noble-server-cloudimg-arm64-initrd-generic"
         ),
         initrd_filename="initrd",
-        rootfs_url="https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-arm64.img",
+        rootfs_url=(
+            "https://cloud-images.ubuntu.com/minimal/releases/noble/release/"
+            "ubuntu-24.04-minimal-cloudimg-arm64.img"
+        ),
         rootfs_filename="rootfs.qcow2",
     ),
 }
@@ -138,7 +144,7 @@ def _qemu_auto_config_image_name() -> str:
     """Return the prebuilt QEMU image cache key for the host architecture."""
     arch = platform.machine().lower()
     image_arch = "aarch64" if arch in {"arm64", "aarch64"} else "x86_64"
-    return f"ubuntu-jammy-qemu-{image_arch}"
+    return f"ubuntu-noble-minimal-qemu-{image_arch}"
 
 
 def _resolve_auto_config_public_key(ssh_key_path: str | None) -> tuple[str, Path]:

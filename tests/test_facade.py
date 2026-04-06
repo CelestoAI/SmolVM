@@ -375,7 +375,9 @@ class TestVMInit:
         assert config.ssh_capable is True
         assert "root=LABEL=cloudimg-rootfs" in config.boot_args
         assert config.extra_drives[0].suffix == ".iso"
-        mock_image_manager.ensure_image.assert_called_once_with("ubuntu-jammy-qemu-aarch64")
+        mock_image_manager.ensure_image.assert_called_once_with(
+            "ubuntu-noble-minimal-qemu-aarch64", on_download=None,
+        )
 
     @patch("smolvm.facade.platform.machine", return_value="arm64")
     @patch("smolvm.facade.build_seed_iso")
@@ -429,7 +431,7 @@ class TestVMInit:
         expected_seed_name = (
             seed_cache_key(
                 ssh_public_key=custom_public.read_text().strip(),
-                instance_id="smolvm-20260320",
+                instance_id="smolvm-20260406",
                 hostname="smolvm",
                 user_data=actual_user_data,
             )

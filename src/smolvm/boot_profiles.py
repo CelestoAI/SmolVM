@@ -32,12 +32,12 @@ FIRECRACKER_KERNEL_URLS: dict[str, str] = {
 # together with a matching initramfs/modules set.
 QEMU_DESKTOP_KERNEL_URLS: dict[str, str] = {
     "x86_64": (
-        "https://cloud-images.ubuntu.com/jammy/current/unpacked/"
-        "jammy-server-cloudimg-amd64-vmlinuz-generic"
+        "https://cloud-images.ubuntu.com/noble/current/unpacked/"
+        "noble-server-cloudimg-amd64-vmlinuz-generic"
     ),
     "aarch64": (
-        "https://cloud-images.ubuntu.com/jammy/current/unpacked/"
-        "jammy-server-cloudimg-arm64-vmlinuz-generic"
+        "https://cloud-images.ubuntu.com/noble/current/unpacked/"
+        "noble-server-cloudimg-arm64-vmlinuz-generic"
     ),
 }
 
