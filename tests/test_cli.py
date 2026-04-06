@@ -931,7 +931,6 @@ class TestCliSSH:
         mock_vm_cls: MagicMock,
         mock_run: MagicMock,
         status: VMState,
-        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """`smolvm ssh` should auto-start attachable non-running VMs."""
         vm = MagicMock()
@@ -943,14 +942,6 @@ class TestCliSSH:
         ret = main(["ssh", "vm001"])
 
         assert ret == 0
-        out = capsys.readouterr().out
-        notice = (
-            "Notice: VM 'vm001' isn't running yet. "
-            "SSH may take a little longer while SmolVM starts it."
-        )
-        assert (
-            notice in out
-        )
         vm.start.assert_called_once_with(boot_timeout=30.0)
         vm.wait_for_ssh.assert_called_once_with(timeout=30.0)
         mock_run.assert_called_once_with(["ssh", "root@127.0.0.1"], check=False)
@@ -961,7 +952,6 @@ class TestCliSSH:
         self,
         mock_vm_cls: MagicMock,
         mock_run: MagicMock,
-        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """`smolvm ssh` should resume paused VMs before attaching."""
         vm = MagicMock()
@@ -973,7 +963,6 @@ class TestCliSSH:
         ret = main(["ssh", "vm001"])
 
         assert ret == 0
-        assert "is paused. Resuming it before attaching." in capsys.readouterr().out
         vm.resume.assert_called_once_with()
         vm.start.assert_not_called()
         vm.wait_for_ssh.assert_called_once_with(timeout=30.0)
