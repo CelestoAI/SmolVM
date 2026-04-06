@@ -127,7 +127,7 @@ Falls back to boto3's standard credential chain (`AWS_*` env vars, `~/.aws/crede
 
 **Verified end-to-end:** Ubuntu cloud image uploaded to Cloudflare R2, pulled via `smolvm create --image s3://...`, VM booted, SSH connected, commands executed.
 
-**Phase 2b (future):** FUSE mount (`mountpoint-s3`) for lazy block-level loading. The architecture leaves a clean seam — `ensure_s3_image()` returns local paths today, a future `mount_s3_image()` would return FUSE mount paths. The rest of the pipeline works unchanged.
+**Phase 2b (FUSE mount) was evaluated and dropped** — see Recommended Order section for rationale.
 
 ---
 
@@ -237,31 +237,29 @@ Phase 2a: S3 image registry (download-and-cache) ........ ✅ DONE
    ↓
 Phase 3: Configurable DB (PostgreSQL) .................... ✅ DONE
    ↓
-Phase 2b: FUSE mount (lazy S3 loading) .................. future
-   ↓
 Phase 4: Async lifecycle (true concurrency) .............. ✅ DONE
 ```
 
-Phase 2b was deferred — download-and-cache covers the fleet distribution need. Phase 3 (DB) is the next bottleneck to remove before async (Phase 4) becomes meaningful.
+**Phase 2b (FUSE mount) was evaluated and dropped.** Download-and-cache covers fleet distribution, FUSE adds operational complexity (mount lifecycle, daemon management, error handling) for marginal benefit, Firecracker can't use it (needs full copy, not qcow2 overlay), and qcow2 over FUSE has seek penalties that could make boot slower than cached local files. FUSE tools (mountpoint-s3, s3fs, rclone) are system packages — not pip-installable — adding install friction.
 
 ---
 
-## Hard Limits to Remove Regardless of Phase
+## Remaining Low-Effort Improvements
 
-These are low-effort fixes that should be done early:
-
-- IP pool: change `IP_POOL_END = 254` → use full `/16` (`172.16.0.0/16`, 65k addresses) in `storage.py`
-- SSH port pool: expand `SSH_PORT_END` or eliminate SSH port forwarding requirement for Firecracker (VMs have direct IPs)
-- nftables: batch all rules for a VM into a single `nft` invocation instead of 6 separate subprocess calls
+| Item | Effort | Impact | Notes |
+|------|--------|--------|-------|
+| SSH port pool expansion | Trivial | 800 → 47k ports | Change `SSH_PORT_END` to 49150 |
+| Dashboard native async | Small | Cleaner code | 6 `asyncio.to_thread` → native `async_stop/delete` |
+| IP pool /16 expansion | Medium | 253 → 65k IPs | Requires TAP naming redesign (`tap{last_octet}` collides) |
+| nftables batching | Skip | Already batched | Only 2-3 nft calls per VM (via `_run_nft_script`) |
 
 ---
 
-## Key Files by Phase
+## All Phases Complete
 
 | Phase | Primary Files | Status |
 |---|---|---|
 | 1 (CoW rootfs) | `vm.py`, `runtime_qemu.py` | ✅ Done |
 | 2a (S3 registry) | `images.py`, `facade.py`, `cli.py` | ✅ Done |
 | 3 (DB) | `storage/` package (5 files) | ✅ Done |
-| 2b (FUSE) | `images.py` | Future |
 | 4 (Async) | `utils.py`, `network.py`, `vm.py`, `facade.py`, `runtime_*.py`, `api.py` | ✅ Done |
