@@ -1209,7 +1209,7 @@ class SmolVM:
                 {"vm_id": self._vm_id},
             )
         if not self.can_run_commands():
-            raise CommandExecutionUnavailableError(self._vm_id)
+            raise CommandExecutionUnavailableError(self._vm_id, {"vm_id": self._vm_id})
 
         self._ensure_ssh()
         assert self._ssh is not None
@@ -1255,8 +1255,14 @@ class SmolVM:
                     if attempt in attempts:
                         continue
                     attempts.append(attempt)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Best-effort: if we cannot ensure a default SSH key, just skip
+                # adding fallback key-based connection attempts, but record why.
+                logger.debug(
+                    "Failed to ensure default SSH key for VM %s: %s",
+                    self._vm_id,
+                    exc,
+                )
 
         deadline = time.monotonic() + timeout
         errors: list[str] = []

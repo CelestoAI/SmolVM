@@ -1799,7 +1799,7 @@ class SmolVMManager:
             effective_config.disk_mode,
         )
 
-        vm_info = self.state.create_vm(effective_config)
+        self.state.create_vm(effective_config)
 
         try:
             ssh_host_port = self.state.reserve_ssh_port(effective_config.vm_id)
@@ -2007,7 +2007,6 @@ class SmolVMManager:
         self, source_path: Path, target_path: Path
     ) -> None:
         """Async version of :meth:`_copy_with_reflink`."""
-        import asyncio
         import shutil
 
         from smolvm.utils import async_run_command
@@ -2048,7 +2047,8 @@ class SmolVMManager:
             os.kill(pid, signal.SIGKILL)
             logger.debug("Killed process: %d", pid)
         except ProcessLookupError:
-            pass
+            # Process is already gone; nothing to do.
+            logger.debug("Process %d not found when attempting to kill", pid)
         except PermissionError:
             try:
                 await async_run_command(
@@ -2059,7 +2059,6 @@ class SmolVMManager:
 
     async def _async_wait_for_process(self, pid: int, timeout: float) -> None:
         """Async version of :meth:`_wait_for_process`."""
-        import asyncio
 
         start = time.time()
         while time.time() - start < timeout:
@@ -2170,12 +2169,19 @@ class SmolVMManager:
         self._log_files[key] = log_file
 
         logger.info("Starting QEMU (async): %s", " ".join(cmd))
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=log_file,
-            stderr=asyncio.subprocess.STDOUT,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+        except Exception:
+            # Ensure log file is not leaked if process creation fails.
+            with suppress(Exception):
+                log_file.close()
+            self._log_files.pop(key, None)
+            raise
         return process
 
     async def _async_start_firecracker(
@@ -2197,12 +2203,32 @@ class SmolVMManager:
 
         cmd = [str(binary_path), "--api-sock", str(control_socket_path)]
         logger.info("Starting Firecracker (async): %s", " ".join(cmd))
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=log_file,
-            stderr=asyncio.subprocess.STDOUT,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+        except Exception:
+            # Ensure the log file does not leak if process creation fails.
+            try:
+                log_file.close()
+            finally:
+                self._log_files.pop(key, None)
+            raise
+
+        async def _close_log_when_done() -> None:
+            try:
+                await process.wait()
+            finally:
+                # Safely close and deregister the log file when the process exits.
+                try:
+                    log_file.close()
+                finally:
+                    self._log_files.pop(key, None)
+
+        asyncio.create_task(_close_log_when_done())
         return process
 
     async def _async_cleanup_resources(self, vm_id: str) -> None:
