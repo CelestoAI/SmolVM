@@ -272,7 +272,14 @@ def _require_boto3() -> S3Client:
 
     access_key = os.environ.get(_S3_ENV_VARS["access_key"])
     secret_key = os.environ.get(_S3_ENV_VARS["secret_key"])
-    if access_key and secret_key:
+    if access_key or secret_key:
+        if not (access_key and secret_key):
+            missing = "SMOLVM_S3_SECRET_ACCESS_KEY" if access_key else "SMOLVM_S3_ACCESS_KEY_ID"
+            raise ImageError(
+                f"Incomplete S3 credentials: {missing} is not set. "
+                f"Both SMOLVM_S3_ACCESS_KEY_ID and SMOLVM_S3_SECRET_ACCESS_KEY "
+                f"must be set together."
+            )
         kwargs["aws_access_key_id"] = access_key
         kwargs["aws_secret_access_key"] = secret_key
 
@@ -665,8 +672,8 @@ class ImageManager:
             )
             tmp_path = Path(tmp_path_str)
             try:
-                response = s3.get_object(Bucket=ref.bucket, Key=manifest_key)
                 with open(tmp_fd, "wb") as f:
+                    response = s3.get_object(Bucket=ref.bucket, Key=manifest_key)
                     for chunk in response["Body"].iter_chunks():
                         f.write(chunk)
                 tmp_path.rename(manifest_dest)
@@ -713,8 +720,8 @@ class ImageManager:
             # Use get_object (single GetObject call) instead of
             # download_fileobj which issues HeadObject first — some
             # S3-compatible stores reject HeadObject.
-            response = s3.get_object(Bucket=bucket, Key=key)
             with open(tmp_fd, "wb") as f:
+                response = s3.get_object(Bucket=bucket, Key=key)
                 for chunk in response["Body"].iter_chunks(_DOWNLOAD_CHUNK_SIZE):
                     f.write(chunk)
                     if sha256 is not None:

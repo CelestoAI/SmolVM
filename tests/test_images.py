@@ -520,17 +520,22 @@ class TestEnsureS3Image:
         self,
         manifest_data: dict[str, object],
         assets: dict[str, bytes],
+        *,
+        expected_bucket: str = "bucket",
     ) -> MagicMock:
         """Create a mock boto3 S3 client that serves a manifest + assets."""
         client = MagicMock()
         manifest_json = json.dumps(manifest_data).encode()
 
         def get_object(Bucket: str, Key: str) -> dict[str, object]:  # noqa: N803
+            assert Bucket == expected_bucket, f"unexpected bucket: {Bucket}"
             filename = Key.rsplit("/", 1)[-1]
             if filename == "smolvm-image.json":
                 content = manifest_json
+            elif filename in assets:
+                content = assets[filename]
             else:
-                content = assets.get(filename, b"")
+                raise Exception(f"unexpected S3 key: {Key}")
             body = MagicMock()
             body.iter_chunks.return_value = iter([content])
             return {"Body": body}
@@ -733,6 +738,9 @@ class TestEnsureS3Image:
 class TestS3CredentialResolution:
     """Tests for SMOLVM_S3_* env var resolution."""
 
+    _TEST_ACCESS_KEY = "test-access-key-id"  # noqa: S105
+    _TEST_SECRET_KEY = "test-secret-access-key"  # noqa: S105
+
     def test_smolvm_env_vars_override_defaults(self) -> None:
         """SMOLVM_S3_* vars should be passed to boto3.client()."""
         import sys
@@ -742,8 +750,8 @@ class TestS3CredentialResolution:
 
         env = {
             "SMOLVM_S3_ENDPOINT_URL": "https://custom.endpoint.example",
-            "SMOLVM_S3_ACCESS_KEY_ID": "my-key",
-            "SMOLVM_S3_SECRET_ACCESS_KEY": "my-secret",
+            "SMOLVM_S3_ACCESS_KEY_ID": self._TEST_ACCESS_KEY,
+            "SMOLVM_S3_SECRET_ACCESS_KEY": self._TEST_SECRET_KEY,
         }
         with patch.dict("os.environ", env), patch.dict(sys.modules, {"boto3": mock_boto3}):
             from smolvm.images import _require_boto3
@@ -754,8 +762,8 @@ class TestS3CredentialResolution:
             "s3",
             endpoint_url="https://custom.endpoint.example",
             region_name="auto",
-            aws_access_key_id="my-key",
-            aws_secret_access_key="my-secret",
+            aws_access_key_id=self._TEST_ACCESS_KEY,
+            aws_secret_access_key=self._TEST_SECRET_KEY,
         )
 
     def test_endpoint_only_uses_boto3_cred_chain(self) -> None:
@@ -807,3 +815,25 @@ class TestS3CredentialResolution:
             _require_boto3()
 
         mock_boto3.client.assert_called_once_with("s3")
+
+    def test_half_set_credentials_raises(self) -> None:
+        """Setting only access key without secret should raise."""
+        import sys
+
+        mock_boto3 = MagicMock()
+        mock_dotenv = MagicMock()
+
+        env = {"SMOLVM_S3_ACCESS_KEY_ID": "only-key"}
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch.dict(sys.modules, {"boto3": mock_boto3, "dotenv": mock_dotenv}),
+            pytest.raises(ImageError, match="Incomplete S3 credentials"),
+        ):
+            import os
+
+            os.environ.pop("SMOLVM_S3_SECRET_ACCESS_KEY", None)
+            os.environ.pop("SMOLVM_S3_ENDPOINT_URL", None)
+
+            from smolvm.images import _require_boto3
+
+            _require_boto3()
