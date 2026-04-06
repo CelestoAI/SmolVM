@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 # Default network configuration
 DEFAULT_HOST_IP = "172.16.0.1"
-DEFAULT_NETMASK = "24"
+DEFAULT_NETMASK = "16"
 
 # SmolVM-managed nftables objects
 _NFT_NAT_FAMILY = "ip"
@@ -1507,10 +1507,10 @@ class NetworkManager:
         )
 
     def generate_mac(self, vm_number: int) -> str:
-        """Generate deterministic VM MAC address for vm_number in [0,255]."""
-        if vm_number < 0 or vm_number > 255:
-            raise ValueError("vm_number must be between 0 and 255")
-        return f"AA:FC:00:00:00:{vm_number:02X}"
+        """Generate deterministic VM MAC address for vm_number in [0, 65534]."""
+        if vm_number < 0 or vm_number > 65534:
+            raise ValueError("vm_number must be between 0 and 65534")
+        return f"AA:FC:00:00:{(vm_number >> 8) & 0xFF:02X}:{vm_number & 0xFF:02X}"
 
 
 def _extract_hostname(entry: str) -> str:

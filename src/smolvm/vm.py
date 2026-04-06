@@ -48,7 +48,7 @@ from smolvm.network import NetworkManager, check_network_prerequisites, resolve_
 from smolvm.runtime import RuntimeContext, SnapshotCreateRequest, SnapshotRestoreRequest
 from smolvm.runtime_firecracker import FirecrackerRuntimeAdapter
 from smolvm.runtime_qemu import QEMU_ROOT_NODE_NAME, QemuRuntimeAdapter
-from smolvm.storage import StateManagerProtocol, create_state_manager
+from smolvm.storage import StateManagerProtocol, create_state_manager, ip_to_pool_index
 from smolvm.types import NetworkConfig, SnapshotInfo, VMConfig, VMInfo, VMState
 from smolvm.utils import RUNTIME_PRIVILEGE_SETUP_HINT, which
 
@@ -745,7 +745,7 @@ class SmolVMManager:
                         "internet_settings domain allowlist is not supported "
                         "with the QEMU backend (user-mode networking)"
                     )
-                mac_seed = (ssh_host_port % 254) + 1
+                mac_seed = (ssh_host_port % 65534) + 1
                 guest_mac = self.network.generate_mac(mac_seed)
                 network_config = NetworkConfig(
                     guest_ip=QEMU_GUEST_IP,
@@ -765,10 +765,10 @@ class SmolVMManager:
                 return vm_info
 
             # Firecracker networking: allocate an IP first, then derive
-            # the TAP name from the last octet.
+            # a unique TAP name from its pool index within 172.16.0.0/16.
             guest_ip = self.state.allocate_ip(effective_config.vm_id, "pending")
-            last_octet = int(guest_ip.split(".")[-1])
-            tap_name = f"tap{last_octet}"
+            vm_number = ip_to_pool_index(guest_ip)
+            tap_name = f"tap{vm_number}"
 
             # Update the lease with the real TAP name
             self.state.update_ip_lease_tap(effective_config.vm_id, tap_name)
@@ -799,8 +799,8 @@ class SmolVMManager:
                 host_port=ssh_host_port,
             )
 
-            # Generate MAC address from last octet
-            guest_mac = self.network.generate_mac(last_octet)
+            # Generate MAC address from pool index
+            guest_mac = self.network.generate_mac(vm_number)
 
             # Create network config
             network_config = NetworkConfig(
@@ -1851,7 +1851,7 @@ class SmolVMManager:
                         "internet_settings domain allowlist is not supported "
                         "with the QEMU backend (user-mode networking)"
                     )
-                mac_seed = (ssh_host_port % 254) + 1
+                mac_seed = (ssh_host_port % 65534) + 1
                 guest_mac = self.network.generate_mac(mac_seed)
                 network_config = NetworkConfig(
                     guest_ip=QEMU_GUEST_IP,
@@ -1866,8 +1866,8 @@ class SmolVMManager:
 
             # Firecracker networking (async)
             guest_ip = self.state.allocate_ip(effective_config.vm_id, "pending")
-            last_octet = int(guest_ip.split(".")[-1])
-            tap_name = f"tap{last_octet}"
+            vm_number = ip_to_pool_index(guest_ip)
+            tap_name = f"tap{vm_number}"
             self.state.update_ip_lease_tap(effective_config.vm_id, tap_name)
 
             user = os.environ.get("USER", "root")
@@ -1892,7 +1892,7 @@ class SmolVMManager:
                 host_port=ssh_host_port,
             )
 
-            guest_mac = self.network.generate_mac(last_octet)
+            guest_mac = self.network.generate_mac(vm_number)
             network_config = NetworkConfig(
                 guest_ip=guest_ip,
                 gateway_ip=self.network.host_ip,

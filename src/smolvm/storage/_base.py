@@ -29,14 +29,34 @@ from smolvm.types import (
     VMConfig,
 )
 
-# IP allocation pool: 172.16.0.2 - 172.16.0.254
-IP_POOL_START = 2
-IP_POOL_END = 254
-IP_PREFIX = "172.16.0."
+# ---------------------------------------------------------------------------
+# IP allocation pool — 172.16.0.0/16
+#
+# Each guest IP is derived from a *pool index* (2 … 65 534):
+#     172.16.<index >> 8>.<index & 0xFF>
+#
+# Index 0 (172.16.0.0 — network) and 1 (172.16.0.1 — host gateway) are
+# reserved, as is 65 535 (172.16.255.255 — broadcast).
+# ---------------------------------------------------------------------------
+IP_POOL_START = 2  # 172.16.0.2
+IP_POOL_END = 65534  # 172.16.255.254
 
-# SSH host-port forwarding pool: 2200 - 2999
+# SSH host-port forwarding pool (65 300 ports — matches IP pool capacity)
 SSH_PORT_START = 2200
-SSH_PORT_END = 2999
+SSH_PORT_END = 67499
+
+
+def pool_index_to_ip(index: int) -> str:
+    """Convert a pool index to an IP in the ``172.16.0.0/16`` range."""
+    if index < 0 or index > 65535:
+        raise ValueError(f"pool index out of range: {index}")
+    return f"172.16.{index >> 8}.{index & 0xFF}"
+
+
+def ip_to_pool_index(ip: str) -> int:
+    """Convert a ``172.16.x.y`` IP back to its pool index."""
+    parts = ip.split(".")
+    return (int(parts[2]) << 8) | int(parts[3])
 
 
 def now_iso() -> str:

@@ -41,9 +41,10 @@ from pathlib import Path
 from smolvm.storage._base import (
     IP_POOL_END,
     IP_POOL_START,
-    IP_PREFIX,
     SSH_PORT_END,
     SSH_PORT_START,
+    ip_to_pool_index,
+    pool_index_to_ip,
 )
 from smolvm.storage._protocol import StateManagerProtocol
 from smolvm.storage._sqlite import SQLiteStateManager
@@ -116,9 +117,10 @@ StateManager = SQLiteStateManager
 __all__ = [
     "IP_POOL_END",
     "IP_POOL_START",
-    "IP_PREFIX",
     "SSH_PORT_END",
     "SSH_PORT_START",
+    "ip_to_pool_index",
+    "pool_index_to_ip",
     "StateManager",
     "StateManagerProtocol",
     "SQLiteStateManager",

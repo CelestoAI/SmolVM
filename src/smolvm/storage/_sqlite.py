@@ -39,11 +39,11 @@ from smolvm.exceptions import (
 from smolvm.storage._base import (
     IP_POOL_END,
     IP_POOL_START,
-    IP_PREFIX,
     SSH_PORT_END,
     SSH_PORT_START,
     browser_session_info_from_row,
     now_iso,
+    pool_index_to_ip,
     snapshot_info_from_row,
     vm_config_from_json,
 )
@@ -352,7 +352,7 @@ class SQLiteStateManager:
             candidate_ips = (
                 [requested_ip]
                 if requested_ip
-                else [f"{IP_PREFIX}{i}" for i in range(IP_POOL_START, IP_POOL_END + 1)]
+                else (pool_index_to_ip(i) for i in range(IP_POOL_START, IP_POOL_END + 1))
             )
             for ip in candidate_ips:
                 if ip is None or ip in allocated_set:
