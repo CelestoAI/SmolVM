@@ -207,8 +207,43 @@ def parse_s3_image_uri(uri: str) -> S3ImageRef:
     return S3ImageRef(bucket=bucket, prefix=prefix)
 
 
+# ---------------------------------------------------------------------------
+# S3 credential resolution
+#
+# SmolVM checks its own env vars first, then falls back to boto3's
+# standard credential chain (AWS_* env vars, ~/.aws/credentials, IAM
+# roles).  This lets users point SmolVM at S3-compatible stores
+# (Cloudflare R2, MinIO, etc.) without touching their AWS config.
+#
+#   SMOLVM_S3_ENDPOINT_URL       — Custom S3 endpoint
+#   SMOLVM_S3_ACCESS_KEY_ID      — Access key (falls back to AWS_ACCESS_KEY_ID)
+#   SMOLVM_S3_SECRET_ACCESS_KEY  — Secret key (falls back to AWS_SECRET_ACCESS_KEY)
+# ---------------------------------------------------------------------------
+
+_S3_ENV_VARS = {
+    "endpoint_url": "SMOLVM_S3_ENDPOINT_URL",
+    "access_key": "SMOLVM_S3_ACCESS_KEY_ID",
+    "secret_key": "SMOLVM_S3_SECRET_ACCESS_KEY",
+}
+
+
 def _require_boto3() -> S3Client:
-    """Import boto3 and return an S3 client, or raise a helpful error."""
+    """Import boto3 and return an S3 client, or raise a helpful error.
+
+    Credentials are resolved in order:
+
+    1. ``SMOLVM_S3_*`` environment variables (explicit SmolVM config)
+    2. ``AWS_*`` environment variables (standard boto3 chain)
+    3. ``~/.aws/credentials`` / IAM roles (standard boto3 chain)
+
+    For S3-compatible stores set at minimum::
+
+        export SMOLVM_S3_ENDPOINT_URL=https://<id>.r2.cloudflarestorage.com
+        export SMOLVM_S3_ACCESS_KEY_ID=<key>
+        export SMOLVM_S3_SECRET_ACCESS_KEY=<secret>
+    """
+    import os
+
     try:
         import boto3  # type: ignore[import-untyped]
     except ImportError:
@@ -216,7 +251,27 @@ def _require_boto3() -> S3Client:
             "S3 image support requires boto3. Install it with:\n"
             "  pip install 'smolvm[s3]'"
         ) from None
-    return boto3.client("s3")  # type: ignore[no-any-return]
+
+    kwargs: dict[str, str] = {}
+
+    endpoint_url = os.environ.get(_S3_ENV_VARS["endpoint_url"])
+    if endpoint_url:
+        kwargs["endpoint_url"] = endpoint_url
+
+    access_key = os.environ.get(_S3_ENV_VARS["access_key"])
+    secret_key = os.environ.get(_S3_ENV_VARS["secret_key"])
+    if access_key and secret_key:
+        kwargs["aws_access_key_id"] = access_key
+        kwargs["aws_secret_access_key"] = secret_key
+
+    if kwargs:
+        logger.info(
+            "Using SmolVM S3 config: endpoint=%s, credentials=%s",
+            endpoint_url or "(default)",
+            "SMOLVM_S3_*" if access_key else "(boto3 chain)",
+        )
+
+    return boto3.client("s3", **kwargs)  # type: ignore[no-any-return]
 
 
 # ---------------------------------------------------------------------------

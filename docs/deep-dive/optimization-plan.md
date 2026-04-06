@@ -159,9 +159,9 @@ Also, resource pools are hardcoded small:
 ## Recommended Order
 
 ```
-Phase 1: Overlayfs (local, no infra needed, biggest single win)
+Phase 1: Overlayfs (local, no infra needed, biggest single win) (done)
    ↓
-Phase 2: S3 image registry (fleet distribution, builds on overlayfs)
+Phase 2: S3 image registry (fleet distribution, builds on overlayfs) (done)
    ↓
 Phase 3: Configurable DB — SQLite default, PostgreSQL via SMOLVM_DATABASE_URL
    ↓

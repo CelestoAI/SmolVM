@@ -725,3 +725,74 @@ class TestEnsureS3Image:
         assert local.kernel_path.exists()
         assert local.rootfs_path.exists()
         assert local.kernel_path.read_bytes() == kernel_content
+
+
+class TestS3CredentialResolution:
+    """Tests for SMOLVM_S3_* env var resolution."""
+
+    def test_smolvm_env_vars_override_defaults(self) -> None:
+        """SMOLVM_S3_* vars should be passed to boto3.client()."""
+        import sys
+
+        mock_boto3 = MagicMock()
+        mock_boto3.client.return_value = MagicMock()
+
+        env = {
+            "SMOLVM_S3_ENDPOINT_URL": "https://custom.endpoint.example",
+            "SMOLVM_S3_ACCESS_KEY_ID": "my-key",
+            "SMOLVM_S3_SECRET_ACCESS_KEY": "my-secret",
+        }
+        with patch.dict("os.environ", env), patch.dict(sys.modules, {"boto3": mock_boto3}):
+            from smolvm.images import _require_boto3
+
+            _require_boto3()
+
+        mock_boto3.client.assert_called_once_with(
+            "s3",
+            endpoint_url="https://custom.endpoint.example",
+            aws_access_key_id="my-key",
+            aws_secret_access_key="my-secret",
+        )
+
+    def test_endpoint_only_uses_boto3_cred_chain(self) -> None:
+        """When only endpoint is set, credentials fall back to boto3 chain."""
+        import os
+        import sys
+
+        mock_boto3 = MagicMock()
+        mock_boto3.client.return_value = MagicMock()
+
+        env = {"SMOLVM_S3_ENDPOINT_URL": "https://r2.example.com"}
+        with patch.dict("os.environ", env), patch.dict(sys.modules, {"boto3": mock_boto3}):
+            os.environ.pop("SMOLVM_S3_ACCESS_KEY_ID", None)
+            os.environ.pop("SMOLVM_S3_SECRET_ACCESS_KEY", None)
+
+            from smolvm.images import _require_boto3
+
+            _require_boto3()
+
+        mock_boto3.client.assert_called_once_with(
+            "s3",
+            endpoint_url="https://r2.example.com",
+        )
+
+    def test_no_smolvm_vars_uses_plain_boto3(self) -> None:
+        """Without SMOLVM_S3_* vars, boto3 defaults should be used."""
+        import os
+        import sys
+
+        mock_boto3 = MagicMock()
+        mock_boto3.client.return_value = MagicMock()
+
+        with patch.dict("os.environ", {}, clear=False), patch.dict(
+            sys.modules, {"boto3": mock_boto3}
+        ):
+            os.environ.pop("SMOLVM_S3_ENDPOINT_URL", None)
+            os.environ.pop("SMOLVM_S3_ACCESS_KEY_ID", None)
+            os.environ.pop("SMOLVM_S3_SECRET_ACCESS_KEY", None)
+
+            from smolvm.images import _require_boto3
+
+            _require_boto3()
+
+        mock_boto3.client.assert_called_once_with("s3")

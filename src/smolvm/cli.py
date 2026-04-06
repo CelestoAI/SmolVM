@@ -434,7 +434,11 @@ def build_parser() -> argparse.ArgumentParser:
     image_group.add_argument(
         "--image",
         default=None,
-        help="Image URI (e.g. s3://bucket/path/to/image/).",
+        help=(
+            "Image URI (e.g. s3://bucket/path/to/image/). "
+            "Configure S3-compatible stores via SMOLVM_S3_ENDPOINT_URL, "
+            "SMOLVM_S3_ACCESS_KEY_ID, SMOLVM_S3_SECRET_ACCESS_KEY env vars."
+        ),
     )
     create_parser.add_argument(
         "--memory-mib",
