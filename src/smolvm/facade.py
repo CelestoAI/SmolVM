@@ -50,7 +50,15 @@ from smolvm.exceptions import (
 )
 from smolvm.images import ImageManager, ImageSource
 from smolvm.ssh import SSHClient
-from smolvm.types import CommandResult, GuestOS, SnapshotInfo, VMConfig, VMInfo, VMState
+from smolvm.types import (
+    CommandResult,
+    GuestOS,
+    InternetSettings,
+    SnapshotInfo,
+    VMConfig,
+    VMInfo,
+    VMState,
+)
 from smolvm.vm import SmolVMManager
 
 logger = logging.getLogger(__name__)
@@ -424,6 +432,10 @@ class SmolVM:
         ssh_key_path: Optional SSH private key path. If omitted,
             SmolVM first tries default SSH auth, then falls back to
             ``~/.smolvm/keys/id_ed25519`` when needed.
+        internet_settings: Network access controls. Accepts an
+            :class:`~smolvm.types.InternetSettings` instance or a dict
+            (e.g. ``{"allowed_domains": ["https://example.com/"]}``).
+            When set, only the listed domains are reachable from the VM.
 
     Raises:
         ValueError: If both *config* and *vm_id* are given, or if auto-config-only
@@ -444,6 +456,7 @@ class SmolVM:
         disk_size_mib: int | None = None,
         ssh_user: str = "root",
         ssh_key_path: str | None = None,
+        internet_settings: InternetSettings | dict[str, Any] | None = None,
     ) -> None:
         if config is not None and vm_id is not None:
             raise ValueError("Provide either config or vm_id, not both.")
@@ -486,6 +499,17 @@ class SmolVM:
                 disk_size_mib=disk_size_mib,
                 ssh_key_path=ssh_key_path,
             )
+
+        # Normalize and merge internet_settings into the config
+        if internet_settings is not None:
+            if vm_id is not None:
+                raise ValueError(
+                    "internet_settings cannot be set when reconnecting to an existing VM."
+                )
+            if isinstance(internet_settings, dict):
+                internet_settings = InternetSettings(**internet_settings)
+            if config is not None and config.internet_settings is None:
+                config = config.model_copy(update={"internet_settings": internet_settings})
 
         self._ssh_user = ssh_user
         self._ssh_key_path = ssh_key_path

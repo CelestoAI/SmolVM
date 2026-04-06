@@ -24,8 +24,10 @@ import asyncio
 import logging
 import os
 import re
+import socket
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 from smolvm.exceptions import NetworkError, SmolVMError
 from smolvm.utils import async_run_command, run_command
@@ -1509,6 +1511,46 @@ class NetworkManager:
         if vm_number < 0 or vm_number > 255:
             raise ValueError("vm_number must be between 0 and 255")
         return f"AA:FC:00:00:00:{vm_number:02X}"
+
+
+def _extract_hostname(entry: str) -> str:
+    """Extract hostname from a URL or bare domain string."""
+    if "://" in entry:
+        return urlparse(entry).hostname or entry
+    # Bare domain — may include a port like "example.com:8080"
+    return entry.split(":")[0]
+
+
+def resolve_domains_to_ips(domains: list[str]) -> list[str]:
+    """Resolve a list of domain entries to unique IP addresses.
+
+    Each entry can be a full URL (``https://example.com/path``) or a bare
+    hostname (``example.com``).  The wildcard ``"*"`` is skipped.
+
+    Returns:
+        Deduplicated list of resolved IP address strings.
+    """
+    seen: set[str] = set()
+    result: list[str] = []
+
+    for entry in domains:
+        if entry == "*":
+            continue
+
+        hostname = _extract_hostname(entry)
+        try:
+            infos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
+        except socket.gaierror:
+            logger.warning("Could not resolve domain %r — skipping", entry)
+            continue
+
+        for _family, _type, _proto, _canonname, sockaddr in infos:
+            ip = sockaddr[0]
+            if ip not in seen:
+                seen.add(ip)
+                result.append(ip)
+
+    return result
 
 
 def check_network_prerequisites() -> list[str]:

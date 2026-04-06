@@ -44,7 +44,7 @@ from smolvm.exceptions import (
     VMNotFoundError,
 )
 from smolvm.host import HostCapability, HostManager
-from smolvm.network import NetworkManager, check_network_prerequisites
+from smolvm.network import NetworkManager, check_network_prerequisites, resolve_domains_to_ips
 from smolvm.runtime import RuntimeContext, SnapshotCreateRequest, SnapshotRestoreRequest
 from smolvm.runtime_firecracker import FirecrackerRuntimeAdapter
 from smolvm.runtime_qemu import QEMU_ROOT_NODE_NAME, QemuRuntimeAdapter
@@ -526,7 +526,12 @@ class SmolVMManager:
             raise ValueError("snapshot_id must resolve within the snapshot directory") from exc
         return snapshot_root
 
-    def _ensure_firecracker_network_for_restore(self, vm_id: str, network: NetworkConfig) -> None:
+    def _ensure_firecracker_network_for_restore(
+        self,
+        vm_id: str,
+        network: NetworkConfig,
+        vm_config: VMConfig | None = None,
+    ) -> None:
         """Ensure host-side network resources exist for a restored Firecracker VM."""
         user = os.environ.get("USER", "root")
         self.network.create_tap(network.tap_device, user)
@@ -537,6 +542,18 @@ class SmolVMManager:
         )
         self.network.add_route(network.guest_ip, network.tap_device)
         self.network.setup_nat(network.tap_device)
+
+        # Re-apply domain allowlist if the original config had one
+        if (
+            vm_config is not None
+            and vm_config.internet_settings is not None
+            and not vm_config.internet_settings.is_allow_all_domains
+        ):
+            allowed_ips = resolve_domains_to_ips(
+                vm_config.internet_settings.allowed_domains
+            )
+            self.network.apply_egress_allowlist(network.tap_device, allowed_ips)
+
         if network.ssh_host_port is not None:
             self.network.setup_ssh_port_forward(
                 vm_id=vm_id,
@@ -719,6 +736,14 @@ class SmolVMManager:
             ssh_host_port = self.state.reserve_ssh_port(effective_config.vm_id)
 
             if backend == BACKEND_QEMU:
+                if (
+                    effective_config.internet_settings is not None
+                    and not effective_config.internet_settings.is_allow_all_domains
+                ):
+                    logger.warning(
+                        "internet_settings domain allowlist is not supported "
+                        "with the QEMU backend (user-mode networking)"
+                    )
                 mac_seed = (ssh_host_port % 254) + 1
                 guest_mac = self.network.generate_mac(mac_seed)
                 network_config = NetworkConfig(
@@ -756,6 +781,17 @@ class SmolVMManager:
             self.network.add_route(guest_ip, tap_name)
 
             self.network.setup_nat(tap_name)
+
+            # Apply domain allowlist if configured
+            if (
+                effective_config.internet_settings is not None
+                and not effective_config.internet_settings.is_allow_all_domains
+            ):
+                allowed_ips = resolve_domains_to_ips(
+                    effective_config.internet_settings.allowed_domains
+                )
+                self.network.apply_egress_allowlist(tap_name, allowed_ips)
+
             self.network.setup_ssh_port_forward(
                 vm_id=effective_config.vm_id,
                 guest_ip=guest_ip,
@@ -1143,6 +1179,7 @@ class SmolVMManager:
                 self._ensure_firecracker_network_for_restore(
                     restore_vm_id,
                     effective_snapshot.network_config,
+                    vm_config=effective_snapshot.vm_config,
                 )
             log_path = self.data_dir / f"{restore_vm_id}.log"
             launch = adapter.restore_snapshot(
@@ -1805,6 +1842,14 @@ class SmolVMManager:
             ssh_host_port = self.state.reserve_ssh_port(effective_config.vm_id)
 
             if backend == BACKEND_QEMU:
+                if (
+                    effective_config.internet_settings is not None
+                    and not effective_config.internet_settings.is_allow_all_domains
+                ):
+                    logger.warning(
+                        "internet_settings domain allowlist is not supported "
+                        "with the QEMU backend (user-mode networking)"
+                    )
                 mac_seed = (ssh_host_port % 254) + 1
                 guest_mac = self.network.generate_mac(mac_seed)
                 network_config = NetworkConfig(
@@ -1829,6 +1874,17 @@ class SmolVMManager:
             await self.network.async_configure_tap(tap_name, netmask="32")
             await self.network.async_add_route(guest_ip, tap_name)
             await self.network.async_setup_nat(tap_name)
+
+            # Apply domain allowlist if configured
+            if (
+                effective_config.internet_settings is not None
+                and not effective_config.internet_settings.is_allow_all_domains
+            ):
+                allowed_ips = resolve_domains_to_ips(
+                    effective_config.internet_settings.allowed_domains
+                )
+                await self.network.async_apply_egress_allowlist(tap_name, allowed_ips)
+
             await self.network.async_setup_ssh_port_forward(
                 vm_id=effective_config.vm_id,
                 guest_ip=guest_ip,

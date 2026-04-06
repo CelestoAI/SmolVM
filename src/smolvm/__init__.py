@@ -47,6 +47,7 @@ from smolvm.types import (
     BrowserViewport,
     CommandResult,
     GuestOS,
+    InternetSettings,
     NetworkConfig,
     SnapshotArtifacts,
     SnapshotInfo,
@@ -76,6 +77,7 @@ __all__ = [
     # SSH
     "SSHClient",
     # Data models
+    "InternetSettings",
     "VMConfig",
     "VMInfo",
     "VMState",
