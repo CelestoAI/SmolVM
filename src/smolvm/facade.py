@@ -209,6 +209,31 @@ def _build_s3_image_config(
             platform.machine(),
         )
 
+    # Cloud images (those with an initrd) typically need a cloud-init
+    # seed ISO to inject the SSH public key.
+    extra_drives: list[Path] = []
+    if local_image.initrd_path is not None:
+        public_key_path = Path(f"{resolved_ssh_key_path}.pub")
+        if public_key_path.is_file():
+            public_key_value = public_key_path.read_text().strip()
+            seed_key = seed_cache_key(
+                ssh_public_key=public_key_value,
+                instance_id=f"smolvm-s3-{manifest.name}",
+                hostname="smolvm",
+            )
+            seed_dir = image_manager.cache_dir / "cloud-init-seeds"
+            seed_path = seed_dir / f"{seed_key}.iso"
+            if not seed_path.exists():
+                build_seed_iso(
+                    seed_path,
+                    user_data=default_user_data(public_key_value),
+                    meta_data=default_meta_data(
+                        instance_id=f"smolvm-s3-{manifest.name}",
+                        hostname="smolvm",
+                    ),
+                )
+            extra_drives.append(seed_path)
+
     resolved_vm_name = vm_name or f"vm-{uuid.uuid4().hex[:8]}"
     config = VMConfig(
         vm_id=resolved_vm_name,
@@ -217,6 +242,7 @@ def _build_s3_image_config(
         kernel_path=local_image.kernel_path,
         initrd_path=local_image.initrd_path,
         rootfs_path=local_image.rootfs_path,
+        extra_drives=extra_drives,
         boot_args=boot_args,
         ssh_capable=True,
         backend=resolved_backend,
