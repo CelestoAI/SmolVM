@@ -1570,22 +1570,29 @@ def _run_ssh(args: argparse.Namespace) -> int:
             ssh_key_path=args.ssh_key,
         )
 
+        console = console_stdout()
         if vm.status in {VMState.CREATED, VMState.STOPPED}:
-            print(
-                f"Notice: VM '{args.vm_id}' isn't running yet. "
-                "SSH may take a little longer while SmolVM starts it."
-            )
-            vm.start(boot_timeout=args.boot_timeout)
+            with console.status(
+                f"Starting sandbox '{args.vm_id}'...", spinner="dots"
+            ) as status:
+                vm.start(boot_timeout=args.boot_timeout)
+                status.update("Waiting for SSH...")
+                vm.wait_for_ssh(timeout=args.boot_timeout)
         elif vm.status == VMState.PAUSED:
-            print(f"Notice: VM '{args.vm_id}' is paused. Resuming it before attaching.")
-            vm.resume()
+            with console.status(
+                f"Resuming sandbox '{args.vm_id}'...", spinner="dots"
+            ) as status:
+                vm.resume()
+                status.update("Waiting for SSH...")
+                vm.wait_for_ssh(timeout=args.boot_timeout)
         elif vm.status == VMState.ERROR:
             raise RuntimeError(
                 f"VM '{args.vm_id}' is in error state. Recreate it or inspect the VM logs "
                 "before attaching."
             )
-
-        vm.wait_for_ssh(timeout=args.boot_timeout)
+        else:
+            with console.status("Waiting for SSH...", spinner="dots"):
+                vm.wait_for_ssh(timeout=args.boot_timeout)
         completed = subprocess.run(vm._ssh_attach_command(), check=False)
         return completed.returncode
     except FileNotFoundError:
