@@ -43,9 +43,11 @@ class StateManagerProtocol(Protocol):
     # VM operations
     # ------------------------------------------------------------------
 
-    def create_vm(self, config: VMConfig) -> VMInfo: ...
+    def create_vm(self, config: VMConfig) -> VMInfo:
+        pass
 
-    def get_vm(self, vm_id: str) -> VMInfo: ...
+    def get_vm(self, vm_id: str) -> VMInfo:
+        pass
 
     def update_vm(
         self,
@@ -57,11 +59,14 @@ class StateManagerProtocol(Protocol):
         control_socket_path: Path | None = None,
         clear_pid: bool = False,
         clear_socket_path: bool = False,
-    ) -> VMInfo: ...
+    ) -> VMInfo:
+        pass
 
-    def delete_vm(self, vm_id: str) -> None: ...
+    def delete_vm(self, vm_id: str) -> None:
+        pass
 
-    def list_vms(self, status: VMState | None = None) -> list[VMInfo]: ...
+    def list_vms(self, status: VMState | None = None) -> list[VMInfo]:
+        pass
 
     # ------------------------------------------------------------------
     # IP allocation
@@ -72,13 +77,17 @@ class StateManagerProtocol(Protocol):
         vm_id: str,
         tap_device: str,
         requested_ip: str | None = None,
-    ) -> str: ...
+    ) -> str:
+        pass
 
-    def release_ip(self, vm_id: str) -> None: ...
+    def release_ip(self, vm_id: str) -> None:
+        pass
 
-    def get_ip_lease(self, vm_id: str) -> tuple[str, str] | None: ...
+    def get_ip_lease(self, vm_id: str) -> tuple[str, str] | None:
+        pass
 
-    def update_ip_lease_tap(self, vm_id: str, tap_device: str) -> None: ...
+    def update_ip_lease_tap(self, vm_id: str, tap_device: str) -> None:
+        pass
 
     # ------------------------------------------------------------------
     # SSH port allocation
@@ -89,27 +98,35 @@ class StateManagerProtocol(Protocol):
         vm_id: str,
         guest_port: int = 22,
         host_port: int | None = None,
-    ) -> int: ...
+    ) -> int:
+        pass
 
-    def get_ssh_port(self, vm_id: str) -> int | None: ...
+    def get_ssh_port(self, vm_id: str) -> int | None:
+        pass
 
-    def release_ssh_port(self, vm_id: str) -> None: ...
+    def release_ssh_port(self, vm_id: str) -> None:
+        pass
 
     # ------------------------------------------------------------------
     # Snapshots
     # ------------------------------------------------------------------
 
-    def create_snapshot(self, info: SnapshotInfo) -> SnapshotInfo: ...
+    def create_snapshot(self, info: SnapshotInfo) -> SnapshotInfo:
+        pass
 
-    def get_snapshot(self, snapshot_id: str) -> SnapshotInfo: ...
+    def get_snapshot(self, snapshot_id: str) -> SnapshotInfo:
+        pass
 
-    def list_snapshots(self, vm_id: str | None = None) -> list[SnapshotInfo]: ...
+    def list_snapshots(self, vm_id: str | None = None) -> list[SnapshotInfo]:
+        pass
 
     def mark_snapshot_restored(
         self, snapshot_id: str, restored_vm_id: str
-    ) -> SnapshotInfo: ...
+    ) -> SnapshotInfo:
+        pass
 
-    def delete_snapshot(self, snapshot_id: str) -> None: ...
+    def delete_snapshot(self, snapshot_id: str) -> None:
+        pass
 
     # ------------------------------------------------------------------
     # Browser sessions
@@ -119,11 +136,14 @@ class StateManagerProtocol(Protocol):
         self,
         info: BrowserSessionInfo,
         config: BrowserSessionConfig,
-    ) -> BrowserSessionInfo: ...
+    ) -> BrowserSessionInfo:
+        pass
 
-    def get_browser_session(self, session_id: str) -> BrowserSessionInfo: ...
+    def get_browser_session(self, session_id: str) -> BrowserSessionInfo:
+        pass
 
-    def get_browser_session_config(self, session_id: str) -> BrowserSessionConfig: ...
+    def get_browser_session_config(self, session_id: str) -> BrowserSessionConfig:
+        pass
 
     def update_browser_session(
         self,
@@ -137,16 +157,20 @@ class StateManagerProtocol(Protocol):
         expires_at: datetime | None = None,
         artifacts_dir: Path | None = None,
         config: BrowserSessionConfig | None = None,
-    ) -> BrowserSessionInfo: ...
+    ) -> BrowserSessionInfo:
+        pass
 
-    def delete_browser_session(self, session_id: str) -> None: ...
+    def delete_browser_session(self, session_id: str) -> None:
+        pass
 
     def list_browser_sessions(
         self, status: BrowserSessionState | None = None
-    ) -> list[BrowserSessionInfo]: ...
+    ) -> list[BrowserSessionInfo]:
+        pass
 
     # ------------------------------------------------------------------
     # Reconciliation
     # ------------------------------------------------------------------
 
-    def reconcile(self) -> list[str]: ...
+    def reconcile(self) -> list[str]:
+        pass

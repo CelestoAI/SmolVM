@@ -781,7 +781,12 @@ class PostgresStateManager:
                 except ProcessLookupError:
                     stale_vms.append(row["id"])
                 except PermissionError:
-                    pass
+                    # Process exists but we don't have permission to signal it; treat as alive.
+                    logger.debug(
+                        "Skipping VM %s in reconcile: cannot signal PID %s due to PermissionError",
+                        row["id"],
+                        pid,
+                    )
 
             now = now_iso()
             for vm_id in stale_vms:
