@@ -16,15 +16,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TextIO
 
 from smolvm.types import SnapshotArtifacts, SnapshotInfo, VMInfo, VMState
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
 
 @dataclass(slots=True, frozen=True)
@@ -83,6 +84,19 @@ class RuntimeContext:
     is_process_running: Callable[[int], bool]
     find_qemu_binary: Callable[[], Path | None]
 
+    # -- Async callable counterparts (populated when async operations are used) --
+    async_start_firecracker: (
+        Callable[[Path, Path], Awaitable[asyncio.subprocess.Process]] | None
+    ) = field(default=None)
+    async_start_qemu: (
+        Callable[..., Awaitable[asyncio.subprocess.Process]] | None
+    ) = field(default=None)
+    async_unlink_socket: Callable[[Path], Awaitable[None]] | None = field(default=None)
+    async_kill_process: Callable[[int], Awaitable[None]] | None = field(default=None)
+    async_wait_for_process: (
+        Callable[[int, float], Awaitable[None]] | None
+    ) = field(default=None)
+
 
 class RuntimeAdapter(Protocol):
     """Common runtime control interface used by ``SmolVMManager``."""
@@ -106,3 +120,11 @@ class RuntimeAdapter(Protocol):
 
     def restore_snapshot(self, request: SnapshotRestoreRequest) -> RuntimeLaunch:
         """Restore a snapshot into a runtime."""
+
+    async def async_start(
+        self, vm_info: VMInfo, *, log_path: Path, boot_timeout: float
+    ) -> RuntimeLaunch:
+        """Async version of :meth:`start`."""
+
+    async def async_stop(self, vm_info: VMInfo, *, timeout: float) -> None:
+        """Async version of :meth:`stop`."""

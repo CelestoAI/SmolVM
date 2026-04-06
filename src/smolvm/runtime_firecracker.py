@@ -16,11 +16,11 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
-import logging
 
 from smolvm.api import FirecrackerClient
 from smolvm.backends import BACKEND_FIRECRACKER
@@ -95,6 +95,136 @@ class FirecrackerRuntimeAdapter(RuntimeAdapter):
             if client is not None:
                 with suppress(Exception):
                     client.close()
+
+    # ------------------------------------------------------------------
+    # Async lifecycle methods
+    # ------------------------------------------------------------------
+
+    async def async_start(
+        self, vm_info: VMInfo, *, log_path: Path, boot_timeout: float
+    ) -> RuntimeLaunch:
+        """Async version of :meth:`start`."""
+        import asyncio
+
+        control_socket_path = self._context.socket_dir / f"fc-{vm_info.vm_id}.sock"
+        if control_socket_path.exists():
+            if self._context.async_unlink_socket:
+                await self._context.async_unlink_socket(control_socket_path)
+            else:
+                self._context.unlink_socket(control_socket_path)
+
+        process: Any | None = None
+        client: FirecrackerClient | None = None
+        try:
+            if self._context.async_start_firecracker:
+                process = await self._context.async_start_firecracker(
+                    control_socket_path, log_path
+                )
+            else:
+                process = await asyncio.to_thread(
+                    self._context.start_firecracker, control_socket_path, log_path
+                )
+            client = FirecrackerClient(control_socket_path)
+            await client.async_wait_for_socket(timeout=boot_timeout)
+            # Firecracker API calls are fast local socket ops — run in thread
+            await asyncio.to_thread(
+                client.set_boot_source,
+                vm_info.config.kernel_path,
+                self._context.resolve_boot_args(vm_info),
+            )
+            await asyncio.to_thread(
+                client.set_machine_config,
+                vm_info.config.vcpu_count,
+                vm_info.config.mem_size_mib,
+            )
+            await asyncio.to_thread(
+                client.add_drive,
+                "rootfs",
+                vm_info.config.rootfs_path,
+                is_root_device=True,
+                is_read_only=False,
+            )
+            for index, drive_path in enumerate(vm_info.config.extra_drives):
+                drive_id = "data_drive" if index == 0 else f"data_drive_{index}"
+                await asyncio.to_thread(
+                    client.add_drive, drive_id, drive_path,
+                    is_root_device=False, is_read_only=False,
+                )
+            if vm_info.network is None:
+                raise SmolVMError("VM has no network configuration", {"vm_id": vm_info.vm_id})
+            await asyncio.to_thread(
+                client.add_network_interface,
+                "eth0",
+                vm_info.network.tap_device,
+                vm_info.network.guest_mac,
+                rate_limit_mbps=vm_info.config.network_rate_limit_mbps,
+            )
+            await asyncio.to_thread(client.start_instance)
+            return RuntimeLaunch(
+                pid=process.pid,
+                control_socket_path=control_socket_path,
+                status=VMState.RUNNING,
+            )
+        except Exception:
+            if process is not None:
+                with suppress(Exception):
+                    if self._context.async_kill_process:
+                        await self._context.async_kill_process(process.pid)
+                    else:
+                        self._context.kill_process(process.pid)
+            if control_socket_path.exists():
+                with suppress(Exception):
+                    if self._context.async_unlink_socket:
+                        await self._context.async_unlink_socket(control_socket_path)
+                    else:
+                        self._context.unlink_socket(control_socket_path)
+            raise
+        finally:
+            if client is not None:
+                with suppress(Exception):
+                    client.close()
+
+    async def async_stop(self, vm_info: VMInfo, *, timeout: float) -> None:
+        """Async version of :meth:`stop`."""
+        import asyncio
+
+        if (
+            vm_info.status == VMState.RUNNING
+            and vm_info.control_socket_path
+            and vm_info.control_socket_path.exists()
+        ):
+            try:
+                client = FirecrackerClient(vm_info.control_socket_path)
+                await asyncio.to_thread(client.send_ctrl_alt_del)
+                client.close()
+                if vm_info.pid:
+                    if self._context.async_wait_for_process:
+                        await self._context.async_wait_for_process(vm_info.pid, timeout)
+                    else:
+                        await asyncio.to_thread(
+                            self._context.wait_for_process, vm_info.pid, timeout
+                        )
+            except Exception:
+                logger.exception(
+                    "Failed to gracefully stop Firecracker VM %s via control socket",
+                    vm_info.vm_id,
+                )
+
+        if vm_info.pid and self._context.is_process_running(vm_info.pid):
+            if self._context.async_kill_process:
+                await self._context.async_kill_process(vm_info.pid)
+            else:
+                self._context.kill_process(vm_info.pid)
+
+        if vm_info.control_socket_path and vm_info.control_socket_path.exists():
+            if self._context.async_unlink_socket:
+                await self._context.async_unlink_socket(vm_info.control_socket_path)
+            else:
+                self._context.unlink_socket(vm_info.control_socket_path)
+
+    # ------------------------------------------------------------------
+    # Sync lifecycle methods (original)
+    # ------------------------------------------------------------------
 
     def stop(self, vm_info: VMInfo, *, timeout: float) -> None:
         """Stop a Firecracker VM."""

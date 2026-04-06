@@ -143,6 +143,29 @@ class FirecrackerClient:
 
         raise OperationTimeoutError("wait_for_socket", timeout)
 
+    async def async_wait_for_socket(self, timeout: float = 10.0) -> None:
+        """Async version of :meth:`wait_for_socket`.
+
+        Replaces blocking ``time.sleep`` with ``asyncio.sleep`` so other
+        coroutines can make progress while waiting.
+        """
+        import asyncio
+
+        start = time.time()
+        while time.time() - start < timeout:
+            if self.socket_path.exists():
+                try:
+                    await asyncio.to_thread(
+                        self._request, "GET", "/", expected_status=(200,)
+                    )
+                    logger.debug("Socket ready (async): %s", self.socket_path)
+                    return
+                except Exception:
+                    pass
+            await asyncio.sleep(0.1)
+
+        raise OperationTimeoutError("wait_for_socket", timeout)
+
     def set_boot_source(
         self,
         kernel_image_path: Path,

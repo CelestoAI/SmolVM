@@ -17,6 +17,9 @@
 Orchestrates VM lifecycle, networking, and state management across runtimes.
 """
 
+from __future__ import annotations
+
+import asyncio
 import logging
 import os
 import platform
@@ -217,7 +220,7 @@ class SmolVMManager:
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_id(cls, vm_id: str, **kwargs: Any) -> "SmolVMManager":
+    def from_id(cls, vm_id: str, **kwargs: Any) -> SmolVMManager:
         """Create an SDK instance and verify a VM exists.
 
         Useful for attaching to an existing VM from a different process.
@@ -236,7 +239,7 @@ class SmolVMManager:
         sdk.state.get_vm(vm_id)  # raises VMNotFoundError if absent
         return sdk
 
-    def __enter__(self) -> "SmolVMManager":
+    def __enter__(self) -> SmolVMManager:
         return self
 
     def __exit__(self, *args: object) -> None:
@@ -1769,3 +1772,502 @@ class SmolVMManager:
 
         except Exception as e:
             logger.warning("Error during cleanup for %s: %s", vm_id, e)
+
+    # ==================================================================
+    # Async lifecycle methods
+    #
+    # Each async method mirrors its sync counterpart, replacing blocking
+    # subprocess calls and time.sleep() with asyncio equivalents.
+    # ==================================================================
+
+    async def async_create(self, config: VMConfig) -> VMInfo:
+        """Async version of :meth:`create`."""
+        if config is None:
+            raise ValueError("config cannot be None")
+
+        backend = self._backend_for_config(config)
+        effective_config = config
+        if effective_config.backend != backend:
+            effective_config = effective_config.model_copy(update={"backend": backend})
+
+        effective_config = await self._async_materialize_rootfs(effective_config)
+
+        logger.info(
+            "Creating VM (async): %s (backend=%s, disk_mode=%s)",
+            effective_config.vm_id,
+            backend,
+            effective_config.disk_mode,
+        )
+
+        vm_info = self.state.create_vm(effective_config)
+
+        try:
+            ssh_host_port = self.state.reserve_ssh_port(effective_config.vm_id)
+
+            if backend == BACKEND_QEMU:
+                mac_seed = (ssh_host_port % 254) + 1
+                guest_mac = self.network.generate_mac(mac_seed)
+                network_config = NetworkConfig(
+                    guest_ip=QEMU_GUEST_IP,
+                    gateway_ip=QEMU_GATEWAY_IP,
+                    netmask=QEMU_NETMASK,
+                    tap_device="usernet",
+                    guest_mac=guest_mac,
+                    ssh_host_port=ssh_host_port,
+                )
+                vm_info = self.state.update_vm(effective_config.vm_id, network=network_config)
+                return vm_info
+
+            # Firecracker networking (async)
+            guest_ip = self.state.allocate_ip(effective_config.vm_id, "pending")
+            last_octet = int(guest_ip.split(".")[-1])
+            tap_name = f"tap{last_octet}"
+            self.state.update_ip_lease_tap(effective_config.vm_id, tap_name)
+
+            user = os.environ.get("USER", "root")
+            await self.network.async_create_tap(tap_name, user)
+            await self.network.async_configure_tap(tap_name, netmask="32")
+            await self.network.async_add_route(guest_ip, tap_name)
+            await self.network.async_setup_nat(tap_name)
+            await self.network.async_setup_ssh_port_forward(
+                vm_id=effective_config.vm_id,
+                guest_ip=guest_ip,
+                host_port=ssh_host_port,
+            )
+
+            guest_mac = self.network.generate_mac(last_octet)
+            network_config = NetworkConfig(
+                guest_ip=guest_ip,
+                gateway_ip=self.network.host_ip,
+                tap_device=tap_name,
+                guest_mac=guest_mac,
+                ssh_host_port=ssh_host_port,
+            )
+            vm_info = self.state.update_vm(effective_config.vm_id, network=network_config)
+            return vm_info
+
+        except Exception as e:
+            logger.error("Failed to create VM %s: %s", effective_config.vm_id, e)
+            await self._async_cleanup_resources(effective_config.vm_id)
+            with suppress(Exception):
+                self.state.delete_vm(effective_config.vm_id)
+            raise
+
+    async def async_start(
+        self,
+        vm_id: str,
+        boot_timeout: float = 30.0,
+    ) -> VMInfo:
+        """Async version of :meth:`start`."""
+        if not vm_id:
+            raise ValueError("vm_id cannot be empty")
+
+        logger.info("Starting VM (async): %s", vm_id)
+
+        vm_info = self.state.get_vm(vm_id)
+
+        if vm_info.status not in (VMState.CREATED, VMState.STOPPED):
+            raise SmolVMError(
+                f"Cannot start VM in state '{vm_info.status.value}'",
+                {"vm_id": vm_id, "current_status": vm_info.status.value},
+            )
+
+        if vm_info.network is None:
+            raise SmolVMError("VM has no network configuration", {"vm_id": vm_id})
+
+        backend = self._backend_for_vm(vm_info)
+        log_path = self.data_dir / f"{vm_id}.log"
+        adapter = self._runtime_adapter_for_backend(backend)
+        try:
+            launch = await adapter.async_start(
+                vm_info, log_path=log_path, boot_timeout=boot_timeout
+            )
+            vm_info = self.state.update_vm(
+                vm_id,
+                status=launch.status,
+                pid=launch.pid,
+                control_socket_path=launch.control_socket_path,
+            )
+            logger.info(
+                "VM started (async): %s (backend=%s, PID: %d)",
+                vm_id,
+                backend,
+                launch.pid,
+            )
+            return vm_info
+        except Exception as e:
+            logger.error("Failed to start VM %s: %s", vm_id, e)
+            self.state.update_vm(
+                vm_id,
+                status=VMState.ERROR,
+                clear_pid=True,
+                clear_socket_path=True,
+            )
+            self._close_runtime_log(vm_id, backend, vm_info.control_socket_path)
+            raise
+
+    async def async_stop(self, vm_id: str, timeout: float = 10.0) -> VMInfo:
+        """Async version of :meth:`stop`."""
+        if not vm_id:
+            raise ValueError("vm_id cannot be empty")
+
+        logger.info("Stopping VM (async): %s", vm_id)
+
+        vm_info = self.state.get_vm(vm_id)
+
+        if vm_info.status not in (VMState.RUNNING, VMState.PAUSED):
+            logger.warning("VM %s is not running (status: %s)", vm_id, vm_info.status)
+            return vm_info
+
+        backend = self._backend_for_vm(vm_info)
+        await self._runtime_adapter_for_backend(backend).async_stop(
+            vm_info, timeout=timeout
+        )
+        self._close_runtime_log(vm_id, backend, vm_info.control_socket_path)
+        vm_info = self.state.update_vm(
+            vm_id,
+            status=VMState.STOPPED,
+            clear_pid=True,
+            clear_socket_path=True,
+        )
+        logger.info("VM stopped (async): %s (backend=%s)", vm_id, backend)
+        return vm_info
+
+    async def async_delete(self, vm_id: str) -> None:
+        """Async version of :meth:`delete`."""
+        if not vm_id:
+            raise ValueError("vm_id cannot be empty")
+
+        logger.info("Deleting VM (async): %s", vm_id)
+
+        try:
+            vm_info = self.state.get_vm(vm_id)
+        except VMNotFoundError:
+            await self._async_cleanup_resources(vm_id)
+            raise
+
+        if vm_info.status in (VMState.RUNNING, VMState.PAUSED):
+            await self.async_stop(vm_id)
+
+        await self._async_cleanup_resources(vm_id)
+        self.state.delete_vm(vm_id)
+        logger.info("VM deleted (async): %s", vm_id)
+
+    # ------------------------------------------------------------------
+    # Async private helpers
+    # ------------------------------------------------------------------
+
+    async def _async_materialize_rootfs(self, config: VMConfig) -> VMConfig:
+        """Async version of :meth:`_materialize_rootfs`."""
+        if config.disk_mode == "shared":
+            return config
+
+        backend = self._backend_for_config(config)
+        instance_rootfs = self._instance_disk_path(config.vm_id, backend)
+        if not instance_rootfs.exists():
+            logger.info(
+                "Creating isolated disk (async) for VM %s from %s -> %s",
+                config.vm_id,
+                config.rootfs_path,
+                instance_rootfs,
+            )
+            if backend == BACKEND_QEMU:
+                await self._async_create_qemu_overlay_disk(
+                    config.rootfs_path, instance_rootfs
+                )
+            else:
+                await self._async_copy_with_reflink(
+                    config.rootfs_path, instance_rootfs
+                )
+
+        return config.model_copy(update={"rootfs_path": instance_rootfs})
+
+    async def _async_create_qemu_overlay_disk(
+        self, base_path: Path, overlay_path: Path
+    ) -> None:
+        """Async version of :meth:`_create_qemu_overlay_disk`."""
+        from smolvm.utils import async_run_command
+
+        qemu_img = self._find_qemu_img_binary()
+        if qemu_img is None:
+            raise SmolVMError("QEMU backend requires qemu-img to create overlay disks")
+
+        overlay_path.parent.mkdir(parents=True, exist_ok=True)
+        base_format = "qcow2" if base_path.suffix == ".qcow2" else "raw"
+        await async_run_command(
+            [
+                str(qemu_img), "create", "-f", "qcow2",
+                "-b", str(base_path.resolve()), "-F", base_format,
+                str(overlay_path),
+            ],
+            use_sudo=False,
+        )
+
+    async def _async_copy_with_reflink(
+        self, source_path: Path, target_path: Path
+    ) -> None:
+        """Async version of :meth:`_copy_with_reflink`."""
+        import asyncio
+        import shutil
+
+        from smolvm.utils import async_run_command
+
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            await async_run_command(
+                ["cp", "--reflink=auto", str(source_path), str(target_path)],
+                use_sudo=False,
+            )
+        except SmolVMError:
+            await asyncio.to_thread(shutil.copy2, source_path, target_path)
+
+    async def _async_unlink_socket(self, socket_path: Path) -> None:
+        """Async version of :meth:`_unlink_socket`."""
+        from smolvm.utils import async_run_command
+
+        try:
+            socket_path.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            result = await async_run_command(
+                ["rm", "-f", str(socket_path)],
+                check=False,
+            )
+            if result.returncode != 0:
+                raise SmolVMError(
+                    f"Failed to remove stale socket: {socket_path}"
+                ) from None
+
+    async def _async_kill_process(self, pid: int) -> None:
+        """Async version of :meth:`_kill_process`."""
+        from smolvm.utils import async_run_command
+
+        try:
+            os.kill(pid, signal.SIGKILL)
+            logger.debug("Killed process: %d", pid)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            try:
+                await async_run_command(
+                    ["kill", "-9", str(pid)], check=False
+                )
+            except Exception:
+                logger.warning("Failed to kill process %d", pid)
+
+    async def _async_wait_for_process(self, pid: int, timeout: float) -> None:
+        """Async version of :meth:`_wait_for_process`."""
+        import asyncio
+
+        start = time.time()
+        while time.time() - start < timeout:
+            if not self._is_process_running(pid):
+                return
+            await asyncio.sleep(0.1)
+
+    async def _async_start_qemu(
+        self,
+        vm_info: VMInfo,
+        log_path: Path,
+        *,
+        control_socket_path: Path | None = None,
+        start_paused: bool = False,
+        root_node_name: str = QEMU_ROOT_NODE_NAME,
+    ) -> asyncio.subprocess.Process:
+        """Async version of :meth:`_start_qemu`.
+
+        Reuses the sync method for command building and log file setup,
+        then launches via asyncio.create_subprocess_exec.
+        """
+        import asyncio
+
+        # Build command using the same logic as _start_qemu (up to the Popen call)
+        # We call the sync _start_qemu's internal logic by extracting the process
+        # launching step. Since _start_qemu does both cmd building + Popen,
+        # we replicate the cmd building here.
+        qemu_bin = self._find_qemu_binary()
+        if qemu_bin is None:
+            raise SmolVMError(
+                "QEMU backend selected but no qemu-system binary was found. "
+                "Install with: brew install qemu"
+            )
+
+        if vm_info.network is None or vm_info.network.ssh_host_port is None:
+            raise SmolVMError("QEMU backend requires a reserved ssh_host_port")
+
+        ssh_port = vm_info.network.ssh_host_port
+        guest_mac = vm_info.network.guest_mac.lower()
+        boot_args = self._resolve_boot_args(vm_info)
+
+        qemu_name = qemu_bin.name
+        system = platform.system()
+
+        disk_format = "qcow2" if vm_info.config.rootfs_path.suffix == ".qcow2" else "raw"
+        root_drive_id = f"{root_node_name}-drive"
+        drive_arg = (
+            f"file={vm_info.config.rootfs_path},if=none,format={disk_format},"
+            f"id={root_drive_id},node-name={root_node_name}"
+        )
+        hostfwd_rules = [f"hostfwd=tcp:127.0.0.1:{ssh_port}-:22"]
+        for forward in vm_info.config.port_forwards:
+            hostfwd_rules.append(
+                f"hostfwd=tcp:{forward.host_address}:{forward.host_port}-:{forward.guest_port}"
+            )
+        netdev_arg = f"user,id=net0,{','.join(hostfwd_rules)}"
+
+        cmd: list[str] = [
+            str(qemu_bin), "-smp", str(vm_info.config.vcpu_count),
+            "-m", str(vm_info.config.mem_size_mib),
+            "-kernel", str(vm_info.config.kernel_path),
+            "-append", boot_args,
+            "-drive", drive_arg,
+            "-netdev", netdev_arg,
+            "-nographic", "-no-reboot",
+        ]
+        if vm_info.config.initrd_path is not None:
+            cmd.extend(["-initrd", str(vm_info.config.initrd_path)])
+
+        extra_drive_ids: list[str] = []
+        for index, drive_path in enumerate(vm_info.config.extra_drives):
+            drive_id = f"extra{index}-drive"
+            node_name = f"extra{index}"
+            extra_drive_ids.append(drive_id)
+            drive_suffix = drive_path.suffix.lower()
+            drive_format = "qcow2" if drive_suffix == ".qcow2" else "raw"
+            readonly = ["readonly=on"] if drive_suffix == ".iso" else []
+            extra_drive_arg = ",".join(
+                [f"file={drive_path}", "if=none", f"format={drive_format}",
+                 *readonly, f"id={drive_id}", f"node-name={node_name}"]
+            )
+            cmd.extend(["-drive", extra_drive_arg])
+
+        if control_socket_path is not None:
+            cmd.extend(["-qmp", f"unix:{control_socket_path},server=on,wait=off"])
+        if start_paused:
+            cmd.append("-S")
+
+        if "aarch64" in qemu_name:
+            machine = "virt,accel=hvf" if system == "Darwin" else "virt"
+            cpu = "host" if system == "Darwin" else "cortex-a72"
+            cmd.extend(["-machine", machine, "-cpu", cpu,
+                        "-device", f"virtio-blk-device,drive={root_drive_id}",
+                        "-device", f"virtio-net-device,netdev=net0,mac={guest_mac}"])
+            for drive_id in extra_drive_ids:
+                cmd.extend(["-device", f"virtio-blk-device,drive={drive_id}"])
+        else:
+            machine = "q35,accel=hvf" if system == "Darwin" else "q35"
+            cpu = "host" if system == "Darwin" else "max"
+            cmd.extend(["-machine", machine, "-cpu", cpu,
+                        "-device", f"virtio-blk-pci,drive={root_drive_id}",
+                        "-device", f"virtio-net-pci,netdev=net0,mac={guest_mac}"])
+            for drive_id in extra_drive_ids:
+                cmd.extend(["-device", f"virtio-blk-pci,drive={drive_id}"])
+
+        log_file = open(log_path, "w")  # noqa: SIM115
+        key = f"qemu:{vm_info.vm_id}"
+        self._log_files[key] = log_file
+
+        logger.info("Starting QEMU (async): %s", " ".join(cmd))
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        return process
+
+    async def _async_start_firecracker(
+        self,
+        control_socket_path: Path,
+        log_path: Path,
+    ) -> asyncio.subprocess.Process:
+        """Async version of :meth:`_start_firecracker`."""
+        import asyncio
+
+        binary_path = self._find_firecracker_binary()
+        if binary_path is None:
+            raise SmolVMError("Firecracker binary not found")
+
+        vm_id = control_socket_path.stem.replace("fc-", "")
+        log_file = open(log_path, "w")  # noqa: SIM115
+        key = f"firecracker:{vm_id}"
+        self._log_files[key] = log_file
+
+        cmd = [str(binary_path), "--api-sock", str(control_socket_path)]
+        logger.info("Starting Firecracker (async): %s", " ".join(cmd))
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        return process
+
+    async def _async_cleanup_resources(self, vm_id: str) -> None:
+        """Async version of :meth:`_cleanup_resources`."""
+        try:
+            vm_info = None
+            with suppress(VMNotFoundError):
+                vm_info = self.state.get_vm(vm_id)
+
+            backend = self.backend
+            if vm_info is not None:
+                with suppress(SmolVMError):
+                    backend = self._backend_for_vm(vm_info)
+
+            lease = self.state.get_ip_lease(vm_id)
+
+            ssh_host_port: int | None = None
+            guest_ip: str | None = lease[0] if lease else None
+            if vm_info and vm_info.network:
+                ssh_host_port = vm_info.network.ssh_host_port
+                guest_ip = vm_info.network.guest_ip
+            else:
+                ssh_host_port = self.state.get_ssh_port(vm_id)
+
+            if backend == BACKEND_FIRECRACKER and ssh_host_port is not None and guest_ip:
+                with suppress(Exception):
+                    await self.network.async_cleanup_ssh_port_forward(
+                        vm_id=vm_id, guest_ip=guest_ip, host_port=ssh_host_port,
+                    )
+
+            with suppress(Exception):
+                await self.network.async_cleanup_all_local_port_forwards(vm_id)
+
+            if lease:
+                _, tap_device = lease
+
+                if backend == BACKEND_FIRECRACKER:
+                    with suppress(Exception):
+                        await self.network.async_remove_egress_rules(tap_device)
+                    await self.network.async_cleanup_nat_rules(tap_device)
+                    await self.network.async_cleanup_tap(tap_device)
+
+                self.state.release_ip(vm_id)
+
+            if ssh_host_port is not None:
+                self.state.release_ssh_port(vm_id)
+
+            for socket_path in (
+                self.socket_dir / f"fc-{vm_id}.sock",
+                self.socket_dir / f"qmp-{vm_id}.sock",
+            ):
+                if socket_path.exists():
+                    await self._async_unlink_socket(socket_path)
+
+            self._close_runtime_log(vm_id, BACKEND_FIRECRACKER)
+            self._close_runtime_log(vm_id, BACKEND_QEMU)
+
+            managed_disk = self._managed_disk_for_vm(vm_info)
+            if managed_disk and managed_disk.exists():
+                if vm_info.config.retain_disk_on_delete:
+                    logger.info("Retaining isolated disk for VM %s at %s", vm_id, managed_disk)
+                else:
+                    with suppress(Exception):
+                        managed_disk.unlink()
+                        logger.info("Removed isolated disk for VM %s: %s", vm_id, managed_disk)
+
+        except Exception as e:
+            logger.warning("Error during async cleanup for %s: %s", vm_id, e)

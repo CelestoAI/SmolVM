@@ -1140,6 +1140,222 @@ class SmolVM:
     # Context manager
     # ------------------------------------------------------------------
 
+    # ==================================================================
+    # Async lifecycle methods
+    # ==================================================================
+
+    async def async_start(self, boot_timeout: float = 30.0) -> SmolVM:
+        """Async version of :meth:`start`."""
+        import asyncio
+
+        if self._info.status == VMState.RUNNING:
+            return self
+        if self._info.status == VMState.PAUSED:
+            return self.resume()
+
+        self._info = await self._sdk.async_start(self._vm_id, boot_timeout=boot_timeout)
+        self._reset_runtime_state(close_ssh=False)
+
+        env_vars = self._info.config.env_vars
+        if env_vars:
+            if not self.can_run_commands():
+                raise SmolVMError(
+                    "Cannot inject environment variables: VM image does not support SSH.",
+                    {"vm_id": self._vm_id},
+                )
+            await self.async_wait_for_ssh(timeout=boot_timeout)
+            if self._ssh is None:
+                self._ssh = SSHClient(
+                    host=self._info.network.guest_ip,
+                    user=self._ssh_user,
+                    key_path=self._ssh_key_path,
+                )
+                self._ssh_ready = True
+            await asyncio.to_thread(inject_env_vars, self._ssh, env_vars)
+
+        return self
+
+    async def async_stop(self, timeout: float = 3.0) -> SmolVM:
+        """Async version of :meth:`stop`."""
+        self._cleanup_local_forwards()
+        self._info = await self._sdk.async_stop(self._vm_id, timeout=timeout)
+        self._reset_runtime_state()
+        return self
+
+    async def async_delete(self) -> None:
+        """Async version of :meth:`delete`."""
+        self._cleanup_local_forwards()
+        await self._sdk.async_delete(self._vm_id)
+        self._reset_runtime_state()
+
+    async def async_run(
+        self,
+        command: str,
+        timeout: int = 30,
+        shell: Literal["login", "raw"] = "login",
+    ) -> CommandResult:
+        """Async version of :meth:`run`.
+
+        Paramiko is synchronous, so the SSH call is wrapped in
+        ``asyncio.to_thread``.
+        """
+        import asyncio
+
+        self._refresh_info()
+
+        if self._info.status != VMState.RUNNING:
+            raise SmolVMError(
+                f"Cannot run command: VM is {self._info.status.value}",
+                {"vm_id": self._vm_id},
+            )
+        if not self.can_run_commands():
+            raise CommandExecutionUnavailableError(self._vm_id)
+
+        self._ensure_ssh()
+        assert self._ssh is not None
+        return await asyncio.to_thread(
+            self._ssh.run, command, timeout=timeout, login_shell=(shell == "login")
+        )
+
+    async def async_wait_for_ssh(self, timeout: float = 60.0) -> SmolVM:
+        """Async version of :meth:`wait_for_ssh`.
+
+        Uses ``asyncio.sleep`` for polling instead of ``time.sleep``.
+        """
+        import asyncio
+
+        self._refresh_info()
+        if self._ssh_ready:
+            return self
+
+        network = self._info.network
+        if network is None:
+            raise SmolVMError("VM has no network", {"vm_id": self._vm_id})
+
+        primary_key = self._ssh_key_path or self._default_ssh_key_path
+
+        ordered_endpoints: list[tuple[str, int]] = []
+        if network.ssh_host_port is not None:
+            ordered_endpoints.append(("127.0.0.1", network.ssh_host_port))
+        if network.guest_ip:
+            ordered_endpoints.append((network.guest_ip, 22))
+
+        attempts: list[tuple[str, int, str | None]] = []
+        for host, port in ordered_endpoints:
+            attempts.append((host, port, primary_key))
+
+        if primary_key is None:
+            from smolvm.utils import ensure_ssh_key
+
+            try:
+                default_key, _ = ensure_ssh_key()
+                default_key_str = str(default_key)
+                for host, port in ordered_endpoints:
+                    attempt = (host, port, default_key_str)
+                    if attempt in attempts:
+                        continue
+                    attempts.append(attempt)
+            except Exception:
+                pass
+
+        deadline = time.monotonic() + timeout
+        errors: list[str] = []
+
+        for host, port, key_path in attempts:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            label = f"wait_for_ssh({host}:{port})"
+            try:
+                # Poll SSH with async sleep
+                start_time = time.monotonic()
+                ssh_timeout = min(remaining, timeout / len(attempts))
+                while time.monotonic() - start_time < ssh_timeout:
+                    try:
+                        ssh = await asyncio.to_thread(
+                            SSHClient,
+                            host=host,
+                            port=port,
+                            user=self._ssh_user,
+                            key_path=key_path,
+                            connect_timeout=2.0,
+                        )
+                        self._ssh = ssh
+                        self._ssh_ready = True
+                        logger.info("SSH ready: %s:%d", host, port)
+                        return self
+                    except Exception as e:
+                        last_error = str(e)
+                        await asyncio.sleep(0.5)
+
+                errors.append(
+                    f"{host}:{port} [key={key_path}] "
+                    f"(Operation '{label}: last error: {last_error}' timed out "
+                    f"after {time.monotonic() - start_time:.1f}s)"
+                )
+            except Exception as e:
+                errors.append(f"{host}:{port} [key={key_path}] ({e})")
+
+        raise OperationTimeoutError(
+            f"wait_for_ssh: {'; '.join(errors)}",
+            timeout,
+        )
+
+    @classmethod
+    async def async_create_many(
+        cls,
+        configs: list[VMConfig],
+        *,
+        boot_timeout: float = 60.0,
+        concurrency: int | None = None,
+        **kwargs: Any,
+    ) -> list[SmolVM]:
+        """Create and start multiple VMs concurrently.
+
+        Args:
+            configs: List of VM configurations.
+            boot_timeout: Maximum seconds to wait for each VM boot.
+            concurrency: Maximum parallel VM starts (default: all).
+            **kwargs: Passed to SmolVM constructor.
+
+        Returns:
+            List of started SmolVM instances.
+        """
+        import asyncio
+
+        sem = asyncio.Semaphore(concurrency or len(configs))
+
+        async def create_one(config: VMConfig) -> SmolVM:
+            async with sem:
+                vm = cls(config, **kwargs)
+                await vm.async_start(boot_timeout=boot_timeout)
+                return vm
+
+        return list(await asyncio.gather(*[create_one(c) for c in configs]))
+
+    async def __aenter__(self) -> SmolVM:
+        """Async context manager entry — auto-starts owned VMs."""
+        if self._owns_vm and self._info.status != VMState.RUNNING:
+            await self.async_start()
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        """Async context manager exit — stops and deletes owned VMs."""
+        try:
+            if self._info.status == VMState.RUNNING:
+                try:
+                    await self.async_stop()
+                except Exception:
+                    logger.warning("Failed to stop VM %s on async context exit", self._vm_id)
+
+            if self._owns_vm:
+                try:
+                    await self.async_delete()
+                except Exception:
+                    logger.warning("Failed to delete VM %s on async context exit", self._vm_id)
+        finally:
+            self.close()
+
     def __enter__(self) -> SmolVM:
         # Auto-start VMs created by this facade instance so callers can
         # immediately interact with the guest inside a context block.

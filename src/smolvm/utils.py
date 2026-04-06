@@ -111,6 +111,75 @@ def run_command(
         raise SmolVMError(f"Command timed out: {' '.join(full_cmd)}") from e
 
 
+async def async_run_command(
+    cmd: Sequence[str],
+    *,
+    check: bool = True,
+    use_sudo: bool = True,
+    timeout: int = 30,
+    input: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Async version of :func:`run_command`.
+
+    Uses ``asyncio.create_subprocess_exec`` for non-blocking execution.
+    Same sudo prefixing, error handling, and timeout behaviour.
+    """
+    import asyncio
+
+    if cmd is None or len(cmd) == 0:
+        raise ValueError("cmd cannot be empty")
+
+    full_cmd = list(cmd)
+    if use_sudo and os.geteuid() != 0:
+        full_cmd = ["sudo", "-n", *full_cmd]
+
+    logger.debug("Running async command: %s", " ".join(full_cmd))
+
+    start = time.monotonic()
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *full_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.PIPE if input else asyncio.subprocess.DEVNULL,
+        )
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            proc.communicate(input=input.encode() if input else None),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise SmolVMError(f"Command timed out: {' '.join(full_cmd)}") from None
+
+    elapsed_ms = (time.monotonic() - start) * 1000
+    base_cmd = cmd[0] if cmd else "unknown"
+    logger.info("CMD %-10s %.1fms (async)", base_cmd, elapsed_ms)
+
+    stdout_str = stdout_bytes.decode() if stdout_bytes else ""
+    stderr_str = stderr_bytes.decode() if stderr_bytes else ""
+    returncode = proc.returncode or 0
+
+    if check and returncode != 0:
+        if full_cmd[:2] == ["sudo", "-n"] and _is_sudo_non_interactive_error(stderr_str):
+            raise SmolVMError(
+                "Missing non-interactive sudo privileges for SmolVM runtime command.\n"
+                f"Command: {' '.join(full_cmd)}\n"
+                f"{RUNTIME_PRIVILEGE_SETUP_HINT}\n"
+                f"sudo stderr: {stderr_str.strip()}"
+            )
+        raise SmolVMError(
+            f"Command failed: {' '.join(full_cmd)}\nstderr: {stderr_str}"
+        )
+
+    return subprocess.CompletedProcess(
+        args=full_cmd,
+        returncode=returncode,
+        stdout=stdout_str,
+        stderr=stderr_str,
+    )
+
+
 def which(binary: str) -> Path | None:
     """Find a binary on the system PATH.
 

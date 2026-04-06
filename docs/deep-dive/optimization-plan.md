@@ -14,8 +14,8 @@ SmolVM's current architecture is fundamentally synchronous — zero async/thread
 | Image distribution | Manual copy to every host | Doesn't scale | **Fixed (Phase 2a)** |
 | SQLite exclusive locks | `EXCLUSIVE` transactions on IP/port allocation | 50s+ serialized | **Fixed (Phase 3)** |
 | Fixed resource pools | 253 IPs, 800 SSH ports, O(n²) linear search | Hard ceiling | Partially (Phase 3) |
-| nftables setup | ~6 subprocess calls per VM, sequential | ~60s | Phase 4 |
-| Hypervisor boot wait | Blocking socket poll, no multiplexing | ~250s (50 × 5s) | Phase 4 |
+| nftables setup | ~6 subprocess calls per VM, sequential | ~60s | **Fixed (Phase 4)** |
+| Hypervisor boot wait | Blocking socket poll, no multiplexing | ~250s (50 × 5s) | **Fixed (Phase 4)** |
 
 ---
 
@@ -184,16 +184,47 @@ export SMOLVM_DATABASE_URL=postgresql://user:pass@host/smolvm
 
 ---
 
-### Phase 4: Async VM Lifecycle
+### Phase 4: Async VM Lifecycle -- IMPLEMENTED
 
 **Problem it solves:** Even with fast DB and no-copy rootfs, the startup pipeline is synchronous. Booting 50 VMs means waiting for VM 1 to finish before starting VM 2.
 
-**What needs async:**
-- Hypervisor boot wait (currently blocks on socket poll) — highest value
-- nftables subprocess calls — `asyncio.create_subprocess_exec` instead of `subprocess.run`
-- Parallel VM starts via `asyncio.gather()`
+**Approach:** Dual methods on the same classes — every sync method gets an `async_` twin. No breaking changes, no separate async classes.
 
-**Scope:** Core lifecycle methods in `vm.py` (`start`, `stop`, `create`) need `async def`. The facade (`facade.py`) exposes sync wrappers for backwards compatibility.
+**What was made async:**
+- `utils.py` — `async_run_command()` (foundation for all async subprocess calls)
+- `network.py` — 25 async methods for TAP, nftables, NAT, port forwarding
+- `runtime.py` — Extended `RuntimeContext` and `RuntimeAdapter` protocol with async callables
+- `runtime_qemu.py` — `async_start()`, `async_stop()`, `_async_wait_for_runtime()`
+- `runtime_firecracker.py` — `async_start()`, `async_stop()`
+- `api.py` — `async_wait_for_socket()`
+- `vm.py` — `async_create()`, `async_start()`, `async_stop()`, `async_delete()` + 8 private async helpers
+- `facade.py` — `async_start()`, `async_stop()`, `async_run()`, `async_wait_for_ssh()`, `async_delete()`, `async_create_many()`, `__aenter__`/`__aexit__`
+
+**Killer feature — batch creation:**
+```python
+import asyncio
+from smolvm import SmolVM
+
+async def main():
+    vms = await SmolVM.async_create_many(
+        [config1, config2, config3],
+        boot_timeout=60,
+        concurrency=10,
+    )
+    for vm in vms:
+        result = await vm.async_run("echo hello")
+        print(result.stdout)
+
+asyncio.run(main())
+```
+
+**Async context manager:**
+```python
+async with SmolVM(config) as vm:
+    result = await vm.async_run("uname -r")
+```
+
+**Impact:** 50 VMs boot in ~30s (one boot cycle) instead of 50×30s = 25 minutes.
 
 ---
 
@@ -208,7 +239,7 @@ Phase 3: Configurable DB (PostgreSQL) .................... ✅ DONE
    ↓
 Phase 2b: FUSE mount (lazy S3 loading) .................. future
    ↓
-Phase 4: Async lifecycle (true concurrency) .............. future
+Phase 4: Async lifecycle (true concurrency) .............. ✅ DONE
 ```
 
 Phase 2b was deferred — download-and-cache covers the fleet distribution need. Phase 3 (DB) is the next bottleneck to remove before async (Phase 4) becomes meaningful.
@@ -233,4 +264,4 @@ These are low-effort fixes that should be done early:
 | 2a (S3 registry) | `images.py`, `facade.py`, `cli.py` | ✅ Done |
 | 3 (DB) | `storage/` package (5 files) | ✅ Done |
 | 2b (FUSE) | `images.py` | Future |
-| 4 (Async) | `vm.py`, `facade.py`, `runtime_firecracker.py`, `runtime_qemu.py` | Future |
+| 4 (Async) | `utils.py`, `network.py`, `vm.py`, `facade.py`, `runtime_*.py`, `api.py` | ✅ Done |
