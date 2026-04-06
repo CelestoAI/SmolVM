@@ -523,17 +523,19 @@ class TestEnsureS3Image:
     ) -> MagicMock:
         """Create a mock boto3 S3 client that serves a manifest + assets."""
         client = MagicMock()
+        manifest_json = json.dumps(manifest_data).encode()
 
-        def download_file(bucket: str, key: str, dest: str) -> None:
-            Path(dest).write_text(json.dumps(manifest_data))
+        def get_object(Bucket: str, Key: str) -> dict[str, object]:  # noqa: N803
+            filename = Key.rsplit("/", 1)[-1]
+            if filename == "smolvm-image.json":
+                content = manifest_json
+            else:
+                content = assets.get(filename, b"")
+            body = MagicMock()
+            body.iter_chunks.return_value = iter([content])
+            return {"Body": body}
 
-        def download_fileobj(bucket: str, key: str, fileobj: object) -> None:
-            filename = key.rsplit("/", 1)[-1]
-            content = assets.get(filename, b"")
-            fileobj.write(content)  # type: ignore[union-attr]
-
-        client.download_file.side_effect = download_file
-        client.download_fileobj.side_effect = download_fileobj
+        client.get_object.side_effect = get_object
         return client
 
     def test_downloads_and_caches(self, tmp_path: Path) -> None:
@@ -579,12 +581,13 @@ class TestEnsureS3Image:
             # First call downloads
             mgr.ensure_s3_image("s3://bucket/images/test/")
             # Reset mock call count
-            mock_s3.download_fileobj.reset_mock()
+            mock_s3.get_object.reset_mock()
             # Second call should use cache
             local, _ = mgr.ensure_s3_image("s3://bucket/images/test/")
 
         assert local.kernel_path.exists()
-        mock_s3.download_fileobj.assert_not_called()
+        # Only manifest was re-fetched; assets came from cache
+        assert mock_s3.get_object.call_count == 1
 
     def test_sha_mismatch_re_downloads(self, tmp_path: Path) -> None:
         """Corrupted cache should trigger re-download."""
@@ -609,11 +612,12 @@ class TestEnsureS3Image:
         local.kernel_path.write_bytes(b"corrupted")
 
         with patch("smolvm.images._require_boto3", return_value=mock_s3):
-            mock_s3.download_fileobj.reset_mock()
+            mock_s3.get_object.reset_mock()
             local2, _ = mgr.ensure_s3_image("s3://bucket/images/test/")
 
         # Kernel should have been re-downloaded (but rootfs cache hit)
-        assert mock_s3.download_fileobj.call_count == 1
+        # Manifest + 1 re-downloaded asset = 2 get_object calls
+        assert mock_s3.get_object.call_count == 2
         assert local2.kernel_path.read_bytes() == kernel_content
 
     def test_no_sha_still_caches(self, tmp_path: Path) -> None:
@@ -634,7 +638,7 @@ class TestEnsureS3Image:
     def test_manifest_download_failure_raises(self, tmp_path: Path) -> None:
         """Failed manifest download should raise ImageError."""
         mock_s3 = MagicMock()
-        mock_s3.download_file.side_effect = Exception("Access Denied")
+        mock_s3.get_object.side_effect = Exception("Access Denied")
 
         mgr = ImageManager(cache_dir=tmp_path / "images")
         with (
@@ -646,9 +650,9 @@ class TestEnsureS3Image:
     def test_invalid_manifest_json_raises(self, tmp_path: Path) -> None:
         """Malformed manifest JSON should raise ImageError."""
         mock_s3 = MagicMock()
-        mock_s3.download_file.side_effect = (
-            lambda bucket, key, dest: Path(dest).write_text("not-json{{{")
-        )
+        body = MagicMock()
+        body.iter_chunks.return_value = iter([b"not-json{{{"])
+        mock_s3.get_object.return_value = {"Body": body}
 
         mgr = ImageManager(cache_dir=tmp_path / "images")
         with (
@@ -716,8 +720,7 @@ class TestEnsureS3Image:
 
         # Second call — S3 is down, should use cached manifest + assets
         offline_s3 = MagicMock()
-        offline_s3.download_file.side_effect = Exception("Network unreachable")
-        offline_s3.download_fileobj.side_effect = Exception("Network unreachable")
+        offline_s3.get_object.side_effect = Exception("Network unreachable")
 
         with patch("smolvm.images._require_boto3", return_value=offline_s3):
             local, _ = mgr.ensure_s3_image("s3://bucket/images/test/")
@@ -750,6 +753,7 @@ class TestS3CredentialResolution:
         mock_boto3.client.assert_called_once_with(
             "s3",
             endpoint_url="https://custom.endpoint.example",
+            region_name="auto",
             aws_access_key_id="my-key",
             aws_secret_access_key="my-secret",
         )
@@ -774,6 +778,7 @@ class TestS3CredentialResolution:
         mock_boto3.client.assert_called_once_with(
             "s3",
             endpoint_url="https://r2.example.com",
+            region_name="auto",
         )
 
     def test_no_smolvm_vars_uses_plain_boto3(self) -> None:

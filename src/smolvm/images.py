@@ -257,6 +257,9 @@ def _require_boto3() -> S3Client:
     endpoint_url = os.environ.get(_S3_ENV_VARS["endpoint_url"])
     if endpoint_url:
         kwargs["endpoint_url"] = endpoint_url
+        # S3-compatible stores (R2, MinIO) typically need region="auto"
+        # to avoid boto3 sending the default AWS region which they reject.
+        kwargs["region_name"] = "auto"
 
     access_key = os.environ.get(_S3_ENV_VARS["access_key"])
     secret_key = os.environ.get(_S3_ENV_VARS["secret_key"])
@@ -643,16 +646,20 @@ class ImageManager:
         image_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            # Atomic download: temp file → rename
+            # Atomic download: temp file → rename.
+            # Uses get_object (single GetObject call) instead of
+            # download_file/download_fileobj which issue HeadObject
+            # first — some S3-compatible stores (e.g. R2) reject
+            # HeadObject on certain token types.
             tmp_fd, tmp_path_str = tempfile.mkstemp(
                 dir=image_dir, suffix=".tmp"
             )
             tmp_path = Path(tmp_path_str)
             try:
-                import os as _os
-
-                _os.close(tmp_fd)
-                s3.download_file(ref.bucket, manifest_key, str(tmp_path))
+                response = s3.get_object(Bucket=ref.bucket, Key=manifest_key)
+                with open(tmp_fd, "wb") as f:
+                    for chunk in response["Body"].iter_chunks():
+                        f.write(chunk)
                 tmp_path.rename(manifest_dest)
             finally:
                 tmp_path.unlink(missing_ok=True)
@@ -694,18 +701,17 @@ class ImageManager:
 
         try:
             sha256 = hashlib.sha256() if expected_sha256 else None
+            # Use get_object (single GetObject call) instead of
+            # download_fileobj which issues HeadObject first — some
+            # S3-compatible stores reject HeadObject.
+            response = s3.get_object(Bucket=bucket, Key=key)
             with open(tmp_fd, "wb") as f:
-                s3.download_fileobj(bucket, key, f)
-
-            # SHA-256 verification requires re-reading the file since
-            # download_fileobj doesn't support streaming callbacks easily.
-            if sha256 is not None and expected_sha256 is not None:
-                with open(tmp_path, "rb") as f:
-                    while True:
-                        chunk = f.read(_DOWNLOAD_CHUNK_SIZE)
-                        if not chunk:
-                            break
+                for chunk in response["Body"].iter_chunks(_DOWNLOAD_CHUNK_SIZE):
+                    f.write(chunk)
+                    if sha256 is not None:
                         sha256.update(chunk)
+
+            if sha256 is not None and expected_sha256 is not None:
                 actual_hash = sha256.hexdigest()
                 if actual_hash != expected_sha256:
                     raise ImageError(
