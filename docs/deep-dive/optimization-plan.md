@@ -137,7 +137,7 @@ Falls back to boto3's standard credential chain (`AWS_*` env vars, `~/.aws/crede
 
 **Architecture implemented:**
 
-```
+```text
 src/smolvm/storage/
   __init__.py          — factory (create_state_manager), exports, StateManager alias
   _protocol.py         — StateManagerProtocol (typing.Protocol, ~30 methods)

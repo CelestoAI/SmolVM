@@ -76,6 +76,9 @@ class SQLiteStateManager:
         self._init_schema()
         logger.info("SQLiteStateManager initialized with database: %s", db_path)
 
+    def close(self) -> None:
+        """No-op for SQLite (connections are per-operation)."""
+
     @contextmanager
     def _get_connection(self, exclusive: bool = False) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(
@@ -771,7 +774,8 @@ class SQLiteStateManager:
                 except ProcessLookupError:
                     stale_vms.append(row["id"])
                 except PermissionError:
-                    pass
+                    # Process exists but we can't signal it — still alive
+                    logger.debug("VM %s PID %d exists (PermissionError)", row["id"], pid)
 
             now = now_iso()
             for vm_id in stale_vms:

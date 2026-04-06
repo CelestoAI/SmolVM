@@ -80,7 +80,7 @@ def create_state_manager(
     """
     url = database_url or os.environ.get(DATABASE_URL_ENV)
 
-    if url and url.startswith("postgresql"):
+    if url and (url.startswith("postgresql") or url.startswith("postgres://")):
         from smolvm.storage._postgres import PostgresStateManager
 
         logger.info("Using PostgreSQL state backend: %s", _redact_url(url))

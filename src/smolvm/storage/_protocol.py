@@ -39,6 +39,14 @@ class StateManagerProtocol(Protocol):
     IP/port allocation, snapshots, and browser sessions.
     """
 
+    def close(self) -> None:
+        """Release backend resources (e.g. connection pool).
+
+        No-op for SQLite. Must be called for PostgreSQL to avoid
+        leaking pooled connections.
+        """
+        ...
+
     # ------------------------------------------------------------------
     # VM operations
     # ------------------------------------------------------------------
