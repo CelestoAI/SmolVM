@@ -44,7 +44,7 @@ from smolvm.dashboard.commands import CommandAction, parse_command
 from smolvm.dashboard.connection_manager import ConnectionManager
 from smolvm.dashboard.poller import poll_vm_state
 from smolvm.exceptions import VMNotFoundError
-from smolvm.storage import StateManager
+from smolvm.storage import StateManagerProtocol, create_state_manager
 from smolvm.types import VMInfo, VMState
 from smolvm.vm import SmolVMManager, resolve_data_dir
 
@@ -299,9 +299,9 @@ def _get_sdk(app: FastAPI) -> SmolVMManager:
     return sdk
 
 
-def _get_state_manager(app: FastAPI) -> StateManager:
+def _get_state_manager(app: FastAPI) -> StateManagerProtocol:
     """Get the StateManager instance from app.state, raising if not initialized."""
-    sm: StateManager | None = getattr(app.state, "state_manager", None)
+    sm: StateManagerProtocol | None = getattr(app.state, "state_manager", None)
     if sm is None:
         raise RuntimeError("StateManager not initialized.")
     return sm
@@ -346,7 +346,7 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
             allow_beta,
         )
 
-    app.state.state_manager = StateManager(db_path)
+    app.state.state_manager = create_state_manager(db_path=db_path)
     app.state.sdk = SmolVMManager(data_dir=data_dir)
     app.state.conn_manager = ConnectionManager()
 

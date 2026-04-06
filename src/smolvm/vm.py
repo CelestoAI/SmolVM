@@ -45,7 +45,7 @@ from smolvm.network import NetworkManager, check_network_prerequisites
 from smolvm.runtime import RuntimeContext, SnapshotCreateRequest, SnapshotRestoreRequest
 from smolvm.runtime_firecracker import FirecrackerRuntimeAdapter
 from smolvm.runtime_qemu import QEMU_ROOT_NODE_NAME, QemuRuntimeAdapter
-from smolvm.storage import StateManager
+from smolvm.storage import StateManagerProtocol, create_state_manager
 from smolvm.types import NetworkConfig, SnapshotInfo, VMConfig, VMInfo, VMState
 from smolvm.utils import RUNTIME_PRIVILEGE_SETUP_HINT, which
 
@@ -182,7 +182,7 @@ class SmolVMManager:
 
         # Initialize managers
         db_path = self.data_dir / "smolvm.db"
-        self.state = StateManager(db_path)
+        self.state: StateManagerProtocol = create_state_manager(db_path=db_path)
         if owner is not None:
             self._ensure_path_owner(db_path, owner.pw_uid, owner.pw_gid)
         self.network = NetworkManager()

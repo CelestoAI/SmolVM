@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from smolvm.dashboard.connection_manager import ConnectionManager
-    from smolvm.storage import StateManager
+    from smolvm.storage import StateManagerProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ DEFAULT_POLL_INTERVAL = 2.0
 
 
 async def poll_vm_state(
-    state_manager: StateManager,
+    state_manager: StateManagerProtocol,
     conn_manager: ConnectionManager,
     *,
     interval: float = DEFAULT_POLL_INTERVAL,

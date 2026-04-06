@@ -1217,7 +1217,7 @@ class TestCliBrowser:
 
     @patch("smolvm.browser.BrowserSession")
     @patch("smolvm.vm.resolve_data_dir", return_value=Path("/tmp"))
-    @patch("smolvm.storage.StateManager")
+    @patch("smolvm.storage.create_state_manager")
     def test_browser_stop_all(
         self,
         mock_state_manager_cls: MagicMock,
@@ -1250,7 +1250,7 @@ class TestCliBrowser:
         assert "Stopped 2 browser session(s)." in capsys.readouterr().out
 
     @patch("smolvm.vm.resolve_data_dir", return_value=Path("/tmp"))
-    @patch("smolvm.storage.StateManager")
+    @patch("smolvm.storage.create_state_manager")
     def test_browser_stop_all_empty(
         self,
         mock_state_manager_cls: MagicMock,
@@ -1269,7 +1269,7 @@ class TestCliBrowser:
         assert "No browser sessions found." in capsys.readouterr().out
 
     @patch("smolvm.vm.resolve_data_dir", return_value=Path("/tmp"))
-    @patch("smolvm.storage.StateManager")
+    @patch("smolvm.storage.create_state_manager")
     def test_browser_list_json(
         self,
         mock_state_manager_cls: MagicMock,

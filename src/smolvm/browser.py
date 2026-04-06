@@ -21,7 +21,7 @@ from smolvm.boot_profiles import (
 )
 from smolvm.exceptions import BrowserSessionNotFoundError, SmolVMError
 from smolvm.facade import SmolVM
-from smolvm.storage import StateManager
+from smolvm.storage import StateManagerProtocol, create_state_manager
 from smolvm.types import (
     BrowserSessionConfig,
     BrowserSessionInfo,
@@ -50,10 +50,10 @@ def _generate_browser_session_id() -> str:
     return f"browser-{uuid.uuid4().hex[:8]}"
 
 
-def _browser_state_manager(data_dir: Path | None = None) -> StateManager:
+def _browser_state_manager(data_dir: Path | None = None) -> StateManagerProtocol:
     """Return a state manager bound to the resolved SmolVM data dir."""
     resolved = resolve_data_dir(data_dir)
-    return StateManager(resolved / "smolvm.db")
+    return create_state_manager(db_path=resolved / "smolvm.db")
 
 
 def _stable_browser_vm_id(profile_id: str) -> str:

@@ -1727,7 +1727,7 @@ def _render_browser_list(rows: list[BrowserRow]) -> None:
 def _run_browser(args: argparse.Namespace) -> int:
     """Handle ``smolvm browser`` commands."""
     from smolvm.browser import BrowserSession
-    from smolvm.storage import StateManager
+    from smolvm.storage import create_state_manager
     from smolvm.types import BrowserSessionConfig
     from smolvm.vm import resolve_data_dir
 
@@ -1789,7 +1789,7 @@ def _run_browser(args: argparse.Namespace) -> int:
 
     if args.browser_action == "stop":
         if args.all:
-            state = StateManager(resolve_data_dir() / "smolvm.db")
+            state = create_state_manager(db_path=resolve_data_dir() / "smolvm.db")
             try:
                 sessions = state.list_browser_sessions()
             except Exception as exc:
@@ -1870,7 +1870,7 @@ def _run_browser(args: argparse.Namespace) -> int:
             if session is not None:
                 session.close()
 
-    state = StateManager(resolve_data_dir() / "smolvm.db")
+    state = create_state_manager(db_path=resolve_data_dir() / "smolvm.db")
     try:
         status = BrowserSessionState(args.status) if args.status else None
         sessions = state.list_browser_sessions(status=status)

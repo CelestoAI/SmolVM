@@ -8,13 +8,14 @@ SmolVM's current architecture is fundamentally synchronous — zero async/thread
 
 ## Bottleneck Summary (worst first)
 
-| Bottleneck | Root Cause | Impact at 50 VMs |
-|---|---|---|
-| Disk materialization | Full `shutil.copy2` / `qemu-img convert` per VM | 100–250s |
-| SQLite exclusive locks | `EXCLUSIVE` transactions on IP/port allocation | 50s+ serialized |
-| Fixed resource pools | 253 IPs, 800 SSH ports, O(n²) linear search | Hard ceiling |
-| nftables setup | ~6 subprocess calls per VM, sequential | ~60s |
-| Hypervisor boot wait | Blocking socket poll, no multiplexing | ~250s (50 × 5s) |
+| Bottleneck | Root Cause | Impact at 50 VMs | Status |
+|---|---|---|---|
+| Disk materialization | Full `shutil.copy2` / `qemu-img convert` per VM | 100–250s | **Fixed (Phase 1)** |
+| Image distribution | Manual copy to every host | Doesn't scale | **Fixed (Phase 2a)** |
+| SQLite exclusive locks | `EXCLUSIVE` transactions on IP/port allocation | 50s+ serialized | **Fixed (Phase 3)** |
+| Fixed resource pools | 253 IPs, 800 SSH ports, O(n²) linear search | Hard ceiling | Partially (Phase 3) |
+| nftables setup | ~6 subprocess calls per VM, sequential | ~60s | Phase 4 |
+| Hypervisor boot wait | Blocking socket poll, no multiplexing | ~250s (50 × 5s) | Phase 4 |
 
 ---
 
@@ -96,50 +97,90 @@ smolvm create --image s3://bucket/images/alpine-ssh/ --name my-vm --memory-mib 1
 vm = SmolVM(image="s3://bucket/images/alpine-ssh/")
 ```
 
-**S3 client:** `boto3` as optional dependency (`pip install 'smolvm[s3]'`). Auth uses boto3's standard credential chain (env vars, `~/.aws/credentials`, IAM roles).
+**S3 client:** `boto3` + `python-dotenv` as optional dependencies (`pip install 'smolvm[s3]'`). Credentials loaded automatically from `.env` file via python-dotenv.
+
+**S3-compatible store support (Cloudflare R2, MinIO, etc.):**
+```bash
+# .env file — no `export` needed, loaded automatically
+SMOLVM_S3_ENDPOINT_URL=https://<id>.r2.cloudflarestorage.com
+SMOLVM_S3_ACCESS_KEY_ID=<key>
+SMOLVM_S3_SECRET_ACCESS_KEY=<secret>
+```
+Falls back to boto3's standard credential chain (`AWS_*` env vars, `~/.aws/credentials`, IAM roles) when `SMOLVM_S3_*` vars are not set. Half-set credentials (key without secret) produce a clear error.
+
+**Cloud-init:** S3 images with an initrd (e.g., Ubuntu cloud images) automatically get a cloud-init seed ISO generated and attached for SSH key injection.
 
 **Files changed:**
-- `images.py` — `S3ImageRef`, `S3ImageManifest`, `parse_s3_image_uri()`, `ImageManager.ensure_s3_image()`, `_download_s3_file()`
-- `facade.py` — `_build_s3_image_config()`, `SmolVM.__init__()` gains `image` parameter
+- `images.py` — `S3ImageRef`, `S3ImageManifest`, `parse_s3_image_uri()`, `ImageManager.ensure_s3_image()`, `_download_s3_file()`, `_require_boto3()` with `SMOLVM_S3_*` env var + dotenv support
+- `facade.py` — `_build_s3_image_config()` with cloud-init seed ISO for cloud images, `SmolVM.__init__()` gains `image` parameter
 - `cli.py` — `--image` flag in mutually exclusive group with `--os`
-- `pyproject.toml` — `[project.optional-dependencies] s3 = ["boto3>=1.26"]`
+- `pyproject.toml` — `[project.optional-dependencies] s3 = ["boto3>=1.26", "python-dotenv>=1.0"]`
 - `__init__.py` — exports `S3ImageManifest`, `S3ImageRef`
 
 **Design decisions:**
 - `VMConfig` stays unchanged — S3 URIs resolve to local paths *before* config construction
 - Manifest-based discovery — single URI, self-describing, extensible
 - Download-and-cache first (not FUSE) — works on all platforms, no system dependencies
+- Uses `get_object` (not `download_file`) to avoid `HeadObject` calls that some S3-compatible stores reject
+- Offline cache fallback — fully cached images work when S3 is unreachable
+- Path traversal protection — manifest filenames validated via Pydantic (rejects `../`, absolute paths, collisions)
+
+**Verified end-to-end:** Ubuntu cloud image uploaded to Cloudflare R2, pulled via `smolvm create --image s3://...`, VM booted, SSH connected, commands executed.
 
 **Phase 2b (future):** FUSE mount (`mountpoint-s3`) for lazy block-level loading. The architecture leaves a clean seam — `ensure_s3_image()` returns local paths today, a future `mount_s3_image()` would return FUSE mount paths. The rest of the pipeline works unchanged.
 
 ---
 
-### Phase 3: Database — Configurable Backend (SQLite default, PostgreSQL for production)
+### Phase 3: Database — Configurable Backend (SQLite default, PostgreSQL for production) -- IMPLEMENTED
 
-**Current problem:** Every IP allocation, port reservation, and VM state write uses `isolation_level="EXCLUSIVE"` with a full table scan. One VM at a time can allocate resources.
+**Problem it solves:** Every IP allocation, port reservation, and VM state write uses `isolation_level="EXCLUSIVE"` with a full table scan. One VM at a time can allocate resources. PostgreSQL unlocks row-level locking and multi-host fleet deployments.
 
-Also, resource pools are hardcoded small:
-- 253 IPs (`172.16.0.2–254`) — uses a `/24` slice of a `/16` for no reason
-- 800 SSH ports (`2200–2999`)
-- O(n²) behavior: linear scan inside exclusive lock, repeated for every concurrent VM
+**Architecture implemented:**
 
-**Approach:** Support both SQLite and PostgreSQL via a `SMOLVM_DATABASE_URL` environment variable (DSN). SQLite remains the default for development and single-host use. For production fleet deployments, users set the DSN to PostgreSQL.
+```
+src/smolvm/storage/
+  __init__.py          — factory (create_state_manager), exports, StateManager alias
+  _protocol.py         — StateManagerProtocol (typing.Protocol, ~30 methods)
+  _base.py             — shared helpers, constants (IP_POOL_*, SSH_PORT_*)
+  _sqlite.py           — SQLiteStateManager (extracted from old storage.py)
+  _postgres.py         — PostgresStateManager (psycopg v3 + connection pool)
+```
 
-- **Default (no env var):** SQLite at `~/.local/state/smolvm/smolvm.db` — zero config, works today
-- **Production:** `SMOLVM_DATABASE_URL=postgresql://user:pass@host/smolvm` — unlocks MVCC, row-level locking, multi-host
+**Configuration:**
+```bash
+# SQLite (default — zero config)
+# Uses {data_dir}/smolvm.db automatically
 
-**What PostgreSQL unlocks:**
-- Multi-host deployments (shared DB across fleet nodes)
-- Connection pooling (`pgbouncer` or SQLAlchemy pool)
-- Proper IPAM via `SELECT ... FOR UPDATE SKIP LOCKED` — concurrent allocation without serialization
-- No artificial resource pool ceilings
+# PostgreSQL (production)
+export SMOLVM_DATABASE_URL=postgresql://user:pass@host/smolvm
+```
 
-**What it doesn't fix:** Async lifecycle. The DB serialization problem goes away, but disk I/O, hypervisor boot, and nftables subprocess calls are still synchronous — that's Phase 4.
+**Factory function:** `create_state_manager(db_path=..., database_url=...)` resolves the backend:
+1. Explicit `database_url` parameter
+2. `SMOLVM_DATABASE_URL` env var
+3. `db_path` parameter (SQLite)
 
-**Migration scope:**
-- `storage.py` — abstract behind a DB interface; add PostgreSQL driver (`psycopg2`/`asyncpg` or SQLAlchemy)
-- Schema migration tooling (Alembic or similar)
-- Connection string resolution from `SMOLVM_DATABASE_URL` env var
+**PostgreSQL specifics:**
+- **Driver:** `psycopg` v3 with `psycopg_pool` for connection pooling (min=2, max=10)
+- **IP/port allocation:** Uses `pg_advisory_xact_lock()` — transaction-scoped advisory locks that serialize only the scan-then-insert pattern without blocking reads
+- **Placeholders:** `%s` (vs SQLite `?`)
+- **Boolean:** Native `BOOLEAN` (vs SQLite `INTEGER`)
+- **Schema:** Same `CREATE TABLE IF NOT EXISTS` pattern, no migration framework
+
+**Backwards compatibility:** `from smolvm.storage import StateManager` still works (alias for `SQLiteStateManager`). All consumers migrated to `create_state_manager()` + `StateManagerProtocol`.
+
+**Files changed:**
+- `storage.py` → `storage/` package (5 new files)
+- `vm.py` — `create_state_manager(db_path=...)` + `StateManagerProtocol` type hint
+- `cli.py` — `create_state_manager()` replaces `StateManager()`
+- `browser.py` — same
+- `dashboard/server.py`, `dashboard/poller.py` — same
+- `pyproject.toml` — `postgres = ["psycopg[binary]>=3.1", "psycopg-pool>=3.1"]`
+
+**Impact:**
+- SQLite: zero behavioral change — all 523 tests pass
+- PostgreSQL: advisory locks replace exclusive file locks, connection pooling replaces per-operation connections
+- Multi-host fleet: shared PostgreSQL DB enables centralized state across nodes
 
 ---
 
@@ -159,16 +200,18 @@ Also, resource pools are hardcoded small:
 ## Recommended Order
 
 ```
-Phase 1: Overlayfs (local, no infra needed, biggest single win) (done)
+Phase 1: Block-level CoW rootfs .......................... ✅ DONE
    ↓
-Phase 2: S3 image registry (fleet distribution, builds on overlayfs) (done)
+Phase 2a: S3 image registry (download-and-cache) ........ ✅ DONE
    ↓
-Phase 3: Configurable DB — SQLite default, PostgreSQL via SMOLVM_DATABASE_URL
+Phase 3: Configurable DB (PostgreSQL) .................... ✅ DONE
    ↓
-Phase 4: Async lifecycle (enables true concurrency)
+Phase 2b: FUSE mount (lazy S3 loading) .................. future
+   ↓
+Phase 4: Async lifecycle (true concurrency) .............. future
 ```
 
-Phases 2–4 can be parallelized depending on team capacity.
+Phase 2b was deferred — download-and-cache covers the fleet distribution need. Phase 3 (DB) is the next bottleneck to remove before async (Phase 4) becomes meaningful.
 
 ---
 
@@ -184,9 +227,10 @@ These are low-effort fixes that should be done early:
 
 ## Key Files by Phase
 
-| Phase | Primary Files |
-|---|---|
-| 1 (Overlayfs) | `vm.py:370–400`, `runtime_firecracker.py:63–71`, `runtime_qemu.py` |
-| 2 (S3) | `types.py:91–212`, `vm.py:338–400`, `images.py` |
-| 3 (DB) | `storage.py` (full file) |
-| 4 (Async) | `vm.py:724–790`, `facade.py`, `runtime_firecracker.py`, `runtime_qemu.py` |
+| Phase | Primary Files | Status |
+|---|---|---|
+| 1 (CoW rootfs) | `vm.py`, `runtime_qemu.py` | ✅ Done |
+| 2a (S3 registry) | `images.py`, `facade.py`, `cli.py` | ✅ Done |
+| 3 (DB) | `storage/` package (5 files) | ✅ Done |
+| 2b (FUSE) | `images.py` | Future |
+| 4 (Async) | `vm.py`, `facade.py`, `runtime_firecracker.py`, `runtime_qemu.py` | Future |
