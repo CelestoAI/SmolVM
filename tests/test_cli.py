@@ -18,7 +18,7 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -363,6 +363,7 @@ class TestCliCreate:
             mem_size_mib=None,
             disk_size_mib=None,
             ssh_key_path=None,
+            on_download=ANY,
         )
         mock_vm_cls.assert_called_once_with(config, ssh_key_path="/tmp/id_ed25519")
         vm.start.assert_called_once_with(boot_timeout=30.0)
@@ -422,6 +423,7 @@ class TestCliCreate:
             mem_size_mib=1024,
             disk_size_mib=2048,
             ssh_key_path=None,
+            on_download=ANY,
         )
         mock_vm_cls.assert_called_once_with(config, ssh_key_path="/tmp/id_ed25519")
         vm.start.assert_called_once_with(boot_timeout=45.0)
@@ -468,6 +470,7 @@ class TestCliCreate:
             mem_size_mib=None,
             disk_size_mib=None,
             ssh_key_path=None,
+            on_download=ANY,
         )
         mock_vm_cls.assert_called_once_with(config, ssh_key_path="/tmp/id_ed25519")
         vm.start.assert_called_once_with(boot_timeout=30.0)

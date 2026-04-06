@@ -27,6 +27,14 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, TypedDict
 
 from rich.panel import Panel
+from rich.progress import (
+    BarColumn,
+    DownloadColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TransferSpeedColumn,
+)
 from rich.table import Table
 from rich.text import Text
 
@@ -976,6 +984,60 @@ def _render_create_result(data: CreatePayload) -> None:
     console.print(f"Next: [bold]{next_step['ssh_command']}[/bold]")
 
 
+def _build_and_boot_with_progress(
+    *,
+    console: object,
+    build_fn: object,
+    boot_timeout: int,
+) -> object:
+    """Build a VM config and boot it, showing a Rich progress bar.
+
+    Displays per-file download progress when the OS image is not cached,
+    then switches to a spinner while the VM boots and SSH becomes available.
+    Returns a started :class:`~smolvm.facade.SmolVM` instance.
+    """
+    from collections.abc import Callable
+    from typing import Any
+
+    from rich.console import Console
+
+    from smolvm.facade import SmolVM
+
+    _console: Console = console  # type: ignore[assignment]
+    _build_fn: Callable[..., Any] = build_fn  # type: ignore[assignment]
+
+    download_tasks: dict[str, Any] = {}
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        DownloadColumn(),
+        TransferSpeedColumn(),
+        console=_console,
+        transient=True,
+    ) as progress:
+
+        def on_download(label: str, chunk: int, total: int | None) -> None:
+            if label not in download_tasks:
+                download_tasks[label] = progress.add_task(
+                    f"Downloading {label}", total=total
+                )
+            progress.update(download_tasks[label], advance=chunk)
+
+        config, ssh_key_path = _build_fn(on_download)
+
+        boot_task = progress.add_task(
+            "Booting computer and waiting for SSH...", total=None
+        )
+        vm = SmolVM(config, ssh_key_path=ssh_key_path)
+        vm.start(boot_timeout=boot_timeout)
+        vm.wait_for_ssh(timeout=boot_timeout)
+        progress.remove_task(boot_task)
+
+    return vm
+
+
 def _run_create(args: argparse.Namespace) -> int:
     """Handle ``smolvm create``."""
     from smolvm.backends import resolve_backend
@@ -1002,18 +1064,18 @@ def _run_create(args: argparse.Namespace) -> int:
             # S3 image path
             if not args.json:
                 console = console_stdout()
-                with console.status("Pulling image from S3...", spinner="dots") as status:
-                    config, ssh_key_path = _build_s3_image_config(
+                vm = _build_and_boot_with_progress(
+                    console=console,
+                    build_fn=lambda on_download: _build_s3_image_config(
                         image=image_uri,
                         vm_name=args.name,
                         backend=args.backend,
                         mem_size_mib=args.memory_mib,
                         ssh_key_path=None,
-                    )
-                    status.update("Booting computer and waiting for SSH...")
-                    vm = SmolVM(config, ssh_key_path=ssh_key_path)
-                    vm.start(boot_timeout=args.boot_timeout)
-                    vm.wait_for_ssh(timeout=args.boot_timeout)
+                        on_download=on_download,
+                    ),
+                    boot_timeout=args.boot_timeout,
+                )
             else:
                 config, ssh_key_path = _build_s3_image_config(
                     image=image_uri,
@@ -1029,20 +1091,19 @@ def _run_create(args: argparse.Namespace) -> int:
             # Standard auto-config path
             if not args.json:
                 console = console_stdout()
-                progress_message = _create_progress_message(resolved_backend, resolved_guest_os)
-                with console.status(progress_message, spinner="dots") as status:
-                    config, ssh_key_path = _build_auto_config(
+                vm = _build_and_boot_with_progress(
+                    console=console,
+                    build_fn=lambda on_download: _build_auto_config(
                         vm_name=args.name,
                         os=args.os,
                         backend=args.backend,
                         mem_size_mib=args.memory_mib,
                         disk_size_mib=args.disk_size_mib,
                         ssh_key_path=None,
-                    )
-                    status.update("Booting computer and waiting for SSH...")
-                    vm = SmolVM(config, ssh_key_path=ssh_key_path)
-                    vm.start(boot_timeout=args.boot_timeout)
-                    vm.wait_for_ssh(timeout=args.boot_timeout)
+                        on_download=on_download,
+                    ),
+                    boot_timeout=args.boot_timeout,
+                )
             else:
                 config, ssh_key_path = _build_auto_config(
                     vm_name=args.name,

@@ -34,6 +34,7 @@ import socket
 import subprocess
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -183,6 +184,7 @@ def _build_s3_image_config(
     backend: str | None = None,
     mem_size_mib: int | None = None,
     ssh_key_path: str | None = None,
+    on_download: Callable[[str, int, int | None], None] | None = None,
 ) -> tuple[VMConfig, str | None]:
     """Build a VMConfig from an S3-hosted image.
 
@@ -193,7 +195,7 @@ def _build_s3_image_config(
     resolved_ssh_key_path: str | None = ssh_key_path
 
     image_manager = ImageManager()
-    local_image, manifest = image_manager.ensure_s3_image(image)
+    local_image, manifest = image_manager.ensure_s3_image(image, on_download=on_download)
 
     # Resolve SSH key for auto-config
     if resolved_ssh_key_path is None:
@@ -272,6 +274,7 @@ def _build_auto_config(
     mem_size_mib: int | None = None,
     disk_size_mib: int | None = None,
     ssh_key_path: str | None = None,
+    on_download: Callable[[str, int, int | None], None] | None = None,
 ) -> tuple[VMConfig, str | None]:
     """Build the default SSH-ready VM config used by zero-config flows."""
     from smolvm.build import ImageBuilder
@@ -300,7 +303,7 @@ def _build_auto_config(
             )
         image_name = _qemu_auto_config_image_name()
         image_manager = ImageManager(registry=_QEMU_UBUNTU_AUTO_IMAGES)
-        image = image_manager.ensure_image(image_name)
+        image = image_manager.ensure_image(image_name, on_download=on_download)
         if image.initrd_path is None:
             raise SmolVMError(
                 "Prebuilt QEMU auto-config image is missing an initrd",

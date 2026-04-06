@@ -25,6 +25,7 @@ import hashlib
 import json
 import logging
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
@@ -372,7 +373,12 @@ class ImageManager:
 
         return kernel.is_file() and rootfs.is_file() and (initrd is None or initrd.is_file())
 
-    def ensure_image(self, name: str) -> LocalImage:
+    def ensure_image(
+        self,
+        name: str,
+        *,
+        on_download: Callable[[str, int, int | None], None] | None = None,
+    ) -> LocalImage:
         """Ensure an image is available locally, downloading if necessary.
 
         If the image is already cached and passes SHA-256 verification,
@@ -380,6 +386,9 @@ class ImageManager:
 
         Args:
             name: Image name from the registry.
+            on_download: Optional callback invoked on each downloaded chunk as
+                ``(label, bytes_in_chunk, total_bytes_or_none)``.  ``label``
+                is one of ``"kernel"``, ``"initrd"``, or ``"rootfs"``.
 
         Returns:
             LocalImage with paths to kernel and rootfs.
@@ -422,15 +431,30 @@ class ImageManager:
         # Download
         image_dir.mkdir(parents=True, exist_ok=True)
 
+        def _make_cb(label: str) -> Callable[[int, int | None], None] | None:
+            if on_download is None:
+                return None
+            _cb = on_download
+            return lambda chunk, total: _cb(label, chunk, total)
+
         logger.info("Downloading image '%s' kernel...", name)
-        self._download_file(source.kernel_url, kernel_path, source.kernel_sha256)
+        self._download_file(
+            source.kernel_url, kernel_path, source.kernel_sha256,
+            progress_callback=_make_cb("kernel"),
+        )
 
         if initrd_path is not None and source.initrd_url is not None:
             logger.info("Downloading image '%s' initrd...", name)
-            self._download_file(source.initrd_url, initrd_path, source.initrd_sha256)
+            self._download_file(
+                source.initrd_url, initrd_path, source.initrd_sha256,
+                progress_callback=_make_cb("initrd"),
+            )
 
         logger.info("Downloading image '%s' rootfs...", name)
-        self._download_file(source.rootfs_url, rootfs_path, source.rootfs_sha256)
+        self._download_file(
+            source.rootfs_url, rootfs_path, source.rootfs_sha256,
+            progress_callback=_make_cb("rootfs"),
+        )
 
         logger.info("Image '%s' ready at: %s", name, image_dir)
         return LocalImage(
@@ -482,7 +506,14 @@ class ImageManager:
             resolved_paths["rootfs"],
         )
 
-    def _download_file(self, url: str, dest: Path, expected_sha256: str | None = None) -> None:
+    def _download_file(
+        self,
+        url: str,
+        dest: Path,
+        expected_sha256: str | None = None,
+        *,
+        progress_callback: Callable[[int, int | None], None] | None = None,
+    ) -> None:
         """Download a file with atomic write and optional SHA-256 verification.
 
         The file is written to a temporary location. If a checksum is
@@ -494,6 +525,8 @@ class ImageManager:
             dest: Final destination path.
             expected_sha256: Expected SHA-256 hex digest, or None to
                 skip verification.
+            progress_callback: Optional callback invoked on each downloaded
+                chunk as ``(bytes_in_chunk, total_bytes_or_none)``.
 
         Raises:
             ImageError: If download or checksum verification fails.
@@ -507,12 +540,19 @@ class ImageManager:
             response = requests.get(url, stream=True, timeout=300)
             response.raise_for_status()
 
+            total: int | None = None
+            raw_length = response.headers.get("content-length")
+            if raw_length is not None:
+                total = int(raw_length)
+
             sha256 = hashlib.sha256() if expected_sha256 else None
             with open(tmp_fd, "wb") as f:
                 for chunk in response.iter_content(chunk_size=_DOWNLOAD_CHUNK_SIZE):
                     f.write(chunk)
                     if sha256 is not None:
                         sha256.update(chunk)
+                    if progress_callback is not None:
+                        progress_callback(len(chunk), total)
 
             if sha256 is not None and expected_sha256 is not None:
                 actual_hash = sha256.hexdigest()
@@ -570,7 +610,12 @@ class ImageManager:
     # S3 image support
     # ------------------------------------------------------------------
 
-    def ensure_s3_image(self, uri: str) -> tuple[LocalImage, S3ImageManifest]:
+    def ensure_s3_image(
+        self,
+        uri: str,
+        *,
+        on_download: Callable[[str, int, int | None], None] | None = None,
+    ) -> tuple[LocalImage, S3ImageManifest]:
         """Download and cache an S3-hosted image.
 
         The S3 prefix must contain a ``smolvm-image.json`` manifest that
@@ -580,6 +625,9 @@ class ImageManager:
         Args:
             uri: S3 URI pointing to the image prefix
                 (e.g. ``s3://bucket/images/alpine-ssh/``).
+            on_download: Optional callback invoked on each downloaded chunk as
+                ``(label, bytes_in_chunk, total_bytes_or_none)``.  ``label``
+                is one of ``"kernel"``, ``"initrd"``, or ``"rootfs"``.
 
         Returns:
             A tuple of the cached :class:`LocalImage` and the parsed
@@ -616,23 +664,38 @@ class ImageManager:
             or (initrd_path.is_file() and self._verify_sha256(initrd_path, manifest.initrd_sha256))
         )
 
+        def _make_cb(label: str) -> Callable[[int, int | None], None] | None:
+            if on_download is None:
+                return None
+            _cb = on_download
+            return lambda chunk, total: _cb(label, chunk, total)
+
         if kernel_ok and rootfs_ok and initrd_ok:
             logger.info("S3 image '%s' found in cache: %s", manifest.name, image_dir)
         else:
             if not kernel_ok:
                 logger.info("Downloading S3 image '%s' kernel...", manifest.name)
                 s3_key = f"{ref.prefix}/{manifest.kernel}"
-                self._download_s3_file(s3, ref.bucket, s3_key, kernel_path, manifest.kernel_sha256)
+                self._download_s3_file(
+                    s3, ref.bucket, s3_key, kernel_path, manifest.kernel_sha256,
+                    progress_callback=_make_cb("kernel"),
+                )
 
             if not rootfs_ok:
                 logger.info("Downloading S3 image '%s' rootfs...", manifest.name)
                 s3_key = f"{ref.prefix}/{manifest.rootfs}"
-                self._download_s3_file(s3, ref.bucket, s3_key, rootfs_path, manifest.rootfs_sha256)
+                self._download_s3_file(
+                    s3, ref.bucket, s3_key, rootfs_path, manifest.rootfs_sha256,
+                    progress_callback=_make_cb("rootfs"),
+                )
 
             if not initrd_ok and initrd_path is not None and manifest.initrd is not None:
                 logger.info("Downloading S3 image '%s' initrd...", manifest.name)
                 s3_key = f"{ref.prefix}/{manifest.initrd}"
-                self._download_s3_file(s3, ref.bucket, s3_key, initrd_path, manifest.initrd_sha256)
+                self._download_s3_file(
+                    s3, ref.bucket, s3_key, initrd_path, manifest.initrd_sha256,
+                    progress_callback=_make_cb("initrd"),
+                )
 
             logger.info("S3 image '%s' ready at: %s", manifest.name, image_dir)
 
@@ -706,6 +769,8 @@ class ImageManager:
         key: str,
         dest: Path,
         expected_sha256: str | None = None,
+        *,
+        progress_callback: Callable[[int, int | None], None] | None = None,
     ) -> None:
         """Download a file from S3 with atomic write and SHA-256 verification.
 
@@ -722,10 +787,13 @@ class ImageManager:
             # S3-compatible stores reject HeadObject.
             with open(tmp_fd, "wb") as f:
                 response = s3.get_object(Bucket=bucket, Key=key)
+                total: int | None = response.get("ContentLength")
                 for chunk in response["Body"].iter_chunks(_DOWNLOAD_CHUNK_SIZE):
                     f.write(chunk)
                     if sha256 is not None:
                         sha256.update(chunk)
+                    if progress_callback is not None:
+                        progress_callback(len(chunk), total)
 
             if sha256 is not None and expected_sha256 is not None:
                 actual_hash = sha256.hexdigest()
