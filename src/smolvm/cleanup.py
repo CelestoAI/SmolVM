@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 
@@ -177,7 +178,7 @@ def run_cleanup(
     json_output: bool = False,
 ) -> int:
     """Clean stale/auto-created VMs and related resources."""
-    warn_not_root = os.geteuid() != 0
+    warn_not_root = sys.platform == "linux" and os.geteuid() != 0
 
     try:
         with SmolVMManager() as sdk:

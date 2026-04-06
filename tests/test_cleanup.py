@@ -41,13 +41,16 @@ class TestCleanup:
             yield sdk
 
     @patch("smolvm.cleanup.os.geteuid", return_value=1000)
+    @patch("smolvm.cleanup.sys")
     def test_run_cleanup_dry_run_human(
         self,
+        mock_sys: MagicMock,
         _: MagicMock,
         mock_sdk_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """Dry runs should show warning, targets, and a summary."""
+        """Dry runs should show warning on Linux, targets, and a summary."""
+        mock_sys.platform = "linux"
         sdk = mock_sdk_cls
         sdk.reconcile.return_value = []
         sdk.list_vms.return_value = [_make_vm("vm-abc123"), _make_vm("vm-def456")]
