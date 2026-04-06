@@ -63,6 +63,7 @@ DEFAULT_SOCKET_DIR = Path("/tmp")
 QEMU_GUEST_IP = "10.0.2.15"
 QEMU_GATEWAY_IP = "10.0.2.2"
 QEMU_NETMASK = "255.255.255.0"
+QEMU_SLIRP_DNS = "10.0.2.3"
 SNAPSHOT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$|^[a-z0-9]$")
 
 
@@ -1451,7 +1452,7 @@ class SmolVMManager:
             hostfwd_rules.append(
                 f"hostfwd=tcp:{forward.host_address}:{forward.host_port}-:{forward.guest_port}"
             )
-        netdev_arg = f"user,id=net0,{','.join(hostfwd_rules)}"
+        netdev_arg = f"user,id=net0,dns={QEMU_SLIRP_DNS},{','.join(hostfwd_rules)}"
 
         cmd = [
             str(qemu_bin),
@@ -2170,7 +2171,7 @@ class SmolVMManager:
             hostfwd_rules.append(
                 f"hostfwd=tcp:{forward.host_address}:{forward.host_port}-:{forward.guest_port}"
             )
-        netdev_arg = f"user,id=net0,{','.join(hostfwd_rules)}"
+        netdev_arg = f"user,id=net0,dns={QEMU_SLIRP_DNS},{','.join(hostfwd_rules)}"
 
         cmd: list[str] = [
             str(qemu_bin), "-smp", str(vm_info.config.vcpu_count),
