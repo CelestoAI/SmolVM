@@ -36,6 +36,11 @@ users:
     shell: /bin/bash
     ssh_authorized_keys:
       - {ssh_public_key}
+bootcmd:
+  - mkdir -p /etc/systemd/resolved.conf.d
+  - ['sh', '-c', 'printf "[Resolve]\\nDNS=10.0.2.3\\n" > /etc/systemd/resolved.conf.d/smolvm-dns.conf']
+  - ['systemctl', 'restart', 'systemd-resolved']
+  - ['systemctl', 'restart', 'systemd-timesyncd']
 write_files:
   - path: /etc/ssh/sshd_config.d/10-smolvm-root.conf
     permissions: "0644"
@@ -56,10 +61,16 @@ local-hostname: {hostname}
 """
 
 
-def seed_cache_key(*, ssh_public_key: str, instance_id: str, hostname: str) -> str:
+def seed_cache_key(
+    *,
+    ssh_public_key: str,
+    instance_id: str,
+    hostname: str,
+    user_data: str = "",
+) -> str:
     """Return a stable cache key for a cloud-init seed payload."""
     digest = hashlib.sha256(
-        f"{ssh_public_key}\n{instance_id}\n{hostname}\n".encode()
+        f"{ssh_public_key}\n{instance_id}\n{hostname}\n{user_data}\n".encode()
     ).hexdigest()
     return digest[:16]
 

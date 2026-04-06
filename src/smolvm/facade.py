@@ -314,17 +314,19 @@ def _build_auto_config(
         )
         boot_args = f"{boot_args} root=LABEL=cloudimg-rootfs rw"
 
+        user_data = default_user_data(public_key_value)
         seed_key = seed_cache_key(
             ssh_public_key=public_key_value,
             instance_id=f"smolvm-{_UBUNTU_CURRENT_RELEASE_DATE}",
             hostname="smolvm",
+            user_data=user_data,
         )
         seed_dir = image_manager.cache_dir / "cloud-init-seeds"
         seed_path = seed_dir / f"{seed_key}.iso"
         if not seed_path.exists():
             build_seed_iso(
                 seed_path,
-                user_data=default_user_data(public_key_value),
+                user_data=user_data,
                 meta_data=default_meta_data(
                     instance_id=f"smolvm-{_UBUNTU_CURRENT_RELEASE_DATE}",
                     hostname="smolvm",

@@ -425,18 +425,20 @@ class TestVMInit:
             ssh_key_path=str(custom_private),
         )
 
+        actual_user_data = mock_build_seed_iso.call_args.kwargs["user_data"]
         expected_seed_name = (
             seed_cache_key(
                 ssh_public_key=custom_public.read_text().strip(),
                 instance_id="smolvm-20260320",
                 hostname="smolvm",
+                user_data=actual_user_data,
             )
             + ".iso"
         )
         assert ssh_key_path == str(custom_private)
         assert config.extra_drives[0].name == expected_seed_name
         assert config.ssh_capable is True
-        assert "AAAAC3NzaCustom" in mock_build_seed_iso.call_args.kwargs["user_data"]
+        assert "AAAAC3NzaCustom" in actual_user_data
         mock_ensure_ssh_key.assert_not_called()
 
     @patch("smolvm.facade.platform.machine", return_value="arm64")
