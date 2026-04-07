@@ -33,8 +33,8 @@ class TestSSHPortForwarding:
     """Tests for SSH forwarding rule setup/cleanup."""
 
     @patch("smolvm.network.run_command")
-    def test_setup_ssh_port_forward_adds_rules(self, mock_run_command: MagicMock) -> None:
-        """Setup should add prerouting/output/postrouting and forward rules."""
+    def test_setup_ssh_port_forward_adds_elements(self, mock_run_command: MagicMock) -> None:
+        """Setup should add elements to DNAT maps and SNAT/forward sets."""
         mock_run_command.return_value = MagicMock(stdout="")
 
         nm = NetworkManager()
@@ -43,17 +43,28 @@ class TestSSHPortForwarding:
         nm.setup_ssh_port_forward(vm_id="vm001", guest_ip="172.16.0.2", host_port=2200)
 
         scripts = _collect_nft_scripts(mock_run_command)
-        assert "add rule ip smolvm_nat prerouting" in scripts
-        assert "add rule ip smolvm_nat output" in scripts
-        assert "add rule ip smolvm_nat postrouting" in scripts
-        assert "add rule inet smolvm_filter forward" in scripts
-        assert 'comment "smolvm:vm001:ssh"' in scripts
+        # Maps/sets declared in base setup
+        assert "add map ip smolvm_nat dnat_ext" in scripts
+        assert "add map ip smolvm_nat dnat_local" in scripts
+        assert "add set ip smolvm_nat snat_return" in scripts
+        assert "add set inet smolvm_filter fwd_allow" in scripts
+        # Static rules referencing maps/sets
+        assert "dnat to tcp dport map @dnat_ext" in scripts
+        assert "dnat to tcp dport map @dnat_local" in scripts
+        # Per-VM elements
+        assert "add element ip smolvm_nat dnat_ext { 2200 : 172.16.0.2 . 22 }" in scripts
+        assert "add element ip smolvm_nat dnat_local { 2200 : 172.16.0.2 . 22 }" in scripts
+        assert "add element ip smolvm_nat snat_return { 172.16.0.2 . 22 }" in scripts
+        assert "add element inet smolvm_filter fwd_allow { 172.16.0.2 . 22 }" in scripts
 
     @patch("smolvm.network.run_command")
-    def test_cleanup_ssh_port_forward_deletes_rules(self, mock_run_command: MagicMock) -> None:
-        """Cleanup should batch-delete SSH rules from nat+filter tables."""
+    def test_cleanup_ssh_port_forward_deletes_elements_and_legacy_rules(
+        self, mock_run_command: MagicMock
+    ) -> None:
+        """Cleanup should delete elements and also try legacy comment-based rules."""
 
         def _side_effect(cmd: list[str], *args: object, **kwargs: object) -> MagicMock:
+            # Legacy rule listing returns old-style rules
             if cmd == ["nft", "-a", "list", "table", "ip", "smolvm_nat"]:
                 return MagicMock(
                     stdout=(
@@ -61,25 +72,11 @@ class TestSSHPortForwarding:
                         "  chain prerouting {\n"
                         '    tcp dport 2200 comment "smolvm:vm001:ssh" # handle 14\n'
                         "  }\n"
-                        "  chain output {\n"
-                        '    tcp dport 2200 comment "smolvm:vm001:ssh" # handle 13\n'
-                        "  }\n"
-                        "  chain postrouting {\n"
-                        '    tcp dport 22 comment "smolvm:vm001:ssh" # handle 11\n'
-                        "  }\n"
                         "}\n"
                     )
                 )
             if cmd == ["nft", "-a", "list", "table", "inet", "smolvm_filter"]:
-                return MagicMock(
-                    stdout=(
-                        "table inet smolvm_filter {\n"
-                        "  chain forward {\n"
-                        '    tcp dport 22 comment "smolvm:vm001:ssh" # handle 12\n'
-                        "  }\n"
-                        "}\n"
-                    )
-                )
+                return MagicMock(stdout="table inet smolvm_filter {\n}\n")
             return MagicMock(stdout="")
 
         mock_run_command.side_effect = _side_effect
@@ -88,10 +85,13 @@ class TestSSHPortForwarding:
         nm.cleanup_ssh_port_forward(vm_id="vm001", guest_ip="172.16.0.2", host_port=2200)
 
         scripts = _collect_nft_scripts(mock_run_command)
-        assert "delete rule ip smolvm_nat postrouting handle 11" in scripts
-        assert "delete rule ip smolvm_nat output handle 13" in scripts
+        # New: element deletes
+        assert "delete element ip smolvm_nat dnat_ext { 2200 }" in scripts
+        assert "delete element ip smolvm_nat dnat_local { 2200 }" in scripts
+        assert "delete element ip smolvm_nat snat_return { 172.16.0.2 . 22 }" in scripts
+        assert "delete element inet smolvm_filter fwd_allow { 172.16.0.2 . 22 }" in scripts
+        # Legacy: comment-based rule deletes still run
         assert "delete rule ip smolvm_nat prerouting handle 14" in scripts
-        assert "delete rule inet smolvm_filter forward handle 12" in scripts
 
 
 class TestTapManagement:
@@ -335,7 +335,8 @@ class TestEgressAllowlist:
         nm.apply_egress_allowlist("tap42", ["1.1.1.1", "8.8.8.8"])
 
         assert nm._nft_list_table.call_count == 2
-        script = nm._run_nft_script.call_args.args[0]
+        # First call is the main atomic script; subsequent calls are element deletes.
+        script = nm._run_nft_script.call_args_list[0].args[0]
 
         add_established = (
             'add rule inet smolvm_filter forward iifname "tap42" ct state established,related '
@@ -362,3 +363,7 @@ class TestEgressAllowlist:
 
         # Fail-closed sequencing: all adds are staged before old rules are deleted.
         assert script.index(add_drop) < script.index(delete_old_established)
+
+        # TAP should also be removed from allowed_taps set.
+        all_scripts = "\n".join(c.args[0] for c in nm._run_nft_script.call_args_list)
+        assert 'delete element inet smolvm_filter allowed_taps { "tap42" }' in all_scripts

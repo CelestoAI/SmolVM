@@ -44,6 +44,13 @@ _NFT_NAT_TABLE = "smolvm_nat"
 _NFT_FILTER_FAMILY = "inet"
 _NFT_FILTER_TABLE = "smolvm_filter"
 
+# Named maps/sets for O(1) element add/delete (replaces per-VM rules)
+_NFT_MAP_DNAT_EXT = "dnat_ext"  # host_port → guest_ip . guest_port
+_NFT_MAP_DNAT_LOCAL = "dnat_local"
+_NFT_SET_SNAT_RETURN = "snat_return"  # (guest_ip, guest_port) pairs
+_NFT_SET_FWD_ALLOW = "fwd_allow"
+_NFT_SET_ALLOWED_TAPS = "allowed_taps"  # TAP interface names
+
 _NFT_CHAIN_RE = re.compile(r"^chain\s+(?P<chain>[^\s{]+)\s*\{")
 _NFT_RULE_COMMENT_RE = re.compile(r'comment "(?P<comment>[^"]+)"')
 _NFT_RULE_HANDLE_RE = re.compile(r'comment "(?P<comment>[^"]+)".*# handle (?P<handle>\d+)')
@@ -59,6 +66,7 @@ class NetworkManager:
         self.host_ip = host_ip
         self._outbound_interface: str | None = None
         self._nft_base_ready = False
+        self._map_rules_ready = False
         self._ip_forwarding_enabled = False
 
     @property
@@ -467,6 +475,22 @@ class NetworkManager:
                 "{ type filter hook forward priority filter; policy accept; }"
             )
 
+        # Always declare maps/sets (idempotent — no-op if they exist).
+        script_lines.extend(
+            [
+                f"add map {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} {_NFT_MAP_DNAT_EXT}"
+                " { type inet_service : ipv4_addr . inet_service ; }",
+                f"add map {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} {_NFT_MAP_DNAT_LOCAL}"
+                " { type inet_service : ipv4_addr . inet_service ; }",
+                f"add set {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} {_NFT_SET_SNAT_RETURN}"
+                " { type ipv4_addr . inet_service ; }",
+                f"add set {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} {_NFT_SET_FWD_ALLOW}"
+                " { type ipv4_addr . inet_service ; }",
+                f"add set {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} {_NFT_SET_ALLOWED_TAPS}"
+                " { type ifname ; }",
+            ]
+        )
+
         if script_lines:
             self._run_nft_script("\n".join(script_lines) + "\n")
 
@@ -547,10 +571,150 @@ class NetworkManager:
                 "{ type filter hook forward priority filter; policy accept; }"
             )
 
+        # Always declare maps/sets (idempotent — no-op if they exist).
+        script_lines.extend(
+            [
+                f"add map {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} {_NFT_MAP_DNAT_EXT}"
+                " { type inet_service : ipv4_addr . inet_service ; }",
+                f"add map {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} {_NFT_MAP_DNAT_LOCAL}"
+                " { type inet_service : ipv4_addr . inet_service ; }",
+                f"add set {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} {_NFT_SET_SNAT_RETURN}"
+                " { type ipv4_addr . inet_service ; }",
+                f"add set {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} {_NFT_SET_FWD_ALLOW}"
+                " { type ipv4_addr . inet_service ; }",
+                f"add set {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} {_NFT_SET_ALLOWED_TAPS}"
+                " { type ifname ; }",
+            ]
+        )
+
         if script_lines:
             await self._async_run_nft_script("\n".join(script_lines) + "\n")
 
         self._nft_base_ready = True
+
+    def _ensure_map_rules(self, iface: str) -> None:
+        """Add static rules that reference maps/sets (once per instance)."""
+        if self._map_rules_ready:
+            return
+        self._add_nft_rules_if_missing(
+            [
+                (
+                    _NFT_NAT_FAMILY,
+                    _NFT_NAT_TABLE,
+                    "prerouting",
+                    f"iifname {self._quote(iface)} dnat to tcp dport map @{_NFT_MAP_DNAT_EXT}",
+                    "smolvm:map:prerouting:dnat_ext",
+                ),
+                (
+                    _NFT_NAT_FAMILY,
+                    _NFT_NAT_TABLE,
+                    "output",
+                    f"ip daddr 127.0.0.1/32 dnat to tcp dport map @{_NFT_MAP_DNAT_LOCAL}",
+                    "smolvm:map:output:dnat_local",
+                ),
+                (
+                    _NFT_NAT_FAMILY,
+                    _NFT_NAT_TABLE,
+                    "postrouting",
+                    (
+                        f"ip saddr 127.0.0.0/8 ip daddr . tcp dport @{_NFT_SET_SNAT_RETURN}"
+                        f" counter snat to {self.host_ip}"
+                    ),
+                    "smolvm:map:postrouting:snat_return",
+                ),
+                (
+                    _NFT_FILTER_FAMILY,
+                    _NFT_FILTER_TABLE,
+                    "forward",
+                    (
+                        f"ip daddr . tcp dport @{_NFT_SET_FWD_ALLOW}"
+                        " ct state new,related,established counter accept"
+                    ),
+                    "smolvm:map:forward:fwd_allow",
+                ),
+                (
+                    _NFT_FILTER_FAMILY,
+                    _NFT_FILTER_TABLE,
+                    "forward",
+                    (
+                        f"iifname @{_NFT_SET_ALLOWED_TAPS}"
+                        f" oifname {self._quote(iface)} counter accept"
+                    ),
+                    "smolvm:map:forward:allowed_taps",
+                ),
+            ]
+        )
+        self._map_rules_ready = True
+
+    async def _async_ensure_map_rules(self, iface: str) -> None:
+        """Add static rules that reference maps/sets (once per instance, async)."""
+        if self._map_rules_ready:
+            return
+        await self._async_add_nft_rules_if_missing(
+            [
+                (
+                    _NFT_NAT_FAMILY,
+                    _NFT_NAT_TABLE,
+                    "prerouting",
+                    f"iifname {self._quote(iface)} dnat to tcp dport map @{_NFT_MAP_DNAT_EXT}",
+                    "smolvm:map:prerouting:dnat_ext",
+                ),
+                (
+                    _NFT_NAT_FAMILY,
+                    _NFT_NAT_TABLE,
+                    "output",
+                    f"ip daddr 127.0.0.1/32 dnat to tcp dport map @{_NFT_MAP_DNAT_LOCAL}",
+                    "smolvm:map:output:dnat_local",
+                ),
+                (
+                    _NFT_NAT_FAMILY,
+                    _NFT_NAT_TABLE,
+                    "postrouting",
+                    (
+                        f"ip saddr 127.0.0.0/8 ip daddr . tcp dport @{_NFT_SET_SNAT_RETURN}"
+                        f" counter snat to {self.host_ip}"
+                    ),
+                    "smolvm:map:postrouting:snat_return",
+                ),
+                (
+                    _NFT_FILTER_FAMILY,
+                    _NFT_FILTER_TABLE,
+                    "forward",
+                    (
+                        f"ip daddr . tcp dport @{_NFT_SET_FWD_ALLOW}"
+                        " ct state new,related,established counter accept"
+                    ),
+                    "smolvm:map:forward:fwd_allow",
+                ),
+                (
+                    _NFT_FILTER_FAMILY,
+                    _NFT_FILTER_TABLE,
+                    "forward",
+                    (
+                        f"iifname @{_NFT_SET_ALLOWED_TAPS}"
+                        f" oifname {self._quote(iface)} counter accept"
+                    ),
+                    "smolvm:map:forward:allowed_taps",
+                ),
+            ]
+        )
+        self._map_rules_ready = True
+
+    def _delete_nft_elements_best_effort(self, lines: list[str]) -> None:
+        """Delete map/set elements individually, ignoring missing elements."""
+        for line in lines:
+            try:
+                self._run_nft_script(line + "\n")
+            except SmolVMError:
+                logger.debug("Element delete skipped (not present): %s", line)
+
+    async def _async_delete_nft_elements_best_effort(self, lines: list[str]) -> None:
+        """Delete map/set elements individually, ignoring missing elements (async)."""
+        for line in lines:
+            try:
+                await self._async_run_nft_script(line + "\n")
+            except SmolVMError:
+                logger.debug("Element delete skipped (not present): %s", line)
 
     def _nft_list_table(self, family: str, table: str, *, handles: bool) -> str:
         cmd = ["nft"]
@@ -815,7 +979,9 @@ class NetworkManager:
         self._ensure_nftables_base()
 
         iface = self.outbound_interface
+        self._ensure_map_rules(iface)
 
+        # Global rules (singleton, idempotent via comment check).
         self._add_nft_rules_if_missing(
             [
                 (
@@ -836,20 +1002,16 @@ class NetworkManager:
                     _NFT_FILTER_FAMILY,
                     _NFT_FILTER_TABLE,
                     "forward",
-                    (
-                        f"iifname {self._quote(tap_name)} "
-                        f"oifname {self._quote(iface)} counter accept"
-                    ),
-                    f"smolvm:nat:tap:{tap_name}:to:{iface}",
-                ),
-                (
-                    _NFT_FILTER_FAMILY,
-                    _NFT_FILTER_TABLE,
-                    "forward",
                     (f"iifname {self._quote('tap*')} oifname {self._quote('tap*')} counter drop"),
                     "smolvm:global:forward:tap-isolation",
                 ),
             ]
+        )
+
+        # Per-TAP: add to allowed_taps set (O(1), idempotent).
+        self._run_nft_script(
+            f"add element {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE}"
+            f" {_NFT_SET_ALLOWED_TAPS} {{ {self._quote(tap_name)} }}\n"
         )
 
     async def async_setup_nat(self, tap_name: str) -> None:
@@ -866,6 +1028,9 @@ class NetworkManager:
             self._outbound_interface = await self._async_detect_outbound_interface()
         iface = self._outbound_interface
 
+        await self._async_ensure_map_rules(iface)
+
+        # Global rules (singleton, idempotent via comment check).
         await self._async_add_nft_rules_if_missing(
             [
                 (
@@ -886,20 +1051,16 @@ class NetworkManager:
                     _NFT_FILTER_FAMILY,
                     _NFT_FILTER_TABLE,
                     "forward",
-                    (
-                        f"iifname {self._quote(tap_name)} "
-                        f"oifname {self._quote(iface)} counter accept"
-                    ),
-                    f"smolvm:nat:tap:{tap_name}:to:{iface}",
-                ),
-                (
-                    _NFT_FILTER_FAMILY,
-                    _NFT_FILTER_TABLE,
-                    "forward",
                     (f"iifname {self._quote('tap*')} oifname {self._quote('tap*')} counter drop"),
                     "smolvm:global:forward:tap-isolation",
                 ),
             ]
+        )
+
+        # Per-TAP: add to allowed_taps set (O(1), idempotent).
+        await self._async_run_nft_script(
+            f"add element {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE}"
+            f" {_NFT_SET_ALLOWED_TAPS} {{ {self._quote(tap_name)} }}\n"
         )
 
     def setup_ssh_port_forward(
@@ -923,49 +1084,18 @@ class NetworkManager:
         self._ensure_nftables_base()
 
         iface = self.outbound_interface
-        target = f"{guest_ip}:{guest_port}"
-        comment = f"smolvm:{vm_id}:ssh"
+        self._ensure_map_rules(iface)
 
-        self._add_nft_rules_if_missing(
-            [
-                (
-                    _NFT_NAT_FAMILY,
-                    _NFT_NAT_TABLE,
-                    "prerouting",
-                    (
-                        f"iifname {self._quote(iface)} "
-                        f"tcp dport {host_port} counter dnat to {target}"
-                    ),
-                    comment,
-                ),
-                (
-                    _NFT_NAT_FAMILY,
-                    _NFT_NAT_TABLE,
-                    "output",
-                    f"ip daddr 127.0.0.1/32 tcp dport {host_port} counter dnat to {target}",
-                    comment,
-                ),
-                (
-                    _NFT_NAT_FAMILY,
-                    _NFT_NAT_TABLE,
-                    "postrouting",
-                    (
-                        f"ip saddr 127.0.0.0/8 ip daddr {guest_ip}/32 "
-                        f"tcp dport {guest_port} counter snat to {self.host_ip}"
-                    ),
-                    comment,
-                ),
-                (
-                    _NFT_FILTER_FAMILY,
-                    _NFT_FILTER_TABLE,
-                    "forward",
-                    (
-                        f"ip daddr {guest_ip}/32 tcp dport {guest_port} "
-                        "ct state new,related,established counter accept"
-                    ),
-                    comment,
-                ),
-            ]
+        target = f"{guest_ip} . {guest_port}"
+        self._run_nft_script(
+            f"add element {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} {_NFT_MAP_DNAT_EXT}"
+            f" {{ {host_port} : {target} }}\n"
+            f"add element {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} {_NFT_MAP_DNAT_LOCAL}"
+            f" {{ {host_port} : {target} }}\n"
+            f"add element {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} {_NFT_SET_SNAT_RETURN}"
+            f" {{ {target} }}\n"
+            f"add element {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} {_NFT_SET_FWD_ALLOW}"
+            f" {{ {target} }}\n"
         )
 
     async def async_setup_ssh_port_forward(
@@ -992,49 +1122,18 @@ class NetworkManager:
             self._outbound_interface = await self._async_detect_outbound_interface()
         iface = self._outbound_interface
 
-        target = f"{guest_ip}:{guest_port}"
-        comment = f"smolvm:{vm_id}:ssh"
+        await self._async_ensure_map_rules(iface)
 
-        await self._async_add_nft_rules_if_missing(
-            [
-                (
-                    _NFT_NAT_FAMILY,
-                    _NFT_NAT_TABLE,
-                    "prerouting",
-                    (
-                        f"iifname {self._quote(iface)} "
-                        f"tcp dport {host_port} counter dnat to {target}"
-                    ),
-                    comment,
-                ),
-                (
-                    _NFT_NAT_FAMILY,
-                    _NFT_NAT_TABLE,
-                    "output",
-                    f"ip daddr 127.0.0.1/32 tcp dport {host_port} counter dnat to {target}",
-                    comment,
-                ),
-                (
-                    _NFT_NAT_FAMILY,
-                    _NFT_NAT_TABLE,
-                    "postrouting",
-                    (
-                        f"ip saddr 127.0.0.0/8 ip daddr {guest_ip}/32 "
-                        f"tcp dport {guest_port} counter snat to {self.host_ip}"
-                    ),
-                    comment,
-                ),
-                (
-                    _NFT_FILTER_FAMILY,
-                    _NFT_FILTER_TABLE,
-                    "forward",
-                    (
-                        f"ip daddr {guest_ip}/32 tcp dport {guest_port} "
-                        "ct state new,related,established counter accept"
-                    ),
-                    comment,
-                ),
-            ]
+        target = f"{guest_ip} . {guest_port}"
+        await self._async_run_nft_script(
+            f"add element {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} {_NFT_MAP_DNAT_EXT}"
+            f" {{ {host_port} : {target} }}\n"
+            f"add element {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} {_NFT_MAP_DNAT_LOCAL}"
+            f" {{ {host_port} : {target} }}\n"
+            f"add element {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} {_NFT_SET_SNAT_RETURN}"
+            f" {{ {target} }}\n"
+            f"add element {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} {_NFT_SET_FWD_ALLOW}"
+            f" {{ {target} }}\n"
         )
 
     def cleanup_ssh_port_forward(
@@ -1054,8 +1153,18 @@ class NetworkManager:
         if guest_port < 1 or guest_port > 65535:
             raise ValueError("guest_port must be 1-65535")
 
-        comment = f"smolvm:{vm_id}:ssh"
+        target = f"{guest_ip} . {guest_port}"
+        self._delete_nft_elements_best_effort(
+            [
+                f"delete element {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} {_NFT_MAP_DNAT_EXT} {{ {host_port} }}",
+                f"delete element {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} {_NFT_MAP_DNAT_LOCAL} {{ {host_port} }}",
+                f"delete element {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} {_NFT_SET_SNAT_RETURN} {{ {target} }}",
+                f"delete element {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} {_NFT_SET_FWD_ALLOW} {{ {target} }}",
+            ]
+        )
 
+        # Legacy: remove comment-based rules from pre-migration VMs.
+        comment = f"smolvm:{vm_id}:ssh"
         self._delete_nft_rules(_NFT_NAT_FAMILY, _NFT_NAT_TABLE, comment=comment)
         self._delete_nft_rules(_NFT_FILTER_FAMILY, _NFT_FILTER_TABLE, comment=comment)
 
@@ -1076,8 +1185,18 @@ class NetworkManager:
         if guest_port < 1 or guest_port > 65535:
             raise ValueError("guest_port must be 1-65535")
 
-        comment = f"smolvm:{vm_id}:ssh"
+        target = f"{guest_ip} . {guest_port}"
+        await self._async_delete_nft_elements_best_effort(
+            [
+                f"delete element {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} {_NFT_MAP_DNAT_EXT} {{ {host_port} }}",
+                f"delete element {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} {_NFT_MAP_DNAT_LOCAL} {{ {host_port} }}",
+                f"delete element {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} {_NFT_SET_SNAT_RETURN} {{ {target} }}",
+                f"delete element {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} {_NFT_SET_FWD_ALLOW} {{ {target} }}",
+            ]
+        )
 
+        # Legacy: remove comment-based rules from pre-migration VMs.
+        comment = f"smolvm:{vm_id}:ssh"
         await self._async_delete_nft_rules(_NFT_NAT_FAMILY, _NFT_NAT_TABLE, comment=comment)
         await self._async_delete_nft_rules(_NFT_FILTER_FAMILY, _NFT_FILTER_TABLE, comment=comment)
 
@@ -1276,6 +1395,15 @@ class NetworkManager:
         if not tap_name:
             raise ValueError("tap_name cannot be empty")
 
+        # New: remove from allowed_taps set.
+        self._delete_nft_elements_best_effort(
+            [
+                f"delete element {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE}"
+                f" {_NFT_SET_ALLOWED_TAPS} {{ {self._quote(tap_name)} }}"
+            ]
+        )
+
+        # Legacy: remove comment-based per-TAP rule from pre-migration VMs.
         iface = self.outbound_interface
         comment = f"smolvm:nat:tap:{tap_name}:to:{iface}"
         self._delete_nft_rules(
@@ -1289,6 +1417,15 @@ class NetworkManager:
         if not tap_name:
             raise ValueError("tap_name cannot be empty")
 
+        # New: remove from allowed_taps set.
+        await self._async_delete_nft_elements_best_effort(
+            [
+                f"delete element {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE}"
+                f" {_NFT_SET_ALLOWED_TAPS} {{ {self._quote(tap_name)} }}"
+            ]
+        )
+
+        # Legacy: remove comment-based per-TAP rule from pre-migration VMs.
         if self._outbound_interface is None:
             self._outbound_interface = await self._async_detect_outbound_interface()
         iface = self._outbound_interface
@@ -1392,6 +1529,14 @@ class NetworkManager:
 
         self._run_nft_script("\n".join(script_lines) + "\n")
 
+        # Also remove from allowed_taps set (egress replaces blanket accept).
+        self._delete_nft_elements_best_effort(
+            [
+                f"delete element {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE}"
+                f" {_NFT_SET_ALLOWED_TAPS} {{ {self._quote(tap_device)} }}"
+            ]
+        )
+
     async def async_apply_egress_allowlist(
         self,
         tap_device: str,
@@ -1462,6 +1607,14 @@ class NetworkManager:
         script_lines.extend(old_nat_accept_delete_lines)
 
         await self._async_run_nft_script("\n".join(script_lines) + "\n")
+
+        # Also remove from allowed_taps set (egress replaces blanket accept).
+        await self._async_delete_nft_elements_best_effort(
+            [
+                f"delete element {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE}"
+                f" {_NFT_SET_ALLOWED_TAPS} {{ {self._quote(tap_device)} }}"
+            ]
+        )
 
     def remove_egress_rules(self, tap_device: str) -> None:
         """Remove all egress allowlist rules for *tap_device*.
