@@ -962,15 +962,13 @@ class SmolVM:
                 {"vm_id": self._vm_id},
             )
 
-        # Prefer the host-forwarded port (127.0.0.1:<port>), fall back to guest IP.
-        ssh_host_port = self._info.network.ssh_host_port
-        if isinstance(ssh_host_port, int):
-            host, port = "127.0.0.1", ssh_host_port
-        else:
-            host, port = self._info.network.guest_ip, 22
+        # Reuse shared endpoint selection (prefers localhost forward, falls
+        # back to guest IP).
+        host, port = self._ssh_endpoints()[0]
 
         # Resolve key: explicit > default SmolVM key.
         key_path = self._ssh_key_path
+        explicit_key = key_path is not None
         if key_path is None:
             from smolvm.utils import ensure_ssh_key
 
@@ -978,7 +976,11 @@ class SmolVM:
                 default_key, _ = ensure_ssh_key()
                 key_path = str(default_key)
             except Exception:
-                pass
+                logger.debug(
+                    "VM %s: could not resolve default SSH key, "
+                    "falling back to agent/default auth",
+                    self._vm_id,
+                )
 
         command = [
             "ssh",
@@ -990,7 +992,12 @@ class SmolVM:
             str(port),
         ]
         if key_path:
-            command.extend(["-i", key_path, "-o", "IdentitiesOnly=yes"])
+            command.extend(["-i", key_path])
+            # Only lock to this key when the user explicitly provided it;
+            # for the auto-resolved SmolVM key, allow agent/default auth
+            # as a fallback.
+            if explicit_key:
+                command.extend(["-o", "IdentitiesOnly=yes"])
         command.append(f"{self._ssh_user}@{host}")
         return command
 
