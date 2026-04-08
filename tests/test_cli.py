@@ -881,7 +881,7 @@ class TestCliSSH:
         """`smolvm ssh` should attach to a running VM without restarting it."""
         vm = MagicMock()
         vm.status = VMState.RUNNING
-        vm._ssh_attach_command.return_value = [
+        vm._ssh_direct_command.return_value = [
             "ssh",
             "-o",
             "StrictHostKeyChecking=no",
@@ -891,8 +891,6 @@ class TestCliSSH:
             "2200",
             "-i",
             "/custom/key",
-            "-o",
-            "IdentitiesOnly=yes",
             "custom-user@127.0.0.1",
         ]
         mock_vm_cls.from_id.return_value = vm
@@ -918,9 +916,9 @@ class TestCliSSH:
             ssh_key_path="/custom/key",
         )
         vm.start.assert_not_called()
-        vm.wait_for_ssh.assert_called_once_with(timeout=15.0)
-        vm._ssh_attach_command.assert_called_once_with()
-        mock_run.assert_called_once_with(vm._ssh_attach_command.return_value, check=False)
+        vm.wait_for_ssh.assert_not_called()
+        vm._ssh_direct_command.assert_called_once_with()
+        mock_run.assert_called_once_with(vm._ssh_direct_command.return_value, check=False)
         vm.close.assert_called_once()
 
     @pytest.mark.parametrize("status", [VMState.CREATED, VMState.STOPPED])
