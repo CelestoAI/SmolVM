@@ -947,6 +947,53 @@ class SmolVM:
         command.append(f"{self._ssh.user}@{self._ssh.host}")
         return command
 
+    def _ssh_direct_command(self) -> list[str]:
+        """Build an SSH command from VM metadata without probing.
+
+        Uses the VM's known network info and key path to construct the
+        command directly, skipping the ``wait_for_ssh`` polling machinery.
+        Suitable for interactive CLI use where OpenSSH handles retries.
+        """
+        self._refresh_info()
+
+        if self._info.network is None:
+            raise SmolVMError(
+                "Cannot build SSH command: VM has no network configuration",
+                {"vm_id": self._vm_id},
+            )
+
+        # Prefer the host-forwarded port (127.0.0.1:<port>), fall back to guest IP.
+        ssh_host_port = self._info.network.ssh_host_port
+        if isinstance(ssh_host_port, int):
+            host, port = "127.0.0.1", ssh_host_port
+        else:
+            host, port = self._info.network.guest_ip, 22
+
+        # Resolve key: explicit > default SmolVM key.
+        key_path = self._ssh_key_path
+        if key_path is None:
+            from smolvm.utils import ensure_ssh_key
+
+            try:
+                default_key, _ = ensure_ssh_key()
+                key_path = str(default_key)
+            except Exception:
+                pass
+
+        command = [
+            "ssh",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-p",
+            str(port),
+        ]
+        if key_path:
+            command.extend(["-i", key_path, "-o", "IdentitiesOnly=yes"])
+        command.append(f"{self._ssh_user}@{host}")
+        return command
+
     def expose_local(self, guest_port: int, host_port: int | None = None) -> int:
         """Expose a guest TCP port on localhost only.
 

@@ -1652,8 +1652,9 @@ def _run_ssh(args: argparse.Namespace) -> int:
                 "before attaching."
             )
         else:
-            with console.status("Waiting for SSH...", spinner="dots"):
-                vm.wait_for_ssh(timeout=args.boot_timeout)
+            # VM is already running — connect directly without probing.
+            completed = subprocess.run(vm._ssh_direct_command(), check=False)
+            return completed.returncode
         completed = subprocess.run(vm._ssh_attach_command(), check=False)
         return completed.returncode
     except FileNotFoundError:
