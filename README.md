@@ -40,25 +40,26 @@ SmolVM gives AI agents their own disposable computer. Each sandbox is a lightwei
 
 ## Quickstart
 
-1. Install the package.
+Install SmolVM with a single command:
+
+```bash
+curl -sSL https://celesto.ai/install.sh | bash
+```
+
+This installs everything you need (including Python tooling), configures your machine, and verifies the setup.
+
+<details>
+<summary>Manual installation</summary>
 
 ```bash
 pip install smolvm
-```
-
-2. Run the one-time setup for your machine.
-
-```bash
 smolvm setup
+smolvm doctor
 ```
 
 Linux may prompt for `sudo` during setup so it can install host dependencies and configure runtime permissions.
 
-3. Check that the runtime is ready.
-
-```bash
-smolvm doctor
-```
+</details>
 
 ### Start a sandbox in Python
 
