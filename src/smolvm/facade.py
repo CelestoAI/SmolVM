@@ -806,7 +806,7 @@ class SmolVM:
 
         if self._info.status != VMState.RUNNING:
             raise SmolVMError(
-                f"Cannot run command: VM is {self._info.status.value}",
+                f"VM is not running. Start the VM using vm.start() before running commands (current state: {self._info.status.value})",
                 {"vm_id": self._vm_id},
             )
         if not self.can_run_commands():
@@ -898,7 +898,7 @@ class SmolVM:
 
         if self._info.status != VMState.RUNNING:
             raise SmolVMError(
-                f"Cannot wait for SSH: VM is {self._info.status.value}",
+                f"VM is not running. Start the VM using vm.start() before waiting for SSH (current state: {self._info.status.value})",
                 {"vm_id": self._vm_id},
             )
         if self._info.network is None:
