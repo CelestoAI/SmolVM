@@ -1127,7 +1127,7 @@ class TestVMRun:
         mock_sdk_cls.return_value = mock_sdk
 
         vm = SmolVM(sample_config)
-        with pytest.raises(SmolVMError, match="VM is stopped"):
+        with pytest.raises(SmolVMError, match="VM is not running"):
             vm.run("echo test")
 
 
@@ -1222,7 +1222,7 @@ class TestVMLocalExpose:
         mock_sdk_cls.return_value = mock_sdk
 
         vm = SmolVM(sample_config)
-        with pytest.raises(SmolVMError, match="VM is stopped"):
+        with pytest.raises(SmolVMError, match="VM is not running"):
             vm.expose_local(guest_port=8080, host_port=18080)
 
     @patch("smolvm.facade.SmolVMManager")
