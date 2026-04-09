@@ -296,6 +296,12 @@ def build_parser() -> argparse.ArgumentParser:
             "output for LLMs, agents, and automation."
         ),
     )
+    parser.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"%(prog)s {importlib.metadata.version('smolvm')}",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     cleanup = subparsers.add_parser(
