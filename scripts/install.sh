@@ -154,7 +154,16 @@ shell_hint() {
 
 main() {
     printf "\n"
-    info "SmolVM Installer"
+    printf "${GREEN}"
+    cat <<'BANNER'
+      ___      _        _          _   ___
+     / __|___ | |___ __| |_ ___   /_\ |_ _|
+    | (__/ -_)| / -_|_-<  _/ _ \ / _ \ | |
+     \___\___||_\___/__/\__\___//_/ \_\___|
+
+BANNER
+    printf "${RESET}"
+    printf "    ${BOLD}SmolVM Installer${RESET}\n"
     printf "    One command to give AI agents their own computer.\n\n"
 
     ensure_uv
