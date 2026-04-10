@@ -14,10 +14,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Set up Node.js # zizmor: ignore[cache-poisoning]
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
           cache: npm
@@ -30,10 +32,13 @@ jobs:
         run: npm run build --prefix ui
 
       - name: Package dashboard dist
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          tar -C ui -czf smolvm-dashboard-ui-${{ github.ref_name }}.tar.gz dist
+          tar -C ui -czf "smolvm-dashboard-ui-${REF_NAME}.tar.gz" dist
 
       - name: Upload release asset
-        uses: softprops/action-gh-release@v2
-        with:
-          files: smolvm-dashboard-ui-${{ github.ref_name }}.tar.gz
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
+        run: gh release upload "${REF_NAME}" "smolvm-dashboard-ui-${REF_NAME}.tar.gz"
