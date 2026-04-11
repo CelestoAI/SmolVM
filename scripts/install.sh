@@ -127,7 +127,7 @@ install_smolvm() {
 
 run_setup() {
     info "Running smolvm setup …"
-    smolvm setup ${SETUP_ARGS[@]+"${SETUP_ARGS[@]}"}
+    smolvm setup --skip-deps ${SETUP_ARGS[@]+"${SETUP_ARGS[@]}"}
 }
 
 # ---------------------------------------------------------------------------
