@@ -19,11 +19,16 @@
 # Usage:
 #   curl -sSL https://celesto.ai/install.sh | bash
 #   curl -sSL https://celesto.ai/install.sh | bash -s -- --with-docker
+#   curl -sSL https://celesto.ai/install.sh | bash -s -- --skip-deps
 #
 # What it does:
 #   1. Installs uv (Python package manager) if not present
 #   2. Installs smolvm into an isolated tool environment via uv
 #   3. Runs `smolvm setup` to configure the host
+#
+# Options (forwarded to `smolvm setup`):
+#   --skip-deps      Skip apt dependency installation (assumes deps are present)
+#   --with-docker    Also install Docker for SSH image support
 #
 # After installation, the `smolvm` command is available globally.
 
