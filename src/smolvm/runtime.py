@@ -35,6 +35,7 @@ class RuntimeLaunch:
     pid: int
     control_socket_path: Path | None
     status: VMState
+    vsock_uds_path: Path | None = None
 
 
 @dataclass(slots=True, frozen=True)

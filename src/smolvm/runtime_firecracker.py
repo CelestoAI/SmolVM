@@ -77,11 +77,23 @@ class FirecrackerRuntimeAdapter(RuntimeAdapter):
                 vm_info.network.guest_mac,
                 rate_limit_mbps=vm_info.config.network_rate_limit_mbps,
             )
+            # Optional vsock device for host↔guest communication
+            vsock_uds_path: str | None = None
+            if vm_info.config.vsock:
+                vsock_uds_path = vm_info.config.vsock.uds_path or str(
+                    self._context.socket_dir / f"vsock-{vm_info.vm_id}.sock"
+                )
+                # Remove stale socket if present
+                vsock_path = Path(vsock_uds_path)
+                if vsock_path.exists():
+                    vsock_path.unlink()
+                client.add_vsock_device(vm_info.config.vsock.guest_cid, vsock_uds_path)
             client.start_instance()
             return RuntimeLaunch(
                 pid=process.pid,
                 control_socket_path=control_socket_path,
                 status=VMState.RUNNING,
+                vsock_uds_path=Path(vsock_uds_path) if vsock_uds_path else None,
             )
         except Exception:
             if process is not None:
@@ -159,11 +171,26 @@ class FirecrackerRuntimeAdapter(RuntimeAdapter):
                 vm_info.network.guest_mac,
                 rate_limit_mbps=vm_info.config.network_rate_limit_mbps,
             )
+            # Optional vsock device for host↔guest communication
+            vsock_uds_path: str | None = None
+            if vm_info.config.vsock:
+                vsock_uds_path = vm_info.config.vsock.uds_path or str(
+                    self._context.socket_dir / f"vsock-{vm_info.vm_id}.sock"
+                )
+                vsock_path = Path(vsock_uds_path)
+                if vsock_path.exists():
+                    vsock_path.unlink()
+                await asyncio.to_thread(
+                    client.add_vsock_device,
+                    vm_info.config.vsock.guest_cid,
+                    vsock_uds_path,
+                )
             await asyncio.to_thread(client.start_instance)
             return RuntimeLaunch(
                 pid=process.pid,
                 control_socket_path=control_socket_path,
                 status=VMState.RUNNING,
+                vsock_uds_path=Path(vsock_uds_path) if vsock_uds_path else None,
             )
         except Exception:
             if process is not None:

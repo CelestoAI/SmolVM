@@ -89,6 +89,27 @@ class PortForwardConfig(BaseModel):
     model_config = {"frozen": True}
 
 
+class VsockConfig(BaseModel):
+    """Virtio-vsock device configuration for host↔guest communication.
+
+    Vsock provides a direct, high-performance communication channel between
+    the host and guest without requiring network configuration. On the host
+    side, Firecracker exposes the vsock as a Unix domain socket (UDS). The
+    guest connects via ``AF_VSOCK`` sockets using the assigned CID.
+
+    Attributes:
+        guest_cid: Context ID for the guest. Must be ≥ 3 (0 = hypervisor,
+            1 = reserved, 2 = host). Each VM must have a unique CID.
+        uds_path: Path to the Unix domain socket on the host. If ``None``,
+            SmolVM auto-generates one in the socket directory.
+    """
+
+    guest_cid: Annotated[int, Field(ge=3, le=4294967295)]
+    uds_path: str | None = None
+
+    model_config = {"frozen": True}
+
+
 class InternetSettings(BaseModel):
     """Network access controls for a VM.
 
@@ -220,6 +241,7 @@ class VMConfig(BaseModel):
     env_vars: dict[str, str] = {}
     network_rate_limit_mbps: Annotated[int, Field(ge=1)] | None = None
     port_forwards: list[PortForwardConfig] = []
+    vsock: VsockConfig | None = None
     internet_settings: InternetSettings | None = None
 
     @field_validator("vm_id", mode="before")
@@ -440,6 +462,7 @@ class VMInfo(BaseModel):
     network: NetworkConfig | None = None
     pid: int | None = None
     control_socket_path: Path | None = None
+    vsock_uds_path: Path | None = None
 
     model_config = {"frozen": True}
 
