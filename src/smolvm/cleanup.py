@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""SmolVM cleanup utilities and CLI."""
+"""SmolVM delete utilities and CLI."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ import argparse
 import os
 import sys
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 
 from rich.panel import Panel
@@ -31,16 +32,16 @@ from smolvm.vm import SmolVMManager
 
 
 @dataclass(frozen=True)
-class CleanupFailure:
-    """One failed VM deletion during cleanup."""
+class DeleteFailure:
+    """One failed VM deletion."""
 
     vm_id: str
     error: str
 
 
 @dataclass(frozen=True)
-class CleanupSummary:
-    """Cleanup result counters."""
+class DeleteSummary:
+    """Delete result counters."""
 
     target_count: int
     deleted_count: int
@@ -48,8 +49,8 @@ class CleanupSummary:
 
 
 @dataclass(frozen=True)
-class CleanupResult:
-    """Structured cleanup result payload."""
+class DeleteResult:
+    """Structured delete result payload."""
 
     delete_all: bool
     prefix: str
@@ -57,12 +58,26 @@ class CleanupResult:
     reconciled_stale_ids: list[str]
     targets: list[str]
     deleted: list[str]
-    failed: list[CleanupFailure]
-    summary: CleanupSummary
+    failed: list[DeleteFailure]
+    summary: DeleteSummary
 
 
-def add_cleanup_args(parser: argparse.ArgumentParser) -> None:
-    """Add shared cleanup CLI arguments to a parser."""
+# ---------------------------------------------------------------------------
+# Backward-compatible aliases so existing imports keep working
+# ---------------------------------------------------------------------------
+CleanupFailure = DeleteFailure
+CleanupSummary = DeleteSummary
+CleanupResult = DeleteResult
+
+
+def add_delete_args(parser: argparse.ArgumentParser) -> None:
+    """Add shared delete CLI arguments to a parser."""
+    parser.add_argument(
+        "vm_ids",
+        nargs="*",
+        metavar="vm-id",
+        help="One or more VM IDs to delete.",
+    )
     parser.add_argument(
         "--all",
         action="store_true",
@@ -76,7 +91,7 @@ def add_cleanup_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Show what would be cleaned up without actually deleting.",
+        help="Show what would be deleted without actually deleting.",
     )
     parser.add_argument(
         "--json",
@@ -85,22 +100,26 @@ def add_cleanup_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _cleanup_error_payload(exc: Exception) -> dict[str, str]:
-    """Build the JSON error payload for cleanup failures."""
+# Keep old name available for callers that import it.
+add_cleanup_args = add_delete_args
+
+
+def _delete_error_payload(exc: Exception) -> dict[str, str]:
+    """Build the JSON error payload for delete failures."""
     return {
         "message": str(exc),
         "type": "runtime_error",
     }
 
 
-def _render_cleanup_result(result: CleanupResult, *, warn_not_root: bool) -> None:
-    """Render the human-friendly cleanup result."""
+def _render_delete_result(result: DeleteResult, *, warn_not_root: bool) -> None:
+    """Render the human-friendly delete result."""
     console = console_stdout()
 
     if warn_not_root:
         console.print(
             Panel.fit(
-                "Warning: not running as root. Cleanup may fail for TAP/nftables resources.",
+                "Warning: not running as root. Deletion may fail for TAP/nftables resources.",
                 title="Warning",
                 border_style="yellow",
             )
@@ -116,10 +135,10 @@ def _render_cleanup_result(result: CleanupResult, *, warn_not_root: bool) -> Non
         )
 
     if not result.targets:
-        render_empty("Cleanup", "No matching VMs to clean.")
+        render_empty("Delete", "No matching VMs to delete.")
         return
 
-    targets_table = Table(title=f"Cleanup Targets ({len(result.targets)})")
+    targets_table = Table(title=f"Delete Targets ({len(result.targets)})")
     targets_table.add_column("VM")
     for vm_id in result.targets:
         targets_table.add_row(vm_id)
@@ -129,13 +148,13 @@ def _render_cleanup_result(result: CleanupResult, *, warn_not_root: bool) -> Non
         console.print(
             Panel.fit(
                 "Dry run complete. No changes made.",
-                title="Cleanup Summary",
+                title="Delete Summary",
                 border_style="cyan",
             )
         )
         return
 
-    results_table = Table(title="Cleanup Results")
+    results_table = Table(title="Delete Results")
     results_table.add_column("VM")
     results_table.add_column("Result")
     results_table.add_column("Error")
@@ -164,45 +183,85 @@ def _render_cleanup_result(result: CleanupResult, *, warn_not_root: bool) -> Non
     console.print(
         Panel.fit(
             summary_body,
-            title="Cleanup Summary",
+            title="Delete Summary",
             border_style=summary_style,
         )
     )
 
 
-def run_cleanup(
+def _delete_vms_concurrent(
+    sdk: SmolVMManager,
+    target_ids: list[str],
+) -> tuple[list[str], list[DeleteFailure]]:
+    """Delete VMs concurrently and return (deleted, failed) lists."""
+    deleted: list[str] = []
+    failed: list[DeleteFailure] = []
+
+    if not target_ids:
+        return deleted, failed
+
+    # Single VM — skip thread overhead.
+    if len(target_ids) == 1:
+        vm_id = target_ids[0]
+        try:
+            sdk.delete(vm_id)
+            deleted.append(vm_id)
+        except Exception as exc:
+            failed.append(DeleteFailure(vm_id=vm_id, error=str(exc)))
+        return deleted, failed
+
+    def _do_delete(vm_id: str) -> tuple[str, Exception | None]:
+        try:
+            sdk.delete(vm_id)
+            return vm_id, None
+        except Exception as exc:  # noqa: BLE001
+            return vm_id, exc
+
+    with ThreadPoolExecutor(max_workers=min(len(target_ids), 8)) as pool:
+        futures = {pool.submit(_do_delete, vm_id): vm_id for vm_id in target_ids}
+        for future in as_completed(futures):
+            vm_id, exc = future.result()
+            if exc is None:
+                deleted.append(vm_id)
+            else:
+                failed.append(DeleteFailure(vm_id=vm_id, error=str(exc)))
+
+    return deleted, failed
+
+
+def run_delete(
     *,
+    vm_ids: list[str] | None = None,
     delete_all: bool = False,
     prefix: str = "vm-",
     dry_run: bool = False,
     json_output: bool = False,
 ) -> int:
-    """Clean stale/auto-created VMs and related resources."""
+    """Delete VMs — by explicit IDs, by prefix, or all."""
     warn_not_root = sys.platform == "linux" and os.geteuid() != 0
 
     try:
         with SmolVMManager() as sdk:
             stale_ids = sorted(set(sdk.reconcile()))
 
-            vms = sdk.list_vms()
-            if delete_all:
+            if vm_ids:
+                # Explicit VM IDs provided — delete exactly those.
+                target_ids = list(vm_ids)
+            elif delete_all:
+                vms = sdk.list_vms()
                 target_ids = [vm.vm_id for vm in vms]
             else:
+                vms = sdk.list_vms()
                 target_ids = sorted(
                     {vm.vm_id for vm in vms if vm.vm_id.startswith(prefix) or vm.vm_id in stale_ids}
                 )
 
             deleted: list[str] = []
-            failed: list[CleanupFailure] = []
+            failed: list[DeleteFailure] = []
             if not dry_run:
-                for vm_id in target_ids:
-                    try:
-                        sdk.delete(vm_id)
-                        deleted.append(vm_id)
-                    except Exception as exc:
-                        failed.append(CleanupFailure(vm_id=vm_id, error=str(exc)))
+                deleted, failed = _delete_vms_concurrent(sdk, target_ids)
 
-            result = CleanupResult(
+            result = DeleteResult(
                 delete_all=delete_all,
                 prefix=prefix,
                 dry_run=dry_run,
@@ -210,7 +269,7 @@ def run_cleanup(
                 targets=target_ids,
                 deleted=deleted,
                 failed=failed,
-                summary=CleanupSummary(
+                summary=DeleteSummary(
                     target_count=len(target_ids),
                     deleted_count=len(deleted),
                     failed_count=len(failed),
@@ -219,29 +278,34 @@ def run_cleanup(
             exit_code = 1 if failed else 0
 
             if json_output:
-                emit_json("cleanup", exit_code, data=asdict(result))
+                emit_json("delete", exit_code, data=asdict(result))
             else:
-                _render_cleanup_result(result, warn_not_root=warn_not_root)
+                _render_delete_result(result, warn_not_root=warn_not_root)
 
             return exit_code
     except Exception as exc:
         if json_output:
-            emit_json("cleanup", 1, data=None, error=_cleanup_error_payload(exc))
+            emit_json("delete", 1, data=None, error=_delete_error_payload(exc))
         else:
             render_error(f"Error: {exc}")
         return 1
 
 
+# Backward-compatible alias.
+run_cleanup = run_delete
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Cleanup stale SmolVM VMs/resources")
-    add_cleanup_args(parser)
+    parser = argparse.ArgumentParser(description="Delete SmolVM VMs/resources")
+    add_delete_args(parser)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Cleanup CLI entrypoint."""
+    """Delete CLI entrypoint."""
     args = build_parser().parse_args(argv)
-    return run_cleanup(
+    return run_delete(
+        vm_ids=args.vm_ids or None,
         delete_all=args.all,
         prefix=args.prefix,
         dry_run=args.dry_run,

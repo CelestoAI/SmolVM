@@ -79,7 +79,7 @@ all = [
 
 [project.scripts]
 smolvm = "smolvm.cli:main"
-smolvm-cleanup = "smolvm.cleanup:main"
+smolvm-delete = "smolvm.cleanup:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/smolvm"]

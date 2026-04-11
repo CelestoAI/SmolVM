@@ -38,7 +38,7 @@ from rich.progress import (
 from rich.table import Table
 from rich.text import Text
 
-from smolvm.cleanup import add_cleanup_args, run_cleanup
+from smolvm.cleanup import add_delete_args, run_delete
 from smolvm.cli_output import console_stdout, emit_json, render_empty, render_error, status_style
 from smolvm.doctor import run_doctor
 from smolvm.types import BrowserSessionState, GuestOS, VMState
@@ -304,11 +304,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    cleanup = subparsers.add_parser(
-        "cleanup",
-        help="Clean up leftover sandboxes and resources.",
+    delete = subparsers.add_parser(
+        "delete",
+        help="Delete one or more sandboxes.",
     )
-    add_cleanup_args(cleanup)
+    add_delete_args(delete)
 
     doctor = subparsers.add_parser(
         "doctor",
@@ -1975,8 +1975,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if args.command == "cleanup":
-        return run_cleanup(
+    if args.command == "delete":
+        return run_delete(
+            vm_ids=args.vm_ids or None,
             delete_all=args.all,
             prefix=args.prefix,
             dry_run=args.dry_run,
