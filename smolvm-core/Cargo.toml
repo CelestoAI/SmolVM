@@ -9,10 +9,10 @@ name = "_smolvm_core"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-pyo3 = { version = "0.23", features = ["extension-module"] }
+pyo3 = { version = "0.28", features = ["extension-module"] }
 libc = "0.2"
 thiserror = "1"
-pyo3-log = "0.12"
+pyo3-log = "0.13"
 log = "0.4"
 
 [target.'cfg(target_os = "linux")'.dependencies]
