@@ -1,14 +1,15 @@
 [package]
-name = "smolvm-native"
+name = "smolvm-core"
 version = "0.0.9"
 edition = "2021"
+license = "Apache-2.0"
 
 [lib]
-name = "_native"
-crate-type = ["cdylib"]
+name = "_smolvm_core"
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-pyo3 = { version = "0.24", features = ["extension-module"] }
+pyo3 = { version = "0.23", features = ["extension-module"] }
 libc = "0.2"
 thiserror = "1"
 pyo3-log = "0.12"
@@ -20,3 +21,8 @@ rtnetlink = "0.14"
 netlink-packet-route = "0.19"
 tokio = { version = "1", features = ["rt", "net", "macros"] }
 futures-util = "0.3"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

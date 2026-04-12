@@ -34,7 +34,7 @@ from smolvm.exceptions import NetworkError, SmolVMError
 from smolvm.utils import async_run_command, run_command
 
 if _HAS_NATIVE:
-    from smolvm import _native
+    import smolvm_core as _native
 
 logger = logging.getLogger(__name__)
 

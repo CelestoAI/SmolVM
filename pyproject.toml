@@ -1,14 +1,14 @@
 [build-system]
-requires = ["maturin>=1.7,<2.0"]
-build-backend = "maturin"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "smolvm"
-version = "0.0.9.dev0"
-description = "Secure runtime for AI agents, and tools -- free and open-source from Celesto AI 🧡"
+version = "0.0.9"
+description = "Secure runtime for AI agents, and tools -- free and open-source from Celesto AI"
 readme = "README.md"
 license = "Apache-2.0"
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.10"
 authors = [
     { name = "Celesto AI", email = "hello@celesto.ai" }
 ]
@@ -35,9 +35,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+native = [
+    "smolvm-core>=0.0.9",
+]
 dev = [
     "pytest>=7.0",
-    "pytest-asyncio>=1.0",
+    "pytest-asyncio>=0.21",
     "pytest-cov>=4.0",
     "ruff>=0.15.0",
     "mypy>=1.0",
@@ -56,43 +59,28 @@ dashboard = [
     "uvicorn[standard]>=0.34.0",
     "websockets>=14.0",
 ]
-examples = [
-    "langchain",
-    "langchain-openai",
-    "openai",
-    "openai-agents",
-    "playwright",
-    "pydantic-ai",
-]
 all = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.34.0",
     "websockets>=14.0",
-    "langchain",
-    "langchain-openai",
-    "openai",
-    "openai-agents",
-    "playwright",
-    "pydantic-ai",
 ]
 
 [project.scripts]
 smolvm = "smolvm.cli:main"
 smolvm-delete = "smolvm.cleanup:main"
 
-[tool.maturin]
-features = ["pyo3/extension-module"]
-python-source = "src"
-module-name = "smolvm._native"
-manifest-path = "rust/smolvm-native/Cargo.toml"
-include = [
-    "scripts/system-setup.sh",
-    "scripts/system-setup-macos.sh",
-    "scripts/internal/install-firecracker.sh",
-    "scripts/internal/configure-runtime-sudoers.sh",
-    "scripts/internal/image-build-loopfs.sh",
-]
-exclude = ["/ui"]
+[tool.hatch.build.targets.wheel]
+packages = ["src/smolvm"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"scripts/system-setup.sh" = "smolvm/_setup_assets/system-setup.sh"
+"scripts/system-setup-macos.sh" = "smolvm/_setup_assets/system-setup-macos.sh"
+"scripts/internal/install-firecracker.sh" = "smolvm/_setup_assets/internal/install-firecracker.sh"
+"scripts/internal/configure-runtime-sudoers.sh" = "smolvm/_setup_assets/internal/configure-runtime-sudoers.sh"
+"scripts/internal/image-build-loopfs.sh" = "smolvm/_setup_assets/internal/image-build-loopfs.sh"
+
+[tool.hatch.build]
+exclude = ["/ui", "/smolvm-core"]
 
 [tool.ruff]
 target-version = "py310"

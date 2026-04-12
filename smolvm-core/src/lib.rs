@@ -110,7 +110,7 @@ fn write_sysctl(key: &str, value: &str) -> PyResult<()> {
 
 /// Python module definition.
 #[pymodule]
-fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _smolvm_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     pyo3_log::init();
 
     m.add_function(wrap_pyfunction!(is_available, m)?)?;

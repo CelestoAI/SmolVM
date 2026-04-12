@@ -1,12 +1,11 @@
-"""Netlink acceleration dispatcher.
+"""Native acceleration dispatcher.
 
-Tries to import the Rust PyO3 extension for fast network operations.
-Falls back gracefully to subprocess-based operations if unavailable
-(e.g., on macOS, or when built without Rust toolchain).
+Tries to import smolvm-core for fast network operations.
+Falls back gracefully if not installed or not available on this platform.
 """
 
 try:
-    from smolvm._native import (  # type: ignore[import-not-found]
+    from smolvm_core import (
         add_addr,
         add_route,
         create_tap,
