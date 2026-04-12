@@ -5,10 +5,6 @@ on:
     tags:
       - "v*.*.*"
 
-permissions:
-  contents: read
-  id-token: write
-
 jobs:
   # Build Linux wheels with Rust extension
   build-linux:
@@ -22,8 +18,8 @@ jobs:
       - uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist
-          manylinux: auto
+          args: --release --out dist --find-interpreter
+          manylinux: manylinux_2_17
 
       - uses: actions/upload-artifact@v4
         with:
@@ -42,7 +38,7 @@ jobs:
       - uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist
+          args: --release --out dist --find-interpreter
 
       - uses: actions/upload-artifact@v4
         with:
@@ -69,12 +65,14 @@ jobs:
   publish:
     needs: [build-linux, build-macos, build-sdist]
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
 
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
         with:
           skip-existing: true
