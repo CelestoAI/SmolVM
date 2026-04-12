@@ -40,16 +40,9 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
 
-      # Install smolvm (creates .venv)
-      - name: Install smolvm
+      # uv workspace resolves smolvm-core from local smolvm-core/ directory
+      - name: Install dependencies
         run: uv sync --extra dev
-
-      # Build smolvm-core into the same venv
-      - name: Build smolvm-core
-        run: |
-          uv pip install maturin
-          cd smolvm-core
-          VIRTUAL_ENV=${{ github.workspace }}/.venv maturin develop --release
 
       - name: Assert native extension available
         run: |

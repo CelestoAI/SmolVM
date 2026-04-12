@@ -26,6 +26,7 @@ classifiers = [
     "Topic :: System :: Emulators",
 ]
 dependencies = [
+    "smolvm-core>=0.0.9",
     "paramiko>=3.0",
     "pycdlib>=1.14.0",
     "pydantic>=2.0",
@@ -35,9 +36,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-native = [
-    "smolvm-core>=0.0.9",
-]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
@@ -94,6 +92,12 @@ python_version = "3.10"
 strict = true
 warn_return_any = true
 warn_unused_ignores = true
+
+[tool.uv.sources]
+smolvm-core = { workspace = true }
+
+[tool.uv.workspace]
+members = ["smolvm-core"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
