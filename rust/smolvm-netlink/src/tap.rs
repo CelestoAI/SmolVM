@@ -61,10 +61,9 @@ pub fn create(name: &str, owner_uid: u32) -> Result<(), NetlinkError> {
 
 /// Delete a TAP device via netlink.
 pub fn delete(name: &str) -> Result<(), NetlinkError> {
-    use crate::route::runtime;
+    use crate::route::{runtime, with_netlink};
 
-    let rt = runtime();
-    rt.block_on(async {
+    with_netlink(async {
         let (connection, handle, _) = rtnetlink::new_connection().map_err(|e| {
             NetlinkError::Other(format!("netlink connection failed: {}", e))
         })?;

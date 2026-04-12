@@ -6,11 +6,24 @@ use std::sync::OnceLock;
 use tokio::runtime::Runtime;
 
 /// Shared tokio runtime for all netlink operations.
+/// Using a dedicated single-threaded runtime to avoid nested runtime issues.
 pub fn runtime() -> &'static Runtime {
     static RT: OnceLock<Runtime> = OnceLock::new();
     RT.get_or_init(|| {
-        Runtime::new().expect("failed to create tokio runtime for netlink")
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to create tokio runtime for netlink")
     })
+}
+
+/// Helper: create connection, run async block, return result.
+pub fn with_netlink<F, T>(f: F) -> Result<T, NetlinkError>
+where
+    F: std::future::Future<Output = Result<T, NetlinkError>>,
+{
+    let rt = runtime();
+    rt.block_on(f)
 }
 
 /// Get the interface index for a device name.
@@ -31,8 +44,7 @@ async fn get_link_index(
 
 /// Set a network interface to UP state.
 pub fn set_link_up(name: &str) -> Result<(), NetlinkError> {
-    let rt = runtime();
-    rt.block_on(async {
+    with_netlink(async {
         let (connection, handle, _) = rtnetlink::new_connection()
             .map_err(|e| NetlinkError::Other(format!("netlink: {}", e)))?;
         tokio::spawn(connection);
@@ -53,8 +65,7 @@ pub fn set_link_up(name: &str) -> Result<(), NetlinkError> {
 
 /// Flush all IPv4 addresses from an interface.
 pub fn flush_addrs(name: &str) -> Result<(), NetlinkError> {
-    let rt = runtime();
-    rt.block_on(async {
+    with_netlink(async {
         let (connection, handle, _) = rtnetlink::new_connection()
             .map_err(|e| NetlinkError::Other(format!("netlink: {}", e)))?;
         tokio::spawn(connection);
@@ -85,8 +96,7 @@ pub fn add_addr(name: &str, ip: &str, prefix_len: u8) -> Result<(), NetlinkError
         .parse()
         .map_err(|e| NetlinkError::Other(format!("invalid IP {}: {}", ip, e)))?;
 
-    let rt = runtime();
-    rt.block_on(async {
+    with_netlink(async {
         let (connection, handle, _) = rtnetlink::new_connection()
             .map_err(|e| NetlinkError::Other(format!("netlink: {}", e)))?;
         tokio::spawn(connection);
@@ -117,8 +127,7 @@ pub fn add_route(dest: &str, prefix_len: u8, dev: &str) -> Result<(), NetlinkErr
         .parse()
         .map_err(|e| NetlinkError::Other(format!("invalid dest {}: {}", dest, e)))?;
 
-    let rt = runtime();
-    rt.block_on(async {
+    with_netlink(async {
         let (connection, handle, _) = rtnetlink::new_connection()
             .map_err(|e| NetlinkError::Other(format!("netlink: {}", e)))?;
         tokio::spawn(connection);
@@ -148,8 +157,7 @@ pub fn add_route(dest: &str, prefix_len: u8, dev: &str) -> Result<(), NetlinkErr
 
 /// Get the default outbound network interface name.
 pub fn get_default_interface() -> Result<String, NetlinkError> {
-    let rt = runtime();
-    rt.block_on(async {
+    with_netlink(async {
         let (connection, handle, _) = rtnetlink::new_connection()
             .map_err(|e| NetlinkError::Other(format!("netlink: {}", e)))?;
         tokio::spawn(connection);
