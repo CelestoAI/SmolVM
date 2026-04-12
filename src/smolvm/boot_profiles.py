@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Literal
 
-from smolvm.backends import BACKEND_FIRECRACKER, BACKEND_QEMU
+from smolvm.backends import BACKEND_FIRECRACKER, BACKEND_LIBKRUN, BACKEND_QEMU
 
 # Firecracker-compatible uncompressed kernels.
 FIRECRACKER_KERNEL_URLS: dict[str, str] = {
@@ -70,7 +70,7 @@ class BootProfileSpec:
             )
 
         if self.profile is KernelBootProfile.MICROVM_DIRECT:
-            if backend == BACKEND_QEMU:
+            if backend in {BACKEND_QEMU, BACKEND_LIBKRUN}:
                 console = "ttyAMA0" if normalized_arch == "aarch64" else "ttyS0"
                 return f"console={console} reboot=k panic=1 init=/init"
             return _MICROVM_DIRECT_FIRECRACKER_BOOT_ARGS
@@ -81,7 +81,7 @@ class BootProfileSpec:
     def supports_backend(self, backend: str) -> bool:
         """Return whether the profile supports the runtime backend."""
         if self.profile is KernelBootProfile.MICROVM_DIRECT:
-            return backend in {BACKEND_FIRECRACKER, BACKEND_QEMU}
+            return backend in {BACKEND_FIRECRACKER, BACKEND_QEMU, BACKEND_LIBKRUN}
         return backend == BACKEND_QEMU
 
 

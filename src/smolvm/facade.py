@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from smolvm.backends import BACKEND_QEMU, resolve_backend
+from smolvm.backends import BACKEND_LIBKRUN, BACKEND_QEMU, resolve_backend
 from smolvm.boot_profiles import KernelBootProfile, get_boot_profile_spec
 from smolvm.cloud_init import build_seed_iso, default_meta_data, default_user_data, seed_cache_key
 from smolvm.env import inject_env_vars, read_env_vars, remove_env_vars
@@ -1722,7 +1722,7 @@ class SmolVM:
         """Return whether localhost exposure should attempt host nftables first."""
         config = getattr(self._info, "config", None)
         backend = getattr(config, "backend", None)
-        return backend != BACKEND_QEMU
+        return backend not in {BACKEND_QEMU, BACKEND_LIBKRUN}
 
     @staticmethod
     def _find_available_local_port() -> int:

@@ -27,7 +27,13 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from smolvm.backends import BACKEND_AUTO, BACKEND_FIRECRACKER, BACKEND_QEMU, resolve_backend
+from smolvm.backends import (
+    BACKEND_AUTO,
+    BACKEND_FIRECRACKER,
+    BACKEND_LIBKRUN,
+    BACKEND_QEMU,
+    resolve_backend,
+)
 from smolvm.cli_output import console_stdout, emit_json, render_error, status_style
 from smolvm.exceptions import SmolVMError
 from smolvm.host import HostManager
@@ -537,6 +543,20 @@ def generate_doctor_report(backend: str | None = None) -> DoctorReport:
 
         checks.append(_check_command("qemu-img", "qemu"))
         checks.append(_check_command("ssh", "openssh-client"))
+    elif resolved == BACKEND_LIBKRUN:
+        checks.append(_check_command("krunvm", "krunvm/libkrun"))
+        checks.append(_check_command("ssh", "openssh-client"))
+        if platform.system() != "Darwin":
+            checks.append(
+                DoctorCheck(
+                    name="libkrun-platform",
+                    status="warn",
+                    detail=(
+                        "libkrun backend is currently tuned for macOS in SmolVM; "
+                        "use with care on non-Darwin hosts"
+                    ),
+                )
+            )
 
     else:
         checks.append(

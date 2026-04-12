@@ -79,6 +79,7 @@ class RuntimeContext:
     resolve_boot_args: Callable[[VMInfo], str]
     start_firecracker: Callable[[Path, Path], subprocess.Popen[bytes]]
     start_qemu: Callable[..., subprocess.Popen[bytes]]
+    start_libkrun: Callable[[VMInfo, Path], subprocess.Popen[bytes]]
     unlink_socket: Callable[[Path], None]
     kill_process: Callable[[int], None]
     wait_for_process: Callable[[int, float], None]
@@ -91,6 +92,9 @@ class RuntimeContext:
     ) = field(default=None)
     async_start_qemu: (
         Callable[..., Awaitable[asyncio.subprocess.Process]] | None
+    ) = field(default=None)
+    async_start_libkrun: (
+        Callable[[VMInfo, Path], Awaitable[asyncio.subprocess.Process]] | None
     ) = field(default=None)
     async_unlink_socket: Callable[[Path], Awaitable[None]] | None = field(default=None)
     async_kill_process: Callable[[int], Awaitable[None]] | None = field(default=None)

@@ -19,11 +19,14 @@ from __future__ import annotations
 import os
 import platform
 
+from smolvm.utils import which
+
 BACKEND_FIRECRACKER = "firecracker"
 BACKEND_QEMU = "qemu"
+BACKEND_LIBKRUN = "libkrun"
 BACKEND_AUTO = "auto"
 
-SUPPORTED_BACKENDS = {BACKEND_FIRECRACKER, BACKEND_QEMU}
+SUPPORTED_BACKENDS = {BACKEND_FIRECRACKER, BACKEND_QEMU, BACKEND_LIBKRUN}
 
 
 def resolve_backend(requested: str | None = None) -> str:
@@ -32,7 +35,7 @@ def resolve_backend(requested: str | None = None) -> str:
     Resolution order:
     1) Explicit ``requested`` argument.
     2) ``SMOLVM_BACKEND`` environment variable.
-    3) Platform-aware default (Darwin -> qemu, others -> firecracker).
+    3) Platform-aware default (Darwin -> libkrun when available, then qemu; others -> firecracker).
 
     Args:
         requested: Optional backend string.
@@ -48,6 +51,8 @@ def resolve_backend(requested: str | None = None) -> str:
     if raw == BACKEND_AUTO:
         system = platform.system().lower()
         if system == "darwin":
+            if which("krunvm") is not None:
+                return BACKEND_LIBKRUN
             return BACKEND_QEMU
         return BACKEND_FIRECRACKER
 

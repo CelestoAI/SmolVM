@@ -209,7 +209,7 @@ class VMConfig(BaseModel):
         boot_args: Kernel boot arguments.
         ssh_capable: Whether this boot path is expected to start guest SSH
             without relying on ``init=/init``.
-        backend: Optional runtime backend override ("firecracker" or "qemu").
+        backend: Optional runtime backend override ("firecracker", "qemu", or "libkrun").
         disk_mode: Disk lifecycle mode:
             - ``"isolated"`` (default): clone rootfs per VM for sandbox isolation.
             - ``"shared"``: boot directly from ``rootfs_path``.
@@ -327,7 +327,7 @@ class BrowserSessionConfig(BaseModel):
         str | None,
         Field(default=None, pattern=_IDENTIFIER_PATTERN),
     ] = None
-    backend: Literal["firecracker", "qemu", "auto"] = "auto"
+    backend: Literal["firecracker", "qemu", "libkrun", "auto"] = "auto"
     browser: Literal["chromium"] = "chromium"
     mode: Literal["headless", "live"] = "headless"
     profile_mode: Literal["ephemeral", "persistent"] = "ephemeral"
@@ -485,7 +485,7 @@ class SnapshotInfo(BaseModel):
         Field(default_factory=_generate_snapshot_id, pattern=_IDENTIFIER_PATTERN),
     ]
     vm_id: Annotated[str, Field(pattern=_IDENTIFIER_PATTERN)]
-    backend: Literal["firecracker", "qemu"]
+    backend: Literal["firecracker", "qemu", "libkrun"]
     artifacts: SnapshotArtifacts
     vm_config: VMConfig
     network_config: NetworkConfig
