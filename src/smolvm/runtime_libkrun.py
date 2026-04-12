@@ -114,7 +114,8 @@ class LibkrunRuntimeAdapter(RuntimeAdapter):
         while time.time() - start < boot_timeout:
             if process.poll() is not None:
                 raise SmolVMError("libkrun process exited before VM became ready")
-            return
+            time.sleep(0.05)
+            continue
 
         with suppress(Exception):
             self._context.kill_process(process.pid)
@@ -128,7 +129,8 @@ class LibkrunRuntimeAdapter(RuntimeAdapter):
         while asyncio.get_running_loop().time() - start < boot_timeout:
             if process.returncode is not None:
                 raise SmolVMError("libkrun process exited before VM became ready")
-            return
+            await asyncio.sleep(0.05)
+            continue
 
         with suppress(Exception):
             if self._context.async_kill_process:

@@ -128,6 +128,49 @@ class TestSmolVMCreate:
         with pytest.raises(VMNotFoundError):
             smol_vm.get("vm001")
 
+    @patch("smolvm.vm.NetworkManager")
+    def test_create_libkrun_uses_usernet_networking(
+        self,
+        mock_network_class: MagicMock,
+        tmp_path: Path,
+        sample_config: VMConfig,
+    ) -> None:
+        """libkrun backend should reuse usernet-style networking without TAP/NAT setup."""
+        smol_vm = SmolVMManager(
+            data_dir=tmp_path / "data-libkrun",
+            socket_dir=tmp_path / "sockets-libkrun",
+            backend="libkrun",
+        )
+        mock_network = MagicMock()
+        mock_network.host_ip = "172.16.0.1"
+        mock_network.generate_mac.return_value = "AA:FC:00:00:00:01"
+        mock_network_class.return_value = mock_network
+        smol_vm.network = mock_network
+
+        vm_info = smol_vm.create(sample_config.model_copy(update={"vm_id": "vm-libkrun"}))
+
+        assert vm_info.network is not None
+        assert vm_info.network.tap_device == "usernet"
+        mock_network.create_tap.assert_not_called()
+        mock_network.setup_nat.assert_not_called()
+        mock_network.setup_ssh_port_forward.assert_not_called()
+
+    def test_check_prerequisites_libkrun_only_checks_krunvm_and_ssh(self, tmp_path: Path) -> None:
+        """libkrun prerequisite checks should not require qemu/qemu-img."""
+        smol_vm = SmolVMManager(
+            data_dir=tmp_path / "data-libkrun-preflight",
+            socket_dir=tmp_path / "sockets-libkrun-preflight",
+            backend="libkrun",
+        )
+
+        with (
+            patch.object(smol_vm, "_find_krunvm_binary", return_value=Path("/usr/bin/krunvm")),
+            patch("smolvm.vm.which", return_value=Path("/usr/bin/ssh")),
+            patch.object(smol_vm, "_find_qemu_binary", return_value=None),
+            patch.object(smol_vm, "_find_qemu_img_binary", return_value=None),
+        ):
+            assert smol_vm.check_prerequisites() == []
+
 
 class TestSmolVMDiskLifecycle:
     """Tests for per-VM disk materialization and cleanup."""

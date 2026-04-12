@@ -195,6 +195,7 @@ class SmolVMManager:
 
         # Track open log file handles per VM for proper cleanup
         self._log_files: dict[str, TextIO] = {}
+        self._background_tasks: set[asyncio.Task[None]] = set()
         self._closed = False
 
         logger.info(
@@ -259,6 +260,10 @@ class SmolVMManager:
             with suppress(Exception):
                 fh.close()
         self._log_files.clear()
+        for task in list(self._background_tasks):
+            if not task.done():
+                task.cancel()
+        self._background_tasks.clear()
         self._closed = True
         logger.debug("SmolVM resources released")
 
@@ -668,6 +673,18 @@ class SmolVMManager:
 
         return errors
 
+    def _check_libkrun_prerequisites(self) -> list[str]:
+        """Check host prerequisites for the libkrun backend."""
+        errors: list[str] = []
+
+        if self._find_krunvm_binary() is None:
+            errors.append("'krunvm' command not found (install libkrun/krunvm)")
+
+        if which("ssh") is None:
+            errors.append("'ssh' command not found (install openssh-client)")
+
+        return errors
+
     def check_prerequisites(self) -> list[str]:
         """Check if all prerequisites are met.
 
@@ -680,6 +697,8 @@ class SmolVMManager:
         """
         if self.backend == BACKEND_QEMU:
             return self._check_qemu_prerequisites()
+        if self.backend == BACKEND_LIBKRUN:
+            return self._check_libkrun_prerequisites()
 
         errors = []
 
@@ -741,14 +760,15 @@ class SmolVMManager:
         try:
             ssh_host_port = self.state.reserve_ssh_port(effective_config.vm_id)
 
-            if backend == BACKEND_QEMU:
+            if backend in {BACKEND_QEMU, BACKEND_LIBKRUN}:
                 if (
                     effective_config.internet_settings is not None
                     and not effective_config.internet_settings.is_allow_all_domains
                 ):
                     logger.warning(
                         "internet_settings domain allowlist is not supported "
-                        "with the QEMU backend (user-mode networking)"
+                        "with the %s backend (user-mode networking)",
+                        backend,
                     )
                 mac_seed = (ssh_host_port % 65534) + 1
                 guest_mac = self.network.generate_mac(mac_seed)
@@ -1903,14 +1923,15 @@ class SmolVMManager:
         try:
             ssh_host_port = self.state.reserve_ssh_port(effective_config.vm_id)
 
-            if backend == BACKEND_QEMU:
+            if backend in {BACKEND_QEMU, BACKEND_LIBKRUN}:
                 if (
                     effective_config.internet_settings is not None
                     and not effective_config.internet_settings.is_allow_all_domains
                 ):
                     logger.warning(
                         "internet_settings domain allowlist is not supported "
-                        "with the QEMU backend (user-mode networking)"
+                        "with the %s backend (user-mode networking)",
+                        backend,
                     )
                 mac_seed = (ssh_host_port % 65534) + 1
                 guest_mac = self.network.generate_mac(mac_seed)
@@ -2243,7 +2264,9 @@ class SmolVMManager:
                 finally:
                     self._log_files.pop(key, None)
 
-        asyncio.create_task(_close_log_when_done())
+        task = asyncio.create_task(_close_log_when_done())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
         return process
 
     async def _async_start_qemu(
@@ -2408,7 +2431,9 @@ class SmolVMManager:
                 finally:
                     self._log_files.pop(key, None)
 
-        asyncio.create_task(_close_log_when_done())
+        task = asyncio.create_task(_close_log_when_done())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
         return process
 
     async def _async_cleanup_resources(self, vm_id: str) -> None:

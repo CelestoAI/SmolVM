@@ -422,14 +422,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit machine-readable JSON output.",
     )
 
-    from smolvm.backends import BACKEND_LIBKRUN, BACKEND_QEMU, resolve_backend
-    from smolvm.facade import _default_guest_os_for_backend
-
-    current_default_backend = resolve_backend(None)
-    current_default_guest_os = _default_guest_os_for_backend(current_default_backend)
-    qemu_default_guest_os = _default_guest_os_for_backend(BACKEND_QEMU)
-    libkrun_default_guest_os = _default_guest_os_for_backend(BACKEND_LIBKRUN)
-
     create_parser = subparsers.add_parser(
         "create",
         help="Create a sandbox and leave it running.",
