@@ -5,10 +5,15 @@ on:
     tags:
       - "v*.*.*"
 
+permissions:
+  contents: read
+
 jobs:
   # Build Linux wheels with Rust extension
   build-linux:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       matrix:
         target: [x86_64, aarch64]
@@ -29,6 +34,8 @@ jobs:
   # Build macOS wheels (native extension stubs — is_available() returns False)
   build-macos:
     runs-on: macos-latest
+    permissions:
+      contents: read
     strategy:
       matrix:
         target: [x86_64, aarch64]
@@ -48,6 +55,8 @@ jobs:
   # Build source distribution (for pip install from source)
   build-sdist:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
