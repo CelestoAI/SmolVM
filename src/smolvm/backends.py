@@ -35,7 +35,7 @@ def resolve_backend(requested: str | None = None) -> str:
     Resolution order:
     1) Explicit ``requested`` argument.
     2) ``SMOLVM_BACKEND`` environment variable.
-    3) Platform-aware default (Darwin -> libkrun when available, then qemu; others -> firecracker).
+    3) Platform-aware default (Darwin -> qemu; others -> firecracker).
 
     Args:
         requested: Optional backend string.
@@ -51,8 +51,6 @@ def resolve_backend(requested: str | None = None) -> str:
     if raw == BACKEND_AUTO:
         system = platform.system().lower()
         if system == "darwin":
-            if which("krunvm") is not None:
-                return BACKEND_LIBKRUN
             return BACKEND_QEMU
         return BACKEND_FIRECRACKER
 
