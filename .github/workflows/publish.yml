@@ -22,6 +22,49 @@ jobs:
       - name: Set up Python
         run: uv python install 3.13
 
+      - name: Verify release ordering and version pin
+        run: |
+          python3 - <<'PY'
+          import os
+          import tomllib
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          data = tomllib.loads(Path("pyproject.toml").read_text())
+          version = data["project"]["version"]
+          tag = os.environ["GITHUB_REF_NAME"]
+          expected_tag = f"v{version}"
+          if tag != expected_tag:
+              raise SystemExit(
+                  f"Release tag {tag!r} does not match pyproject version {version!r}. "
+                  f"Expected {expected_tag!r}."
+              )
+
+          expected_dep = f"smolvm-core=={version}"
+          dependencies = data["project"]["dependencies"]
+          if expected_dep not in dependencies:
+              raise SystemExit(
+                  f"pyproject.toml must pin {expected_dep!r} before publishing smolvm."
+              )
+
+          url = f"https://pypi.org/pypi/smolvm-core/{version}/json"
+          try:
+              with urllib.request.urlopen(url) as response:
+                  if response.status != 200:
+                      raise SystemExit(
+                          f"Unexpected status {response.status} while checking {url}."
+                      )
+          except urllib.error.HTTPError as exc:
+              if exc.code == 404:
+                  raise SystemExit(
+                      f"smolvm-core {version} is not on PyPI yet. Publish tag core-v{version} first."
+                  ) from exc
+              raise
+
+          print(f"Release preflight OK: smolvm-core {version} is available on PyPI.")
+          PY
+
       - name: Build package
         run: uv build
 

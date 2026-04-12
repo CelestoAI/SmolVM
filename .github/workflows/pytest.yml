@@ -34,7 +34,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: rust-${{ runner.os }}-${{ hashFiles('smolvm-core/Cargo.toml') }}
+          key: rust-${{ runner.os }}-${{ hashFiles('Cargo.toml', 'smolvm-core/Cargo.toml') }}
           restore-keys: rust-${{ runner.os }}-
 
       - name: Install uv
@@ -56,3 +56,72 @@ jobs:
 
       - name: Run pytest
         run: uv run pytest
+
+  package-smoke:
+    runs-on: ubuntu-latest
+    env:
+      UV_CACHE_DIR: /tmp/uv-cache
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ hashFiles('Cargo.toml', 'smolvm-core/Cargo.toml') }}
+          restore-keys: rust-${{ runner.os }}-
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+
+      - name: Build release artifacts
+        run: |
+          uv build --package smolvm-core --wheel --out-dir smolvm-core/dist
+          uv build --package smolvm --wheel --out-dir dist
+
+      - name: Smoke test built wheels
+        run: |
+          VERSION=$(python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          data = tomllib.loads(Path("pyproject.toml").read_text())
+          print(data["project"]["version"])
+          PY
+          )
+
+          uv venv .smoke-venv --python 3.13
+          uv pip install \
+            --python .smoke-venv/bin/python3 \
+            --find-links smolvm-core/dist \
+            --find-links dist \
+            "smolvm==${VERSION}"
+
+          .smoke-venv/bin/python3 - <<PY
+          import platform
+          from importlib.metadata import version as pkg_version
+
+          from smolvm._accel import HAS_NETLINK
+
+          version = "${VERSION}"
+          assert pkg_version("smolvm") == version
+          assert pkg_version("smolvm-core") == version
+          if platform.system() == "Linux":
+              assert HAS_NETLINK, "smolvm-core native extension did not load from built wheel"
+          print("artifact install: OK")
+          PY

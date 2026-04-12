@@ -57,6 +57,8 @@ smolvm setup
 smolvm doctor
 ```
 
+On supported Linux and macOS systems, `pip install smolvm` also pulls in the matching `smolvm-core` wheel automatically. Most users do not need Rust installed.
+
 Linux may prompt for `sudo` during setup so it can install host dependencies and configure runtime permissions.
 
 </details>

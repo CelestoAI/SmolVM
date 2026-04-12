@@ -21,8 +21,3 @@ rtnetlink = "0.14"
 netlink-packet-route = "0.19"
 tokio = { version = "1", features = ["rt", "net", "macros"] }
 futures-util = "0.3"
-
-[profile.release]
-opt-level = 3
-lto = "fat"
-codegen-units = 1

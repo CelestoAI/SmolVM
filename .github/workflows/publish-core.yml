@@ -9,7 +9,54 @@ permissions:
   contents: read
 
 jobs:
+  verify-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag and package versions
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          core_tag_prefix = "core-v"
+          if not tag.startswith(core_tag_prefix):
+              raise SystemExit(f"Unexpected tag format: {tag!r}")
+
+          version = tag.removeprefix(core_tag_prefix)
+
+          cargo_text = Path("smolvm-core/Cargo.toml").read_text()
+          cargo_match = re.search(r'^version = "([^"]+)"$', cargo_text, re.MULTILINE)
+          if cargo_match is None:
+              raise SystemExit("Could not find version in smolvm-core/Cargo.toml")
+
+          cargo_version = cargo_match.group(1)
+          if cargo_version != version:
+              raise SystemExit(
+                  f"Tag {tag!r} does not match smolvm-core/Cargo.toml version {cargo_version!r}."
+              )
+
+          pyproject = tomllib.loads(Path("pyproject.toml").read_text())
+          smolvm_version = pyproject["project"]["version"]
+          expected_dep = f"smolvm-core=={version}"
+          if smolvm_version != version:
+              raise SystemExit(
+                  f"pyproject.toml version {smolvm_version!r} does not match core release {version!r}."
+              )
+          if expected_dep not in pyproject["project"]["dependencies"]:
+              raise SystemExit(
+                  f"pyproject.toml must pin {expected_dep!r} before publishing smolvm-core."
+              )
+
+          print(f"Release preflight OK for smolvm-core {version}.")
+          PY
+
   build-linux:
+    needs: verify-release
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -30,6 +77,7 @@ jobs:
           path: smolvm-core/dist
 
   build-macos:
+    needs: verify-release
     runs-on: macos-latest
     strategy:
       matrix:
@@ -57,6 +105,7 @@ jobs:
           path: smolvm-core/dist
 
   build-sdist:
+    needs: verify-release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
