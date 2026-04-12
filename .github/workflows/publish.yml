@@ -26,6 +26,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import os
+          import re
           import tomllib
           import urllib.error
           import urllib.request
@@ -41,14 +42,24 @@ jobs:
                   f"Expected {expected_tag!r}."
               )
 
-          expected_dep = f"smolvm-core=={version}"
+          match = re.fullmatch(r"(?P<base>\d+\.\d+\.\d+)(?P<suffix>.*)", version)
+          if match is None:
+              raise SystemExit(
+                  f"Unsupported project version format {version!r}. Expected X.Y.Z or X.Y.Z<suffix>."
+              )
+
+          base_version = match.group("base")
+          suffix = match.group("suffix")
+          core_version = base_version if suffix else version
+
+          expected_dep = f"smolvm-core=={core_version}"
           dependencies = data["project"]["dependencies"]
           if expected_dep not in dependencies:
               raise SystemExit(
                   f"pyproject.toml must pin {expected_dep!r} before publishing smolvm."
               )
 
-          url = f"https://pypi.org/pypi/smolvm-core/{version}/json"
+          url = f"https://pypi.org/pypi/smolvm-core/{core_version}/json"
           try:
               with urllib.request.urlopen(url) as response:
                   if response.status != 200:
@@ -58,11 +69,17 @@ jobs:
           except urllib.error.HTTPError as exc:
               if exc.code == 404:
                   raise SystemExit(
-                      f"smolvm-core {version} is not on PyPI yet. Publish tag core-v{version} first."
+                      f"smolvm-core {core_version} is not on PyPI yet. Publish tag core-v{core_version} first."
                   ) from exc
               raise
 
-          print(f"Release preflight OK: smolvm-core {version} is available on PyPI.")
+          if suffix:
+              print(
+                  f"Release preflight OK: prerelease smolvm {version} is pinned to stable "
+                  f"smolvm-core {core_version}, and that core release is available on PyPI."
+              )
+          else:
+              print(f"Release preflight OK: smolvm-core {core_version} is available on PyPI.")
           PY
 
       - name: Build package
