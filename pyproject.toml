@@ -85,7 +85,7 @@ smolvm-delete = "smolvm.cleanup:main"
 features = ["pyo3/extension-module"]
 python-source = "src"
 module-name = "smolvm._native"
-manifest-path = "rust/smolvm-netlink/Cargo.toml"
+manifest-path = "rust/smolvm-native/Cargo.toml"
 include = [
     "scripts/system-setup.sh",
     "scripts/system-setup-macos.sh",

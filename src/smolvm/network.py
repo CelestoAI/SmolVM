@@ -29,8 +29,12 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
+from smolvm._accel import HAS_NETLINK as _HAS_NATIVE
 from smolvm.exceptions import NetworkError, SmolVMError
 from smolvm.utils import async_run_command, run_command
+
+if _HAS_NATIVE:
+    from smolvm import _native
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +82,15 @@ class NetworkManager:
 
     def _detect_outbound_interface(self) -> str:
         """Detect outbound interface from default route."""
+        if _HAS_NATIVE:
+            try:
+                iface = _native.get_default_interface()
+                logger.info("Detected outbound interface: %s", iface)
+                return iface
+            except OSError as e:
+                logger.error("Native get_default_interface failed: %s", e)
+                raise NetworkError(str(e)) from e
+
         try:
             result = run_command(["ip", "route", "show", "default"], use_sudo=False)
             parts = result.stdout.strip().split()
@@ -121,6 +134,31 @@ class NetworkManager:
             user = os.environ.get("USER", "root")
 
         logger.info("Creating TAP device: %s (user: %s)", tap_name, user)
+
+        if _HAS_NATIVE:
+            uid = os.getuid() if user == os.environ.get("USER") else int(
+                run_command(["id", "-u", user], use_sudo=False).stdout.strip()
+            )
+            max_busy_retries = 3
+            for attempt in range(max_busy_retries + 1):
+                try:
+                    _native.create_tap(tap_name, uid)
+                    return
+                except OSError as e:
+                    err = str(e)
+                    if "File exists" in err:
+                        logger.debug("TAP device %s already exists", tap_name)
+                        return
+                    if "Device or resource busy" in err and attempt < max_busy_retries:
+                        delay = 0.1 * (attempt + 1)
+                        logger.warning(
+                            "TAP %s busy (attempt %d/%d), retrying in %.2fs",
+                            tap_name, attempt + 1, max_busy_retries + 1, delay,
+                        )
+                        time.sleep(delay)
+                        continue
+                    raise SmolVMError(err) from e
+            return
 
         max_busy_retries = 3
         for attempt in range(max_busy_retries + 1):
@@ -200,6 +238,17 @@ class NetworkManager:
 
         logger.info("Configuring TAP %s with IP %s/%s", tap_name, host_ip, netmask)
 
+        if _HAS_NATIVE:
+            try:
+                _native.flush_addrs(tap_name)
+                _native.add_addr(tap_name, host_ip, int(netmask))
+                _native.set_link_up(tap_name)
+            except OSError as e:
+                if "RTNETLINK answers: File exists" not in str(e) and "File exists" not in str(e):
+                    raise SmolVMError(str(e)) from e
+            self._write_sysctl(f"net/ipv4/conf/{tap_name}/route_localnet", "1")
+            return
+
         batch = [
             f"addr flush dev {tap_name}",
             f"addr add {host_ip}/{netmask} dev {tap_name}",
@@ -209,11 +258,9 @@ class NetworkManager:
         try:
             self._run_ip_batch(batch)
         except SmolVMError as e:
-            # Can happen in rare races; safe to ignore for idempotency.
             if "RTNETLINK answers: File exists" not in str(e):
                 raise
 
-        # Allow localhost DNAT to guest addresses.
         self._write_sysctl(f"net/ipv4/conf/{tap_name}/route_localnet", "1")
 
     async def async_configure_tap(
@@ -254,6 +301,15 @@ class NetworkManager:
             raise ValueError("device cannot be empty")
 
         logger.info("Adding route: %s via %s", ip_address, device)
+
+        if _HAS_NATIVE:
+            try:
+                _native.add_route(ip_address, 32, device)
+            except OSError as e:
+                if "File exists" not in str(e):
+                    raise SmolVMError(str(e)) from e
+            return
+
         try:
             run_command(["ip", "route", "add", f"{ip_address}/32", "dev", device])
         except SmolVMError as e:
@@ -280,6 +336,15 @@ class NetworkManager:
             raise ValueError("tap_name cannot be empty")
 
         logger.info("Cleaning up TAP device: %s", tap_name)
+
+        if _HAS_NATIVE:
+            try:
+                _native.delete_tap(tap_name)
+            except OSError as e:
+                if "Cannot find device" not in str(e):
+                    logger.warning("Failed to delete TAP %s: %s", tap_name, e)
+            return
+
         try:
             run_command(["ip", "link", "delete", tap_name])
         except SmolVMError as e:
@@ -320,6 +385,13 @@ class NetworkManager:
 
     def _write_sysctl(self, key_path: str, value: str) -> bool:
         """Write /proc/sys key, with sudo sysctl fallback."""
+        if _HAS_NATIVE:
+            try:
+                _native.write_sysctl(key_path.replace("/", "."), value)
+                return True
+            except OSError:
+                pass  # Fall through to Python path
+
         path = Path(f"/proc/sys/{key_path}")
 
         try:

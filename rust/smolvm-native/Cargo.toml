@@ -1,5 +1,5 @@
 [package]
-name = "smolvm-netlink"
+name = "smolvm-native"
 version = "0.1.0"
 edition = "2021"
 
