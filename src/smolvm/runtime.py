@@ -79,12 +79,12 @@ class RuntimeContext:
     resolve_boot_args: Callable[[VMInfo], str]
     start_firecracker: Callable[[Path, Path], subprocess.Popen[bytes]]
     start_qemu: Callable[..., subprocess.Popen[bytes]]
-    start_libkrun: Callable[[VMInfo, Path], subprocess.Popen[bytes]]
     unlink_socket: Callable[[Path], None]
     kill_process: Callable[[int], None]
     wait_for_process: Callable[[int, float], None]
     is_process_running: Callable[[int], bool]
     find_qemu_binary: Callable[[], Path | None]
+    start_libkrun: Callable[[VMInfo, Path], subprocess.Popen[bytes]] | None = None
 
     # -- Async callable counterparts (populated when async operations are used) --
     async_start_firecracker: (

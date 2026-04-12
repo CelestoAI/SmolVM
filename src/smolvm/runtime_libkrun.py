@@ -43,6 +43,8 @@ class LibkrunRuntimeAdapter(RuntimeAdapter):
         self._context = context
 
     def start(self, vm_info: VMInfo, *, log_path: Path, boot_timeout: float) -> RuntimeLaunch:
+        if self._context.start_libkrun is None:
+            raise SmolVMError("libkrun launch function is not configured in runtime context")
         process = self._context.start_libkrun(vm_info, log_path)
         self._wait_for_runtime(process, boot_timeout)
         return RuntimeLaunch(
@@ -80,6 +82,8 @@ class LibkrunRuntimeAdapter(RuntimeAdapter):
         if self._context.async_start_libkrun:
             process = await self._context.async_start_libkrun(vm_info, log_path)
         else:
+            if self._context.start_libkrun is None:
+                raise SmolVMError("libkrun launch function is not configured in runtime context")
             process = await asyncio.to_thread(self._context.start_libkrun, vm_info, log_path)
 
         await self._async_wait_for_runtime(process, boot_timeout)
