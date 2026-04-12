@@ -3,6 +3,10 @@ name = "smolvm-core"
 version = "0.0.9"
 edition = "2021"
 license = "Apache-2.0"
+description = "Rust-native core package for SmolVM"
+homepage = "https://github.com/CelestoAI/SmolVM"
+repository = "https://github.com/CelestoAI/SmolVM"
+readme = "README.md"
 
 [lib]
 name = "_smolvm_core"

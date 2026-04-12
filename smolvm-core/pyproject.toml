@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "smolvm-core"
 dynamic = ["version"]
 description = "Rust-accelerated network operations for SmolVM"
-readme = "../README.md"
+readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
 authors = [
@@ -25,6 +25,11 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Rust",
 ]
+
+[project.urls]
+Homepage = "https://github.com/CelestoAI/SmolVM"
+Repository = "https://github.com/CelestoAI/SmolVM"
+Documentation = "https://docs.celesto.ai"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
