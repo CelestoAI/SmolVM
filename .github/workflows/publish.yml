@@ -20,10 +20,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # maturin builds inside a manylinux Docker container —
+      # use explicit in-container interpreter paths (not host setup-python)
       - uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist --find-interpreter
+          args: >-
+            --release --out dist
+            --interpreter /opt/python/cp310-cp310/bin/python
+            --interpreter /opt/python/cp311-cp311/bin/python
+            --interpreter /opt/python/cp312-cp312/bin/python
+            --interpreter /opt/python/cp313-cp313/bin/python
           manylinux: manylinux_2_17
 
       - uses: actions/upload-artifact@v4
@@ -41,6 +48,15 @@ jobs:
         target: [x86_64, aarch64]
     steps:
       - uses: actions/checkout@v4
+
+      # macOS: setup-python installs on the host (not in a container)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: |
+            3.10
+            3.11
+            3.12
+            3.13
 
       - uses: PyO3/maturin-action@v1
         with:

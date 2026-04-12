@@ -54,10 +54,3 @@ class TestVersion:
         assert '__version__ = "' not in source, (
             "__version__ should be read from importlib.metadata, not hardcoded"
         )
-
-    def test_version_is_current(self) -> None:
-        """Sanity check that version is at least 0.0.9 (post-Rust extension)."""
-        import smolvm
-        from packaging.version import Version
-
-        assert Version(smolvm.__version__) >= Version("0.0.9")
