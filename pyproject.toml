@@ -8,7 +8,7 @@ version = "0.0.9.dev0"
 description = "Secure runtime for AI agents, and tools -- free and open-source from Celesto AI 🧡"
 readme = "README.md"
 license = "Apache-2.0"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.14"
 authors = [
     { name = "Celesto AI", email = "hello@celesto.ai" }
 ]
