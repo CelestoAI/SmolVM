@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
 
 [project]
 name = "smolvm"
@@ -81,23 +81,19 @@ all = [
 smolvm = "smolvm.cli:main"
 smolvm-delete = "smolvm.cleanup:main"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/smolvm"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"scripts/system-setup.sh" = "src/smolvm/_setup_assets/system-setup.sh"
-"scripts/system-setup-macos.sh" = "src/smolvm/_setup_assets/system-setup-macos.sh"
-"scripts/internal/install-firecracker.sh" = "src/smolvm/_setup_assets/internal/install-firecracker.sh"
-"scripts/internal/configure-runtime-sudoers.sh" = "src/smolvm/_setup_assets/internal/configure-runtime-sudoers.sh"
-"scripts/internal/image-build-loopfs.sh" = "src/smolvm/_setup_assets/internal/image-build-loopfs.sh"
-
-[tool.hatch.build]
-exclude = [
-    "/ui",
+[tool.maturin]
+features = ["pyo3/extension-module"]
+python-source = "src"
+module-name = "smolvm._native"
+manifest-path = "rust/smolvm-netlink/Cargo.toml"
+include = [
+    "scripts/system-setup.sh",
+    "scripts/system-setup-macos.sh",
+    "scripts/internal/install-firecracker.sh",
+    "scripts/internal/configure-runtime-sudoers.sh",
+    "scripts/internal/image-build-loopfs.sh",
 ]
-
-[tool.hatch.version]
-path = "src/smolvm/__init__.py"
+exclude = ["/ui"]
 
 [tool.ruff]
 target-version = "py310"
