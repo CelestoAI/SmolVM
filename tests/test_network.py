@@ -16,8 +16,17 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from smolvm.exceptions import SmolVMError
 from smolvm.network import NetworkManager, check_network_prerequisites
+
+
+@pytest.fixture(autouse=True)
+def _disable_native_extension():
+    """Force subprocess path in all network tests (native extension may be present on Linux CI)."""
+    with patch("smolvm.network._HAS_NATIVE", False):
+        yield
 
 
 def _collect_nft_scripts(mock_run_command: MagicMock) -> str:

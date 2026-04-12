@@ -135,9 +135,12 @@ class NetworkManager:
         logger.info("Creating TAP device: %s (user: %s)", tap_name, user)
 
         if _HAS_NATIVE:
-            uid = os.getuid() if user == os.environ.get("USER") else int(
-                run_command(["id", "-u", user], use_sudo=False).stdout.strip()
-            )
+            import pwd
+
+            try:
+                uid = pwd.getpwnam(user).pw_uid
+            except KeyError:
+                uid = os.getuid()
             max_busy_retries = 3
             for attempt in range(max_busy_retries + 1):
                 try:
