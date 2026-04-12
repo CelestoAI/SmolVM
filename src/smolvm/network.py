@@ -159,8 +159,12 @@ class NetworkManager:
                         )
                         time.sleep(delay)
                         continue
+                    if "errno 1" in err or "Operation not permitted" in err:
+                        logger.warning("Native create_tap lacks permissions, falling back to subprocess")
+                        break  # Fall through to subprocess path
                     raise SmolVMError(err) from e
-            return
+            else:
+                return  # Native path succeeded after retries
 
         max_busy_retries = 3
         for attempt in range(max_busy_retries + 1):
@@ -245,11 +249,17 @@ class NetworkManager:
                 _native.flush_addrs(tap_name)
                 _native.add_addr(tap_name, host_ip, int(netmask))
                 _native.set_link_up(tap_name)
+                self._write_sysctl(f"net/ipv4/conf/{tap_name}/route_localnet", "1")
+                return
             except OSError as e:
-                if "RTNETLINK answers: File exists" not in str(e) and "File exists" not in str(e):
-                    raise SmolVMError(str(e)) from e
-            self._write_sysctl(f"net/ipv4/conf/{tap_name}/route_localnet", "1")
-            return
+                err = str(e)
+                if "RTNETLINK answers: File exists" in err or "File exists" in err:
+                    self._write_sysctl(f"net/ipv4/conf/{tap_name}/route_localnet", "1")
+                    return
+                if "errno 1" in err or "Operation not permitted" in err:
+                    logger.warning("Native configure_tap lacks permissions, falling back to subprocess")
+                else:
+                    raise SmolVMError(err) from e
 
         batch = [
             f"addr flush dev {tap_name}",
@@ -307,10 +317,15 @@ class NetworkManager:
         if _HAS_NATIVE:
             try:
                 _native.add_route(ip_address, 32, device)
+                return
             except OSError as e:
-                if "File exists" not in str(e):
-                    raise SmolVMError(str(e)) from e
-            return
+                err = str(e)
+                if "File exists" in err:
+                    return
+                if "errno 1" in err or "Operation not permitted" in err:
+                    logger.warning("Native add_route lacks permissions, falling back to subprocess")
+                else:
+                    raise SmolVMError(err) from e
 
         try:
             run_command(["ip", "route", "add", f"{ip_address}/32", "dev", device])
@@ -342,11 +357,16 @@ class NetworkManager:
         if _HAS_NATIVE:
             try:
                 _native.delete_tap(tap_name)
+                return
             except OSError as e:
                 err = str(e)
-                if "Cannot find device" not in err and "No such device" not in err:
+                if "Cannot find device" in err or "No such device" in err:
+                    return
+                if "errno 1" in err or "Operation not permitted" in err:
+                    logger.warning("Native delete_tap lacks permissions, falling back to subprocess")
+                else:
                     logger.warning("Failed to delete TAP %s: %s", tap_name, e)
-            return
+                    return
 
         try:
             run_command(["ip", "link", "delete", tap_name])
