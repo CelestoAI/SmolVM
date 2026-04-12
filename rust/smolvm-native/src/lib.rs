@@ -123,7 +123,5 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(get_default_interface, m)?)?;
     m.add_function(wrap_pyfunction!(write_sysctl, m)?)?;
 
-    // Version info
-    m.add("__version__", "0.1.0")?;
     Ok(())
 }
