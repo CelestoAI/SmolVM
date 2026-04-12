@@ -114,13 +114,17 @@ jobs:
 
           .smoke-venv/bin/python3 - <<PY
           import platform
+          import re
           from importlib.metadata import version as pkg_version
 
           from smolvm._accel import HAS_NETLINK
 
           version = "${VERSION}"
+          match = re.fullmatch(r"(?P<base>\d+\.\d+\.\d+)(?P<suffix>.*)", version)
+          assert match is not None, version
+          core_version = match.group("base") if match.group("suffix") else version
           assert pkg_version("smolvm") == version
-          assert pkg_version("smolvm-core") == version
+          assert pkg_version("smolvm-core") == core_version
           if platform.system() == "Linux":
               assert HAS_NETLINK, "smolvm-core native extension did not load from built wheel"
           print("artifact install: OK")
