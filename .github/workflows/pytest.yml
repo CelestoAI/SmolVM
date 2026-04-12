@@ -43,5 +43,15 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev --extra all
 
+      - name: Assert native extension available
+        run: |
+          uv run python -c "
+          from smolvm._accel import HAS_NETLINK
+          assert HAS_NETLINK, 'Native extension not loaded — build may have failed silently'
+          from smolvm._native import is_available
+          assert is_available(), 'Native extension reports not available on Linux'
+          print('Native extension: OK')
+          "
+
       - name: Run pytest
         run: uv run pytest

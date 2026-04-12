@@ -88,8 +88,7 @@ class NetworkManager:
                 logger.info("Detected outbound interface: %s", iface)
                 return iface
             except OSError as e:
-                logger.error("Native get_default_interface failed: %s", e)
-                raise NetworkError(str(e)) from e
+                logger.error("Native get_default_interface failed, falling back to subprocess: %s", e)
 
         try:
             result = run_command(["ip", "route", "show", "default"], use_sudo=False)
@@ -341,7 +340,8 @@ class NetworkManager:
             try:
                 _native.delete_tap(tap_name)
             except OSError as e:
-                if "Cannot find device" not in str(e):
+                err = str(e)
+                if "Cannot find device" not in err and "No such device" not in err:
                     logger.warning("Failed to delete TAP %s: %s", tap_name, e)
             return
 
