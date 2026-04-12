@@ -10,28 +10,71 @@ permissions:
   id-token: write
 
 jobs:
-  publish:
+  # Build Linux wheels with Rust extension
+  build-linux:
     runs-on: ubuntu-latest
-
+    strategy:
+      matrix:
+        target: [x86_64, aarch64]
     steps:
-      - name: Check out repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@v4
+
+      - uses: PyO3/maturin-action@v1
         with:
-          persist-credentials: false
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          manylinux: auto
 
-      - name: Install uv # zizmor: ignore[cache-poisoning]
-        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-${{ matrix.target }}
+          path: dist
 
-      - name: Set up Python
-        run: uv python install 3.12
+  # Build macOS wheels (native extension stubs — is_available() returns False)
+  build-macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        target: [x86_64, aarch64]
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: uv sync
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist
 
-      - name: Build package
-        run: uv build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-macos-${{ matrix.target }}
+          path: dist
 
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
+  # Build source distribution (for pip install from source)
+  build-sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist
+
+  # Publish all wheels + sdist to PyPI
+  publish:
+    needs: [build-linux, build-macos, build-sdist]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           skip-existing: true
