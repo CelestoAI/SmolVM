@@ -148,6 +148,10 @@ class WorkspaceMount(BaseModel):
             )
         return v
 
+    def resolved_tag(self, index: int) -> str:
+        """Return the mount tag, falling back to ``workspace{index}``."""
+        return self.mount_tag or f"workspace{index}"
+
     model_config = {"frozen": True}
 
 
@@ -368,7 +372,7 @@ class VMConfig(BaseModel):
         seen_tags: set[str] = set()
         seen_guest_paths: set[str] = set()
         for index, mount in enumerate(v):
-            tag = mount.mount_tag or f"workspace{index}"
+            tag = mount.resolved_tag(index)
             if tag in seen_tags:
                 raise ValueError(
                     f"Duplicate workspace mount tag: {tag}"

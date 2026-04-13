@@ -57,6 +57,16 @@ class TestWorkspaceMountValidation:
         ws = WorkspaceMount(host_path=tmp_path, mount_tag="myshare")
         assert ws.mount_tag == "myshare"
 
+    def test_resolved_tag_with_explicit_tag(self, tmp_path: Path) -> None:
+        ws = WorkspaceMount(host_path=tmp_path, mount_tag="myshare")
+        assert ws.resolved_tag(0) == "myshare"
+        assert ws.resolved_tag(5) == "myshare"
+
+    def test_resolved_tag_fallback(self, tmp_path: Path) -> None:
+        ws = WorkspaceMount(host_path=tmp_path)
+        assert ws.resolved_tag(0) == "workspace0"
+        assert ws.resolved_tag(3) == "workspace3"
+
 
 # ── VMConfig workspace_mounts validation ────────────────────────────
 
@@ -188,8 +198,11 @@ def test_start_qemu_includes_9p_workspace_args(
 # ── Firecracker rejection ───────────────────────────────────────────
 
 
-def test_workspace_rejected_on_firecracker(tmp_path: Path) -> None:
-    """Workspace mounts should be rejected for the Firecracker backend."""
+@pytest.mark.parametrize("backend", ["firecracker", "libkrun"])
+def test_workspace_rejected_on_non_qemu_backend(
+    tmp_path: Path, backend: str,
+) -> None:
+    """Workspace mounts should be rejected for non-QEMU backends."""
     from smolvm.exceptions import SmolVMError
 
     kernel = tmp_path / "vmlinux"
@@ -201,20 +214,20 @@ def test_workspace_rejected_on_firecracker(tmp_path: Path) -> None:
     ws_dir.mkdir()
 
     config = VMConfig(
-        vm_id="vm-fc-ws",
+        vm_id=f"vm-{backend}-ws",
         kernel_path=kernel,
         rootfs_path=rootfs,
-        backend="firecracker",
+        backend=backend,
         workspace_mounts=[WorkspaceMount(host_path=ws_dir)],
     )
 
     sdk = SmolVMManager(
         data_dir=tmp_path / "data",
         socket_dir=tmp_path / "sockets",
-        backend="firecracker",
+        backend=backend,
     )
 
-    with pytest.raises(SmolVMError, match="not supported with the Firecracker"):
+    with pytest.raises(SmolVMError, match="only supported with the QEMU"):
         sdk.create(config)
 
 
@@ -273,3 +286,56 @@ class TestCliWorkspaceFlag:
         parser = build_parser()
         args = parser.parse_args(["create"])
         assert args.workspace is None
+
+
+# ── Facade guards ───────────────────────────────────────────────────
+
+
+class TestFacadeWorkspaceGuards:
+    """Tests for facade-level workspace mount guards."""
+
+    def test_mount_workspaces_rejects_non_root_ssh(self, tmp_path: Path) -> None:
+        """Workspace mounts should fail fast if ssh_user is not root."""
+        from unittest.mock import MagicMock
+
+        from smolvm.exceptions import SmolVMError
+        from smolvm.facade import SmolVM
+
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+
+        ws_dir = tmp_path / "project"
+        ws_dir.mkdir()
+
+        config = VMConfig(
+            vm_id="vm-nonroot",
+            kernel_path=kernel,
+            rootfs_path=rootfs,
+            backend="qemu",
+            ssh_capable=True,
+            workspace_mounts=[WorkspaceMount(host_path=ws_dir)],
+        )
+
+        with patch("smolvm.facade.SmolVMManager") as mock_sdk_cls:
+            mock_sdk = MagicMock()
+            mock_info = MagicMock(vm_id="vm-nonroot")
+            mock_info.status = MagicMock()
+            mock_info.status.value = "created"
+            mock_info.config = config
+            mock_sdk.create.return_value = mock_info
+
+            running_info = MagicMock(vm_id="vm-nonroot")
+            running_info.config = config
+            running_info.network.guest_ip = "127.0.0.1"
+            running_info.network.ssh_host_port = 2200
+            mock_sdk.start.return_value = running_info
+            mock_sdk_cls.return_value = mock_sdk
+
+            vm = SmolVM(config, ssh_user="agent")
+            with pytest.raises(SmolVMError, match="require ssh_user='root'"):
+                with patch.object(vm, "can_run_commands", return_value=True), \
+                     patch.object(vm, "wait_for_ssh"), \
+                     patch("smolvm.facade.SSHClient"):
+                    vm.start()

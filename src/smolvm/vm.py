@@ -747,10 +747,10 @@ class SmolVMManager:
         if effective_config.backend != backend:
             effective_config = effective_config.model_copy(update={"backend": backend})
 
-        if effective_config.workspace_mounts and backend == BACKEND_FIRECRACKER:
+        if effective_config.workspace_mounts and backend != BACKEND_QEMU:
             raise SmolVMError(
-                "Workspace mounts (virtio-9p) are not supported with the "
-                "Firecracker backend. Use --backend qemu instead.",
+                "Workspace mounts (virtio-9p) are only supported with the "
+                "QEMU backend. Use --backend qemu.",
                 {"vm_id": effective_config.vm_id, "backend": backend},
             )
 
@@ -1531,7 +1531,7 @@ class SmolVMManager:
         # ── virtio-9p workspace mounts ──────────────────────────────
         workspace_fsdev_ids: list[tuple[str, str]] = []
         for index, ws in enumerate(vm_info.config.workspace_mounts):
-            tag = ws.mount_tag or f"workspace{index}"
+            tag = ws.resolved_tag(index)
             fsdev_id = f"fsdev-{tag}"
             workspace_fsdev_ids.append((fsdev_id, tag))
             cmd.extend([
@@ -2374,7 +2374,7 @@ class SmolVMManager:
         # ── virtio-9p workspace mounts ──────────────────────────────
         workspace_fsdev_ids: list[tuple[str, str]] = []
         for index, ws in enumerate(vm_info.config.workspace_mounts):
-            tag = ws.mount_tag or f"workspace{index}"
+            tag = ws.resolved_tag(index)
             fsdev_id = f"fsdev-{tag}"
             workspace_fsdev_ids.append((fsdev_id, tag))
             cmd.extend([

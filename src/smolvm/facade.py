@@ -1548,8 +1548,15 @@ class SmolVM:
         if not workspace_mounts:
             return
 
+        if self._ssh_user != "root":
+            raise SmolVMError(
+                "Workspace mounts require ssh_user='root' because the guest "
+                "must run modprobe and mount.",
+                {"vm_id": self._vm_id, "ssh_user": self._ssh_user},
+            )
+
         for index, ws in enumerate(workspace_mounts):
-            tag = ws.mount_tag or f"workspace{index}"
+            tag = ws.resolved_tag(index)
             guest_path = shlex.quote(ws.guest_path)
             lower = shlex.quote(f"/mnt/.smolvm-ws-{tag}")
             upper = shlex.quote(f"/tmp/.smolvm-ws-{tag}-upper")
