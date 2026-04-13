@@ -502,6 +502,8 @@ class SmolVMManager:
             raise SmolVMError("Snapshotting currently supports only isolated-disk VMs")
         if vm_info.config.extra_drives:
             raise SmolVMError("Snapshotting currently supports only VMs without extra drives")
+        if vm_info.config.workspace_mounts:
+            raise SmolVMError("Snapshotting is not supported for VMs with workspace mounts")
         if vm_info.network is None:
             raise SmolVMError("VM has no network configuration", {"vm_id": vm_info.vm_id})
 
@@ -744,6 +746,13 @@ class SmolVMManager:
         effective_config = config
         if effective_config.backend != backend:
             effective_config = effective_config.model_copy(update={"backend": backend})
+
+        if effective_config.workspace_mounts and backend == BACKEND_FIRECRACKER:
+            raise SmolVMError(
+                "Workspace mounts (virtio-9p) are not supported with the "
+                "Firecracker backend. Use --backend qemu instead.",
+                {"vm_id": effective_config.vm_id, "backend": backend},
+            )
 
         effective_config = self._materialize_rootfs(effective_config)
 
@@ -1518,6 +1527,19 @@ class SmolVMManager:
                 ]
             )
             cmd.extend(["-drive", extra_drive_arg])
+
+        # ── virtio-9p workspace mounts ──────────────────────────────
+        workspace_fsdev_ids: list[tuple[str, str]] = []
+        for index, ws in enumerate(vm_info.config.workspace_mounts):
+            tag = ws.mount_tag or f"workspace{index}"
+            fsdev_id = f"fsdev-{tag}"
+            workspace_fsdev_ids.append((fsdev_id, tag))
+            cmd.extend([
+                "-fsdev",
+                f"local,id={fsdev_id},path={ws.host_path},"
+                f"security_model=mapped-xattr,readonly=on",
+            ])
+
         if control_socket_path is not None:
             cmd.extend(
                 [
@@ -1545,6 +1567,8 @@ class SmolVMManager:
             )
             for drive_id in extra_drive_ids:
                 cmd.extend(["-device", f"virtio-blk-device,drive={drive_id}"])
+            for fsdev_id, tag in workspace_fsdev_ids:
+                cmd.extend(["-device", f"virtio-9p-device,fsdev={fsdev_id},mount_tag={tag}"])
         else:
             machine = "q35,accel=hvf" if system == "Darwin" else "q35"
             cpu = "host" if system == "Darwin" else "max"
@@ -1562,6 +1586,8 @@ class SmolVMManager:
             )
             for drive_id in extra_drive_ids:
                 cmd.extend(["-device", f"virtio-blk-pci,drive={drive_id}"])
+            for fsdev_id, tag in workspace_fsdev_ids:
+                cmd.extend(["-device", f"virtio-9p-pci,fsdev={fsdev_id},mount_tag={tag}"])
 
         logger.debug("Starting QEMU: %s", " ".join(cmd))
 
@@ -2345,6 +2371,18 @@ class SmolVMManager:
             )
             cmd.extend(["-drive", extra_drive_arg])
 
+        # ── virtio-9p workspace mounts ──────────────────────────────
+        workspace_fsdev_ids: list[tuple[str, str]] = []
+        for index, ws in enumerate(vm_info.config.workspace_mounts):
+            tag = ws.mount_tag or f"workspace{index}"
+            fsdev_id = f"fsdev-{tag}"
+            workspace_fsdev_ids.append((fsdev_id, tag))
+            cmd.extend([
+                "-fsdev",
+                f"local,id={fsdev_id},path={ws.host_path},"
+                f"security_model=mapped-xattr,readonly=on",
+            ])
+
         if control_socket_path is not None:
             cmd.extend(["-qmp", f"unix:{control_socket_path},server=on,wait=off"])
         if start_paused:
@@ -2358,6 +2396,8 @@ class SmolVMManager:
                         "-device", f"virtio-net-device,netdev=net0,mac={guest_mac}"])
             for drive_id in extra_drive_ids:
                 cmd.extend(["-device", f"virtio-blk-device,drive={drive_id}"])
+            for fsdev_id, tag in workspace_fsdev_ids:
+                cmd.extend(["-device", f"virtio-9p-device,fsdev={fsdev_id},mount_tag={tag}"])
         else:
             machine = "q35,accel=hvf" if system == "Darwin" else "q35"
             cpu = "host" if system == "Darwin" else "max"
@@ -2366,6 +2406,8 @@ class SmolVMManager:
                         "-device", f"virtio-net-pci,netdev=net0,mac={guest_mac}"])
             for drive_id in extra_drive_ids:
                 cmd.extend(["-device", f"virtio-blk-pci,drive={drive_id}"])
+            for fsdev_id, tag in workspace_fsdev_ids:
+                cmd.extend(["-device", f"virtio-9p-pci,fsdev={fsdev_id},mount_tag={tag}"])
 
         log_file = open(log_path, "w")  # noqa: SIM115
         key = f"qemu:{vm_info.vm_id}"

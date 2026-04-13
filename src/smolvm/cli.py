@@ -24,6 +24,7 @@ import platform
 import re
 import subprocess
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
 from rich.panel import Panel
@@ -482,6 +483,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Emit machine-readable JSON output.",
+    )
+    create_parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Host directory to mount at /workspace inside the sandbox. "
+            "The host directory stays read-only; writes inside the sandbox "
+            "go to an overlay and do not affect the host."
+        ),
     )
     _add_boot_timeout_arg(create_parser)
 
@@ -1001,6 +1013,7 @@ def _build_and_boot_with_progress(
     console: object,
     build_fn: object,
     boot_timeout: int,
+    workspace: Path | None = None,
 ) -> object:
     """Build a VM config and boot it, showing a Rich progress bar.
 
@@ -1042,7 +1055,7 @@ def _build_and_boot_with_progress(
         boot_task = progress.add_task(
             "Booting computer and waiting for SSH...", total=None
         )
-        vm = SmolVM(config, ssh_key_path=ssh_key_path)
+        vm = SmolVM(config, ssh_key_path=ssh_key_path, workspace=workspace)
         vm.start(boot_timeout=boot_timeout)
         vm.wait_for_ssh(timeout=boot_timeout)
         progress.remove_task(boot_task)
@@ -1087,6 +1100,7 @@ def _run_create(args: argparse.Namespace) -> int:
                         on_download=on_download,
                     ),
                     boot_timeout=args.boot_timeout,
+                    workspace=args.workspace,
                 )
             else:
                 config, ssh_key_path = _build_s3_image_config(
@@ -1096,7 +1110,7 @@ def _run_create(args: argparse.Namespace) -> int:
                     mem_size_mib=args.memory_mib,
                     ssh_key_path=None,
                 )
-                vm = SmolVM(config, ssh_key_path=ssh_key_path)
+                vm = SmolVM(config, ssh_key_path=ssh_key_path, workspace=args.workspace)
                 vm.start(boot_timeout=args.boot_timeout)
                 vm.wait_for_ssh(timeout=args.boot_timeout)
         else:
@@ -1115,6 +1129,7 @@ def _run_create(args: argparse.Namespace) -> int:
                         on_download=on_download,
                     ),
                     boot_timeout=args.boot_timeout,
+                    workspace=args.workspace,
                 )
             else:
                 config, ssh_key_path = _build_auto_config(
@@ -1125,7 +1140,7 @@ def _run_create(args: argparse.Namespace) -> int:
                     disk_size_mib=args.disk_size_mib,
                     ssh_key_path=None,
                 )
-                vm = SmolVM(config, ssh_key_path=ssh_key_path)
+                vm = SmolVM(config, ssh_key_path=ssh_key_path, workspace=args.workspace)
                 vm.start(boot_timeout=args.boot_timeout)
                 vm.wait_for_ssh(timeout=args.boot_timeout)
 

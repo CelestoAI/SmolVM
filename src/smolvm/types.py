@@ -110,6 +110,47 @@ class VsockConfig(BaseModel):
     model_config = {"frozen": True}
 
 
+class WorkspaceMount(BaseModel):
+    """Host directory to mount inside the guest via virtio-9p + overlayfs.
+
+    The host directory is exposed read-only through QEMU's virtio-9p
+    passthrough.  An overlayfs layer on top lets the guest read and write
+    freely — but changes stay inside the VM and never touch the host.
+
+    Attributes:
+        host_path: Absolute path to a directory on the host.
+        guest_path: Mount point inside the guest (default ``/workspace``).
+        mount_tag: 9p mount tag passed to QEMU.  Auto-generated when omitted.
+    """
+
+    host_path: Path
+    guest_path: str = "/workspace"
+    mount_tag: str | None = None
+
+    @field_validator("host_path")
+    @classmethod
+    def validate_host_path(cls, v: Path) -> Path:
+        """Ensure the host path exists and is a directory."""
+        v = v.resolve()
+        if not v.exists():
+            raise ValueError(f"Workspace path does not exist: {v}")
+        if not v.is_dir():
+            raise ValueError(f"Workspace path is not a directory: {v}")
+        return v
+
+    @field_validator("guest_path")
+    @classmethod
+    def validate_guest_path(cls, v: str) -> str:
+        """Ensure the guest mount point is an absolute path."""
+        if not v.startswith("/"):
+            raise ValueError(
+                f"guest_path must be an absolute path, got: {v!r}"
+            )
+        return v
+
+    model_config = {"frozen": True}
+
+
 class InternetSettings(BaseModel):
     """Network access controls for a VM.
 
@@ -243,6 +284,7 @@ class VMConfig(BaseModel):
     port_forwards: list[PortForwardConfig] = []
     vsock: VsockConfig | None = None
     internet_settings: InternetSettings | None = None
+    workspace_mounts: list[WorkspaceMount] = []
 
     @field_validator("vm_id", mode="before")
     @classmethod
@@ -315,6 +357,28 @@ class VMConfig(BaseModel):
                 raise ValueError(f"Duplicate guest port in port_forwards: {forward.guest_port}")
             seen_host_ports.add(forward.host_port)
             seen_guest_ports.add(forward.guest_port)
+        return v
+
+    @field_validator("workspace_mounts")
+    @classmethod
+    def validate_workspace_mounts(
+        cls, v: list[WorkspaceMount],
+    ) -> list[WorkspaceMount]:
+        """Ensure workspace mount tags and guest paths are unique."""
+        seen_tags: set[str] = set()
+        seen_guest_paths: set[str] = set()
+        for index, mount in enumerate(v):
+            tag = mount.mount_tag or f"workspace{index}"
+            if tag in seen_tags:
+                raise ValueError(
+                    f"Duplicate workspace mount tag: {tag}"
+                )
+            if mount.guest_path in seen_guest_paths:
+                raise ValueError(
+                    f"Duplicate workspace guest_path: {mount.guest_path}"
+                )
+            seen_tags.add(tag)
+            seen_guest_paths.add(mount.guest_path)
         return v
 
     model_config = {"frozen": True}

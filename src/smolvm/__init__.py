@@ -18,6 +18,8 @@ A Python SDK for running AI agents and executing untrusted code in a secure,
 sandboxed environment.
 """
 
+from importlib.metadata import version as _pkg_version
+
 from smolvm.browser import BrowserSession
 from smolvm.build import SSH_BOOT_ARGS, ImageBuilder
 from smolvm.exceptions import (
@@ -54,10 +56,9 @@ from smolvm.types import (
     VMConfig,
     VMInfo,
     VMState,
+    WorkspaceMount,
 )
 from smolvm.vm import SmolVMManager
-
-from importlib.metadata import version as _pkg_version
 
 __version__ = _pkg_version("smolvm")
 
@@ -88,6 +89,7 @@ __all__ = [
     "SnapshotInfo",
     "CommandResult",
     "BrowserViewport",
+    "WorkspaceMount",
     "BrowserSessionConfig",
     "BrowserSessionInfo",
     "BrowserSessionState",

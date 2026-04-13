@@ -634,9 +634,11 @@ class TestVMLifecycle:
         mock_sdk = MagicMock()
         mock_info = MagicMock(vm_id="vm001", status=VMState.CREATED)
         mock_info.config.env_vars = {}
+        mock_info.config.workspace_mounts = []
 
         running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
         running_info.config.env_vars = {}
+        running_info.config.workspace_mounts = []
 
         mock_sdk.create.return_value = mock_info
         mock_sdk.start.return_value = running_info
@@ -658,6 +660,8 @@ class TestVMLifecycle:
         mock_sdk = MagicMock()
         running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
         running_info.config.env_vars = {}
+        running_info.config.workspace_mounts = []
+
         mock_sdk.create.return_value = running_info
         mock_sdk_cls.return_value = mock_sdk
 
@@ -677,8 +681,12 @@ class TestVMLifecycle:
         mock_sdk = MagicMock()
         paused_info = MagicMock(vm_id="vm001", status=VMState.PAUSED)
         paused_info.config.env_vars = {}
+        paused_info.config.workspace_mounts = []
+
         running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
         running_info.config.env_vars = {}
+        running_info.config.workspace_mounts = []
+
         mock_sdk.create.return_value = paused_info
         mock_sdk.resume.return_value = running_info
         mock_sdk_cls.return_value = mock_sdk
@@ -1465,8 +1473,12 @@ class TestVMContextManager:
         mock_sdk = MagicMock()
         created_info = MagicMock(vm_id="vm001", status=VMState.CREATED)
         created_info.config.env_vars = {}
+        created_info.config.workspace_mounts = []
+
         running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
         running_info.config.env_vars = {}
+        running_info.config.workspace_mounts = []
+
         stopped_info = MagicMock(vm_id="vm001", status=VMState.STOPPED)
 
         mock_sdk.create.return_value = created_info

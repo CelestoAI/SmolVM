@@ -365,7 +365,7 @@ class TestCliCreate:
             ssh_key_path=None,
             on_download=ANY,
         )
-        mock_vm_cls.assert_called_once_with(config, ssh_key_path="/tmp/id_ed25519")
+        mock_vm_cls.assert_called_once_with(config, ssh_key_path="/tmp/id_ed25519", workspace=None)
         vm.start.assert_called_once_with(boot_timeout=30.0)
         vm.wait_for_ssh.assert_called_once_with(timeout=30.0)
         vm.close.assert_called_once()
@@ -425,7 +425,7 @@ class TestCliCreate:
             ssh_key_path=None,
             on_download=ANY,
         )
-        mock_vm_cls.assert_called_once_with(config, ssh_key_path="/tmp/id_ed25519")
+        mock_vm_cls.assert_called_once_with(config, ssh_key_path="/tmp/id_ed25519", workspace=None)
         vm.start.assert_called_once_with(boot_timeout=45.0)
         vm.wait_for_ssh.assert_called_once_with(timeout=45.0)
         vm.stop.assert_not_called()
@@ -472,7 +472,7 @@ class TestCliCreate:
             ssh_key_path=None,
             on_download=ANY,
         )
-        mock_vm_cls.assert_called_once_with(config, ssh_key_path="/tmp/id_ed25519")
+        mock_vm_cls.assert_called_once_with(config, ssh_key_path="/tmp/id_ed25519", workspace=None)
         vm.start.assert_called_once_with(boot_timeout=30.0)
         vm.wait_for_ssh.assert_called_once_with(timeout=30.0)
         vm.close.assert_called_once()
