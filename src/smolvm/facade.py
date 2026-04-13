@@ -166,6 +166,24 @@ def _resolve_auto_config_public_key(ssh_key_path: str | None) -> tuple[str, Path
     return ssh_key_path, public_key
 
 
+def _parse_mount_specs(specs: list[str]) -> list[WorkspaceMount]:
+    """Parse ``HOST_PATH[:GUEST_PATH]`` strings into WorkspaceMount objects.
+
+    If no guest path is given, the mount defaults to ``/workspace``
+    (for a single mount) or ``/workspace-N`` (for multiples).
+    """
+    mounts: list[WorkspaceMount] = []
+    for index, spec in enumerate(specs):
+        # Split on the *last* colon to allow Windows-style paths in the future
+        if ":" in spec:
+            host_str, guest_path = spec.rsplit(":", 1)
+        else:
+            host_str = spec
+            guest_path = "/workspace" if len(specs) == 1 else f"/workspace-{index}"
+        mounts.append(WorkspaceMount(host_path=Path(host_str), guest_path=guest_path))
+    return mounts
+
+
 def _build_auto_config_image_name(
     guest_os: GuestOS,
     *,
@@ -470,7 +488,7 @@ class SmolVM:
         ssh_user: str = "root",
         ssh_key_path: str | None = None,
         internet_settings: InternetSettings | dict[str, Any] | None = None,
-        workspace: Path | str | None = None,
+        mounts: list[str] | None = None,
     ) -> None:
         if config is not None and vm_id is not None:
             raise ValueError("Provide either config or vm_id, not both.")
@@ -530,21 +548,20 @@ class SmolVM:
             if config is not None:
                 config = config.model_copy(update={"internet_settings": internet_settings})
 
-        # Normalize and merge workspace into the config
-        if workspace is not None:
+        # Normalize and merge mounts into the config
+        if mounts is not None:
             if vm_id is not None:
                 raise ValueError(
-                    "workspace cannot be set when reconnecting to an existing VM."
+                    "mounts cannot be set when reconnecting to an existing VM."
                 )
-            ws_path = Path(workspace) if isinstance(workspace, str) else workspace
-            mount = WorkspaceMount(host_path=ws_path)
+            workspace_mounts = _parse_mount_specs(mounts)
             if config is not None:
                 if config.workspace_mounts:
                     raise ValueError(
                         "workspace_mounts is already set on the provided VMConfig; "
                         "pass it in one place only."
                     )
-                config = config.model_copy(update={"workspace_mounts": [mount]})
+                config = config.model_copy(update={"workspace_mounts": workspace_mounts})
 
         self._ssh_user = ssh_user
         self._ssh_key_path = ssh_key_path

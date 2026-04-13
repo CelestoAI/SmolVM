@@ -270,22 +270,84 @@ def test_snapshot_rejected_with_workspace_mounts(tmp_path: Path) -> None:
 # ── CLI ─────────────────────────────────────────────────────────────
 
 
-class TestCliWorkspaceFlag:
-    """Tests for the --workspace CLI flag on create."""
+class TestCliMountFlag:
+    """Tests for the --mount CLI flag on create."""
 
-    def test_workspace_flag_is_parsed(self) -> None:
+    def test_single_mount_host_only(self) -> None:
         from smolvm.cli import build_parser
 
         parser = build_parser()
-        args = parser.parse_args(["create", "--workspace", "/tmp"])
-        assert args.workspace == Path("/tmp")
+        args = parser.parse_args(["create", "--mount", "/tmp/project"])
+        assert args.mounts == ["/tmp/project"]
 
-    def test_workspace_flag_defaults_to_none(self) -> None:
+    def test_single_mount_with_guest_path(self) -> None:
+        from smolvm.cli import build_parser
+
+        parser = build_parser()
+        args = parser.parse_args(["create", "--mount", "/tmp/project:/code"])
+        assert args.mounts == ["/tmp/project:/code"]
+
+    def test_multiple_mounts(self) -> None:
+        from smolvm.cli import build_parser
+
+        parser = build_parser()
+        args = parser.parse_args([
+            "create",
+            "--mount", "/tmp/a",
+            "--mount", "/tmp/b:/data",
+        ])
+        assert args.mounts == ["/tmp/a", "/tmp/b:/data"]
+
+    def test_mount_defaults_to_none(self) -> None:
         from smolvm.cli import build_parser
 
         parser = build_parser()
         args = parser.parse_args(["create"])
-        assert args.workspace is None
+        assert args.mounts is None
+
+
+# ── Mount spec parsing ──────────────────────────────────────────────
+
+
+class TestParseMountSpecs:
+    """Tests for _parse_mount_specs helper."""
+
+    def test_single_host_only_defaults_to_workspace(self, tmp_path: Path) -> None:
+        from smolvm.facade import _parse_mount_specs
+
+        mounts = _parse_mount_specs([str(tmp_path)])
+        assert len(mounts) == 1
+        assert mounts[0].host_path == tmp_path.resolve()
+        assert mounts[0].guest_path == "/workspace"
+
+    def test_host_with_guest_path(self, tmp_path: Path) -> None:
+        from smolvm.facade import _parse_mount_specs
+
+        mounts = _parse_mount_specs([f"{tmp_path}:/code"])
+        assert len(mounts) == 1
+        assert mounts[0].guest_path == "/code"
+
+    def test_multiple_mounts_get_indexed_defaults(self, tmp_path: Path) -> None:
+        from smolvm.facade import _parse_mount_specs
+
+        d1 = tmp_path / "a"
+        d2 = tmp_path / "b"
+        d1.mkdir()
+        d2.mkdir()
+        mounts = _parse_mount_specs([str(d1), str(d2)])
+        assert mounts[0].guest_path == "/workspace-0"
+        assert mounts[1].guest_path == "/workspace-1"
+
+    def test_mixed_explicit_and_default(self, tmp_path: Path) -> None:
+        from smolvm.facade import _parse_mount_specs
+
+        d1 = tmp_path / "a"
+        d2 = tmp_path / "b"
+        d1.mkdir()
+        d2.mkdir()
+        mounts = _parse_mount_specs([str(d1), f"{d2}:/data"])
+        assert mounts[0].guest_path == "/workspace-0"
+        assert mounts[1].guest_path == "/data"
 
 
 # ── Facade guards ───────────────────────────────────────────────────
@@ -334,8 +396,8 @@ class TestFacadeWorkspaceGuards:
             mock_sdk_cls.return_value = mock_sdk
 
             vm = SmolVM(config, ssh_user="agent")
-            with pytest.raises(SmolVMError, match="require ssh_user='root'"):
-                with patch.object(vm, "can_run_commands", return_value=True), \
-                     patch.object(vm, "wait_for_ssh"), \
-                     patch("smolvm.facade.SSHClient"):
-                    vm.start()
+            with pytest.raises(SmolVMError, match="require ssh_user='root'"), \
+                 patch.object(vm, "can_run_commands", return_value=True), \
+                 patch.object(vm, "wait_for_ssh"), \
+                 patch("smolvm.facade.SSHClient"):
+                vm.start()
