@@ -256,8 +256,9 @@ class _LinuxOnlyOption(argparse.Action):
         if platform.system() != "Linux":
             parser.error(
                 f"argument {option_string}: only supported on Linux "
-                "(configures Firecracker/KVM runtime). On macOS, SmolVM uses "
-                "the QEMU backend — run `smolvm setup` without this flag."
+                "(configures Firecracker/KVM runtime). "
+                f"Detected OS: {platform.system()}. "
+                "Run `smolvm setup` without this flag."
             )
 
         if self.nargs == 0:

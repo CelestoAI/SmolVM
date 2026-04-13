@@ -64,9 +64,12 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
     exit 1
 fi
 
-if ! command -v brew >/dev/null 2>&1; then
-    echo "❌ Homebrew not found. Install from https://brew.sh and rerun."
-    exit 1
+# Homebrew is only required when we may install dependencies.
+if [[ "$CHECK_ONLY" != "true" && "$SKIP_DEPS" != "true" ]]; then
+    if ! command -v brew >/dev/null 2>&1; then
+        echo "❌ Homebrew not found. Install from https://brew.sh and rerun."
+        exit 1
+    fi
 fi
 
 find_qemu() {
