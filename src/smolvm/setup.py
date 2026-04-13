@@ -111,6 +111,8 @@ def build_setup_command(
         argv.append("--check-only")
     if options.with_docker:
         argv.append("--with-docker")
+    if options.skip_deps:
+        argv.append("--skip-deps")
     return argv
 
 

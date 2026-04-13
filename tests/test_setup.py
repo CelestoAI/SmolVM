@@ -117,6 +117,21 @@ class TestBuildSetupCommand:
             "--with-docker",
         ]
 
+    def test_macos_skip_deps_forwarded_to_script(self, tmp_path: Path) -> None:
+        asset_root = _make_asset_root(tmp_path)
+
+        command = build_setup_command(
+            SetupOptions(skip_deps=True),
+            system_name="Darwin",
+            asset_root=asset_root,
+        )
+
+        assert command == [
+            "bash",
+            str(asset_root / "system-setup-macos.sh"),
+            "--skip-deps",
+        ]
+
     def test_unsupported_os_fails(self, tmp_path: Path) -> None:
         asset_root = _make_asset_root(tmp_path)
 

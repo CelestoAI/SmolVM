@@ -253,8 +253,12 @@ class _LinuxOnlyOption(argparse.Action):
         values: str | Sequence[str] | None,
         option_string: str | None = None,
     ) -> None:
-        if platform.system() == "Darwin":
-            parser.error(f"argument {option_string}: only supported on Linux")
+        if platform.system() != "Linux":
+            parser.error(
+                f"argument {option_string}: only supported on Linux "
+                "(configures Firecracker/KVM runtime). On macOS, SmolVM uses "
+                "the QEMU backend — run `smolvm setup` without this flag."
+            )
 
         if self.nargs == 0:
             setattr(namespace, self.dest, self.const if self.const is not None else True)
@@ -337,6 +341,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Exit with an error if any check reports a warning.",
     )
 
+    def _linux_only_help(text: str) -> str:
+        """Return *text* on Linux; suppress the flag from ``--help`` elsewhere."""
+        return text if platform.system() == "Linux" else argparse.SUPPRESS
+
     setup = subparsers.add_parser(
         "setup",
         help="Install or validate one-time host prerequisites.",
@@ -357,21 +365,19 @@ def build_parser() -> argparse.ArgumentParser:
         nargs=0,
         const=True,
         default=False,
-        help="Skip runtime permission setup (Linux only).",
+        help=_linux_only_help("Skip runtime permission setup (Linux only)."),
     )
     setup.add_argument(
         "--skip-deps",
-        action=_LinuxOnlyOption,
-        nargs=0,
-        const=True,
+        action="store_true",
         default=False,
-        help="Skip installing system packages (Linux only).",
+        help="Skip installing system packages.",
     )
     setup.add_argument(
         "--runtime-user",
         action=_LinuxOnlyOption,
         default=None,
-        help="User to grant runtime permissions to (Linux only).",
+        help=_linux_only_help("User to grant runtime permissions to (Linux only)."),
     )
     setup.add_argument(
         "--remove-runtime-config",
@@ -379,7 +385,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs=0,
         const=True,
         default=False,
-        help="Remove previously configured runtime permissions (Linux only).",
+        help=_linux_only_help("Remove previously configured runtime permissions (Linux only)."),
     )
 
     def _add_ui_args(command_parser: argparse.ArgumentParser) -> None:

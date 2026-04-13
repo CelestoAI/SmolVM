@@ -1102,11 +1102,61 @@ class TestCliSetup:
     ) -> None:
         """Linux-only setup flags should fail at argparse time on macOS."""
         with pytest.raises(SystemExit) as exc_info:
-            main(["setup", "--skip-deps"])
+            main(["setup", "--runtime-user", "foo"])
 
         assert exc_info.value.code == 2
         assert mock_platform_system.called
+        err = capsys.readouterr().err
+        assert "only supported on Linux" in err
+        assert "Firecracker/KVM" in err
+
+    @patch("smolvm.cli._run_setup")
+    @patch("smolvm.cli.platform.system", return_value="Darwin")
+    def test_setup_skip_deps_accepted_on_macos(
+        self,
+        mock_platform_system: MagicMock,
+        mock_run_setup: MagicMock,
+    ) -> None:
+        """``--skip-deps`` is cross-platform and should be accepted on macOS."""
+        mock_run_setup.return_value = 0
+
+        ret = main(["setup", "--skip-deps"])
+
+        assert ret == 0
+        mock_run_setup.assert_called_once()
+
+    @patch("smolvm.cli.platform.system", return_value="Windows")
+    def test_setup_rejects_linux_only_flags_on_unsupported_os(
+        self,
+        mock_platform_system: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Linux-only flags should be rejected on any non-Linux platform."""
+        with pytest.raises(SystemExit) as exc_info:
+            main(["setup", "--no-configure-runtime"])
+
+        assert exc_info.value.code == 2
         assert "only supported on Linux" in capsys.readouterr().err
+
+    @patch("smolvm.cli.platform.system", return_value="Darwin")
+    def test_setup_help_hides_linux_only_flags_on_macos(
+        self,
+        mock_platform_system: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Linux-only flags should not appear in ``--help`` on macOS."""
+        with pytest.raises(SystemExit) as exc_info:
+            main(["setup", "--help"])
+        assert exc_info.value.code == 0
+
+        help_text = capsys.readouterr().out
+
+        # Linux-only flags should be hidden
+        assert "--runtime-user" not in help_text
+        assert "--remove-runtime-config" not in help_text
+        assert "--no-configure-runtime" not in help_text
+        # Cross-platform flags should still appear
+        assert "--skip-deps" in help_text
 
     @patch("smolvm.cli.platform.system", return_value="Linux")
     def test_setup_remove_runtime_config_conflicts_with_other_modes(

@@ -19,6 +19,7 @@ set -euo pipefail
 
 CHECK_ONLY=false
 WITH_DOCKER=false
+SKIP_DEPS=false
 
 usage() {
     cat <<EOF
@@ -29,6 +30,7 @@ Installs and checks macOS dependencies for SmolVM qemu backend.
 Options:
   --check-only   Only validate prerequisites; do not install.
   --with-docker  Install Docker Desktop cask (optional; for image build workflows).
+  --skip-deps    Skip Homebrew dependency installation (assumes qemu already present).
   -h, --help     Show this help.
 EOF
 }
@@ -40,6 +42,9 @@ while [[ $# -gt 0 ]]; do
             ;;
         --with-docker)
             WITH_DOCKER=true
+            ;;
+        --skip-deps)
+            SKIP_DEPS=true
             ;;
         -h|--help)
             usage
@@ -111,14 +116,18 @@ fi
 
 echo "=== SmolVM macOS setup (qemu backend) ==="
 
-if ! find_qemu; then
-    echo "Installing qemu via Homebrew..."
-    brew install qemu
-fi
+if [[ "$SKIP_DEPS" == "true" ]]; then
+    echo "Skipping dependency installation (--skip-deps)"
+else
+    if ! find_qemu; then
+        echo "Installing qemu via Homebrew..."
+        brew install qemu
+    fi
 
-if [[ "$WITH_DOCKER" == "true" ]] && ! command -v docker >/dev/null 2>&1; then
-    echo "Installing Docker Desktop cask via Homebrew..."
-    brew install --cask docker
+    if [[ "$WITH_DOCKER" == "true" ]] && ! command -v docker >/dev/null 2>&1; then
+        echo "Installing Docker Desktop cask via Homebrew..."
+        brew install --cask docker
+    fi
 fi
 
 echo ""
