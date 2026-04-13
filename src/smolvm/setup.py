@@ -41,8 +41,24 @@ class SetupOptions:
 
 
 def packaged_asset_root() -> Path:
-    """Return the packaged directory containing setup shell assets."""
-    return Path(__file__).resolve().parent / "_setup_assets"
+    """Return the directory containing setup shell assets.
+
+    Checks the packaged ``_setup_assets/`` directory first (present in installed
+    wheels), then falls back to the repository ``scripts/`` directory so that
+    ``uv run smolvm setup`` works from a source checkout.
+    """
+    pkg_dir = Path(__file__).resolve().parent / "_setup_assets"
+    # In a wheel the scripts live under _setup_assets/.  In a source checkout
+    # they only exist under the repo-root scripts/ directory.
+    marker = pkg_dir / _LINUX_SCRIPT
+    if marker.is_file():
+        return pkg_dir
+    # Fall back to the repository scripts/ directory (two levels up from
+    # src/smolvm/ → repo root).
+    repo_scripts = Path(__file__).resolve().parents[2] / "scripts"
+    if repo_scripts.is_dir():
+        return repo_scripts
+    return pkg_dir
 
 
 def detect_setup_platform(system_name: str | None = None) -> SetupPlatform:
