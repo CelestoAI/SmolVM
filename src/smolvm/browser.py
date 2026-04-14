@@ -14,13 +14,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from smolvm.backends import BACKEND_QEMU, resolve_backend
-from smolvm.boot_profiles import (
+from smolvm.exceptions import BrowserSessionNotFoundError, SmolVMError
+from smolvm.facade import SmolVM
+from smolvm.runtime.backends import BACKEND_QEMU, resolve_backend
+from smolvm.runtime.boot_profiles import (
     KernelBootProfile,
     get_boot_profile_spec,
 )
-from smolvm.exceptions import BrowserSessionNotFoundError, SmolVMError
-from smolvm.facade import SmolVM
 from smolvm.storage import StateManagerProtocol, create_state_manager
 from smolvm.types import (
     BrowserSessionConfig,
@@ -114,7 +114,7 @@ def _build_browser_vm_config(
     ssh_key_path: str | None = None,
 ) -> tuple[VMConfig, str | None]:
     """Build the underlying VM config for a browser session."""
-    from smolvm.build import ImageBuilder
+    from smolvm.images.builder import ImageBuilder
     from smolvm.utils import ensure_ssh_key
 
     resolved_backend = resolve_backend(browser_config.backend)

@@ -19,7 +19,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from smolvm.doctor import (
+
+from smolvm.exceptions import SmolVMError
+from smolvm.host.doctor import (
     DoctorCheck,
     DoctorReport,
     WorkerNodeSecurityError,
@@ -27,7 +29,6 @@ from smolvm.doctor import (
     generate_doctor_report,
     run_doctor,
 )
-from smolvm.exceptions import SmolVMError
 
 
 def _pass(name: str) -> DoctorCheck:
@@ -37,15 +38,15 @@ def _pass(name: str) -> DoctorCheck:
 class TestDoctorFirecracker:
     """Firecracker backend diagnostic tests."""
 
-    @patch("smolvm.doctor._check_kvm_permissions", new=lambda: _pass("worker:kvm-permissions"))
-    @patch("smolvm.doctor._check_kvm_nx_huge_pages", new=lambda: _pass("worker:kvm-nx-huge-pages"))
-    @patch("smolvm.doctor._check_thp_disabled", new=lambda: _pass("worker:thp-disabled"))
-    @patch("smolvm.doctor._check_ksm_disabled", new=lambda: _pass("worker:ksm-disabled"))
-    @patch("smolvm.doctor._check_swap_disabled", new=lambda: _pass("worker:swap-disabled"))
-    @patch("smolvm.doctor.run_command")
-    @patch("smolvm.doctor.check_network_prerequisites", return_value=[])
-    @patch("smolvm.doctor.which")
-    @patch("smolvm.doctor.HostManager")
+    @patch("smolvm.host.doctor._check_kvm_permissions", new=lambda: _pass("worker:kvm-permissions"))
+    @patch("smolvm.host.doctor._check_kvm_nx_huge_pages", new=lambda: _pass("worker:kvm-nx-huge-pages"))
+    @patch("smolvm.host.doctor._check_thp_disabled", new=lambda: _pass("worker:thp-disabled"))
+    @patch("smolvm.host.doctor._check_ksm_disabled", new=lambda: _pass("worker:ksm-disabled"))
+    @patch("smolvm.host.doctor._check_swap_disabled", new=lambda: _pass("worker:swap-disabled"))
+    @patch("smolvm.host.doctor.run_command")
+    @patch("smolvm.host.doctor.check_network_prerequisites", return_value=[])
+    @patch("smolvm.host.doctor.which")
+    @patch("smolvm.host.doctor.HostManager")
     def test_generate_report_firecracker_ok(
         self,
         mock_host_cls: MagicMock,
@@ -73,10 +74,10 @@ class TestDoctorFirecracker:
         assert report.failures == []
         assert report.warnings == []
 
-    @patch("smolvm.doctor._check_kvm_permissions", new=lambda: _pass("worker:kvm-permissions"))
-    @patch("smolvm.doctor._check_kvm_nx_huge_pages", new=lambda: _pass("worker:kvm-nx-huge-pages"))
+    @patch("smolvm.host.doctor._check_kvm_permissions", new=lambda: _pass("worker:kvm-permissions"))
+    @patch("smolvm.host.doctor._check_kvm_nx_huge_pages", new=lambda: _pass("worker:kvm-nx-huge-pages"))
     @patch(
-        "smolvm.doctor._check_thp_disabled",
+        "smolvm.host.doctor._check_thp_disabled",
         new=lambda: DoctorCheck(
             name="worker:thp-disabled",
             status="fail",
@@ -84,9 +85,9 @@ class TestDoctorFirecracker:
             fix="sudo sh -c 'echo never > /sys/kernel/mm/transparent_hugepage/enabled'",
         ),
     )
-    @patch("smolvm.doctor._check_ksm_disabled", new=lambda: _pass("worker:ksm-disabled"))
+    @patch("smolvm.host.doctor._check_ksm_disabled", new=lambda: _pass("worker:ksm-disabled"))
     @patch(
-        "smolvm.doctor._check_swap_disabled",
+        "smolvm.host.doctor._check_swap_disabled",
         new=lambda: DoctorCheck(
             name="worker:swap-disabled",
             status="fail",
@@ -94,10 +95,10 @@ class TestDoctorFirecracker:
             fix="sudo swapoff -a",
         ),
     )
-    @patch("smolvm.doctor.run_command")
-    @patch("smolvm.doctor.check_network_prerequisites", return_value=[])
-    @patch("smolvm.doctor.which")
-    @patch("smolvm.doctor.HostManager")
+    @patch("smolvm.host.doctor.run_command")
+    @patch("smolvm.host.doctor.check_network_prerequisites", return_value=[])
+    @patch("smolvm.host.doctor.which")
+    @patch("smolvm.host.doctor.HostManager")
     def test_generate_report_firecracker_warns_for_worker_hardening_gaps(
         self,
         mock_host_cls: MagicMock,
@@ -130,15 +131,15 @@ class TestDoctorFirecracker:
             "worker:thp-disabled",
         }
 
-    @patch("smolvm.doctor._check_kvm_permissions", new=lambda: _pass("worker:kvm-permissions"))
-    @patch("smolvm.doctor._check_kvm_nx_huge_pages", new=lambda: _pass("worker:kvm-nx-huge-pages"))
-    @patch("smolvm.doctor._check_thp_disabled", new=lambda: _pass("worker:thp-disabled"))
-    @patch("smolvm.doctor._check_ksm_disabled", new=lambda: _pass("worker:ksm-disabled"))
-    @patch("smolvm.doctor._check_swap_disabled", new=lambda: _pass("worker:swap-disabled"))
-    @patch("smolvm.doctor.run_command", side_effect=SmolVMError("No such file or directory"))
-    @patch("smolvm.doctor.check_network_prerequisites", return_value=[])
-    @patch("smolvm.doctor.which")
-    @patch("smolvm.doctor.HostManager")
+    @patch("smolvm.host.doctor._check_kvm_permissions", new=lambda: _pass("worker:kvm-permissions"))
+    @patch("smolvm.host.doctor._check_kvm_nx_huge_pages", new=lambda: _pass("worker:kvm-nx-huge-pages"))
+    @patch("smolvm.host.doctor._check_thp_disabled", new=lambda: _pass("worker:thp-disabled"))
+    @patch("smolvm.host.doctor._check_ksm_disabled", new=lambda: _pass("worker:ksm-disabled"))
+    @patch("smolvm.host.doctor._check_swap_disabled", new=lambda: _pass("worker:swap-disabled"))
+    @patch("smolvm.host.doctor.run_command", side_effect=SmolVMError("No such file or directory"))
+    @patch("smolvm.host.doctor.check_network_prerequisites", return_value=[])
+    @patch("smolvm.host.doctor.which")
+    @patch("smolvm.host.doctor.HostManager")
     def test_run_doctor_strict_fails_on_warnings(
         self,
         mock_host_cls: MagicMock,
@@ -171,29 +172,29 @@ class TestDoctorFirecracker:
         assert "strict mode treats warnings as failures" in output
         assert "\033[" not in output
 
-    @patch("smolvm.doctor._check_kvm_permissions", new=lambda: _pass("worker:kvm-permissions"))
-    @patch("smolvm.doctor._check_kvm_nx_huge_pages", new=lambda: _pass("worker:kvm-nx-huge-pages"))
+    @patch("smolvm.host.doctor._check_kvm_permissions", new=lambda: _pass("worker:kvm-permissions"))
+    @patch("smolvm.host.doctor._check_kvm_nx_huge_pages", new=lambda: _pass("worker:kvm-nx-huge-pages"))
     @patch(
-        "smolvm.doctor._check_thp_disabled",
+        "smolvm.host.doctor._check_thp_disabled",
         new=lambda: DoctorCheck(
             name="worker:thp-disabled",
             status="fail",
             detail="Active ('madvise')",
         ),
     )
-    @patch("smolvm.doctor._check_ksm_disabled", new=lambda: _pass("worker:ksm-disabled"))
+    @patch("smolvm.host.doctor._check_ksm_disabled", new=lambda: _pass("worker:ksm-disabled"))
     @patch(
-        "smolvm.doctor._check_swap_disabled",
+        "smolvm.host.doctor._check_swap_disabled",
         new=lambda: DoctorCheck(
             name="worker:swap-disabled",
             status="fail",
             detail="Active (8388604 kB)",
         ),
     )
-    @patch("smolvm.doctor.run_command")
-    @patch("smolvm.doctor.check_network_prerequisites", return_value=[])
-    @patch("smolvm.doctor.which")
-    @patch("smolvm.doctor.HostManager")
+    @patch("smolvm.host.doctor.run_command")
+    @patch("smolvm.host.doctor.check_network_prerequisites", return_value=[])
+    @patch("smolvm.host.doctor.which")
+    @patch("smolvm.host.doctor.HostManager")
     def test_run_doctor_strict_fails_on_worker_hardening_warnings(
         self,
         mock_host_cls: MagicMock,
@@ -228,7 +229,7 @@ class TestDoctorFirecracker:
             checks=[DoctorCheck(name="qemu", status="pass", detail="/usr/bin/qemu")],
         )
 
-        with patch("smolvm.doctor.generate_doctor_report", return_value=report):
+        with patch("smolvm.host.doctor.generate_doctor_report", return_value=report):
             ret = run_doctor(json_output=True, strict=False)
 
         assert ret == 0
@@ -243,8 +244,8 @@ class TestDoctorFirecracker:
 class TestDoctorQemu:
     """QEMU backend diagnostic tests."""
 
-    @patch("smolvm.doctor._find_qemu_binary", return_value=None)
-    @patch("smolvm.doctor.which", return_value=Path("/usr/bin/ssh"))
+    @patch("smolvm.host.doctor._find_qemu_binary", return_value=None)
+    @patch("smolvm.host.doctor.which", return_value=Path("/usr/bin/ssh"))
     def test_generate_report_qemu_missing_binary(
         self,
         mock_which: MagicMock,
@@ -256,11 +257,11 @@ class TestDoctorQemu:
         assert report.backend_resolved == "qemu"
         assert any(check.name == "qemu" and check.status == "fail" for check in report.checks)
 
-    @patch("smolvm.doctor.platform.system", return_value="Linux")
-    @patch("smolvm.doctor.subprocess.run")
-    @patch("smolvm.doctor.which")
+    @patch("smolvm.host.doctor.platform.system", return_value="Linux")
+    @patch("smolvm.host.doctor.subprocess.run")
+    @patch("smolvm.host.doctor.which")
     @patch(
-        "smolvm.doctor._find_qemu_binary",
+        "smolvm.host.doctor._find_qemu_binary",
         return_value=("qemu-system-x86_64", Path("/usr/bin/qemu-system-x86_64")),
     )
     def test_generate_report_qemu_ok_with_qemu_img_and_supported_version(
@@ -280,11 +281,11 @@ class TestDoctorQemu:
         assert checks["qemu-version"].status == "pass"
         assert checks["command:qemu-img"].status == "pass"
 
-    @patch("smolvm.doctor.platform.system", return_value="Linux")
-    @patch("smolvm.doctor.subprocess.run")
-    @patch("smolvm.doctor.which")
+    @patch("smolvm.host.doctor.platform.system", return_value="Linux")
+    @patch("smolvm.host.doctor.subprocess.run")
+    @patch("smolvm.host.doctor.which")
     @patch(
-        "smolvm.doctor._find_qemu_binary",
+        "smolvm.host.doctor._find_qemu_binary",
         return_value=("qemu-system-x86_64", Path("/usr/bin/qemu-system-x86_64")),
     )
     def test_generate_report_qemu_fails_for_missing_qemu_img_and_old_version(
@@ -304,11 +305,11 @@ class TestDoctorQemu:
         assert checks["qemu-version"].status == "fail"
         assert checks["command:qemu-img"].status == "fail"
 
-    @patch("smolvm.doctor.platform.system", return_value="Linux")
-    @patch("smolvm.doctor.subprocess.run", side_effect=OSError("probe failed"))
-    @patch("smolvm.doctor.which")
+    @patch("smolvm.host.doctor.platform.system", return_value="Linux")
+    @patch("smolvm.host.doctor.subprocess.run", side_effect=OSError("probe failed"))
+    @patch("smolvm.host.doctor.which")
     @patch(
-        "smolvm.doctor._find_qemu_binary",
+        "smolvm.host.doctor._find_qemu_binary",
         return_value=("qemu-system-x86_64", Path("/usr/bin/qemu-system-x86_64")),
     )
     def test_generate_report_qemu_warns_when_version_probe_fails(
@@ -327,11 +328,11 @@ class TestDoctorQemu:
         assert checks["qemu-version"].status == "warn"
         assert "probe failed" in checks["qemu-version"].detail
 
-    @patch("smolvm.doctor.platform.system", return_value="Linux")
-    @patch("smolvm.doctor.subprocess.run", side_effect=RuntimeError("boom"))
-    @patch("smolvm.doctor.which")
+    @patch("smolvm.host.doctor.platform.system", return_value="Linux")
+    @patch("smolvm.host.doctor.subprocess.run", side_effect=RuntimeError("boom"))
+    @patch("smolvm.host.doctor.which")
     @patch(
-        "smolvm.doctor._find_qemu_binary",
+        "smolvm.host.doctor._find_qemu_binary",
         return_value=("qemu-system-x86_64", Path("/usr/bin/qemu-system-x86_64")),
     )
     def test_generate_report_qemu_propagates_unexpected_probe_errors(
@@ -351,18 +352,18 @@ class TestDoctorQemu:
 class TestWorkerNodeSecurityChecks:
     """Tests for strict worker-node startup guard behavior."""
 
-    @patch("smolvm.doctor._check_kvm_permissions", new=lambda: _pass("worker:kvm-permissions"))
+    @patch("smolvm.host.doctor._check_kvm_permissions", new=lambda: _pass("worker:kvm-permissions"))
     @patch(
-        "smolvm.doctor._check_kvm_nx_huge_pages",
+        "smolvm.host.doctor._check_kvm_nx_huge_pages",
         new=lambda: DoctorCheck(
             name="worker:kvm-nx-huge-pages",
             status="warn",
             detail="kvm module not loaded",
         ),
     )
-    @patch("smolvm.doctor._check_thp_disabled", new=lambda: _pass("worker:thp-disabled"))
-    @patch("smolvm.doctor._check_ksm_disabled", new=lambda: _pass("worker:ksm-disabled"))
-    @patch("smolvm.doctor._check_swap_disabled", new=lambda: _pass("worker:swap-disabled"))
+    @patch("smolvm.host.doctor._check_thp_disabled", new=lambda: _pass("worker:thp-disabled"))
+    @patch("smolvm.host.doctor._check_ksm_disabled", new=lambda: _pass("worker:ksm-disabled"))
+    @patch("smolvm.host.doctor._check_swap_disabled", new=lambda: _pass("worker:swap-disabled"))
     def test_check_worker_node_security_raises_on_warn(self) -> None:
         """Startup guard should reject non-pass security checks, including warnings."""
         with pytest.raises(WorkerNodeSecurityError, match=r"worker:kvm-nx-huge-pages \(warn\)"):

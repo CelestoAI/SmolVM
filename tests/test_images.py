@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from smolvm.exceptions import ImageError
-from smolvm.images import (
+from smolvm.images.manager import (
     ImageManager,
     ImageSource,
     LocalImage,
@@ -188,7 +188,7 @@ class TestEnsureImage:
         (image_dir / "vmlinux.bin").write_bytes(kernel_content)
         (image_dir / "rootfs.ext4").write_bytes(rootfs_content)
 
-        with patch("smolvm.images.requests.get") as mock_get:
+        with patch("smolvm.images.manager.requests.get") as mock_get:
             result = image_manager.ensure_image("test-image")
 
             # Should NOT have downloaded anything
@@ -199,7 +199,7 @@ class TestEnsureImage:
         assert result.kernel_path.exists()
         assert result.rootfs_path.exists()
 
-    @patch("smolvm.images.requests.get")
+    @patch("smolvm.images.manager.requests.get")
     def test_downloads_when_not_cached(
         self,
         mock_get: MagicMock,
@@ -231,7 +231,7 @@ class TestEnsureImage:
         assert result.rootfs_path.exists()
         assert mock_get.call_count == 2
 
-    @patch("smolvm.images.requests.get")
+    @patch("smolvm.images.manager.requests.get")
     def test_re_downloads_on_sha_mismatch(
         self,
         mock_get: MagicMock,
@@ -270,7 +270,7 @@ class TestEnsureImage:
 class TestDownloadFile:
     """Tests for atomic download."""
 
-    @patch("smolvm.images.requests.get")
+    @patch("smolvm.images.manager.requests.get")
     def test_sha_mismatch_raises(
         self, mock_get: MagicMock, image_manager: ImageManager, tmp_path: Path
     ) -> None:
@@ -293,7 +293,7 @@ class TestDownloadFile:
         assert not dest.exists()
         assert not list(tmp_path.glob("*.tmp"))
 
-    @patch("smolvm.images.requests.get")
+    @patch("smolvm.images.manager.requests.get")
     def test_network_error_raises(
         self, mock_get: MagicMock, image_manager: ImageManager, tmp_path: Path
     ) -> None:
@@ -334,7 +334,7 @@ class TestVerifySHA256:
 
         assert ImageManager._verify_sha256(file_path, None) is True
 
-    @patch("smolvm.images.requests.get")
+    @patch("smolvm.images.manager.requests.get")
     def test_download_skips_sha_when_none(self, mock_get: MagicMock, tmp_path: Path) -> None:
         """Test that _download_file succeeds without SHA check when None."""
         mock_resp = MagicMock()
@@ -367,7 +367,7 @@ class TestVerifySHA256:
         (image_dir / "vmlinux.bin").write_bytes(b"kernel")
         (image_dir / "rootfs.ext4").write_bytes(b"rootfs")
 
-        with patch("smolvm.images.requests.get") as mock_get:
+        with patch("smolvm.images.manager.requests.get") as mock_get:
             result = mgr.ensure_image("no-sha")
             mock_get.assert_not_called()
 
@@ -557,7 +557,7 @@ class TestEnsureS3Image:
         })
 
         mgr = ImageManager(cache_dir=tmp_path / "images")
-        with patch("smolvm.images._require_boto3", return_value=mock_s3):
+        with patch("smolvm.images.manager._require_boto3", return_value=mock_s3):
             local, parsed_manifest = mgr.ensure_s3_image("s3://bucket/images/test/")
 
         assert local.name == "test-image"
@@ -582,7 +582,7 @@ class TestEnsureS3Image:
 
         mgr = ImageManager(cache_dir=tmp_path / "images")
 
-        with patch("smolvm.images._require_boto3", return_value=mock_s3):
+        with patch("smolvm.images.manager._require_boto3", return_value=mock_s3):
             # First call downloads
             mgr.ensure_s3_image("s3://bucket/images/test/")
             # Reset mock call count
@@ -610,13 +610,13 @@ class TestEnsureS3Image:
         mgr = ImageManager(cache_dir=tmp_path / "images")
 
         # First download to populate cache
-        with patch("smolvm.images._require_boto3", return_value=mock_s3):
+        with patch("smolvm.images.manager._require_boto3", return_value=mock_s3):
             local, _ = mgr.ensure_s3_image("s3://bucket/images/test/")
 
         # Corrupt the cached kernel
         local.kernel_path.write_bytes(b"corrupted")
 
-        with patch("smolvm.images._require_boto3", return_value=mock_s3):
+        with patch("smolvm.images.manager._require_boto3", return_value=mock_s3):
             mock_s3.get_object.reset_mock()
             local2, _ = mgr.ensure_s3_image("s3://bucket/images/test/")
 
@@ -634,7 +634,7 @@ class TestEnsureS3Image:
         })
 
         mgr = ImageManager(cache_dir=tmp_path / "images")
-        with patch("smolvm.images._require_boto3", return_value=mock_s3):
+        with patch("smolvm.images.manager._require_boto3", return_value=mock_s3):
             local, _ = mgr.ensure_s3_image("s3://bucket/images/nosha/")
 
         assert local.kernel_path.exists()
@@ -647,7 +647,7 @@ class TestEnsureS3Image:
 
         mgr = ImageManager(cache_dir=tmp_path / "images")
         with (
-            patch("smolvm.images._require_boto3", return_value=mock_s3),
+            patch("smolvm.images.manager._require_boto3", return_value=mock_s3),
             pytest.raises(ImageError, match="Failed to download image manifest"),
         ):
             mgr.ensure_s3_image("s3://bucket/images/private/")
@@ -661,7 +661,7 @@ class TestEnsureS3Image:
 
         mgr = ImageManager(cache_dir=tmp_path / "images")
         with (
-            patch("smolvm.images._require_boto3", return_value=mock_s3),
+            patch("smolvm.images.manager._require_boto3", return_value=mock_s3),
             pytest.raises(ImageError, match="Invalid smolvm-image.json"),
         ):
             mgr.ensure_s3_image("s3://bucket/images/bad/")
@@ -670,7 +670,7 @@ class TestEnsureS3Image:
         """Missing boto3 should produce a clear installation hint."""
         mgr = ImageManager(cache_dir=tmp_path / "images")
         with (
-            patch("smolvm.images._require_boto3", side_effect=ImageError("S3 image support requires boto3")),
+            patch("smolvm.images.manager._require_boto3", side_effect=ImageError("S3 image support requires boto3")),
             pytest.raises(ImageError, match="requires boto3"),
         ):
             mgr.ensure_s3_image("s3://bucket/images/test/")
@@ -696,7 +696,7 @@ class TestEnsureS3Image:
         })
 
         mgr = ImageManager(cache_dir=tmp_path / "images")
-        with patch("smolvm.images._require_boto3", return_value=mock_s3):
+        with patch("smolvm.images.manager._require_boto3", return_value=mock_s3):
             local, manifest = mgr.ensure_s3_image("s3://bucket/images/ubuntu/")
 
         assert local.initrd_path is not None
@@ -720,14 +720,14 @@ class TestEnsureS3Image:
         mgr = ImageManager(cache_dir=tmp_path / "images")
 
         # First call — populate cache
-        with patch("smolvm.images._require_boto3", return_value=mock_s3):
+        with patch("smolvm.images.manager._require_boto3", return_value=mock_s3):
             mgr.ensure_s3_image("s3://bucket/images/test/")
 
         # Second call — S3 is down, should use cached manifest + assets
         offline_s3 = MagicMock()
         offline_s3.get_object.side_effect = Exception("Network unreachable")
 
-        with patch("smolvm.images._require_boto3", return_value=offline_s3):
+        with patch("smolvm.images.manager._require_boto3", return_value=offline_s3):
             local, _ = mgr.ensure_s3_image("s3://bucket/images/test/")
 
         assert local.kernel_path.exists()
@@ -754,7 +754,7 @@ class TestS3CredentialResolution:
             "SMOLVM_S3_SECRET_ACCESS_KEY": self._TEST_SECRET_KEY,
         }
         with patch.dict("os.environ", env), patch.dict(sys.modules, {"boto3": mock_boto3}):
-            from smolvm.images import _require_boto3
+            from smolvm.images.manager import _require_boto3
 
             _require_boto3()
 
@@ -783,7 +783,7 @@ class TestS3CredentialResolution:
             os.environ.pop("SMOLVM_S3_ACCESS_KEY_ID", None)
             os.environ.pop("SMOLVM_S3_SECRET_ACCESS_KEY", None)
 
-            from smolvm.images import _require_boto3
+            from smolvm.images.manager import _require_boto3
 
             _require_boto3()
 
@@ -810,7 +810,7 @@ class TestS3CredentialResolution:
             os.environ.pop("SMOLVM_S3_ACCESS_KEY_ID", None)
             os.environ.pop("SMOLVM_S3_SECRET_ACCESS_KEY", None)
 
-            from smolvm.images import _require_boto3
+            from smolvm.images.manager import _require_boto3
 
             _require_boto3()
 
@@ -834,6 +834,6 @@ class TestS3CredentialResolution:
             os.environ.pop("SMOLVM_S3_SECRET_ACCESS_KEY", None)
             os.environ.pop("SMOLVM_S3_ENDPOINT_URL", None)
 
-            from smolvm.images import _require_boto3
+            from smolvm.images.manager import _require_boto3
 
             _require_boto3()

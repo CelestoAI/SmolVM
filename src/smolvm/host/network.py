@@ -29,8 +29,8 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
-from smolvm._accel import HAS_NETLINK as _HAS_NATIVE
 from smolvm.exceptions import NetworkError, SmolVMError
+from smolvm.host._accel import HAS_NETLINK as _HAS_NATIVE
 from smolvm.utils import async_run_command, run_command
 
 if _HAS_NATIVE:

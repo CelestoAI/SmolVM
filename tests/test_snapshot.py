@@ -79,7 +79,7 @@ def test_pause_and_resume_firecracker_vm(
     """Pause/resume should transition the persisted VM state."""
     _running_vm(smol_vm, sample_config, tmp_path)
 
-    with patch("smolvm.runtime_firecracker.FirecrackerClient") as mock_client_cls:
+    with patch("smolvm.runtime.firecracker.FirecrackerClient") as mock_client_cls:
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
 
@@ -101,7 +101,7 @@ def test_pause_and_resume_support_shared_disk_firecracker_vm(
     shared_config = sample_config.model_copy(update={"disk_mode": "shared"})
     _running_vm(smol_vm, shared_config, tmp_path)
 
-    with patch("smolvm.runtime_firecracker.FirecrackerClient") as mock_client_cls:
+    with patch("smolvm.runtime.firecracker.FirecrackerClient") as mock_client_cls:
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
 
@@ -128,7 +128,7 @@ def test_create_snapshot_pauses_vm_and_persists_metadata(
         snapshot_path.write_text("vmstate")
         mem_path.write_text("memory")
 
-    with patch("smolvm.runtime_firecracker.FirecrackerClient") as mock_client_cls:
+    with patch("smolvm.runtime.firecracker.FirecrackerClient") as mock_client_cls:
         mock_client = MagicMock()
         mock_client.create_snapshot.side_effect = _write_snapshot
         mock_client_cls.return_value = mock_client
@@ -159,7 +159,7 @@ def test_create_snapshot_rolls_back_metadata_on_resume_failure(
         snapshot_path.write_text("vmstate")
         mem_path.write_text("memory")
 
-    with patch("smolvm.runtime_firecracker.FirecrackerClient") as mock_client_cls:
+    with patch("smolvm.runtime.firecracker.FirecrackerClient") as mock_client_cls:
         mock_client = MagicMock()
         mock_client.create_snapshot.side_effect = _write_snapshot
         mock_client.resume_vm.side_effect = [SmolVMError("resume failed"), None]
@@ -203,7 +203,7 @@ def test_create_snapshot_preserves_metadata_when_rollback_dir_cleanup_fails(
         snapshot_path.write_text("vmstate")
         mem_path.write_text("memory")
 
-    with patch("smolvm.runtime_firecracker.FirecrackerClient") as mock_client_cls:
+    with patch("smolvm.runtime.firecracker.FirecrackerClient") as mock_client_cls:
         mock_client = MagicMock()
         mock_client.create_snapshot.side_effect = _write_snapshot
         mock_client.resume_vm.side_effect = [SmolVMError("resume failed"), None]
@@ -274,7 +274,7 @@ def test_restore_snapshot_rehydrates_deleted_vm(
 
     with (
         patch.object(smol_vm, "_start_firecracker", return_value=SimpleNamespace(pid=98765)),
-        patch("smolvm.runtime_firecracker.FirecrackerClient") as mock_client_cls,
+        patch("smolvm.runtime.firecracker.FirecrackerClient") as mock_client_cls,
     ):
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
@@ -330,7 +330,7 @@ def test_restore_snapshot_rolls_back_new_vm_resources_on_failure(
 
     with (
         patch.object(smol_vm, "_start_firecracker", return_value=SimpleNamespace(pid=98765)),
-        patch("smolvm.runtime_firecracker.FirecrackerClient") as mock_client_cls,
+        patch("smolvm.runtime.firecracker.FirecrackerClient") as mock_client_cls,
     ):
         mock_client = MagicMock()
         mock_client.load_snapshot.side_effect = SmolVMError("load failed")
@@ -381,7 +381,7 @@ def test_restore_snapshot_preserves_existing_managed_disk_on_failure(
 
     with (
         patch.object(smol_vm, "_start_firecracker", return_value=SimpleNamespace(pid=98765)),
-        patch("smolvm.runtime_firecracker.FirecrackerClient") as mock_client_cls,
+        patch("smolvm.runtime.firecracker.FirecrackerClient") as mock_client_cls,
     ):
         mock_client = MagicMock()
         mock_client.load_snapshot.side_effect = SmolVMError("load failed")
@@ -408,7 +408,7 @@ def test_delete_snapshot_rejects_active_restored_vm(
         snapshot_path.write_text("vmstate")
         mem_path.write_text("memory")
 
-    with patch("smolvm.runtime_firecracker.FirecrackerClient") as mock_client_cls:
+    with patch("smolvm.runtime.firecracker.FirecrackerClient") as mock_client_cls:
         mock_client = MagicMock()
         mock_client.create_snapshot.side_effect = _write_snapshot
         mock_client_cls.return_value = mock_client
@@ -416,7 +416,7 @@ def test_delete_snapshot_rejects_active_restored_vm(
 
     with (
         patch.object(smol_vm, "_start_firecracker", return_value=SimpleNamespace(pid=98765)),
-        patch("smolvm.runtime_firecracker.FirecrackerClient") as mock_client_cls,
+        patch("smolvm.runtime.firecracker.FirecrackerClient") as mock_client_cls,
     ):
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client

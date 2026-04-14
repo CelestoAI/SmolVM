@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from smolvm.exceptions import HostError
-from smolvm.host import (
+from smolvm.host.manager import (
     DEFAULT_FIRECRACKER_VERSION,
     HostCapability,
     HostInfo,
@@ -38,12 +38,12 @@ def host_manager() -> HostManager:
 class TestDetectArch:
     """Tests for architecture detection."""
 
-    @patch("smolvm.host.platform.machine", return_value="x86_64")
+    @patch("smolvm.host.manager.platform.machine", return_value="x86_64")
     def test_detect_x86_64(self, mock_machine: MagicMock, host_manager: HostManager) -> None:
         """Test detecting x86_64 architecture."""
         assert host_manager.detect_arch() == "x86_64"
 
-    @patch("smolvm.host.platform.machine", return_value="aarch64")
+    @patch("smolvm.host.manager.platform.machine", return_value="aarch64")
     def test_detect_aarch64(self, mock_machine: MagicMock, host_manager: HostManager) -> None:
         """Test detecting aarch64 architecture."""
         assert host_manager.detect_arch() == "aarch64"
@@ -52,21 +52,21 @@ class TestDetectArch:
 class TestCheckKVM:
     """Tests for KVM availability checks."""
 
-    @patch("smolvm.host.os.access", return_value=True)
-    @patch("smolvm.host.Path.exists", return_value=True)
+    @patch("smolvm.host.manager.os.access", return_value=True)
+    @patch("smolvm.host.manager.Path.exists", return_value=True)
     def test_kvm_available(
         self, mock_exists: MagicMock, mock_access: MagicMock, host_manager: HostManager
     ) -> None:
         """Test KVM is detected when /dev/kvm exists with permissions."""
         assert host_manager.check_kvm() is True
 
-    @patch("smolvm.host.Path.exists", return_value=False)
+    @patch("smolvm.host.manager.Path.exists", return_value=False)
     def test_kvm_missing(self, mock_exists: MagicMock, host_manager: HostManager) -> None:
         """Test KVM not detected when /dev/kvm doesn't exist."""
         assert host_manager.check_kvm() is False
 
-    @patch("smolvm.host.os.access", return_value=False)
-    @patch("smolvm.host.Path.exists", return_value=True)
+    @patch("smolvm.host.manager.os.access", return_value=False)
+    @patch("smolvm.host.manager.Path.exists", return_value=True)
     def test_kvm_no_permissions(
         self, mock_exists: MagicMock, mock_access: MagicMock, host_manager: HostManager
     ) -> None:
@@ -77,7 +77,7 @@ class TestCheckKVM:
 class TestCheckDependencies:
     """Tests for dependency checking."""
 
-    @patch("smolvm.host.which")
+    @patch("smolvm.host.manager.which")
     def test_all_present(self, mock_which: MagicMock, host_manager: HostManager) -> None:
         """Test when all dependencies are present."""
         mock_which.return_value = Path("/usr/bin/something")
@@ -86,7 +86,7 @@ class TestCheckDependencies:
 
         assert missing == []
 
-    @patch("smolvm.host.which")
+    @patch("smolvm.host.manager.which")
     def test_some_missing(self, mock_which: MagicMock, host_manager: HostManager) -> None:
         """Test when some dependencies are missing."""
 
@@ -104,15 +104,15 @@ class TestCheckDependencies:
 class TestFindFirecracker:
     """Tests for finding the Firecracker binary."""
 
-    @patch("smolvm.host.which", return_value=Path("/usr/local/bin/firecracker"))
+    @patch("smolvm.host.manager.which", return_value=Path("/usr/local/bin/firecracker"))
     def test_found_in_path(self, mock_which: MagicMock, host_manager: HostManager) -> None:
         """Test finding firecracker in system PATH."""
         result = host_manager.find_firecracker()
 
         assert result == Path("/usr/local/bin/firecracker")
 
-    @patch("smolvm.host.os.access", return_value=True)
-    @patch("smolvm.host.which", return_value=None)
+    @patch("smolvm.host.manager.os.access", return_value=True)
+    @patch("smolvm.host.manager.which", return_value=None)
     def test_found_in_smolvm_dir(
         self,
         mock_which: MagicMock,
@@ -131,7 +131,7 @@ class TestFindFirecracker:
 
         assert result == fc_binary
 
-    @patch("smolvm.host.which", return_value=None)
+    @patch("smolvm.host.manager.which", return_value=None)
     def test_not_found(self, mock_which: MagicMock, host_manager: HostManager) -> None:
         """Test when firecracker is not found anywhere."""
         # BIN_DIR default points to ~/.smolvm/bin which doesn't have it
@@ -145,7 +145,7 @@ class TestFindFirecracker:
 class TestInstallFirecracker:
     """Tests for Firecracker installation."""
 
-    @patch("smolvm.host.platform.machine", return_value="armv7l")
+    @patch("smolvm.host.manager.platform.machine", return_value="armv7l")
     def test_unsupported_arch_raises(
         self, mock_machine: MagicMock, host_manager: HostManager
     ) -> None:
@@ -153,8 +153,8 @@ class TestInstallFirecracker:
         with pytest.raises(HostError, match="Unsupported architecture"):
             host_manager.install_firecracker()
 
-    @patch("smolvm.host.requests.get")
-    @patch("smolvm.host.platform.machine", return_value="x86_64")
+    @patch("smolvm.host.manager.requests.get")
+    @patch("smolvm.host.manager.platform.machine", return_value="x86_64")
     def test_install_success(
         self,
         mock_machine: MagicMock,
@@ -196,10 +196,10 @@ class TestInstallFirecracker:
 class TestValidate:
     """Tests for full host validation."""
 
-    @patch("smolvm.host.which")
-    @patch("smolvm.host.os.access", return_value=True)
-    @patch("smolvm.host.Path.exists", return_value=True)
-    @patch("smolvm.host.platform.machine", return_value="x86_64")
+    @patch("smolvm.host.manager.which")
+    @patch("smolvm.host.manager.os.access", return_value=True)
+    @patch("smolvm.host.manager.Path.exists", return_value=True)
+    @patch("smolvm.host.manager.platform.machine", return_value="x86_64")
     def test_validate_all_good(
         self,
         mock_machine: MagicMock,
@@ -218,9 +218,9 @@ class TestValidate:
         assert info.capabilities[HostCapability.KVM] is True
         assert info.missing_deps == []
 
-    @patch("smolvm.host.which", return_value=None)
-    @patch("smolvm.host.Path.exists", return_value=False)
-    @patch("smolvm.host.platform.machine", return_value="x86_64")
+    @patch("smolvm.host.manager.which", return_value=None)
+    @patch("smolvm.host.manager.Path.exists", return_value=False)
+    @patch("smolvm.host.manager.platform.machine", return_value="x86_64")
     def test_validate_missing_everything(
         self,
         mock_machine: MagicMock,

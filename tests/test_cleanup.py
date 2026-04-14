@@ -19,8 +19,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from smolvm.cleanup import build_parser, main as cleanup_main, run_cleanup, run_delete
-from smolvm.cli import main as cli_main
+from smolvm.cli.cleanup import build_parser, run_cleanup, run_delete
+from smolvm.cli.cleanup import main as cleanup_main
+from smolvm.cli.main import main as cli_main
 
 
 def _make_vm(vm_id: str) -> MagicMock:
@@ -34,13 +35,13 @@ class TestDelete:
 
     @pytest.fixture
     def mock_sdk_cls(self) -> MagicMock:
-        with patch("smolvm.cleanup.SmolVMManager") as mock_cls:
+        with patch("smolvm.cli.cleanup.SmolVMManager") as mock_cls:
             sdk = MagicMock()
             mock_cls.return_value.__enter__.return_value = sdk
             mock_cls.return_value.__exit__.return_value = None
             yield sdk
 
-    @patch("smolvm.cleanup.os.geteuid", return_value=0)
+    @patch("smolvm.cli.cleanup.os.geteuid", return_value=0)
     def test_run_delete_single_vm(
         self,
         _: MagicMock,
@@ -56,7 +57,7 @@ class TestDelete:
         sdk.delete.assert_called_once_with("vm-abc123")
         sdk.list_vms.assert_not_called()
 
-    @patch("smolvm.cleanup.os.geteuid", return_value=0)
+    @patch("smolvm.cli.cleanup.os.geteuid", return_value=0)
     def test_run_delete_multiple_vms(
         self,
         _: MagicMock,
@@ -71,7 +72,7 @@ class TestDelete:
         assert ret == 0
         assert sdk.delete.call_count == 2
 
-    @patch("smolvm.cleanup.os.geteuid", return_value=0)
+    @patch("smolvm.cli.cleanup.os.geteuid", return_value=0)
     def test_run_delete_dry_run(
         self,
         _: MagicMock,
@@ -88,7 +89,7 @@ class TestDelete:
         out = capsys.readouterr().out
         assert "Dry run complete" in out
 
-    @patch("smolvm.cleanup.os.geteuid", return_value=0)
+    @patch("smolvm.cli.cleanup.os.geteuid", return_value=0)
     def test_run_delete_partial_failure(
         self,
         _: MagicMock,
@@ -112,7 +113,7 @@ class TestDelete:
         assert "failed" in out
         assert "busy" in out
 
-    @patch("smolvm.cleanup.os.geteuid", return_value=0)
+    @patch("smolvm.cli.cleanup.os.geteuid", return_value=0)
     def test_run_delete_json(
         self,
         _: MagicMock,
@@ -131,7 +132,7 @@ class TestDelete:
         assert payload["data"]["targets"] == ["vm-abc"]
         assert payload["data"]["deleted"] == ["vm-abc"]
 
-    @patch("smolvm.cli.run_delete", return_value=0)
+    @patch("smolvm.cli.main.run_delete", return_value=0)
     def test_cli_delete_forwards_args(self, mock_run_delete: MagicMock) -> None:
         """`smolvm delete vm-abc vm-def --json` forwards correctly."""
         ret = cli_main(["delete", "vm-abc", "vm-def", "--json"])
@@ -149,14 +150,14 @@ class TestCleanup:
 
     @pytest.fixture
     def mock_sdk_cls(self) -> MagicMock:
-        with patch("smolvm.cleanup.SmolVMManager") as mock_cls:
+        with patch("smolvm.cli.cleanup.SmolVMManager") as mock_cls:
             sdk = MagicMock()
             mock_cls.return_value.__enter__.return_value = sdk
             mock_cls.return_value.__exit__.return_value = None
             yield sdk
 
-    @patch("smolvm.cleanup.os.geteuid", return_value=1000)
-    @patch("smolvm.cleanup.sys")
+    @patch("smolvm.cli.cleanup.os.geteuid", return_value=1000)
+    @patch("smolvm.cli.cleanup.sys")
     def test_run_cleanup_dry_run_human(
         self,
         mock_sys: MagicMock,
@@ -181,7 +182,7 @@ class TestCleanup:
         assert "Dry run complete" in out
         sdk.delete.assert_not_called()
 
-    @patch("smolvm.cleanup.os.geteuid", return_value=0)
+    @patch("smolvm.cli.cleanup.os.geteuid", return_value=0)
     def test_run_cleanup_deletes_all(
         self,
         _: MagicMock,
@@ -198,7 +199,7 @@ class TestCleanup:
         assert ret == 0
         assert sdk.delete.call_count == 2
 
-    @patch("smolvm.cleanup.os.geteuid", return_value=0)
+    @patch("smolvm.cli.cleanup.os.geteuid", return_value=0)
     def test_run_cleanup_partial_failure(
         self,
         _: MagicMock,
@@ -225,7 +226,7 @@ class TestCleanup:
         assert "failed" in out
         assert "busy" in out
 
-    @patch("smolvm.cleanup.os.geteuid", return_value=0)
+    @patch("smolvm.cli.cleanup.os.geteuid", return_value=0)
     def test_run_cleanup_json(
         self,
         _: MagicMock,
@@ -253,7 +254,7 @@ class TestCleanup:
         args = build_parser().parse_args(["--json"])
         assert args.json is True
 
-    @patch("smolvm.cli.run_cleanup", return_value=0)
+    @patch("smolvm.cli.main.run_cleanup", return_value=0)
     def test_cli_cleanup_forwards_json(self, mock_run_cleanup: MagicMock) -> None:
         """`smolvm cleanup --json` forwards correctly."""
         ret = cli_main(["cleanup", "--json"])
@@ -264,7 +265,7 @@ class TestCleanup:
             json_output=True,
         )
 
-    @patch("smolvm.cleanup.run_cleanup", return_value=0)
+    @patch("smolvm.cli.cleanup.run_cleanup", return_value=0)
     def test_standalone_cleanup_main_forwards_json(self, mock_run_cleanup: MagicMock) -> None:
         """`smolvm-cleanup --json` forwards correctly."""
         ret = cleanup_main(["--json"])

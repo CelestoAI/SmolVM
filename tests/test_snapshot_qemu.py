@@ -91,7 +91,7 @@ def test_pause_and_resume_qemu_vm(
     """Pause/resume should drive QMP stop/cont for QEMU VMs."""
     _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
 
-    with patch("smolvm.runtime_qemu.QMPClient") as mock_client_cls:
+    with patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls:
         mock_client = _mock_qmp_client()
         mock_client_cls.return_value = mock_client
 
@@ -112,7 +112,7 @@ def test_create_qemu_snapshot_from_running_vm_leaves_source_paused_by_default(
     """QEMU snapshot creation should persist backend-neutral metadata and pause the source."""
     _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
 
-    with patch("smolvm.runtime_qemu.QMPClient") as mock_client_cls:
+    with patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls:
         mock_client = _mock_qmp_client()
         mock_client_cls.return_value = mock_client
 
@@ -139,7 +139,7 @@ def test_create_qemu_snapshot_from_running_vm_can_resume_source(
     """QEMU snapshot creation should optionally resume the source VM after persistence."""
     _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
 
-    with patch("smolvm.runtime_qemu.QMPClient") as mock_client_cls:
+    with patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls:
         mock_client = _mock_qmp_client()
         mock_client_cls.return_value = mock_client
 
@@ -165,7 +165,7 @@ def test_create_qemu_snapshot_from_paused_vm_does_not_stop_again(
         control_socket_path=control_socket_path,
     )
 
-    with patch("smolvm.runtime_qemu.QMPClient") as mock_client_cls:
+    with patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls:
         mock_client = _mock_qmp_client()
         mock_client_cls.return_value = mock_client
 
@@ -204,7 +204,7 @@ def test_restore_qemu_snapshot_rehydrates_deleted_vm(
 
     with (
         patch.object(qemu_smol_vm, "_start_qemu", return_value=process),
-        patch("smolvm.runtime_qemu.QMPClient") as mock_client_cls,
+        patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls,
     ):
         mock_client = _mock_qmp_client()
         mock_client_cls.return_value = mock_client
@@ -248,7 +248,7 @@ def test_restore_qemu_snapshot_rolls_back_new_vm_resources_on_failure(
 
     with (
         patch.object(qemu_smol_vm, "_start_qemu", return_value=process),
-        patch("smolvm.runtime_qemu.QMPClient") as mock_client_cls,
+        patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls,
     ):
         mock_client = _mock_qmp_client()
         mock_client.wait_for_job.side_effect = SmolVMError("load failed")
@@ -293,7 +293,7 @@ def test_restore_qemu_snapshot_preserves_existing_managed_disk_on_failure(
 
     with (
         patch.object(qemu_smol_vm, "_start_qemu", return_value=process),
-        patch("smolvm.runtime_qemu.QMPClient") as mock_client_cls,
+        patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls,
     ):
         mock_client = _mock_qmp_client()
         mock_client.wait_for_job.side_effect = SmolVMError("load failed")
@@ -335,7 +335,7 @@ def test_delete_qemu_snapshot_rejects_active_restored_vm(
 
     with (
         patch.object(qemu_smol_vm, "_start_qemu", return_value=process),
-        patch("smolvm.runtime_qemu.QMPClient") as mock_client_cls,
+        patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls,
     ):
         mock_client = _mock_qmp_client()
         mock_client_cls.return_value = mock_client

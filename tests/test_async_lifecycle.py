@@ -25,7 +25,6 @@ import pytest
 from smolvm.exceptions import SmolVMError
 from smolvm.types import VMConfig, VMState
 
-
 # ---------------------------------------------------------------------------
 # async_run_command
 # ---------------------------------------------------------------------------
@@ -107,7 +106,7 @@ class TestAsyncSmolVMManager:
         tmp_path: Path,
     ) -> None:
         """async_start should call adapter.async_start and update state."""
-        from smolvm.runtime import RuntimeLaunch
+        from smolvm.runtime.base import RuntimeLaunch
         from smolvm.vm import SmolVMManager
 
         kernel = tmp_path / "vmlinux"

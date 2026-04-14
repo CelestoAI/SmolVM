@@ -24,10 +24,10 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from smolvm.backends import BACKEND_QEMU
 from smolvm.exceptions import SmolVMError
 from smolvm.qmp import QMPClient
-from smolvm.runtime import (
+from smolvm.runtime.backends import BACKEND_QEMU
+from smolvm.runtime.base import (
     RuntimeAdapter,
     RuntimeContext,
     RuntimeLaunch,

@@ -28,7 +28,7 @@ class TestVersion:
     def test_cli_version_flag(self) -> None:
         """smolvm --version should print the package version."""
         import smolvm
-        from smolvm.cli import build_parser
+        from smolvm.cli.main import build_parser
 
         parser = build_parser()
         with pytest.raises(SystemExit) as exc_info:
@@ -37,7 +37,7 @@ class TestVersion:
 
     def test_cli_short_version_flag(self) -> None:
         """smolvm -V should also trigger version output."""
-        from smolvm.cli import build_parser
+        from smolvm.cli.main import build_parser
 
         parser = build_parser()
         with pytest.raises(SystemExit) as exc_info:

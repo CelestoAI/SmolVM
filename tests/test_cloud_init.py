@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from smolvm.cloud_init import build_seed_iso
+from smolvm.images.cloud_init import build_seed_iso
 
 
 def test_build_seed_iso_replaces_output_atomically(tmp_path) -> None:
@@ -46,7 +46,7 @@ def test_build_seed_iso_closes_and_cleans_up_temp_file_on_failure(tmp_path) -> N
     fake_iso.write.side_effect = RuntimeError("write failed")
 
     with (
-        patch("smolvm.cloud_init.PyCdlib", return_value=fake_iso),
+        patch("smolvm.images.cloud_init.PyCdlib", return_value=fake_iso),
         pytest.raises(RuntimeError, match="write failed"),
     ):
         build_seed_iso(

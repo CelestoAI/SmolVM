@@ -36,19 +36,24 @@ from pathlib import Path
 from typing import Any, TextIO
 from uuid import uuid4
 
-from smolvm.backends import BACKEND_FIRECRACKER, BACKEND_LIBKRUN, BACKEND_QEMU, resolve_backend
 from smolvm.exceptions import (
     SmolVMError,
     SnapshotAlreadyExistsError,
     SnapshotNotFoundError,
     VMNotFoundError,
 )
-from smolvm.host import HostCapability, HostManager
-from smolvm.network import NetworkManager, check_network_prerequisites, resolve_domains_to_ips
-from smolvm.runtime import RuntimeContext, SnapshotCreateRequest, SnapshotRestoreRequest
-from smolvm.runtime_firecracker import FirecrackerRuntimeAdapter
-from smolvm.runtime_libkrun import LibkrunRuntimeAdapter
-from smolvm.runtime_qemu import QEMU_ROOT_NODE_NAME, QemuRuntimeAdapter
+from smolvm.host.manager import HostCapability, HostManager
+from smolvm.host.network import NetworkManager, check_network_prerequisites, resolve_domains_to_ips
+from smolvm.runtime.backends import (
+    BACKEND_FIRECRACKER,
+    BACKEND_LIBKRUN,
+    BACKEND_QEMU,
+    resolve_backend,
+)
+from smolvm.runtime.base import RuntimeContext, SnapshotCreateRequest, SnapshotRestoreRequest
+from smolvm.runtime.firecracker import FirecrackerRuntimeAdapter
+from smolvm.runtime.libkrun import LibkrunRuntimeAdapter
+from smolvm.runtime.qemu import QEMU_ROOT_NODE_NAME, QemuRuntimeAdapter
 from smolvm.storage import StateManagerProtocol, create_state_manager, ip_to_pool_index
 from smolvm.types import NetworkConfig, SnapshotInfo, VMConfig, VMInfo, VMState
 from smolvm.utils import RUNTIME_PRIVILEGE_SETUP_HINT, which
@@ -168,7 +173,7 @@ class SmolVMManager:
                 ``/var/lib/smolvm`` as fallback).
             socket_dir: Directory for VM sockets (default: /tmp).
             backend: Runtime backend (``firecracker``, ``qemu``, or ``auto``).
-                Defaults to ``auto`` via :func:`smolvm.backends.resolve_backend`.
+                Defaults to ``auto`` via :func:`smolvm.runtime.backends.resolve_backend`.
         """
         self.data_dir = resolve_data_dir(data_dir)
         self.socket_dir = socket_dir or DEFAULT_SOCKET_DIR
@@ -1632,7 +1637,7 @@ class SmolVMManager:
         if fc_path is None:
             raise SmolVMError(
                 "Firecracker binary not found. "
-                "Install it with: smolvm.host.HostManager().install_firecracker()"
+                "Install it with: smolvm.host.manager.HostManager().install_firecracker()"
             )
 
         cmd = [str(fc_path), "--api-sock", str(socket_path)]

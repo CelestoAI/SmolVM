@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from smolvm.setup import SetupOptions, build_setup_command, run_setup
+from smolvm.host.setup import SetupOptions, build_setup_command, run_setup
 
 
 def _make_asset_root(tmp_path: Path) -> Path:
@@ -149,7 +149,7 @@ class TestBuildSetupCommand:
 class TestRunSetup:
     """Tests for subprocess execution behavior."""
 
-    @patch("smolvm.setup.subprocess.run")
+    @patch("smolvm.host.setup.subprocess.run")
     def test_child_exit_code_is_propagated(
         self,
         mock_run: MagicMock,
@@ -165,7 +165,7 @@ class TestRunSetup:
 
         assert exit_code == 7
 
-    @patch("smolvm.setup.subprocess.run")
+    @patch("smolvm.host.setup.subprocess.run")
     def test_run_setup_inherits_stdio_and_does_not_capture_output(
         self,
         mock_run: MagicMock,

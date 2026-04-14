@@ -19,9 +19,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from smolvm.boot_profiles import KernelBootProfile
 from smolvm.browser import BrowserSession, _browser_vm_id, _build_browser_vm_config
 from smolvm.exceptions import BrowserSessionNotFoundError
+from smolvm.runtime.boot_profiles import KernelBootProfile
 from smolvm.types import (
     BrowserSessionConfig,
     BrowserSessionState,
@@ -57,7 +57,7 @@ def test_browser_vm_id_uses_stable_profile_id() -> None:
 
 
 @patch("smolvm.utils.ensure_ssh_key")
-@patch("smolvm.build.ImageBuilder")
+@patch("smolvm.images.builder.ImageBuilder")
 @patch("smolvm.browser._allocate_browser_host_port", side_effect=[39001])
 def test_build_browser_vm_config_uses_persistent_disk_reuse(
     mock_allocate_host_port: MagicMock,
@@ -112,7 +112,7 @@ def test_build_browser_vm_config_uses_persistent_disk_reuse(
 
 
 @patch("smolvm.utils.ensure_ssh_key")
-@patch("smolvm.build.ImageBuilder")
+@patch("smolvm.images.builder.ImageBuilder")
 @patch("smolvm.browser._allocate_browser_host_port", side_effect=[39011, 39012])
 def test_build_browser_vm_config_allocates_qemu_live_port_forwards(
     mock_allocate_host_port: MagicMock,

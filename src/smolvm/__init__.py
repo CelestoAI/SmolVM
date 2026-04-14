@@ -21,7 +21,6 @@ sandboxed environment.
 from importlib.metadata import version as _pkg_version
 
 from smolvm.browser import BrowserSession
-from smolvm.build import SSH_BOOT_ARGS, ImageBuilder
 from smolvm.exceptions import (
     BrowserSessionAlreadyExistsError,
     BrowserSessionNotFoundError,
@@ -39,8 +38,9 @@ from smolvm.exceptions import (
     VMNotFoundError,
 )
 from smolvm.facade import SmolVM
-from smolvm.host import HostManager
-from smolvm.images import ImageManager, ImageSource, LocalImage, S3ImageManifest, S3ImageRef
+from smolvm.host.manager import HostManager
+from smolvm.images.builder import SSH_BOOT_ARGS, ImageBuilder
+from smolvm.images.manager import ImageManager, ImageSource, LocalImage, S3ImageManifest, S3ImageRef
 from smolvm.ssh import SSHClient
 from smolvm.types import (
     BrowserSessionConfig,

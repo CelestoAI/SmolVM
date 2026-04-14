@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Literal
 
-from smolvm.backends import BACKEND_FIRECRACKER, BACKEND_LIBKRUN, BACKEND_QEMU
+from smolvm.runtime.backends import BACKEND_FIRECRACKER, BACKEND_LIBKRUN, BACKEND_QEMU
 
 # Firecracker-compatible uncompressed kernels.
 FIRECRACKER_KERNEL_URLS: dict[str, str] = {

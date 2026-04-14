@@ -21,9 +21,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from smolvm.boot_profiles import KernelBootProfile, resolve_kernel_url
-from smolvm.build import ImageBuilder
 from smolvm.exceptions import ImageError, SmolVMError
+from smolvm.images.builder import ImageBuilder
+from smolvm.runtime.boot_profiles import KernelBootProfile, resolve_kernel_url
 
 
 def _ok_subprocess_run(
@@ -40,7 +40,7 @@ class TestDockerDiagnostics:
     def test_docker_requirement_error_when_docker_missing(self, tmp_path: Path) -> None:
         builder = ImageBuilder(cache_dir=tmp_path / "images")
 
-        with patch("smolvm.build.shutil.which", return_value=None):
+        with patch("smolvm.images.builder.shutil.which", return_value=None):
             error = builder.docker_requirement_error()
 
         assert str(error) == (
@@ -48,7 +48,7 @@ class TestDockerDiagnostics:
             "Install Docker Desktop (macOS) or docker.io (Linux)."
         )
 
-    @patch("smolvm.build.subprocess.run")
+    @patch("smolvm.images.builder.subprocess.run")
     def test_docker_requirement_error_when_daemon_unreachable(
         self, mock_subprocess_run: MagicMock, tmp_path: Path
     ) -> None:
@@ -62,14 +62,14 @@ class TestDockerDiagnostics:
             ),
         )
 
-        with patch("smolvm.build.shutil.which", return_value="/usr/bin/docker"):
+        with patch("smolvm.images.builder.shutil.which", return_value="/usr/bin/docker"):
             error = builder.docker_requirement_error()
 
         assert "could not reach the Docker daemon" in str(error)
         assert "Start Docker Desktop or the Docker service" in str(error)
         assert "Cannot connect to the Docker daemon" in str(error)
 
-    @patch("smolvm.build.subprocess.run")
+    @patch("smolvm.images.builder.subprocess.run")
     def test_docker_requirement_error_when_socket_permission_denied(
         self, mock_subprocess_run: MagicMock, tmp_path: Path
     ) -> None:
@@ -83,7 +83,7 @@ class TestDockerDiagnostics:
             ),
         )
 
-        with patch("smolvm.build.shutil.which", return_value="/usr/bin/docker"):
+        with patch("smolvm.images.builder.shutil.which", return_value="/usr/bin/docker"):
             error = builder.docker_requirement_error()
 
         assert "cannot access the Docker daemon socket" in str(error)
@@ -102,7 +102,7 @@ class TestImageBuilderLoopFs:
         ):
             builder._run_loopfs("mount", Path("/tmp/rootfs.ext4"), Path("/tmp/mnt"))
 
-    @patch("smolvm.build.run_command")
+    @patch("smolvm.images.builder.run_command")
     def test_run_loopfs_maps_runtime_error(
         self, mock_run_command: MagicMock, tmp_path: Path
     ) -> None:
@@ -119,8 +119,8 @@ class TestImageBuilderLoopFs:
         ):
             builder._run_loopfs("mount", Path("/tmp/rootfs.ext4"), Path("/tmp/mnt"))
 
-    @patch("smolvm.build.subprocess.run")
-    @patch("smolvm.build.run_command")
+    @patch("smolvm.images.builder.subprocess.run")
+    @patch("smolvm.images.builder.run_command")
     def test_do_build_uses_loopfs_helper(
         self, mock_run_command: MagicMock, mock_subprocess_run: MagicMock, tmp_path: Path
     ) -> None:
@@ -254,8 +254,8 @@ class TestBrowserImageBuilder:
 
         assert mock_do_build.call_count == 2
 
-    @patch("smolvm.build.subprocess.run")
-    @patch("smolvm.build.run_command")
+    @patch("smolvm.images.builder.subprocess.run")
+    @patch("smolvm.images.builder.run_command")
     def test_do_build_uses_docker_fallback_when_loopfs_missing(
         self, mock_run_command: MagicMock, mock_subprocess_run: MagicMock, tmp_path: Path
     ) -> None:
@@ -317,8 +317,8 @@ class TestBrowserImageBuilder:
         assert len(docker_run_calls) == 1
         assert rootfs_path.exists()
 
-    @patch("smolvm.build.subprocess.run")
-    @patch("smolvm.build.run_command")
+    @patch("smolvm.images.builder.subprocess.run")
+    @patch("smolvm.images.builder.run_command")
     def test_do_build_preserves_tar_error_when_unmount_fails(
         self, mock_run_command: MagicMock, mock_subprocess_run: MagicMock, tmp_path: Path
     ) -> None:

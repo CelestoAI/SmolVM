@@ -19,13 +19,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from smolvm.exceptions import SmolVMError
-from smolvm.network import NetworkManager, check_network_prerequisites
+from smolvm.host.network import NetworkManager, check_network_prerequisites
 
 
 @pytest.fixture(autouse=True)
 def _disable_native_extension():
     """Force subprocess path in all network tests (native extension may be present on Linux CI)."""
-    with patch("smolvm.network._HAS_NATIVE", False):
+    with patch("smolvm.host.network._HAS_NATIVE", False):
         yield
 
 
@@ -41,7 +41,7 @@ def _collect_nft_scripts(mock_run_command: MagicMock) -> str:
 class TestSSHPortForwarding:
     """Tests for SSH forwarding rule setup/cleanup."""
 
-    @patch("smolvm.network.run_command")
+    @patch("smolvm.host.network.run_command")
     def test_setup_ssh_port_forward_adds_elements(self, mock_run_command: MagicMock) -> None:
         """Setup should add elements to DNAT maps and SNAT/forward sets."""
         mock_run_command.return_value = MagicMock(stdout="")
@@ -66,7 +66,7 @@ class TestSSHPortForwarding:
         assert "add element ip smolvm_nat snat_return { 172.16.0.2 . 22 }" in scripts
         assert "add element inet smolvm_filter fwd_allow { 172.16.0.2 . 22 }" in scripts
 
-    @patch("smolvm.network.run_command")
+    @patch("smolvm.host.network.run_command")
     def test_cleanup_ssh_port_forward_deletes_elements_and_legacy_rules(
         self, mock_run_command: MagicMock
     ) -> None:
@@ -106,7 +106,7 @@ class TestSSHPortForwarding:
 class TestTapManagement:
     """Tests for TAP device create behavior."""
 
-    @patch("smolvm.network.run_command")
+    @patch("smolvm.host.network.run_command")
     def test_create_tap_is_idempotent_when_existing(self, mock_run_command: MagicMock) -> None:
         """'File exists' errors should be treated as success."""
         mock_run_command.side_effect = SmolVMError("RTNETLINK answers: File exists")
@@ -118,8 +118,8 @@ class TestTapManagement:
             ["ip", "tuntap", "add", "tap42", "mode", "tap", "user", "alice"]
         )
 
-    @patch("smolvm.network.time.sleep")
-    @patch("smolvm.network.run_command")
+    @patch("smolvm.host.network.time.sleep")
+    @patch("smolvm.host.network.run_command")
     def test_create_tap_retries_busy_then_succeeds(
         self, mock_run_command: MagicMock, mock_sleep: MagicMock
     ) -> None:
@@ -135,8 +135,8 @@ class TestTapManagement:
         assert mock_run_command.call_count == 2
         mock_sleep.assert_called_once_with(0.1)
 
-    @patch("smolvm.network.time.sleep")
-    @patch("smolvm.network.run_command")
+    @patch("smolvm.host.network.time.sleep")
+    @patch("smolvm.host.network.run_command")
     def test_create_tap_raises_after_busy_retries(
         self, mock_run_command: MagicMock, mock_sleep: MagicMock
     ) -> None:
@@ -157,7 +157,7 @@ class TestTapManagement:
 class TestLocalPortForwarding:
     """Tests for localhost-only forwarding rule setup/cleanup."""
 
-    @patch("smolvm.network.run_command")
+    @patch("smolvm.host.network.run_command")
     def test_setup_local_port_forward_adds_output_and_forward(
         self,
         mock_run_command: MagicMock,
@@ -180,7 +180,7 @@ class TestLocalPortForwarding:
         assert "add rule inet smolvm_filter forward" in scripts
         assert "add rule ip smolvm_nat prerouting" not in scripts
 
-    @patch("smolvm.network.run_command")
+    @patch("smolvm.host.network.run_command")
     def test_cleanup_local_port_forward_deletes_rules(self, mock_run_command: MagicMock) -> None:
         """Cleanup should batch-delete OUTPUT/POSTROUTING/FORWARD rules."""
 
@@ -225,7 +225,7 @@ class TestLocalPortForwarding:
         assert "delete rule ip smolvm_nat output handle 23" in scripts
         assert "delete rule inet smolvm_filter forward handle 22" in scripts
 
-    @patch("smolvm.network.run_command", side_effect=SmolVMError("missing rule"))
+    @patch("smolvm.host.network.run_command", side_effect=SmolVMError("missing rule"))
     def test_cleanup_local_port_forward_is_idempotent_when_rules_missing(
         self,
         mock_run_command: MagicMock,
@@ -241,7 +241,7 @@ class TestLocalPortForwarding:
         # One table list attempt per table (nat + filter).
         assert mock_run_command.call_count == 2
 
-    @patch("smolvm.network.run_command")
+    @patch("smolvm.host.network.run_command")
     def test_cleanup_all_local_port_forwards_removes_matching_rules_only(
         self,
         mock_run_command: MagicMock,
@@ -299,8 +299,8 @@ class TestLocalPortForwarding:
 class TestNetworkPrerequisites:
     """Tests for runtime prerequisite checks."""
 
-    @patch("smolvm.network.os.geteuid", return_value=1000)
-    @patch("smolvm.network.run_command")
+    @patch("smolvm.host.network.os.geteuid", return_value=1000)
+    @patch("smolvm.host.network.run_command")
     def test_check_network_prerequisites_checks_scoped_sudo_commands(
         self,
         mock_run_command: MagicMock,

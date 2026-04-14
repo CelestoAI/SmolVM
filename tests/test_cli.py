@@ -22,7 +22,12 @@ from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
-from smolvm.cli import DASHBOARD_ALLOW_BETA_ENV, _current_version_is_prerelease, build_parser, main
+from smolvm.cli.main import (
+    DASHBOARD_ALLOW_BETA_ENV,
+    _current_version_is_prerelease,
+    build_parser,
+    main,
+)
 from smolvm.types import BrowserSessionState, NetworkConfig, VMState
 
 
@@ -331,7 +336,7 @@ class TestCliCreate:
 
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
-    @patch("smolvm.backends.platform.system", return_value="Darwin")
+    @patch("smolvm.runtime.backends.platform.system", return_value="Darwin")
     def test_create_auto_generated_name(
         self,
         _: MagicMock,
@@ -377,7 +382,7 @@ class TestCliCreate:
 
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
-    @patch("smolvm.backends.platform.system", return_value="Darwin")
+    @patch("smolvm.runtime.backends.platform.system", return_value="Darwin")
     def test_create_success(
         self,
         _: MagicMock,
@@ -479,7 +484,7 @@ class TestCliCreate:
 
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
-    @patch("smolvm.backends.platform.system", return_value="Darwin")
+    @patch("smolvm.runtime.backends.platform.system", return_value="Darwin")
     def test_create_json(
         self,
         _: MagicMock,
@@ -871,7 +876,7 @@ class TestCliSnapshot:
 class TestCliSSH:
     """Tests for `smolvm ssh`."""
 
-    @patch("smolvm.cli.subprocess.run")
+    @patch("smolvm.cli.main.subprocess.run")
     @patch("smolvm.facade.SmolVM")
     def test_ssh_running_vm_launches_subprocess(
         self,
@@ -922,7 +927,7 @@ class TestCliSSH:
         vm.close.assert_called_once()
 
     @pytest.mark.parametrize("status", [VMState.CREATED, VMState.STOPPED])
-    @patch("smolvm.cli.subprocess.run")
+    @patch("smolvm.cli.main.subprocess.run")
     @patch("smolvm.facade.SmolVM")
     def test_ssh_auto_starts_created_or_stopped_vm(
         self,
@@ -944,7 +949,7 @@ class TestCliSSH:
         vm.wait_for_ssh.assert_called_once_with(timeout=30.0)
         mock_run.assert_called_once_with(["ssh", "root@127.0.0.1"], check=False)
 
-    @patch("smolvm.cli.subprocess.run")
+    @patch("smolvm.cli.main.subprocess.run")
     @patch("smolvm.facade.SmolVM")
     def test_ssh_resumes_paused_vm(
         self,
@@ -966,7 +971,7 @@ class TestCliSSH:
         vm.wait_for_ssh.assert_called_once_with(timeout=30.0)
         mock_run.assert_called_once_with(["ssh", "root@127.0.0.1"], check=False)
 
-    @patch("smolvm.cli.subprocess.run")
+    @patch("smolvm.cli.main.subprocess.run")
     @patch("smolvm.facade.SmolVM")
     def test_ssh_error_state_fails_fast(
         self,
@@ -988,7 +993,7 @@ class TestCliSSH:
         vm.close.assert_called_once()
         assert "error state" in capsys.readouterr().err
 
-    @patch("smolvm.cli.subprocess.run")
+    @patch("smolvm.cli.main.subprocess.run")
     @patch("smolvm.facade.SmolVM")
     def test_ssh_missing_vm_prints_error(
         self,
@@ -1005,7 +1010,7 @@ class TestCliSSH:
         mock_run.assert_not_called()
         assert "VM 'missing' not found" in capsys.readouterr().err
 
-    @patch("smolvm.cli.subprocess.run", side_effect=FileNotFoundError)
+    @patch("smolvm.cli.main.subprocess.run", side_effect=FileNotFoundError)
     @patch("smolvm.facade.SmolVM")
     def test_ssh_missing_local_ssh_binary(
         self,
@@ -1025,7 +1030,7 @@ class TestCliSSH:
         assert "openssh-client" in capsys.readouterr().err
         vm.close.assert_called_once()
 
-    @patch("smolvm.cli.subprocess.run")
+    @patch("smolvm.cli.main.subprocess.run")
     @patch("smolvm.facade.SmolVM")
     def test_ssh_propagates_child_exit_code(
         self,
@@ -1047,7 +1052,7 @@ class TestCliSSH:
 class TestCliDoctor:
     """Tests for `smolvm doctor`."""
 
-    @patch("smolvm.cli.run_doctor")
+    @patch("smolvm.cli.main.run_doctor")
     def test_doctor_default(self, mock_run_doctor: MagicMock) -> None:
         """Default doctor invocation should call run_doctor with defaults."""
         mock_run_doctor.return_value = 0
@@ -1061,7 +1066,7 @@ class TestCliDoctor:
             strict=False,
         )
 
-    @patch("smolvm.cli.run_doctor")
+    @patch("smolvm.cli.main.run_doctor")
     def test_doctor_with_flags(self, mock_run_doctor: MagicMock) -> None:
         """Doctor flags should be forwarded to run_doctor."""
         mock_run_doctor.return_value = 1
@@ -1079,8 +1084,8 @@ class TestCliDoctor:
 class TestCliSetup:
     """Tests for `smolvm setup` CLI wiring."""
 
-    @patch("smolvm.cli._run_setup")
-    @patch("smolvm.cli.platform.system", return_value="Linux")
+    @patch("smolvm.cli.main._run_setup")
+    @patch("smolvm.cli.main.platform.system", return_value="Linux")
     def test_setup_dispatches_to_runner(
         self,
         mock_platform_system: MagicMock,
@@ -1094,7 +1099,7 @@ class TestCliSetup:
         assert ret == 0
         mock_run_setup.assert_called_once()
 
-    @patch("smolvm.cli.platform.system", return_value="Darwin")
+    @patch("smolvm.cli.main.platform.system", return_value="Darwin")
     def test_setup_rejects_linux_only_flags_on_macos(
         self,
         mock_platform_system: MagicMock,
@@ -1110,8 +1115,8 @@ class TestCliSetup:
         assert "only supported on Linux" in err
         assert "Firecracker/KVM" in err
 
-    @patch("smolvm.cli._run_setup")
-    @patch("smolvm.cli.platform.system", return_value="Darwin")
+    @patch("smolvm.cli.main._run_setup")
+    @patch("smolvm.cli.main.platform.system", return_value="Darwin")
     def test_setup_skip_deps_accepted_on_macos(
         self,
         mock_platform_system: MagicMock,
@@ -1125,7 +1130,7 @@ class TestCliSetup:
         assert ret == 0
         mock_run_setup.assert_called_once()
 
-    @patch("smolvm.cli.platform.system", return_value="Windows")
+    @patch("smolvm.cli.main.platform.system", return_value="Windows")
     def test_setup_rejects_linux_only_flags_on_unsupported_os(
         self,
         mock_platform_system: MagicMock,
@@ -1138,7 +1143,7 @@ class TestCliSetup:
         assert exc_info.value.code == 2
         assert "only supported on Linux" in capsys.readouterr().err
 
-    @patch("smolvm.cli.platform.system", return_value="Darwin")
+    @patch("smolvm.cli.main.platform.system", return_value="Darwin")
     def test_setup_help_hides_linux_only_flags_on_macos(
         self,
         mock_platform_system: MagicMock,
@@ -1158,7 +1163,7 @@ class TestCliSetup:
         # Cross-platform flags should still appear
         assert "--skip-deps" in help_text
 
-    @patch("smolvm.cli.platform.system", return_value="Linux")
+    @patch("smolvm.cli.main.platform.system", return_value="Linux")
     def test_setup_remove_runtime_config_conflicts_with_other_modes(
         self,
         mock_platform_system: MagicMock,
@@ -1176,12 +1181,12 @@ class TestCliSetup:
 class TestCurrentVersionIsPrerelease:
     """Tests for _current_version_is_prerelease helper."""
 
-    @patch("smolvm.cli.importlib.metadata.version", return_value="0.0.5.a1")
+    @patch("smolvm.cli.main.importlib.metadata.version", return_value="0.0.5.a1")
     def test_alpha_version_is_prerelease(self, _: MagicMock) -> None:
         """Alpha versions (e.g. 0.0.5.a1) should be detected as pre-release."""
         assert _current_version_is_prerelease() is True
 
-    @patch("smolvm.cli.importlib.metadata.version", return_value="0.0.5.dev1")
+    @patch("smolvm.cli.main.importlib.metadata.version", return_value="0.0.5.dev1")
     def test_dev_version_is_prerelease(self, _: MagicMock) -> None:
         """Dev versions (e.g. 0.0.5.dev1) should be detected as pre-release."""
         assert _current_version_is_prerelease() is True
@@ -1338,22 +1343,22 @@ class TestCliBrowser:
         assert payload["data"]["sessions"][0]["session_id"] == "browser-abc123"
         assert payload["data"]["sessions"][0]["status"] == "ready"
 
-    @patch("smolvm.cli.importlib.metadata.version", return_value="0.0.5b2")
+    @patch("smolvm.cli.main.importlib.metadata.version", return_value="0.0.5b2")
     def test_beta_version_is_prerelease(self, _: MagicMock) -> None:
         """Beta versions (e.g. 0.0.5b2) should be detected as pre-release."""
         assert _current_version_is_prerelease() is True
 
-    @patch("smolvm.cli.importlib.metadata.version", return_value="0.0.5rc1")
+    @patch("smolvm.cli.main.importlib.metadata.version", return_value="0.0.5rc1")
     def test_rc_version_is_prerelease(self, _: MagicMock) -> None:
         """Release candidates (e.g. 0.0.5rc1) should be detected as pre-release."""
         assert _current_version_is_prerelease() is True
 
-    @patch("smolvm.cli.importlib.metadata.version", return_value="0.0.5")
+    @patch("smolvm.cli.main.importlib.metadata.version", return_value="0.0.5")
     def test_stable_version_is_not_prerelease(self, _: MagicMock) -> None:
         """Stable versions (e.g. 0.0.5) should NOT be detected as pre-release."""
         assert _current_version_is_prerelease() is False
 
-    @patch("smolvm.cli.importlib.metadata.version", return_value="1.2.3")
+    @patch("smolvm.cli.main.importlib.metadata.version", return_value="1.2.3")
     def test_stable_semver_is_not_prerelease(self, _: MagicMock) -> None:
         """Stable semantic versions (e.g. 1.2.3) should NOT be detected as pre-release."""
         assert _current_version_is_prerelease() is False
@@ -1363,7 +1368,7 @@ class TestCliBrowser:
         import importlib.metadata
 
         with patch(
-            "smolvm.cli.importlib.metadata.version",
+            "smolvm.cli.main.importlib.metadata.version",
             side_effect=importlib.metadata.PackageNotFoundError("smolvm"),
         ):
             assert _current_version_is_prerelease() is False
@@ -1372,7 +1377,7 @@ class TestCliBrowser:
 class TestCliUi:
     """Tests for `smolvm ui`."""
 
-    @patch("smolvm.cli.importlib.import_module")
+    @patch("smolvm.cli.main.importlib.import_module")
     def test_ui_defaults(self, mock_import: MagicMock) -> None:
         """`smolvm ui` should launch uvicorn with defaults."""
         mock_uvicorn = MagicMock()
@@ -1388,7 +1393,7 @@ class TestCliUi:
             port=8080,
         )
 
-    @patch("smolvm.cli.importlib.import_module")
+    @patch("smolvm.cli.main.importlib.import_module")
     def test_ui_custom_port(self, mock_import: MagicMock) -> None:
         """Custom host/port should be forwarded to uvicorn."""
         mock_uvicorn = MagicMock()
@@ -1403,7 +1408,7 @@ class TestCliUi:
             port=9090,
         )
 
-    @patch("smolvm.cli.importlib.import_module")
+    @patch("smolvm.cli.main.importlib.import_module")
     def test_ui_allow_beta_sets_env(self, mock_import: MagicMock) -> None:
         """--allow-beta should set env flag while uvicorn starts."""
         mock_uvicorn = MagicMock()
@@ -1420,7 +1425,7 @@ class TestCliUi:
         assert ret == 0
         assert DASHBOARD_ALLOW_BETA_ENV not in os.environ
 
-    @patch("smolvm.cli.importlib.import_module", side_effect=ImportError)
+    @patch("smolvm.cli.main.importlib.import_module", side_effect=ImportError)
     def test_ui_missing_dependency(
         self,
         _: MagicMock,
@@ -1432,7 +1437,7 @@ class TestCliUi:
         assert ret == 1
         assert "smolvm[dashboard]" in capsys.readouterr().err
 
-    @patch("smolvm.cli.importlib.import_module")
+    @patch("smolvm.cli.main.importlib.import_module")
     def test_ui_invalid_port(
         self,
         mock_import: MagicMock,
@@ -1446,7 +1451,7 @@ class TestCliUi:
         assert ret == 2
         assert "invalid port" in capsys.readouterr().err
 
-    @patch("smolvm.cli.importlib.import_module")
+    @patch("smolvm.cli.main.importlib.import_module")
     def test_ui_auto_beta_for_prerelease_version(
         self,
         mock_import: MagicMock,
@@ -1454,7 +1459,7 @@ class TestCliUi:
         capsys: pytest.CaptureFixture,
     ) -> None:
         """Pre-release smolvm version should auto-enable beta UI assets."""
-        monkeypatch.setattr("smolvm.cli._current_version_is_prerelease", lambda: True)
+        monkeypatch.setattr("smolvm.cli.main._current_version_is_prerelease", lambda: True)
         mock_uvicorn = MagicMock()
 
         def _run(*args: object, **kwargs: object) -> None:
@@ -1470,7 +1475,7 @@ class TestCliUi:
         assert DASHBOARD_ALLOW_BETA_ENV not in os.environ
         assert "auto-enabled" in capsys.readouterr().out
 
-    @patch("smolvm.cli.importlib.import_module")
+    @patch("smolvm.cli.main.importlib.import_module")
     def test_ui_no_auto_beta_for_stable_version(
         self,
         mock_import: MagicMock,
@@ -1478,7 +1483,7 @@ class TestCliUi:
         capsys: pytest.CaptureFixture,
     ) -> None:
         """Stable smolvm version should NOT auto-enable beta UI assets."""
-        monkeypatch.setattr("smolvm.cli._current_version_is_prerelease", lambda: False)
+        monkeypatch.setattr("smolvm.cli.main._current_version_is_prerelease", lambda: False)
         mock_uvicorn = MagicMock()
         mock_import.return_value = mock_uvicorn
 

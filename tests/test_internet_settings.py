@@ -20,7 +20,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
-from smolvm.network import resolve_domains_to_ips
+from smolvm.host.network import resolve_domains_to_ips
 from smolvm.types import InternetSettings
 
 
@@ -105,7 +105,7 @@ class TestInternetSettings:
 class TestResolveDomains:
     """Tests for resolve_domains_to_ips helper."""
 
-    @patch("smolvm.network.socket.getaddrinfo")
+    @patch("smolvm.host.network.socket.getaddrinfo")
     def test_resolves_bare_domain(self, mock_getaddrinfo: object) -> None:
         mock_getaddrinfo.return_value = [  # type: ignore[union-attr]
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0)),
@@ -113,7 +113,7 @@ class TestResolveDomains:
         result = resolve_domains_to_ips(["example.com"])
         assert result == ["93.184.216.34"]
 
-    @patch("smolvm.network.socket.getaddrinfo")
+    @patch("smolvm.host.network.socket.getaddrinfo")
     def test_resolves_url_extracts_hostname(self, mock_getaddrinfo: object) -> None:
         mock_getaddrinfo.return_value = [  # type: ignore[union-attr]
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0)),
@@ -124,7 +124,7 @@ class TestResolveDomains:
             "example.com", None, proto=socket.IPPROTO_TCP
         )
 
-    @patch("smolvm.network.socket.getaddrinfo")
+    @patch("smolvm.host.network.socket.getaddrinfo")
     def test_deduplicates_ips(self, mock_getaddrinfo: object) -> None:
         mock_getaddrinfo.return_value = [  # type: ignore[union-attr]
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("1.2.3.4", 0)),
@@ -133,7 +133,7 @@ class TestResolveDomains:
         result = resolve_domains_to_ips(["example.com"])
         assert result == ["1.2.3.4"]
 
-    @patch("smolvm.network.socket.getaddrinfo")
+    @patch("smolvm.host.network.socket.getaddrinfo")
     def test_skips_ipv6(self, mock_getaddrinfo: object) -> None:
         mock_getaddrinfo.return_value = [  # type: ignore[union-attr]
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("1.2.3.4", 0)),
@@ -142,7 +142,7 @@ class TestResolveDomains:
         result = resolve_domains_to_ips(["example.com"])
         assert result == ["1.2.3.4"]
 
-    @patch("smolvm.network.socket.getaddrinfo")
+    @patch("smolvm.host.network.socket.getaddrinfo")
     def test_multiple_domains(self, mock_getaddrinfo: object) -> None:
         def fake_resolve(host: str, *args: object, **kwargs: object) -> list:
             if host == "a.com":
@@ -153,19 +153,19 @@ class TestResolveDomains:
         result = resolve_domains_to_ips(["a.com", "b.com"])
         assert result == ["1.1.1.1", "2.2.2.2"]
 
-    @patch("smolvm.network.socket.getaddrinfo")
+    @patch("smolvm.host.network.socket.getaddrinfo")
     def test_skips_wildcard(self, mock_getaddrinfo: object) -> None:
         result = resolve_domains_to_ips(["*"])
         assert result == []
         mock_getaddrinfo.assert_not_called()  # type: ignore[union-attr]
 
-    @patch("smolvm.network.socket.getaddrinfo")
+    @patch("smolvm.host.network.socket.getaddrinfo")
     def test_unresolvable_domain_skipped(self, mock_getaddrinfo: object) -> None:
         mock_getaddrinfo.side_effect = socket.gaierror("DNS lookup failed")  # type: ignore[union-attr]
         result = resolve_domains_to_ips(["nonexistent.invalid"])
         assert result == []
 
-    @patch("smolvm.network.socket.getaddrinfo")
+    @patch("smolvm.host.network.socket.getaddrinfo")
     def test_mixed_resolvable_and_unresolvable(self, mock_getaddrinfo: object) -> None:
         def fake_resolve(host: str, *args: object, **kwargs: object) -> list:
             if host == "good.com":

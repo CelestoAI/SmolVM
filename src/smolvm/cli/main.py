@@ -39,9 +39,9 @@ from rich.progress import (
 from rich.table import Table
 from rich.text import Text
 
-from smolvm.cleanup import add_cleanup_args, add_delete_args, run_cleanup, run_delete
-from smolvm.cli_output import console_stdout, emit_json, render_empty, render_error, status_style
-from smolvm.doctor import run_doctor
+from smolvm.cli.cleanup import add_cleanup_args, add_delete_args, run_cleanup, run_delete
+from smolvm.cli.output import console_stdout, emit_json, render_empty, render_error, status_style
+from smolvm.host.doctor import run_doctor
 from smolvm.types import BrowserSessionState, GuestOS, VMState
 
 if TYPE_CHECKING:
@@ -907,7 +907,7 @@ def _render_list(rows: list[VmRow]) -> None:
 
 def _run_setup(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     """Handle ``smolvm setup``."""
-    from smolvm.setup import SetupOptions, run_setup
+    from smolvm.host.setup import SetupOptions, run_setup
 
     invalid_remove_runtime_flags: list[str] = []
     if args.check_only:
@@ -1068,13 +1068,13 @@ def _build_and_boot_with_progress(
 
 def _run_create(args: argparse.Namespace) -> int:
     """Handle ``smolvm create``."""
-    from smolvm.backends import resolve_backend
     from smolvm.facade import (
         SmolVM,
         _build_auto_config,
         _build_s3_image_config,
         _default_guest_os_for_backend,
     )
+    from smolvm.runtime.backends import resolve_backend
 
     vm: SmolVM | None = None
     try:

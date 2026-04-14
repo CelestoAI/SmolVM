@@ -19,13 +19,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from smolvm.cloud_init import seed_cache_key
 from smolvm.exceptions import (
     CommandExecutionUnavailableError,
     OperationTimeoutError,
     SmolVMError,
 )
 from smolvm.facade import SmolVM, _build_auto_config
+from smolvm.images.cloud_init import seed_cache_key
 from smolvm.types import GuestOS, VMConfig, VMState
 
 
@@ -98,9 +98,9 @@ class TestVMInit:
             SmolVM(sample_config, vm_id="vm001")
 
     @patch("smolvm.facade.SmolVMManager")
-    @patch("smolvm.build.ImageBuilder")
+    @patch("smolvm.images.builder.ImageBuilder")
     @patch("smolvm.utils.ensure_ssh_key")
-    @patch("smolvm.backends.platform.system", return_value="Linux")
+    @patch("smolvm.runtime.backends.platform.system", return_value="Linux")
     def test_neither_config_nor_id_autoconfigures(
         self,
         _: MagicMock,
@@ -140,9 +140,9 @@ class TestVMInit:
         assert created_config.mem_size_mib == 512
 
     @patch("smolvm.facade.SmolVMManager")
-    @patch("smolvm.build.ImageBuilder")
+    @patch("smolvm.images.builder.ImageBuilder")
     @patch("smolvm.utils.ensure_ssh_key")
-    @patch("smolvm.backends.platform.system", return_value="Linux")
+    @patch("smolvm.runtime.backends.platform.system", return_value="Linux")
     def test_autoconfigure_with_custom_mem_and_disk(
         self,
         _: MagicMock,
@@ -180,7 +180,7 @@ class TestVMInit:
         assert created_config.mem_size_mib == 2048
 
     @patch("smolvm.facade.SmolVMManager")
-    @patch("smolvm.build.ImageBuilder")
+    @patch("smolvm.images.builder.ImageBuilder")
     @patch("smolvm.utils.ensure_ssh_key")
     def test_autoconfigure_with_debian_uses_debian_builder(
         self,
@@ -219,7 +219,7 @@ class TestVMInit:
         assert created_config.mem_size_mib == 512
 
     @patch("smolvm.facade.SmolVMManager")
-    @patch("smolvm.build.ImageBuilder")
+    @patch("smolvm.images.builder.ImageBuilder")
     @patch("smolvm.utils.ensure_ssh_key")
     def test_autoconfigure_with_debian_enum_works(
         self,
@@ -251,7 +251,7 @@ class TestVMInit:
 
         mock_builder.build_debian_ssh_key.assert_called_once()
 
-    @patch("smolvm.build.ImageBuilder")
+    @patch("smolvm.images.builder.ImageBuilder")
     @patch("smolvm.utils.ensure_ssh_key")
     def test_build_auto_config_debian_disk_override(
         self,
@@ -298,9 +298,9 @@ class TestVMInit:
         with pytest.raises(ValueError, match="Valid values: alpine, debian, ubuntu"):
             _build_auto_config(os="fedora")
 
-    @patch("smolvm.build.ImageBuilder")
+    @patch("smolvm.images.builder.ImageBuilder")
     @patch("smolvm.utils.ensure_ssh_key")
-    @patch("smolvm.backends.platform.system", return_value="Linux")
+    @patch("smolvm.runtime.backends.platform.system", return_value="Linux")
     def test_named_auto_config_preserves_vm_name(
         self,
         _: MagicMock,
@@ -444,7 +444,7 @@ class TestVMInit:
         mock_ensure_ssh_key.assert_not_called()
 
     @patch("smolvm.facade.platform.machine", return_value="arm64")
-    @patch("smolvm.build.ImageBuilder")
+    @patch("smolvm.images.builder.ImageBuilder")
     @patch("smolvm.utils.ensure_ssh_key")
     def test_named_debian_auto_config_qemu_keeps_backend_specific_settings(
         self,

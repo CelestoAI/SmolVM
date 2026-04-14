@@ -27,17 +27,17 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from smolvm.backends import (
+from smolvm.cli.output import console_stdout, emit_json, render_error, status_style
+from smolvm.exceptions import SmolVMError
+from smolvm.host.manager import HostManager
+from smolvm.host.network import check_network_prerequisites
+from smolvm.runtime.backends import (
     BACKEND_AUTO,
     BACKEND_FIRECRACKER,
     BACKEND_LIBKRUN,
     BACKEND_QEMU,
     resolve_backend,
 )
-from smolvm.cli_output import console_stdout, emit_json, render_error, status_style
-from smolvm.exceptions import SmolVMError
-from smolvm.host import HostManager
-from smolvm.network import check_network_prerequisites
 from smolvm.utils import run_command, which
 
 DoctorStatus = Literal["pass", "warn", "fail"]
@@ -378,7 +378,7 @@ def check_worker_node_security() -> list[DoctorCheck]:
 
     Example usage in a reconciler entrypoint::
 
-        from smolvm.doctor import check_worker_node_security, WorkerNodeSecurityError
+        from smolvm.host.doctor import check_worker_node_security, WorkerNodeSecurityError
 
         try:
             check_worker_node_security()

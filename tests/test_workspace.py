@@ -274,21 +274,21 @@ class TestCliMountFlag:
     """Tests for the --mount CLI flag on create."""
 
     def test_single_mount_host_only(self) -> None:
-        from smolvm.cli import build_parser
+        from smolvm.cli.main import build_parser
 
         parser = build_parser()
         args = parser.parse_args(["create", "--mount", "/tmp/project"])
         assert args.mounts == ["/tmp/project"]
 
     def test_single_mount_with_guest_path(self) -> None:
-        from smolvm.cli import build_parser
+        from smolvm.cli.main import build_parser
 
         parser = build_parser()
         args = parser.parse_args(["create", "--mount", "/tmp/project:/code"])
         assert args.mounts == ["/tmp/project:/code"]
 
     def test_multiple_mounts(self) -> None:
-        from smolvm.cli import build_parser
+        from smolvm.cli.main import build_parser
 
         parser = build_parser()
         args = parser.parse_args([
@@ -299,7 +299,7 @@ class TestCliMountFlag:
         assert args.mounts == ["/tmp/a", "/tmp/b:/data"]
 
     def test_mount_defaults_to_none(self) -> None:
-        from smolvm.cli import build_parser
+        from smolvm.cli.main import build_parser
 
         parser = build_parser()
         args = parser.parse_args(["create"])

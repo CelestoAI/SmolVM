@@ -21,9 +21,9 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from smolvm.backends import BACKEND_LIBKRUN
 from smolvm.exceptions import SmolVMError
-from smolvm.runtime import (
+from smolvm.runtime.backends import BACKEND_LIBKRUN
+from smolvm.runtime.base import (
     RuntimeAdapter,
     RuntimeContext,
     RuntimeLaunch,

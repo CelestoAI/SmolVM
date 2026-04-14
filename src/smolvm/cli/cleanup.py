@@ -27,9 +27,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from smolvm.cli_output import console_stdout, emit_json, render_empty, render_error, status_style
+from smolvm.cli.output import console_stdout, emit_json, render_empty, render_error, status_style
 from smolvm.vm import SmolVMManager
-
 
 # ---------------------------------------------------------------------------
 # Shared data types

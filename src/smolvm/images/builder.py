@@ -32,13 +32,13 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from smolvm.boot_profiles import (
+from smolvm.exceptions import ImageError, SmolVMError
+from smolvm.runtime.boot_profiles import (
     QEMU_DESKTOP_KERNEL_URLS,
     KernelBootProfile,
     normalize_arch,
     resolve_kernel_url,
 )
-from smolvm.exceptions import ImageError, SmolVMError
 from smolvm.utils import RUNTIME_PRIVILEGE_SETUP_HINT, run_command
 
 logger = logging.getLogger(__name__)
@@ -62,7 +62,7 @@ class ImageBuilder:
     Example usage::
 
         from smolvm import ImageBuilder, SmolVM, VMConfig
-        from smolvm.build import SSH_BOOT_ARGS
+        from smolvm.images.builder import SSH_BOOT_ARGS
 
         builder = ImageBuilder()
         kernel, rootfs = builder.build_alpine_ssh()

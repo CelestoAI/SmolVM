@@ -41,16 +41,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from smolvm.backends import BACKEND_LIBKRUN, BACKEND_QEMU, resolve_backend
-from smolvm.boot_profiles import KernelBootProfile, get_boot_profile_spec
-from smolvm.cloud_init import build_seed_iso, default_meta_data, default_user_data, seed_cache_key
 from smolvm.env import inject_env_vars, read_env_vars, remove_env_vars
 from smolvm.exceptions import (
     CommandExecutionUnavailableError,
     OperationTimeoutError,
     SmolVMError,
 )
-from smolvm.images import ImageManager, ImageSource
+from smolvm.images.cloud_init import (
+    build_seed_iso,
+    default_meta_data,
+    default_user_data,
+    seed_cache_key,
+)
+from smolvm.images.manager import ImageManager, ImageSource
+from smolvm.runtime.backends import BACKEND_LIBKRUN, BACKEND_QEMU, resolve_backend
+from smolvm.runtime.boot_profiles import KernelBootProfile, get_boot_profile_spec
 from smolvm.ssh import SSHClient
 from smolvm.types import (
     CommandResult,
@@ -303,7 +308,7 @@ def _build_auto_config(
     on_download: Callable[[str, int, int | None], None] | None = None,
 ) -> tuple[VMConfig, str | None]:
     """Build the default SSH-ready VM config used by zero-config flows."""
-    from smolvm.build import ImageBuilder
+    from smolvm.images.builder import ImageBuilder
 
     resolved_backend = resolve_backend(backend)
     resolved_os = _normalize_guest_os(os or _default_guest_os_for_backend(resolved_backend))

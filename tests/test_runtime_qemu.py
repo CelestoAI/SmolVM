@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from smolvm.exceptions import SmolVMError
-from smolvm.runtime import RuntimeContext
-from smolvm.runtime_qemu import QemuRuntimeAdapter
+from smolvm.runtime.base import RuntimeContext
+from smolvm.runtime.qemu import QemuRuntimeAdapter
 from smolvm.types import NetworkConfig, VMConfig, VMInfo, VMState
 
 
