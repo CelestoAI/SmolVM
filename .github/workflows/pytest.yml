@@ -47,7 +47,7 @@ jobs:
       - name: Assert native extension available
         run: |
           uv run python -c "
-          from smolvm._accel import HAS_NETLINK
+          from smolvm.host._accel import HAS_NETLINK
           assert HAS_NETLINK, 'smolvm-core not loaded'
           from smolvm_core import is_available
           assert is_available(), 'Native extension reports not available on Linux'
@@ -117,7 +117,7 @@ jobs:
           import re
           from importlib.metadata import version as pkg_version
 
-          from smolvm._accel import HAS_NETLINK
+          from smolvm.host._accel import HAS_NETLINK
 
           version = "${VERSION}"
           match = re.fullmatch(r"(?P<base>\d+\.\d+\.\d+)(?P<suffix>.*)", version)

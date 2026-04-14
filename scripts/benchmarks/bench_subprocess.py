@@ -96,7 +96,7 @@ def _dry_run_benchmark(num_vms: int) -> dict:
     Traces which run_command() invocations each NetworkManager
     method would make during VM create + delete.
     """
-    from smolvm.network import NetworkManager
+    from smolvm.host.network import NetworkManager
 
     nm = NetworkManager()
     nm._outbound_interface = "eth0"  # Fake for counting
@@ -124,7 +124,7 @@ def _dry_run_benchmark(num_vms: int) -> dict:
         result.returncode = 0
         return result
 
-    with patch("smolvm.network.run_command", side_effect=_counting_run_command):
+    with patch("smolvm.host.network.run_command", side_effect=_counting_run_command):
         for i in range(num_vms):
             vm_id = f"bench-vm-{i}"
             guest_ip = f"172.16.0.{i + 2}"
