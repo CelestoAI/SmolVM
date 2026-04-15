@@ -38,11 +38,9 @@ class TestParamikoLoggerSilenced:
     """
 
     def test_paramiko_transport_logger_is_silenced_on_import(self) -> None:
-        # Importing smolvm.ssh should have already configured the logger.
-        # Re-import here defensively in case test isolation has been
-        # tampered with by an earlier test.
-        import smolvm.ssh  # noqa: F401  (import for side effect)
-
+        # The top-level ``from smolvm.ssh import SSHClient`` above has
+        # already triggered the module-level ``setLevel`` call as a side
+        # effect of import. We just verify the resulting state here.
         level = logging.getLogger("paramiko.transport").getEffectiveLevel()
         assert level >= logging.CRITICAL, (
             f"paramiko.transport logger level is {level}, expected >= CRITICAL "
