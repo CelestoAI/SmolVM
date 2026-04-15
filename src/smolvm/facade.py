@@ -133,20 +133,27 @@ _QEMU_UBUNTU_AUTO_IMAGES: dict[str, ImageSource] = {
 # firmware boot (OVMF/SeaBIOS) for this image, so only the rootfs URL matters.
 #
 # Pinned to a specific dated release (immutable URL) and verified against the
-# upstream SHA-512 digest from that release's SHA512SUMS file. To bump:
+# upstream SHA-512 digest from that release's SHA512SUMS file. Note the
+# filename inside the dated directory carries the build identifier
+# (e.g. ``-20260413-2447``); only the ``latest/`` symlink view exposes the
+# short un-suffixed name. We pin to the dated path for immutability, so the
+# filename here MUST include the build suffix.
+#
+# To bump:
 #   1. Pick a newer build under https://cloud.debian.org/images/cloud/bookworm/
 #   2. Copy the SHA-512 hex digests from its SHA512SUMS file into this registry
-#   3. Verify the partition layout is still a single ext4 partition before
+#   3. Update both the URL build suffix and the _DEBIAN_CURRENT_RELEASE_TAG
+#   4. Verify the partition layout is still a single ext4 partition before
 #      committing — cloud-init growpart assumes this for the disk-resize path
 _DEBIAN_CURRENT_RELEASE_TAG = "20260413-2447"
 _DEBIAN_AUTO_IMAGES: dict[str, tuple[str, str]] = {
     "debian-bookworm-genericcloud-qemu-x86_64": (
-        f"https://cloud.debian.org/images/cloud/bookworm/{_DEBIAN_CURRENT_RELEASE_TAG}/debian-12-genericcloud-amd64.qcow2",
+        f"https://cloud.debian.org/images/cloud/bookworm/{_DEBIAN_CURRENT_RELEASE_TAG}/debian-12-genericcloud-amd64-{_DEBIAN_CURRENT_RELEASE_TAG}.qcow2",
         "db11b13c4efcc37828ffadae521d101e85079d349e1418074087bb7d306f11ca"
         "ccdc2b0b539d6fd50d623d40a898f83c6137268a048d7700397dc35b7dcbc927",
     ),
     "debian-bookworm-genericcloud-qemu-aarch64": (
-        f"https://cloud.debian.org/images/cloud/bookworm/{_DEBIAN_CURRENT_RELEASE_TAG}/debian-12-genericcloud-arm64.qcow2",
+        f"https://cloud.debian.org/images/cloud/bookworm/{_DEBIAN_CURRENT_RELEASE_TAG}/debian-12-genericcloud-arm64-{_DEBIAN_CURRENT_RELEASE_TAG}.qcow2",
         "15ad6c52e255c84eb0e91001c5907b27199d8a7164d8ac172cfe9c92850dfaf6"
         "06a6c3161d6af7f0fd5a5fef2aa8dcd9a23c2eb0fedbfcddb38e2bc306cba98f",
     ),
