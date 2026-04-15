@@ -41,6 +41,7 @@ from rich.text import Text
 
 from smolvm.cli.cleanup import add_cleanup_args, add_delete_args, run_cleanup, run_delete
 from smolvm.cli.output import console_stdout, emit_json, render_empty, render_error, status_style
+from smolvm.cli.version_check import maybe_print_update_notice
 from smolvm.host.doctor import run_doctor
 from smolvm.types import BrowserSessionState, GuestOS, VMState
 
@@ -2002,6 +2003,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     """CLI entrypoint for `smolvm`."""
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    # Best-effort PyPI update nag. Skipped in --json mode so we never
+    # pollute machine-readable output.
+    maybe_print_update_notice(json_output=bool(getattr(args, "json", False)))
 
     if args.command == "delete":
         return run_delete(
