@@ -344,10 +344,16 @@ class VMConfig(BaseModel):
 
     @field_validator("initrd_path")
     @classmethod
-    def validate_optional_path_exists(cls, v: Path | None) -> Path | None:
+    def validate_optional_path_exists(
+        cls,
+        v: Path | None,
+        info: ValidationInfo,
+    ) -> Path | None:
         """Ensure optional paths exist on the filesystem."""
         if v is None:
             return None
+        if not cls._should_validate_paths(info):
+            return v
         return cls._validate_file_path(v)
 
     @field_validator("extra_drives")

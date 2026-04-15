@@ -107,6 +107,33 @@ class TestStateManagerVMOperations:
         assert vm_info.vm_id == "vm001"
         assert vm_info.config.kernel_path == sample_config.kernel_path
 
+    def test_get_vm_allows_missing_persisted_initrd(
+        self,
+        state_manager: StateManager,
+        tmp_path: Path,
+    ) -> None:
+        """Persisted VM metadata should tolerate a cleaned-up initrd cache."""
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        initrd = tmp_path / "initrd"
+        kernel.touch()
+        rootfs.touch()
+        initrd.touch()
+
+        config = VMConfig(
+            vm_id="vm001",
+            kernel_path=kernel,
+            initrd_path=initrd,
+            rootfs_path=rootfs,
+        )
+        state_manager.create_vm(config)
+        initrd.unlink()
+
+        vm_info = state_manager.get_vm("vm001")
+
+        assert vm_info.vm_id == "vm001"
+        assert vm_info.config.initrd_path == initrd
+
     def test_get_nonexistent_vm_raises(self, state_manager: StateManager) -> None:
         """Test that getting a nonexistent VM raises an error."""
         with pytest.raises(VMNotFoundError) as exc_info:

@@ -319,6 +319,27 @@ class TestVMConfig:
                 extra_drives=[tmp_path / "missing.ext4"],
             )
 
+    def test_initrd_path_respects_validate_paths_context(self, tmp_path: Path) -> None:
+        """Persisted configs may skip initrd existence checks during reload."""
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        initrd = tmp_path / "initrd"
+        kernel.touch()
+        rootfs.touch()
+        initrd.touch()
+
+        raw = VMConfig(
+            vm_id="vm001",
+            kernel_path=kernel,
+            initrd_path=initrd,
+            rootfs_path=rootfs,
+        ).model_dump_json()
+        initrd.unlink()
+
+        config = VMConfig.model_validate_json(raw, context={"validate_paths": False})
+
+        assert config.initrd_path == initrd
+
     def test_invalid_disk_mode_rejected(self, tmp_path: Path) -> None:
         """Test unsupported disk_mode values are rejected."""
         kernel = tmp_path / "vmlinux"
