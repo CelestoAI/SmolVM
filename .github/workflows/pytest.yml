@@ -96,14 +96,33 @@ jobs:
 
       - name: Smoke test built wheels
         run: |
-          VERSION=$(python3 - <<'PY'
+          # Read smolvm version and the smolvm-core version it depends on.
+          # smolvm and smolvm-core are released independently within the
+          # 0.0.x series, so we pull the expected core version from the
+          # pyproject dependency string rather than assuming lockstep.
+          eval "$(python3 - <<'PY'
+          import re
           import tomllib
           from pathlib import Path
 
           data = tomllib.loads(Path("pyproject.toml").read_text())
-          print(data["project"]["version"])
-          PY
+          version = data["project"]["version"]
+
+          core_dep = next(
+              (
+                  d
+                  for d in data["project"]["dependencies"]
+                  if re.match(r"^smolvm-core(\s|[<>=!~]|$)", d)
+              ),
+              None,
           )
+          assert core_dep is not None, "pyproject must declare a smolvm-core dependency"
+          m = re.search(r"(\d+\.\d+\.\d+(?:[a-zA-Z0-9.\-]*)?)", core_dep)
+          assert m is not None, f"could not parse version from {core_dep!r}"
+          print(f"VERSION={version}")
+          print(f"CORE_VERSION={m.group(1)}")
+          PY
+          )"
 
           uv venv .smoke-venv --python 3.13
           uv pip install \
@@ -114,17 +133,12 @@ jobs:
 
           .smoke-venv/bin/python3 - <<PY
           import platform
-          import re
           from importlib.metadata import version as pkg_version
 
           from smolvm.host._accel import HAS_NETLINK
 
-          version = "${VERSION}"
-          match = re.fullmatch(r"(?P<base>\d+\.\d+\.\d+)(?P<suffix>.*)", version)
-          assert match is not None, version
-          core_version = match.group("base") if match.group("suffix") else version
-          assert pkg_version("smolvm") == version
-          assert pkg_version("smolvm-core") == core_version
+          assert pkg_version("smolvm") == "${VERSION}"
+          assert pkg_version("smolvm-core") == "${CORE_VERSION}"
           if platform.system() == "Linux":
               assert HAS_NETLINK, "smolvm-core native extension did not load from built wheel"
           print("artifact install: OK")
