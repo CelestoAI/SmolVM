@@ -28,9 +28,11 @@ interface::
 
 from __future__ import annotations
 
+import json
 import logging
 import platform
 import shlex
+import shutil
 import socket
 import subprocess
 import time
@@ -126,6 +128,21 @@ _QEMU_UBUNTU_AUTO_IMAGES: dict[str, ImageSource] = {
     ),
 }
 
+# Debian "genericcloud" is a single bootable qcow2 with the kernel + initrd
+# inside — no separate unpacked assets like Ubuntu publishes. SmolVM uses
+# firmware boot (OVMF/SeaBIOS) for this image, so only the rootfs URL matters.
+# Pinning to /bookworm/latest/ mirrors the existing Ubuntu pattern of not
+# pinning to a dated release.
+_DEBIAN_CURRENT_RELEASE_TAG = "bookworm-latest"
+_DEBIAN_AUTO_IMAGE_URLS: dict[str, str] = {
+    "debian-bookworm-genericcloud-qemu-x86_64": (
+        "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
+    ),
+    "debian-bookworm-genericcloud-qemu-aarch64": (
+        "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-arm64.qcow2"
+    ),
+}
+
 
 def _normalize_guest_os(os: GuestOS | str | None) -> GuestOS:
     """Normalize guest OS input for auto-config flows."""
@@ -147,11 +164,95 @@ def _default_guest_os_for_backend(backend: str) -> GuestOS:
     return GuestOS.ALPINE
 
 
-def _qemu_auto_config_image_name() -> str:
-    """Return the prebuilt QEMU image cache key for the host architecture."""
+def _qemu_auto_config_image_name(guest_os: GuestOS = GuestOS.UBUNTU) -> str:
+    """Return the prebuilt QEMU image cache key for *guest_os* on this host."""
     arch = platform.machine().lower()
     image_arch = "aarch64" if arch in {"arm64", "aarch64"} else "x86_64"
-    return f"ubuntu-noble-minimal-qemu-{image_arch}"
+    if guest_os is GuestOS.UBUNTU:
+        return f"ubuntu-noble-minimal-qemu-{image_arch}"
+    if guest_os is GuestOS.DEBIAN:
+        return f"debian-bookworm-genericcloud-qemu-{image_arch}"
+    raise ValueError(f"No prebuilt QEMU auto-config image for guest OS: {guest_os}")
+
+
+def _qcow2_virtual_size_mib(qcow2_path: Path) -> int:
+    """Return the virtual size of a qcow2 image in MiB."""
+    result = subprocess.run(
+        ["qemu-img", "info", "--output=json", str(qcow2_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    info = json.loads(result.stdout)
+    return int(info["virtual-size"]) // (1024 * 1024)
+
+
+def _prepare_sized_qcow2(
+    *,
+    cache_dir: Path,
+    base_image_name: str,
+    source_qcow2: Path,
+    target_mib: int,
+) -> tuple[Path, int]:
+    """Return a qcow2 rootfs sized to at least *target_mib*.
+
+    The pristine downloaded image is never mutated. When the requested size
+    exceeds the cached image's virtual size, this copies the qcow2 into a
+    size-specific cache directory (``{base_image_name}-{target_mib}m``) and
+    runs ``qemu-img resize`` on the copy. The sized copy is shared across
+    VMs of the same size; per-VM isolation still happens via
+    ``disk_mode="isolated"`` cloning later.
+
+    Returns a tuple of ``(rootfs_path, resolved_target_mib)`` where
+    ``resolved_target_mib`` is the actual virtual size of the returned image
+    (equal to ``target_mib`` for a fresh resize, or the existing cached size
+    for the default-size passthrough).
+    """
+    current_mib = _qcow2_virtual_size_mib(source_qcow2)
+    if target_mib <= current_mib:
+        # Use the pristine cached image. Cloud images ship at their minimum
+        # viable size; we refuse to shrink below that to avoid breaking the
+        # filesystem. Callers should enforce target_mib >= default upstream
+        # and surface a clear error instead of silently falling back here.
+        return source_qcow2, current_mib
+
+    sized_dir = cache_dir / f"{base_image_name}-{target_mib}m"
+    sized_qcow2 = sized_dir / source_qcow2.name
+    if sized_qcow2.is_file():
+        try:
+            existing_mib = _qcow2_virtual_size_mib(sized_qcow2)
+        except subprocess.CalledProcessError:
+            existing_mib = -1
+        if existing_mib == target_mib:
+            return sized_qcow2, existing_mib
+        logger.warning(
+            "Cached resized image %s has unexpected size (%d MiB), rebuilding",
+            sized_qcow2,
+            existing_mib,
+        )
+        sized_qcow2.unlink(missing_ok=True)
+
+    sized_dir.mkdir(parents=True, exist_ok=True)
+    temp_qcow2 = sized_qcow2.with_name(f".{sized_qcow2.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        shutil.copy2(source_qcow2, temp_qcow2)
+        subprocess.run(
+            ["qemu-img", "resize", str(temp_qcow2), f"{target_mib}M"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        temp_qcow2.replace(sized_qcow2)
+    except Exception:
+        temp_qcow2.unlink(missing_ok=True)
+        raise
+    logger.info(
+        "Prepared resized rootfs at %s (%d MiB -> %d MiB)",
+        sized_qcow2,
+        current_mib,
+        target_mib,
+    )
+    return sized_qcow2, target_mib
 
 
 def _resolve_auto_config_public_key(ssh_key_path: str | None) -> tuple[str, Path]:
@@ -164,10 +265,7 @@ def _resolve_auto_config_public_key(ssh_key_path: str | None) -> tuple[str, Path
 
     public_key = Path(f"{ssh_key_path}.pub")
     if not public_key.is_file():
-        raise ValueError(
-            "ssh_key_path must have a matching public key file at "
-            f"{public_key}"
-        )
+        raise ValueError(f"ssh_key_path must have a matching public key file at {public_key}")
     return ssh_key_path, public_key
 
 
@@ -327,12 +425,12 @@ def _build_auto_config(
         raise ValueError("ubuntu auto-config currently requires backend='qemu'")
 
     if resolved_os is GuestOS.UBUNTU:
-        if resolved_disk_size_mib != default_disk_size_mib:
+        if resolved_disk_size_mib < default_disk_size_mib:
             raise ValueError(
-                "ubuntu/qemu auto-config currently supports only the default disk size "
-                f"({default_disk_size_mib} MiB)"
+                f"ubuntu auto-config requires disk_size_mib >= {default_disk_size_mib} "
+                f"(got {resolved_disk_size_mib})"
             )
-        image_name = _qemu_auto_config_image_name()
+        image_name = _qemu_auto_config_image_name(GuestOS.UBUNTU)
         image_manager = ImageManager(registry=_QEMU_UBUNTU_AUTO_IMAGES)
         image = image_manager.ensure_image(image_name, on_download=on_download)
         if image.initrd_path is None:
@@ -340,6 +438,16 @@ def _build_auto_config(
                 "Prebuilt QEMU auto-config image is missing an initrd",
                 {"image_name": image_name},
             )
+
+        if resolved_disk_size_mib > default_disk_size_mib:
+            rootfs_path, _resolved_size = _prepare_sized_qcow2(
+                cache_dir=image_manager.cache_dir,
+                base_image_name=image_name,
+                source_qcow2=image.rootfs_path,
+                target_mib=resolved_disk_size_mib,
+            )
+        else:
+            rootfs_path = image.rootfs_path
 
         boot_profile = KernelBootProfile.QEMU_DESKTOP_INITRAMFS
         boot_args = get_boot_profile_spec(boot_profile).base_boot_args_for_backend(
@@ -374,7 +482,7 @@ def _build_auto_config(
             mem_size_mib=resolved_mem_size_mib,
             kernel_path=image.kernel_path,
             initrd_path=image.initrd_path,
-            rootfs_path=image.rootfs_path,
+            rootfs_path=rootfs_path,
             extra_drives=[seed_path],
             boot_args=boot_args,
             ssh_capable=True,
@@ -382,6 +490,79 @@ def _build_auto_config(
         )
         logger.info(
             "Auto-configured VM: %s (os=%s, backend=%s, source=prebuilt-qemu-image)",
+            resolved_vm_name,
+            resolved_os.value,
+            resolved_backend,
+        )
+        return config, resolved_ssh_key_path
+
+    # Debian on QEMU: fetch the upstream genericcloud qcow2 and boot it via
+    # firmware (OVMF/SeaBIOS). On non-QEMU backends (firecracker, libkrun),
+    # fall through to the docker-build path below.
+    if resolved_os is GuestOS.DEBIAN and resolved_backend == BACKEND_QEMU:
+        if resolved_disk_size_mib < default_disk_size_mib:
+            raise ValueError(
+                f"debian auto-config on qemu requires disk_size_mib >= {default_disk_size_mib} "
+                f"(got {resolved_disk_size_mib})"
+            )
+        image_name = _qemu_auto_config_image_name(GuestOS.DEBIAN)
+        rootfs_url = _DEBIAN_AUTO_IMAGE_URLS.get(image_name)
+        if rootfs_url is None:
+            raise SmolVMError(
+                "No prebuilt Debian image registered for this host architecture",
+                {"image_name": image_name},
+            )
+        image_manager = ImageManager()
+        pristine_rootfs = image_manager.ensure_rootfs_only(
+            image_name,
+            url=rootfs_url,
+            filename="rootfs.qcow2",
+            on_download=on_download,
+        )
+
+        if resolved_disk_size_mib > default_disk_size_mib:
+            rootfs_path, _resolved_size = _prepare_sized_qcow2(
+                cache_dir=image_manager.cache_dir,
+                base_image_name=image_name,
+                source_qcow2=pristine_rootfs,
+                target_mib=resolved_disk_size_mib,
+            )
+        else:
+            rootfs_path = pristine_rootfs
+
+        user_data = default_user_data(public_key_value)
+        seed_key = seed_cache_key(
+            ssh_public_key=public_key_value,
+            instance_id=f"smolvm-debian-{_DEBIAN_CURRENT_RELEASE_TAG}",
+            hostname="smolvm",
+            user_data=user_data,
+        )
+        seed_dir = image_manager.cache_dir / "cloud-init-seeds"
+        seed_path = seed_dir / f"{seed_key}.iso"
+        if not seed_path.exists():
+            build_seed_iso(
+                seed_path,
+                user_data=user_data,
+                meta_data=default_meta_data(
+                    instance_id=f"smolvm-debian-{_DEBIAN_CURRENT_RELEASE_TAG}",
+                    hostname="smolvm",
+                ),
+            )
+
+        resolved_vm_name = vm_name or f"vm-{uuid.uuid4().hex[:8]}"
+        config = VMConfig(
+            vm_id=resolved_vm_name,
+            vcpu_count=1,
+            mem_size_mib=resolved_mem_size_mib,
+            boot_mode="firmware",
+            kernel_path=None,
+            rootfs_path=rootfs_path,
+            extra_drives=[seed_path],
+            ssh_capable=True,
+            backend=resolved_backend,
+        )
+        logger.info(
+            "Auto-configured VM: %s (os=%s, backend=%s, source=prebuilt-debian-firmware)",
             resolved_vm_name,
             resolved_os.value,
             resolved_backend,
@@ -499,9 +680,7 @@ class SmolVM:
             raise ValueError("Provide either config or vm_id, not both.")
 
         if image is not None and (config is not None or vm_id is not None):
-            raise ValueError(
-                "image cannot be combined with config or vm_id."
-            )
+            raise ValueError("image cannot be combined with config or vm_id.")
 
         if image is not None and os is not None:
             raise ValueError(
@@ -556,9 +735,7 @@ class SmolVM:
         # Normalize and merge mounts into the config
         if mounts is not None:
             if vm_id is not None:
-                raise ValueError(
-                    "mounts cannot be set when reconnecting to an existing VM."
-                )
+                raise ValueError("mounts cannot be set when reconnecting to an existing VM.")
             workspace_mounts = _parse_mount_specs(mounts)
             if config is not None:
                 if config.workspace_mounts:
@@ -1036,8 +1213,7 @@ class SmolVM:
                 key_path = str(default_key)
             except Exception:
                 logger.debug(
-                    "VM %s: could not resolve default SSH key, "
-                    "falling back to agent/default auth",
+                    "VM %s: could not resolve default SSH key, falling back to agent/default auth",
                     self._vm_id,
                 )
 
@@ -1811,6 +1987,7 @@ class SmolVM:
         # explicit ssh_key_path should still authenticate correctly.
         if primary_key is None:
             from smolvm.utils import ensure_ssh_key
+
             try:
                 default_key, _ = ensure_ssh_key()
                 default_key_str = str(default_key)

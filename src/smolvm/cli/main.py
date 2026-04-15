@@ -471,7 +471,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--disk-size-mib",
         type=int,
         default=None,
-        help="Sandbox disk size in MiB (default: 512).",
+        help=(
+            "Sandbox disk size in MiB. Defaults: 512 for alpine, "
+            "2048 for debian/ubuntu. Minimum 64."
+        ),
     )
     create_parser.add_argument(
         "--backend",

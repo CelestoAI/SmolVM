@@ -249,8 +249,7 @@ def _require_boto3() -> S3Client:
         import boto3  # type: ignore[import-untyped]
     except ImportError:
         raise ImageError(
-            "S3 image support requires boto3. Install it with:\n"
-            "  pip install 'smolvm[s3]'"
+            "S3 image support requires boto3. Install it with:\n  pip install 'smolvm[s3]'"
         ) from None
 
     # Load .env file if present (walks up from cwd to find it).
@@ -439,20 +438,26 @@ class ImageManager:
 
         logger.info("Downloading image '%s' kernel...", name)
         self._download_file(
-            source.kernel_url, kernel_path, source.kernel_sha256,
+            source.kernel_url,
+            kernel_path,
+            source.kernel_sha256,
             progress_callback=_make_cb("kernel"),
         )
 
         if initrd_path is not None and source.initrd_url is not None:
             logger.info("Downloading image '%s' initrd...", name)
             self._download_file(
-                source.initrd_url, initrd_path, source.initrd_sha256,
+                source.initrd_url,
+                initrd_path,
+                source.initrd_sha256,
                 progress_callback=_make_cb("initrd"),
             )
 
         logger.info("Downloading image '%s' rootfs...", name)
         self._download_file(
-            source.rootfs_url, rootfs_path, source.rootfs_sha256,
+            source.rootfs_url,
+            rootfs_path,
+            source.rootfs_sha256,
             progress_callback=_make_cb("rootfs"),
         )
 
@@ -463,6 +468,61 @@ class ImageManager:
             initrd_path=initrd_path,
             rootfs_path=rootfs_path,
         )
+
+    def ensure_rootfs_only(
+        self,
+        name: str,
+        *,
+        url: str,
+        filename: str = "rootfs.qcow2",
+        sha256: str | None = None,
+        on_download: Callable[[str, int, int | None], None] | None = None,
+    ) -> Path:
+        """Ensure a standalone rootfs image is available locally.
+
+        Unlike :meth:`ensure_image`, this downloads only a rootfs with no
+        separate kernel or initrd. It is used for firmware-boot VMs where
+        the guest kernel lives inside the rootfs and QEMU boots directly
+        via OVMF/SeaBIOS firmware.
+
+        Args:
+            name: Cache directory name (under ``~/.smolvm/images/``).
+            url: URL to download the rootfs from.
+            filename: Cache filename for the rootfs (default ``rootfs.qcow2``).
+            sha256: Optional expected SHA-256 hex digest. ``None`` skips
+                verification.
+            on_download: Optional progress callback invoked as
+                ``(label, bytes_in_chunk, total_bytes_or_none)`` with
+                ``label="rootfs"``.
+
+        Returns:
+            Absolute path to the cached rootfs file.
+        """
+        if not name:
+            raise ValueError("image name cannot be empty")
+
+        image_dir = self.cache_dir / name
+        rootfs_path = image_dir / filename
+
+        if rootfs_path.is_file() and self._verify_sha256(rootfs_path, sha256):
+            logger.info("Rootfs '%s' found in cache: %s", name, rootfs_path)
+            return rootfs_path
+
+        image_dir.mkdir(parents=True, exist_ok=True)
+
+        def _progress(chunk: int, total: int | None) -> None:
+            if on_download is not None:
+                on_download("rootfs", chunk, total)
+
+        logger.info("Downloading rootfs '%s'...", name)
+        self._download_file(
+            url,
+            rootfs_path,
+            sha256,
+            progress_callback=_progress if on_download is not None else None,
+        )
+        logger.info("Rootfs '%s' ready at: %s", name, rootfs_path)
+        return rootfs_path
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -651,17 +711,14 @@ class ImageManager:
         initrd_path = image_dir / manifest.initrd if manifest.initrd else None
 
         # Check local cache
-        kernel_ok = (
-            kernel_path.is_file()
-            and self._verify_sha256(kernel_path, manifest.kernel_sha256)
+        kernel_ok = kernel_path.is_file() and self._verify_sha256(
+            kernel_path, manifest.kernel_sha256
         )
-        rootfs_ok = (
-            rootfs_path.is_file()
-            and self._verify_sha256(rootfs_path, manifest.rootfs_sha256)
+        rootfs_ok = rootfs_path.is_file() and self._verify_sha256(
+            rootfs_path, manifest.rootfs_sha256
         )
-        initrd_ok = (
-            initrd_path is None
-            or (initrd_path.is_file() and self._verify_sha256(initrd_path, manifest.initrd_sha256))
+        initrd_ok = initrd_path is None or (
+            initrd_path.is_file() and self._verify_sha256(initrd_path, manifest.initrd_sha256)
         )
 
         def _make_cb(label: str) -> Callable[[int, int | None], None] | None:
@@ -677,7 +734,11 @@ class ImageManager:
                 logger.info("Downloading S3 image '%s' kernel...", manifest.name)
                 s3_key = f"{ref.prefix}/{manifest.kernel}"
                 self._download_s3_file(
-                    s3, ref.bucket, s3_key, kernel_path, manifest.kernel_sha256,
+                    s3,
+                    ref.bucket,
+                    s3_key,
+                    kernel_path,
+                    manifest.kernel_sha256,
                     progress_callback=_make_cb("kernel"),
                 )
 
@@ -685,7 +746,11 @@ class ImageManager:
                 logger.info("Downloading S3 image '%s' rootfs...", manifest.name)
                 s3_key = f"{ref.prefix}/{manifest.rootfs}"
                 self._download_s3_file(
-                    s3, ref.bucket, s3_key, rootfs_path, manifest.rootfs_sha256,
+                    s3,
+                    ref.bucket,
+                    s3_key,
+                    rootfs_path,
+                    manifest.rootfs_sha256,
                     progress_callback=_make_cb("rootfs"),
                 )
 
@@ -693,7 +758,11 @@ class ImageManager:
                 logger.info("Downloading S3 image '%s' initrd...", manifest.name)
                 s3_key = f"{ref.prefix}/{manifest.initrd}"
                 self._download_s3_file(
-                    s3, ref.bucket, s3_key, initrd_path, manifest.initrd_sha256,
+                    s3,
+                    ref.bucket,
+                    s3_key,
+                    initrd_path,
+                    manifest.initrd_sha256,
                     progress_callback=_make_cb("initrd"),
                 )
 
@@ -730,9 +799,7 @@ class ImageManager:
             # download_file/download_fileobj which issue HeadObject
             # first — some S3-compatible stores (e.g. R2) reject
             # HeadObject on certain token types.
-            tmp_fd, tmp_path_str = tempfile.mkstemp(
-                dir=image_dir, suffix=".tmp"
-            )
+            tmp_fd, tmp_path_str = tempfile.mkstemp(dir=image_dir, suffix=".tmp")
             tmp_path = Path(tmp_path_str)
             try:
                 with open(tmp_fd, "wb") as f:
@@ -810,8 +877,6 @@ class ImageManager:
         except ImageError:
             raise
         except Exception as exc:
-            raise ImageError(
-                f"S3 download failed for s3://{bucket}/{key}: {exc}"
-            ) from exc
+            raise ImageError(f"S3 download failed for s3://{bucket}/{key}: {exc}") from exc
         finally:
             tmp_path.unlink(missing_ok=True)

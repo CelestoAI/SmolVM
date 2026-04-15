@@ -72,6 +72,28 @@ QEMU_NETMASK = "255.255.255.0"
 QEMU_SLIRP_DNS = "10.0.2.3"
 SNAPSHOT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$|^[a-z0-9]$")
 
+# Candidate UEFI firmware locations for aarch64 QEMU firmware-boot.
+# Searched in order; the first existing file wins. macOS Homebrew ships
+# edk2-aarch64-code.fd under the qemu data dir; Debian/Ubuntu split it into
+# a separate qemu-efi-aarch64 package; RHEL uses AAVMF.
+_AARCH64_EDK2_FIRMWARE_CANDIDATES: tuple[str, ...] = (
+    "/opt/homebrew/share/qemu/edk2-aarch64-code.fd",
+    "/usr/local/share/qemu/edk2-aarch64-code.fd",
+    "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd",
+    "/usr/share/AAVMF/AAVMF_CODE.fd",
+    "/usr/share/edk2/aarch64/QEMU_EFI.fd",
+    "/usr/share/edk2-armvirt/aarch64/QEMU_EFI.fd",
+)
+
+
+def _find_aarch64_uefi_firmware() -> Path | None:
+    """Return the first existing aarch64 UEFI firmware file, or ``None``."""
+    for candidate in _AARCH64_EDK2_FIRMWARE_CANDIDATES:
+        path = Path(candidate)
+        if path.is_file():
+            return path
+    return None
+
 
 def _get_sudo_user_info() -> pwd.struct_passwd | None:
     """Return sudo user's passwd entry when running under sudo."""
@@ -532,8 +554,7 @@ class SmolVMManager:
             raise ValueError("snapshot_id cannot be empty")
         if not SNAPSHOT_ID_PATTERN.fullmatch(snapshot_id):
             raise ValueError(
-                "snapshot_id must contain only lowercase letters, numbers, hyphens, "
-                "or underscores"
+                "snapshot_id must contain only lowercase letters, numbers, hyphens, or underscores"
             )
 
         snapshot_root = (self.snapshot_dir / snapshot_id).resolve(strict=False)
@@ -567,9 +588,7 @@ class SmolVMManager:
             and vm_config.internet_settings is not None
             and not vm_config.internet_settings.is_allow_all_domains
         ):
-            allowed_ips = resolve_domains_to_ips(
-                vm_config.internet_settings.allowed_domains
-            )
+            allowed_ips = resolve_domains_to_ips(vm_config.internet_settings.allowed_domains)
             self.network.apply_egress_allowlist(network.tap_device, allowed_ips)
 
         if network.ssh_host_port is not None:
@@ -643,7 +662,7 @@ class SmolVMManager:
             errors.append(
                 "QEMU not found. Install one of: qemu-system-aarch64, qemu-system-x86_64 "
                 "(macOS/Homebrew: brew install qemu)."
-                )
+            )
         elif platform.system() == "Darwin":
             try:
                 result = subprocess.run(
@@ -1141,7 +1160,10 @@ class SmolVMManager:
             self.stop(restore_vm_id)
             existing_vm = self.state.get_vm(restore_vm_id)
 
-        if not snapshot.vm_config.kernel_path.exists():
+        if (
+            snapshot.vm_config.kernel_path is not None
+            and not snapshot.vm_config.kernel_path.exists()
+        ):
             raise SmolVMError(
                 "Snapshot restore requires the original kernel path to exist",
                 {
@@ -1499,18 +1521,31 @@ class SmolVMManager:
             str(vm_info.config.vcpu_count),
             "-m",
             str(vm_info.config.mem_size_mib),
-            "-kernel",
-            str(vm_info.config.kernel_path),
-            "-append",
-            boot_args,
-            "-drive",
-            drive_arg,
-            "-netdev",
-            netdev_arg,
-            "-nographic",
-            "-no-reboot",
         ]
-        if vm_info.config.initrd_path is not None:
+        # Boot mode: direct-kernel passes -kernel/-append (optionally -initrd);
+        # firmware mode lets QEMU boot the rootfs disk via default firmware
+        # (OVMF on aarch64, SeaBIOS on x86_64) — the guest kernel lives inside
+        # the rootfs image.
+        if vm_info.config.boot_mode == "direct_kernel":
+            cmd.extend(
+                [
+                    "-kernel",
+                    str(vm_info.config.kernel_path),
+                    "-append",
+                    boot_args,
+                ]
+            )
+        cmd.extend(
+            [
+                "-drive",
+                drive_arg,
+                "-netdev",
+                netdev_arg,
+                "-nographic",
+                "-no-reboot",
+            ]
+        )
+        if vm_info.config.boot_mode == "direct_kernel" and vm_info.config.initrd_path is not None:
             cmd.extend(["-initrd", str(vm_info.config.initrd_path)])
 
         extra_drive_ids: list[str] = []
@@ -1539,11 +1574,13 @@ class SmolVMManager:
             tag = ws.resolved_tag(index)
             fsdev_id = f"fsdev-{tag}"
             workspace_fsdev_ids.append((fsdev_id, tag))
-            cmd.extend([
-                "-fsdev",
-                f"local,id={fsdev_id},path={ws.host_path},"
-                f"security_model=mapped-xattr,readonly=on",
-            ])
+            cmd.extend(
+                [
+                    "-fsdev",
+                    f"local,id={fsdev_id},path={ws.host_path},"
+                    f"security_model=mapped-xattr,readonly=on",
+                ]
+            )
 
         if control_socket_path is not None:
             cmd.extend(
@@ -1570,6 +1607,17 @@ class SmolVMManager:
                     f"virtio-net-device,netdev=net0,mac={guest_mac}",
                 ]
             )
+            if vm_info.config.boot_mode == "firmware":
+                firmware_path = _find_aarch64_uefi_firmware()
+                if firmware_path is None:
+                    raise SmolVMError(
+                        "aarch64 firmware-boot requires UEFI firmware (edk2/AAVMF) "
+                        "but none was found. Searched: "
+                        f"{', '.join(_AARCH64_EDK2_FIRMWARE_CANDIDATES)}. "
+                        "On macOS run 'brew reinstall qemu'; on Debian/Ubuntu "
+                        "install 'qemu-efi-aarch64'."
+                    )
+                cmd.extend(["-bios", str(firmware_path)])
             for drive_id in extra_drive_ids:
                 cmd.extend(["-device", f"virtio-blk-device,drive={drive_id}"])
             for fsdev_id, tag in workspace_fsdev_ids:
@@ -2090,9 +2138,7 @@ class SmolVMManager:
             return vm_info
 
         backend = self._backend_for_vm(vm_info)
-        await self._runtime_adapter_for_backend(backend).async_stop(
-            vm_info, timeout=timeout
-        )
+        await self._runtime_adapter_for_backend(backend).async_stop(vm_info, timeout=timeout)
         self._close_runtime_log(vm_id, backend, vm_info.control_socket_path)
         vm_info = self.state.update_vm(
             vm_id,
@@ -2142,19 +2188,13 @@ class SmolVMManager:
                 instance_rootfs,
             )
             if backend == BACKEND_QEMU:
-                await self._async_create_qemu_overlay_disk(
-                    config.rootfs_path, instance_rootfs
-                )
+                await self._async_create_qemu_overlay_disk(config.rootfs_path, instance_rootfs)
             else:
-                await self._async_copy_with_reflink(
-                    config.rootfs_path, instance_rootfs
-                )
+                await self._async_copy_with_reflink(config.rootfs_path, instance_rootfs)
 
         return config.model_copy(update={"rootfs_path": instance_rootfs})
 
-    async def _async_create_qemu_overlay_disk(
-        self, base_path: Path, overlay_path: Path
-    ) -> None:
+    async def _async_create_qemu_overlay_disk(self, base_path: Path, overlay_path: Path) -> None:
         """Async version of :meth:`_create_qemu_overlay_disk`."""
         from smolvm.utils import async_run_command
 
@@ -2166,16 +2206,20 @@ class SmolVMManager:
         base_format = "qcow2" if base_path.suffix == ".qcow2" else "raw"
         await async_run_command(
             [
-                str(qemu_img), "create", "-f", "qcow2",
-                "-b", str(base_path.resolve()), "-F", base_format,
+                str(qemu_img),
+                "create",
+                "-f",
+                "qcow2",
+                "-b",
+                str(base_path.resolve()),
+                "-F",
+                base_format,
                 str(overlay_path),
             ],
             use_sudo=False,
         )
 
-    async def _async_copy_with_reflink(
-        self, source_path: Path, target_path: Path
-    ) -> None:
+    async def _async_copy_with_reflink(self, source_path: Path, target_path: Path) -> None:
         """Async version of :meth:`_copy_with_reflink`."""
         import shutil
 
@@ -2205,9 +2249,7 @@ class SmolVMManager:
                 check=False,
             )
             if result.returncode != 0:
-                raise SmolVMError(
-                    f"Failed to remove stale socket: {socket_path}"
-                ) from None
+                raise SmolVMError(f"Failed to remove stale socket: {socket_path}") from None
 
     async def _async_kill_process(self, pid: int) -> None:
         """Async version of :meth:`_kill_process`."""
@@ -2221,9 +2263,7 @@ class SmolVMManager:
             logger.debug("Process %d not found when attempting to kill", pid)
         except PermissionError:
             try:
-                await async_run_command(
-                    ["kill", "-9", str(pid)], check=False
-                )
+                await async_run_command(["kill", "-9", str(pid)], check=False)
             except Exception:
                 logger.warning("Failed to kill process %d", pid)
 
@@ -2351,15 +2391,36 @@ class SmolVMManager:
         netdev_arg = f"user,id=net0,dns={QEMU_SLIRP_DNS},{','.join(hostfwd_rules)}"
 
         cmd: list[str] = [
-            str(qemu_bin), "-smp", str(vm_info.config.vcpu_count),
-            "-m", str(vm_info.config.mem_size_mib),
-            "-kernel", str(vm_info.config.kernel_path),
-            "-append", boot_args,
-            "-drive", drive_arg,
-            "-netdev", netdev_arg,
-            "-nographic", "-no-reboot",
+            str(qemu_bin),
+            "-smp",
+            str(vm_info.config.vcpu_count),
+            "-m",
+            str(vm_info.config.mem_size_mib),
         ]
-        if vm_info.config.initrd_path is not None:
+        # Boot mode: direct-kernel passes -kernel/-append (optionally -initrd);
+        # firmware mode lets QEMU boot the rootfs disk via default firmware
+        # (OVMF on aarch64, SeaBIOS on x86_64) — the guest kernel lives inside
+        # the rootfs image.
+        if vm_info.config.boot_mode == "direct_kernel":
+            cmd.extend(
+                [
+                    "-kernel",
+                    str(vm_info.config.kernel_path),
+                    "-append",
+                    boot_args,
+                ]
+            )
+        cmd.extend(
+            [
+                "-drive",
+                drive_arg,
+                "-netdev",
+                netdev_arg,
+                "-nographic",
+                "-no-reboot",
+            ]
+        )
+        if vm_info.config.boot_mode == "direct_kernel" and vm_info.config.initrd_path is not None:
             cmd.extend(["-initrd", str(vm_info.config.initrd_path)])
 
         extra_drive_ids: list[str] = []
@@ -2371,8 +2432,14 @@ class SmolVMManager:
             drive_format = "qcow2" if drive_suffix == ".qcow2" else "raw"
             readonly = ["readonly=on"] if drive_suffix == ".iso" else []
             extra_drive_arg = ",".join(
-                [f"file={drive_path}", "if=none", f"format={drive_format}",
-                 *readonly, f"id={drive_id}", f"node-name={node_name}"]
+                [
+                    f"file={drive_path}",
+                    "if=none",
+                    f"format={drive_format}",
+                    *readonly,
+                    f"id={drive_id}",
+                    f"node-name={node_name}",
+                ]
             )
             cmd.extend(["-drive", extra_drive_arg])
 
@@ -2382,11 +2449,13 @@ class SmolVMManager:
             tag = ws.resolved_tag(index)
             fsdev_id = f"fsdev-{tag}"
             workspace_fsdev_ids.append((fsdev_id, tag))
-            cmd.extend([
-                "-fsdev",
-                f"local,id={fsdev_id},path={ws.host_path},"
-                f"security_model=mapped-xattr,readonly=on",
-            ])
+            cmd.extend(
+                [
+                    "-fsdev",
+                    f"local,id={fsdev_id},path={ws.host_path},"
+                    f"security_model=mapped-xattr,readonly=on",
+                ]
+            )
 
         if control_socket_path is not None:
             cmd.extend(["-qmp", f"unix:{control_socket_path},server=on,wait=off"])
@@ -2396,9 +2465,29 @@ class SmolVMManager:
         if "aarch64" in qemu_name:
             machine = "virt,accel=hvf" if system == "Darwin" else "virt"
             cpu = "host" if system == "Darwin" else "cortex-a72"
-            cmd.extend(["-machine", machine, "-cpu", cpu,
-                        "-device", f"virtio-blk-device,drive={root_drive_id}",
-                        "-device", f"virtio-net-device,netdev=net0,mac={guest_mac}"])
+            cmd.extend(
+                [
+                    "-machine",
+                    machine,
+                    "-cpu",
+                    cpu,
+                    "-device",
+                    f"virtio-blk-device,drive={root_drive_id}",
+                    "-device",
+                    f"virtio-net-device,netdev=net0,mac={guest_mac}",
+                ]
+            )
+            if vm_info.config.boot_mode == "firmware":
+                firmware_path = _find_aarch64_uefi_firmware()
+                if firmware_path is None:
+                    raise SmolVMError(
+                        "aarch64 firmware-boot requires UEFI firmware (edk2/AAVMF) "
+                        "but none was found. Searched: "
+                        f"{', '.join(_AARCH64_EDK2_FIRMWARE_CANDIDATES)}. "
+                        "On macOS run 'brew reinstall qemu'; on Debian/Ubuntu "
+                        "install 'qemu-efi-aarch64'."
+                    )
+                cmd.extend(["-bios", str(firmware_path)])
             for drive_id in extra_drive_ids:
                 cmd.extend(["-device", f"virtio-blk-device,drive={drive_id}"])
             for fsdev_id, tag in workspace_fsdev_ids:
@@ -2406,9 +2495,18 @@ class SmolVMManager:
         else:
             machine = "q35,accel=hvf" if system == "Darwin" else "q35"
             cpu = "host" if system == "Darwin" else "max"
-            cmd.extend(["-machine", machine, "-cpu", cpu,
-                        "-device", f"virtio-blk-pci,drive={root_drive_id}",
-                        "-device", f"virtio-net-pci,netdev=net0,mac={guest_mac}"])
+            cmd.extend(
+                [
+                    "-machine",
+                    machine,
+                    "-cpu",
+                    cpu,
+                    "-device",
+                    f"virtio-blk-pci,drive={root_drive_id}",
+                    "-device",
+                    f"virtio-net-pci,netdev=net0,mac={guest_mac}",
+                ]
+            )
             for drive_id in extra_drive_ids:
                 cmd.extend(["-device", f"virtio-blk-pci,drive={drive_id}"])
             for fsdev_id, tag in workspace_fsdev_ids:
@@ -2508,7 +2606,9 @@ class SmolVMManager:
             if backend == BACKEND_FIRECRACKER and ssh_host_port is not None and guest_ip:
                 with suppress(Exception):
                     await self.network.async_cleanup_ssh_port_forward(
-                        vm_id=vm_id, guest_ip=guest_ip, host_port=ssh_host_port,
+                        vm_id=vm_id,
+                        guest_ip=guest_ip,
+                        host_port=ssh_host_port,
                     )
 
             with suppress(Exception):

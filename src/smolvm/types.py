@@ -143,9 +143,7 @@ class WorkspaceMount(BaseModel):
     def validate_guest_path(cls, v: str) -> str:
         """Ensure the guest mount point is an absolute path."""
         if not v.startswith("/"):
-            raise ValueError(
-                f"guest_path must be an absolute path, got: {v!r}"
-            )
+            raise ValueError(f"guest_path must be an absolute path, got: {v!r}")
         return v
 
     def resolved_tag(self, index: int) -> str:
@@ -247,11 +245,25 @@ class VMConfig(BaseModel):
             If omitted, SmolVM auto-generates one.
         vcpu_count: Number of virtual CPUs (1-32).
         mem_size_mib: Memory size in MiB (128-16384).
-        kernel_path: Path to the kernel image.
+        boot_mode: How the guest boots:
+
+            - ``"direct_kernel"`` (default): the hypervisor loads
+              ``kernel_path`` (and optionally ``initrd_path``) directly and
+              passes ``boot_args`` as the kernel command line. Required for
+              firecracker, libkrun, and microvm-style QEMU boots.
+            - ``"firmware"``: QEMU boots the rootfs disk via its default
+              firmware (OVMF on aarch64, SeaBIOS on x86_64). The guest kernel
+              lives inside ``rootfs_path`` (e.g. a Debian or Ubuntu cloud
+              image). ``kernel_path`` must be ``None`` in this mode, and the
+              backend must be ``"qemu"``.
+
+        kernel_path: Path to the kernel image. Required when
+            ``boot_mode == "direct_kernel"``; must be ``None`` when
+            ``boot_mode == "firmware"``.
         initrd_path: Optional path to the initrd image.
         rootfs_path: Path to the root filesystem image.
         extra_drives: Additional block-device image paths to attach at boot.
-        boot_args: Kernel boot arguments.
+        boot_args: Kernel boot arguments (ignored in firmware mode).
         ssh_capable: Whether this boot path is expected to start guest SSH
             without relying on ``init=/init``.
         backend: Optional runtime backend override ("firecracker", "qemu", or "libkrun").
@@ -274,7 +286,8 @@ class VMConfig(BaseModel):
     ]
     vcpu_count: Annotated[int, Field(ge=1, le=32)] = 2
     mem_size_mib: Annotated[int, Field(ge=128, le=16384)] = 512
-    kernel_path: Path
+    boot_mode: Literal["direct_kernel", "firmware"] = "direct_kernel"
+    kernel_path: Path | None = None
     initrd_path: Path | None = None
     rootfs_path: Path
     extra_drives: list[Path] = []
@@ -300,11 +313,31 @@ class VMConfig(BaseModel):
 
     @field_validator("kernel_path", "rootfs_path")
     @classmethod
-    def validate_path_exists(cls, v: Path, info: ValidationInfo) -> Path:
+    def validate_path_exists(cls, v: Path | None, info: ValidationInfo) -> Path | None:
         """Ensure paths exist on the filesystem."""
+        if v is None:
+            return None
         if not cls._should_validate_paths(info):
             return v
         return cls._validate_file_path(v)
+
+    @model_validator(mode="after")
+    def _check_boot_mode_consistency(self) -> "VMConfig":
+        """Enforce boot_mode <-> kernel_path <-> backend invariants."""
+        if self.boot_mode == "firmware":
+            if self.kernel_path is not None:
+                raise ValueError(
+                    "boot_mode='firmware' requires kernel_path=None "
+                    "(the guest kernel is inside the rootfs disk)"
+                )
+            if self.backend is not None and self.backend != "qemu":
+                raise ValueError(
+                    f"boot_mode='firmware' requires backend='qemu' (got backend={self.backend!r})"
+                )
+        else:  # direct_kernel
+            if self.kernel_path is None:
+                raise ValueError("boot_mode='direct_kernel' requires kernel_path to be set")
+        return self
 
     @field_validator("initrd_path")
     @classmethod
@@ -366,7 +399,8 @@ class VMConfig(BaseModel):
     @field_validator("workspace_mounts")
     @classmethod
     def validate_workspace_mounts(
-        cls, v: list[WorkspaceMount],
+        cls,
+        v: list[WorkspaceMount],
     ) -> list[WorkspaceMount]:
         """Ensure workspace mount tags and guest paths are unique."""
         seen_tags: set[str] = set()
@@ -374,13 +408,9 @@ class VMConfig(BaseModel):
         for index, mount in enumerate(v):
             tag = mount.resolved_tag(index)
             if tag in seen_tags:
-                raise ValueError(
-                    f"Duplicate workspace mount tag: {tag}"
-                )
+                raise ValueError(f"Duplicate workspace mount tag: {tag}")
             if mount.guest_path in seen_guest_paths:
-                raise ValueError(
-                    f"Duplicate workspace guest_path: {mount.guest_path}"
-                )
+                raise ValueError(f"Duplicate workspace guest_path: {mount.guest_path}")
             seen_tags.add(tag)
             seen_guest_paths.add(mount.guest_path)
         return v
@@ -523,7 +553,6 @@ class VMInfo(BaseModel):
         control_socket_path: Path to the runtime control socket.
     """
 
-
     vm_id: str
     status: VMState
     config: VMConfig
@@ -562,8 +591,6 @@ class SnapshotInfo(BaseModel):
     restored_vm_id: str | None = None
 
     model_config = {"frozen": True}
-
-
 
 
 class BrowserSessionInfo(BaseModel):
