@@ -435,6 +435,34 @@ class TestVMInit:
         with pytest.raises(ValueError, match="auto-config mode"):
             SmolVM(sample_config, mem_size_mib=1024)
 
+    def test_debian_pinned_urls_carry_build_suffix(self) -> None:
+        """Each pinned Debian URL must include the build tag in the filename.
+
+        Debian's dated release directories (e.g. ``bookworm/20260413-2447/``)
+        store files with the build tag *in the filename*, like
+        ``debian-12-genericcloud-arm64-20260413-2447.qcow2``. Only the
+        ``latest/`` symlink view exposes the un-suffixed short names. Pinning
+        to a dated directory with a short filename produces a 404 — this test
+        catches that exact mistake on a future bump.
+        """
+        from smolvm.facade import _DEBIAN_AUTO_IMAGES, _DEBIAN_CURRENT_RELEASE_TAG
+
+        assert _DEBIAN_AUTO_IMAGES, "_DEBIAN_AUTO_IMAGES must not be empty"
+        for image_name, (url, _sha512) in _DEBIAN_AUTO_IMAGES.items():
+            # The dated path must appear in the URL.
+            assert f"/{_DEBIAN_CURRENT_RELEASE_TAG}/" in url, (
+                f"{image_name}: URL missing dated release path "
+                f"{_DEBIAN_CURRENT_RELEASE_TAG!r}: {url}"
+            )
+            # The filename portion must also embed the build tag.
+            filename = url.rsplit("/", 1)[-1]
+            assert _DEBIAN_CURRENT_RELEASE_TAG in filename, (
+                f"{image_name}: filename {filename!r} is missing the build "
+                f"tag {_DEBIAN_CURRENT_RELEASE_TAG!r}. Inside dated release "
+                "directories the filename includes the build identifier; only "
+                "the 'latest/' symlink view uses the short name."
+            )
+
     def test_os_with_config_raises(self, sample_config: VMConfig) -> None:
         """Guest OS selection is only valid in zero-config mode."""
         with pytest.raises(ValueError, match="auto-config mode"):
