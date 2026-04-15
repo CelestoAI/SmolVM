@@ -330,9 +330,12 @@ class VMConfig(BaseModel):
                     "boot_mode='firmware' requires kernel_path=None "
                     "(the guest kernel is inside the rootfs disk)"
                 )
-            if self.backend is not None and self.backend != "qemu":
+            if self.backend != "qemu":
                 raise ValueError(
-                    f"boot_mode='firmware' requires backend='qemu' (got backend={self.backend!r})"
+                    f"boot_mode='firmware' requires backend='qemu' "
+                    f"(got backend={self.backend!r}); firmware boot is only "
+                    "supported on the QEMU backend, so the caller must set it "
+                    "explicitly rather than relying on auto-detection"
                 )
         else:  # direct_kernel
             if self.kernel_path is None:

@@ -476,6 +476,7 @@ class ImageManager:
         url: str,
         filename: str = "rootfs.qcow2",
         sha256: str | None = None,
+        sha512: str | None = None,
         on_download: Callable[[str, int, int | None], None] | None = None,
     ) -> Path:
         """Ensure a standalone rootfs image is available locally.
@@ -489,8 +490,13 @@ class ImageManager:
             name: Cache directory name (under ``~/.smolvm/images/``).
             url: URL to download the rootfs from.
             filename: Cache filename for the rootfs (default ``rootfs.qcow2``).
-            sha256: Optional expected SHA-256 hex digest. ``None`` skips
-                verification.
+                Sanitized to a basename; path separators or traversal
+                components raise ``ValueError``.
+            sha256: Optional expected SHA-256 hex digest.
+            sha512: Optional expected SHA-512 hex digest. Used when upstream
+                publishes SHA-512 rather than SHA-256 (e.g. Debian cloud).
+                At least one of ``sha256``/``sha512`` is recommended for any
+                image that will be booted as a guest OS.
             on_download: Optional progress callback invoked as
                 ``(label, bytes_in_chunk, total_bytes_or_none)`` with
                 ``label="rootfs"``.
@@ -501,10 +507,16 @@ class ImageManager:
         if not name:
             raise ValueError("image name cannot be empty")
 
+        safe_filename = ImageSource.normalize_cache_filename(filename)
         image_dir = self.cache_dir / name
-        rootfs_path = image_dir / filename
+        rootfs_path = image_dir / safe_filename
 
-        if rootfs_path.is_file() and self._verify_sha256(rootfs_path, sha256):
+        cache_ok = (
+            rootfs_path.is_file()
+            and self._verify_sha256(rootfs_path, sha256)
+            and self._verify_sha512(rootfs_path, sha512)
+        )
+        if cache_ok:
             logger.info("Rootfs '%s' found in cache: %s", name, rootfs_path)
             return rootfs_path
 
@@ -521,6 +533,12 @@ class ImageManager:
             sha256,
             progress_callback=_progress if on_download is not None else None,
         )
+        if sha512 is not None and not self._verify_sha512(rootfs_path, sha512):
+            actual = self._compute_sha512(rootfs_path)
+            rootfs_path.unlink(missing_ok=True)
+            raise ImageError(
+                f"SHA-512 mismatch for {url}\n  expected: {sha512}\n  actual:   {actual}"
+            )
         logger.info("Rootfs '%s' ready at: %s", name, rootfs_path)
         return rootfs_path
 
@@ -659,6 +677,43 @@ class ImageManager:
         if actual != expected:
             logger.debug(
                 "SHA-256 mismatch for %s: expected=%s, actual=%s",
+                path,
+                expected,
+                actual,
+            )
+            return False
+        return True
+
+    @staticmethod
+    def _compute_sha512(path: Path) -> str:
+        """Compute the SHA-512 hex digest of a file."""
+        sha512 = hashlib.sha512()
+        with open(path, "rb") as f:
+            while True:
+                chunk = f.read(_DOWNLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                sha512.update(chunk)
+        return sha512.hexdigest()
+
+    @classmethod
+    def _verify_sha512(cls, path: Path, expected: str | None) -> bool:
+        """Verify the SHA-512 checksum of a file.
+
+        Args:
+            path: Path to the file.
+            expected: Expected SHA-512 hex digest, or None to skip.
+
+        Returns:
+            True if the checksum matches or if no hash was provided.
+        """
+        if expected is None:
+            return True
+
+        actual = cls._compute_sha512(path)
+        if actual != expected.lower():
+            logger.debug(
+                "SHA-512 mismatch for %s: expected=%s, actual=%s",
                 path,
                 expected,
                 actual,

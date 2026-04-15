@@ -373,7 +373,62 @@ class TestVMInit:
     ) -> None:
         """Ubuntu should reject --disk-size-mib below the default."""
         with pytest.raises(ValueError, match="disk_size_mib >= 2048"):
-            _build_auto_config(os="ubuntu", disk_size_mib=512)
+            _build_auto_config(os="ubuntu", backend="qemu", disk_size_mib=512)
+
+    def test_firmware_boot_vmconfig_rejects_non_qemu_backend(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """VMConfig should reject firmware boot without explicit backend='qemu'."""
+        rootfs = tmp_path / "rootfs.qcow2"
+        rootfs.touch()
+
+        # backend=None (auto) must be rejected.
+        with pytest.raises(ValueError, match="requires backend='qemu'"):
+            VMConfig(
+                vm_id="vm-fw-none",
+                boot_mode="firmware",
+                kernel_path=None,
+                rootfs_path=rootfs,
+                ssh_capable=True,
+                backend=None,
+            )
+
+        # backend='firecracker' must also be rejected.
+        with pytest.raises(ValueError, match="requires backend='qemu'"):
+            VMConfig(
+                vm_id="vm-fw-fc",
+                boot_mode="firmware",
+                kernel_path=None,
+                rootfs_path=rootfs,
+                ssh_capable=True,
+                backend="firecracker",
+            )
+
+    def test_firmware_boot_vmconfig_can_run_commands(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A firmware-boot VM with ssh_capable=True should pass can_run_commands."""
+        rootfs = tmp_path / "rootfs.qcow2"
+        rootfs.touch()
+
+        config = VMConfig(
+            vm_id="vm-fw-ok",
+            boot_mode="firmware",
+            kernel_path=None,
+            rootfs_path=rootfs,
+            ssh_capable=True,
+            backend="qemu",
+        )
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(
+            vm_id="vm-fw-ok", status=VMState.CREATED, config=config
+        )
+        with patch("smolvm.facade.SmolVMManager", return_value=mock_sdk):
+            vm = SmolVM(config)
+            assert vm.can_run_commands() is True
 
     def test_custom_auto_sizing_with_config_raises(self, sample_config: VMConfig) -> None:
         """Custom auto sizing options are only valid in zero-config mode."""

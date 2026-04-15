@@ -375,6 +375,109 @@ class TestVerifySHA256:
         assert result.kernel_path.exists()
 
 
+class TestEnsureRootfsOnly:
+    """Tests for ImageManager.ensure_rootfs_only."""
+
+    def test_strips_path_traversal_from_filename(self, tmp_path: Path) -> None:
+        """A filename with '..' components must be basenamed, never escape cache."""
+        mgr = ImageManager(cache_dir=tmp_path)
+
+        captured_dest: list[Path] = []
+
+        def fake_download(
+            self: ImageManager,
+            url: str,
+            dest: Path,
+            expected_sha256: str | None = None,
+            *,
+            progress_callback: object = None,
+        ) -> None:
+            captured_dest.append(dest)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"ok")
+
+        with patch.object(ImageManager, "_download_file", fake_download):
+            result = mgr.ensure_rootfs_only(
+                "evil-image",
+                url="https://example.com/rootfs.qcow2",
+                filename="../../../etc/passwd",
+            )
+
+        # The destination must stay inside cache_dir/evil-image/, with only
+        # the basename ("passwd") retained from the caller input.
+        assert len(captured_dest) == 1
+        dest = captured_dest[0]
+        assert dest == tmp_path / "evil-image" / "passwd"
+        assert result == dest
+        # Sanity check: the attacker-controlled traversal target does not exist.
+        assert not (tmp_path / "etc" / "passwd").exists()
+
+    def test_rejects_absolute_filename(self, tmp_path: Path) -> None:
+        """An absolute filename must be rejected."""
+        mgr = ImageManager(cache_dir=tmp_path)
+        with pytest.raises(ValueError, match="relative paths"):
+            mgr.ensure_rootfs_only(
+                "evil-image",
+                url="https://example.com/rootfs.qcow2",
+                filename="/tmp/escape.qcow2",
+            )
+
+    def test_sha512_mismatch_deletes_file_and_raises(self, tmp_path: Path) -> None:
+        """A SHA-512 mismatch should delete the downloaded file and raise."""
+        mgr = ImageManager(cache_dir=tmp_path)
+
+        def fake_download(
+            self: ImageManager,
+            url: str,
+            dest: Path,
+            expected_sha256: str | None = None,
+            *,
+            progress_callback: object = None,
+        ) -> None:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"corrupt")
+
+        with patch.object(ImageManager, "_download_file", fake_download):
+            with pytest.raises(ImageError, match="SHA-512 mismatch"):
+                mgr.ensure_rootfs_only(
+                    "bad-image",
+                    url="https://example.com/rootfs.qcow2",
+                    sha512="0" * 128,
+                )
+
+        # The file must be deleted so retries don't return a bad cache.
+        assert not (tmp_path / "bad-image" / "rootfs.qcow2").exists()
+
+    def test_sha512_match_caches_file(self, tmp_path: Path) -> None:
+        """A valid SHA-512 should pass and the file should be cached."""
+        import hashlib
+
+        content = b"hello world"
+        expected_sha512 = hashlib.sha512(content).hexdigest()
+        mgr = ImageManager(cache_dir=tmp_path)
+
+        def fake_download(
+            self: ImageManager,
+            url: str,
+            dest: Path,
+            expected_sha256: str | None = None,
+            *,
+            progress_callback: object = None,
+        ) -> None:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(content)
+
+        with patch.object(ImageManager, "_download_file", fake_download):
+            result = mgr.ensure_rootfs_only(
+                "good-image",
+                url="https://example.com/rootfs.qcow2",
+                sha512=expected_sha512,
+            )
+
+        assert result.exists()
+        assert result.read_bytes() == content
+
+
 class TestImageManagerInit:
     """Tests for ImageManager initialization."""
 
@@ -491,9 +594,7 @@ class TestS3ImageManifest:
 
     def test_manifest_rejects_colliding_filenames_with_initrd(self) -> None:
         with pytest.raises(ValueError, match="collide"):
-            S3ImageManifest(
-                name="bad", kernel="vmlinux", rootfs="rootfs.ext4", initrd="vmlinux"
-            )
+            S3ImageManifest(name="bad", kernel="vmlinux", rootfs="rootfs.ext4", initrd="vmlinux")
 
 
 def _make_s3_manifest_data(
@@ -551,10 +652,13 @@ class TestEnsureS3Image:
             kernel_sha256=hashlib.sha256(kernel_content).hexdigest(),
             rootfs_sha256=hashlib.sha256(rootfs_content).hexdigest(),
         )
-        mock_s3 = self._mock_s3_client(manifest, {
-            "vmlinux.bin": kernel_content,
-            "rootfs.ext4": rootfs_content,
-        })
+        mock_s3 = self._mock_s3_client(
+            manifest,
+            {
+                "vmlinux.bin": kernel_content,
+                "rootfs.ext4": rootfs_content,
+            },
+        )
 
         mgr = ImageManager(cache_dir=tmp_path / "images")
         with patch("smolvm.images.manager._require_boto3", return_value=mock_s3):
@@ -575,10 +679,13 @@ class TestEnsureS3Image:
             kernel_sha256=hashlib.sha256(kernel_content).hexdigest(),
             rootfs_sha256=hashlib.sha256(rootfs_content).hexdigest(),
         )
-        mock_s3 = self._mock_s3_client(manifest, {
-            "vmlinux.bin": kernel_content,
-            "rootfs.ext4": rootfs_content,
-        })
+        mock_s3 = self._mock_s3_client(
+            manifest,
+            {
+                "vmlinux.bin": kernel_content,
+                "rootfs.ext4": rootfs_content,
+            },
+        )
 
         mgr = ImageManager(cache_dir=tmp_path / "images")
 
@@ -602,10 +709,13 @@ class TestEnsureS3Image:
             kernel_sha256=hashlib.sha256(kernel_content).hexdigest(),
             rootfs_sha256=hashlib.sha256(rootfs_content).hexdigest(),
         )
-        mock_s3 = self._mock_s3_client(manifest, {
-            "vmlinux.bin": kernel_content,
-            "rootfs.ext4": rootfs_content,
-        })
+        mock_s3 = self._mock_s3_client(
+            manifest,
+            {
+                "vmlinux.bin": kernel_content,
+                "rootfs.ext4": rootfs_content,
+            },
+        )
 
         mgr = ImageManager(cache_dir=tmp_path / "images")
 
@@ -628,10 +738,13 @@ class TestEnsureS3Image:
     def test_no_sha_still_caches(self, tmp_path: Path) -> None:
         """Images without SHA-256 hashes should still cache and return."""
         manifest = _make_s3_manifest_data()  # no sha256 fields
-        mock_s3 = self._mock_s3_client(manifest, {
-            "vmlinux.bin": b"kernel",
-            "rootfs.ext4": b"rootfs",
-        })
+        mock_s3 = self._mock_s3_client(
+            manifest,
+            {
+                "vmlinux.bin": b"kernel",
+                "rootfs.ext4": b"rootfs",
+            },
+        )
 
         mgr = ImageManager(cache_dir=tmp_path / "images")
         with patch("smolvm.images.manager._require_boto3", return_value=mock_s3):
@@ -670,7 +783,10 @@ class TestEnsureS3Image:
         """Missing boto3 should produce a clear installation hint."""
         mgr = ImageManager(cache_dir=tmp_path / "images")
         with (
-            patch("smolvm.images.manager._require_boto3", side_effect=ImageError("S3 image support requires boto3")),
+            patch(
+                "smolvm.images.manager._require_boto3",
+                side_effect=ImageError("S3 image support requires boto3"),
+            ),
             pytest.raises(ImageError, match="requires boto3"),
         ):
             mgr.ensure_s3_image("s3://bucket/images/test/")
@@ -689,11 +805,14 @@ class TestEnsureS3Image:
             "rootfs_sha256": hashlib.sha256(rootfs_content).hexdigest(),
             "initrd_sha256": hashlib.sha256(initrd_content).hexdigest(),
         }
-        mock_s3 = self._mock_s3_client(manifest_data, {
-            "vmlinuz": kernel_content,
-            "rootfs.qcow2": rootfs_content,
-            "initrd.img": initrd_content,
-        })
+        mock_s3 = self._mock_s3_client(
+            manifest_data,
+            {
+                "vmlinuz": kernel_content,
+                "rootfs.qcow2": rootfs_content,
+                "initrd.img": initrd_content,
+            },
+        )
 
         mgr = ImageManager(cache_dir=tmp_path / "images")
         with patch("smolvm.images.manager._require_boto3", return_value=mock_s3):
@@ -712,10 +831,13 @@ class TestEnsureS3Image:
             kernel_sha256=hashlib.sha256(kernel_content).hexdigest(),
             rootfs_sha256=hashlib.sha256(rootfs_content).hexdigest(),
         )
-        mock_s3 = self._mock_s3_client(manifest, {
-            "vmlinux.bin": kernel_content,
-            "rootfs.ext4": rootfs_content,
-        })
+        mock_s3 = self._mock_s3_client(
+            manifest,
+            {
+                "vmlinux.bin": kernel_content,
+                "rootfs.ext4": rootfs_content,
+            },
+        )
 
         mgr = ImageManager(cache_dir=tmp_path / "images")
 

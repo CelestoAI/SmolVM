@@ -131,15 +131,24 @@ _QEMU_UBUNTU_AUTO_IMAGES: dict[str, ImageSource] = {
 # Debian "genericcloud" is a single bootable qcow2 with the kernel + initrd
 # inside — no separate unpacked assets like Ubuntu publishes. SmolVM uses
 # firmware boot (OVMF/SeaBIOS) for this image, so only the rootfs URL matters.
-# Pinning to /bookworm/latest/ mirrors the existing Ubuntu pattern of not
-# pinning to a dated release.
-_DEBIAN_CURRENT_RELEASE_TAG = "bookworm-latest"
-_DEBIAN_AUTO_IMAGE_URLS: dict[str, str] = {
+#
+# Pinned to a specific dated release (immutable URL) and verified against the
+# upstream SHA-512 digest from that release's SHA512SUMS file. To bump:
+#   1. Pick a newer build under https://cloud.debian.org/images/cloud/bookworm/
+#   2. Copy the SHA-512 hex digests from its SHA512SUMS file into this registry
+#   3. Verify the partition layout is still a single ext4 partition before
+#      committing — cloud-init growpart assumes this for the disk-resize path
+_DEBIAN_CURRENT_RELEASE_TAG = "20260413-2447"
+_DEBIAN_AUTO_IMAGES: dict[str, tuple[str, str]] = {
     "debian-bookworm-genericcloud-qemu-x86_64": (
-        "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
+        f"https://cloud.debian.org/images/cloud/bookworm/{_DEBIAN_CURRENT_RELEASE_TAG}/debian-12-genericcloud-amd64.qcow2",
+        "db11b13c4efcc37828ffadae521d101e85079d349e1418074087bb7d306f11ca"
+        "ccdc2b0b539d6fd50d623d40a898f83c6137268a048d7700397dc35b7dcbc927",
     ),
     "debian-bookworm-genericcloud-qemu-aarch64": (
-        "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-arm64.qcow2"
+        f"https://cloud.debian.org/images/cloud/bookworm/{_DEBIAN_CURRENT_RELEASE_TAG}/debian-12-genericcloud-arm64.qcow2",
+        "15ad6c52e255c84eb0e91001c5907b27199d8a7164d8ac172cfe9c92850dfaf6"
+        "06a6c3161d6af7f0fd5a5fef2aa8dcd9a23c2eb0fedbfcddb38e2bc306cba98f",
     ),
 }
 
@@ -506,17 +515,19 @@ def _build_auto_config(
                 f"(got {resolved_disk_size_mib})"
             )
         image_name = _qemu_auto_config_image_name(GuestOS.DEBIAN)
-        rootfs_url = _DEBIAN_AUTO_IMAGE_URLS.get(image_name)
-        if rootfs_url is None:
+        debian_entry = _DEBIAN_AUTO_IMAGES.get(image_name)
+        if debian_entry is None:
             raise SmolVMError(
                 "No prebuilt Debian image registered for this host architecture",
                 {"image_name": image_name},
             )
+        rootfs_url, rootfs_sha512 = debian_entry
         image_manager = ImageManager()
         pristine_rootfs = image_manager.ensure_rootfs_only(
             image_name,
             url=rootfs_url,
             filename="rootfs.qcow2",
+            sha512=rootfs_sha512,
             on_download=on_download,
         )
 
@@ -1453,13 +1464,20 @@ class SmolVM:
         """Whether this VM config supports command execution via SSH.
 
         Command execution requires a boot path that is expected to
-        bring up SSH inside the guest.
+        bring up SSH inside the guest. Three shapes qualify:
+
+        1. ``ssh_capable=True`` — the caller has explicitly declared the
+           boot path brings up SSH (used by prebuilt cloud images, S3
+           images, and firmware-boot VMs).
+        2. A microvm direct-kernel boot with ``init=/init`` in the kernel
+           command line (the alpine/debian docker-build path).
+        3. A legacy initrd-backed boot with ``ssh_capable`` implicitly set.
         """
-        initrd_path = self._info.config.initrd_path
-        ssh_capable = getattr(self._info.config, "ssh_capable", False)
-        return "init=/init" in self._info.config.boot_args or (
-            isinstance(initrd_path, Path) and ssh_capable is True
-        )
+        config = self._info.config
+        ssh_capable = getattr(config, "ssh_capable", False)
+        if ssh_capable is True:
+            return True
+        return "init=/init" in config.boot_args
 
     def close(self) -> None:
         """Release underlying SDK resources for this facade instance."""
