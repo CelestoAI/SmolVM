@@ -14,6 +14,7 @@
 
 """Tests for SmolVM SSH module."""
 
+import logging
 import socket
 from unittest.mock import MagicMock, patch
 
@@ -22,6 +23,43 @@ import pytest
 from smolvm.exceptions import OperationTimeoutError, SmolVMError
 from smolvm.ssh import SSHClient
 from smolvm.types import CommandResult
+
+
+class TestParamikoLoggerSilenced:
+    """Importing smolvm.ssh must silence paramiko's transport logger.
+
+    Rationale: during ``wait_for_ssh`` retries, paramiko's Transport thread
+    logs ``Exception (client): Error reading SSH protocol banner`` at ERROR
+    level when sshd is briefly unavailable. SmolVM catches the SSHException
+    and retries successfully, so the stderr noise from the failed attempt is
+    misleading. The fix sets the ``paramiko.transport`` logger to CRITICAL
+    so per-retry races stay quiet; smolvm still surfaces real errors via
+    SmolVMError with the original exception chained.
+    """
+
+    def test_paramiko_transport_logger_is_silenced_on_import(self) -> None:
+        # Importing smolvm.ssh should have already configured the logger.
+        # Re-import here defensively in case test isolation has been
+        # tampered with by an earlier test.
+        import smolvm.ssh  # noqa: F401  (import for side effect)
+
+        level = logging.getLogger("paramiko.transport").getEffectiveLevel()
+        assert level >= logging.CRITICAL, (
+            f"paramiko.transport logger level is {level}, expected >= CRITICAL "
+            f"({logging.CRITICAL}) so retry-loop EOF noise stays silent"
+        )
+
+    def test_smolvm_ssh_logger_is_not_silenced(self) -> None:
+        """Silencing paramiko.transport must not affect smolvm's own logger."""
+        # smolvm.ssh.logger should remain at its default (NOTSET / inherited),
+        # so smolvm's own info/debug messages are still surfaced.
+        smolvm_level = logging.getLogger("smolvm.ssh").getEffectiveLevel()
+        # Anything strictly below CRITICAL means we didn't accidentally
+        # blanket-silence the smolvm namespace.
+        assert smolvm_level < logging.CRITICAL, (
+            f"smolvm.ssh logger level is {smolvm_level}; the paramiko "
+            "silencer must not affect smolvm's own loggers"
+        )
 
 
 class TestSSHClientInit:

@@ -35,6 +35,31 @@ from smolvm.types import CommandResult
 
 logger = logging.getLogger(__name__)
 
+# Silence paramiko's Transport thread logger.
+#
+# During ``SSHClient.wait_for_ssh`` we poll a freshly-booted guest until
+# sshd responds. The first connect attempts often race against cloud-init
+# (which restarts sshd part-way through boot), so paramiko reads EOF on the
+# banner, logs ``Exception (client): Error reading SSH protocol banner`` to
+# its own logger at ERROR level from the Transport thread, *and then* raises
+# SSHException to the caller. SmolVM catches that exception, retries, and
+# the next attempt succeeds — but the stderr noise from the failed attempt
+# is misleading because the operation as a whole succeeded.
+#
+# Every paramiko exception that smolvm cares about is already wrapped into
+# a SmolVMError with the original message preserved (see :meth:`_connect`),
+# and the original exception is chained via ``raise ... from e`` so the full
+# traceback stays available. Suppressing paramiko's own transport logger to
+# CRITICAL therefore loses no information that callers can't already get
+# from the wrapped error — it only silences the per-retry noise.
+#
+# To re-enable paramiko's own logging for debugging, set the level back
+# explicitly in your application code::
+#
+#     import logging
+#     logging.getLogger("paramiko.transport").setLevel(logging.WARNING)
+logging.getLogger("paramiko.transport").setLevel(logging.CRITICAL)
+
 ShellMode = Literal["login", "raw"]
 
 
