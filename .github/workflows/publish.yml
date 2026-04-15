@@ -22,7 +22,7 @@ jobs:
       - name: Set up Python
         run: uv python install 3.13
 
-      - name: Verify release ordering and version pin
+      - name: Verify release ordering and core availability
         run: |
           python3 - <<'PY'
           import os
@@ -42,22 +42,28 @@ jobs:
                   f"Expected {expected_tag!r}."
               )
 
-          match = re.fullmatch(r"(?P<base>\d+\.\d+\.\d+)(?P<suffix>.*)", version)
-          if match is None:
-              raise SystemExit(
-                  f"Unsupported project version format {version!r}. Expected X.Y.Z or X.Y.Z<suffix>."
-              )
-
-          base_version = match.group("base")
-          suffix = match.group("suffix")
-          core_version = base_version if suffix else version
-
-          expected_dep = f"smolvm-core=={core_version}"
+          # Find the smolvm-core dependency line. We no longer require the
+          # core version to match smolvm's own version: smolvm 0.0.10 may
+          # depend on smolvm-core 0.0.9, and that's intentional.
           dependencies = data["project"]["dependencies"]
-          if expected_dep not in dependencies:
+          core_dep = next(
+              (d for d in dependencies if re.match(r"^smolvm-core(\s|[<>=!~]|$)", d)),
+              None,
+          )
+          if core_dep is None:
               raise SystemExit(
-                  f"pyproject.toml must pin {expected_dep!r} before publishing smolvm."
+                  "pyproject.toml must declare a smolvm-core dependency before publishing smolvm."
               )
+
+          # Extract a concrete version to verify against PyPI. Works for
+          # `smolvm-core==X.Y.Z`, `smolvm-core>=X.Y.Z,<0.1.0`, etc. — we
+          # check the first version string we find in the constraint.
+          version_match = re.search(r"(\d+\.\d+\.\d+(?:[a-zA-Z0-9.\-]*)?)", core_dep)
+          if version_match is None:
+              raise SystemExit(
+                  f"Could not extract a smolvm-core version from {core_dep!r}."
+              )
+          core_version = version_match.group(1)
 
           url = f"https://pypi.org/pypi/smolvm-core/{core_version}/json"
           try:
@@ -69,17 +75,15 @@ jobs:
           except urllib.error.HTTPError as exc:
               if exc.code == 404:
                   raise SystemExit(
-                      f"smolvm-core {core_version} is not on PyPI yet. Publish tag core-v{core_version} first."
+                      f"smolvm-core {core_version} is not on PyPI yet. "
+                      f"Publish tag core-v{core_version} first."
                   ) from exc
               raise
 
-          if suffix:
-              print(
-                  f"Release preflight OK: prerelease smolvm {version} is pinned to stable "
-                  f"smolvm-core {core_version}, and that core release is available on PyPI."
-              )
-          else:
-              print(f"Release preflight OK: smolvm-core {core_version} is available on PyPI.")
+          print(
+              f"Release preflight OK: smolvm {version} depends on {core_dep!r}; "
+              f"smolvm-core {core_version} is available on PyPI."
+          )
           PY
 
       - name: Build package
