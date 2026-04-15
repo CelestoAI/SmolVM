@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 DISABLE_ENV = "SMOLVM_DISABLE_VERSION_CHECK"
 PYPI_URL = "https://pypi.org/pypi/smolvm/json"
-CACHE_TTL_SECONDS = 24 * 60 * 60  # 24h
+CACHE_TTL_SECONDS = 60 * 60  # 1h
 NETWORK_TIMEOUT_SECONDS = 2.0
 
 
@@ -140,8 +140,8 @@ def _is_prerelease(version: str) -> bool:
 def check_for_update(*, force: bool = False) -> str | None:
     """Return the newer PyPI version if one is available, else ``None``.
 
-    Uses a 24-hour on-disk cache so we only hit PyPI once per day per user.
-    Set ``force=True`` to bypass the cache.
+    Uses a 1-hour on-disk cache so we only hit PyPI at most once per hour
+    per user. Set ``force=True`` to bypass the cache.
     """
     current = _get_current_version()
     if current is None:
