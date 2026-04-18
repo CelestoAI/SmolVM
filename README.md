@@ -18,7 +18,8 @@
 
 ---
 
-SmolVM gives AI agents their own disposable computer. Each sandbox is a lightweight virtual machine that boots in seconds, runs any code or command you throw at it, and disappears when you're done — nothing touches your host.
+SmolVM gives AI agents their own disposable computer. 
+Each microVM boots in milliseconds, runs any code or software you throw at it, keeps state when you need it, and vanishes when you don't — nothing touches your host.
 
 
 ## Features
@@ -48,7 +49,7 @@ Install SmolVM with a single command:
 curl -sSL https://celesto.ai/install.sh | bash
 ```
 
-This installs everything you need (including Python tooling), configures your machine, and verifies the setup.
+This installs everything you need (including Python), configures your machine, and verifies the setup.
 
 <details>
 <summary>Manual installation</summary>
