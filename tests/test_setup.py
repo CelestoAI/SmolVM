@@ -21,13 +21,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import smolvm.host.setup as host_setup_module
-from smolvm.host.setup import (
-    SetupOptions,
-    build_setup_command,
-    packaged_asset_root,
-    resolve_setup_script,
-    run_setup,
-)
 
 
 def _make_asset_root(tmp_path: Path) -> Path:
@@ -63,7 +56,7 @@ class TestPackagedAssetRoot:
         package_assets = _make_asset_root(tmp_path / "site-packages")
         monkeypatch.setattr(host_setup_module, "files", lambda package: package_assets)
 
-        assert packaged_asset_root() == package_assets
+        assert host_setup_module.packaged_asset_root() == package_assets
 
     def test_falls_back_to_repo_scripts_when_package_assets_missing(
         self,
@@ -77,7 +70,7 @@ class TestPackagedAssetRoot:
         monkeypatch.setattr(host_setup_module, "files", lambda package: package_assets)
         monkeypatch.setattr(host_setup_module, "__file__", str(fake_setup_py))
 
-        assert packaged_asset_root() == fake_setup_py.parents[3] / "scripts"
+        assert host_setup_module.packaged_asset_root() == fake_setup_py.parents[3] / "scripts"
 
     def test_resolve_setup_script_raises_when_package_and_repo_assets_missing(
         self,
@@ -92,7 +85,7 @@ class TestPackagedAssetRoot:
         monkeypatch.setattr(host_setup_module, "__file__", str(fake_setup_py))
 
         with pytest.raises(FileNotFoundError, match="Missing packaged setup asset") as exc_info:
-            resolve_setup_script("linux")
+            host_setup_module.resolve_setup_script("linux")
 
         assert str(package_assets / "system-setup.sh") in str(exc_info.value)
 
@@ -103,7 +96,11 @@ class TestBuildSetupCommand:
     def test_linux_default_includes_configure_runtime(self, tmp_path: Path) -> None:
         asset_root = _make_asset_root(tmp_path)
 
-        command = build_setup_command(SetupOptions(), system_name="Linux", asset_root=asset_root)
+        command = host_setup_module.build_setup_command(
+            host_setup_module.SetupOptions(),
+            system_name="Linux",
+            asset_root=asset_root,
+        )
 
         assert command == [
             "bash",
@@ -298,7 +295,11 @@ class TestRunSetup:
             returncode=7,
         )
 
-        exit_code = run_setup(SetupOptions(), system_name="Linux", asset_root=asset_root)
+        exit_code = host_setup_module.run_setup(
+            host_setup_module.SetupOptions(),
+            system_name="Linux",
+            asset_root=asset_root,
+        )
 
         assert exit_code == 7
 
@@ -314,7 +315,11 @@ class TestRunSetup:
             returncode=0,
         )
 
-        run_setup(SetupOptions(with_docker=True), system_name="Darwin", asset_root=asset_root)
+        host_setup_module.run_setup(
+            host_setup_module.SetupOptions(with_docker=True),
+            system_name="Darwin",
+            asset_root=asset_root,
+        )
 
         mock_run.assert_called_once_with(
             [
