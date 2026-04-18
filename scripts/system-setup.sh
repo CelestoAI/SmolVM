@@ -41,7 +41,6 @@ REMOVE_RUNTIME_CONFIG=false
 RUNTIME_USER=""
 SKIP_KVM_CHECK=false
 SKIP_RUNTIME_CHECK=false
-FOR_BAKE=false
 FIRECRACKER_VERSION=""
 
 usage() {
@@ -95,7 +94,6 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --for-bake)
-            FOR_BAKE=true
             SKIP_KVM_CHECK=true
             SKIP_RUNTIME_CHECK=true
             ;;

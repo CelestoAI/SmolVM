@@ -419,11 +419,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     setup.add_argument(
         "--firecracker-version",
+        action=_LinuxOnlyOption,
         default=None,
         metavar="VER",
-        help=(
+        help=_linux_only_help(
             "Pin Firecracker release tag (e.g. v1.14.1). Falls back to "
-            "$SMOLVM_FIRECRACKER_VERSION or the built-in default."
+            "$SMOLVM_FIRECRACKER_VERSION or the built-in default (Linux only)."
         ),
     )
     setup.add_argument(
