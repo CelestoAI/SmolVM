@@ -55,6 +55,16 @@ while [[ $# -gt 0 ]]; do
                 usage
                 exit 1
             fi
+            if [[ -z "$2" || "$2" == -* ]]; then
+                echo "❌ --firecracker-version got an invalid value: '$2'"
+                echo "   Expected a release tag like 'v1.14.1' (no leading dash, not empty)."
+                exit 1
+            fi
+            if [[ ! "$2" =~ ^[A-Za-z0-9._-]+$ ]]; then
+                echo "❌ --firecracker-version contains invalid characters: '$2'"
+                echo "   Allowed: letters, digits, '.', '_', '-' (e.g. 'v1.14.1')."
+                exit 1
+            fi
             FC_VERSION_OVERRIDE="$2"
             shift
             ;;
@@ -99,6 +109,13 @@ elif [[ -n "${SMOLVM_FIRECRACKER_VERSION:-}" ]]; then
 else
     FC_VERSION="${FC_VERSION:-v1.14.1}"
 fi
+
+if [[ ! "${FC_VERSION}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "❌ Firecracker version '${FC_VERSION}' is not a valid release tag."
+    echo "   Allowed: letters, digits, '.', '_', '-' (e.g. 'v1.14.1')."
+    exit 1
+fi
+
 ARCH=$(uname -m)
 
 if [[ "${REQUIRE_KVM}" == "true" && ! -e /dev/kvm ]]; then

@@ -2060,9 +2060,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    # Best-effort PyPI update nag. Skipped in --json mode so we never
-    # pollute machine-readable output.
-    maybe_print_update_notice(json_output=bool(getattr(args, "json", False)))
+    # Best-effort PyPI update nag. Skipped in --json mode and for
+    # `setup --assets-dir` so we never pollute machine-readable output
+    # that scripts (Packer, Make, etc.) consume directly.
+    suppress_update_notice = bool(getattr(args, "json", False)) or (
+        args.command == "setup" and bool(getattr(args, "assets_dir", False))
+    )
+    maybe_print_update_notice(json_output=suppress_update_notice)
 
     if args.command == "delete":
         return run_delete(

@@ -1234,6 +1234,40 @@ class TestCliSetup:
             Path(out) / "system-setup-macos.sh"
         ).is_file()
 
+    @patch("smolvm.cli.main.maybe_print_update_notice")
+    @patch("smolvm.cli.main.platform.system", return_value="Linux")
+    @patch("smolvm.host.setup.run_setup")
+    def test_setup_assets_dir_suppresses_update_notice(
+        self,
+        mock_run_setup: MagicMock,
+        mock_platform_system: MagicMock,
+        mock_notice: MagicMock,
+    ) -> None:
+        """``--assets-dir`` output is consumed by scripts; nag must be suppressed."""
+        ret = main(["setup", "--assets-dir"])
+
+        assert ret == 0
+        mock_notice.assert_called_once()
+        assert mock_notice.call_args.kwargs.get("json_output") is True
+
+    @patch("smolvm.cli.main.maybe_print_update_notice")
+    @patch("smolvm.cli.main.platform.system", return_value="Linux")
+    @patch("smolvm.host.setup.run_setup")
+    def test_setup_without_assets_dir_does_not_suppress_update_notice(
+        self,
+        mock_run_setup: MagicMock,
+        mock_platform_system: MagicMock,
+        mock_notice: MagicMock,
+    ) -> None:
+        """Plain ``setup`` (no --assets-dir, no --json) leaves the nag enabled."""
+        mock_run_setup.return_value = 0
+
+        ret = main(["setup"])
+
+        assert ret == 0
+        mock_notice.assert_called_once()
+        assert mock_notice.call_args.kwargs.get("json_output") is False
+
 
 class TestCurrentVersionIsPrerelease:
     """Tests for _current_version_is_prerelease helper."""
