@@ -78,9 +78,6 @@ print(result)
 vm.stop()
 ```
 
-The `with` block creates a sandbox, runs your command inside it, and tears the sandbox down automatically when the block exits.
-
-
 ### Start a sandbox from the CLI
 
 Create a sandbox, check that it's running, then stop it:
