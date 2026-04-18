@@ -111,8 +111,8 @@ class TestBuildSetupCommand:
     def test_linux_check_only_keeps_runtime_config_check(self, tmp_path: Path) -> None:
         asset_root = _make_asset_root(tmp_path)
 
-        command = build_setup_command(
-            SetupOptions(check_only=True),
+        command = host_setup_module.build_setup_command(
+            host_setup_module.SetupOptions(check_only=True),
             system_name="Linux",
             asset_root=asset_root,
         )
@@ -127,8 +127,12 @@ class TestBuildSetupCommand:
     def test_linux_no_configure_runtime_removes_flag(self, tmp_path: Path) -> None:
         asset_root = _make_asset_root(tmp_path)
 
-        command = build_setup_command(
-            SetupOptions(check_only=True, configure_runtime=False, skip_deps=True),
+        command = host_setup_module.build_setup_command(
+            host_setup_module.SetupOptions(
+                check_only=True,
+                configure_runtime=False,
+                skip_deps=True,
+            ),
             system_name="Linux",
             asset_root=asset_root,
         )
@@ -143,8 +147,8 @@ class TestBuildSetupCommand:
     def test_linux_remove_runtime_config_only_forwards_removal_args(self, tmp_path: Path) -> None:
         asset_root = _make_asset_root(tmp_path)
 
-        command = build_setup_command(
-            SetupOptions(
+        command = host_setup_module.build_setup_command(
+            host_setup_module.SetupOptions(
                 check_only=True,
                 with_docker=True,
                 configure_runtime=False,
@@ -167,8 +171,12 @@ class TestBuildSetupCommand:
     def test_macos_uses_macos_script_and_supported_flags_only(self, tmp_path: Path) -> None:
         asset_root = _make_asset_root(tmp_path)
 
-        command = build_setup_command(
-            SetupOptions(check_only=True, with_docker=True, configure_runtime=False),
+        command = host_setup_module.build_setup_command(
+            host_setup_module.SetupOptions(
+                check_only=True,
+                with_docker=True,
+                configure_runtime=False,
+            ),
             system_name="Darwin",
             asset_root=asset_root,
         )
@@ -183,8 +191,8 @@ class TestBuildSetupCommand:
     def test_macos_skip_deps_forwarded_to_script(self, tmp_path: Path) -> None:
         asset_root = _make_asset_root(tmp_path)
 
-        command = build_setup_command(
-            SetupOptions(skip_deps=True),
+        command = host_setup_module.build_setup_command(
+            host_setup_module.SetupOptions(skip_deps=True),
             system_name="Darwin",
             asset_root=asset_root,
         )
@@ -198,8 +206,12 @@ class TestBuildSetupCommand:
     def test_linux_for_bake_appends_single_flag(self, tmp_path: Path) -> None:
         asset_root = _make_asset_root(tmp_path)
 
-        command = build_setup_command(
-            SetupOptions(for_bake=True, skip_kvm_check=True, skip_runtime_check=True),
+        command = host_setup_module.build_setup_command(
+            host_setup_module.SetupOptions(
+                for_bake=True,
+                skip_kvm_check=True,
+                skip_runtime_check=True,
+            ),
             system_name="Linux",
             asset_root=asset_root,
         )
@@ -216,8 +228,11 @@ class TestBuildSetupCommand:
     def test_linux_skip_flags_without_for_bake_pass_through(self, tmp_path: Path) -> None:
         asset_root = _make_asset_root(tmp_path)
 
-        command = build_setup_command(
-            SetupOptions(skip_kvm_check=True, skip_runtime_check=True),
+        command = host_setup_module.build_setup_command(
+            host_setup_module.SetupOptions(
+                skip_kvm_check=True,
+                skip_runtime_check=True,
+            ),
             system_name="Linux",
             asset_root=asset_root,
         )
@@ -233,8 +248,8 @@ class TestBuildSetupCommand:
     def test_linux_firecracker_version_forwarded(self, tmp_path: Path) -> None:
         asset_root = _make_asset_root(tmp_path)
 
-        command = build_setup_command(
-            SetupOptions(firecracker_version="v1.15.0"),
+        command = host_setup_module.build_setup_command(
+            host_setup_module.SetupOptions(firecracker_version="v1.15.0"),
             system_name="Linux",
             asset_root=asset_root,
         )
@@ -250,8 +265,8 @@ class TestBuildSetupCommand:
     def test_macos_ignores_linux_only_bake_flags(self, tmp_path: Path) -> None:
         asset_root = _make_asset_root(tmp_path)
 
-        command = build_setup_command(
-            SetupOptions(
+        command = host_setup_module.build_setup_command(
+            host_setup_module.SetupOptions(
                 for_bake=True,
                 skip_kvm_check=True,
                 skip_runtime_check=True,
@@ -270,14 +285,22 @@ class TestBuildSetupCommand:
         asset_root = _make_asset_root(tmp_path)
 
         with pytest.raises(RuntimeError, match="supported only on Linux and macOS"):
-            build_setup_command(SetupOptions(), system_name="Windows", asset_root=asset_root)
+            host_setup_module.build_setup_command(
+                host_setup_module.SetupOptions(),
+                system_name="Windows",
+                asset_root=asset_root,
+            )
 
     def test_missing_asset_fails(self, tmp_path: Path) -> None:
         asset_root = tmp_path / "assets"
         asset_root.mkdir()
 
         with pytest.raises(FileNotFoundError, match="Missing packaged setup asset"):
-            build_setup_command(SetupOptions(), system_name="Linux", asset_root=asset_root)
+            host_setup_module.build_setup_command(
+                host_setup_module.SetupOptions(),
+                system_name="Linux",
+                asset_root=asset_root,
+            )
 
 
 class TestRunSetup:
