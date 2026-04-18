@@ -72,9 +72,10 @@ For golden-AMI builds, two-stage deploys, pinning the Firecracker version, and o
 ```python
 from smolvm import SmolVM
 
-with SmolVM() as vm:
-    result = vm.run("echo 'Hello from the sandbox!'")
-    print(result.stdout.strip())
+vm = SmolVM()
+result = vm.run("echo 'Hello from the sandbox!'")
+print(result)
+vm.stop()
 ```
 
 The `with` block creates a sandbox, runs your command inside it, and tears the sandbox down automatically when the block exits.
