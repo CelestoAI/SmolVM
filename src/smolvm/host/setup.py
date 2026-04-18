@@ -38,6 +38,10 @@ class SetupOptions:
     skip_deps: bool = False
     runtime_user: str | None = None
     remove_runtime_config: bool = False
+    for_bake: bool = False
+    skip_kvm_check: bool = False
+    skip_runtime_check: bool = False
+    firecracker_version: str | None = None
 
 
 def packaged_asset_root() -> Path:
@@ -53,9 +57,9 @@ def packaged_asset_root() -> Path:
     marker = pkg_dir / _LINUX_SCRIPT
     if marker.is_file():
         return pkg_dir
-    # Fall back to the repository scripts/ directory (two levels up from
-    # src/smolvm/ → repo root).
-    repo_scripts = Path(__file__).resolve().parents[2] / "scripts"
+    # Fall back to the repository scripts/ directory: three parents up from
+    # src/smolvm/host/setup.py → src/smolvm/host → src/smolvm → src → repo root.
+    repo_scripts = Path(__file__).resolve().parents[3] / "scripts"
     if repo_scripts.is_dir():
         return repo_scripts
     return pkg_dir
@@ -121,6 +125,14 @@ def build_setup_command(
             argv.append("--skip-deps")
         if options.runtime_user:
             argv.extend(["--runtime-user", options.runtime_user])
+        if options.for_bake:
+            argv.append("--for-bake")
+        if options.skip_kvm_check and not options.for_bake:
+            argv.append("--skip-kvm-check")
+        if options.skip_runtime_check and not options.for_bake:
+            argv.append("--skip-runtime-check")
+        if options.firecracker_version:
+            argv.extend(["--firecracker-version", options.firecracker_version])
         return argv
 
     if options.check_only:

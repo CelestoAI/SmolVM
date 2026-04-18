@@ -39,6 +39,10 @@ SKIP_DEPS=false
 CONFIGURE_RUNTIME=false
 REMOVE_RUNTIME_CONFIG=false
 RUNTIME_USER=""
+SKIP_KVM_CHECK=false
+SKIP_RUNTIME_CHECK=false
+FOR_BAKE=false
+FIRECRACKER_VERSION=""
 
 usage() {
     cat <<EOF_USAGE
@@ -47,13 +51,20 @@ Usage: $(basename "$0") [options]
 Installs host dependencies and Firecracker (no Python/venv involvement).
 
 Options:
-  --check-only               Only validate system prerequisites; do not install.
-  --with-docker              Install Docker (required for SSH image demo).
-  --skip-deps                Skip apt dependency install (assumes deps already present).
-  --configure-runtime        Configure scoped NOPASSWD sudoers for SmolVM runtime.
-  --remove-runtime-config    Remove generated runtime sudoers config.
-  --runtime-user <user>      Target user for runtime sudoers/docker group (default: invoking user).
-  -h, --help                 Show this help.
+  --check-only                   Only validate system prerequisites; do not install.
+  --with-docker                  Install Docker (required for SSH image demo).
+  --skip-deps                    Skip apt dependency install (assumes deps already present).
+  --configure-runtime            Configure scoped NOPASSWD sudoers for SmolVM runtime.
+  --remove-runtime-config        Remove generated runtime sudoers config.
+  --runtime-user <user>          Target user for runtime sudoers/docker group (default: invoking user).
+  --for-bake                     Bake-friendly install: implies --skip-kvm-check and
+                                 --skip-runtime-check. Use during AMI builds, then run
+                                 'smolvm doctor' on the runtime host to verify.
+  --skip-kvm-check               Do not require /dev/kvm at install time.
+  --skip-runtime-check           Skip the post-install sudoers self-test on the live host.
+  --firecracker-version <ver>    Pin Firecracker release tag (e.g. v1.14.1). Falls back
+                                 to \$SMOLVM_FIRECRACKER_VERSION or the built-in default.
+  -h, --help                     Show this help.
 EOF_USAGE
 }
 
@@ -81,6 +92,26 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             RUNTIME_USER="$2"
+            shift
+            ;;
+        --for-bake)
+            FOR_BAKE=true
+            SKIP_KVM_CHECK=true
+            SKIP_RUNTIME_CHECK=true
+            ;;
+        --skip-kvm-check)
+            SKIP_KVM_CHECK=true
+            ;;
+        --skip-runtime-check)
+            SKIP_RUNTIME_CHECK=true
+            ;;
+        --firecracker-version)
+            if [[ $# -lt 2 ]]; then
+                echo "❌ --firecracker-version requires a value"
+                usage
+                exit 1
+            fi
+            FIRECRACKER_VERSION="$2"
             shift
             ;;
         -h|--help)
@@ -180,9 +211,14 @@ run_runtime_config() {
         return 1
     fi
 
+    local configure_args=(--runtime-user "${runtime_user}")
+    if [[ "${SKIP_RUNTIME_CHECK}" == "true" ]]; then
+        configure_args+=(--skip-runtime-check)
+    fi
+
     case "${mode}" in
         configure)
-            bash "${RUNTIME_CONFIG_SCRIPT}" --runtime-user "${runtime_user}"
+            bash "${RUNTIME_CONFIG_SCRIPT}" "${configure_args[@]}"
             ;;
         check)
             bash "${RUNTIME_CONFIG_SCRIPT}" --runtime-user "${runtime_user}" --check-only
@@ -207,6 +243,8 @@ missing_items=()
 check_kvm() {
     if [[ -e /dev/kvm ]]; then
         echo "  ✅ KVM device present (/dev/kvm)"
+    elif [[ "${SKIP_KVM_CHECK}" == "true" ]]; then
+        echo "  ℹ️ KVM device missing (/dev/kvm) — skipped (--skip-kvm-check / --for-bake)"
     else
         echo "  ❌ KVM device missing (/dev/kvm)"
         missing_items+=("KVM (/dev/kvm)")
@@ -279,10 +317,18 @@ echo "=== SmolVM System Setup ==="
 
 echo "Checking KVM..."
 if [[ ! -e /dev/kvm ]]; then
-    echo "❌ /dev/kvm not found. Enable KVM or nested virtualization."
-    exit 1
+    if [[ "${SKIP_KVM_CHECK}" == "true" ]]; then
+        echo "ℹ️ /dev/kvm not present; skipping KVM check (--skip-kvm-check / --for-bake)."
+        echo "   Run 'smolvm doctor' on the runtime host to verify KVM before booting VMs."
+    else
+        echo "❌ /dev/kvm not found. Enable KVM or nested virtualization."
+        echo "   For bake-time installs on hosts without /dev/kvm, pass --for-bake."
+        exit 1
+    fi
 fi
-ensure_kvm_group_membership
+if [[ -e /dev/kvm ]]; then
+    ensure_kvm_group_membership
+fi
 
 if [[ "${SKIP_DEPS}" == "true" ]]; then
     echo "Skipping dependency installation (--skip-deps)"
@@ -329,7 +375,11 @@ else
         exit 1
     fi
     echo "Installing Firecracker..."
-    bash "${INSTALL_SCRIPT}" --skip-deps
+    install_args=(--skip-deps)
+    if [[ -n "${FIRECRACKER_VERSION}" ]]; then
+        install_args+=(--firecracker-version "${FIRECRACKER_VERSION}")
+    fi
+    bash "${INSTALL_SCRIPT}" "${install_args[@]}"
 fi
 
 if ! command -v firecracker >/dev/null 2>&1; then

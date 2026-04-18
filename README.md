@@ -65,6 +65,37 @@ Linux may prompt for `sudo` during setup so it can install host dependencies and
 
 </details>
 
+<details>
+<summary>Bake-time install (golden AMI / two-stage deploys)</summary>
+
+If you bake an image on a host without `/dev/kvm` (for example, a cheap AWS builder) and boot it later on a KVM-enabled host, run setup in **bake mode**:
+
+```bash
+smolvm setup --for-bake --runtime-user ubuntu
+```
+
+`--for-bake` skips the install-time KVM check and the post-install sudoers self-test, so the install completes on a builder that isn't yet runtime-ready. On the runtime host, finish with:
+
+```bash
+smolvm doctor
+```
+
+To pin the Firecracker version (so a downstream AMI doesn't drift when SmolVM bumps it), pass either a flag or an environment variable:
+
+```bash
+smolvm setup --firecracker-version v1.14.1
+# or
+SMOLVM_FIRECRACKER_VERSION=v1.14.1 smolvm setup
+```
+
+If you need the location of the packaged shell scripts (e.g. to invoke them directly from a Packer provisioner), use the stable CLI instead of importing from the Python package:
+
+```bash
+smolvm setup --assets-dir
+```
+
+</details>
+
 ### Start a sandbox in Python
 
 ```python

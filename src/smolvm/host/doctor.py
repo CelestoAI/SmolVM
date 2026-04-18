@@ -426,6 +426,15 @@ def generate_doctor_report(backend: str | None = None) -> DoctorReport:
                 name="kvm",
                 status="pass" if kvm_ok else "fail",
                 detail="/dev/kvm is available" if kvm_ok else "/dev/kvm unavailable",
+                fix=(
+                    None
+                    if kvm_ok
+                    else (
+                        "Run on a KVM-enabled host. If this image was built with "
+                        "'smolvm setup --for-bake', /dev/kvm is expected only on the "
+                        "runtime host, not the builder."
+                    )
+                ),
             )
         )
 

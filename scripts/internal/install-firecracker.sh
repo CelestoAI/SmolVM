@@ -20,15 +20,21 @@ set -euo pipefail
 
 WITH_IMAGES=false
 SKIP_DEPS=false
+REQUIRE_KVM=false
+FC_VERSION_OVERRIDE=""
 
 usage() {
     cat <<EOF_USAGE
-Usage: $(basename "$0") [--with-images] [--skip-deps]
+Usage: $(basename "$0") [--with-images] [--skip-deps] [--require-kvm] [--firecracker-version <ver>]
 
 Options:
-  --with-images  Download kernel/rootfs images after install
-  --skip-deps    Skip apt dependency install (requires wget + tar)
-  -h, --help     Show this help
+  --with-images               Download kernel/rootfs images after install
+  --skip-deps                 Skip apt dependency install (requires wget + tar)
+  --require-kvm               Fail if /dev/kvm is missing (default: skip the check
+                              so installs work on bake hosts; runtime/doctor catch it)
+  --firecracker-version <ver> Pin Firecracker release tag (default: built-in or
+                              \$SMOLVM_FIRECRACKER_VERSION / \$FC_VERSION env)
+  -h, --help                  Show this help
 EOF_USAGE
 }
 
@@ -39,6 +45,18 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-deps)
             SKIP_DEPS=true
+            ;;
+        --require-kvm)
+            REQUIRE_KVM=true
+            ;;
+        --firecracker-version)
+            if [[ $# -lt 2 ]]; then
+                echo "❌ --firecracker-version requires a value"
+                usage
+                exit 1
+            fi
+            FC_VERSION_OVERRIDE="$2"
+            shift
             ;;
         -h|--help)
             usage
@@ -73,10 +91,17 @@ run_root() {
 
 echo "=== Installing Firecracker ==="
 
-FC_VERSION="${FC_VERSION:-v1.14.1}"
+# Version precedence: --firecracker-version flag > SMOLVM_FIRECRACKER_VERSION > FC_VERSION (legacy) > default.
+if [[ -n "${FC_VERSION_OVERRIDE}" ]]; then
+    FC_VERSION="${FC_VERSION_OVERRIDE}"
+elif [[ -n "${SMOLVM_FIRECRACKER_VERSION:-}" ]]; then
+    FC_VERSION="${SMOLVM_FIRECRACKER_VERSION}"
+else
+    FC_VERSION="${FC_VERSION:-v1.14.1}"
+fi
 ARCH=$(uname -m)
 
-if [[ ! -e /dev/kvm ]]; then
+if [[ "${REQUIRE_KVM}" == "true" && ! -e /dev/kvm ]]; then
     echo "ERROR: /dev/kvm not found. KVM is required."
     exit 1
 fi

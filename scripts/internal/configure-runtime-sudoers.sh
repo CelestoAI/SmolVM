@@ -22,12 +22,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNTIME_USER="${SUDO_USER:-}"
 CHECK_ONLY=false
 REMOVE=false
+SKIP_RUNTIME_CHECK=false
 LOOPFS_HELPER_SRC="${SCRIPT_DIR}/image-build-loopfs.sh"
 LOOPFS_HELPER_DST="/usr/local/libexec/smolvm-loopfs-helper"
 
 usage() {
     cat <<EOF
-Usage: ${SCRIPT_NAME} [--runtime-user <user>] [--check-only] [--remove]
+Usage: ${SCRIPT_NAME} [--runtime-user <user>] [--check-only] [--remove] [--skip-runtime-check]
 
 Configures scoped sudoers rules so SmolVM runtime commands can run without
 interactive password prompts.
@@ -36,6 +37,9 @@ Options:
   --runtime-user <user>   Target non-root user (default: \$SUDO_USER).
   --check-only            Validate existing runtime sudoers and command access.
   --remove                Remove generated runtime sudoers file.
+  --skip-runtime-check    Install sudoers without running the post-install live
+                          access self-test (use during AMI bake; verify on the
+                          runtime host with --check-only or 'smolvm doctor').
   -h, --help              Show this help.
 EOF
 }
@@ -64,6 +68,9 @@ while [[ $# -gt 0 ]]; do
             ;;
         --remove)
             REMOVE=true
+            ;;
+        --skip-runtime-check)
+            SKIP_RUNTIME_CHECK=true
             ;;
         -h|--help)
             usage
@@ -206,4 +213,9 @@ validate_sudoers_file "${tmp_file}"
 
 echo "✅ Installed runtime sudoers: ${SUDOERS_FILE}"
 echo "✅ Installed runtime helper: ${LOOPFS_HELPER_DST}"
-check_runtime_access
+if [[ "${SKIP_RUNTIME_CHECK}" == "true" ]]; then
+    echo "ℹ️ Skipping post-install runtime access check (--skip-runtime-check)."
+    echo "   Verify on the runtime host with --check-only or 'smolvm doctor'."
+else
+    check_runtime_access
+fi

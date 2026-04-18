@@ -1177,6 +1177,63 @@ class TestCliSetup:
         assert mock_platform_system.called
         assert "not allowed with --with-docker" in capsys.readouterr().err
 
+    @patch("smolvm.cli.main.platform.system", return_value="Linux")
+    @patch("smolvm.host.setup.run_setup")
+    def test_setup_for_bake_forwards_options(
+        self,
+        mock_run_setup: MagicMock,
+        mock_platform_system: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """``--for-bake`` should populate the bake-mode SetupOptions fields."""
+        mock_run_setup.return_value = 0
+
+        ret = main(["setup", "--for-bake", "--runtime-user", "ubuntu"])
+
+        assert ret == 0
+        mock_run_setup.assert_called_once()
+        options = mock_run_setup.call_args.args[0]
+        assert options.for_bake is True
+        assert options.runtime_user == "ubuntu"
+        # User-facing notice about doctor follow-up.
+        assert "smolvm doctor" in capsys.readouterr().out
+
+    @patch("smolvm.cli.main.platform.system", return_value="Linux")
+    @patch("smolvm.host.setup.run_setup")
+    def test_setup_firecracker_version_forwarded(
+        self,
+        mock_run_setup: MagicMock,
+        mock_platform_system: MagicMock,
+    ) -> None:
+        """``--firecracker-version`` should populate SetupOptions.firecracker_version."""
+        mock_run_setup.return_value = 0
+
+        ret = main(["setup", "--firecracker-version", "v1.15.0"])
+
+        assert ret == 0
+        options = mock_run_setup.call_args.args[0]
+        assert options.firecracker_version == "v1.15.0"
+
+    @patch("smolvm.cli.main.platform.system", return_value="Linux")
+    @patch("smolvm.host.setup.run_setup")
+    def test_setup_assets_dir_prints_path_without_running_bash(
+        self,
+        mock_run_setup: MagicMock,
+        mock_platform_system: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """``--assets-dir`` should print the asset root and exit 0 without invoking bash."""
+        ret = main(["setup", "--assets-dir"])
+
+        assert ret == 0
+        mock_run_setup.assert_not_called()
+        out = capsys.readouterr().out.strip()
+        assert out, "expected --assets-dir to print a path"
+        # The printed path should contain the script we depend on.
+        assert (Path(out) / "system-setup.sh").is_file() or (
+            Path(out) / "system-setup-macos.sh"
+        ).is_file()
+
 
 class TestCurrentVersionIsPrerelease:
     """Tests for _current_version_is_prerelease helper."""
