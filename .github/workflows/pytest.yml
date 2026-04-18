@@ -133,13 +133,33 @@ jobs:
 
           .smoke-venv/bin/python3 - <<PY
           import platform
+          import subprocess
+          from pathlib import Path
           from importlib.metadata import version as pkg_version
 
           from smolvm.host._accel import HAS_NETLINK
+          from smolvm.host.setup import detect_setup_platform, resolve_setup_script
 
           assert pkg_version("smolvm") == "${VERSION}"
           assert pkg_version("smolvm-core") == "${CORE_VERSION}"
           if platform.system() == "Linux":
               assert HAS_NETLINK, "smolvm-core native extension did not load from built wheel"
+          setup_script = resolve_setup_script(detect_setup_platform())
+          assert setup_script.is_file(), f"setup script missing from wheel: {setup_script}"
+
+          assets_dir = Path(
+              subprocess.check_output(
+                  [".smoke-venv/bin/smolvm", "setup", "--assets-dir"],
+                  text=True,
+              ).strip()
+          )
+          assert assets_dir.resolve() == setup_script.parent.resolve()
+          for helper in (
+              "configure-runtime-sudoers.sh",
+              "image-build-loopfs.sh",
+              "install-firecracker.sh",
+          ):
+              helper_path = assets_dir / "internal" / helper
+              assert helper_path.is_file(), f"missing packaged helper: {helper_path}"
           print("artifact install: OK")
           PY

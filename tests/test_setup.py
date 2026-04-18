@@ -20,7 +20,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from smolvm.host.setup import SetupOptions, build_setup_command, run_setup
+import smolvm.host.setup as host_setup_module
+from smolvm.host.setup import (
+    SetupOptions,
+    build_setup_command,
+    packaged_asset_root,
+    resolve_setup_script,
+    run_setup,
+)
 
 
 def _make_asset_root(tmp_path: Path) -> Path:
@@ -29,6 +36,65 @@ def _make_asset_root(tmp_path: Path) -> Path:
     (asset_root / "system-setup.sh").write_text("#!/bin/bash\n")
     (asset_root / "system-setup-macos.sh").write_text("#!/bin/bash\n")
     return asset_root
+
+
+def _make_repo_checkout(tmp_path: Path, *, with_scripts: bool) -> Path:
+    repo_root = tmp_path / "repo"
+    setup_py = repo_root / "src" / "smolvm" / "host" / "setup.py"
+    setup_py.parent.mkdir(parents=True)
+    setup_py.write_text("# test fixture\n")
+    if with_scripts:
+        scripts_root = repo_root / "scripts"
+        scripts_root.mkdir(parents=True)
+        (scripts_root / "internal").mkdir(parents=True)
+        (scripts_root / "system-setup.sh").write_text("#!/bin/bash\n")
+        (scripts_root / "system-setup-macos.sh").write_text("#!/bin/bash\n")
+    return setup_py
+
+
+class TestPackagedAssetRoot:
+    """Tests for installed-package and source-checkout asset resolution."""
+
+    def test_prefers_installed_package_assets(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        package_assets = _make_asset_root(tmp_path / "site-packages")
+        monkeypatch.setattr(host_setup_module, "files", lambda package: package_assets)
+
+        assert packaged_asset_root() == package_assets
+
+    def test_falls_back_to_repo_scripts_when_package_assets_missing(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        package_assets = tmp_path / "site-packages" / "smolvm" / "_setup_assets"
+        package_assets.mkdir(parents=True)
+        fake_setup_py = _make_repo_checkout(tmp_path, with_scripts=True)
+
+        monkeypatch.setattr(host_setup_module, "files", lambda package: package_assets)
+        monkeypatch.setattr(host_setup_module, "__file__", str(fake_setup_py))
+
+        assert packaged_asset_root() == fake_setup_py.parents[3] / "scripts"
+
+    def test_resolve_setup_script_raises_when_package_and_repo_assets_missing(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        package_assets = tmp_path / "site-packages" / "smolvm" / "_setup_assets"
+        package_assets.mkdir(parents=True)
+        fake_setup_py = _make_repo_checkout(tmp_path, with_scripts=False)
+
+        monkeypatch.setattr(host_setup_module, "files", lambda package: package_assets)
+        monkeypatch.setattr(host_setup_module, "__file__", str(fake_setup_py))
+
+        with pytest.raises(FileNotFoundError, match="Missing packaged setup asset") as exc_info:
+            resolve_setup_script("linux")
+
+        assert str(package_assets / "system-setup.sh") in str(exc_info.value)
 
 
 class TestBuildSetupCommand:

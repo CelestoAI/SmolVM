@@ -19,6 +19,8 @@ from __future__ import annotations
 import platform
 import subprocess
 from dataclasses import dataclass
+from importlib.resources import files
+from os import fspath
 from pathlib import Path
 from typing import Literal
 
@@ -47,22 +49,32 @@ class SetupOptions:
 def packaged_asset_root() -> Path:
     """Return the directory containing setup shell assets.
 
-    Checks the packaged ``_setup_assets/`` directory first (present in installed
-    wheels), then falls back to the repository ``scripts/`` directory so that
-    ``uv run smolvm setup`` works from a source checkout.
+    Checks the installed ``smolvm._setup_assets`` package first, then falls
+    back to the repository ``scripts/`` directory so ``uv run smolvm setup``
+    works from a source checkout.
     """
-    pkg_dir = Path(__file__).resolve().parent / "_setup_assets"
-    # In a wheel the scripts live under _setup_assets/.  In a source checkout
-    # they only exist under the repo-root scripts/ directory.
-    marker = pkg_dir / _LINUX_SCRIPT
-    if marker.is_file():
+    pkg_dir = _package_asset_root()
+    if pkg_dir is not None and (pkg_dir / _LINUX_SCRIPT).is_file():
         return pkg_dir
-    # Fall back to the repository scripts/ directory: three parents up from
+
+    # In a source checkout, the installable resource package exists but does
+    # not contain the shell scripts. Fall back to the repo-root scripts/ dir:
     # src/smolvm/host/setup.py → src/smolvm/host → src/smolvm → src → repo root.
     repo_scripts = Path(__file__).resolve().parents[3] / "scripts"
-    if repo_scripts.is_dir():
+    if (repo_scripts / _LINUX_SCRIPT).is_file():
         return repo_scripts
-    return pkg_dir
+
+    # Preserve the installed package path in error messages when the wheel is
+    # present but incomplete; otherwise return the repo fallback candidate.
+    return pkg_dir or repo_scripts
+
+
+def _package_asset_root() -> Path | None:
+    """Return the installed setup asset directory when it is filesystem-backed."""
+    try:
+        return Path(fspath(files("smolvm._setup_assets")))
+    except (ModuleNotFoundError, TypeError):
+        return None
 
 
 def detect_setup_platform(system_name: str | None = None) -> SetupPlatform:
