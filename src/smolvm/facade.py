@@ -715,10 +715,17 @@ class SmolVM:
             )
 
         # Workspace mounts currently require the QEMU backend (virtio-9p).
-        # If the caller didn't pick a backend but asked for mounts, default
-        # to QEMU so `--mount` works out of the box on Linux and macOS.
-        if backend is None and mounts and vm_id is None:
-            backend = BACKEND_QEMU
+        # When no backend was pinned and mounts were requested — either via
+        # the `mounts=` kwarg or via `config.workspace_mounts` on a pre-built
+        # VMConfig — default to QEMU. Callers who explicitly set `backend`
+        # (on the kwarg or the config) still get the SmolVMManager error if
+        # their choice can't host mounts.
+        wants_mounts = bool(mounts) or (
+            config is not None and bool(config.workspace_mounts)
+        )
+        if backend is None and wants_mounts and vm_id is None:
+            if config is None or config.backend is None:
+                backend = BACKEND_QEMU
 
         if image is not None:
             # S3 image mode

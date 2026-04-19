@@ -237,16 +237,14 @@ def test_workspace_rejected_on_non_qemu_backend(
 
 @patch("smolvm.facade.SmolVMManager")
 @patch("smolvm.facade._build_auto_config")
-@patch("smolvm.runtime.backends.platform.system", return_value="Linux")
 def test_mounts_without_backend_auto_selects_qemu(
-    _mock_platform: MagicMock,
     mock_build_auto_config: MagicMock,
     mock_sdk_cls: MagicMock,
     tmp_path: Path,
 ) -> None:
-    """On Linux, `SmolVM(mounts=...)` without an explicit backend should
-    pick QEMU so --mount works out of the box instead of erroring out on
-    the default Firecracker backend."""
+    """`SmolVM(mounts=...)` without an explicit backend should pick QEMU so
+    `--mount` works out of the box instead of erroring out on a non-QEMU
+    default (Firecracker on Linux)."""
     kernel = tmp_path / "vmlinux"
     rootfs = tmp_path / "rootfs.ext4"
     kernel.touch()
@@ -273,6 +271,37 @@ def test_mounts_without_backend_auto_selects_qemu(
     assert mock_build_auto_config.call_args.kwargs["backend"] == "qemu"
     # SmolVMManager must be initialized with the upgraded backend, not the
     # platform default.
+    assert mock_sdk_cls.call_args.kwargs["backend"] == "qemu"
+
+
+@patch("smolvm.facade.SmolVMManager")
+def test_config_with_workspace_mounts_auto_selects_qemu(
+    mock_sdk_cls: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """`SmolVM(config=cfg)` with populated `cfg.workspace_mounts` and no
+    backend pinned on either the config or the kwarg should upgrade the
+    manager backend to QEMU."""
+    kernel = tmp_path / "vmlinux"
+    rootfs = tmp_path / "rootfs.ext4"
+    kernel.touch()
+    rootfs.touch()
+    ws_dir = tmp_path / "project"
+    ws_dir.mkdir()
+
+    config = VMConfig(
+        vm_id="vm-cfg-ws",
+        kernel_path=kernel,
+        rootfs_path=rootfs,
+        workspace_mounts=[WorkspaceMount(host_path=ws_dir)],
+    )
+
+    mock_sdk = MagicMock()
+    mock_sdk.create.return_value = MagicMock(vm_id="vm-cfg-ws", status=VMState.CREATED)
+    mock_sdk_cls.return_value = mock_sdk
+
+    SmolVM(config)
+
     assert mock_sdk_cls.call_args.kwargs["backend"] == "qemu"
 
 
