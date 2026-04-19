@@ -714,6 +714,12 @@ class SmolVM:
                 "config and vm_id are omitted (auto-config mode)."
             )
 
+        # Workspace mounts currently require the QEMU backend (virtio-9p).
+        # If the caller didn't pick a backend but asked for mounts, default
+        # to QEMU so `--mount` works out of the box on Linux and macOS.
+        if backend is None and mounts and vm_id is None:
+            backend = BACKEND_QEMU
+
         if image is not None:
             # S3 image mode
             logger.info("Resolving image from %s...", image)

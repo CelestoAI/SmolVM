@@ -20,7 +20,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
-from smolvm.types import VMConfig, WorkspaceMount
+from smolvm.facade import SmolVM
+from smolvm.types import VMConfig, VMState, WorkspaceMount
 from smolvm.vm import SmolVMManager
 
 # ── WorkspaceMount validation ───────────────────────────────────────
@@ -229,6 +230,50 @@ def test_workspace_rejected_on_non_qemu_backend(
 
     with pytest.raises(SmolVMError, match="only supported with the QEMU"):
         sdk.create(config)
+
+
+# ── Mount auto-selects QEMU backend ─────────────────────────────────
+
+
+@patch("smolvm.facade.SmolVMManager")
+@patch("smolvm.facade._build_auto_config")
+@patch("smolvm.runtime.backends.platform.system", return_value="Linux")
+def test_mounts_without_backend_auto_selects_qemu(
+    _mock_platform: MagicMock,
+    mock_build_auto_config: MagicMock,
+    mock_sdk_cls: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """On Linux, `SmolVM(mounts=...)` without an explicit backend should
+    pick QEMU so --mount works out of the box instead of erroring out on
+    the default Firecracker backend."""
+    kernel = tmp_path / "vmlinux"
+    rootfs = tmp_path / "rootfs.ext4"
+    kernel.touch()
+    rootfs.touch()
+    ws_dir = tmp_path / "project"
+    ws_dir.mkdir()
+
+    mock_build_auto_config.return_value = (
+        VMConfig(
+            vm_id="vm-auto",
+            kernel_path=kernel,
+            rootfs_path=rootfs,
+            backend="qemu",
+        ),
+        None,
+    )
+
+    mock_sdk = MagicMock()
+    mock_sdk.create.return_value = MagicMock(vm_id="vm-auto", status=VMState.CREATED)
+    mock_sdk_cls.return_value = mock_sdk
+
+    SmolVM(mounts=[str(ws_dir)])
+
+    assert mock_build_auto_config.call_args.kwargs["backend"] == "qemu"
+    # SmolVMManager must be initialized with the upgraded backend, not the
+    # platform default.
+    assert mock_sdk_cls.call_args.kwargs["backend"] == "qemu"
 
 
 # ── Snapshot guard ──────────────────────────────────────────────────

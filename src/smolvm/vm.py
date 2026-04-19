@@ -774,7 +774,9 @@ class SmolVMManager:
         if effective_config.workspace_mounts and backend != BACKEND_QEMU:
             raise SmolVMError(
                 "Workspace mounts (virtio-9p) are only supported with the "
-                "QEMU backend. Use --backend qemu.",
+                f"QEMU backend (got backend={backend!r}). Re-run without "
+                "--backend (SmolVM will auto-select QEMU when --mount is "
+                "used) or pass --backend qemu explicitly.",
                 {"vm_id": effective_config.vm_id, "backend": backend},
             )
 
