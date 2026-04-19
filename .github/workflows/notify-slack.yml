@@ -1,0 +1,19 @@
+name: Notify Slack on star/fork
+on:
+  watch:
+    types: [started]   # fired when someone stars the repo
+  fork:
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [ "${{ github.event_name }}" = "watch" ]; then
+            MSG="⭐ ${{ github.actor }} starred ${{ github.repository }} (total: ${{ github.event.repository.stargazers_count }})"
+          else
+            MSG="🍴 ${{ github.actor }} forked ${{ github.repository }} → ${{ github.event.forkee.full_name }}"
+          fi
+          curl -sS -X POST -H 'Content-type: application/json' \
+               --data "{\"text\":\"$MSG\"}" "$SLACK_WEBHOOK_URL"
