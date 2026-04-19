@@ -3,6 +3,8 @@ on:
   watch:
     types: [started]   # fired when someone stars the repo
   fork:
+permissions:
+  contents: read
 jobs:
   notify:
     runs-on: ubuntu-latest
