@@ -4,8 +4,46 @@ use crate::error::NetlinkError;
 use std::ffi::CString;
 use std::os::fd::AsRawFd;
 
+/// Maximum retry attempts for EBUSY on TUNSETPERSIST.
+const MAX_BUSY_RETRIES: u32 = 3;
+
 /// Create a TAP device with the given name and owner UID.
+///
+/// Retries on EBUSY from TUNSETPERSIST up to MAX_BUSY_RETRIES times, because the
+/// kernel briefly holds the device between TUNSETIFF and TUNSETPERSIST, especially
+/// under load or after rapid VM creation/deletion cycles. This mirrors the retry
+/// logic already present in the Python fallback (src/smolvm/host/network.py).
 pub fn create(name: &str, owner_uid: u32) -> Result<(), NetlinkError> {
+    let mut backoff_ms: u64 = 100;
+
+    for attempt in 0..=MAX_BUSY_RETRIES {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
+            backoff_ms *= 2; // exponential backoff
+        }
+
+        if let Err(e) = create_once(name, owner_uid) {
+            // Only retry on EBUSY at the TUNSETPERSIST step
+            if e.to_string().contains("EBUSY") && attempt < MAX_BUSY_RETRIES {
+                log::warn!(
+                    "TAP {} busy during creation (attempt {}/{}), retrying...",
+                    name,
+                    attempt + 1,
+                    MAX_BUSY_RETRIES + 1
+                );
+                continue;
+            }
+            return Err(e);
+        }
+        return Ok(());
+    }
+
+    // Should not be reached, but defensively return last error
+    create_once(name, owner_uid)
+}
+
+/// Perform a single TAP creation attempt (TUNSETIFF + TUNSETOWNER + TUNSETPERSIST).
+fn create_once(name: &str, owner_uid: u32) -> Result<(), NetlinkError> {
     let fd = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -52,7 +90,8 @@ pub fn create(name: &str, owner_uid: u32) -> Result<(), NetlinkError> {
     let ret = unsafe { libc::ioctl(fd.as_raw_fd(), 0x400454CB_u64, 1 as libc::c_int) };
     if ret < 0 {
         let errno = unsafe { *libc::__errno_location() };
-        return Err(NetlinkError::from_errno(errno, &format!("TUNSETPERSIST {}", name)));
+        let msg = format!("TUNSETPERSIST {}: {}", name, NetlinkError::from_errno(errno, ""));
+        return Err(NetlinkError::Other(msg));
     }
 
     log::debug!("TAP {} created (owner UID {})", name, owner_uid);
