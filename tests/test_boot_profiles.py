@@ -24,6 +24,7 @@ from smolvm.runtime.backends import (
     BACKEND_QEMU,
 )
 from smolvm.runtime.boot_profiles import (
+    SMOLVM_NATIVE_RELEASE_HOST,
     KernelBootProfile,
     get_boot_profile_spec,
     normalize_arch,
@@ -99,7 +100,11 @@ class TestSmolvmNativeProfile:
 
     def test_url_points_at_github_release_bundle(self) -> None:
         url = resolve_kernel_url(KernelBootProfile.SMOLVM_NATIVE, "x86_64")
-        assert url.startswith("https://github.com/celesto-ai/SmolVM/releases/download/")
+        assert url.startswith(f"{SMOLVM_NATIVE_RELEASE_HOST}/")
+        # CelestoAI is the canonical GitHub org slug — not celesto-ai with
+        # a hyphen, which is a dead URL. Guard against regressing to it.
+        assert "celesto-ai" not in url
+        assert "/CelestoAI/" in url
         assert url.endswith("-x86_64.tar.zst")
 
     def test_urls_differ_per_arch(self) -> None:

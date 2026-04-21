@@ -50,14 +50,15 @@ QEMU_DESKTOP_KERNEL_URLS: dict[str, str] = {
 # The version pinned here must correspond to a published kernel-v* GitHub
 # Release. See kernel/README.md for the release flow.
 SMOLVM_NATIVE_KERNEL_VERSION = "1.0.0"
+SMOLVM_NATIVE_RELEASE_HOST = "https://github.com/CelestoAI/SmolVM/releases/download"
 SMOLVM_NATIVE_BUNDLE_URLS: dict[str, str] = {
     "x86_64": (
-        "https://github.com/celesto-ai/SmolVM/releases/download/"
+        f"{SMOLVM_NATIVE_RELEASE_HOST}/"
         f"kernel-v{SMOLVM_NATIVE_KERNEL_VERSION}/"
         f"smolvm-kernel-v{SMOLVM_NATIVE_KERNEL_VERSION}-x86_64.tar.zst"
     ),
     "aarch64": (
-        "https://github.com/celesto-ai/SmolVM/releases/download/"
+        f"{SMOLVM_NATIVE_RELEASE_HOST}/"
         f"kernel-v{SMOLVM_NATIVE_KERNEL_VERSION}/"
         f"smolvm-kernel-v{SMOLVM_NATIVE_KERNEL_VERSION}-aarch64.tar.zst"
     ),

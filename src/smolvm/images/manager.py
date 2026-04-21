@@ -627,6 +627,39 @@ class ImageManager:
             )
 
         bundle_root = self.cache_dir / "_kernel" / cache_key
+        bundle_root.mkdir(parents=True, exist_ok=True)
+        lock_path = bundle_root / ".fetch.lock"
+
+        # Serialize concurrent fetches targeting the same cache_key.
+        # Without this, two `smolvm create` invocations booting on a
+        # fresh host both hit the cache-miss branch and race:
+        # rmtree(extract_dir) by B wipes the bundle A just staged, or
+        # two staging_dir.mkdir() calls collide mid-flight. fcntl.flock
+        # is POSIX-only, which matches SmolVM's supported platforms.
+        import fcntl  # noqa: PLC0415 — lazy so cross-platform imports stay clean
+
+        with open(lock_path, "w") as lockfd:
+            fcntl.flock(lockfd, fcntl.LOCK_EX)
+            return self._ensure_kernel_bundle_locked(
+                bundle_root=bundle_root,
+                url=url,
+                bundle_sha256=bundle_sha256,
+                cache_key=cache_key,
+                expected_kernel_filename=expected_kernel_filename,
+                on_download=on_download,
+            )
+
+    def _ensure_kernel_bundle_locked(
+        self,
+        *,
+        bundle_root: Path,
+        url: str,
+        bundle_sha256: str,
+        cache_key: str,
+        expected_kernel_filename: str,
+        on_download: Callable[[str, int, int | None], None] | None,
+    ) -> KernelBundle:
+        """Inner body of :meth:`ensure_kernel_bundle` called under flock."""
         archive_path = bundle_root / "bundle.tar.zst"
         extract_dir = bundle_root / "extracted"
         stamp_path = bundle_root / ".bundle.sha256"
@@ -657,7 +690,6 @@ class ImageManager:
         if extract_dir.exists():
             shutil.rmtree(extract_dir)
         stamp_path.unlink(missing_ok=True)
-        bundle_root.mkdir(parents=True, exist_ok=True)
 
         def _progress(chunk: int, total: int | None) -> None:
             if on_download is not None:
@@ -886,28 +918,80 @@ class ImageManager:
 
     @staticmethod
     def _extract_tar_zst(archive: Path, dest: Path) -> None:
-        """Extract a ``.tar.zst`` archive into ``dest``.
+        """Extract a ``.tar.zst`` archive into ``dest`` safely.
 
-        Uses Python 3.12+ ``filter='data'`` to block traversal. The
-        archive must contain files only (no absolute paths, no
-        ``..`` components, no symlinks escaping the destination).
+        The archive must contain regular files and directories only:
+        no absolute paths, no ``..`` traversal, no symlinks, no device
+        files. Extraction fails closed if any member violates these
+        constraints.
+
+        On Python 3.12+ this delegates to tarfile's built-in
+        ``filter='data'`` sandbox. On 3.10/3.11 (which don't support
+        the ``filter=`` kwarg) we perform equivalent per-member
+        validation by hand before calling ``tf.extract``.
         """
-        # Lazy-import so test environments without the optional zstandard
-        # dep can still import the rest of this module.
+        import io
+        import sys
         import tarfile
 
+        # Lazy-import so test environments without the optional zstandard
+        # dep can still import the rest of this module.
         import zstandard
 
+        # Decompress to memory first: bundle size is bounded (~30 MiB
+        # uncompressed) and a seekable tarfile is simpler + safer to
+        # validate than a streaming one.
         dctx = zstandard.ZstdDecompressor()
-        with (
-            open(archive, "rb") as compressed,
-            dctx.stream_reader(compressed) as reader,
-            tarfile.open(fileobj=reader, mode="r|") as tf,
-        ):
-            # filter='data' is the safest stock filter in 3.12+:
-            # strips setuid, blocks absolute paths, blocks links
-            # that escape the destination, rejects device files.
-            tf.extractall(dest, filter="data")
+        with open(archive, "rb") as compressed:
+            decompressed = dctx.decompress(compressed.read())
+
+        with tarfile.open(fileobj=io.BytesIO(decompressed), mode="r:") as tf:
+            if sys.version_info >= (3, 12):
+                tf.extractall(dest, filter="data")
+            else:
+                ImageManager._extract_members_safely(tf, Path(dest))
+
+    @staticmethod
+    def _extract_members_safely(tf: object, dest: Path) -> None:
+        """Python <3.12 fallback mirroring ``tarfile``'s ``data`` filter.
+
+        Rejects absolute paths, ``..`` traversal, symlinks, hardlinks,
+        device files, and FIFOs. Strips setuid/setgid. The extracted
+        file's resolved path must stay inside ``dest``.
+        """
+        import tarfile
+
+        assert isinstance(tf, tarfile.TarFile)  # noqa: S101 — internal call
+
+        dest.mkdir(parents=True, exist_ok=True)
+        dest_resolved = dest.resolve()
+
+        for member in tf:
+            if not (member.isreg() or member.isdir()):
+                raise tarfile.ExtractError(
+                    f"refusing unsafe archive member: {member.name!r} (type={member.type!r})"
+                )
+
+            member_path = Path(member.name)
+            if member_path.is_absolute() or member.name.startswith("/"):
+                raise tarfile.ExtractError(f"archive contains absolute path: {member.name!r}")
+            if ".." in member_path.parts:
+                raise tarfile.ExtractError(f"archive contains path traversal: {member.name!r}")
+
+            # Belt-and-braces: the resolved extracted path must live
+            # under dest even after symlink/normalization shenanigans.
+            target = (dest_resolved / member.name).resolve()
+            try:
+                target.relative_to(dest_resolved)
+            except ValueError as exc:
+                raise tarfile.ExtractError(
+                    f"archive member escapes destination: {member.name!r}"
+                ) from exc
+
+            # Strip setuid/setgid bits before extraction.
+            member.mode &= ~0o6000
+
+            tf.extract(member, dest_resolved)
 
     # ------------------------------------------------------------------
     # S3 image support

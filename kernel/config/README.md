@@ -1,8 +1,10 @@
 # Kernel config
 
+This directory holds the Linux kernel configuration that controls what the SmolVM guest supports at boot — things like shared file mounts, serial console, and which virtual hardware drivers are compiled in. Review changes here carefully: they decide what works, what's bloat, and what's attack surface.
+
 ## `smolvm.fragment` — the SmolVM-specific decisions
 
-A Kconfig fragment in Linux's [merge_config](https://www.kernel.org/doc/html/latest/kbuild/kconfig.html#merging-configurations) format. Encodes **only** the symbols where SmolVM differs from `kvm_guest.config`, so diffs stay reviewable.
+`smolvm.fragment` is a small kernel-config overlay in Linux's [`merge_config`](https://www.kernel.org/doc/html/latest/kbuild/kconfig.html#merging-configurations) format. It records **only** the symbols where SmolVM differs from upstream's `kvm_guest.config` baseline — so diffs stay reviewable, and we're not hand-maintaining a 5000-line file.
 
 At build time, the flow is:
 

@@ -342,3 +342,94 @@ class TestEnsureKernelBundleFailureModes:
                 cache_key="missing-linux-version",
                 expected_kernel_filename="vmlinux",
             )
+
+
+# ---------------------------------------------------------------------------
+# Security — exercise the Python <3.12 manual-validation fallback directly
+# so CI on any supported interpreter covers the rejection paths.
+# ---------------------------------------------------------------------------
+
+
+def _make_tar_with_member(name: str, data: bytes = b"x") -> bytes:
+    """Build a raw tar containing a single file with the given path."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        info = tarfile.TarInfo(name=name)
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _make_tar_with_symlink(name: str, link_target: str) -> bytes:
+    """Build a raw tar containing a single symlink entry."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        info = tarfile.TarInfo(name=name)
+        info.type = tarfile.SYMTYPE
+        info.linkname = link_target
+        tf.addfile(info)
+    return buf.getvalue()
+
+
+class TestExtractMembersSafelyFallback:
+    """Directly exercise the Python <3.12 fallback extraction path.
+
+    These scenarios are also covered by tarfile's ``filter='data'`` on
+    3.12+, but our in-house fallback needs its own coverage because it
+    is what runs on Python 3.10 and 3.11.
+    """
+
+    def test_absolute_path_rejected(self, tmp_path: Path) -> None:
+        tar_bytes = _make_tar_with_member("/etc/passwd")
+        dest = tmp_path / "out"
+        with (
+            tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:") as tf,
+            pytest.raises(tarfile.ExtractError, match="absolute path"),
+        ):
+            ImageManager._extract_members_safely(tf, dest)
+
+    def test_traversal_rejected(self, tmp_path: Path) -> None:
+        tar_bytes = _make_tar_with_member("../escape.txt")
+        dest = tmp_path / "out"
+        with (
+            tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:") as tf,
+            pytest.raises(tarfile.ExtractError, match="path traversal"),
+        ):
+            ImageManager._extract_members_safely(tf, dest)
+
+    def test_symlink_rejected(self, tmp_path: Path) -> None:
+        tar_bytes = _make_tar_with_symlink("link", "/etc/passwd")
+        dest = tmp_path / "out"
+        with (
+            tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:") as tf,
+            pytest.raises(tarfile.ExtractError, match="unsafe archive member"),
+        ):
+            ImageManager._extract_members_safely(tf, dest)
+
+    def test_setuid_bits_stripped(self, tmp_path: Path) -> None:
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tf:
+            info = tarfile.TarInfo(name="setuid-binary")
+            info.mode = 0o4755  # setuid + rwx/rx/rx
+            info.size = 1
+            tf.addfile(info, io.BytesIO(b"x"))
+        tar_bytes = buf.getvalue()
+
+        dest = tmp_path / "out"
+        with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:") as tf:
+            ImageManager._extract_members_safely(tf, dest)
+
+        extracted = dest / "setuid-binary"
+        assert extracted.is_file()
+        # Setuid and setgid bits must be cleared.
+        assert extracted.stat().st_mode & 0o6000 == 0
+
+    def test_clean_archive_extracts(self, tmp_path: Path) -> None:
+        tar_bytes = _make_tar_with_member("good/file.txt", b"hello")
+        dest = tmp_path / "out"
+        with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:") as tf:
+            ImageManager._extract_members_safely(tf, dest)
+
+        extracted = dest / "good" / "file.txt"
+        assert extracted.is_file()
+        assert extracted.read_bytes() == b"hello"

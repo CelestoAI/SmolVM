@@ -8,12 +8,9 @@ on:
   push:
     tags:
       - "kernel-v*"
+  # Manual runs from the Actions UI build both arches but never publish
+  # a release — the `release` job is gated on `refs/tags/kernel-v*`.
   workflow_dispatch:
-    inputs:
-      dry_run:
-        description: "Build both arches but do not create a Release"
-        type: boolean
-        default: true
 
 permissions:
   contents: read
@@ -52,12 +49,17 @@ jobs:
       - name: Record artifact metadata
         id: meta
         run: |
-          VERSION="$(cat kernel/VERSION | tr -d '[:space:]')"
+          VERSION="$(tr -d '[:space:]' < kernel/VERSION)"
           ARTIFACT="smolvm-kernel-v${VERSION}-${{ matrix.arch }}.tar.zst"
-          echo "version=${VERSION}"         >> "${GITHUB_OUTPUT}"
-          echo "artifact_name=${ARTIFACT}"  >> "${GITHUB_OUTPUT}"
-          echo "artifact_path=kernel/build/${ARTIFACT}" >> "${GITHUB_OUTPUT}"
-          sha256sum "kernel/build/${ARTIFACT}" | tee kernel/build/${ARTIFACT}.sha256
+          {
+            echo "version=${VERSION}"
+            echo "artifact_name=${ARTIFACT}"
+            echo "artifact_path=kernel/build/${ARTIFACT}"
+          } >> "${GITHUB_OUTPUT}"
+          # Generate the sidecar checksum from inside kernel/build so the
+          # recorded path is just the filename. That way `sha256sum -c`
+          # works when the .sha256 sits next to the tarball in the release.
+          (cd kernel/build && sha256sum "${ARTIFACT}") | tee "kernel/build/${ARTIFACT}.sha256"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
