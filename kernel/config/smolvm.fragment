@@ -1,0 +1,111 @@
+# SmolVM kernel config fragment.
+#
+# Merged on top of Linux's `kvm_guest.config` at build time via
+# scripts/kconfig/merge_config.sh. Encodes only the decisions that are
+# specific to SmolVM — everything else comes from the kvm_guest.config
+# baseline (https://www.kernel.org/doc/html/latest/kbuild/kconfig.html).
+#
+# DESIGN INVARIANTS:
+#   - All required drivers compiled in (=y), never as modules.
+#     This is what prevents the /lib/modules/$(uname -r) version-skew
+#     class of bugs forever.
+#   - Every "off" symbol is affirmatively `is not set` rather than omitted,
+#     so a future `make olddefconfig` can't silently flip it on.
+#
+# When this fragment changes, the SmolVM kernel VERSION must be bumped
+# (kernel/VERSION), and the CI pipeline must rebuild and republish the
+# bundle.
+
+# -----------------------------------------------------------------------------
+# No modules, ever.
+# -----------------------------------------------------------------------------
+# CONFIG_MODULES is not set
+
+# -----------------------------------------------------------------------------
+# Required filesystems — rootfs, shared workspaces, overlay safety.
+# -----------------------------------------------------------------------------
+CONFIG_EXT4_FS=y
+CONFIG_FUSE_FS=y
+CONFIG_OVERLAY_FS=y
+CONFIG_VIRTIO_FS=y
+
+# Keep tmpfs and devtmpfs for rootfs bring-up.
+CONFIG_TMPFS=y
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+
+# Affirmatively drop the old workspace-sharing plane. SmolVM switches
+# from virtio-9p+overlayfs to virtiofs+overlayfs in the same release that
+# ships this kernel; 9p must not silently come back.
+# CONFIG_NET_9P is not set
+# CONFIG_NET_9P_VIRTIO is not set
+# CONFIG_9P_FS is not set
+
+# -----------------------------------------------------------------------------
+# Virtio transports — both PCI and MMIO. QEMU x86_64 uses PCI; QEMU aarch64
+# and Firecracker (both arches) use MMIO.
+# -----------------------------------------------------------------------------
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_MMIO=y
+# Legacy PCI virtio isn't needed for any modern hypervisor we target.
+# CONFIG_VIRTIO_PCI_LEGACY is not set
+
+# -----------------------------------------------------------------------------
+# Virtio devices — only the ones we actually use.
+# -----------------------------------------------------------------------------
+CONFIG_VIRTIO_BLK=y
+CONFIG_VIRTIO_NET=y
+CONFIG_VIRTIO_CONSOLE=y
+CONFIG_HW_RANDOM_VIRTIO=y
+
+# VSOCK for future host<->guest RPC without SSH.
+CONFIG_VSOCKETS=y
+CONFIG_VIRTIO_VSOCKETS=y
+
+# Everything below is deliberately off. Leaving them as explicit
+# `is not set` so `make olddefconfig` can't turn them back on.
+# CONFIG_VIRTIO_BALLOON is not set
+# CONFIG_VIRTIO_MEM is not set
+# CONFIG_VIRTIO_PMEM is not set
+# CONFIG_VIRTIO_GPU is not set
+# CONFIG_VIRTIO_INPUT is not set
+# CONFIG_VIRTIO_SCSI is not set
+# CONFIG_VIRTIO_CRYPTO is not set
+# CONFIG_VIRTIO_IOMMU is not set
+
+# Vhost is host-side infrastructure; a guest kernel doesn't need any of it.
+# CONFIG_VHOST_NET is not set
+# CONFIG_VHOST_VSOCK is not set
+
+# -----------------------------------------------------------------------------
+# Networking basics the guest needs for `smolvm ssh` to work.
+# -----------------------------------------------------------------------------
+CONFIG_NET=y
+CONFIG_INET=y
+CONFIG_IPV6=y
+CONFIG_PACKET=y
+CONFIG_UNIX=y
+
+# -----------------------------------------------------------------------------
+# Console — pick the right serial driver per arch. The kvm_guest.config
+# defconfig handles x86_64 8250 already; we assert it here for clarity
+# and add the aarch64 PL011 that kvm_guest.config doesn't cover.
+# -----------------------------------------------------------------------------
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_SERIAL_AMBA_PL011=y
+CONFIG_SERIAL_AMBA_PL011_CONSOLE=y
+
+# -----------------------------------------------------------------------------
+# Boot-time sanity.
+# -----------------------------------------------------------------------------
+CONFIG_PRINTK=y
+CONFIG_PROC_FS=y
+CONFIG_SYSFS=y
+CONFIG_CGROUPS=y
+CONFIG_NAMESPACES=y
+
+# Guest paravirt.
+CONFIG_KVM_GUEST=y
+CONFIG_PARAVIRT=y
+CONFIG_HIGH_RES_TIMERS=y

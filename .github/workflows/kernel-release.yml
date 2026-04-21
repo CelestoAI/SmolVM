@@ -1,0 +1,121 @@
+name: Build and release SmolVM guest kernel
+
+# Triggered either by pushing a tag like `kernel-v1.0.0` (normal release)
+# or manually via the Actions UI (dry runs, testing). A tag push uploads
+# artifacts to the matching GitHub Release; a manual dispatch stops at
+# the artifact-upload step so maintainers can inspect builds.
+on:
+  push:
+    tags:
+      - "kernel-v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build both arches but do not create a Release"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build kernel (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build kernel builder image
+        run: |
+          docker build \
+            --file kernel/Dockerfile \
+            --tag smolvm-kernel-builder \
+            kernel/
+
+      - name: Build kernel
+        run: |
+          docker run --rm \
+            --volume "${{ github.workspace }}:/work" \
+            --workdir /work \
+            smolvm-kernel-builder \
+            /work/kernel/scripts/build.sh ${{ matrix.arch }}
+
+      - name: Record artifact metadata
+        id: meta
+        run: |
+          VERSION="$(cat kernel/VERSION | tr -d '[:space:]')"
+          ARTIFACT="smolvm-kernel-v${VERSION}-${{ matrix.arch }}.tar.zst"
+          echo "version=${VERSION}"         >> "${GITHUB_OUTPUT}"
+          echo "artifact_name=${ARTIFACT}"  >> "${GITHUB_OUTPUT}"
+          echo "artifact_path=kernel/build/${ARTIFACT}" >> "${GITHUB_OUTPUT}"
+          sha256sum "kernel/build/${ARTIFACT}" | tee kernel/build/${ARTIFACT}.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.artifact_name }}
+          path: |
+            ${{ steps.meta.outputs.artifact_path }}
+            ${{ steps.meta.outputs.artifact_path }}.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    # Only run on tag push; skip for workflow_dispatch dry runs.
+    if: startsWith(github.ref, 'refs/tags/kernel-v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Validate tag matches kernel/VERSION
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#kernel-v}"
+          FILE_VERSION="$(cat kernel/VERSION | tr -d '[:space:]')"
+          if [[ "${TAG_VERSION}" != "${FILE_VERSION}" ]]; then
+            echo "tag kernel-v${TAG_VERSION} does not match kernel/VERSION (${FILE_VERSION})" >&2
+            exit 1
+          fi
+
+      - name: Flatten release-assets tree
+        run: |
+          mkdir -p release-final
+          find release-assets -type f \( -name '*.tar.zst' -o -name '*.sha256' \) \
+            -exec cp -v {} release-final/ \;
+          ls -la release-final/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: SmolVM guest kernel ${{ github.ref_name }}
+          body: |
+            SmolVM guest kernel build ${{ github.ref_name }}.
+
+            **Bundle contents** (per-arch `.tar.zst`):
+            - `vmlinux` (x86_64) or `Image` (aarch64) — uncompressed kernel
+            - `config` — the expanded kernel config used
+            - `SHA256SUMS` — checksums for the three files above
+            - `LINUX_VERSION` — upstream Linux version
+
+            Consumed by the SmolVM facade's `ensure_kernel_bundle()` at boot
+            time. See `kernel/README.md` for how the kernel is built and how
+            to bump the version.
+          files: release-final/*
+          fail_on_unmatched_files: true

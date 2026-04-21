@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import shutil
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -103,6 +104,34 @@ class LocalImage(BaseModel):
     kernel_path: Path
     initrd_path: Path | None = None
     rootfs_path: Path
+
+    model_config = {"frozen": True}
+
+
+class KernelBundle(BaseModel):
+    """An extracted SmolVM kernel bundle on local disk.
+
+    Produced by :meth:`ImageManager.ensure_kernel_bundle`. Unlike
+    :class:`LocalImage`, this represents just a kernel artifact plus its
+    sidecar metadata — no rootfs or initrd. Bundles ship as per-arch
+    ``.tar.zst`` archives attached to the SmolVM GitHub kernel release.
+
+    Attributes:
+        kernel_path: Absolute path to the extracted kernel image
+            (``vmlinux`` on x86_64, ``Image`` on aarch64).
+        config_path: Absolute path to the expanded kernel ``.config``
+            that was used to build this kernel. Diagnostic only.
+        linux_version: Upstream Linux point release the bundle was built
+            from (e.g. ``"6.12.82"``).
+        bundle_sha256: The SHA-256 of the source ``.tar.zst`` archive
+            (not of any file inside it). Proves the bundle on disk
+            matches what was fetched from the network.
+    """
+
+    kernel_path: Path
+    config_path: Path
+    linux_version: str
+    bundle_sha256: str
 
     model_config = {"frozen": True}
 
@@ -542,6 +571,140 @@ class ImageManager:
         logger.info("Rootfs '%s' ready at: %s", name, rootfs_path)
         return rootfs_path
 
+    def ensure_kernel_bundle(
+        self,
+        *,
+        url: str,
+        bundle_sha256: str,
+        cache_key: str,
+        expected_kernel_filename: str,
+        on_download: Callable[[str, int, int | None], None] | None = None,
+    ) -> KernelBundle:
+        """Download, verify, and extract a SmolVM kernel bundle.
+
+        Bundles are per-arch ``.tar.zst`` archives attached to the SmolVM
+        GitHub kernel release. Each bundle contains:
+
+        - ``vmlinux`` (x86_64) or ``Image`` (aarch64)
+        - ``config`` — the expanded kernel config
+        - ``SHA256SUMS`` — checksums for the files above
+        - ``LINUX_VERSION`` — upstream Linux version the bundle was built from
+
+        Args:
+            url: HTTPS URL of the bundle ``.tar.zst`` archive.
+            bundle_sha256: SHA-256 of the archive. **Required** — an
+                unverified kernel is a security hole, so passing ``None``
+                raises ``ValueError``.
+            cache_key: Stable cache key (typically derived from the
+                SmolVM kernel version + target arch).
+            expected_kernel_filename: ``"vmlinux"`` for x86_64,
+                ``"Image"`` for aarch64. Asserted after extraction; any
+                other filename inside the tarball is rejected.
+            on_download: Optional progress callback invoked as
+                ``(label, bytes_in_chunk, total_bytes_or_none)`` with
+                ``label="kernel_bundle"``.
+
+        Returns:
+            A :class:`KernelBundle` pointing at the extracted kernel and
+            sidecar metadata.
+
+        Raises:
+            ValueError: If ``bundle_sha256`` is ``None`` or empty.
+            ImageError: If download, checksum verification, extraction,
+                or post-extraction sanity checks fail.
+        """
+        if not bundle_sha256:
+            raise ValueError(
+                "ensure_kernel_bundle requires a non-empty bundle_sha256. "
+                "Unverified kernels are rejected by design."
+            )
+        if not cache_key:
+            raise ValueError("cache_key cannot be empty")
+        if expected_kernel_filename not in {"vmlinux", "Image"}:
+            raise ValueError(
+                f"expected_kernel_filename must be 'vmlinux' or 'Image', "
+                f"got {expected_kernel_filename!r}"
+            )
+
+        bundle_root = self.cache_dir / "_kernel" / cache_key
+        archive_path = bundle_root / "bundle.tar.zst"
+        extract_dir = bundle_root / "extracted"
+        stamp_path = bundle_root / ".bundle.sha256"
+
+        # Cache hit: stamp records the previously-verified sha256, and
+        # the kernel file is present. Re-verify the stamp matches the
+        # requested sha256 so a bundle version bump invalidates cache.
+        kernel_path = extract_dir / expected_kernel_filename
+        config_path = extract_dir / "config"
+        linux_version_path = extract_dir / "LINUX_VERSION"
+        if (
+            kernel_path.is_file()
+            and config_path.is_file()
+            and linux_version_path.is_file()
+            and stamp_path.is_file()
+            and stamp_path.read_text().strip() == bundle_sha256
+        ):
+            logger.info("Kernel bundle '%s' found in cache: %s", cache_key, bundle_root)
+            return KernelBundle(
+                kernel_path=kernel_path,
+                config_path=config_path,
+                linux_version=linux_version_path.read_text().strip(),
+                bundle_sha256=bundle_sha256,
+            )
+
+        # Full fetch + extract. Wipe any partial state first so we can't
+        # serve a half-extracted bundle on retry.
+        if extract_dir.exists():
+            shutil.rmtree(extract_dir)
+        stamp_path.unlink(missing_ok=True)
+        bundle_root.mkdir(parents=True, exist_ok=True)
+
+        def _progress(chunk: int, total: int | None) -> None:
+            if on_download is not None:
+                on_download("kernel_bundle", chunk, total)
+
+        logger.info("Downloading kernel bundle from %s", url)
+        self._download_file(
+            url,
+            archive_path,
+            bundle_sha256,
+            progress_callback=_progress if on_download is not None else None,
+        )
+
+        # Extract atomically into a sibling directory, then rename.
+        staging_dir = bundle_root / ".extract-staging"
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir)
+        staging_dir.mkdir()
+
+        try:
+            self._extract_tar_zst(archive_path, staging_dir)
+        except Exception as exc:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            raise ImageError(f"Failed to extract kernel bundle: {exc}") from exc
+
+        # Post-extraction sanity checks before we commit.
+        staged_kernel = staging_dir / expected_kernel_filename
+        staged_config = staging_dir / "config"
+        staged_linux_version = staging_dir / "LINUX_VERSION"
+        for expected in (staged_kernel, staged_config, staged_linux_version):
+            if not expected.is_file():
+                shutil.rmtree(staging_dir, ignore_errors=True)
+                raise ImageError(
+                    f"Kernel bundle is missing required file: {expected.name} (from {url})"
+                )
+
+        staging_dir.rename(extract_dir)
+        stamp_path.write_text(bundle_sha256 + "\n")
+
+        logger.info("Kernel bundle '%s' ready at: %s", cache_key, extract_dir)
+        return KernelBundle(
+            kernel_path=extract_dir / expected_kernel_filename,
+            config_path=extract_dir / "config",
+            linux_version=(extract_dir / "LINUX_VERSION").read_text().strip(),
+            bundle_sha256=bundle_sha256,
+        )
+
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
@@ -720,6 +883,31 @@ class ImageManager:
             )
             return False
         return True
+
+    @staticmethod
+    def _extract_tar_zst(archive: Path, dest: Path) -> None:
+        """Extract a ``.tar.zst`` archive into ``dest``.
+
+        Uses Python 3.12+ ``filter='data'`` to block traversal. The
+        archive must contain files only (no absolute paths, no
+        ``..`` components, no symlinks escaping the destination).
+        """
+        # Lazy-import so test environments without the optional zstandard
+        # dep can still import the rest of this module.
+        import tarfile
+
+        import zstandard
+
+        dctx = zstandard.ZstdDecompressor()
+        with (
+            open(archive, "rb") as compressed,
+            dctx.stream_reader(compressed) as reader,
+            tarfile.open(fileobj=reader, mode="r|") as tf,
+        ):
+            # filter='data' is the safest stock filter in 3.12+:
+            # strips setuid, blocks absolute paths, blocks links
+            # that escape the destination, rejects device files.
+            tf.extractall(dest, filter="data")
 
     # ------------------------------------------------------------------
     # S3 image support
