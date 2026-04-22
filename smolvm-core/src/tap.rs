@@ -24,7 +24,7 @@ pub fn create(name: &str, owner_uid: u32) -> Result<(), NetlinkError> {
 
         if let Err(e) = create_once(name, owner_uid) {
             // Only retry on EBUSY at the TUNSETPERSIST step
-            if e.to_string().contains("EBUSY") && attempt < MAX_BUSY_RETRIES {
+            if is_tunsetpersist_busy(&e) && attempt < MAX_BUSY_RETRIES {
                 log::warn!(
                     "TAP {} busy during creation (attempt {}/{}), retrying...",
                     name,
@@ -40,6 +40,14 @@ pub fn create(name: &str, owner_uid: u32) -> Result<(), NetlinkError> {
 
     // Should not be reached, but defensively return last error
     create_once(name, owner_uid)
+}
+
+fn is_tunsetpersist_busy(error: &NetlinkError) -> bool {
+    matches!(
+        error,
+        NetlinkError::Other(msg)
+            if msg.starts_with("TUNSETPERSIST ") && msg.contains("Device or resource busy")
+    )
 }
 
 /// Perform a single TAP creation attempt (TUNSETIFF + TUNSETOWNER + TUNSETPERSIST).
@@ -127,4 +135,28 @@ pub fn delete(name: &str) -> Result<(), NetlinkError> {
 
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_tunsetpersist_busy_error() {
+        let error = NetlinkError::Other("TUNSETPERSIST tap0: Device or resource busy".to_string());
+
+        assert!(is_tunsetpersist_busy(&error));
+    }
+
+    #[test]
+    fn ignores_non_tunsetpersist_busy_errors() {
+        let owner_error =
+            NetlinkError::Other("TUNSETOWNER tap0: Device or resource busy".to_string());
+        let generic_busy = NetlinkError::DeviceBusy;
+        let persist_other = NetlinkError::Other("TUNSETPERSIST tap0: errno 22".to_string());
+
+        assert!(!is_tunsetpersist_busy(&owner_error));
+        assert!(!is_tunsetpersist_busy(&generic_busy));
+        assert!(!is_tunsetpersist_busy(&persist_other));
+    }
 }
