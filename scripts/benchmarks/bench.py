@@ -272,8 +272,13 @@ def bench_pause_resume(backend: str, iterations: int) -> dict[str, Any]:
                 if _is_unsupported_error(e):
                     logger.warning("[pause-resume] backend does not support pause/resume: %s", e)
                     return {"status": "unsupported", "backend": backend, "reason": str(e)}
+                # A non-unsupported failure mid-cycle (e.g. resume fails after pause
+                # succeeded) leaves the VM in an indeterminate state. Record it and
+                # stop — further iterations would measure noise on a broken VM.
                 record["error"] = repr(e)
-                logger.warning("[pause-resume] iter %d failed: %s", i + 1, e)
+                logger.warning("[pause-resume] iter %d failed, aborting bench: %s", i + 1, e)
+                raw.append(record)
+                break
             raw.append(record)
     finally:
         _safe_teardown(vm)

@@ -211,7 +211,7 @@ SmolVM automatically trusts new sandboxes on first connection to keep setup simp
 
 ## Performance
 
-SmolVM ships a benchmark suite that measures the timings AI agents actually feel — cold start, time-to-interactive, pause/resume, and snapshot create/restore — driving the public Python SDK on whichever backend is native to your host (Firecracker on Linux, QEMU on macOS).
+SmolVM ships a benchmark suite that measures the timings AI agents actually feel: cold start, time-to-interactive, pause/resume, and snapshot create/restore. It drives the public Python SDK on whichever backend is native to your host — Firecracker on Linux, QEMU on macOS.
 
 Run it locally:
 
@@ -219,7 +219,9 @@ Run it locally:
 uv run python scripts/benchmarks/bench.py
 ```
 
-See [scripts/benchmarks/README.md](scripts/benchmarks/README.md) for flags, output format, and what each metric means. SmolVM uses [Firecracker](https://firecracker-microvm.github.io/) on Linux, a lightweight virtual machine manager built for running thousands of secure, fast micro-VMs.
+See [scripts/benchmarks/README.md](scripts/benchmarks/README.md) for flags, output format, and what each metric means.
+
+SmolVM uses [Firecracker](https://firecracker-microvm.github.io/) on Linux — a lightweight virtual machine manager built for running thousands of secure, fast micro-VMs.
 
 
 ## Contributing
