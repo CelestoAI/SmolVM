@@ -1930,7 +1930,7 @@ class TestCliInfo:
         with patch("smolvm.cli.main._query_live_vm_info") as mock_query:
             mock_query.return_value = {
                 "os": "Ubuntu 24.04.1 LTS",
-                "memory_used_mib": 312,
+                "memory_used": 312,
             }
 
             ret = main(["info", "sbx-pauling"])
@@ -2007,9 +2007,9 @@ class TestCliInfo:
             "ssh_port": 2200,
             "pid": 4242,
             "vcpus": 2,
-            "memory_mib": 1024,
-            "memory_used_mib": None,
-            "disk_size_mib": 3,
+            "memory": 1024,
+            "memory_used": None,
+            "disk_size": 3,
         }
 
     def test_info_not_found(

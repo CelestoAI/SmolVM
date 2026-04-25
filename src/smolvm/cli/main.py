@@ -100,7 +100,11 @@ class CreateNextPayload(TypedDict):
 
 
 class InfoVmPayload(TypedDict):
-    """Machine-readable VM details for ``smolvm info``."""
+    """Machine-readable VM details for ``smolvm info``.
+
+    Memory and disk fields are in MiB (SmolVM's house unit, matching
+    :attr:`VMConfig.memory`).
+    """
 
     name: str
     status: str
@@ -110,9 +114,9 @@ class InfoVmPayload(TypedDict):
     ssh_port: int | None
     pid: int | None
     vcpus: int
-    memory_mib: int
-    memory_used_mib: int | None
-    disk_size_mib: int | None
+    memory: int
+    memory_used: int | None
+    disk_size: int | None
 
 
 class InfoPayload(TypedDict):
@@ -1257,7 +1261,7 @@ def _query_live_vm_info(vm_id: str) -> dict[str, object]:
         out["os"] = parts[0].strip()
     if len(parts) > 1:
         try:
-            out["memory_used_mib"] = int(parts[1].strip())
+            out["memory_used"] = int(parts[1].strip())
         except ValueError:
             pass
     return out
@@ -1269,16 +1273,16 @@ def _info_payload(vm: VMInfo, *, live_data: dict[str, object] | None = None) -> 
     config = vm.config
     live = live_data or {}
 
-    disk_size_mib: int | None = None
+    disk_size: int | None = None
     rootfs = config.rootfs_path
     if rootfs is not None:
         try:
-            disk_size_mib = rootfs.stat().st_size // (1024 * 1024)
+            disk_size = rootfs.stat().st_size // (1024 * 1024)
         except OSError:
-            disk_size_mib = None
+            disk_size = None
 
     os_value = live.get("os") or _guess_os_from_paths(vm)
-    memory_used = live.get("memory_used_mib")
+    memory_used = live.get("memory_used")
 
     return {
         "vm": {
@@ -1290,9 +1294,9 @@ def _info_payload(vm: VMInfo, *, live_data: dict[str, object] | None = None) -> 
             "ssh_port": network.ssh_host_port if network else None,
             "pid": vm.pid,
             "vcpus": config.vcpu_count,
-            "memory_mib": config.memory,
-            "memory_used_mib": memory_used if isinstance(memory_used, int) else None,
-            "disk_size_mib": disk_size_mib,
+            "memory": config.memory,
+            "memory_used": memory_used if isinstance(memory_used, int) else None,
+            "disk_size": disk_size,
         }
     }
 
@@ -1302,14 +1306,14 @@ def _render_info_result(data: InfoPayload) -> None:
     console = console_stdout()
     vm_data = data["vm"]
 
-    if vm_data["memory_used_mib"] is not None:
-        memory_str = f"{vm_data['memory_used_mib']} / {vm_data['memory_mib']} MiB used"
+    if vm_data["memory_used"] is not None:
+        memory_str = f"{vm_data['memory_used']} / {vm_data['memory']} MiB used"
     else:
-        memory_str = f"{vm_data['memory_mib']} MiB"
+        memory_str = f"{vm_data['memory']} MiB"
 
     disk_str = (
-        f"{vm_data['disk_size_mib']} MiB"
-        if vm_data["disk_size_mib"] is not None
+        f"{vm_data['disk_size']} MiB"
+        if vm_data["disk_size"] is not None
         else "-"
     )
 
