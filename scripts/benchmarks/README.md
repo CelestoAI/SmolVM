@@ -51,7 +51,7 @@ uv run python scripts/benchmarks/bench.py --backend qemu
 | Benchmark      | Metrics                                                         | What it measures |
 |----------------|-----------------------------------------------------------------|------------------|
 | `cold-start`   | `construct_ms`, `boot_to_ssh_ms`, `total_ms`                    | First VM boot in this process. The image cache on disk is assumed already populated; "cold" means no warm SmolVM state in memory and no per-VM disk overlay yet. |
-| `tti`          | same as `cold-start`                                            | Subsequent boots — the steady-state experience. Compare `tti.p50` to `cold-start.iter[0]` to see the one-time cost. |
+| `tti`          | same as `cold-start`                                            | Subsequent boots — the steady-state experience. `tti` runs a warm-up boot first (excluded from stats), then takes `--iterations` measurements. Compare `results["tti"]["stats"]["total_ms"]["p50"]` to `results["cold-start"]["raw"][0]["total_ms"]` to see the one-time cost. |
 | `pause-resume` | `pause_ms`, `resume_ms`                                         | Freeze and unfreeze a long-lived VM. |
 | `snapshot`     | `snapshot_create_ms`, `snapshot_restore_ms`, `snapshot_restore_to_ssh_ms` | Persist VM state and bring it back. Each iteration uses a fresh source VM. |
 

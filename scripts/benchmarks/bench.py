@@ -134,7 +134,9 @@ def _safe_teardown(vm) -> None:
 
 
 def _force_cleanup(vm_id: str) -> None:
-    """Last-resort cleanup: SIGKILL the PID, then delete the DB row."""
+    """Last-resort cleanup: SIGKILL the PID, retry the manager's delete (which
+    also tears down NAT, port forwards, sockets, and isolated disks), and only
+    fall back to a raw state-row delete if that still fails."""
     import os
     import signal
 
@@ -148,8 +150,15 @@ def _force_cleanup(vm_id: str) -> None:
         if info is not None and info.pid:
             with suppress(ProcessLookupError, PermissionError):
                 os.kill(info.pid, signal.SIGKILL)
-        with suppress(Exception):
-            sdk.state.delete_vm(vm_id)
+
+        try:
+            sdk.delete(vm_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "force-cleanup: sdk.delete still failed (%s); dropping DB row directly", e
+            )
+            with suppress(Exception):
+                sdk.state.delete_vm(vm_id)
     logger.warning("force-cleaned %s", vm_id)
 
 
@@ -159,6 +168,18 @@ def _safe_delete_snapshot(snapshot_id: str) -> None:
 
     with suppress(Exception), SmolVMManager() as sdk:
         sdk.delete_snapshot(snapshot_id)
+
+
+def _is_unsupported_error(exc: BaseException) -> bool:
+    """Detect 'this backend does not support X' errors from the SDK.
+
+    The runtime adapters (libkrun in particular) raise SmolVMError with messages
+    like 'libkrun backend does not support snapshots yet'. NotImplementedError
+    can also surface here from future adapters.
+    """
+    if isinstance(exc, NotImplementedError):
+        return True
+    return "does not support" in str(exc).lower()
 
 
 # ── Individual benchmarks ────────────────────────────────────────────
@@ -215,7 +236,9 @@ def bench_cold_start(backend: str, iterations: int) -> dict[str, Any]:
 
 
 def bench_tti(backend: str, iterations: int) -> dict[str, Any]:
-    """Time-to-interactive after at least one prior boot (warm caches)."""
+    """Time-to-interactive after a warm-up boot (caches populated)."""
+    logger.info("[tti] running excluded warm-up boot before measured iterations...")
+    _bench_boot(backend, 1, "tti-warmup")
     return _bench_boot(backend, iterations, "tti")
 
 
@@ -246,6 +269,9 @@ def bench_pause_resume(backend: str, iterations: int) -> dict[str, Any]:
                 record["resume_ms"] = round(p_resume.elapsed_ms, 1)
                 resume.append(record["resume_ms"])
             except Exception as e:  # noqa: BLE001
+                if _is_unsupported_error(e):
+                    logger.warning("[pause-resume] backend does not support pause/resume: %s", e)
+                    return {"status": "unsupported", "backend": backend, "reason": str(e)}
                 record["error"] = repr(e)
                 logger.warning("[pause-resume] iter %d failed: %s", i + 1, e)
             raw.append(record)
@@ -299,14 +325,10 @@ def bench_snapshot(backend: str, iterations: int) -> dict[str, Any]:
                 restored_vm.wait_for_ssh()
             record["snapshot_restore_to_ssh_ms"] = round(p_restore.elapsed_ms + p_ssh.elapsed_ms, 1)
             restore_to_ssh.append(record["snapshot_restore_to_ssh_ms"])
-        except NotImplementedError as e:
-            logger.warning("[snapshot] backend does not support snapshots: %s", e)
-            return {
-                "status": "unsupported",
-                "backend": backend,
-                "reason": str(e),
-            }
         except Exception as e:  # noqa: BLE001
+            if _is_unsupported_error(e):
+                logger.warning("[snapshot] backend does not support snapshots: %s", e)
+                return {"status": "unsupported", "backend": backend, "reason": str(e)}
             record["error"] = repr(e)
             logger.warning("[snapshot] iter %d failed: %s", i + 1, e)
         finally:

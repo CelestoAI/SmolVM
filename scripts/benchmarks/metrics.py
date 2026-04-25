@@ -21,12 +21,17 @@ import time
 
 
 def percentile(values: list[float], p: float) -> float:
-    """Return the p-th percentile of values (0 <= p <= 1)."""
+    """Return the p-th percentile of values via linear interpolation (0 <= p <= 1)."""
     if not values:
         return 0.0
     ordered = sorted(values)
-    k = min(int(len(ordered) * p), len(ordered) - 1)
-    return ordered[k]
+    if len(ordered) == 1:
+        return ordered[0]
+    position = (len(ordered) - 1) * p
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = position - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
 
 
 def stats(values: list[float]) -> dict[str, float | int]:
