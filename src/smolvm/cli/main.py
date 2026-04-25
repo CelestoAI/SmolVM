@@ -1869,6 +1869,7 @@ def _maybe_attach_and_launch(
 
 def _exec_launch_command(vm: object, launch_command: str) -> int:
     """SSH into *vm* with a TTY and run *launch_command* under a login shell."""
+    from smolvm.env import ENV_FILE
     from smolvm.facade import SmolVM
 
     _vm: SmolVM = vm  # type: ignore[assignment]
@@ -1876,8 +1877,14 @@ def _exec_launch_command(vm: object, launch_command: str) -> int:
     # Insert -t before user@host so OpenSSH allocates a TTY for the remote
     # command. Source profile.d so injected env vars (API keys) are visible
     # to the harness, then exec to keep signal handling clean.
+    #
+    # The env file is only created when at least one host env var was
+    # injected (env.inject_env_vars short-circuits on an empty mapping),
+    # so it may legitimately not exist — e.g. claude-code with subscription
+    # auth where ANTHROPIC_API_KEY is unset on the host. Guard the source
+    # and chain with ';' so a missing file never prevents the launch.
     cmd.insert(-1, "-t")
-    cmd.append(f"{ENV_RELOAD_HINT} && exec {launch_command}")
+    cmd.append(f"[ -r {ENV_FILE} ] && . {ENV_FILE}; exec {launch_command}")
     completed = subprocess.run(cmd, check=False)
     return completed.returncode
 
