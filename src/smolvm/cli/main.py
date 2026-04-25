@@ -1101,33 +1101,19 @@ def _emit_cli_error(
 def _vm_warnings(vm: VMInfo) -> list[str]:
     """Collect human-facing warnings about a VM's persisted config.
 
-    Today this only covers stale workspace-mount host paths. The wording
-    is state-aware: a sandbox that was already running when the host
-    folder vanished keeps running (you can still ssh in), but it will
-    not survive a stop+start cycle — so we say so, instead of falsely
-    claiming the sandbox cannot start. Messages are full sentences so
-    JSON consumers (agents) get the same self-contained context.
+    Today this only covers stale workspace-mount host paths. The
+    message is one short sentence that names the missing folder and
+    the recovery commands; it deliberately makes no claim about
+    consequences (e.g. "cannot restart") because those are either
+    false (running sandbox) or irrelevant to the user's intent.
     """
     warnings: list[str] = []
-    is_live = vm.status in (VMState.RUNNING, VMState.PAUSED)
     for mount in vm.config.workspace_mounts:
-        if mount.host_path.exists():
-            continue
-        if is_live:
+        if not mount.host_path.exists():
             warnings.append(
-                f"This sandbox shares the folder '{mount.host_path}' from "
-                "your machine, but that folder no longer exists. The "
-                "sandbox is still running and can be used, but it will "
-                "not be able to start again once stopped. Restore the "
-                f"folder, or delete the sandbox with 'smolvm delete "
-                f"{vm.vm_id}' when you're done with it."
-            )
-        else:
-            warnings.append(
-                f"This sandbox shares the folder '{mount.host_path}' from "
-                "your machine, but that folder no longer exists. The "
-                "sandbox cannot start until you put the folder back, or "
-                f"delete the sandbox with 'smolvm delete {vm.vm_id}'."
+                f"Shared folder is missing on your machine: "
+                f"'{mount.host_path}'. Restore it, or run "
+                f"'smolvm delete {vm.vm_id}' to remove the sandbox."
             )
     return warnings
 

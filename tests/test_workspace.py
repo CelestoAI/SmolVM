@@ -277,7 +277,7 @@ def test_start_friendly_error_when_workspace_host_path_missing(
 
     ws_dir.rmdir()  # simulate Conductor worktree cleanup
 
-    with pytest.raises(SmolVMError, match="no longer exists") as exc_info:
+    with pytest.raises(SmolVMError, match="shared folder is missing") as exc_info:
         sdk.start("vm-stale-mount")
     # The error names the sandbox and the recovery command, so a first-time
     # user can act on it without reading the source.

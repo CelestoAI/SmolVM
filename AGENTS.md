@@ -42,18 +42,23 @@ Error and warning messages are UX, not stack traces. The reader may
 be a first-time user with no idea how SmolVM works internally — they
 must still be able to act on the message. Every user-facing message
 (CLI output, panels, JSON `error` payloads, JSON `warnings` entries)
-must answer three questions:
+should:
 
-- **What happened?** In plain English. Avoid internal vocabulary
+- **State the fact in plain English.** Avoid internal vocabulary
   ("mount", "host", "tap device", "validator") even when those words
   appear in flag names — the user did not necessarily set the flag.
-- **Why does it matter?** What can the user no longer do? Make sure
-  the consequence is **true in every state the message can fire in**.
-  A warning that says "the sandbox cannot start" is wrong when shown
-  on a running sandbox the user just SSH'd into. Branch the wording
-  on state if the consequence differs.
-- **How do they recover?** Include the exact recovery command, with
-  the actual sandbox name interpolated, not a placeholder.
+- **Name the recovery.** Include the exact recovery command, with the
+  actual sandbox name interpolated, not a placeholder.
+- **Stay short.** One sentence is the goal; two if you must. If you
+  reach for a third sentence, you are probably explaining a
+  consequence that is either false in some state or not actionable —
+  cut it.
+- **Skip consequences you cannot guarantee.** A warning that says
+  "the sandbox cannot start" is wrong if the sandbox is currently
+  running. Saying "won't be able to restart once stopped" is true but
+  irrelevant when the user may not plan to restart anyway. Prefer
+  phrasing that is true regardless of state and let the user judge
+  the impact.
 
 The same rule applies to JSON consumers — agents benefit from the
 same self-contained context. Don't split the message across the human
@@ -65,8 +70,9 @@ output and a separate hint that JSON callers will not see.
 workspace mount missing on host: /Users/aniket/conductor/workspaces/SmolVM/lome
 ```
 
-**Bad** — plain language, but the consequence is false for a running
-sandbox the user can already SSH into:
+**Bad** — plain language, but too long and makes a state-dependent
+claim ("cannot start") that is false for a sandbox the user can SSH
+into right now:
 
 ```
 This sandbox was set up to share the folder '...' with you, but that
@@ -75,14 +81,10 @@ until you put the folder back, or delete the sandbox with
 'smolvm delete sbx-einstein'.
 ```
 
-**Good** — plain English, factual for the sandbox's actual state,
-names the recovery:
+**Good** — one sentence, true in every state, names the recovery:
 
 ```
-This sandbox shares the folder
-'/Users/aniket/conductor/workspaces/SmolVM/lome' from your machine,
-but that folder no longer exists. The sandbox is still running and
-can be used, but it will not be able to start again once stopped.
-Restore the folder, or delete the sandbox with
-'smolvm delete sbx-einstein' when you're done with it.
+Shared folder is missing on your machine:
+'/Users/aniket/conductor/workspaces/SmolVM/lome'. Restore it, or run
+'smolvm delete sbx-einstein' to remove the sandbox.
 ```

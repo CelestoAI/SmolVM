@@ -1879,16 +1879,19 @@ class TestCliList:
         # The warning explains what to do, not just what's wrong.
         assert "smolvm delete vm-abc123" in out
 
-    def test_list_warning_is_state_aware(
+    def test_list_warning_does_not_claim_running_sandbox_cannot_start(
         self,
         mock_sdk_cls: MagicMock,
         capsys: pytest.CaptureFixture,
         tmp_path: Path,
     ) -> None:
-        """A running sandbox keeps working when its host folder vanishes;
-        the warning must say so instead of falsely claiming it can't start.
-        A stopped sandbox does block on the missing folder, so the wording
-        differs."""
+        """The warning must not falsely claim a running sandbox can't start.
+
+        The user can SSH into a sandbox that was already running when its
+        host folder got deleted — saying 'cannot start' contradicts what
+        they're seeing. The chosen wording sidesteps the consequence
+        entirely and just states the fact + the recovery.
+        """
         missing = tmp_path / "deleted-worktree"
         mount = MagicMock()
         mount.host_path = missing
@@ -1901,28 +1904,14 @@ class TestCliList:
                 12345,
                 workspace_mounts=[mount],
             ),
-            _make_vm_info(
-                "sbx-stopped",
-                VMState.STOPPED,
-                "172.16.0.3",
-                None,
-                None,
-                workspace_mounts=[mount],
-            ),
         ]
 
-        ret = main(["list", "--all", "--json"])
+        ret = main(["list", "--json"])
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
-        running_warning = payload["data"]["vms"][0]["warnings"][0]
-        stopped_warning = payload["data"]["vms"][1]["warnings"][0]
-
-        assert "still running" in running_warning
-        assert "once stopped" in running_warning
-        assert "cannot start" not in running_warning  # the bug we fixed
-
-        assert "cannot start" in stopped_warning
+        warning = payload["data"]["vms"][0]["warnings"][0]
+        assert "cannot start" not in warning.lower()
 
     def test_list_json_includes_warnings(
         self,
@@ -1954,7 +1943,7 @@ class TestCliList:
         # JSON consumers (agents) get the same self-contained message:
         # what's wrong, the missing path, and how to recover.
         assert str(missing) in warnings[0]
-        assert "no longer exists" in warnings[0]
+        assert "missing" in warnings[0]
         assert "smolvm delete vm-abc123" in warnings[0]
 
 

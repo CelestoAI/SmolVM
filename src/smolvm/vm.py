@@ -944,10 +944,8 @@ class SmolVMManager:
         if missing_mounts:
             paths = ", ".join(str(m.host_path) for m in missing_mounts)
             raise SmolVMError(
-                f"Cannot start sandbox '{vm_id}': it was set up to share a "
-                f"folder from your machine that no longer exists ({paths}). "
-                "Put the folder back, or delete the sandbox with "
-                f"'smolvm delete {vm_id}' and create a new one.",
+                f"Cannot start sandbox '{vm_id}': shared folder is missing: "
+                f"{paths}. Restore it, or run 'smolvm delete {vm_id}'.",
                 {
                     "vm_id": vm_id,
                     "missing_mounts": [str(m.host_path) for m in missing_mounts],
