@@ -23,6 +23,7 @@ import os
 import platform
 import re
 import subprocess
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
@@ -380,6 +381,24 @@ def _add_start_parser(
             default=600.0,
             help="Seconds to wait for the harness install (default: 600).",
         )
+        if preset.launch_command is not None:
+            attach_group = p.add_mutually_exclusive_group()
+            attach_group.add_argument(
+                "--attach",
+                dest="attach",
+                action="store_true",
+                default=None,
+                help=(
+                    f"After install, ssh in and run `{preset.launch_command}` "
+                    "without prompting."
+                ),
+            )
+            attach_group.add_argument(
+                "--no-attach",
+                dest="attach",
+                action="store_false",
+                help="Skip the post-install attach prompt.",
+            )
         p.add_argument(
             "--json",
             action="store_true",
@@ -1510,12 +1529,73 @@ def _run_start(args: argparse.Namespace) -> int:
             emit_json("start", 0, data=data)
         else:
             _render_start_result(data)
+
+        if not args.json and preset.launch_command:
+            return _maybe_attach_and_launch(vm, preset, attach=getattr(args, "attach", None))
         return 0
     except Exception as exc:
         return _emit_cli_error("start", 1, exc, json_output=args.json)
     finally:
         if vm is not None:
             vm.close()
+
+
+def _maybe_attach_and_launch(
+    vm: object,
+    preset: object,
+    *,
+    attach: bool | None,
+) -> int:
+    """Maybe SSH into *vm* and exec the preset's launch command.
+
+    *attach* tri-state: ``True`` skip prompt and attach; ``False`` skip
+    everything; ``None`` (default) ask the user when stdin is a TTY.
+    Returns the exit code of the SSH session, or 0 when no attach happens.
+    """
+    from smolvm.facade import SmolVM
+    from smolvm.presets._types import Preset
+
+    _vm: SmolVM = vm  # type: ignore[assignment]
+    _preset: Preset = preset  # type: ignore[assignment]
+    if _preset.launch_command is None:
+        return 0
+
+    if attach is False:
+        return 0
+
+    console = console_stdout()
+    if attach is None:
+        if not sys.stdin.isatty():
+            return 0
+        prompt = (
+            f"\nLaunch [bold]{_preset.launch_command}[/bold] in "
+            f"'{_vm.vm_id}' now? \\[Y/n] "
+        )
+        try:
+            console.print(prompt, end="")
+            answer = input("").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            console.print()
+            return 0
+        if answer in {"n", "no"}:
+            return 0
+
+    return _exec_launch_command(_vm, _preset.launch_command)
+
+
+def _exec_launch_command(vm: object, launch_command: str) -> int:
+    """SSH into *vm* with a TTY and run *launch_command* under a login shell."""
+    from smolvm.facade import SmolVM
+
+    _vm: SmolVM = vm  # type: ignore[assignment]
+    cmd = list(_vm._ssh_attach_command())
+    # Insert -t before user@host so OpenSSH allocates a TTY for the remote
+    # command. Source profile.d so injected env vars (API keys) are visible
+    # to the harness, then exec to keep signal handling clean.
+    cmd.insert(-1, "-t")
+    cmd.append(f"{ENV_RELOAD_HINT} && exec {launch_command}")
+    completed = subprocess.run(cmd, check=False)
+    return completed.returncode
 
 
 def _apply_preset_with_progress(

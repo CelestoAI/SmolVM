@@ -25,4 +25,5 @@ CODEX_PRESET = Preset(
     install_script=npm_install_global("@openai/codex"),
     host_env_vars=("OPENAI_API_KEY",),
     host_configs=(HostConfigCopy(host_path="~/.codex", guest_path="/root/.codex"),),
+    launch_command="codex",
 )

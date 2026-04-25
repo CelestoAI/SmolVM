@@ -63,3 +63,5 @@ class Preset:
     host_configs: tuple[HostConfigCopy, ...] = field(default_factory=tuple)
     default_mem_mib: int = 2048
     default_disk_mib: int = 8192
+    launch_command: str | None = None
+    """Guest command run when the user attaches after install — e.g. ``"codex"``."""

@@ -28,4 +28,5 @@ CLAUDE_CODE_PRESET = Preset(
         HostConfigCopy(host_path="~/.claude.json", guest_path="/root/.claude.json"),
         HostConfigCopy(host_path="~/.claude", guest_path="/root/.claude"),
     ),
+    launch_command="claude",
 )
