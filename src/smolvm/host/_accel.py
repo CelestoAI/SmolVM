@@ -2,23 +2,28 @@
 
 Tries to import smolvm-core for fast network operations.
 Falls back gracefully if not installed or not available on this platform.
+
+Callers should gate use on ``HAS_NETLINK``; ``native`` is ``None`` otherwise.
 """
 
-try:
-    from smolvm_core import (
-        add_addr,
-        add_route,
-        create_tap,
-        delete_tap,
-        flush_addrs,
-        get_default_interface,
-        is_available,
-        set_link_up,
-        write_sysctl,
-    )
+import logging
+import sys
 
-    HAS_NETLINK = is_available()
+logger = logging.getLogger(__name__)
+
+try:
+    import smolvm_core as native
+
+    HAS_NETLINK = native.is_available()
 except ImportError:
+    native = None  # type: ignore[assignment]
     HAS_NETLINK = False
 
-__all__ = ["HAS_NETLINK"]
+if not HAS_NETLINK and sys.platform == "linux":
+    logger.warning(
+        "smolvm-core native extension is unavailable; falling back to subprocess "
+        "(ip/nft/sysctl) for network operations, which is significantly slower. "
+        "Reinstall smolvm to pick up the native wheel."
+    )
+
+__all__ = ["HAS_NETLINK", "native"]

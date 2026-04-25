@@ -211,23 +211,16 @@ SmolVM automatically trusts new sandboxes on first connection to keep setup simp
 
 ## Performance
 
-Median lifecycle timings on a standard Linux host:
+SmolVM ships a benchmark suite that measures the timings AI agents actually feel: cold start, time-to-interactive, pause/resume, and snapshot create/restore. It drives the public Python SDK on whichever backend is native to your host — Firecracker on Linux, QEMU on macOS.
 
-| Phase | Time |
-| --- | --- |
-| Create + Start | ~572 ms |
-| Ready to accept commands | ~2.1 s |
-| Command execution | ~43 ms |
-| Stop + Delete | ~751 ms |
-| **Full lifecycle (boot, run, teardown)** | **~3.5 s** |
-
-Run the benchmark yourself:
+Run it locally:
 
 ```bash
-python3 scripts/benchmarks/bench_subprocess.py --vms 10 -v
+uv run python scripts/benchmarks/bench.py
 ```
 
-Measured on AMD Ryzen 7 7800X3D (8C/16T), Ubuntu Linux. SmolVM uses [Firecracker](https://firecracker-microvm.github.io/), a lightweight virtual machine manager built for running thousands of secure, fast micro-VMs.
+See [scripts/benchmarks/README.md](scripts/benchmarks/README.md) for flags, output format, and what each metric means.
+
 
 
 ## Contributing
