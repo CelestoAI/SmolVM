@@ -25,7 +25,7 @@ from smolvm.host.network import NetworkManager, check_network_prerequisites
 @pytest.fixture(autouse=True)
 def _disable_native_extension():
     """Force subprocess path in all network tests (native extension may be present on Linux CI)."""
-    with patch("smolvm.host.network._HAS_NATIVE", False):
+    with patch("smolvm.host.network.HAS_NETLINK", False):
         yield
 
 
