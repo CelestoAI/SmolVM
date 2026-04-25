@@ -35,3 +35,39 @@ SmolVM is specifically designed to provide a secure "sandbox" for AI agents to e
 - Do not introduce a new concept unless the page truly needs it.
 - If you must use a technical term, explain it immediately in simple language.
 - Prefer short, concrete sentences over dense explanations.
+
+### User-facing errors and warnings
+
+Error and warning messages are UX, not stack traces. The reader may
+be a first-time user with no idea how SmolVM works internally — they
+must still be able to act on the message. Every user-facing message
+(CLI output, panels, JSON `error` payloads, JSON `warnings` entries)
+must answer three questions:
+
+- **What happened?** In plain English. Avoid internal vocabulary
+  ("mount", "host", "tap device", "validator") even when those words
+  appear in flag names — the user did not necessarily set the flag.
+- **Why does it matter?** What can the user no longer do? ("This
+  sandbox cannot start.")
+- **How do they recover?** Include the exact recovery command, with
+  the actual sandbox name interpolated, not a placeholder.
+
+The same rule applies to JSON consumers — agents benefit from the
+same self-contained context. Don't split the message across the human
+output and a separate hint that JSON callers will not see.
+
+**Bad** — internal vocabulary, no recovery path:
+
+```
+workspace mount missing on host: /Users/aniket/conductor/workspaces/SmolVM/lome
+```
+
+**Good** — plain English, names what to do:
+
+```
+This sandbox was set up to share the folder
+'/Users/aniket/conductor/workspaces/SmolVM/lome' with you, but that
+folder no longer exists on your machine. The sandbox cannot start
+until you put the folder back, or delete the sandbox with
+'smolvm delete sbx-einstein'.
+```
