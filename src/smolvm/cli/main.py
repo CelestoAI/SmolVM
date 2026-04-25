@@ -25,6 +25,7 @@ import re
 import subprocess
 import sys
 from collections.abc import Sequence
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
@@ -1226,32 +1227,48 @@ def _guess_os_from_paths(vm: VMInfo) -> str | None:
     return None
 
 
-def _query_live_vm_info(vm_id: str) -> dict[str, object]:
+def _query_live_vm_info(vm: VMInfo) -> dict[str, object]:
     """Query a running VM via SSH for OS pretty-name and used memory.
+
+    Connects directly with a short ``connect_timeout`` so half-dead VMs
+    (status=running in state but SSH unreachable) fail fast instead of
+    blocking on the SmolVM facade's 30-second SSH-ready wait.
 
     Returns an empty dict on any failure so the caller can render fall-through
     placeholders without surfacing transient SSH errors to the user.
     """
-    from smolvm.facade import SmolVM
+    from smolvm.ssh import SSHClient
 
-    try:
-        vm = SmolVM.from_id(vm_id)
-    except Exception:
+    network = vm.network
+    if network is None:
         return {}
+
+    if network.ssh_host_port is not None:
+        host, port = "127.0.0.1", network.ssh_host_port
+    else:
+        host, port = network.guest_ip, 22
+
+    key_path = Path.home() / ".smolvm" / "keys" / "id_ed25519"
+    client = SSHClient(
+        host=host,
+        port=port,
+        key_path=str(key_path) if key_path.exists() else None,
+        connect_timeout=3,
+    )
+
+    cmd = (
+        "(. /etc/os-release 2>/dev/null && printf '%s' \"${PRETTY_NAME:-}\"); "
+        "printf '\\n---\\n'; "
+        "free -m 2>/dev/null | awk 'NR==2 {print $3}'"
+    )
     try:
-        cmd = (
-            "(. /etc/os-release 2>/dev/null && printf '%s' \"${PRETTY_NAME:-}\"); "
-            "printf '\\n---\\n'; "
-            "free -m 2>/dev/null | awk 'NR==2 {print $3}'"
-        )
-        result = vm.run(cmd, timeout=5, shell="raw")
-    except Exception:
+        result = client.run(cmd, timeout=5, shell="raw")
+    except Exception:  # noqa: BLE001 - any SSH failure means "skip live data"
         return {}
     finally:
-        try:
-            vm.close()
-        except Exception:
-            pass
+        # Best-effort cleanup; a failed close on a dead transport is harmless.
+        with suppress(Exception):
+            client.close()
 
     if result.exit_code != 0:
         return {}
@@ -1263,8 +1280,33 @@ def _query_live_vm_info(vm_id: str) -> dict[str, object]:
         try:
             out["memory_used"] = int(parts[1].strip())
         except ValueError:
+            # `free -m` output unparseable on this guest (busybox variant,
+            # locale, etc.) — omit the field rather than fail the whole probe.
             pass
     return out
+
+
+def _disk_size_mib(rootfs_path: Path | None) -> int | None:
+    """Return the rootfs disk size visible to the guest, in MiB.
+
+    For qcow2 images, the host file footprint can be far smaller than the
+    guest-visible disk because of qcow2's sparse/copy-on-write semantics, so
+    we shell out to ``qemu-img`` for the virtual size. Other image formats
+    (raw, ext4) match the host file size, where ``stat`` is sufficient.
+    """
+    if rootfs_path is None:
+        return None
+    if rootfs_path.suffix.lower() == ".qcow2":
+        from smolvm.facade import _qcow2_virtual_size_mib
+
+        try:
+            return _qcow2_virtual_size_mib(rootfs_path)
+        except Exception:  # noqa: BLE001 - qemu-img missing or image unreadable
+            pass
+    try:
+        return rootfs_path.stat().st_size // (1024 * 1024)
+    except OSError:
+        return None
 
 
 def _info_payload(vm: VMInfo, *, live_data: dict[str, object] | None = None) -> InfoPayload:
@@ -1273,14 +1315,7 @@ def _info_payload(vm: VMInfo, *, live_data: dict[str, object] | None = None) -> 
     config = vm.config
     live = live_data or {}
 
-    disk_size: int | None = None
-    rootfs = config.rootfs_path
-    if rootfs is not None:
-        try:
-            disk_size = rootfs.stat().st_size // (1024 * 1024)
-        except OSError:
-            disk_size = None
-
+    disk_size = _disk_size_mib(config.rootfs_path)
     os_value = live.get("os") or _guess_os_from_paths(vm)
     memory_used = live.get("memory_used")
 
@@ -1351,7 +1386,7 @@ def _run_info(*, vm_id: str, json_output: bool) -> int:
             vm = sdk.state.get_vm(vm_id)
             live_data: dict[str, object] | None = None
             if vm.status == VMState.RUNNING:
-                live_data = _query_live_vm_info(vm_id)
+                live_data = _query_live_vm_info(vm)
             data = _info_payload(vm, live_data=live_data)
             if json_output:
                 emit_json("info", 0, data=data)

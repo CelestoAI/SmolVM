@@ -1924,9 +1924,8 @@ class TestCliInfo:
         capsys: pytest.CaptureFixture,
     ) -> None:
         """For running VMs, info should overlay OS and used memory from SSH."""
-        mock_sdk_cls.return_value.state.get_vm.return_value = self._make_info_vm(
-            status=VMState.RUNNING
-        )
+        vm_info = self._make_info_vm(status=VMState.RUNNING)
+        mock_sdk_cls.return_value.state.get_vm.return_value = vm_info
         with patch("smolvm.cli.main._query_live_vm_info") as mock_query:
             mock_query.return_value = {
                 "os": "Ubuntu 24.04.1 LTS",
@@ -1939,7 +1938,7 @@ class TestCliInfo:
         out = capsys.readouterr().out
         assert "Ubuntu 24.04.1 LTS" in out
         assert "312 / 1024 MiB used" in out
-        mock_query.assert_called_once_with("sbx-pauling")
+        mock_query.assert_called_once_with(vm_info)
 
     def test_info_running_vm_with_unreachable_ssh(
         self,
@@ -2025,6 +2024,27 @@ class TestCliInfo:
         assert ret == 1
         assert "VM 'ghost' not found" in capsys.readouterr().err
         mock_sdk_cls.return_value.close.assert_called_once()
+
+    def test_info_qcow2_uses_virtual_size(
+        self,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """For qcow2 rootfs, disk size should report the guest-visible virtual size, not the host file footprint."""
+        rootfs = tmp_path / "ubuntu" / "rootfs.qcow2"
+        rootfs.parent.mkdir(parents=True)
+        rootfs.write_bytes(b"\0" * (1 * 1024 * 1024))  # 1 MiB on disk
+        mock_sdk_cls.return_value.state.get_vm.return_value = self._make_info_vm(
+            status=VMState.STOPPED, rootfs_path=rootfs
+        )
+        with patch("smolvm.facade._qcow2_virtual_size_mib", return_value=8192) as mock_qsize:
+            ret = main(["info", "sbx-pauling", "--json"])
+
+        assert ret == 0
+        mock_qsize.assert_called_once_with(rootfs)
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["data"]["vm"]["disk_size"] == 8192
 
 
 class TestCliStart:
