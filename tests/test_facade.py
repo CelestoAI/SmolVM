@@ -89,7 +89,7 @@ class TestVMInit:
         vm = SmolVM(config)
 
         assert vm.vm_id == config.vm_id
-        assert vm.vm_id.startswith("vm-")
+        assert vm.vm_id.startswith("sbx-")
         mock_sdk.create.assert_called_once_with(config)
 
     def test_both_config_and_id_raises(self, sample_config: VMConfig) -> None:
@@ -130,7 +130,7 @@ class TestVMInit:
 
         vm = SmolVM()
 
-        assert vm.vm_id.startswith("vm-")
+        assert vm.vm_id.startswith("sbx-")
         mock_builder.build_alpine_ssh_key.assert_called_once()
         assert mock_builder.build_alpine_ssh_key.call_args.args[0] == public_key
         assert mock_builder.build_alpine_ssh_key.call_args.kwargs["rootfs_size_mb"] == 512
@@ -172,7 +172,7 @@ class TestVMInit:
 
         vm = SmolVM(memory=2048, disk_size=4096)
 
-        assert vm.vm_id.startswith("vm-")
+        assert vm.vm_id.startswith("sbx-")
         mock_builder.build_alpine_ssh_key.assert_called_once()
         assert mock_builder.build_alpine_ssh_key.call_args.kwargs["rootfs_size_mb"] == 4096
         mock_sdk.create.assert_called_once()
@@ -210,7 +210,7 @@ class TestVMInit:
 
         vm = SmolVM(os="debian", backend="firecracker")
 
-        assert vm.vm_id.startswith("vm-")
+        assert vm.vm_id.startswith("sbx-")
         mock_builder.build_debian_ssh_key.assert_called_once()
         assert mock_builder.build_debian_ssh_key.call_args.args[0] == public_key
         assert mock_builder.build_debian_ssh_key.call_args.kwargs["rootfs_size_mb"] == 2048

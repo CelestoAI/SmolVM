@@ -43,6 +43,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from smolvm._naming import generate_sandbox_name
 from smolvm.env import inject_env_vars, read_env_vars, remove_env_vars
 from smolvm.exceptions import (
     CommandExecutionUnavailableError,
@@ -271,6 +272,36 @@ def _prepare_sized_qcow2(
     return sized_qcow2, target_mib
 
 
+def _existing_vm_ids() -> set[str]:
+    """Best-effort lookup of existing VM IDs for collision-free auto-naming.
+
+    Returns an empty set if the state store cannot be read (e.g. the data dir
+    doesn't exist yet on a fresh install). The downstream ``create`` call still
+    enforces uniqueness via the storage layer, so a stale or empty answer
+    here can never produce a duplicate VM — at worst it triggers one extra
+    retry.
+    """
+    from smolvm.storage import create_state_manager
+    from smolvm.vm import resolve_data_dir
+
+    try:
+        db_path = resolve_data_dir() / "smolvm.db"
+        if not db_path.exists():
+            return set()
+        state = create_state_manager(db_path=db_path)
+        return {info.vm_id for info in state.list_vms()}
+    except Exception as exc:
+        logger.debug("Could not enumerate existing VM IDs for auto-naming: %s", exc)
+        return set()
+
+
+def _resolve_vm_name(vm_name: str | None) -> str:
+    """Return the user-supplied name or pick a fresh ``sbx-{scientist}`` one."""
+    if vm_name is not None:
+        return vm_name
+    return generate_sandbox_name(_existing_vm_ids())
+
+
 def _resolve_auto_config_public_key(ssh_key_path: str | None) -> tuple[str, Path]:
     """Resolve the SSH private key path and matching public key for auto-config."""
     from smolvm.utils import ensure_ssh_key
@@ -389,7 +420,7 @@ def _build_s3_image_config(
                 )
             extra_drives.append(seed_path)
 
-    resolved_vm_name = vm_name or f"vm-{uuid.uuid4().hex[:8]}"
+    resolved_vm_name = _resolve_vm_name(vm_name)
     config = VMConfig(
         vm_id=resolved_vm_name,
         vcpu_count=1,
@@ -491,7 +522,7 @@ def _build_auto_config(
                 ),
             )
 
-        resolved_vm_name = vm_name or f"vm-{uuid.uuid4().hex[:8]}"
+        resolved_vm_name = _resolve_vm_name(vm_name)
         config = VMConfig(
             vm_id=resolved_vm_name,
             vcpu_count=1,
@@ -567,7 +598,7 @@ def _build_auto_config(
                 ),
             )
 
-        resolved_vm_name = vm_name or f"vm-{uuid.uuid4().hex[:8]}"
+        resolved_vm_name = _resolve_vm_name(vm_name)
         config = VMConfig(
             vm_id=resolved_vm_name,
             vcpu_count=1,
@@ -614,7 +645,7 @@ def _build_auto_config(
             kernel_profile=kernel_profile,
         )
 
-    resolved_vm_name = vm_name or f"vm-{uuid.uuid4().hex[:8]}"
+    resolved_vm_name = _resolve_vm_name(vm_name)
     config = VMConfig(
         vm_id=resolved_vm_name,
         vcpu_count=1,
@@ -720,9 +751,7 @@ class SmolVM:
         # VMConfig — default to QEMU. Callers who explicitly set `backend`
         # (on the kwarg or the config) still get the SmolVMManager error if
         # their choice can't host mounts.
-        wants_mounts = bool(mounts) or (
-            config is not None and bool(config.workspace_mounts)
-        )
+        wants_mounts = bool(mounts) or (config is not None and bool(config.workspace_mounts))
         if backend is None and wants_mounts and vm_id is None:
             if config is None or config.backend is None:
                 backend = BACKEND_QEMU

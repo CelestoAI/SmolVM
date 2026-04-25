@@ -71,7 +71,7 @@ class TestVMConfig:
             rootfs_path=rootfs,
         )
 
-        assert config.vm_id.startswith("vm-")
+        assert config.vm_id.startswith("sbx-")
         assert re.fullmatch(r"^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$|^[a-z0-9]$", config.vm_id)
 
     def test_vm_id_auto_generated_when_none(self, tmp_path: Path) -> None:
@@ -87,7 +87,7 @@ class TestVMConfig:
             rootfs_path=rootfs,
         )
 
-        assert config.vm_id.startswith("vm-")
+        assert config.vm_id.startswith("sbx-")
 
     def test_invalid_vm_id_uppercase(self, tmp_path: Path) -> None:
         """Test that uppercase VM IDs are rejected."""
@@ -411,8 +411,6 @@ class TestSnapshotInfo:
         assert snapshot.artifacts.disk_path == disk_path
         assert snapshot.vm_config.vm_id == "vm001"
         assert snapshot.network_config.tap_device == "tap2"
-
-
 
 
 class TestBrowserSessionConfig:
