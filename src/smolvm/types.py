@@ -72,6 +72,17 @@ def _generate_snapshot_id() -> str:
 _IDENTIFIER_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$|^[a-z0-9]$"
 
 
+def _should_validate_paths(info: ValidationInfo) -> bool:
+    """Return whether path-existence checks should run for this validation.
+
+    Storage reads (``vm_config_from_json``) pass ``validate_paths=False`` in
+    the validation context so a stale or missing host path on disk does not
+    blow up read-only commands like ``smolvm list``. Defaults to ``True`` so
+    direct construction (creates, tests) keeps its safety net.
+    """
+    return bool((info.context or {}).get("validate_paths", True))
+
+
 class BrowserViewport(BaseModel):
     """Viewport settings for browser sessions."""
 
@@ -131,9 +142,17 @@ class WorkspaceMount(BaseModel):
 
     @field_validator("host_path")
     @classmethod
-    def validate_host_path(cls, v: Path) -> Path:
-        """Ensure the host path exists and is a directory."""
+    def validate_host_path(cls, v: Path, info: ValidationInfo) -> Path:
+        """Ensure the host path exists and is a directory.
+
+        Existence and directory checks are skipped when the validation
+        context has ``validate_paths=False`` so persisted configs with
+        stale mount paths still load (read-only commands surface them as
+        warnings instead of crashing).
+        """
         v = v.resolve()
+        if not _should_validate_paths(info):
+            return v
         if not v.exists():
             raise ValueError(f"Workspace path does not exist: {v}")
         if not v.is_dir():
@@ -319,7 +338,7 @@ class VMConfig(BaseModel):
         """Ensure paths exist on the filesystem."""
         if v is None:
             return None
-        if not cls._should_validate_paths(info):
+        if not _should_validate_paths(info):
             return v
         return cls._validate_file_path(v)
 
@@ -354,7 +373,7 @@ class VMConfig(BaseModel):
         """Ensure optional paths exist on the filesystem."""
         if v is None:
             return None
-        if not cls._should_validate_paths(info):
+        if not _should_validate_paths(info):
             return v
         return cls._validate_file_path(v)
 
@@ -362,7 +381,7 @@ class VMConfig(BaseModel):
     @classmethod
     def validate_extra_drives(cls, v: list[Path], info: ValidationInfo) -> list[Path]:
         """Ensure all extra drive paths exist and are files."""
-        if not cls._should_validate_paths(info):
+        if not _should_validate_paths(info):
             return v
         for path in v:
             cls._validate_file_path(path)
@@ -376,11 +395,6 @@ class VMConfig(BaseModel):
         if not v.is_file():
             raise ValueError(f"Path is not a file: {v}")
         return v
-
-    @staticmethod
-    def _should_validate_paths(info: ValidationInfo) -> bool:
-        """Allow storage reads to skip filesystem existence checks."""
-        return bool((info.context or {}).get("validate_paths", True))
 
     @field_validator("env_vars")
     @classmethod

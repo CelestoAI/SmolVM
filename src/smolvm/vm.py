@@ -938,6 +938,21 @@ class SmolVMManager:
                 {"vm_id": vm_id},
             )
 
+        missing_mounts = [
+            mount for mount in vm_info.config.workspace_mounts if not mount.host_path.exists()
+        ]
+        if missing_mounts:
+            paths = ", ".join(str(m.host_path) for m in missing_mounts)
+            raise SmolVMError(
+                f"Cannot start VM '{vm_id}': workspace mount path missing on host: {paths}. "
+                "Restore the folder, or delete this VM with "
+                f"'smolvm delete {vm_id}' and recreate it.",
+                {
+                    "vm_id": vm_id,
+                    "missing_mounts": [str(m.host_path) for m in missing_mounts],
+                },
+            )
+
         backend = self._backend_for_vm(vm_info)
         log_path = self.data_dir / f"{vm_id}.log"
         adapter = self._runtime_adapter_for_backend(backend)

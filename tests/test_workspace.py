@@ -68,6 +68,22 @@ class TestWorkspaceMountValidation:
         assert ws.resolved_tag(0) == "workspace0"
         assert ws.resolved_tag(3) == "workspace3"
 
+    def test_missing_host_path_loads_under_validate_paths_false(self, tmp_path: Path) -> None:
+        """Persisted configs reload even when the host path was deleted.
+
+        Read-only commands like ``smolvm list`` pass
+        ``context={"validate_paths": False}`` so a stale mount path on disk
+        does not crash the whole command. The validator must respect that.
+        """
+        ws_dir = tmp_path / "gone"
+        ws_dir.mkdir()
+        raw = WorkspaceMount(host_path=ws_dir).model_dump_json()
+        ws_dir.rmdir()
+
+        ws = WorkspaceMount.model_validate_json(raw, context={"validate_paths": False})
+
+        assert ws.host_path == ws_dir.resolve()
+
 
 # ── VMConfig workspace_mounts validation ────────────────────────────
 
@@ -133,6 +149,28 @@ class TestVMConfigWorkspaceMounts:
                 ],
             )
 
+    def test_persisted_config_reloads_with_missing_mount_host(self, tmp_path: Path) -> None:
+        """Storage reads must succeed when a workspace host folder is gone.
+
+        Reproduces the ``smolvm list`` crash where a deleted Conductor
+        worktree caused the whole command to fail. The fix is that
+        ``WorkspaceMount`` honors the ``validate_paths=False`` context the
+        storage layer already passes via ``vm_config_from_json``.
+        """
+        ws_dir = tmp_path / "project"
+        ws_dir.mkdir()
+        config = self._make_config(
+            tmp_path,
+            workspace_mounts=[WorkspaceMount(host_path=ws_dir)],
+        )
+        raw = config.model_dump_json()
+        ws_dir.rmdir()
+
+        reloaded = VMConfig.model_validate_json(raw, context={"validate_paths": False})
+
+        assert len(reloaded.workspace_mounts) == 1
+        assert reloaded.workspace_mounts[0].host_path == ws_dir.resolve()
+
 
 # ── QEMU command builder ────────────────────────────────────────────
 
@@ -194,6 +232,54 @@ def test_start_qemu_includes_9p_workspace_args(
 
     # Find the virtio-9p device (aarch64 → virtio-9p-device)
     assert "virtio-9p-device,fsdev=fsdev-workspace0,mount_tag=workspace0" in cmd
+
+
+@patch("smolvm.vm.subprocess.Popen")
+@patch.object(
+    SmolVMManager,
+    "_find_qemu_binary",
+    return_value=Path("/opt/homebrew/bin/qemu-system-aarch64"),
+)
+def test_start_friendly_error_when_workspace_host_path_missing(
+    _mock_find_qemu_binary: MagicMock,
+    mock_popen: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """`start` should refuse with a plain-English error when a mount's host
+    folder has been deleted since the VM was created — no Pydantic stack."""
+    from smolvm.exceptions import SmolVMError
+
+    kernel = tmp_path / "vmlinux"
+    rootfs = tmp_path / "rootfs.ext4"
+    kernel.touch()
+    rootfs.touch()
+
+    ws_dir = tmp_path / "project"
+    ws_dir.mkdir()
+
+    config = VMConfig(
+        vm_id="vm-stale-mount",
+        kernel_path=kernel,
+        rootfs_path=rootfs,
+        backend="qemu",
+        boot_args="console=ttyAMA0 reboot=k panic=1 init=/init",
+        workspace_mounts=[WorkspaceMount(host_path=ws_dir)],
+    )
+
+    sdk = SmolVMManager(
+        data_dir=tmp_path / "data",
+        socket_dir=tmp_path / "sockets",
+        backend="qemu",
+    )
+    with patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_convert:
+        mock_convert.side_effect = lambda source, target: target.touch()
+        sdk.create(config)
+
+    ws_dir.rmdir()  # simulate Conductor worktree cleanup
+
+    with pytest.raises(SmolVMError, match="workspace mount path missing on host"):
+        sdk.start("vm-stale-mount")
+    mock_popen.assert_not_called()
 
 
 # ── Firecracker rejection ───────────────────────────────────────────

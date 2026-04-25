@@ -37,12 +37,14 @@ def _make_vm_info(
     guest_ip: str = "172.16.0.2",
     ssh_host_port: int | None = 2200,
     pid: int | None = 12345,
+    workspace_mounts: list[object] | None = None,
 ) -> MagicMock:
     """Build a lightweight VMInfo-like mock for list tests."""
     vm = MagicMock()
     vm.vm_id = vm_id
     vm.status = status
     vm.pid = pid
+    vm.config.workspace_mounts = workspace_mounts or []
     if guest_ip:
         vm.network = MagicMock(spec=NetworkConfig)
         vm.network.guest_ip = guest_ip
@@ -1774,6 +1776,7 @@ class TestCliList:
                 "ip_address": "172.16.0.2",
                 "ssh_port": 2200,
                 "pid": 12345,
+                "warnings": [],
             }
         ]
         mock_sdk_cls.return_value.list_vms.assert_called_once_with(status=VMState.RUNNING)
@@ -1841,6 +1844,67 @@ class TestCliList:
         assert ret == 1
         assert "Error: db unavailable" in capsys.readouterr().err
         mock_sdk_cls.return_value.close.assert_called_once()
+
+    def test_list_flags_stale_workspace_mount(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+        tmp_path: Path,
+    ) -> None:
+        """`smolvm list` should keep listing VMs whose host mount is gone,
+        and print a warning naming the missing path."""
+        missing = tmp_path / "deleted-worktree"
+        mount = MagicMock()
+        mount.host_path = missing
+        vms = [
+            _make_vm_info(
+                "vm-abc123",
+                VMState.RUNNING,
+                "172.16.0.2",
+                2200,
+                12345,
+                workspace_mounts=[mount],
+            ),
+        ]
+        mock_sdk_cls.return_value.list_vms.return_value = vms
+
+        ret = main(["list"])
+
+        # Rich may wrap long tmp paths across lines; flatten before asserting.
+        out = capsys.readouterr().out.replace("\n", "")
+        assert ret == 0
+        assert "vm-abc123" in out
+        assert "Warnings:" in out
+        assert str(missing) in out
+
+    def test_list_json_includes_warnings(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+        tmp_path: Path,
+    ) -> None:
+        """`smolvm list --json` should expose stale mounts via `warnings`."""
+        missing = tmp_path / "deleted-worktree"
+        mount = MagicMock()
+        mount.host_path = missing
+        mock_sdk_cls.return_value.list_vms.return_value = [
+            _make_vm_info(
+                "vm-abc123",
+                VMState.RUNNING,
+                "172.16.0.2",
+                2200,
+                12345,
+                workspace_mounts=[mount],
+            ),
+        ]
+
+        ret = main(["list", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["data"]["vms"][0]["warnings"] == [
+            f"workspace mount missing on host: {missing}"
+        ]
 
 
 class TestCliInfo:

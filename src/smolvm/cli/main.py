@@ -68,6 +68,7 @@ class VmRow(TypedDict):
     pid: int | None
     ip_address: str | None
     ssh_port: int | None
+    warnings: list[str]
 
 
 class ListFiltersPayload(TypedDict):
@@ -1097,6 +1098,20 @@ def _emit_cli_error(
     return exit_code
 
 
+def _vm_warnings(vm: VMInfo) -> list[str]:
+    """Collect human-facing warnings about a VM's persisted config.
+
+    Today this only covers stale workspace-mount host paths — the host
+    folder a VM was created against has been moved or deleted, so the VM
+    cannot start until the user repairs the mount or restores the path.
+    """
+    warnings: list[str] = []
+    for mount in vm.config.workspace_mounts:
+        if not mount.host_path.exists():
+            warnings.append(f"workspace mount missing on host: {mount.host_path}")
+    return warnings
+
+
 def _vm_rows(vms: Sequence[VMInfo]) -> list[VmRow]:
     """Normalize VM info objects into CLI list rows."""
     rows: list[VmRow] = []
@@ -1109,6 +1124,7 @@ def _vm_rows(vms: Sequence[VMInfo]) -> list[VmRow]:
                 "pid": vm.pid,
                 "ip_address": network.guest_ip if network else None,
                 "ssh_port": network.ssh_host_port if network else None,
+                "warnings": _vm_warnings(vm),
             }
         )
     return rows
@@ -1121,8 +1137,11 @@ def _render_list(rows: list[VmRow]) -> None:
     table.add_column("Status")
     table.add_column("PID", justify="right")
     for row in rows:
+        name = str(row["name"])
+        if row["warnings"]:
+            name = f"⚠ {name}"
         table.add_row(
-            str(row["name"]),
+            name,
             Text(str(row["status"]), style=status_style(str(row["status"]))),
             str(row["pid"] or "-"),
         )
@@ -1130,6 +1149,15 @@ def _render_list(rows: list[VmRow]) -> None:
     console = console_stdout()
     console.print(table)
     console.print(f"Total: {len(rows)} VM(s).")
+
+    flagged = [row for row in rows if row["warnings"]]
+    if flagged:
+        console.print()
+        console.print(Text("Warnings:", style="bold yellow"))
+        for row in flagged:
+            console.print(f"  {row['name']}:")
+            for warning in row["warnings"]:
+                console.print(f"    • {warning}")
 
 
 def _run_setup(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
