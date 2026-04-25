@@ -1876,6 +1876,8 @@ class TestCliList:
         assert "vm-abc123" in out
         assert "Warnings:" in out
         assert str(missing) in out
+        # The warning explains what to do, not just what's wrong.
+        assert "smolvm delete vm-abc123" in out
 
     def test_list_json_includes_warnings(
         self,
@@ -1902,9 +1904,13 @@ class TestCliList:
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["data"]["vms"][0]["warnings"] == [
-            f"workspace mount missing on host: {missing}"
-        ]
+        warnings = payload["data"]["vms"][0]["warnings"]
+        assert len(warnings) == 1
+        # JSON consumers (agents) get the same self-contained message:
+        # what's wrong, the missing path, and how to recover.
+        assert str(missing) in warnings[0]
+        assert "no longer exists" in warnings[0]
+        assert "smolvm delete vm-abc123" in warnings[0]
 
 
 class TestCliInfo:

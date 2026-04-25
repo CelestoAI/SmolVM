@@ -1101,14 +1101,22 @@ def _emit_cli_error(
 def _vm_warnings(vm: VMInfo) -> list[str]:
     """Collect human-facing warnings about a VM's persisted config.
 
-    Today this only covers stale workspace-mount host paths — the host
-    folder a VM was created against has been moved or deleted, so the VM
-    cannot start until the user repairs the mount or restores the path.
+    Today this only covers stale workspace-mount host paths — the folder
+    a VM was created to share has been moved or deleted, so the VM
+    cannot start until the user restores the folder or deletes the VM.
+    Messages are full sentences so JSON consumers (agents) get the same
+    self-contained context the CLI shows.
     """
     warnings: list[str] = []
     for mount in vm.config.workspace_mounts:
         if not mount.host_path.exists():
-            warnings.append(f"workspace mount missing on host: {mount.host_path}")
+            warnings.append(
+                f"This sandbox was set up to share the folder "
+                f"'{mount.host_path}' with you, but that folder no longer "
+                f"exists on your machine. The sandbox cannot start until "
+                f"you put the folder back, or delete the sandbox with "
+                f"'smolvm delete {vm.vm_id}'."
+            )
     return warnings
 
 
@@ -1155,9 +1163,8 @@ def _render_list(rows: list[VmRow]) -> None:
         console.print()
         console.print(Text("Warnings:", style="bold yellow"))
         for row in flagged:
-            console.print(f"  {row['name']}:")
             for warning in row["warnings"]:
-                console.print(f"    • {warning}")
+                console.print(f"  • {warning}")
 
 
 def _run_setup(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:

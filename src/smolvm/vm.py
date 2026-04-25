@@ -944,9 +944,10 @@ class SmolVMManager:
         if missing_mounts:
             paths = ", ".join(str(m.host_path) for m in missing_mounts)
             raise SmolVMError(
-                f"Cannot start VM '{vm_id}': workspace mount path missing on host: {paths}. "
-                "Restore the folder, or delete this VM with "
-                f"'smolvm delete {vm_id}' and recreate it.",
+                f"Cannot start sandbox '{vm_id}': it was set up to share a "
+                f"folder from your machine that no longer exists ({paths}). "
+                "Put the folder back, or delete the sandbox with "
+                f"'smolvm delete {vm_id}' and create a new one.",
                 {
                     "vm_id": vm_id,
                     "missing_mounts": [str(m.host_path) for m in missing_mounts],
