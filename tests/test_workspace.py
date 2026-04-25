@@ -287,6 +287,110 @@ def test_start_friendly_error_when_workspace_host_path_missing(
     mock_popen.assert_not_called()
 
 
+@patch("smolvm.vm.subprocess.Popen")
+@patch.object(
+    SmolVMManager,
+    "_find_qemu_binary",
+    return_value=Path("/opt/homebrew/bin/qemu-system-aarch64"),
+)
+def test_start_friendly_error_when_workspace_host_path_is_a_file(
+    _mock_find_qemu_binary: MagicMock,
+    mock_popen: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """The preflight should also fire when the path now points to a file
+    instead of a directory — covers the gap where the path technically
+    exists but the original Pydantic ``is_dir()`` check would have
+    rejected it. Without this we'd fall through to a backend error."""
+    from smolvm.exceptions import SmolVMError
+
+    kernel = tmp_path / "vmlinux"
+    rootfs = tmp_path / "rootfs.ext4"
+    kernel.touch()
+    rootfs.touch()
+
+    ws_dir = tmp_path / "project"
+    ws_dir.mkdir()
+
+    config = VMConfig(
+        vm_id="vm-mount-is-file",
+        kernel_path=kernel,
+        rootfs_path=rootfs,
+        backend="qemu",
+        boot_args="console=ttyAMA0 reboot=k panic=1 init=/init",
+        workspace_mounts=[WorkspaceMount(host_path=ws_dir)],
+    )
+
+    sdk = SmolVMManager(
+        data_dir=tmp_path / "data",
+        socket_dir=tmp_path / "sockets",
+        backend="qemu",
+    )
+    with patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_convert:
+        mock_convert.side_effect = lambda source, target: target.touch()
+        sdk.create(config)
+
+    # Replace the directory with a file at the same path.
+    ws_dir.rmdir()
+    ws_dir.touch()
+
+    with pytest.raises(SmolVMError, match="shared folder is missing"):
+        sdk.start("vm-mount-is-file")
+    mock_popen.assert_not_called()
+
+
+@patch("smolvm.vm.subprocess.Popen")
+@patch.object(
+    SmolVMManager,
+    "_find_qemu_binary",
+    return_value=Path("/opt/homebrew/bin/qemu-system-aarch64"),
+)
+def test_async_start_runs_the_same_workspace_preflight(
+    _mock_find_qemu_binary: MagicMock,
+    mock_popen: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """``async_start`` is a parallel code path; if it skips the preflight
+    the friendly error becomes a backend failure for async callers. The
+    helper is shared so both surfaces give the same plain-English error.
+    """
+    import asyncio
+
+    from smolvm.exceptions import SmolVMError
+
+    kernel = tmp_path / "vmlinux"
+    rootfs = tmp_path / "rootfs.ext4"
+    kernel.touch()
+    rootfs.touch()
+
+    ws_dir = tmp_path / "project"
+    ws_dir.mkdir()
+
+    config = VMConfig(
+        vm_id="vm-async-stale",
+        kernel_path=kernel,
+        rootfs_path=rootfs,
+        backend="qemu",
+        boot_args="console=ttyAMA0 reboot=k panic=1 init=/init",
+        workspace_mounts=[WorkspaceMount(host_path=ws_dir)],
+    )
+
+    sdk = SmolVMManager(
+        data_dir=tmp_path / "data",
+        socket_dir=tmp_path / "sockets",
+        backend="qemu",
+    )
+    with patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_convert:
+        mock_convert.side_effect = lambda source, target: target.touch()
+        sdk.create(config)
+
+    ws_dir.rmdir()
+
+    with pytest.raises(SmolVMError, match="shared folder is missing"):
+        asyncio.run(sdk.async_start("vm-async-stale"))
+    mock_popen.assert_not_called()
+
+
 # ── Firecracker rejection ───────────────────────────────────────────
 
 

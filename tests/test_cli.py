@@ -28,7 +28,7 @@ from smolvm.cli.main import (
     build_parser,
     main,
 )
-from smolvm.types import BrowserSessionState, NetworkConfig, VMState
+from smolvm.types import BrowserSessionState, NetworkConfig, VMState, WorkspaceMount
 
 
 def _make_vm_info(
@@ -37,7 +37,7 @@ def _make_vm_info(
     guest_ip: str = "172.16.0.2",
     ssh_host_port: int | None = 2200,
     pid: int | None = 12345,
-    workspace_mounts: list[object] | None = None,
+    workspace_mounts: list[WorkspaceMount] | None = None,
 ) -> MagicMock:
     """Build a lightweight VMInfo-like mock for list tests."""
     vm = MagicMock()
@@ -52,6 +52,28 @@ def _make_vm_info(
     else:
         vm.network = None
     return vm
+
+
+def _make_vm_with_stale_mount(
+    tmp_path: Path,
+    *,
+    vm_id: str = "vm-abc123",
+    status: VMState = VMState.RUNNING,
+) -> tuple[MagicMock, Path]:
+    """Build a VMInfo mock whose workspace mount points at a now-deleted folder.
+
+    The mount is a real ``WorkspaceMount`` (not a loose ``MagicMock()``) so
+    if ``WorkspaceMount`` ever renames its public attributes, these tests
+    fail loudly instead of silently spoofing the API.
+
+    Returns ``(vm_info_mock, missing_host_path)``.
+    """
+    ws_dir = tmp_path / f"{vm_id}-deleted-worktree"
+    ws_dir.mkdir()
+    mount = WorkspaceMount(host_path=ws_dir)
+    ws_dir.rmdir()
+    vm = _make_vm_info(vm_id, status, workspace_mounts=[mount])
+    return vm, mount.host_path
 
 
 def _make_snapshot_info(
@@ -1853,20 +1875,8 @@ class TestCliList:
     ) -> None:
         """`smolvm list` should keep listing VMs whose host mount is gone,
         and print a warning naming the missing path."""
-        missing = tmp_path / "deleted-worktree"
-        mount = MagicMock()
-        mount.host_path = missing
-        vms = [
-            _make_vm_info(
-                "vm-abc123",
-                VMState.RUNNING,
-                "172.16.0.2",
-                2200,
-                12345,
-                workspace_mounts=[mount],
-            ),
-        ]
-        mock_sdk_cls.return_value.list_vms.return_value = vms
+        vm, missing = _make_vm_with_stale_mount(tmp_path)
+        mock_sdk_cls.return_value.list_vms.return_value = [vm]
 
         ret = main(["list"])
 
@@ -1892,19 +1902,8 @@ class TestCliList:
         they're seeing. The chosen wording sidesteps the consequence
         entirely and just states the fact + the recovery.
         """
-        missing = tmp_path / "deleted-worktree"
-        mount = MagicMock()
-        mount.host_path = missing
-        mock_sdk_cls.return_value.list_vms.return_value = [
-            _make_vm_info(
-                "sbx-running",
-                VMState.RUNNING,
-                "172.16.0.2",
-                2200,
-                12345,
-                workspace_mounts=[mount],
-            ),
-        ]
+        vm, _ = _make_vm_with_stale_mount(tmp_path, vm_id="sbx-running")
+        mock_sdk_cls.return_value.list_vms.return_value = [vm]
 
         ret = main(["list", "--json"])
 
@@ -1920,19 +1919,8 @@ class TestCliList:
         tmp_path: Path,
     ) -> None:
         """`smolvm list --json` should expose stale mounts via `warnings`."""
-        missing = tmp_path / "deleted-worktree"
-        mount = MagicMock()
-        mount.host_path = missing
-        mock_sdk_cls.return_value.list_vms.return_value = [
-            _make_vm_info(
-                "vm-abc123",
-                VMState.RUNNING,
-                "172.16.0.2",
-                2200,
-                12345,
-                workspace_mounts=[mount],
-            ),
-        ]
+        vm, missing = _make_vm_with_stale_mount(tmp_path)
+        mock_sdk_cls.return_value.list_vms.return_value = [vm]
 
         ret = main(["list", "--json"])
 

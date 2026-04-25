@@ -531,6 +531,34 @@ class SmolVMManager:
             return None
         return expected
 
+    def _check_workspace_mounts(self, vm_info: VMInfo) -> None:
+        """Verify each workspace mount's host folder is still usable.
+
+        The Pydantic validator on ``WorkspaceMount.host_path`` runs at
+        create time, but storage reads pass ``validate_paths=False`` so a
+        config can reach start time after its host folder was deleted or
+        replaced. Catch both cases here (missing path, or path that's no
+        longer a directory) and raise a single friendly error, instead of
+        letting QEMU fail later with a host-side message a first-time user
+        cannot interpret.
+        """
+        bad_paths = [
+            mount.host_path
+            for mount in vm_info.config.workspace_mounts
+            if not (mount.host_path.exists() and mount.host_path.is_dir())
+        ]
+        if not bad_paths:
+            return
+        paths = ", ".join(str(p) for p in bad_paths)
+        raise SmolVMError(
+            f"Cannot start sandbox '{vm_info.vm_id}': shared folder is missing: "
+            f"{paths}. Restore it, or run 'smolvm delete {vm_info.vm_id}'.",
+            {
+                "vm_id": vm_info.vm_id,
+                "missing_mounts": [str(p) for p in bad_paths],
+            },
+        )
+
     def _ensure_snapshot_supported(self, vm_info: VMInfo) -> None:
         """Validate whether snapshot operations are supported for a VM."""
         if vm_info.config.disk_mode != "isolated":
@@ -938,19 +966,7 @@ class SmolVMManager:
                 {"vm_id": vm_id},
             )
 
-        missing_mounts = [
-            mount for mount in vm_info.config.workspace_mounts if not mount.host_path.exists()
-        ]
-        if missing_mounts:
-            paths = ", ".join(str(m.host_path) for m in missing_mounts)
-            raise SmolVMError(
-                f"Cannot start sandbox '{vm_id}': shared folder is missing: "
-                f"{paths}. Restore it, or run 'smolvm delete {vm_id}'.",
-                {
-                    "vm_id": vm_id,
-                    "missing_mounts": [str(m.host_path) for m in missing_mounts],
-                },
-            )
+        self._check_workspace_mounts(vm_info)
 
         backend = self._backend_for_vm(vm_info)
         log_path = self.data_dir / f"{vm_id}.log"
@@ -2138,6 +2154,8 @@ class SmolVMManager:
 
         if vm_info.network is None:
             raise SmolVMError("VM has no network configuration", {"vm_id": vm_id})
+
+        self._check_workspace_mounts(vm_info)
 
         backend = self._backend_for_vm(vm_info)
         log_path = self.data_dir / f"{vm_id}.log"
