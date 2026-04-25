@@ -661,8 +661,8 @@ class SmolVM:
         socket_dir: Override the default socket directory.
         backend: Runtime backend override (``firecracker``, ``qemu``, or ``auto``).
         os: Guest OS for auto-config mode (``"alpine"`` or ``"debian"``).
-        mem_size_mib: Guest memory in MiB for auto-config mode (``SmolVM()`` only).
-        disk_size_mib: Root filesystem size in MiB for auto-config mode (``SmolVM()`` only).
+        memory: Guest memory in MiB for auto-config mode (``SmolVM()`` only).
+        disk_size: Root filesystem size in MiB for auto-config mode (``SmolVM()`` only).
         ssh_user: SSH user for :meth:`run` (default ``root``).
         ssh_key_path: Optional SSH private key path. If omitted,
             SmolVM first tries default SSH auth, then falls back to
@@ -687,8 +687,8 @@ class SmolVM:
         socket_dir: Path | None = None,
         backend: str | None = None,
         os: GuestOS | str | None = None,
-        mem_size_mib: int | None = None,
-        disk_size_mib: int | None = None,
+        memory: int | None = None,
+        disk_size: int | None = None,
         ssh_user: str = "root",
         ssh_key_path: str | None = None,
         internet_settings: InternetSettings | dict[str, Any] | None = None,
@@ -707,10 +707,10 @@ class SmolVM:
             )
 
         if (config is not None or vm_id is not None) and (
-            mem_size_mib is not None or disk_size_mib is not None or os is not None
+            memory is not None or disk_size is not None or os is not None
         ):
             raise ValueError(
-                "mem_size_mib, disk_size_mib, and os can only be set when both "
+                "memory, disk_size, and os can only be set when both "
                 "config and vm_id are omitted (auto-config mode)."
             )
 
@@ -733,7 +733,7 @@ class SmolVM:
             config, ssh_key_path = _build_s3_image_config(
                 image=image,
                 backend=backend,
-                mem_size_mib=mem_size_mib,
+                mem_size_mib=memory,
                 ssh_key_path=ssh_key_path,
             )
         elif config is None and vm_id is None:
@@ -742,8 +742,8 @@ class SmolVM:
             config, ssh_key_path = _build_auto_config(
                 os=os,
                 backend=backend,
-                mem_size_mib=mem_size_mib,
-                disk_size_mib=disk_size_mib,
+                mem_size_mib=memory,
+                disk_size_mib=disk_size,
                 ssh_key_path=ssh_key_path,
             )
 

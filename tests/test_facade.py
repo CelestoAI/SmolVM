@@ -170,7 +170,7 @@ class TestVMInit:
         mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = SmolVM(mem_size_mib=2048, disk_size_mib=4096)
+        vm = SmolVM(memory=2048, disk_size=4096)
 
         assert vm.vm_id.startswith("vm-")
         mock_builder.build_alpine_ssh_key.assert_called_once()
@@ -433,7 +433,7 @@ class TestVMInit:
     def test_custom_auto_sizing_with_config_raises(self, sample_config: VMConfig) -> None:
         """Custom auto sizing options are only valid in zero-config mode."""
         with pytest.raises(ValueError, match="auto-config mode"):
-            SmolVM(sample_config, mem_size_mib=1024)
+            SmolVM(sample_config, memory=1024)
 
     def test_debian_pinned_urls_carry_build_suffix(self) -> None:
         """Each pinned Debian URL must include the build tag in the filename.
@@ -807,7 +807,7 @@ class TestVMImageParam:
         mock_sdk.create.return_value = MagicMock(vm_id="vm-s3mem", status=VMState.CREATED)
         mock_sdk_cls.return_value = mock_sdk
 
-        SmolVM(image="s3://bucket/img/", backend="qemu", mem_size_mib=1024)
+        SmolVM(image="s3://bucket/img/", backend="qemu", memory=1024)
 
         mock_build_s3.assert_called_once_with(
             image="s3://bucket/img/",
