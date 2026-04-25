@@ -32,6 +32,6 @@ Repository = "https://github.com/CelestoAI/SmolVM"
 Documentation = "https://docs.celesto.ai"
 
 [tool.maturin]
-features = ["pyo3/extension-module"]
+features = ["extension-module"]
 python-source = "python"
 module-name = "smolvm_core._smolvm_core"

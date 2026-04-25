@@ -262,9 +262,9 @@ dependencies = [
 
 [[package]]
 name = "nix"
-version = "0.29.0"
+version = "0.30.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
+checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
 dependencies = [
  "bitflags",
  "cfg-if",
@@ -416,17 +416,17 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "smolvm-core"
-version = "0.0.9"
+version = "0.0.10"
 dependencies = [
  "futures-util",
  "libc",
  "log",
  "netlink-packet-route",
- "nix 0.29.0",
+ "nix 0.30.1",
  "pyo3",
  "pyo3-log",
  "rtnetlink",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
 ]
 
