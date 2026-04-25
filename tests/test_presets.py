@@ -26,6 +26,7 @@ from smolvm.presets import (
     CLAUDE_CODE_PRESET,
     CODEX_PRESET,
     HostConfigCopy,
+    HostKeychainSecret,
     Preset,
     apply_preset,
     collect_host_env,
@@ -90,13 +91,24 @@ class TestClaudeCodePreset:
         assert CLAUDE_CODE_PRESET.name == "claude-code"
         assert CLAUDE_CODE_PRESET.host_env_vars == ("ANTHROPIC_API_KEY",)
 
+    def test_claude_code_pulls_oauth_from_macos_keychain(self) -> None:
+        """The preset must declare a keychain secret for the OAuth tokens.
+
+        Claude Code on macOS keeps tokens in the keychain (not in
+        ``~/.claude/.credentials.json``); without this entry the guest
+        sees the user's profile but says "Not logged in"."""
+        assert CLAUDE_CODE_PRESET.host_keychain_secrets == (
+            HostKeychainSecret(
+                service="Claude Code-credentials",
+                guest_path="/root/.claude/.credentials.json",
+            ),
+        )
+
     def test_claude_code_install_runs_npm_install(self) -> None:
         assert "@anthropic-ai/claude-code" in CLAUDE_CODE_PRESET.install_script
         assert "npm install -g" in CLAUDE_CODE_PRESET.install_script
 
-    def test_claude_code_install_strips_host_install_method(
-        self, tmp_path: Path
-    ) -> None:
+    def test_claude_code_install_strips_host_install_method(self, tmp_path: Path) -> None:
         """The install script must drop ``installMethod`` from the copied
         ``~/.claude.json``. The host's value (e.g. ``"native"`` after the
         user ran ``claude migrate-installer`` on their machine) does not
@@ -139,9 +151,7 @@ class TestClaudeCodePreset:
         assert data["theme"] == "dark"
         assert data["recentProjects"] == ["a", "b"]
 
-    def test_claude_code_install_skips_when_config_absent(
-        self, tmp_path: Path
-    ) -> None:
+    def test_claude_code_install_skips_when_config_absent(self, tmp_path: Path) -> None:
         """The cleanup must be a no-op when ~/.claude.json was never
         copied (e.g. a fresh user with no host config)."""
         import subprocess
@@ -221,6 +231,7 @@ class TestApplyPreset:
         install: str = "true",
         host_env_vars: tuple[str, ...] = (),
         host_configs: tuple[HostConfigCopy, ...] = (),
+        host_keychain_secrets: tuple[HostKeychainSecret, ...] = (),
     ) -> Preset:
         return Preset(
             name="test",
@@ -228,6 +239,7 @@ class TestApplyPreset:
             install_script=install,
             host_env_vars=host_env_vars,
             host_configs=host_configs,
+            host_keychain_secrets=host_keychain_secrets,
         )
 
     def test_install_runs_after_copy_and_env(
@@ -389,3 +401,277 @@ class TestApplyPreset:
         assert any("Copying" in m for m in messages)
         assert any("env var" in m for m in messages)
         assert any("Installing test" in m for m in messages)
+
+
+class TestExtractKeychainSecret:
+    """``security find-generic-password`` wrapper used on macOS hosts."""
+
+    def test_returns_none_on_non_darwin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import smolvm.presets._install as install_mod
+
+        monkeypatch.setattr(install_mod.sys, "platform", "linux")
+
+        assert install_mod._extract_keychain_secret("anything") is None
+
+    def test_returns_none_when_security_binary_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import smolvm.presets._install as install_mod
+
+        monkeypatch.setattr(install_mod.sys, "platform", "darwin")
+
+        def fake_run(*_args: object, **_kwargs: object) -> object:
+            raise FileNotFoundError("security")
+
+        monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
+
+        assert install_mod._extract_keychain_secret("svc") is None
+
+    def test_returns_none_when_lookup_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A non-zero exit (entry not found, user cancelled the prompt,
+        permission denied) must not raise — the caller falls through so
+        the user can still authenticate inside the guest."""
+        import subprocess as _subprocess
+
+        import smolvm.presets._install as install_mod
+
+        monkeypatch.setattr(install_mod.sys, "platform", "darwin")
+
+        def fake_run(args: list[str], **_kwargs: object) -> _subprocess.CompletedProcess[str]:
+            return _subprocess.CompletedProcess(
+                args=args, returncode=44, stdout="", stderr="not found"
+            )
+
+        monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
+
+        assert install_mod._extract_keychain_secret("missing") is None
+
+    def test_returns_none_on_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """If the user walks away from the system prompt we time out and
+        skip rather than hanging sandbox provisioning forever."""
+        import subprocess as _subprocess
+
+        import smolvm.presets._install as install_mod
+
+        monkeypatch.setattr(install_mod.sys, "platform", "darwin")
+
+        def fake_run(*_args: object, **_kwargs: object) -> object:
+            raise _subprocess.TimeoutExpired(cmd="security", timeout=60)
+
+        monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
+
+        assert install_mod._extract_keychain_secret("svc") is None
+
+    def test_returns_password_and_strips_one_trailing_newline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``security -w`` always appends one newline; the value itself
+        (a JSON blob for Claude Code) must be returned unchanged."""
+        import subprocess as _subprocess
+
+        import smolvm.presets._install as install_mod
+
+        monkeypatch.setattr(install_mod.sys, "platform", "darwin")
+
+        captured: dict[str, list[str]] = {}
+
+        def fake_run(args: list[str], **_kwargs: object) -> _subprocess.CompletedProcess[str]:
+            captured["args"] = args
+            return _subprocess.CompletedProcess(
+                args=args, returncode=0, stdout='{"k":"v"}\n', stderr=""
+            )
+
+        monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
+
+        assert install_mod._extract_keychain_secret("My Service") == '{"k":"v"}'
+        # Exact CLI shape — service passed via -s, password requested via -w.
+        assert captured["args"] == [
+            "security",
+            "find-generic-password",
+            "-s",
+            "My Service",
+            "-w",
+        ]
+
+    def test_account_argument_scopes_lookup(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Multiple keychain items may share a service name (claude-code
+        files one under ``acct=root`` for MCP tokens and another under
+        the macOS user for the main login OAuth). The applier must
+        reach the right one by passing ``-a``."""
+        import subprocess as _subprocess
+
+        import smolvm.presets._install as install_mod
+
+        monkeypatch.setattr(install_mod.sys, "platform", "darwin")
+
+        captured: dict[str, list[str]] = {}
+
+        def fake_run(args: list[str], **_kwargs: object) -> _subprocess.CompletedProcess[str]:
+            captured["args"] = args
+            return _subprocess.CompletedProcess(
+                args=args, returncode=0, stdout="payload\n", stderr=""
+            )
+
+        monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
+
+        install_mod._extract_keychain_secret("My Service", account="alice")
+
+        assert captured["args"] == [
+            "security",
+            "find-generic-password",
+            "-s",
+            "My Service",
+            "-a",
+            "alice",
+            "-w",
+        ]
+
+
+class TestApplyPresetKeychain:
+    """Keychain step within ``apply_preset``."""
+
+    def _make_preset(self, secrets: tuple[HostKeychainSecret, ...]) -> Preset:
+        return Preset(
+            name="test",
+            summary="test preset",
+            install_script="",
+            host_keychain_secrets=secrets,
+        )
+
+    def test_writes_extracted_secret_to_guest_with_chmod(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ssh = MagicMock()
+        ssh.run.return_value = _ok()
+
+        monkeypatch.setattr(
+            "smolvm.presets._install._extract_keychain_secret",
+            lambda service, *, account=None: '{"oauth":"x"}' if service == "Test Service" else None,
+        )
+
+        uploaded: list[tuple[str, str]] = []
+
+        def capture_put(local: object, remote: str) -> None:
+            uploaded.append((Path(str(local)).read_text(), remote))
+
+        ssh.put_file.side_effect = capture_put
+
+        preset = self._make_preset(
+            (
+                HostKeychainSecret(
+                    service="Test Service",
+                    guest_path="/root/.claude/.credentials.json",
+                ),
+            )
+        )
+
+        summary = apply_preset(ssh, preset)
+
+        assert summary["extracted_keychain_secrets"] == ["/root/.claude/.credentials.json"]
+        # Plaintext is uploaded, not echoed via shell.
+        assert uploaded == [('{"oauth":"x"}', "/root/.claude/.credentials.json")]
+        # Parent dir is created before SFTP, and chmod 600 follows the upload.
+        commands_run = [call.args[0] for call in ssh.run.call_args_list]
+        assert any("mkdir -p" in cmd and "/root/.claude" in cmd for cmd in commands_run)
+        assert any(
+            "chmod 600" in cmd and "/root/.claude/.credentials.json" in cmd for cmd in commands_run
+        )
+
+    def test_skips_when_extraction_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No keychain entry → no SSH side effects, summary lists nothing."""
+        ssh = MagicMock()
+        ssh.run.return_value = _ok()
+
+        monkeypatch.setattr(
+            "smolvm.presets._install._extract_keychain_secret",
+            lambda _service, *, account=None: None,
+        )
+
+        preset = self._make_preset((HostKeychainSecret(service="Missing", guest_path="/root/x"),))
+
+        summary = apply_preset(ssh, preset)
+
+        assert summary["extracted_keychain_secrets"] == []
+        ssh.put_file.assert_not_called()
+        # No chmod for a file we never wrote.
+        chmod_calls = [call.args[0] for call in ssh.run.call_args_list if "chmod" in call.args[0]]
+        assert chmod_calls == []
+
+    def test_default_account_is_macos_login_user(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When ``HostKeychainSecret.account`` is None, the applier
+        must look up the keychain entry under the current user's login
+        — that's the account claude-code uses for the main OAuth."""
+        import smolvm.presets._install as install_mod
+
+        ssh = MagicMock()
+        ssh.run.return_value = _ok()
+
+        monkeypatch.setattr(install_mod.getpass, "getuser", lambda: "alice")
+
+        seen: dict[str, str | None] = {}
+
+        def fake_extract(service: str, *, account: str | None = None) -> str | None:
+            seen["service"] = service
+            seen["account"] = account
+            return None
+
+        monkeypatch.setattr(install_mod, "_extract_keychain_secret", fake_extract)
+
+        preset = self._make_preset((HostKeychainSecret(service="svc", guest_path="/root/x"),))
+
+        apply_preset(ssh, preset)
+
+        assert seen == {"service": "svc", "account": "alice"}
+
+    def test_explicit_account_overrides_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import smolvm.presets._install as install_mod
+
+        ssh = MagicMock()
+        ssh.run.return_value = _ok()
+
+        monkeypatch.setattr(install_mod.getpass, "getuser", lambda: "alice")
+
+        seen: dict[str, str | None] = {}
+
+        def fake_extract(service: str, *, account: str | None = None) -> str | None:
+            seen["account"] = account
+            return None
+
+        monkeypatch.setattr(install_mod, "_extract_keychain_secret", fake_extract)
+
+        preset = self._make_preset(
+            (HostKeychainSecret(service="svc", guest_path="/root/x", account="bob"),)
+        )
+
+        apply_preset(ssh, preset)
+
+        assert seen["account"] == "bob"
+
+    def test_progress_message_emitted_only_when_secret_present(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The user shouldn't see a "Copying from keychain" message for
+        a secret that wasn't actually found."""
+        ssh = MagicMock()
+        ssh.run.return_value = _ok()
+
+        # Two secrets: one found, one missing.
+        monkeypatch.setattr(
+            "smolvm.presets._install._extract_keychain_secret",
+            lambda service, *, account=None: "blob" if service == "found" else None,
+        )
+
+        preset = self._make_preset(
+            (
+                HostKeychainSecret(service="found", guest_path="/root/a"),
+                HostKeychainSecret(service="missing", guest_path="/root/b"),
+            )
+        )
+
+        messages: list[str] = []
+        apply_preset(ssh, preset, on_progress=messages.append)
+
+        keychain_msgs = [m for m in messages if "keychain" in m]
+        assert len(keychain_msgs) == 1
+        assert "found" in keychain_msgs[0]
+        assert "/root/a" in keychain_msgs[0]

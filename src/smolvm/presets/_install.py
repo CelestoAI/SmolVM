@@ -16,9 +16,12 @@
 
 from __future__ import annotations
 
+import getpass
 import logging
 import os
 import shlex
+import subprocess
+import sys
 import tarfile
 import tempfile
 from collections.abc import Callable
@@ -39,6 +42,13 @@ logger = logging.getLogger(__name__)
 # How long the install script may take. Apt + NodeSource setup + global
 # npm install can run for a couple of minutes on a cold image.
 _DEFAULT_INSTALL_TIMEOUT = 600
+
+# Cap the wait on `security find-generic-password`. The first call may
+# pop up a system dialog asking the user to grant access; if they walk
+# away from the keyboard we don't want to hang sandbox provisioning
+# indefinitely. After the user clicks "Always Allow" once, future calls
+# return instantly.
+_KEYCHAIN_LOOKUP_TIMEOUT = 60
 
 
 def collect_host_env(preset: Preset) -> dict[str, str]:
@@ -80,6 +90,28 @@ def apply_preset(
         _copy_to_guest(ssh, local, cfg.guest_path)
         copied_configs.append(cfg.guest_path)
 
+    # Keychain step runs after host_configs so a directory copy that
+    # targets the same parent (e.g. ~/.claude → /root/.claude) cannot
+    # tar-extract over a credential file we just wrote.
+    extracted_secrets: list[str] = []
+    for secret in preset.host_keychain_secrets:
+        # Default the account to the current macOS login user. This is
+        # what Claude Code uses for its OAuth keychain entry, and it
+        # disambiguates when multiple items share the same service name
+        # (e.g. a separate entry under acct=root for MCP tokens).
+        account = secret.account if secret.account is not None else getpass.getuser()
+        plaintext = _extract_keychain_secret(secret.service, account=account)
+        if plaintext is None:
+            logger.debug(
+                "Skipping unavailable keychain secret: service=%s account=%s",
+                secret.service,
+                account,
+            )
+            continue
+        notify(f"Copying {secret.service} from macOS keychain → {secret.guest_path}")
+        _write_secret_to_guest(ssh, plaintext, secret.guest_path, secret.file_mode)
+        extracted_secrets.append(secret.guest_path)
+
     env_vars = collect_host_env(preset)
     injected_keys: list[str] = []
     if env_vars:
@@ -103,6 +135,7 @@ def apply_preset(
     return {
         "preset": preset.name,
         "copied_configs": copied_configs,
+        "extracted_keychain_secrets": extracted_secrets,
         "injected_env_keys": injected_keys,
     }
 
@@ -168,6 +201,81 @@ def _posix_dirname(path: str) -> str:
         return ""
     parent = path.rsplit("/", 1)[0]
     return parent or "/"
+
+
+def _extract_keychain_secret(service: str, *, account: str | None = None) -> str | None:
+    """Return the password stored under *service* in the macOS keychain.
+
+    When *account* is provided, scopes the lookup with ``-a <account>``
+    so that an item under a different account (e.g. claude-code's
+    ``acct=root`` MCP-token entry) doesn't shadow the one we want.
+
+    Returns ``None`` (never raises) on:
+      - non-macOS hosts,
+      - missing ``security`` binary,
+      - missing keychain entry,
+      - the user denying access at the system prompt,
+      - the lookup exceeding ``_KEYCHAIN_LOOKUP_TIMEOUT``.
+
+    A ``None`` return is the signal for the caller to fall through —
+    the user can still authenticate inside the guest with ``/login`` or
+    by setting the harness's API-key env var.
+    """
+    if sys.platform != "darwin":
+        return None
+    cmd = ["security", "find-generic-password", "-s", service]
+    if account is not None:
+        cmd.extend(["-a", account])
+    cmd.append("-w")
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_KEYCHAIN_LOOKUP_TIMEOUT,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    # `security -w` appends a single trailing newline; strip it without
+    # touching newlines inside the value (none in practice for the
+    # JSON blob Claude Code stores, but safer this way).
+    value = result.stdout
+    if value.endswith("\n"):
+        value = value[:-1]
+    return value
+
+
+def _write_secret_to_guest(ssh: SSHClient, content: str, guest_path: str, file_mode: int) -> None:
+    """Stage *content* in a 0o600 host tempfile, SFTP it, then chmod on the guest."""
+    parent = _posix_dirname(guest_path)
+    if parent:
+        result = ssh.run(f"mkdir -p -- {shlex.quote(parent)}", timeout=10)
+        if not result.ok:
+            raise SmolVMError(
+                f"Failed to create guest directory {parent!r}",
+                {"exit_code": result.exit_code, "stderr": result.stderr},
+            )
+
+    fd, tmp_name = tempfile.mkstemp(prefix=".smolvm-secret-", suffix=".tmp")
+    tmp_path = Path(tmp_name)
+    try:
+        # mkstemp already creates the file with mode 0o600; write via the
+        # returned fd to avoid a brief world-readable window.
+        with os.fdopen(fd, "w") as fp:
+            fp.write(content)
+        ssh.put_file(tmp_path, guest_path)
+        chmod_cmd = f"chmod {file_mode:o} -- {shlex.quote(guest_path)}"
+        result = ssh.run(chmod_cmd, timeout=5)
+        if not result.ok:
+            raise SmolVMError(
+                f"Failed to chmod {guest_path!r} on guest",
+                {"exit_code": result.exit_code, "stderr": result.stderr},
+            )
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 __all__ = ["apply_preset", "collect_host_env"]

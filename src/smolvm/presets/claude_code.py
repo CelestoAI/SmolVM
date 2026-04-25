@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from smolvm.presets._scripts import npm_install_global
-from smolvm.presets._types import HostConfigCopy, Preset
+from smolvm.presets._types import HostConfigCopy, HostKeychainSecret, Preset
 
 # Drop host-specific install metadata from the copied ~/.claude.json.
 # claude-code records `installMethod` ("native" if the user ran
@@ -53,6 +53,20 @@ CLAUDE_CODE_PRESET = Preset(
     host_configs=(
         HostConfigCopy(host_path="~/.claude.json", guest_path="/root/.claude.json"),
         HostConfigCopy(host_path="~/.claude", guest_path="/root/.claude"),
+    ),
+    # On macOS, claude stores its OAuth tokens in the keychain (not in
+    # ~/.claude/.credentials.json — that file does not exist on a
+    # signed-in Mac). Pull the keychain item into the guest as the
+    # credentials file Linux claude reads at startup; without this the
+    # guest greets the user by name (from oauthAccount in the copied
+    # ~/.claude.json) but says "Not logged in". The keychain item is
+    # named "Claude Code-credentials" and its value is already the JSON
+    # body credentials.json expects.
+    host_keychain_secrets=(
+        HostKeychainSecret(
+            service="Claude Code-credentials",
+            guest_path="/root/.claude/.credentials.json",
+        ),
     ),
     launch_command="claude",
 )
