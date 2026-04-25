@@ -1,17 +1,17 @@
 [package]
 name = "smolvm-core"
 version = "0.0.10"
-edition = "2024"
-rust-version = "1.85"
-license = "Apache-2.0"
 description = "Rust-native core package for SmolVM"
-authors = ["Celesto AI <hello@celesto.ai>"]
-homepage = "https://github.com/CelestoAI/SmolVM"
-repository = "https://github.com/CelestoAI/SmolVM"
 documentation = "https://docs.rs/smolvm-core"
 readme = "README.md"
-keywords = ["sandbox", "vm", "microvm", "pyo3", "agents"]
-categories = ["virtualization", "api-bindings"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [lib]
 name = "_smolvm_core"
