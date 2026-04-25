@@ -17,6 +17,7 @@ def _make_context() -> RuntimeContext:
         data_dir=Path("/tmp/data"),
         socket_dir=Path("/tmp"),
         log_files={},
+        process_handles={},
         resolve_boot_args=lambda vm_info: vm_info.config.boot_args,
         start_firecracker=MagicMock(),
         start_qemu=MagicMock(),
@@ -86,9 +87,7 @@ def test_stop_raises_when_qemu_survives_hard_kill(tmp_path: Path) -> None:
     adapter = QemuRuntimeAdapter(context)
     vm_info = _make_vm_info(tmp_path)
 
-    with patch("os.kill") as mock_os_kill, pytest.raises(
-        SmolVMError, match="did not exit"
-    ):
+    with patch("os.kill") as mock_os_kill, pytest.raises(SmolVMError, match="did not exit"):
         adapter.stop(vm_info, timeout=10.0)
 
     mock_os_kill.assert_called_once()
