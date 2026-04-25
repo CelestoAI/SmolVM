@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import shutil
 import subprocess
@@ -224,133 +225,17 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                     self._context.unlink_socket(control_socket_path)
             raise
 
-    # ------------------------------------------------------------------
-    # Async lifecycle methods
-    # ------------------------------------------------------------------
-
     async def async_start(
         self, vm_info: VMInfo, *, log_path: Path, boot_timeout: float
     ) -> RuntimeLaunch:
         """Async version of :meth:`start`."""
-        import asyncio
-
-        control_socket_path = self._control_socket_path(vm_info.vm_id)
-        if control_socket_path.exists():
-            if self._context.async_unlink_socket:
-                await self._context.async_unlink_socket(control_socket_path)
-            else:
-                self._context.unlink_socket(control_socket_path)
-
-        process: Any | None = None
-        try:
-            if self._context.async_start_qemu:
-                process = await self._context.async_start_qemu(
-                    vm_info,
-                    log_path,
-                    control_socket_path=control_socket_path,
-                    start_paused=False,
-                    root_node_name=QEMU_ROOT_NODE_NAME,
-                )
-            else:
-                process = await asyncio.to_thread(
-                    self._context.start_qemu,
-                    vm_info,
-                    log_path,
-                    control_socket_path=control_socket_path,
-                    start_paused=False,
-                    root_node_name=QEMU_ROOT_NODE_NAME,
-                )
-            await self._async_wait_for_runtime(process, control_socket_path, boot_timeout)
-            return RuntimeLaunch(
-                pid=process.pid,
-                control_socket_path=control_socket_path,
-                status=VMState.RUNNING,
-            )
-        except Exception:
-            if process is not None:
-                with suppress(Exception):
-                    if self._context.async_kill_process:
-                        await self._context.async_kill_process(process.pid)
-                    else:
-                        self._context.kill_process(process.pid)
-            if control_socket_path.exists():
-                with suppress(Exception):
-                    if self._context.async_unlink_socket:
-                        await self._context.async_unlink_socket(control_socket_path)
-                    else:
-                        self._context.unlink_socket(control_socket_path)
-            raise
+        return await asyncio.to_thread(
+            self.start, vm_info, log_path=log_path, boot_timeout=boot_timeout
+        )
 
     async def async_stop(self, vm_info: VMInfo, *, timeout: float) -> None:
         """Async version of :meth:`stop`."""
-        import asyncio
-        import os
-        import signal
-
-        if vm_info.pid and self._context.is_process_running(vm_info.pid):
-            try:
-                os.kill(vm_info.pid, signal.SIGTERM)
-                if self._context.async_wait_for_process:
-                    await self._context.async_wait_for_process(vm_info.pid, timeout)
-                else:
-                    await asyncio.to_thread(
-                        self._context.wait_for_process, vm_info.pid, timeout
-                    )
-            except (OSError, SmolVMError):
-                ...
-
-        if vm_info.pid and self._context.is_process_running(vm_info.pid):
-            if self._context.async_kill_process:
-                await self._context.async_kill_process(vm_info.pid)
-            else:
-                self._context.kill_process(vm_info.pid)
-            if self._context.async_wait_for_process:
-                await self._context.async_wait_for_process(vm_info.pid, min(timeout, 5.0))
-            else:
-                await asyncio.to_thread(
-                    self._context.wait_for_process, vm_info.pid, min(timeout, 5.0)
-                )
-
-        if vm_info.pid and self._context.is_process_running(vm_info.pid):
-            raise SmolVMError(
-                f"QEMU process did not exit for VM '{vm_info.vm_id}'",
-                {"pid": vm_info.pid},
-            )
-
-        if vm_info.control_socket_path and vm_info.control_socket_path.exists():
-            if self._context.async_unlink_socket:
-                await self._context.async_unlink_socket(vm_info.control_socket_path)
-            else:
-                self._context.unlink_socket(vm_info.control_socket_path)
-
-    async def _async_wait_for_runtime(
-        self, process: Any, control_socket_path: Path, timeout: float
-    ) -> None:
-        """Async version of :meth:`_wait_for_runtime`."""
-        import asyncio
-
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            exit_code = process.returncode if hasattr(process, "returncode") else process.poll()
-            if exit_code is not None:
-                raise SmolVMError(
-                    f"QEMU exited early while booting VM '{getattr(process, 'pid', 'unknown')}'",
-                    {"exit_code": exit_code},
-                )
-            try:
-                with self._client(control_socket_path, timeout=0.2):
-                    return
-            except SmolVMError:
-                await asyncio.sleep(0.05)
-
-        raise SmolVMError(
-            "Timed out waiting for QEMU control socket",
-            {"socket_path": str(control_socket_path)},
-        )
-
-    # ------------------------------------------------------------------
-    # Sync lifecycle methods (original)
-    # ------------------------------------------------------------------
+        await asyncio.to_thread(self.stop, vm_info, timeout=timeout)
 
     def _wait_for_runtime(self, process: Any, control_socket_path: Path, timeout: float) -> None:
         """Wait for QEMU to expose its QMP socket or fail fast if it exits."""
