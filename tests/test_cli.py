@@ -1834,3 +1834,162 @@ class TestCliList:
         assert ret == 1
         assert "Error: db unavailable" in capsys.readouterr().err
         mock_sdk_cls.return_value.close.assert_called_once()
+
+
+class TestCliStart:
+    """Tests for `smolvm start <preset>`."""
+
+    def _make_vm_mock(self, vm_id: str = "sbx-codex") -> MagicMock:
+        vm = MagicMock()
+        vm.vm_id = vm_id
+        vm.info.status = VMState.RUNNING
+        vm.info.config.backend = "qemu"
+        vm.info.network = MagicMock(spec=NetworkConfig)
+        vm.info.network.guest_ip = "172.16.0.2"
+        vm.info.network.ssh_host_port = 2200
+        return vm
+
+    def test_start_help_lists_known_presets(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """`smolvm start --help` should list every registered preset."""
+        with pytest.raises(SystemExit):
+            main(["start", "--help"])
+        out = capsys.readouterr().out
+        assert "codex" in out
+        assert "claude-code" in out
+
+    def test_start_unknown_preset_errors(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """An unknown preset name should fail at argparse-level."""
+        with pytest.raises(SystemExit):
+            main(["start", "hermes"])
+        err = capsys.readouterr().err
+        # argparse produces "invalid choice" for unknown subcommand
+        assert "invalid choice" in err or "argument harness" in err
+
+    @patch("smolvm.cli.main._apply_preset_with_progress")
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_codex_default_path(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        mock_apply: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm start codex` boots ubuntu/qemu with preset defaults and applies the preset."""
+        from smolvm.types import GuestOS
+
+        config = MagicMock(vm_id="sbx-codex")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+        vm = self._make_vm_mock("sbx-codex")
+        mock_vm_cls.return_value = vm
+        mock_apply.return_value = {
+            "preset": "codex",
+            "copied_configs": ["/root/.codex"],
+            "injected_env_keys": ["OPENAI_API_KEY"],
+        }
+
+        ret = main(["start", "codex", "--name", "sbx-codex"])
+
+        assert ret == 0
+        mock_build_auto_config.assert_called_once_with(
+            vm_name="sbx-codex",
+            os=GuestOS.UBUNTU,
+            backend="qemu",
+            mem_size_mib=2048,
+            disk_size_mib=8192,
+            ssh_key_path=None,
+            on_download=ANY,
+        )
+        mock_vm_cls.assert_called_once_with(config, ssh_key_path="/tmp/id_ed25519", mounts=None)
+        vm.start.assert_called_once_with(boot_timeout=30.0)
+        vm.wait_for_ssh.assert_called_once_with(timeout=30.0)
+        mock_apply.assert_called_once()
+        vm.close.assert_called_once()
+
+        out = capsys.readouterr().out
+        assert "sbx-codex" in out
+        assert "codex" in out
+        assert "OPENAI_API_KEY" in out
+        assert "smolvm ssh sbx-codex" in out
+
+    @patch("smolvm.presets.apply_preset")
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_codex_json(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        mock_apply_fn: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm start codex --json` should emit the start envelope."""
+        config = MagicMock(vm_id="sbx-1")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+        vm = self._make_vm_mock("sbx-1")
+        mock_vm_cls.return_value = vm
+        mock_apply_fn.return_value = {
+            "preset": "codex",
+            "copied_configs": [],
+            "injected_env_keys": ["OPENAI_API_KEY"],
+        }
+
+        ret = main(["start", "codex", "--name", "sbx-1", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["command"] == "start"
+        assert payload["ok"] is True
+        assert payload["data"]["vm"]["name"] == "sbx-1"
+        assert payload["data"]["vm"]["os"] == "ubuntu"
+        assert payload["data"]["preset"]["name"] == "codex"
+        assert payload["data"]["preset"]["injected_env_keys"] == ["OPENAI_API_KEY"]
+        assert payload["data"]["next"]["ssh_command"] == "smolvm ssh sbx-1"
+
+    @patch("smolvm.cli.main._apply_preset_with_progress")
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_claude_code_overrides_memory(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        mock_apply: MagicMock,
+    ) -> None:
+        """User --memory should override the preset default."""
+        config = MagicMock(vm_id="sbx")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+        vm = self._make_vm_mock("sbx")
+        mock_vm_cls.return_value = vm
+        mock_apply.return_value = {
+            "preset": "claude-code",
+            "copied_configs": [],
+            "injected_env_keys": [],
+        }
+
+        ret = main(["start", "claude-code", "--memory", "4096", "--disk-size", "16384"])
+
+        assert ret == 0
+        kwargs = mock_build_auto_config.call_args.kwargs
+        assert kwargs["mem_size_mib"] == 4096
+        assert kwargs["disk_size_mib"] == 16384
+
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_rejects_non_qemu_backend(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Built-in presets target ubuntu, which only boots on qemu."""
+        ret = main(["start", "codex", "--backend", "firecracker"])
+
+        assert ret == 2
+        err = capsys.readouterr().err
+        assert "requires --backend qemu" in err
+        # Nothing should have started.
+        mock_build_auto_config.assert_not_called()
+        mock_vm_cls.assert_not_called()
