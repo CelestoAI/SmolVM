@@ -510,6 +510,9 @@ class TestFacadeWorkspaceGuards:
 
         install_script = vm._ssh.run.call_args_list[1].args[0]
         mount_script = vm._ssh.run.call_args_list[2].args[0]
+        assert "DPkg::Lock::Timeout=120" in install_script
+        assert "Acquire::Retries=3" in install_script
+        assert "fuser $APT_LOCKS" in install_script
         assert "linux-modules-extra-$(uname -r)" in install_script
         assert "mount -t 9p" in mount_script
 

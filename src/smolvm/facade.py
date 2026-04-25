@@ -1893,8 +1893,18 @@ if [ "${ID:-}" != "ubuntu" ] || ! command -v apt-get >/dev/null 2>&1; then
   exit 42
 fi
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq "linux-modules-extra-$(uname -r)"
+APT_LOCKS="/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock"
+deadline=$(( $(date +%s) + 120 ))
+while command -v fuser >/dev/null 2>&1 && fuser $APT_LOCKS >/dev/null 2>&1; do
+  if [ "$(date +%s)" -ge "$deadline" ]; then
+    echo "Timed out waiting for apt/dpkg locks" >&2
+    exit 43
+  fi
+  sleep 2
+done
+APT_OPTS='-o DPkg::Lock::Timeout=120 -o Acquire::Retries=3'
+apt-get $APT_OPTS update -qq
+apt-get $APT_OPTS install -y -qq "linux-modules-extra-$(uname -r)"
 modprobe 9p
 modprobe 9pnet_virtio
 modprobe overlay
