@@ -19,11 +19,36 @@ from __future__ import annotations
 from smolvm.presets._scripts import npm_install_global
 from smolvm.presets._types import HostConfigCopy, Preset
 
+# Drop host-specific install metadata from the copied ~/.claude.json.
+# claude-code records `installMethod` ("native" if the user ran
+# `claude migrate-installer` on their host) and uses it to locate its
+# own binary on launch. That value reflects the host's layout, not the
+# guest's — in the guest claude is npm-installed under
+# /usr/lib/node_modules, so a copied "native" tag makes claude error
+# with "claude command not found at /root/.local/bin/claude" on first
+# start. Removing the key lets claude re-detect the install method
+# fresh on the guest. python3 ships in the Ubuntu cloud image.
+_RESET_INSTALL_METHOD = r"""
+if [ -f /root/.claude.json ]; then
+  python3 - <<'PY' || true
+import json, pathlib
+p = pathlib.Path("/root/.claude.json")
+try:
+    data = json.loads(p.read_text())
+except Exception:
+    raise SystemExit(0)
+if isinstance(data, dict) and "installMethod" in data:
+    del data["installMethod"]
+    p.write_text(json.dumps(data, indent=2))
+PY
+fi
+"""
+
 CLAUDE_CODE_PRESET = Preset(
     name="claude-code",
     aliases=("claude",),
     summary="Start a sandbox with Anthropic's Claude Code CLI preinstalled.",
-    install_script=npm_install_global("@anthropic-ai/claude-code"),
+    install_script=npm_install_global("@anthropic-ai/claude-code") + _RESET_INSTALL_METHOD,
     host_env_vars=("ANTHROPIC_API_KEY",),
     host_configs=(
         HostConfigCopy(host_path="~/.claude.json", guest_path="/root/.claude.json"),

@@ -94,6 +94,70 @@ class TestClaudeCodePreset:
         assert "@anthropic-ai/claude-code" in CLAUDE_CODE_PRESET.install_script
         assert "npm install -g" in CLAUDE_CODE_PRESET.install_script
 
+    def test_claude_code_install_strips_host_install_method(
+        self, tmp_path: Path
+    ) -> None:
+        """The install script must drop ``installMethod`` from the copied
+        ``~/.claude.json``. The host's value (e.g. ``"native"`` after the
+        user ran ``claude migrate-installer`` on their machine) does not
+        match the guest, where claude is npm-installed under
+        ``/usr/lib/node_modules`` — leaving it makes claude error with
+        ``claude command not found at /root/.local/bin/claude`` on the
+        first launch."""
+        import json
+        import subprocess
+
+        root = tmp_path / "root"
+        root.mkdir()
+        config = root / ".claude.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "installMethod": "native",
+                    "theme": "dark",
+                    "recentProjects": ["a", "b"],
+                }
+            )
+        )
+
+        # Extract just the cleanup snippet (after the npm install line)
+        # and rewrite the hard-coded /root/ path to our temp dir.
+        from smolvm.presets.claude_code import _RESET_INSTALL_METHOD
+
+        snippet = _RESET_INSTALL_METHOD.replace("/root/", f"{root}/")
+        completed = subprocess.run(
+            ["bash", "-c", f"set -euo pipefail; {snippet}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+
+        data = json.loads(config.read_text())
+        assert "installMethod" not in data
+        # Other fields are untouched.
+        assert data["theme"] == "dark"
+        assert data["recentProjects"] == ["a", "b"]
+
+    def test_claude_code_install_skips_when_config_absent(
+        self, tmp_path: Path
+    ) -> None:
+        """The cleanup must be a no-op when ~/.claude.json was never
+        copied (e.g. a fresh user with no host config)."""
+        import subprocess
+
+        from smolvm.presets.claude_code import _RESET_INSTALL_METHOD
+
+        # Point at an empty dir — the file does not exist.
+        snippet = _RESET_INSTALL_METHOD.replace("/root/", f"{tmp_path}/")
+        completed = subprocess.run(
+            ["bash", "-c", f"set -euo pipefail; {snippet}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+
 
 class TestNpmInstallGlobalSafety:
     """The npm install helper rejects unsafe package names."""
