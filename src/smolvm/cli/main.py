@@ -520,7 +520,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="MIB",
         help=(
             "Sandbox disk size in MiB. Defaults: 512 for alpine, "
-            "2048 for debian/ubuntu. Minimum: 64 for alpine; 2048 for "
+            "4096 for debian/ubuntu. Minimum: 64 for alpine; 2048 for "
             "debian/ubuntu on qemu (values below 2048 are rejected)."
         ),
     )
@@ -1156,6 +1156,15 @@ def _run_create(args: argparse.Namespace) -> int:
             if args.os is not None
             else _default_guest_os_for_backend(resolved_backend)
         )
+
+        # CLI default: roomier disk for debian/ubuntu so package installs
+        # and apt cache don't fill the rootfs on a basic `smolvm create`.
+        if (
+            not use_s3_image
+            and args.disk_size_mib is None
+            and resolved_guest_os in {GuestOS.DEBIAN, GuestOS.UBUNTU}
+        ):
+            args.disk_size_mib = 4096
 
         if use_s3_image:
             # S3 image path

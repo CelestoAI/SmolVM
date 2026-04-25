@@ -366,7 +366,7 @@ class TestCliCreate:
             os=None,
             backend=None,
             mem_size_mib=None,
-            disk_size_mib=None,
+            disk_size_mib=4096,
             ssh_key_path=None,
             on_download=ANY,
         )
@@ -448,12 +448,16 @@ class TestCliCreate:
 
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.runtime.backends.platform.system", return_value="Darwin")
     def test_create_success_with_short_name_flag(
         self,
+        _: MagicMock,
         mock_vm_cls: MagicMock,
         mock_build_auto_config: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """`smolvm create -n ...` should behave the same as `--name`."""
+        monkeypatch.delenv("SMOLVM_BACKEND", raising=False)
         config = MagicMock(vm_id="computer")
         mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
 
@@ -473,7 +477,7 @@ class TestCliCreate:
             os=None,
             backend=None,
             mem_size_mib=None,
-            disk_size_mib=None,
+            disk_size_mib=4096,
             ssh_key_path=None,
             on_download=ANY,
         )
@@ -546,11 +550,40 @@ class TestCliCreate:
             os="debian",
             backend=None,
             mem_size_mib=None,
-            disk_size_mib=None,
+            disk_size_mib=4096,
             ssh_key_path=None,
         )
         payload = json.loads(capsys.readouterr().out)
         assert payload["data"]["vm"]["os"] == "debian"
+
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_create_alpine_does_not_get_disk_size_default(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+    ) -> None:
+        """The 4096 MiB CLI default only applies to debian/ubuntu, not alpine."""
+        mock_build_auto_config.return_value = (MagicMock(vm_id="vm"), "/tmp/id_ed25519")
+        vm = MagicMock()
+        vm.vm_id = "vm"
+        vm.info.config.backend = "firecracker"
+        vm.info.network = MagicMock(spec=NetworkConfig)
+        vm.info.network.guest_ip = "172.16.0.2"
+        vm.info.network.ssh_host_port = 2200
+        mock_vm_cls.return_value = vm
+
+        ret = main(["create", "--os", "alpine", "--json"])
+
+        assert ret == 0
+        mock_build_auto_config.assert_called_once_with(
+            vm_name=None,
+            os="alpine",
+            backend=None,
+            mem_size_mib=None,
+            disk_size_mib=None,
+            ssh_key_path=None,
+        )
 
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
