@@ -21,6 +21,7 @@ from smolvm.presets._types import HostConfigCopy, Preset
 
 CLAUDE_CODE_PRESET = Preset(
     name="claude-code",
+    aliases=("claude",),
     summary="Start a sandbox with Anthropic's Claude Code CLI preinstalled.",
     install_script=npm_install_global("@anthropic-ai/claude-code"),
     host_env_vars=("ANTHROPIC_API_KEY",),

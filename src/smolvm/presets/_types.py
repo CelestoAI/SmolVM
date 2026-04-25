@@ -45,6 +45,10 @@ class Preset:
 
     Attributes:
         name: CLI-facing identifier (e.g. ``"codex"``).
+        aliases: Extra names that resolve to this preset on the CLI
+            (e.g. ``("claude",)`` for ``claude-code``). Argparse routes
+            them to the same parser; the canonical ``name`` is what
+            ``args.preset_name`` carries.
         summary: One-line description for ``--help`` output.
         install_script: Bash script run via ``ssh.run`` after boot.
             Should be idempotent and self-contained.
@@ -59,6 +63,7 @@ class Preset:
     name: str
     summary: str
     install_script: str
+    aliases: tuple[str, ...] = field(default_factory=tuple)
     host_env_vars: tuple[str, ...] = field(default_factory=tuple)
     host_configs: tuple[HostConfigCopy, ...] = field(default_factory=tuple)
     default_mem_mib: int = 2048

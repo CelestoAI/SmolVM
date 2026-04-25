@@ -354,6 +354,7 @@ def _add_preset_parsers(
     for preset in list_presets():
         preset_parser = subparsers.add_parser(
             preset.name,
+            aliases=list(preset.aliases),
             help=preset.summary,
             description=preset.summary,
         )
@@ -446,10 +447,15 @@ def _add_preset_parsers(
 
 
 def _is_preset_command(args: argparse.Namespace) -> bool:
-    """Return True when ``args`` came from ``smolvm <preset> ...``."""
-    from smolvm.presets import preset_names
+    """Return True when ``args`` came from ``smolvm <preset> ...``.
 
-    return args.command in preset_names()
+    Accepts canonical preset names and aliases (e.g. ``claude`` for
+    ``claude-code``); argparse stores whichever spelling the user typed
+    in ``args.command``.
+    """
+    from smolvm.presets import preset_command_names
+
+    return args.command in preset_command_names()
 
 
 def build_parser() -> argparse.ArgumentParser:

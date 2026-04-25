@@ -2179,6 +2179,32 @@ class TestCliStart:
         # argparse produces "invalid choice" for unknown subcommand
         assert "invalid choice" in err or "argument command" in err
 
+    def test_claude_alias_resolves_to_claude_code(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """`smolvm claude start` should be accepted as an alias for
+        `smolvm claude-code start` — first-time users keep typing the
+        short name and the previous behaviour was an unfriendly
+        argparse 'invalid choice' error."""
+        parser = build_parser()
+        args = parser.parse_args(["claude", "start"])
+        # argparse stores whichever spelling the user typed in
+        # ``args.command``, but the canonical preset name (set via
+        # ``set_defaults``) is what the dispatch path looks up.
+        assert args.command == "claude"
+        assert args.preset_name == "claude-code"
+
+    def test_top_level_help_lists_claude_alias(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """The alias should appear in the top-level help so the
+        shorthand is discoverable, not a hidden trick."""
+        with pytest.raises(SystemExit):
+            main(["--help"])
+        out = capsys.readouterr().out
+        assert "claude" in out
+        assert "claude-code" in out
+
     @patch("smolvm.cli.main._apply_preset_with_progress")
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")

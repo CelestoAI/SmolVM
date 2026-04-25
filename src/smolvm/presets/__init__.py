@@ -56,6 +56,19 @@ def preset_names() -> list[str]:
     return sorted(_REGISTRY)
 
 
+def preset_command_names() -> list[str]:
+    """Return every name (canonical + aliases) that the CLI accepts.
+
+    Use this — not :func:`preset_names` — when checking whether an
+    ``args.command`` came from a preset, since the user may have typed
+    an alias like ``claude`` instead of ``claude-code``.
+    """
+    names: set[str] = set(_REGISTRY)
+    for preset in _REGISTRY.values():
+        names.update(preset.aliases)
+    return sorted(names)
+
+
 __all__ = [
     "CLAUDE_CODE_PRESET",
     "CODEX_PRESET",
@@ -65,5 +78,6 @@ __all__ = [
     "collect_host_env",
     "get_preset",
     "list_presets",
+    "preset_command_names",
     "preset_names",
 ]
