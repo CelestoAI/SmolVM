@@ -1879,6 +1879,51 @@ class TestCliList:
         # The warning explains what to do, not just what's wrong.
         assert "smolvm delete vm-abc123" in out
 
+    def test_list_warning_is_state_aware(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+        tmp_path: Path,
+    ) -> None:
+        """A running sandbox keeps working when its host folder vanishes;
+        the warning must say so instead of falsely claiming it can't start.
+        A stopped sandbox does block on the missing folder, so the wording
+        differs."""
+        missing = tmp_path / "deleted-worktree"
+        mount = MagicMock()
+        mount.host_path = missing
+        mock_sdk_cls.return_value.list_vms.return_value = [
+            _make_vm_info(
+                "sbx-running",
+                VMState.RUNNING,
+                "172.16.0.2",
+                2200,
+                12345,
+                workspace_mounts=[mount],
+            ),
+            _make_vm_info(
+                "sbx-stopped",
+                VMState.STOPPED,
+                "172.16.0.3",
+                None,
+                None,
+                workspace_mounts=[mount],
+            ),
+        ]
+
+        ret = main(["list", "--all", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        running_warning = payload["data"]["vms"][0]["warnings"][0]
+        stopped_warning = payload["data"]["vms"][1]["warnings"][0]
+
+        assert "still running" in running_warning
+        assert "once stopped" in running_warning
+        assert "cannot start" not in running_warning  # the bug we fixed
+
+        assert "cannot start" in stopped_warning
+
     def test_list_json_includes_warnings(
         self,
         mock_sdk_cls: MagicMock,

@@ -1101,21 +1101,33 @@ def _emit_cli_error(
 def _vm_warnings(vm: VMInfo) -> list[str]:
     """Collect human-facing warnings about a VM's persisted config.
 
-    Today this only covers stale workspace-mount host paths — the folder
-    a VM was created to share has been moved or deleted, so the VM
-    cannot start until the user restores the folder or deletes the VM.
-    Messages are full sentences so JSON consumers (agents) get the same
-    self-contained context the CLI shows.
+    Today this only covers stale workspace-mount host paths. The wording
+    is state-aware: a sandbox that was already running when the host
+    folder vanished keeps running (you can still ssh in), but it will
+    not survive a stop+start cycle — so we say so, instead of falsely
+    claiming the sandbox cannot start. Messages are full sentences so
+    JSON consumers (agents) get the same self-contained context.
     """
     warnings: list[str] = []
+    is_live = vm.status in (VMState.RUNNING, VMState.PAUSED)
     for mount in vm.config.workspace_mounts:
-        if not mount.host_path.exists():
+        if mount.host_path.exists():
+            continue
+        if is_live:
             warnings.append(
-                f"This sandbox was set up to share the folder "
-                f"'{mount.host_path}' with you, but that folder no longer "
-                f"exists on your machine. The sandbox cannot start until "
-                f"you put the folder back, or delete the sandbox with "
-                f"'smolvm delete {vm.vm_id}'."
+                f"This sandbox shares the folder '{mount.host_path}' from "
+                "your machine, but that folder no longer exists. The "
+                "sandbox is still running and can be used, but it will "
+                "not be able to start again once stopped. Restore the "
+                f"folder, or delete the sandbox with 'smolvm delete "
+                f"{vm.vm_id}' when you're done with it."
+            )
+        else:
+            warnings.append(
+                f"This sandbox shares the folder '{mount.host_path}' from "
+                "your machine, but that folder no longer exists. The "
+                "sandbox cannot start until you put the folder back, or "
+                f"delete the sandbox with 'smolvm delete {vm.vm_id}'."
             )
     return warnings
 

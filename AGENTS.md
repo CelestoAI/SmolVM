@@ -47,8 +47,11 @@ must answer three questions:
 - **What happened?** In plain English. Avoid internal vocabulary
   ("mount", "host", "tap device", "validator") even when those words
   appear in flag names — the user did not necessarily set the flag.
-- **Why does it matter?** What can the user no longer do? ("This
-  sandbox cannot start.")
+- **Why does it matter?** What can the user no longer do? Make sure
+  the consequence is **true in every state the message can fire in**.
+  A warning that says "the sandbox cannot start" is wrong when shown
+  on a running sandbox the user just SSH'd into. Branch the wording
+  on state if the consequence differs.
 - **How do they recover?** Include the exact recovery command, with
   the actual sandbox name interpolated, not a placeholder.
 
@@ -62,12 +65,24 @@ output and a separate hint that JSON callers will not see.
 workspace mount missing on host: /Users/aniket/conductor/workspaces/SmolVM/lome
 ```
 
-**Good** — plain English, names what to do:
+**Bad** — plain language, but the consequence is false for a running
+sandbox the user can already SSH into:
 
 ```
-This sandbox was set up to share the folder
-'/Users/aniket/conductor/workspaces/SmolVM/lome' with you, but that
+This sandbox was set up to share the folder '...' with you, but that
 folder no longer exists on your machine. The sandbox cannot start
 until you put the folder back, or delete the sandbox with
 'smolvm delete sbx-einstein'.
+```
+
+**Good** — plain English, factual for the sandbox's actual state,
+names the recovery:
+
+```
+This sandbox shares the folder
+'/Users/aniket/conductor/workspaces/SmolVM/lome' from your machine,
+but that folder no longer exists. The sandbox is still running and
+can be used, but it will not be able to start again once stopped.
+Restore the folder, or delete the sandbox with
+'smolvm delete sbx-einstein' when you're done with it.
 ```
