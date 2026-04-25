@@ -2226,6 +2226,57 @@ class TestCliStart:
         assert "LAUNCHED" in completed.stdout
         assert "No such file" not in completed.stderr
 
+    def test_launch_snippet_prepends_local_bin_to_path(
+        self, tmp_path: Path
+    ) -> None:
+        """The launch snippet must prepend ``~/.local/bin`` to PATH so a
+        harness that self-installed there (claude-code's npm postinstall
+        migrates to ``~/.local/bin/claude``) is found by the non-login
+        SSH shell, which otherwise inherits root's default PATH."""
+        import subprocess
+
+        from smolvm.cli.main import _exec_launch_command
+
+        captured: list[list[str]] = []
+
+        class _StubSshVm:
+            def _ssh_attach_command(self) -> list[str]:
+                return ["ssh", "-p", "2200", "root@127.0.0.1"]
+
+        def fake_run(*args: object, **_kwargs: object) -> MagicMock:
+            captured.append(args[0])  # type: ignore[arg-type]
+            result = MagicMock()
+            result.returncode = 0
+            return result
+
+        with patch("smolvm.cli.main.subprocess.run", side_effect=fake_run):
+            _exec_launch_command(_StubSshVm(), "claude")
+
+        remote = captured[0][-1]
+        # Drop a fake binary at $HOME/.local/bin/claude and verify the
+        # snippet would resolve `claude` from there. We swap `exec` for a
+        # `command -v` probe so the test stays in-process.
+        home = tmp_path / "home"
+        local_bin = home / ".local" / "bin"
+        local_bin.mkdir(parents=True)
+        (local_bin / "claude").write_text("#!/bin/sh\necho FROM_LOCAL_BIN\n")
+        (local_bin / "claude").chmod(0o755)
+
+        missing_env_file = tmp_path / "missing.sh"
+        snippet = remote.replace("exec claude", "command -v claude")
+        snippet = snippet.replace(
+            "/etc/profile.d/smolvm_env.sh", str(missing_env_file)
+        )
+        completed = subprocess.run(
+            ["bash", "-c", snippet],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={"HOME": str(home), "PATH": "/usr/bin:/bin"},
+        )
+        assert completed.returncode == 0
+        assert str(local_bin / "claude") in completed.stdout
+
     def test_claude_alias_resolves_to_claude_code(self) -> None:
         """`smolvm claude start` should be accepted as an alias for
         `smolvm claude-code start` — first-time users keep typing the

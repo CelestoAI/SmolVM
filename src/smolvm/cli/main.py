@@ -1886,7 +1886,16 @@ def _exec_launch_command(vm: object, launch_command: str) -> int:
     # auth where ANTHROPIC_API_KEY is unset on the host. Guard the source
     # and chain with ';' so a missing file never prevents the launch.
     cmd.insert(-1, "-t")
-    cmd.append(f"[ -r {ENV_FILE} ] && . {ENV_FILE}; exec {launch_command}")
+    # Prepend ~/.local/bin to PATH so harnesses that self-migrate to a
+    # native install on first run (claude-code drops a binary there via
+    # its npm postinstall) are picked up without a "not in your PATH"
+    # warning. SSH non-login shells skip /etc/profile, and Ubuntu's
+    # default root PATH does not include ~/.local/bin.
+    cmd.append(
+        f'[ -r {ENV_FILE} ] && . {ENV_FILE}; '
+        f'export PATH="$HOME/.local/bin:$PATH"; '
+        f"exec {launch_command}"
+    )
     completed = subprocess.run(cmd, check=False)
     return completed.returncode
 
