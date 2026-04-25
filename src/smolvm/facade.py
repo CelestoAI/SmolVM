@@ -358,7 +358,7 @@ def _build_s3_image_config(
     image: str,
     vm_name: str | None = None,
     backend: str | None = None,
-    mem_size_mib: int | None = None,
+    memory: int | None = None,
     ssh_key_path: str | None = None,
     on_download: Callable[[str, int, int | None], None] | None = None,
 ) -> tuple[VMConfig, str | None]:
@@ -424,7 +424,7 @@ def _build_s3_image_config(
     config = VMConfig(
         vm_id=resolved_vm_name,
         vcpu_count=1,
-        mem_size_mib=mem_size_mib or 512,
+        memory=memory or 512,
         kernel_path=local_image.kernel_path,
         initrd_path=local_image.initrd_path,
         rootfs_path=local_image.rootfs_path,
@@ -447,7 +447,7 @@ def _build_auto_config(
     vm_name: str | None = None,
     os: GuestOS | str | None = None,
     backend: str | None = None,
-    mem_size_mib: int | None = None,
+    memory: int | None = None,
     disk_size_mib: int | None = None,
     ssh_key_path: str | None = None,
     on_download: Callable[[str, int, int | None], None] | None = None,
@@ -460,9 +460,9 @@ def _build_auto_config(
     resolved_ssh_key_path, public_key_path = _resolve_auto_config_public_key(ssh_key_path)
     public_key_value = public_key_path.read_text().strip()
 
-    resolved_mem_size_mib = _AUTO_CONFIG_DEFAULT_MEM_SIZE_MIB[resolved_os]
-    if mem_size_mib is not None:
-        resolved_mem_size_mib = mem_size_mib
+    resolved_memory = _AUTO_CONFIG_DEFAULT_MEM_SIZE_MIB[resolved_os]
+    if memory is not None:
+        resolved_memory = memory
     default_disk_size_mib = _AUTO_CONFIG_DEFAULT_DISK_SIZE_MIB[resolved_os]
     resolved_disk_size_mib = default_disk_size_mib if disk_size_mib is None else disk_size_mib
     if resolved_disk_size_mib < 64:
@@ -526,7 +526,7 @@ def _build_auto_config(
         config = VMConfig(
             vm_id=resolved_vm_name,
             vcpu_count=1,
-            mem_size_mib=resolved_mem_size_mib,
+            memory=resolved_memory,
             kernel_path=image.kernel_path,
             initrd_path=image.initrd_path,
             rootfs_path=rootfs_path,
@@ -602,7 +602,7 @@ def _build_auto_config(
         config = VMConfig(
             vm_id=resolved_vm_name,
             vcpu_count=1,
-            mem_size_mib=resolved_mem_size_mib,
+            memory=resolved_memory,
             boot_mode="firmware",
             kernel_path=None,
             rootfs_path=rootfs_path,
@@ -649,7 +649,7 @@ def _build_auto_config(
     config = VMConfig(
         vm_id=resolved_vm_name,
         vcpu_count=1,
-        mem_size_mib=resolved_mem_size_mib,
+        memory=resolved_memory,
         kernel_path=kernel,
         rootfs_path=rootfs,
         boot_args=boot_args,
@@ -762,7 +762,7 @@ class SmolVM:
             config, ssh_key_path = _build_s3_image_config(
                 image=image,
                 backend=backend,
-                mem_size_mib=memory,
+                memory=memory,
                 ssh_key_path=ssh_key_path,
             )
         elif config is None and vm_id is None:
@@ -771,7 +771,7 @@ class SmolVM:
             config, ssh_key_path = _build_auto_config(
                 os=os,
                 backend=backend,
-                mem_size_mib=memory,
+                memory=memory,
                 disk_size_mib=disk_size,
                 ssh_key_path=ssh_key_path,
             )

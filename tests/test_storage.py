@@ -56,7 +56,7 @@ def sample_config(tmp_path: Path) -> VMConfig:
     return VMConfig(
         vm_id="vm001",
         vcpu_count=2,
-        mem_size_mib=512,
+        memory=512,
         kernel_path=kernel,
         rootfs_path=rootfs,
     )

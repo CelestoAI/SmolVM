@@ -50,14 +50,14 @@ class TestVMConfig:
         config = VMConfig(
             vm_id="vm001",
             vcpu_count=2,
-            mem_size_mib=512,
+            memory=512,
             kernel_path=kernel,
             rootfs_path=rootfs,
         )
 
         assert config.vm_id == "vm001"
         assert config.vcpu_count == 2
-        assert config.mem_size_mib == 512
+        assert config.memory == 512
 
     def test_vm_id_auto_generated_when_omitted(self, tmp_path: Path) -> None:
         """Test VM ID is generated when omitted."""
@@ -155,7 +155,7 @@ class TestVMConfig:
         with pytest.raises(ValidationError):
             VMConfig(
                 vm_id="vm001",
-                mem_size_mib=64,
+                memory=64,
                 kernel_path=kernel,
                 rootfs_path=rootfs,
             )
@@ -164,7 +164,7 @@ class TestVMConfig:
         with pytest.raises(ValidationError):
             VMConfig(
                 vm_id="vm001",
-                mem_size_mib=32768,
+                memory=32768,
                 kernel_path=kernel,
                 rootfs_path=rootfs,
             )

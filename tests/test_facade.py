@@ -40,7 +40,7 @@ def sample_config(tmp_path: Path) -> VMConfig:
     return VMConfig(
         vm_id="vm001",
         vcpu_count=2,
-        mem_size_mib=512,
+        memory=512,
         kernel_path=kernel,
         rootfs_path=rootfs,
     )
@@ -137,7 +137,7 @@ class TestVMInit:
         mock_sdk.create.assert_called_once()
         created_config = mock_sdk.create.call_args[0][0]
         assert "init=/init" in created_config.boot_args
-        assert created_config.mem_size_mib == 512
+        assert created_config.memory == 512
 
     @patch("smolvm.facade.SmolVMManager")
     @patch("smolvm.images.builder.ImageBuilder")
@@ -177,7 +177,7 @@ class TestVMInit:
         assert mock_builder.build_alpine_ssh_key.call_args.kwargs["rootfs_size_mb"] == 4096
         mock_sdk.create.assert_called_once()
         created_config = mock_sdk.create.call_args[0][0]
-        assert created_config.mem_size_mib == 2048
+        assert created_config.memory == 2048
 
     @patch("smolvm.facade.SmolVMManager")
     @patch("smolvm.images.builder.ImageBuilder")
@@ -216,7 +216,7 @@ class TestVMInit:
         assert mock_builder.build_debian_ssh_key.call_args.kwargs["rootfs_size_mb"] == 2048
         mock_builder.build_alpine_ssh_key.assert_not_called()
         created_config = mock_sdk.create.call_args[0][0]
-        assert created_config.mem_size_mib == 512
+        assert created_config.memory == 512
         assert created_config.boot_mode == "direct_kernel"
 
     @patch("smolvm.facade.SmolVMManager")
@@ -774,7 +774,7 @@ class TestVMImageParam:
         mock_build_s3.assert_called_once_with(
             image="s3://bucket/images/alpine/",
             backend=None,
-            mem_size_mib=None,
+            memory=None,
             ssh_key_path=None,
         )
         assert vm.vm_id == "vm-s3test"
@@ -788,7 +788,7 @@ class TestVMImageParam:
         mock_sdk_cls: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """Backend and mem_size_mib should be forwarded to the S3 config builder."""
+        """Backend and memory should be forwarded to the S3 config builder."""
         kernel = tmp_path / "vmlinux"
         rootfs = tmp_path / "rootfs.ext4"
         kernel.touch()
@@ -812,7 +812,7 @@ class TestVMImageParam:
         mock_build_s3.assert_called_once_with(
             image="s3://bucket/img/",
             backend="qemu",
-            mem_size_mib=1024,
+            memory=1024,
             ssh_key_path=None,
         )
 

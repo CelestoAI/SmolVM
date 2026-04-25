@@ -144,7 +144,7 @@ def _build_browser_vm_config(
     config = VMConfig(
         vm_id=_browser_vm_id(session_id, browser_config),
         vcpu_count=1,
-        mem_size_mib=browser_config.mem_size_mib,
+        memory=browser_config.mem_size_mib,
         kernel_path=kernel,
         rootfs_path=rootfs,
         boot_args=_browser_boot_args_for_backend(resolved_backend),

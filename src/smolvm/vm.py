@@ -537,7 +537,7 @@ class SmolVMManager:
     def _warn_low_disk_space_for_snapshot(self, vm_info: VMInfo) -> None:
         """Warn when snapshot creation looks likely to exhaust local disk space."""
         rootfs_size = vm_info.config.rootfs_path.stat().st_size
-        mem_size = vm_info.config.mem_size_mib * 1024 * 1024
+        mem_size = vm_info.config.memory * 1024 * 1024
         required_bytes = rootfs_size + (2 * mem_size)
         free_bytes = shutil.disk_usage(self.snapshot_dir).free
         if free_bytes < required_bytes:
@@ -1522,7 +1522,7 @@ class SmolVMManager:
             "-smp",
             str(vm_info.config.vcpu_count),
             "-m",
-            str(vm_info.config.mem_size_mib),
+            str(vm_info.config.memory),
         ]
         # Boot mode: direct-kernel passes -kernel/-append (optionally -initrd);
         # firmware mode lets QEMU boot the rootfs disk via default firmware
@@ -1735,7 +1735,7 @@ class SmolVMManager:
             "--cpus",
             str(vm_info.config.vcpu_count),
             "--memory",
-            str(vm_info.config.mem_size_mib),
+            str(vm_info.config.memory),
             "--kernel",
             str(vm_info.config.kernel_path),
             "--rootfs",
@@ -2271,7 +2271,7 @@ class SmolVMManager:
             "--cpus",
             str(vm_info.config.vcpu_count),
             "--memory",
-            str(vm_info.config.mem_size_mib),
+            str(vm_info.config.memory),
             "--kernel",
             str(vm_info.config.kernel_path),
             "--rootfs",

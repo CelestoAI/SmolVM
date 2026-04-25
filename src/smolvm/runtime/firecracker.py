@@ -60,7 +60,7 @@ class FirecrackerRuntimeAdapter(RuntimeAdapter):
             client = FirecrackerClient(control_socket_path)
             client.wait_for_socket(timeout=boot_timeout)
             client.set_boot_source(vm_info.config.kernel_path, self._context.resolve_boot_args(vm_info))
-            client.set_machine_config(vm_info.config.vcpu_count, vm_info.config.mem_size_mib)
+            client.set_machine_config(vm_info.config.vcpu_count, vm_info.config.memory)
             client.add_drive(
                 "rootfs",
                 vm_info.config.rootfs_path,

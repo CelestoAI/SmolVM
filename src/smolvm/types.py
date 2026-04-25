@@ -246,7 +246,7 @@ class VMConfig(BaseModel):
         vm_id: Optional unique identifier (lowercase alphanumeric with hyphens).
             If omitted, SmolVM auto-generates one.
         vcpu_count: Number of virtual CPUs (1-32).
-        mem_size_mib: Memory size in MiB (128-16384).
+        memory: Memory size in MiB (128-16384).
         boot_mode: How the guest boots:
 
             - ``"direct_kernel"`` (default): the hypervisor loads
@@ -287,7 +287,7 @@ class VMConfig(BaseModel):
         ),
     ]
     vcpu_count: Annotated[int, Field(ge=1, le=32)] = 2
-    mem_size_mib: Annotated[int, Field(ge=128, le=16384)] = 512
+    memory: Annotated[int, Field(ge=128, le=16384)] = 512
     boot_mode: Literal["direct_kernel", "firmware"] = "direct_kernel"
     kernel_path: Path | None = None
     initrd_path: Path | None = None
