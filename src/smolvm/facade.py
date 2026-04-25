@@ -752,9 +752,13 @@ class SmolVM:
         # (on the kwarg or the config) still get the SmolVMManager error if
         # their choice can't host mounts.
         wants_mounts = bool(mounts) or (config is not None and bool(config.workspace_mounts))
-        if backend is None and wants_mounts and vm_id is None:
-            if config is None or config.backend is None:
-                backend = BACKEND_QEMU
+        if (
+            backend is None
+            and wants_mounts
+            and vm_id is None
+            and (config is None or config.backend is None)
+        ):
+            backend = BACKEND_QEMU
 
         if image is not None:
             # S3 image mode
@@ -1102,7 +1106,8 @@ class SmolVM:
 
         if self._info.status != VMState.RUNNING:
             raise SmolVMError(
-                f"VM is not running. Start the VM using vm.start() before running commands (current state: {self._info.status.value})",
+                "VM is not running. Start the VM using vm.start() before "
+                f"running commands (current state: {self._info.status.value})",
                 {"vm_id": self._vm_id},
             )
         if not self.can_run_commands():
@@ -1194,7 +1199,8 @@ class SmolVM:
 
         if self._info.status != VMState.RUNNING:
             raise SmolVMError(
-                f"VM is not running. Start the VM using vm.start() before waiting for SSH (current state: {self._info.status.value})",
+                "VM is not running. Start the VM using vm.start() before "
+                f"waiting for SSH (current state: {self._info.status.value})",
                 {"vm_id": self._vm_id},
             )
         if self._info.network is None:
@@ -1820,6 +1826,8 @@ class SmolVM:
                 {"vm_id": self._vm_id, "ssh_user": self._ssh_user},
             )
 
+        self._ensure_9p_workspace_support()
+
         for index, ws in enumerate(workspace_mounts):
             tag = ws.resolved_tag(index)
             guest_path = shlex.quote(ws.guest_path)
@@ -1864,6 +1872,55 @@ class SmolVM:
                 tag,
                 ws.guest_path,
             )
+
+    def _ensure_9p_workspace_support(self) -> None:
+        """Best-effort repair for Ubuntu cloud images missing 9p modules."""
+        assert self._ssh is not None  # noqa: S101 — caller guarantees SSH ready
+
+        probe_script = (
+            "modprobe 9p 2>/dev/null && "
+            "modprobe 9pnet_virtio 2>/dev/null && "
+            "modprobe overlay 2>/dev/null"
+        )
+        probe = self._ssh.run(probe_script, timeout=15)
+        if probe.exit_code == 0:
+            return
+
+        install_script = r"""
+set -eu
+. /etc/os-release 2>/dev/null || ID=
+if [ "${ID:-}" != "ubuntu" ] || ! command -v apt-get >/dev/null 2>&1; then
+  exit 42
+fi
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq "linux-modules-extra-$(uname -r)"
+modprobe 9p
+modprobe 9pnet_virtio
+modprobe overlay
+""".strip()
+        install = self._ssh.run(install_script, timeout=240)
+        if install.exit_code == 0:
+            logger.info(
+                "VM %s: installed Ubuntu linux-modules-extra for workspace mounts",
+                self._vm_id,
+            )
+            return
+
+        raise SmolVMError(
+            "Cannot mount workspaces: guest is missing 9p or overlay kernel support. "
+            "Ubuntu guests can usually be repaired by installing "
+            "linux-modules-extra-$(uname -r); this guest could not be repaired "
+            "automatically.",
+            {
+                "vm_id": self._vm_id,
+                "probe_exit_code": probe.exit_code,
+                "probe_stderr": probe.stderr.strip(),
+                "install_exit_code": install.exit_code,
+                "install_stdout": install.stdout.strip(),
+                "install_stderr": install.stderr.strip(),
+            },
+        )
 
     def _reset_runtime_state(self, *, close_ssh: bool = True) -> None:
         """Clear cached runtime connection state after lifecycle changes."""

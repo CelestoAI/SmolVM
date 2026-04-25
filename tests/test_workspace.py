@@ -21,7 +21,7 @@ import pytest
 from pydantic import ValidationError
 
 from smolvm.facade import SmolVM
-from smolvm.types import VMConfig, VMState, WorkspaceMount
+from smolvm.types import CommandResult, VMConfig, VMState, WorkspaceMount
 from smolvm.vm import SmolVMManager
 
 # ── WorkspaceMount validation ───────────────────────────────────────
@@ -475,3 +475,76 @@ class TestFacadeWorkspaceGuards:
                  patch.object(vm, "wait_for_ssh"), \
                  patch("smolvm.facade.SSHClient"):
                 vm.start()
+
+    def test_mount_workspaces_repairs_ubuntu_missing_9p_modules(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Ubuntu guests missing 9p modules should install linux-modules-extra."""
+        ws_dir = tmp_path / "project"
+        ws_dir.mkdir()
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+        config = VMConfig(
+            vm_id="vm-repair",
+            kernel_path=kernel,
+            rootfs_path=rootfs,
+            backend="qemu",
+            workspace_mounts=[WorkspaceMount(host_path=ws_dir)],
+        )
+
+        vm = object.__new__(SmolVM)
+        vm._vm_id = "vm-repair"
+        vm._ssh_user = "root"
+        vm._info = MagicMock(config=config)
+        vm._ssh = MagicMock()
+        vm._ssh.run.side_effect = [
+            CommandResult(exit_code=1, stdout="", stderr="modprobe: FATAL: Module 9p"),
+            CommandResult(exit_code=0, stdout="", stderr=""),
+            CommandResult(exit_code=0, stdout="", stderr=""),
+        ]
+
+        vm._mount_workspaces()
+
+        install_script = vm._ssh.run.call_args_list[1].args[0]
+        mount_script = vm._ssh.run.call_args_list[2].args[0]
+        assert "linux-modules-extra-$(uname -r)" in install_script
+        assert "mount -t 9p" in mount_script
+
+    def test_mount_workspaces_reports_unrepairable_missing_9p(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Non-Ubuntu or unrepairable guests should fail before the mount loop."""
+        from smolvm.exceptions import SmolVMError
+
+        ws_dir = tmp_path / "project"
+        ws_dir.mkdir()
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+        config = VMConfig(
+            vm_id="vm-unrepairable",
+            kernel_path=kernel,
+            rootfs_path=rootfs,
+            backend="qemu",
+            workspace_mounts=[WorkspaceMount(host_path=ws_dir)],
+        )
+
+        vm = object.__new__(SmolVM)
+        vm._vm_id = "vm-unrepairable"
+        vm._ssh_user = "root"
+        vm._info = MagicMock(config=config)
+        vm._ssh = MagicMock()
+        vm._ssh.run.side_effect = [
+            CommandResult(exit_code=1, stdout="", stderr="modprobe: FATAL: Module 9p"),
+            CommandResult(exit_code=42, stdout="", stderr="not ubuntu"),
+        ]
+
+        with pytest.raises(SmolVMError, match="missing 9p or overlay"):
+            vm._mount_workspaces()
+
+        assert vm._ssh.run.call_count == 2
