@@ -221,7 +221,6 @@ uv run python scripts/benchmarks/bench.py
 
 See [scripts/benchmarks/README.md](scripts/benchmarks/README.md) for flags, output format, and what each metric means.
 
-SmolVM uses [Firecracker](https://firecracker-microvm.github.io/) on Linux — a lightweight virtual machine manager built for running thousands of secure, fast micro-VMs.
 
 
 ## Contributing
