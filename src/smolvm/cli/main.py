@@ -107,7 +107,7 @@ class CreatePayload(TypedDict):
 
 
 class StartPresetPayload(TypedDict):
-    """Preset application summary for ``smolvm start``."""
+    """Preset application summary for ``smolvm <preset> start``."""
 
     name: str
     copied_configs: list[str]
@@ -115,7 +115,7 @@ class StartPresetPayload(TypedDict):
 
 
 class StartPayload(TypedDict):
-    """JSON payload for ``smolvm start``."""
+    """JSON payload for ``smolvm <preset> start``."""
 
     vm: CreateVmPayload
     preset: StartPresetPayload
@@ -311,37 +311,47 @@ def _add_boot_timeout_arg(command_parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_start_parser(
+def _add_preset_parsers(
     subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
 ) -> None:
-    """Wire ``smolvm start <preset>`` into the CLI."""
+    """Wire ``smolvm <preset> <action>`` into the CLI.
+
+    Each agent harness is a top-level subcommand (``smolvm codex``,
+    ``smolvm claude-code``) with its own action subcommands. This follows
+    the project's NOUN-VERB CLI convention so future harness actions
+    (``logs``, ``status``, etc.) compose naturally.
+    """
     from smolvm.presets import list_presets
 
-    start_parser = subparsers.add_parser(
-        "start",
-        help="Start a sandbox preconfigured for a specific agent harness.",
-        description=(
-            "Boot a fresh sandbox and preinstall an agent harness. Each "
-            "preset copies relevant host config (e.g. ~/.codex, ~/.claude) "
-            "and forwards API keys from the host environment."
-        ),
-    )
-    preset_sub = start_parser.add_subparsers(
-        dest="preset_name",
-        metavar="harness",
-    )
-
     for preset in list_presets():
-        p = preset_sub.add_parser(
+        preset_parser = subparsers.add_parser(
             preset.name,
             help=preset.summary,
+            description=preset.summary,
         )
-        p.add_argument(
+        action_sub = preset_parser.add_subparsers(
+            dest="preset_action",
+            metavar="ACTION",
+            required=True,
+        )
+
+        start_p = action_sub.add_parser(
+            "start",
+            help=f"Start a sandbox preconfigured for {preset.name}.",
+            description=(
+                f"Boot a fresh sandbox and preinstall {preset.name}. "
+                "Copies relevant host config (e.g. ~/.codex, ~/.claude) "
+                "and forwards API keys from the host environment."
+            ),
+        )
+        start_p.set_defaults(preset_name=preset.name)
+
+        start_p.add_argument(
             "-n",
             "--name",
             help="Name for the sandbox (default: auto-generated).",
         )
-        p.add_argument(
+        start_p.add_argument(
             "--memory",
             dest="memory_mib",
             type=int,
@@ -349,7 +359,7 @@ def _add_start_parser(
             metavar="MIB",
             help=f"Sandbox memory in MiB (default: {preset.default_mem_mib}).",
         )
-        p.add_argument(
+        start_p.add_argument(
             "--disk-size",
             dest="disk_size_mib",
             type=int,
@@ -357,13 +367,13 @@ def _add_start_parser(
             metavar="MIB",
             help=f"Sandbox disk size in MiB (default: {preset.default_disk_mib}).",
         )
-        p.add_argument(
+        start_p.add_argument(
             "--backend",
             choices=["auto", "firecracker", "qemu", "libkrun"],
             default=None,
             help="Virtualization backend (default: qemu, required by ubuntu).",
         )
-        p.add_argument(
+        start_p.add_argument(
             "--mount",
             action="append",
             default=None,
@@ -375,14 +385,14 @@ def _add_start_parser(
                 "Can be repeated."
             ),
         )
-        p.add_argument(
+        start_p.add_argument(
             "--install-timeout",
             type=_positive_float,
             default=600.0,
             help="Seconds to wait for the harness install (default: 600).",
         )
         if preset.launch_command is not None:
-            attach_group = p.add_mutually_exclusive_group()
+            attach_group = start_p.add_mutually_exclusive_group()
             attach_group.add_argument(
                 "--attach",
                 dest="attach",
@@ -399,12 +409,19 @@ def _add_start_parser(
                 action="store_false",
                 help="Skip the post-install attach prompt.",
             )
-        p.add_argument(
+        start_p.add_argument(
             "--json",
             action="store_true",
             help="Emit machine-readable JSON output.",
         )
-        _add_boot_timeout_arg(p)
+        _add_boot_timeout_arg(start_p)
+
+
+def _is_preset_command(args: argparse.Namespace) -> bool:
+    """Return True when ``args`` came from ``smolvm <preset> ...``."""
+    from smolvm.presets import preset_names
+
+    return args.command in preset_names()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -664,7 +681,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_boot_timeout_arg(create_parser)
 
-    _add_start_parser(subparsers)
+    _add_preset_parsers(subparsers)
 
     stop_parser = subparsers.add_parser(
         "stop",
@@ -1382,7 +1399,7 @@ def _run_create(args: argparse.Namespace) -> int:
 
 
 def _render_start_result(data: StartPayload) -> None:
-    """Render the human-facing ``smolvm start`` result."""
+    """Render the human-facing ``smolvm <preset> start`` result."""
     console = console_stdout()
     vm_data = data["vm"]
     preset = data["preset"]
@@ -1425,20 +1442,11 @@ def _render_start_result(data: StartPayload) -> None:
 
 
 def _run_start(args: argparse.Namespace) -> int:
-    """Handle ``smolvm start <preset>``."""
+    """Handle ``smolvm <preset> start``."""
     from smolvm.facade import SmolVM, _build_auto_config
     from smolvm.presets import apply_preset, get_preset
 
-    if not getattr(args, "preset_name", None):
-        # argparse leaves preset_name=None when invoked as bare ``smolvm start``.
-        # Print the start subparser help instead of failing silently.
-        build_parser().parse_args(["start", "--help"])
-        return 2
-
-    try:
-        preset = get_preset(args.preset_name)
-    except KeyError as exc:
-        return _emit_cli_error("start", 2, exc, json_output=args.json)
+    preset = get_preset(args.preset_name)
 
     backend = args.backend or "qemu"
     if backend != "qemu":
@@ -2494,7 +2502,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "create":
         return _run_create(args)
 
-    if args.command == "start":
+    if _is_preset_command(args):
         return _run_start(args)
 
     if args.command == "stop":

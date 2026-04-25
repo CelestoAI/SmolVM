@@ -1837,7 +1837,7 @@ class TestCliList:
 
 
 class TestCliStart:
-    """Tests for `smolvm start <preset>`."""
+    """Tests for `smolvm <preset> start`."""
 
     def _make_vm_mock(self, vm_id: str = "sbx-codex") -> MagicMock:
         vm = MagicMock()
@@ -1849,25 +1849,32 @@ class TestCliStart:
         vm.info.network.ssh_host_port = 2200
         return vm
 
-    def test_start_help_lists_known_presets(
+    def test_top_level_help_lists_known_presets(
         self, capsys: pytest.CaptureFixture
     ) -> None:
-        """`smolvm start --help` should list every registered preset."""
+        """`smolvm --help` should list every registered preset as a top-level command."""
         with pytest.raises(SystemExit):
-            main(["start", "--help"])
+            main(["--help"])
         out = capsys.readouterr().out
         assert "codex" in out
         assert "claude-code" in out
 
-    def test_start_unknown_preset_errors(
+    def test_preset_help_lists_start_action(
         self, capsys: pytest.CaptureFixture
     ) -> None:
+        """`smolvm codex --help` should list the `start` action."""
+        with pytest.raises(SystemExit):
+            main(["codex", "--help"])
+        out = capsys.readouterr().out
+        assert "start" in out
+
+    def test_unknown_preset_errors(self, capsys: pytest.CaptureFixture) -> None:
         """An unknown preset name should fail at argparse-level."""
         with pytest.raises(SystemExit):
-            main(["start", "hermes"])
+            main(["hermes", "start"])
         err = capsys.readouterr().err
         # argparse produces "invalid choice" for unknown subcommand
-        assert "invalid choice" in err or "argument harness" in err
+        assert "invalid choice" in err or "argument command" in err
 
     @patch("smolvm.cli.main._apply_preset_with_progress")
     @patch("smolvm.facade._build_auto_config")
@@ -1879,7 +1886,7 @@ class TestCliStart:
         mock_apply: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm start codex` boots ubuntu/qemu with preset defaults and applies the preset."""
+        """`smolvm codex start` boots ubuntu/qemu with preset defaults and applies the preset."""
         from smolvm.types import GuestOS
 
         config = MagicMock(vm_id="sbx-codex")
@@ -1892,7 +1899,7 @@ class TestCliStart:
             "injected_env_keys": ["OPENAI_API_KEY"],
         }
 
-        ret = main(["start", "codex", "--name", "sbx-codex"])
+        ret = main(["codex", "start", "--name", "sbx-codex"])
 
         assert ret == 0
         mock_build_auto_config.assert_called_once_with(
@@ -1926,7 +1933,7 @@ class TestCliStart:
         mock_apply_fn: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm start codex --json` should emit the start envelope."""
+        """`smolvm codex start --json` should emit the start envelope."""
         config = MagicMock(vm_id="sbx-1")
         mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
         vm = self._make_vm_mock("sbx-1")
@@ -1937,7 +1944,7 @@ class TestCliStart:
             "injected_env_keys": ["OPENAI_API_KEY"],
         }
 
-        ret = main(["start", "codex", "--name", "sbx-1", "--json"])
+        ret = main(["codex", "start", "--name", "sbx-1", "--json"])
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
@@ -1969,7 +1976,7 @@ class TestCliStart:
             "injected_env_keys": [],
         }
 
-        ret = main(["start", "claude-code", "--memory", "4096", "--disk-size", "16384"])
+        ret = main(["claude-code", "start", "--memory", "4096", "--disk-size", "16384"])
 
         assert ret == 0
         kwargs = mock_build_auto_config.call_args.kwargs
@@ -1985,7 +1992,7 @@ class TestCliStart:
         capsys: pytest.CaptureFixture,
     ) -> None:
         """Built-in presets target ubuntu, which only boots on qemu."""
-        ret = main(["start", "codex", "--backend", "firecracker"])
+        ret = main(["codex", "start", "--backend", "firecracker"])
 
         assert ret == 2
         err = capsys.readouterr().err
@@ -2025,7 +2032,7 @@ class TestCliStart:
         completed.returncode = 0
         mock_subprocess_run.return_value = completed
 
-        ret = main(["start", "codex", "--attach"])
+        ret = main(["codex", "start", "--attach"])
 
         assert ret == 0
         mock_subprocess_run.assert_called_once()
@@ -2058,7 +2065,7 @@ class TestCliStart:
             "injected_env_keys": [],
         }
 
-        ret = main(["start", "codex", "--no-attach"])
+        ret = main(["codex", "start", "--no-attach"])
 
         assert ret == 0
         mock_subprocess_run.assert_not_called()
@@ -2095,7 +2102,7 @@ class TestCliStart:
         completed.returncode = 0
         mock_subprocess_run.return_value = completed
 
-        ret = main(["start", "codex"])
+        ret = main(["codex", "start"])
 
         assert ret == 0
         mock_input.assert_called_once()
@@ -2128,7 +2135,7 @@ class TestCliStart:
             "injected_env_keys": [],
         }
 
-        ret = main(["start", "codex"])
+        ret = main(["codex", "start"])
 
         assert ret == 0
         mock_input.assert_called_once()
@@ -2155,7 +2162,7 @@ class TestCliStart:
             "injected_env_keys": [],
         }
 
-        ret = main(["start", "codex", "--json"])
+        ret = main(["codex", "start", "--json"])
 
         assert ret == 0
         mock_subprocess_run.assert_not_called()

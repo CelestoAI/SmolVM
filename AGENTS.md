@@ -13,6 +13,18 @@ SmolVM is specifically designed to provide a secure "sandbox" for AI agents to e
 - **Testing:** `pytest` (runs the suite in `tests/`)
 - **Linting & Formatting:** `uv run ruff check .` or `uv run ruff format .`
 
+### CLI design
+
+- New CLI commands follow a **NOUN-VERB** structure: `smolvm <noun> <verb>`,
+  e.g. `smolvm codex start`, not `smolvm start codex`.
+- The noun names the resource (a sandbox, a harness, a browser session); the
+  verb names the action on it (`start`, `stop`, `ssh`).
+- This scales naturally as actions grow: `smolvm codex start`, then later
+  `smolvm codex logs`, `smolvm codex status`, etc.
+- When adding a new harness or resource, register it as a top-level
+  subcommand and put its actions underneath, instead of overloading a
+  global verb.
+
 ### Core writing principles
 - Follow progressive disclosure of complexity.
 - Lead with outcomes, not implementation details.

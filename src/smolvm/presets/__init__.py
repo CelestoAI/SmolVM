@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Preconfigured agent-harness blueprints for ``smolvm start``.
+"""Preconfigured agent-harness blueprints for ``smolvm <harness> start``.
 
 A *preset* boots a fresh sandbox and layers on a specific agent
 harness — for example OpenAI's codex CLI or Anthropic's Claude Code —
