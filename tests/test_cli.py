@@ -562,8 +562,10 @@ class TestCliCreate:
         self,
         mock_vm_cls: MagicMock,
         mock_build_auto_config: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The 4096 MiB CLI default only applies to debian/ubuntu, not alpine."""
+        monkeypatch.delenv("SMOLVM_BACKEND", raising=False)
         mock_build_auto_config.return_value = (MagicMock(vm_id="vm"), "/tmp/id_ed25519")
         vm = MagicMock()
         vm.vm_id = "vm"
@@ -584,6 +586,9 @@ class TestCliCreate:
             disk_size_mib=None,
             ssh_key_path=None,
         )
+        vm.start.assert_called_once_with(boot_timeout=30.0)
+        vm.wait_for_ssh.assert_called_once_with(timeout=30.0)
+        vm.close.assert_called_once()
 
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
@@ -664,17 +669,34 @@ class TestCliCreateImage:
         assert "not allowed" in capsys.readouterr().err
 
     def test_image_with_name_and_memory(self) -> None:
-        """--image should work alongside --name and --memory."""
+        """--image should work alongside --name, --memory, and --disk-size."""
         parser = build_parser()
         args = parser.parse_args([
             "create",
             "--image", "s3://bucket/img/",
             "--name", "my-vm",
             "--memory", "1024",
+            "--disk-size", "2048",
         ])
         assert args.image == "s3://bucket/img/"
         assert args.name == "my-vm"
         assert args.memory_mib == 1024
+        assert args.disk_size_mib == 2048
+
+    def test_image_with_disk_size_is_rejected(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--disk-size has no effect on prebuilt S3 images and must be rejected."""
+        ret = main([
+            "create",
+            "--image", "s3://bucket/img/",
+            "--disk-size", "8192",
+        ])
+
+        assert ret == 1
+        err = capsys.readouterr().err
+        assert "--disk-size is incompatible with --image" in err
 
 
 class TestCliStop:

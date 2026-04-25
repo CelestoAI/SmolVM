@@ -1157,6 +1157,15 @@ def _run_create(args: argparse.Namespace) -> int:
             else _default_guest_os_for_backend(resolved_backend)
         )
 
+        # --disk-size has no effect for prebuilt S3 images (the rootfs size
+        # is baked into the image). Reject it explicitly so users aren't
+        # silently misled into thinking it took effect.
+        if use_s3_image and args.disk_size_mib is not None:
+            raise ValueError(
+                "--disk-size is incompatible with --image: the disk size of "
+                "an S3 image is fixed by the image itself."
+            )
+
         # CLI default: roomier disk for debian/ubuntu so package installs
         # and apt cache don't fill the rootfs on a basic `smolvm create`.
         if (
