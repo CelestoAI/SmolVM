@@ -13,7 +13,7 @@ is what users get.
 | macOS    | QEMU        | `--backend auto` picks it |
 | Linux    | Firecracker | `--backend auto` picks it |
 
-Cross-platform combinations (Firecracker on macOS, libkrun anywhere except its supported targets) error out at startup.
+Firecracker on macOS errors out at startup.
 
 ## Prerequisites
 
