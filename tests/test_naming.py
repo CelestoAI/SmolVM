@@ -51,6 +51,25 @@ def test_returned_name_passes_vm_id_validation() -> None:
         assert re.fullmatch(_IDENTIFIER_PATTERN, name), name
 
 
+def test_custom_prefix() -> None:
+    """A caller-supplied prefix replaces the default ``sbx`` in generated names."""
+    name = generate_sandbox_name(set(), prefix="codex")
+    assert name.startswith("codex-")
+    scientist = name.removeprefix("codex-")
+    assert scientist in SCIENTISTS
+
+
+def test_custom_prefix_with_collision() -> None:
+    taken = {f"codex-{s}" for s in SCIENTISTS}
+    name = generate_sandbox_name(taken, prefix="codex", rng=random.Random(0))
+
+    assert name.startswith("codex-")
+    parts = name.removeprefix("codex-").split("-")
+    assert len(parts) == 2
+    assert parts[0] in SCIENTISTS
+    assert parts[1] in CITIES
+
+
 def test_falls_back_to_hex_when_space_exhausted() -> None:
     """Final fallback guarantees uniqueness even if scientists+cities collide."""
     taken = {f"sbx-{s}" for s in SCIENTISTS}

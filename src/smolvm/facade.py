@@ -295,11 +295,11 @@ def _existing_vm_ids() -> set[str]:
         return set()
 
 
-def _resolve_vm_name(vm_name: str | None) -> str:
-    """Return the user-supplied name or pick a fresh ``sbx-{scientist}`` one."""
+def _resolve_vm_name(vm_name: str | None, *, prefix: str = "sbx") -> str:
+    """Return the user-supplied name or auto-generate one with *prefix*."""
     if vm_name is not None:
         return vm_name
-    return generate_sandbox_name(_existing_vm_ids())
+    return generate_sandbox_name(_existing_vm_ids(), prefix=prefix)
 
 
 def _resolve_auto_config_public_key(ssh_key_path: str | None) -> tuple[str, Path]:
@@ -357,6 +357,7 @@ def _build_s3_image_config(
     *,
     image: str,
     vm_name: str | None = None,
+    name_prefix: str = "sbx",
     backend: str | None = None,
     memory: int | None = None,
     ssh_key_path: str | None = None,
@@ -420,7 +421,7 @@ def _build_s3_image_config(
                 )
             extra_drives.append(seed_path)
 
-    resolved_vm_name = _resolve_vm_name(vm_name)
+    resolved_vm_name = _resolve_vm_name(vm_name, prefix=name_prefix)
     config = VMConfig(
         vm_id=resolved_vm_name,
         vcpu_count=1,
@@ -445,6 +446,7 @@ def _build_s3_image_config(
 def _build_auto_config(
     *,
     vm_name: str | None = None,
+    name_prefix: str = "sbx",
     os: GuestOS | str | None = None,
     backend: str | None = None,
     memory: int | None = None,
@@ -522,7 +524,7 @@ def _build_auto_config(
                 ),
             )
 
-        resolved_vm_name = _resolve_vm_name(vm_name)
+        resolved_vm_name = _resolve_vm_name(vm_name, prefix=name_prefix)
         config = VMConfig(
             vm_id=resolved_vm_name,
             vcpu_count=1,
@@ -598,7 +600,7 @@ def _build_auto_config(
                 ),
             )
 
-        resolved_vm_name = _resolve_vm_name(vm_name)
+        resolved_vm_name = _resolve_vm_name(vm_name, prefix=name_prefix)
         config = VMConfig(
             vm_id=resolved_vm_name,
             vcpu_count=1,
@@ -645,7 +647,7 @@ def _build_auto_config(
             kernel_profile=kernel_profile,
         )
 
-    resolved_vm_name = _resolve_vm_name(vm_name)
+    resolved_vm_name = _resolve_vm_name(vm_name, prefix=name_prefix)
     config = VMConfig(
         vm_id=resolved_vm_name,
         vcpu_count=1,

@@ -127,6 +127,7 @@ CITIES: tuple[str, ...] = (
 def generate_sandbox_name(
     existing: set[str] | frozenset[str] | None = None,
     *,
+    prefix: str = SANDBOX_PREFIX,
     rng: random.Random | None = None,
 ) -> str:
     """Return a friendly sandbox name like ``sbx-einstein`` or ``sbx-tesla-london``.
@@ -137,11 +138,14 @@ def generate_sandbox_name(
             performed (callers without state-manager access can still get a
             scientist-style name and rely on the storage layer to reject
             duplicates).
+        prefix: Namespace prefix for the generated name. Defaults to ``"sbx"``.
+            Presets pass their own name (e.g. ``"codex"``) so sandboxes are
+            visually grouped by harness type.
         rng: Optional ``random.Random`` for deterministic tests.
 
     Strategy:
-        1. Try a bare ``sbx-{scientist}`` for a few random picks.
-        2. On collision, append a random city: ``sbx-{scientist}-{city}``.
+        1. Try a bare ``{prefix}-{scientist}`` for a few random picks.
+        2. On collision, append a random city: ``{prefix}-{scientist}-{city}``.
         3. If everything collides (vanishingly unlikely), fall back to a hex
            suffix that guarantees uniqueness.
     """
@@ -150,13 +154,13 @@ def generate_sandbox_name(
 
     for _ in range(len(SCIENTISTS)):
         scientist = picker.choice(SCIENTISTS)
-        bare = f"{SANDBOX_PREFIX}-{scientist}"
+        bare = f"{prefix}-{scientist}"
         if bare not in taken:
             return bare
         for _ in range(len(CITIES)):
             city = picker.choice(CITIES)
-            qualified = f"{SANDBOX_PREFIX}-{scientist}-{city}"
+            qualified = f"{prefix}-{scientist}-{city}"
             if qualified not in taken:
                 return qualified
 
-    return f"{SANDBOX_PREFIX}-{picker.choice(SCIENTISTS)}-{uuid4().hex[:6]}"
+    return f"{prefix}-{picker.choice(SCIENTISTS)}-{uuid4().hex[:6]}"

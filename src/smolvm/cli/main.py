@@ -1744,6 +1744,7 @@ def _run_start(args: argparse.Namespace) -> int:
                 console=console,
                 build_fn=lambda on_download: _build_auto_config(
                     vm_name=args.name,
+                    name_prefix=preset.name,
                     os=GuestOS.UBUNTU,
                     backend=backend,
                     memory=memory_mib,
@@ -1763,6 +1764,7 @@ def _run_start(args: argparse.Namespace) -> int:
         else:
             config, ssh_key_path = _build_auto_config(
                 vm_name=args.name,
+                name_prefix=preset.name,
                 os=GuestOS.UBUNTU,
                 backend=backend,
                 memory=memory_mib,
