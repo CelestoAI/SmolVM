@@ -409,9 +409,9 @@ class TestCliCreate:
                 "create",
                 "--name",
                 "project-spacex",
-                "--memory-mib",
+                "--memory",
                 "1024",
-                "--disk-size-mib",
+                "--disk-size",
                 "2048",
                 "--backend",
                 "qemu",
@@ -631,13 +631,13 @@ class TestCliCreateImage:
         assert "not allowed" in capsys.readouterr().err
 
     def test_image_with_name_and_memory(self) -> None:
-        """--image should work alongside --name and --memory-mib."""
+        """--image should work alongside --name and --memory."""
         parser = build_parser()
         args = parser.parse_args([
             "create",
             "--image", "s3://bucket/img/",
             "--name", "my-vm",
-            "--memory-mib", "1024",
+            "--memory", "1024",
         ])
         assert args.image == "s3://bucket/img/"
         assert args.name == "my-vm"

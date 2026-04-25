@@ -335,7 +335,7 @@ class TestVMInit:
         mock_prepare_sized: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """--disk-size-mib on debian/qemu should be forwarded to resize helper."""
+        """--disk-size on debian/qemu should be forwarded to resize helper."""
         private_key = tmp_path / "id_ed25519"
         public_key = tmp_path / "id_ed25519.pub"
         private_key.touch()
@@ -363,7 +363,7 @@ class TestVMInit:
         self,
         tmp_path: Path,
     ) -> None:
-        """Debian/qemu should reject --disk-size-mib below the default."""
+        """Debian/qemu should reject --disk-size below the default."""
         with pytest.raises(ValueError, match="disk_size_mib >= 2048"):
             _build_auto_config(os="debian", backend="qemu", disk_size_mib=1024)
 
@@ -371,7 +371,7 @@ class TestVMInit:
         self,
         tmp_path: Path,
     ) -> None:
-        """Ubuntu should reject --disk-size-mib below the default."""
+        """Ubuntu should reject --disk-size below the default."""
         with pytest.raises(ValueError, match="disk_size_mib >= 2048"):
             _build_auto_config(os="ubuntu", backend="qemu", disk_size_mib=512)
 

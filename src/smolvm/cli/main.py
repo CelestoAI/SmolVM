@@ -505,15 +505,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     create_parser.add_argument(
-        "--memory-mib",
+        "--memory",
+        dest="memory_mib",
         type=int,
         default=None,
+        metavar="MIB",
         help="Sandbox memory in MiB (default: 512).",
     )
     create_parser.add_argument(
-        "--disk-size-mib",
+        "--disk-size",
+        dest="disk_size_mib",
         type=int,
         default=None,
+        metavar="MIB",
         help=(
             "Sandbox disk size in MiB. Defaults: 512 for alpine, "
             "2048 for debian/ubuntu. Minimum: 64 for alpine; 2048 for "
@@ -724,15 +728,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Browser viewport height (default: 720).",
     )
     browser_start.add_argument(
-        "--memory-mib",
+        "--memory",
+        dest="memory_mib",
         type=int,
         default=2048,
+        metavar="MIB",
         help="Sandbox memory in MiB (default: 2048).",
     )
     browser_start.add_argument(
-        "--disk-size-mib",
+        "--disk-size",
+        dest="disk_size_mib",
         type=int,
         default=4096,
+        metavar="MIB",
         help="Sandbox disk size in MiB (default: 4096).",
     )
     browser_start.add_argument(
