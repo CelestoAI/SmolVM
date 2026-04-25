@@ -76,6 +76,7 @@ class RuntimeContext:
     data_dir: Path
     socket_dir: Path
     log_files: dict[str, TextIO]
+    process_handles: dict[int, subprocess.Popen[bytes]]
     resolve_boot_args: Callable[[VMInfo], str]
     start_firecracker: Callable[[Path, Path], subprocess.Popen[bytes]]
     start_qemu: Callable[..., subprocess.Popen[bytes]]
@@ -87,9 +88,9 @@ class RuntimeContext:
     start_libkrun: Callable[[VMInfo, Path], subprocess.Popen[bytes]] | None = None
 
     # -- Async callable counterparts (populated when async operations are used) --
-    async_start_libkrun: (
-        Callable[[VMInfo, Path], Awaitable[asyncio.subprocess.Process]] | None
-    ) = field(default=None)
+    async_start_libkrun: Callable[[VMInfo, Path], Awaitable[asyncio.subprocess.Process]] | None = (
+        field(default=None)
+    )
 
 
 class RuntimeAdapter(Protocol):

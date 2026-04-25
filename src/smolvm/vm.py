@@ -222,6 +222,9 @@ class SmolVMManager:
 
         # Track open log file handles per VM for proper cleanup
         self._log_files: dict[str, TextIO] = {}
+        # Retain Popen handles so SIGKILL'd children can be reaped via Popen.wait()
+        # — without this, killed VMs linger as zombies and _is_process_running stays True.
+        self._process_handles: dict[int, subprocess.Popen[bytes]] = {}
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._closed = False
 
@@ -287,6 +290,10 @@ class SmolVMManager:
             with suppress(Exception):
                 fh.close()
         self._log_files.clear()
+        for handle in self._process_handles.values():
+            with suppress(Exception):
+                handle.wait(timeout=0)
+        self._process_handles.clear()
         for task in list(self._background_tasks):
             if not task.done():
                 task.cancel()
@@ -319,6 +326,7 @@ class SmolVMManager:
             data_dir=self.data_dir,
             socket_dir=self.socket_dir,
             log_files=self._log_files,
+            process_handles=self._process_handles,
             resolve_boot_args=self._resolve_boot_args,
             start_firecracker=self._start_firecracker,
             start_qemu=self._start_qemu,
@@ -1662,6 +1670,7 @@ class SmolVMManager:
 
         key = f"qemu:{vm_info.vm_id}"
         self._log_files[key] = log_file
+        self._process_handles[process.pid] = process
 
         logger.debug("Started QEMU: PID=%d, vm_id=%s", process.pid, vm_info.vm_id)
         return process
@@ -1711,6 +1720,7 @@ class SmolVMManager:
         # Derive a key from the socket path so we can close the handle later
         key = str(socket_path)
         self._log_files[key] = log_file
+        self._process_handles[process.pid] = process
 
         logger.debug("Started Firecracker: PID=%d, socket=%s", process.pid, socket_path)
         return process
@@ -1765,6 +1775,7 @@ class SmolVMManager:
 
         key = f"libkrun:{vm_info.vm_id}"
         self._log_files[key] = log_file
+        self._process_handles[process.pid] = process
         logger.debug("Started libkrun: PID=%d, vm_id=%s", process.pid, vm_info.vm_id)
         return process
 
@@ -1813,6 +1824,12 @@ class SmolVMManager:
             except Exception:
                 logger.warning("Failed to kill process %d", pid)
 
+        handle = self._process_handles.get(pid)
+        if handle is not None:
+            with suppress(subprocess.TimeoutExpired):
+                handle.wait(timeout=0.1)
+                self._process_handles.pop(pid, None)
+
     def _is_process_running(self, pid: int) -> bool:
         """Check if a process is running.
 
@@ -1822,6 +1839,12 @@ class SmolVMManager:
         Returns:
             True if running.
         """
+        # Reap any zombie via the retained Popen handle so os.kill(pid, 0) below
+        # cannot mistake a not-yet-reaped corpse for a live process.
+        handle = self._process_handles.get(pid)
+        if handle is not None and handle.poll() is not None:
+            self._process_handles.pop(pid, None)
+            return False
         try:
             os.kill(pid, 0)
             return True
@@ -1837,6 +1860,13 @@ class SmolVMManager:
             pid: Process ID to wait for.
             timeout: Maximum seconds to wait.
         """
+        handle = self._process_handles.get(pid)
+        if handle is not None:
+            with suppress(subprocess.TimeoutExpired):
+                handle.wait(timeout=timeout)
+                self._process_handles.pop(pid, None)
+            return
+
         start = time.time()
         while time.time() - start < timeout:
             if not self._is_process_running(pid):

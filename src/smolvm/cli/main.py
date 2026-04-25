@@ -23,6 +23,7 @@ import os
 import platform
 import re
 import subprocess
+import sys
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -124,6 +125,22 @@ class CreatePayload(TypedDict):
     """JSON payload for ``smolvm create``."""
 
     vm: CreateVmPayload
+    next: CreateNextPayload
+
+
+class StartPresetPayload(TypedDict):
+    """Preset application summary for ``smolvm start``."""
+
+    name: str
+    copied_configs: list[str]
+    injected_env_keys: list[str]
+
+
+class StartPayload(TypedDict):
+    """JSON payload for ``smolvm start``."""
+
+    vm: CreateVmPayload
+    preset: StartPresetPayload
     next: CreateNextPayload
 
 
@@ -314,6 +331,102 @@ def _add_boot_timeout_arg(command_parser: argparse.ArgumentParser) -> None:
         default=30.0,
         help="Seconds to wait for the sandbox to be ready (default: 30).",
     )
+
+
+def _add_start_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    """Wire ``smolvm start <preset>`` into the CLI."""
+    from smolvm.presets import list_presets
+
+    start_parser = subparsers.add_parser(
+        "start",
+        help="Start a sandbox preconfigured for a specific agent harness.",
+        description=(
+            "Boot a fresh sandbox and preinstall an agent harness. Each "
+            "preset copies relevant host config (e.g. ~/.codex, ~/.claude) "
+            "and forwards API keys from the host environment."
+        ),
+    )
+    preset_sub = start_parser.add_subparsers(
+        dest="preset_name",
+        metavar="harness",
+    )
+
+    for preset in list_presets():
+        p = preset_sub.add_parser(
+            preset.name,
+            help=preset.summary,
+        )
+        p.add_argument(
+            "-n",
+            "--name",
+            help="Name for the sandbox (default: auto-generated).",
+        )
+        p.add_argument(
+            "--memory",
+            dest="memory_mib",
+            type=int,
+            default=None,
+            metavar="MIB",
+            help=f"Sandbox memory in MiB (default: {preset.default_mem_mib}).",
+        )
+        p.add_argument(
+            "--disk-size",
+            dest="disk_size_mib",
+            type=int,
+            default=None,
+            metavar="MIB",
+            help=f"Sandbox disk size in MiB (default: {preset.default_disk_mib}).",
+        )
+        p.add_argument(
+            "--backend",
+            choices=["auto", "firecracker", "qemu", "libkrun"],
+            default=None,
+            help="Virtualization backend (default: qemu, required by ubuntu).",
+        )
+        p.add_argument(
+            "--mount",
+            action="append",
+            default=None,
+            dest="mounts",
+            metavar="HOST_PATH[:GUEST_PATH]",
+            help=(
+                "Host directory to mount inside the sandbox. "
+                "Defaults to /workspace if no guest path is given. "
+                "Can be repeated."
+            ),
+        )
+        p.add_argument(
+            "--install-timeout",
+            type=_positive_float,
+            default=600.0,
+            help="Seconds to wait for the harness install (default: 600).",
+        )
+        if preset.launch_command is not None:
+            attach_group = p.add_mutually_exclusive_group()
+            attach_group.add_argument(
+                "--attach",
+                dest="attach",
+                action="store_true",
+                default=None,
+                help=(
+                    f"After install, ssh in and run `{preset.launch_command}` "
+                    "without prompting."
+                ),
+            )
+            attach_group.add_argument(
+                "--no-attach",
+                dest="attach",
+                action="store_false",
+                help="Skip the post-install attach prompt.",
+            )
+        p.add_argument(
+            "--json",
+            action="store_true",
+            help="Emit machine-readable JSON output.",
+        )
+        _add_boot_timeout_arg(p)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -585,6 +698,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_boot_timeout_arg(create_parser)
+
+    _add_start_parser(subparsers)
 
     stop_parser = subparsers.add_parser(
         "stop",
@@ -1464,6 +1579,265 @@ def _run_create(args: argparse.Namespace) -> int:
             vm.close()
 
 
+def _render_start_result(data: StartPayload) -> None:
+    """Render the human-facing ``smolvm start`` result."""
+    console = console_stdout()
+    vm_data = data["vm"]
+    preset = data["preset"]
+    next_step = data["next"]
+
+    console.print(
+        Panel.fit(
+            f"Started '{vm_data['name']}' with [bold]{preset['name']}[/bold] preinstalled.",
+            title="Sandbox Ready",
+            border_style="green",
+        )
+    )
+
+    details = Table(title="Sandbox Details", show_header=False)
+    details.add_column("Field")
+    details.add_column("Value")
+    details.add_row("Name", str(vm_data["name"]))
+    details.add_row(
+        "Status",
+        Text(str(vm_data["status"]), style=status_style(str(vm_data["status"]))),
+    )
+    details.add_row("OS", str(vm_data["os"]))
+    details.add_row("Backend", str(vm_data["backend"]))
+    details.add_row("IP Address", str(vm_data["ip_address"] or "-"))
+    details.add_row(
+        "SSH Port",
+        str(vm_data["ssh_port"]) if vm_data["ssh_port"] is not None else "-",
+    )
+    details.add_row("Preset", preset["name"])
+    details.add_row(
+        "Configs Copied",
+        ", ".join(preset["copied_configs"]) if preset["copied_configs"] else "-",
+    )
+    details.add_row(
+        "Env Vars Forwarded",
+        ", ".join(preset["injected_env_keys"]) if preset["injected_env_keys"] else "-",
+    )
+    console.print(details)
+    console.print(f"Next: [bold]{next_step['ssh_command']}[/bold]")
+
+
+def _run_start(args: argparse.Namespace) -> int:
+    """Handle ``smolvm start <preset>``."""
+    from smolvm.facade import SmolVM, _build_auto_config
+    from smolvm.presets import apply_preset, get_preset
+
+    if not getattr(args, "preset_name", None):
+        # argparse leaves preset_name=None when invoked as bare ``smolvm start``.
+        # Print the start subparser help instead of failing silently.
+        build_parser().parse_args(["start", "--help"])
+        return 2
+
+    try:
+        preset = get_preset(args.preset_name)
+    except KeyError as exc:
+        return _emit_cli_error("start", 2, exc, json_output=args.json)
+
+    backend = args.backend or "qemu"
+    if backend != "qemu":
+        # Built-in presets target the ubuntu cloud image, which only boots on
+        # qemu in this codebase. Fail loudly rather than silently downgrade.
+        return _emit_cli_error(
+            "start",
+            2,
+            ValueError(
+                f"Preset {preset.name!r} requires --backend qemu (got {backend!r})."
+            ),
+            json_output=args.json,
+        )
+
+    memory_mib = args.memory_mib if args.memory_mib is not None else preset.default_mem_mib
+    disk_size_mib = (
+        args.disk_size_mib if args.disk_size_mib is not None else preset.default_disk_mib
+    )
+
+    vm: SmolVM | None = None
+    try:
+        if not args.json:
+            console = console_stdout()
+            vm = _build_and_boot_with_progress(
+                console=console,
+                build_fn=lambda on_download: _build_auto_config(
+                    vm_name=args.name,
+                    os=GuestOS.UBUNTU,
+                    backend=backend,
+                    memory=memory_mib,
+                    disk_size_mib=disk_size_mib,
+                    ssh_key_path=None,
+                    on_download=on_download,
+                ),
+                boot_timeout=args.boot_timeout,
+                mounts=args.mounts,
+            )
+            apply_summary = _apply_preset_with_progress(
+                console=console,
+                vm=vm,
+                preset=preset,
+                install_timeout=int(args.install_timeout),
+            )
+        else:
+            config, ssh_key_path = _build_auto_config(
+                vm_name=args.name,
+                os=GuestOS.UBUNTU,
+                backend=backend,
+                memory=memory_mib,
+                disk_size_mib=disk_size_mib,
+                ssh_key_path=None,
+            )
+            vm = SmolVM(config, ssh_key_path=ssh_key_path, mounts=args.mounts)
+            vm.start(boot_timeout=args.boot_timeout)
+            vm.wait_for_ssh(timeout=args.boot_timeout)
+            ssh = vm._ensure_ssh_for_env()
+            apply_summary = apply_preset(
+                ssh,
+                preset,
+                install_timeout=int(args.install_timeout),
+            )
+
+        network = vm.info.network
+        data: StartPayload = {
+            "vm": {
+                "name": vm.vm_id,
+                "status": (
+                    vm.info.status.value
+                    if isinstance(vm.info.status, VMState)
+                    else VMState.RUNNING.value
+                ),
+                "os": GuestOS.UBUNTU.value,
+                "backend": vm.info.config.backend or "auto",
+                "ip_address": network.guest_ip if network else None,
+                "ssh_port": network.ssh_host_port if network else None,
+            },
+            "preset": {
+                "name": str(apply_summary["preset"]),
+                "copied_configs": list(apply_summary["copied_configs"]),  # type: ignore[arg-type]
+                "injected_env_keys": list(apply_summary["injected_env_keys"]),  # type: ignore[arg-type]
+            },
+            "next": {
+                "ssh_command": f"smolvm ssh {vm.vm_id}",
+            },
+        }
+
+        if args.json:
+            emit_json("start", 0, data=data)
+        else:
+            _render_start_result(data)
+
+        if not args.json and preset.launch_command:
+            return _maybe_attach_and_launch(vm, preset, attach=getattr(args, "attach", None))
+        return 0
+    except Exception as exc:
+        return _emit_cli_error("start", 1, exc, json_output=args.json)
+    finally:
+        if vm is not None:
+            vm.close()
+
+
+def _maybe_attach_and_launch(
+    vm: object,
+    preset: object,
+    *,
+    attach: bool | None,
+) -> int:
+    """Maybe SSH into *vm* and exec the preset's launch command.
+
+    *attach* tri-state: ``True`` skip prompt and attach; ``False`` skip
+    everything; ``None`` (default) ask the user when stdin is a TTY.
+    Returns the exit code of the SSH session, or 0 when no attach happens.
+    """
+    from smolvm.facade import SmolVM
+    from smolvm.presets._types import Preset
+
+    _vm: SmolVM = vm  # type: ignore[assignment]
+    _preset: Preset = preset  # type: ignore[assignment]
+    if _preset.launch_command is None:
+        return 0
+
+    if attach is False:
+        return 0
+
+    console = console_stdout()
+    if attach is None:
+        if not sys.stdin.isatty():
+            return 0
+        prompt = (
+            f"\nLaunch [bold]{_preset.launch_command}[/bold] in "
+            f"'{_vm.vm_id}' now? \\[Y/n] "
+        )
+        try:
+            console.print(prompt, end="")
+            answer = input("").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            console.print()
+            return 0
+        if answer in {"n", "no"}:
+            return 0
+
+    return _exec_launch_command(_vm, _preset.launch_command)
+
+
+def _exec_launch_command(vm: object, launch_command: str) -> int:
+    """SSH into *vm* with a TTY and run *launch_command* under a login shell."""
+    from smolvm.facade import SmolVM
+
+    _vm: SmolVM = vm  # type: ignore[assignment]
+    cmd = list(_vm._ssh_attach_command())
+    # Insert -t before user@host so OpenSSH allocates a TTY for the remote
+    # command. Source profile.d so injected env vars (API keys) are visible
+    # to the harness, then exec to keep signal handling clean.
+    cmd.insert(-1, "-t")
+    cmd.append(f"{ENV_RELOAD_HINT} && exec {launch_command}")
+    completed = subprocess.run(cmd, check=False)
+    return completed.returncode
+
+
+def _apply_preset_with_progress(
+    *,
+    console: object,
+    vm: object,
+    preset: object,
+    install_timeout: int,
+) -> dict[str, object]:
+    """Run :func:`apply_preset` with a Rich spinner showing each step."""
+    from rich.console import Console
+
+    from smolvm.facade import SmolVM
+    from smolvm.presets import apply_preset
+    from smolvm.presets._types import Preset
+
+    _console: Console = console  # type: ignore[assignment]
+    _vm: SmolVM = vm  # type: ignore[assignment]
+    _preset: Preset = preset  # type: ignore[assignment]
+
+    ssh = _vm._ensure_ssh_for_env()
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=_console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task(f"Preparing {_preset.name}...", total=None)
+
+        def on_progress(message: str) -> None:
+            progress.update(task, description=message)
+
+        summary = apply_preset(
+            ssh,
+            _preset,
+            on_progress=on_progress,
+            install_timeout=install_timeout,
+        )
+        progress.remove_task(task)
+
+    return summary
+
+
 def _render_vm_lifecycle_result(
     data: StopPayload,
     *,
@@ -2320,6 +2694,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "create":
         return _run_create(args)
+
+    if args.command == "start":
+        return _run_start(args)
 
     if args.command == "stop":
         return _run_stop(args)

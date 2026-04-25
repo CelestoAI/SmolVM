@@ -15,6 +15,9 @@
 """Tests for SmolVM main SDK class."""
 
 import subprocess
+import sys
+import time
+from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
@@ -816,3 +819,48 @@ class TestFirecrackerLaunchAndSocketCleanup:
 
         with pytest.raises(SmolVMError, match="sudo rm -f /tmp/fc-test.sock"):
             smol_vm._unlink_socket(Path("/tmp/fc-test.sock"))
+
+
+class TestProcessLifecycle:
+    """Tests for process tracking, killing, and zombie reaping (issue #189)."""
+
+    def test_is_process_running_reaps_zombie_via_handle(self, smol_vm: SmolVMManager) -> None:
+        """A child that exited naturally must not be mistaken for a live process."""
+        process = subprocess.Popen([sys.executable, "-c", "pass"])
+        smol_vm._process_handles[process.pid] = process
+
+        deadline = time.time() + 5.0
+        while process.poll() is None and time.time() < deadline:
+            time.sleep(0.01)
+        assert process.returncode is not None, "child failed to exit in time"
+
+        # Without zombie reaping, os.kill(pid, 0) succeeds against the corpse and
+        # _is_process_running returns True. The handle-based poll must catch it.
+        assert smol_vm._is_process_running(process.pid) is False
+        assert process.pid not in smol_vm._process_handles
+
+    def test_kill_process_reaps_handle_so_followup_check_returns_false(
+        self, smol_vm: SmolVMManager
+    ) -> None:
+        """SIGKILL via _kill_process should leave _is_process_running returning False."""
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        smol_vm._process_handles[process.pid] = process
+        try:
+            smol_vm._kill_process(process.pid)
+            assert smol_vm._is_process_running(process.pid) is False
+            assert process.pid not in smol_vm._process_handles
+        finally:
+            if process.poll() is None:
+                process.kill()
+            with suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=2.0)
+
+    def test_wait_for_process_uses_handle_and_drops_pid(self, smol_vm: SmolVMManager) -> None:
+        """_wait_for_process should block via Popen.wait() and drop the handle."""
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.1)"])
+        smol_vm._process_handles[process.pid] = process
+
+        smol_vm._wait_for_process(process.pid, timeout=5.0)
+
+        assert process.poll() is not None
+        assert process.pid not in smol_vm._process_handles

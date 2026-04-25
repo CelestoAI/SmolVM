@@ -2025,3 +2025,328 @@ class TestCliInfo:
         assert ret == 1
         assert "VM 'ghost' not found" in capsys.readouterr().err
         mock_sdk_cls.return_value.close.assert_called_once()
+
+
+class TestCliStart:
+    """Tests for `smolvm start <preset>`."""
+
+    def _make_vm_mock(self, vm_id: str = "sbx-codex") -> MagicMock:
+        vm = MagicMock()
+        vm.vm_id = vm_id
+        vm.info.status = VMState.RUNNING
+        vm.info.config.backend = "qemu"
+        vm.info.network = MagicMock(spec=NetworkConfig)
+        vm.info.network.guest_ip = "172.16.0.2"
+        vm.info.network.ssh_host_port = 2200
+        return vm
+
+    def test_start_help_lists_known_presets(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """`smolvm start --help` should list every registered preset."""
+        with pytest.raises(SystemExit):
+            main(["start", "--help"])
+        out = capsys.readouterr().out
+        assert "codex" in out
+        assert "claude-code" in out
+
+    def test_start_unknown_preset_errors(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """An unknown preset name should fail at argparse-level."""
+        with pytest.raises(SystemExit):
+            main(["start", "hermes"])
+        err = capsys.readouterr().err
+        # argparse produces "invalid choice" for unknown subcommand
+        assert "invalid choice" in err or "argument harness" in err
+
+    @patch("smolvm.cli.main._apply_preset_with_progress")
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_codex_default_path(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        mock_apply: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm start codex` boots ubuntu/qemu with preset defaults and applies the preset."""
+        from smolvm.types import GuestOS
+
+        config = MagicMock(vm_id="sbx-codex")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+        vm = self._make_vm_mock("sbx-codex")
+        mock_vm_cls.return_value = vm
+        mock_apply.return_value = {
+            "preset": "codex",
+            "copied_configs": ["/root/.codex"],
+            "injected_env_keys": ["OPENAI_API_KEY"],
+        }
+
+        ret = main(["start", "codex", "--name", "sbx-codex"])
+
+        assert ret == 0
+        mock_build_auto_config.assert_called_once_with(
+            vm_name="sbx-codex",
+            os=GuestOS.UBUNTU,
+            backend="qemu",
+            memory=2048,
+            disk_size_mib=8192,
+            ssh_key_path=None,
+            on_download=ANY,
+        )
+        mock_vm_cls.assert_called_once_with(config, ssh_key_path="/tmp/id_ed25519", mounts=None)
+        vm.start.assert_called_once_with(boot_timeout=30.0)
+        vm.wait_for_ssh.assert_called_once_with(timeout=30.0)
+        mock_apply.assert_called_once()
+        vm.close.assert_called_once()
+
+        out = capsys.readouterr().out
+        assert "sbx-codex" in out
+        assert "codex" in out
+        assert "OPENAI_API_KEY" in out
+        assert "smolvm ssh sbx-codex" in out
+
+    @patch("smolvm.presets.apply_preset")
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_codex_json(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        mock_apply_fn: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm start codex --json` should emit the start envelope."""
+        config = MagicMock(vm_id="sbx-1")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+        vm = self._make_vm_mock("sbx-1")
+        mock_vm_cls.return_value = vm
+        mock_apply_fn.return_value = {
+            "preset": "codex",
+            "copied_configs": [],
+            "injected_env_keys": ["OPENAI_API_KEY"],
+        }
+
+        ret = main(["start", "codex", "--name", "sbx-1", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["command"] == "start"
+        assert payload["ok"] is True
+        assert payload["data"]["vm"]["name"] == "sbx-1"
+        assert payload["data"]["vm"]["os"] == "ubuntu"
+        assert payload["data"]["preset"]["name"] == "codex"
+        assert payload["data"]["preset"]["injected_env_keys"] == ["OPENAI_API_KEY"]
+        assert payload["data"]["next"]["ssh_command"] == "smolvm ssh sbx-1"
+
+    @patch("smolvm.cli.main._apply_preset_with_progress")
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_claude_code_overrides_memory(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        mock_apply: MagicMock,
+    ) -> None:
+        """User --memory should override the preset default."""
+        config = MagicMock(vm_id="sbx")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+        vm = self._make_vm_mock("sbx")
+        mock_vm_cls.return_value = vm
+        mock_apply.return_value = {
+            "preset": "claude-code",
+            "copied_configs": [],
+            "injected_env_keys": [],
+        }
+
+        ret = main(["start", "claude-code", "--memory", "4096", "--disk-size", "16384"])
+
+        assert ret == 0
+        kwargs = mock_build_auto_config.call_args.kwargs
+        assert kwargs["memory"] == 4096
+        assert kwargs["disk_size_mib"] == 16384
+
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_rejects_non_qemu_backend(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Built-in presets target ubuntu, which only boots on qemu."""
+        ret = main(["start", "codex", "--backend", "firecracker"])
+
+        assert ret == 2
+        err = capsys.readouterr().err
+        assert "requires --backend qemu" in err
+        # Nothing should have started.
+        mock_build_auto_config.assert_not_called()
+        mock_vm_cls.assert_not_called()
+
+    @patch("smolvm.cli.main.subprocess.run")
+    @patch("smolvm.cli.main._apply_preset_with_progress")
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_attach_runs_codex_via_ssh(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        mock_apply: MagicMock,
+        mock_subprocess_run: MagicMock,
+    ) -> None:
+        """`--attach` should ssh into the box and exec the launch command."""
+        config = MagicMock(vm_id="sbx")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+        vm = self._make_vm_mock("sbx")
+        vm._ssh_attach_command.return_value = [
+            "ssh",
+            "-p",
+            "2200",
+            "root@127.0.0.1",
+        ]
+        mock_vm_cls.return_value = vm
+        mock_apply.return_value = {
+            "preset": "codex",
+            "copied_configs": [],
+            "injected_env_keys": ["OPENAI_API_KEY"],
+        }
+        completed = MagicMock()
+        completed.returncode = 0
+        mock_subprocess_run.return_value = completed
+
+        ret = main(["start", "codex", "--attach"])
+
+        assert ret == 0
+        mock_subprocess_run.assert_called_once()
+        cmd = mock_subprocess_run.call_args.args[0]
+        # `-t` must come before user@host so OpenSSH allocates a TTY.
+        assert "-t" in cmd
+        assert cmd.index("-t") < cmd.index("root@127.0.0.1")
+        # Remote command must source the smolvm env file then exec codex.
+        assert cmd[-1].endswith("&& exec codex")
+        assert "/etc/profile.d/smolvm_env.sh" in cmd[-1]
+
+    @patch("smolvm.cli.main.subprocess.run")
+    @patch("smolvm.cli.main._apply_preset_with_progress")
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_no_attach_skips_subprocess(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        mock_apply: MagicMock,
+        mock_subprocess_run: MagicMock,
+    ) -> None:
+        """`--no-attach` should skip both the prompt and the ssh launch."""
+        config = MagicMock(vm_id="sbx")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+        mock_vm_cls.return_value = self._make_vm_mock("sbx")
+        mock_apply.return_value = {
+            "preset": "codex",
+            "copied_configs": [],
+            "injected_env_keys": [],
+        }
+
+        ret = main(["start", "codex", "--no-attach"])
+
+        assert ret == 0
+        mock_subprocess_run.assert_not_called()
+
+    @patch("smolvm.cli.main.subprocess.run")
+    @patch("smolvm.cli.main.sys.stdin")
+    @patch("builtins.input", return_value="y")
+    @patch("smolvm.cli.main._apply_preset_with_progress")
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_prompt_yes_attaches(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        mock_apply: MagicMock,
+        mock_input: MagicMock,
+        mock_stdin: MagicMock,
+        mock_subprocess_run: MagicMock,
+    ) -> None:
+        """Default behavior on a TTY: prompt; ``y`` answer attaches."""
+        mock_stdin.isatty.return_value = True
+
+        config = MagicMock(vm_id="sbx")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+        vm = self._make_vm_mock("sbx")
+        vm._ssh_attach_command.return_value = ["ssh", "root@127.0.0.1"]
+        mock_vm_cls.return_value = vm
+        mock_apply.return_value = {
+            "preset": "codex",
+            "copied_configs": [],
+            "injected_env_keys": [],
+        }
+        completed = MagicMock()
+        completed.returncode = 0
+        mock_subprocess_run.return_value = completed
+
+        ret = main(["start", "codex"])
+
+        assert ret == 0
+        mock_input.assert_called_once()
+        mock_subprocess_run.assert_called_once()
+
+    @patch("smolvm.cli.main.subprocess.run")
+    @patch("smolvm.cli.main.sys.stdin")
+    @patch("builtins.input", return_value="n")
+    @patch("smolvm.cli.main._apply_preset_with_progress")
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_prompt_no_skips_attach(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        mock_apply: MagicMock,
+        mock_input: MagicMock,
+        mock_stdin: MagicMock,
+        mock_subprocess_run: MagicMock,
+    ) -> None:
+        """A ``n`` answer should skip the ssh launch."""
+        mock_stdin.isatty.return_value = True
+
+        config = MagicMock(vm_id="sbx")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+        mock_vm_cls.return_value = self._make_vm_mock("sbx")
+        mock_apply.return_value = {
+            "preset": "codex",
+            "copied_configs": [],
+            "injected_env_keys": [],
+        }
+
+        ret = main(["start", "codex"])
+
+        assert ret == 0
+        mock_input.assert_called_once()
+        mock_subprocess_run.assert_not_called()
+
+    @patch("smolvm.cli.main.subprocess.run")
+    @patch("smolvm.presets.apply_preset")
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_json_never_attaches(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        mock_apply_fn: MagicMock,
+        mock_subprocess_run: MagicMock,
+    ) -> None:
+        """JSON mode should never prompt or attach, even when a launch command exists."""
+        config = MagicMock(vm_id="sbx")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+        mock_vm_cls.return_value = self._make_vm_mock("sbx")
+        mock_apply_fn.return_value = {
+            "preset": "codex",
+            "copied_configs": [],
+            "injected_env_keys": [],
+        }
+
+        ret = main(["start", "codex", "--json"])
+
+        assert ret == 0
+        mock_subprocess_run.assert_not_called()
