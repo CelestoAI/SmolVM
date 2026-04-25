@@ -365,7 +365,7 @@ class TestCliCreate:
             vm_name=None,
             os=None,
             backend=None,
-            mem_size_mib=None,
+            memory=None,
             disk_size_mib=4096,
             ssh_key_path=None,
             on_download=ANY,
@@ -378,7 +378,12 @@ class TestCliCreate:
         assert "Created VM 'vm-a1b2c3d4'." in out
         assert "OS" in out
         assert "ubuntu" in out
+        assert "Started" in out
         assert "smolvm ssh vm-a1b2c3d4" in out
+        assert "smolvm info vm-a1b2c3d4" in out
+        assert "Backend" not in out
+        assert "IP Address" not in out
+        assert "SSH Port" not in out
 
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
@@ -425,7 +430,7 @@ class TestCliCreate:
             vm_name="project-spacex",
             os=None,
             backend="qemu",
-            mem_size_mib=1024,
+            memory=1024,
             disk_size_mib=2048,
             ssh_key_path=None,
             on_download=ANY,
@@ -440,11 +445,12 @@ class TestCliCreate:
         assert "Created VM 'project-spacex'." in out
         assert "OS" in out
         assert "ubuntu" in out
-        assert "Backend" in out
-        assert "qemu" in out
-        assert "172.16.0.2" in out
-        assert "2200" in out
+        assert "Started" in out
         assert "smolvm ssh project-spacex" in out
+        assert "smolvm info project-spacex" in out
+        assert "Backend" not in out
+        assert "172.16.0.2" not in out
+        assert "2200" not in out
 
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
@@ -476,7 +482,7 @@ class TestCliCreate:
             vm_name="computer",
             os=None,
             backend=None,
-            mem_size_mib=None,
+            memory=None,
             disk_size_mib=4096,
             ssh_key_path=None,
             on_download=ANY,
@@ -519,8 +525,9 @@ class TestCliCreate:
         assert payload["command"] == "create"
         assert payload["data"]["vm"]["name"] == "project-spacex"
         assert payload["data"]["vm"]["os"] == "ubuntu"
-        assert payload["data"]["vm"]["backend"] == "qemu"
+        assert payload["data"]["vm"]["started_at"]
         assert payload["data"]["next"]["ssh_command"] == "smolvm ssh project-spacex"
+        assert payload["data"]["next"]["info_command"] == "smolvm info project-spacex"
 
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
@@ -549,7 +556,7 @@ class TestCliCreate:
             vm_name="project-spacex",
             os="debian",
             backend=None,
-            mem_size_mib=None,
+            memory=None,
             disk_size_mib=4096,
             ssh_key_path=None,
         )
@@ -582,7 +589,7 @@ class TestCliCreate:
             vm_name=None,
             os="alpine",
             backend=None,
-            mem_size_mib=None,
+            memory=None,
             disk_size_mib=None,
             ssh_key_path=None,
         )
@@ -1833,4 +1840,188 @@ class TestCliList:
 
         assert ret == 1
         assert "Error: db unavailable" in capsys.readouterr().err
+        mock_sdk_cls.return_value.close.assert_called_once()
+
+
+class TestCliInfo:
+    """Tests for `smolvm info`."""
+
+    @pytest.fixture
+    def mock_sdk_cls(self) -> MagicMock:
+        with patch("smolvm.vm.SmolVMManager") as m:
+            m.return_value.__enter__.return_value = m.return_value
+            m.return_value.__exit__.side_effect = lambda *args: m.return_value.close()
+            yield m
+
+    @staticmethod
+    def _make_info_vm(
+        vm_id: str = "sbx-pauling",
+        status: VMState = VMState.RUNNING,
+        backend: str = "qemu",
+        guest_ip: str | None = "10.0.2.15",
+        ssh_host_port: int | None = 2200,
+        pid: int | None = 4242,
+        vcpus: int = 2,
+        memory_mib: int = 1024,
+        rootfs_path: Path | None = None,
+        kernel_path: Path | None = None,
+        initrd_path: Path | None = None,
+    ) -> MagicMock:
+        vm = MagicMock()
+        vm.vm_id = vm_id
+        vm.status = status
+        vm.config.backend = backend
+        vm.config.vcpu_count = vcpus
+        vm.config.memory = memory_mib
+        vm.config.rootfs_path = rootfs_path
+        vm.config.kernel_path = kernel_path
+        vm.config.initrd_path = initrd_path
+        vm.pid = pid
+        if guest_ip is not None:
+            vm.network = MagicMock(spec=NetworkConfig)
+            vm.network.guest_ip = guest_ip
+            vm.network.ssh_host_port = ssh_host_port
+        else:
+            vm.network = None
+        return vm
+
+    def test_info_renders_full_table(
+        self,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm info <name>` should show the full details table."""
+        rootfs = tmp_path / "ubuntu-noble-minimal-qemu-x86_64" / "rootfs.qcow2"
+        rootfs.parent.mkdir(parents=True)
+        rootfs.write_bytes(b"\0" * (5 * 1024 * 1024))  # 5 MiB
+        mock_sdk_cls.return_value.state.get_vm.return_value = self._make_info_vm(
+            status=VMState.STOPPED, rootfs_path=rootfs
+        )
+
+        ret = main(["info", "sbx-pauling"])
+
+        assert ret == 0
+        out = capsys.readouterr().out
+        assert "sbx-pauling" in out
+        assert "stopped" in out
+        assert "qemu" in out
+        assert "10.0.2.15" in out
+        assert "2200" in out
+        assert "4242" in out
+        assert "CPUs" in out
+        assert "Memory" in out
+        assert "1024 MiB" in out
+        assert "Disk Size" in out
+        assert "5 MiB" in out
+        assert "ubuntu" in out
+        mock_sdk_cls.return_value.state.get_vm.assert_called_once_with("sbx-pauling")
+        mock_sdk_cls.return_value.close.assert_called_once()
+
+    def test_info_running_vm_queries_live_data(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """For running VMs, info should overlay OS and used memory from SSH."""
+        mock_sdk_cls.return_value.state.get_vm.return_value = self._make_info_vm(
+            status=VMState.RUNNING
+        )
+        with patch("smolvm.cli.main._query_live_vm_info") as mock_query:
+            mock_query.return_value = {
+                "os": "Ubuntu 24.04.1 LTS",
+                "memory_used_mib": 312,
+            }
+
+            ret = main(["info", "sbx-pauling"])
+
+        assert ret == 0
+        out = capsys.readouterr().out
+        assert "Ubuntu 24.04.1 LTS" in out
+        assert "312 / 1024 MiB used" in out
+        mock_query.assert_called_once_with("sbx-pauling")
+
+    def test_info_running_vm_with_unreachable_ssh(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """If SSH probe fails, info should still render with placeholders."""
+        mock_sdk_cls.return_value.state.get_vm.return_value = self._make_info_vm(
+            status=VMState.RUNNING
+        )
+        with patch("smolvm.cli.main._query_live_vm_info") as mock_query:
+            mock_query.return_value = {}
+
+            ret = main(["info", "sbx-pauling"])
+
+        assert ret == 0
+        out = capsys.readouterr().out
+        assert "1024 MiB" in out
+        # No "used" suffix when memory_used is unavailable.
+        assert "used" not in out
+
+    def test_info_handles_missing_network(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm info` should render '-' when the VM has no network."""
+        mock_sdk_cls.return_value.state.get_vm.return_value = self._make_info_vm(
+            status=VMState.STOPPED, guest_ip=None, ssh_host_port=None, pid=None
+        )
+
+        ret = main(["info", "sbx-pauling"])
+
+        assert ret == 0
+        out = capsys.readouterr().out
+        assert "stopped" in out
+        assert "-" in out
+
+    def test_info_json(
+        self,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm info --json` should emit a structured envelope."""
+        rootfs = tmp_path / "alpine-virt" / "rootfs.ext4"
+        rootfs.parent.mkdir(parents=True)
+        rootfs.write_bytes(b"\0" * (3 * 1024 * 1024))  # 3 MiB
+        mock_sdk_cls.return_value.state.get_vm.return_value = self._make_info_vm(
+            status=VMState.STOPPED, rootfs_path=rootfs
+        )
+
+        ret = main(["info", "sbx-pauling", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["command"] == "info"
+        assert payload["ok"] is True
+        assert payload["data"]["vm"] == {
+            "name": "sbx-pauling",
+            "status": "stopped",
+            "os": "alpine",
+            "backend": "qemu",
+            "ip_address": "10.0.2.15",
+            "ssh_port": 2200,
+            "pid": 4242,
+            "vcpus": 2,
+            "memory_mib": 1024,
+            "memory_used_mib": None,
+            "disk_size_mib": 3,
+        }
+
+    def test_info_not_found(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm info` returns 1 and an error message when the VM is missing."""
+        mock_sdk_cls.return_value.state.get_vm.side_effect = RuntimeError("VM 'ghost' not found")
+
+        ret = main(["info", "ghost"])
+
+        assert ret == 1
+        assert "VM 'ghost' not found" in capsys.readouterr().err
         mock_sdk_cls.return_value.close.assert_called_once()
