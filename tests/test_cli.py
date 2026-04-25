@@ -2197,8 +2197,10 @@ class TestCliStart:
             def _ssh_attach_command(self) -> list[str]:
                 return ["ssh", "-p", "2200", "root@127.0.0.1"]
 
-        def fake_run(cmd: list[str], check: bool = False) -> MagicMock:
-            captured.append(cmd)
+        def fake_run(*args: object, **_kwargs: object) -> MagicMock:
+            # Tolerate future kwargs (e.g. text=, env=) on the real
+            # subprocess.run call without rewriting the stub.
+            captured.append(args[0])  # type: ignore[arg-type]
             result = MagicMock()
             result.returncode = 0
             return result
@@ -2224,9 +2226,7 @@ class TestCliStart:
         assert "LAUNCHED" in completed.stdout
         assert "No such file" not in completed.stderr
 
-    def test_claude_alias_resolves_to_claude_code(
-        self, capsys: pytest.CaptureFixture
-    ) -> None:
+    def test_claude_alias_resolves_to_claude_code(self) -> None:
         """`smolvm claude start` should be accepted as an alias for
         `smolvm claude-code start` — first-time users keep typing the
         short name and the previous behaviour was an unfriendly
@@ -2244,11 +2244,18 @@ class TestCliStart:
     ) -> None:
         """The alias should appear in the top-level help so the
         shorthand is discoverable, not a hidden trick."""
+        import re
+
         with pytest.raises(SystemExit):
             main(["--help"])
         out = capsys.readouterr().out
-        assert "claude" in out
-        assert "claude-code" in out
+        # Must check 'claude' as a distinct token, not a substring of
+        # 'claude-code'. argparse renders the choices block as
+        # ``{a,b,claude-code,claude,...}`` so split on whitespace and the
+        # punctuation argparse uses there.
+        tokens = set(re.split(r"[\s{},]+", out))
+        assert "claude" in tokens
+        assert "claude-code" in tokens
 
     @patch("smolvm.cli.main._apply_preset_with_progress")
     @patch("smolvm.facade._build_auto_config")
