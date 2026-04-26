@@ -14,7 +14,8 @@
 
 """Image building utilities for SmolVM.
 
-Automatically builds VM images with SSH using Docker.
+Automatically builds VM images with SSH using Podman (with Docker as
+a fallback).
 """
 
 import hashlib
@@ -33,6 +34,12 @@ import urllib.request
 from pathlib import Path
 
 from smolvm.exceptions import ImageError, SmolVMError
+from smolvm.images.container_runtime import (
+    ContainerRuntime,
+    container_runtime_error,
+    detect_container_runtime,
+    diagnose_container_runtime,
+)
 from smolvm.runtime.boot_profiles import (
     QEMU_DESKTOP_KERNEL_URLS,
     KernelBootProfile,
@@ -86,79 +93,43 @@ class ImageBuilder:
                 Defaults to ~/.smolvm/images/
         """
         self.cache_dir = cache_dir or (Path.home() / ".smolvm" / "images")
+        self._runtime: ContainerRuntime | None = None
 
     def check_docker(self) -> bool:
-        """Check if Docker is available and the daemon is reachable."""
-        docker_bin = shutil.which("docker")
-        if docker_bin is None:
-            return False
+        """Check if a container runtime is available and reachable.
 
-        try:
-            subprocess.run(
-                [docker_bin, "info"],
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=10,
-            )
-            return True
-        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        Kept for backward compatibility with the public SDK. Prefers
+        Podman; falls back to Docker.
+        """
+        runtime = detect_container_runtime()
+        if runtime is None:
+            self._runtime = None
             return False
+        self._runtime = runtime
+        return True
 
     def docker_requirement_error(self) -> ImageError:
-        """Create a helpful Docker availability error."""
-        install_hint = "Install Docker Desktop (macOS) or docker.io (Linux)."
-        start_hint = (
-            "Docker is installed, but SmolVM could not reach the Docker daemon. "
-            "Start Docker Desktop or the Docker service and try again."
-        )
-        permission_hint = (
-            "Docker is installed, but this user cannot access the Docker daemon socket. "
-            "Make sure Docker Desktop is running or grant access to /var/run/docker.sock."
-        )
+        """Create a helpful container-runtime availability error.
 
-        docker_bin = shutil.which("docker")
-        if docker_bin is None:
-            return ImageError(f"Docker is required to build images. {install_hint}")
+        Kept for backward compatibility. Returns a message tailored to
+        the user's actual situation (no runtime installed, runtime
+        installed but unreachable, Podman machine not running, etc.).
+        """
+        return container_runtime_error(diagnose_container_runtime())
 
-        try:
-            subprocess.run(
-                [docker_bin, "info"],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-        except FileNotFoundError:
-            return ImageError(f"Docker is required to build images. {install_hint}")
-        except subprocess.TimeoutExpired:
-            return ImageError(
-                f"{start_hint} Original Docker error: timed out while contacting Docker."
-            )
-        except subprocess.CalledProcessError as exc:
-            details = "\n".join(part.strip() for part in (exc.stderr, exc.stdout) if part).strip()
-            details_lower = details.lower()
-            if "permission denied" in details_lower and "docker.sock" in details_lower:
-                return ImageError(
-                    f"{permission_hint} Original Docker error: {details or 'unknown error.'}"
-                )
-            if (
-                "cannot connect to the docker daemon" in details_lower
-                or "is the docker daemon running" in details_lower
-                or "error during connect" in details_lower
-            ):
-                return ImageError(
-                    f"{start_hint} Original Docker error: {details or 'unknown error.'}"
-                )
-            return ImageError(
-                "Docker is required to build images, but Docker could not be used successfully. "
-                f"{install_hint} Original Docker error: {details or 'unknown error.'}"
-            )
+    def _require_runtime(self) -> ContainerRuntime:
+        """Resolve the container runtime, caching the result.
 
-        return ImageError(
-            "Docker is required to build images, but an unexpected Docker availability "
-            "check failed."
-        )
+        Raises ImageError with an actionable message if no runtime is
+        available.
+        """
+        if self._runtime is not None:
+            return self._runtime
+        runtime = detect_container_runtime()
+        if runtime is None:
+            raise container_runtime_error()
+        self._runtime = runtime
+        return runtime
 
     def build_alpine_ssh(
         self,
@@ -1379,19 +1350,26 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
         if tar_error is not None:
             raise tar_error
 
-    def _create_ext4_with_docker(
+    def _create_ext4_with_container(
         self,
         tar_path: Path,
         rootfs_path: Path,
         rootfs_size_mb: int,
         tmpdir: Path,
     ) -> None:
-        """Create and populate ext4 rootfs using Docker + mke2fs.
+        """Create and populate ext4 rootfs using a container + mke2fs.
 
         This path avoids Linux loop mounts and works on macOS where
-        ``mkfs.ext4`` and loop devices are typically unavailable.
+        ``mkfs.ext4`` and loop devices are typically unavailable. Uses
+        whichever container runtime ``_require_runtime()`` resolves —
+        Podman by default, Docker as a fallback.
         """
-        logger.info("  [3/4] Creating ext4 filesystem via Docker helper (%dMB)...", rootfs_size_mb)
+        runtime = self._require_runtime()
+        logger.info(
+            "  [3/4] Creating ext4 filesystem via %s helper (%dMB)...",
+            runtime.kind,
+            rootfs_size_mb,
+        )
 
         rootfs_dir = tmpdir / "rootfs-dir"
         rootfs_dir.mkdir()
@@ -1401,7 +1379,8 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
                 member_path = Path(member.name)
                 if member_path.is_absolute() or ".." in member_path.parts:
                     raise ImageError(
-                        f"Refusing to extract suspicious tar path from docker export: {member.name}"
+                        "Refusing to extract suspicious tar path from "
+                        f"container export: {member.name}"
                     )
 
             # Python 3.14 defaults to a restrictive extraction filter that rejects
@@ -1425,7 +1404,7 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
         try:
             subprocess.run(
                 [
-                    "docker",
+                    str(runtime.binary),
                     "run",
                     "--rm",
                     "-v",
@@ -1445,8 +1424,8 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
         except subprocess.CalledProcessError as e:
             stderr = (e.stderr or "").strip()
             raise ImageError(
-                "Failed to create ext4 image via Docker helper.\n"
-                f"Command: docker run ... mke2fs\n"
+                f"Failed to create ext4 image via {runtime.kind} helper.\n"
+                f"Command: {runtime.kind} run ... mke2fs\n"
                 f"stderr: {stderr}"
             ) from e
 
@@ -1467,8 +1446,10 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
         kernel_url: str | None = None,
         fingerprint_data: dict[str, typing.Any] | None = None,
     ) -> None:
-        """Execute the Docker build and image conversion."""
-        docker_tag = f"smolvm-{name}"
+        """Execute the container build and image conversion."""
+        runtime = self._require_runtime()
+        runtime_bin = str(runtime.binary)
+        image_tag = f"smolvm-{name}"
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
@@ -1480,9 +1461,9 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
                 for filename, content in extra_files.items():
                     (tmp_path / filename).write_text(content)
 
-            # 1. Build Docker image
-            logger.info("  [1/4] Building Docker image...")
-            build_cmd = ["docker", "build", "-t", docker_tag]
+            # 1. Build container image
+            logger.info("  [1/4] Building container image with %s...", runtime.kind)
+            build_cmd = [runtime_bin, "build", "-t", image_tag]
             if build_args:
                 for k, v in build_args.items():
                     build_cmd.extend(["--build-arg", f"{k}={v}"])
@@ -1498,7 +1479,7 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
             # 2. Export rootfs from container
             logger.info("  [2/4] Exporting rootfs...")
             container_id = subprocess.run(
-                ["docker", "create", docker_tag],
+                [runtime_bin, "create", image_tag],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -1507,12 +1488,12 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
             try:
                 tar_path = tmp_path / "rootfs.tar"
                 subprocess.run(
-                    ["docker", "export", container_id, "-o", str(tar_path)],
+                    [runtime_bin, "export", container_id, "-o", str(tar_path)],
                     check=True,
                 )
             finally:
                 subprocess.run(
-                    ["docker", "rm", container_id],
+                    [runtime_bin, "rm", container_id],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
@@ -1521,7 +1502,7 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
             if self._loopfs_helper_path() is not None:
                 self._create_ext4_with_loopfs(tar_path, rootfs_path, rootfs_size_mb, tmp_path)
             else:
-                self._create_ext4_with_docker(tar_path, rootfs_path, rootfs_size_mb, tmp_path)
+                self._create_ext4_with_container(tar_path, rootfs_path, rootfs_size_mb, tmp_path)
 
             # 4. Download architecture-compatible kernel
             resolved_kernel_url = kernel_url or self._kernel_url_for_host()

@@ -22,7 +22,7 @@ A raw image file is exactly "a big file that is a virtual disk." The kernel sees
 
 **Image building** (`build.py`):
 - Linux: `mkfs.ext4` via loop device (`_create_ext4_with_loopfs`)
-- macOS: Docker + `mke2fs` since macOS lacks native loop device support (`_create_ext4_with_docker`)
+- macOS: Podman (or Docker as fallback) + `mke2fs` since macOS lacks native loop device support (`_create_ext4_with_container`). The container runtime is also used to build the rootfs from a Dockerfile on every platform — Podman is preferred for its rootless, daemonless model.
 
 ---
 

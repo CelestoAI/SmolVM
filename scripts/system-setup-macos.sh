@@ -18,7 +18,8 @@
 set -euo pipefail
 
 CHECK_ONLY=false
-WITH_DOCKER=false
+WITH_PODMAN=false
+WITH_DOCKER_CLASSIC=false
 SKIP_DEPS=false
 
 usage() {
@@ -28,10 +29,12 @@ Usage: $(basename "$0") [options]
 Installs and checks macOS dependencies for SmolVM qemu backend.
 
 Options:
-  --check-only   Only validate prerequisites; do not install.
-  --with-docker  Install Docker Desktop cask (optional; for image build workflows).
-  --skip-deps    Skip Homebrew dependency installation (assumes qemu already present).
-  -h, --help     Show this help.
+  --check-only           Only validate prerequisites; do not install.
+  --with-podman          Install Podman + start its Linux VM (recommended) for image builds.
+  --with-docker          Alias for --with-podman (legacy flag name).
+  --with-docker-classic  Install Docker Desktop cask (legacy; only if you need Docker).
+  --skip-deps            Skip Homebrew dependency installation (assumes qemu already present).
+  -h, --help             Show this help.
 EOF
 }
 
@@ -40,8 +43,16 @@ while [[ $# -gt 0 ]]; do
         --check-only)
             CHECK_ONLY=true
             ;;
+        --with-podman)
+            WITH_PODMAN=true
+            ;;
         --with-docker)
-            WITH_DOCKER=true
+            echo "ℹ️  --with-docker now installs Podman (lighter than Docker Desktop)."
+            echo "    Pass --with-docker-classic if you specifically need Docker Desktop."
+            WITH_PODMAN=true
+            ;;
+        --with-docker-classic)
+            WITH_DOCKER_CLASSIC=true
             ;;
         --skip-deps)
             SKIP_DEPS=true
@@ -95,7 +106,25 @@ check_prereqs() {
         missing=1
     fi
 
-    if [[ "$WITH_DOCKER" == "true" ]]; then
+    if [[ "$WITH_PODMAN" == "true" ]]; then
+        if ! command -v podman >/dev/null 2>&1; then
+            echo "⚠️  podman not found"
+            echo "    Fix: 'brew install podman && podman machine init && podman machine start'"
+            missing=1
+        elif ! podman machine inspect podman-machine-default >/dev/null 2>&1; then
+            echo "⚠️  podman is installed but no Linux VM has been created"
+            echo "    Fix: 'podman machine init' then 'podman machine start'"
+            missing=1
+        elif ! podman machine inspect podman-machine-default --format '{{.State}}' 2>/dev/null | grep -q running; then
+            echo "⚠️  podman is installed but its Linux VM is not running"
+            echo "    Fix: 'podman machine start'"
+            missing=1
+        else
+            echo "✅ podman ready (Linux VM running)"
+        fi
+    fi
+
+    if [[ "$WITH_DOCKER_CLASSIC" == "true" ]]; then
         if command -v docker >/dev/null 2>&1; then
             echo "✅ docker found"
         else
@@ -127,7 +156,23 @@ else
         brew install qemu
     fi
 
-    if [[ "$WITH_DOCKER" == "true" ]] && ! command -v docker >/dev/null 2>&1; then
+    if [[ "$WITH_PODMAN" == "true" ]]; then
+        if ! command -v podman >/dev/null 2>&1; then
+            echo "Installing Podman via Homebrew..."
+            brew install podman
+        fi
+        if ! podman machine inspect podman-machine-default >/dev/null 2>&1; then
+            echo "Initialising Podman's Linux VM (first run can take ~30 seconds)..."
+            podman machine init
+        fi
+        if ! podman machine inspect podman-machine-default --format '{{.State}}' 2>/dev/null | grep -q running; then
+            echo "Starting Podman's Linux VM..."
+            podman machine start
+        fi
+        echo "ℹ️  Podman is ready. Verify with 'smolvm doctor'."
+    fi
+
+    if [[ "$WITH_DOCKER_CLASSIC" == "true" ]] && ! command -v docker >/dev/null 2>&1; then
         echo "Installing Docker Desktop cask via Homebrew..."
         brew install --cask docker
     fi

@@ -15,8 +15,10 @@
 # limitations under the License.
 
 # system-setup.sh - System-level setup for SmolVM (no Python/venv).
-# Installs Firecracker/Jailer and host dependencies. Docker is optional.
-# Can optionally configure command-scoped NOPASSWD sudo for runtime operations.
+# Installs Firecracker/Jailer and host dependencies. A container runtime
+# (Podman by default, Docker on request) is optional and only needed for
+# image builds. Can optionally configure command-scoped NOPASSWD sudo for
+# runtime operations.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,7 +36,8 @@ if [[ ${EUID} -ne 0 ]]; then
 fi
 
 CHECK_ONLY=false
-WITH_DOCKER=false
+WITH_PODMAN=false
+WITH_DOCKER_CLASSIC=false
 SKIP_DEPS=false
 CONFIGURE_RUNTIME=false
 REMOVE_RUNTIME_CONFIG=false
@@ -51,7 +54,9 @@ Installs host dependencies and Firecracker (no Python/venv involvement).
 
 Options:
   --check-only                   Only validate system prerequisites; do not install.
-  --with-docker                  Install Docker (required for SSH image demo).
+  --with-podman                  Install Podman (rootless, recommended) for image builds.
+  --with-docker                  Alias for --with-podman (legacy flag name).
+  --with-docker-classic          Install Docker (legacy; only if you need Docker specifically).
   --skip-deps                    Skip apt dependency install (assumes deps already present).
   --configure-runtime            Configure scoped NOPASSWD sudoers for SmolVM runtime.
   --remove-runtime-config        Remove generated runtime sudoers config.
@@ -72,8 +77,16 @@ while [[ $# -gt 0 ]]; do
         --check-only)
             CHECK_ONLY=true
             ;;
+        --with-podman)
+            WITH_PODMAN=true
+            ;;
         --with-docker)
-            WITH_DOCKER=true
+            echo "ℹ️  --with-docker now installs Podman (rootless, no daemon)."
+            echo "    Pass --with-docker-classic if you specifically need Docker."
+            WITH_PODMAN=true
+            ;;
+        --with-docker-classic)
+            WITH_DOCKER_CLASSIC=true
             ;;
         --skip-deps)
             SKIP_DEPS=true
@@ -266,14 +279,17 @@ run_checks() {
     check_cmd "nft" "nft (nftables)"
     check_cmd "ssh" "ssh (openssh-client)"
     check_cmd "firecracker" "firecracker"
-    if [[ "${WITH_DOCKER}" == "true" ]]; then
+    if [[ "${WITH_PODMAN}" == "true" ]]; then
+        check_cmd "podman" "podman"
+    fi
+    if [[ "${WITH_DOCKER_CLASSIC}" == "true" ]]; then
         check_cmd "docker" "docker"
     fi
 }
 
 required_runtime_cmds=("ip" "nft" "ssh")
 required_install_cmds=("wget" "tar")
-if [[ "${WITH_DOCKER}" == "true" ]]; then
+if [[ "${WITH_DOCKER_CLASSIC}" == "true" ]]; then
     required_install_cmds+=("curl")
 fi
 
@@ -385,7 +401,26 @@ if ! command -v firecracker >/dev/null 2>&1; then
     exit 1
 fi
 
-if [[ "${WITH_DOCKER}" == "true" ]]; then
+if [[ "${WITH_PODMAN}" == "true" ]]; then
+    if command -v podman >/dev/null 2>&1; then
+        echo "✅ Podman already installed: $(command -v podman)"
+    else
+        echo "Installing Podman..."
+        if ! DEBIAN_FRONTEND=noninteractive apt-get install -y -qq podman; then
+            echo "❌ apt-get install podman failed."
+            echo "    Fix apt sources, or install Podman manually with your distro's package manager."
+            exit 1
+        fi
+        if ! command -v podman >/dev/null 2>&1; then
+            echo "❌ Podman install failed (podman command not found)."
+            exit 1
+        fi
+    fi
+    echo "ℹ️  Podman is rootless on Linux — no docker group needed."
+    echo "    Verify with 'smolvm doctor'."
+fi
+
+if [[ "${WITH_DOCKER_CLASSIC}" == "true" ]]; then
     if command -v docker >/dev/null 2>&1; then
         echo "✅ Docker already installed"
     else

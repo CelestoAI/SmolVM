@@ -31,6 +31,7 @@ from smolvm.cli.output import console_stdout, emit_json, render_error, status_st
 from smolvm.exceptions import SmolVMError
 from smolvm.host.manager import HostManager
 from smolvm.host.network import check_network_prerequisites
+from smolvm.images.container_runtime import runtime_health
 from smolvm.runtime.backends import (
     BACKEND_AUTO,
     BACKEND_FIRECRACKER,
@@ -85,6 +86,16 @@ def _check_command(binary: str, package_hint: str) -> DoctorCheck:
         name=f"command:{binary}",
         status="pass",
         detail=str(path),
+    )
+
+
+def _check_container_runtime() -> DoctorCheck:
+    health = runtime_health()
+    return DoctorCheck(
+        name="container-runtime",
+        status=health.status,
+        detail=health.detail,
+        fix=health.fix,
     )
 
 
@@ -417,6 +428,9 @@ def generate_doctor_report(backend: str | None = None) -> DoctorReport:
 
     checks: list[DoctorCheck] = []
 
+    # Image builds are backend-independent, so the runtime check runs once.
+    checks.append(_check_container_runtime())
+
     if resolved == BACKEND_FIRECRACKER:
         host = HostManager()
 
@@ -512,7 +526,7 @@ def generate_doctor_report(backend: str | None = None) -> DoctorReport:
                     status="pass",
                     detail=f"{qemu_name} ({qemu_path})",
                 )
-                    )
+            )
 
             checks.append(_check_qemu_version(qemu_path))
             if platform.system() == "Darwin":

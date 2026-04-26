@@ -38,6 +38,10 @@ def _pass(name: str) -> DoctorCheck:
 class TestDoctorFirecracker:
     """Firecracker backend diagnostic tests."""
 
+    @patch(
+        "smolvm.host.doctor._check_container_runtime",
+        new=lambda: _pass("container-runtime"),
+    )
     @patch("smolvm.host.doctor._check_kvm_permissions", new=lambda: _pass("worker:kvm-permissions"))
     @patch("smolvm.host.doctor._check_kvm_nx_huge_pages", new=lambda: _pass("worker:kvm-nx-huge-pages"))
     @patch("smolvm.host.doctor._check_thp_disabled", new=lambda: _pass("worker:thp-disabled"))
@@ -95,6 +99,10 @@ class TestDoctorFirecracker:
             fix="sudo swapoff -a",
         ),
     )
+    @patch(
+        "smolvm.host.doctor._check_container_runtime",
+        new=lambda: _pass("container-runtime"),
+    )
     @patch("smolvm.host.doctor.run_command")
     @patch("smolvm.host.doctor.check_network_prerequisites", return_value=[])
     @patch("smolvm.host.doctor.which")
@@ -131,6 +139,10 @@ class TestDoctorFirecracker:
             "worker:thp-disabled",
         }
 
+    @patch(
+        "smolvm.host.doctor._check_container_runtime",
+        new=lambda: _pass("container-runtime"),
+    )
     @patch("smolvm.host.doctor._check_kvm_permissions", new=lambda: _pass("worker:kvm-permissions"))
     @patch("smolvm.host.doctor._check_kvm_nx_huge_pages", new=lambda: _pass("worker:kvm-nx-huge-pages"))
     @patch("smolvm.host.doctor._check_thp_disabled", new=lambda: _pass("worker:thp-disabled"))
@@ -191,6 +203,10 @@ class TestDoctorFirecracker:
             detail="Active (8388604 kB)",
         ),
     )
+    @patch(
+        "smolvm.host.doctor._check_container_runtime",
+        new=lambda: _pass("container-runtime"),
+    )
     @patch("smolvm.host.doctor.run_command")
     @patch("smolvm.host.doctor.check_network_prerequisites", return_value=[])
     @patch("smolvm.host.doctor.which")
@@ -244,6 +260,10 @@ class TestDoctorFirecracker:
 class TestDoctorQemu:
     """QEMU backend diagnostic tests."""
 
+    @patch(
+        "smolvm.host.doctor._check_container_runtime",
+        new=lambda: _pass("container-runtime"),
+    )
     @patch("smolvm.host.doctor._find_qemu_binary", return_value=None)
     @patch("smolvm.host.doctor.which", return_value=Path("/usr/bin/ssh"))
     def test_generate_report_qemu_missing_binary(
@@ -257,6 +277,10 @@ class TestDoctorQemu:
         assert report.backend_resolved == "qemu"
         assert any(check.name == "qemu" and check.status == "fail" for check in report.checks)
 
+    @patch(
+        "smolvm.host.doctor._check_container_runtime",
+        new=lambda: _pass("container-runtime"),
+    )
     @patch("smolvm.host.doctor.platform.system", return_value="Linux")
     @patch("smolvm.host.doctor.subprocess.run")
     @patch("smolvm.host.doctor.which")
@@ -281,6 +305,10 @@ class TestDoctorQemu:
         assert checks["qemu-version"].status == "pass"
         assert checks["command:qemu-img"].status == "pass"
 
+    @patch(
+        "smolvm.host.doctor._check_container_runtime",
+        new=lambda: _pass("container-runtime"),
+    )
     @patch("smolvm.host.doctor.platform.system", return_value="Linux")
     @patch("smolvm.host.doctor.subprocess.run")
     @patch("smolvm.host.doctor.which")
@@ -305,6 +333,10 @@ class TestDoctorQemu:
         assert checks["qemu-version"].status == "fail"
         assert checks["command:qemu-img"].status == "fail"
 
+    @patch(
+        "smolvm.host.doctor._check_container_runtime",
+        new=lambda: _pass("container-runtime"),
+    )
     @patch("smolvm.host.doctor.platform.system", return_value="Linux")
     @patch("smolvm.host.doctor.subprocess.run", side_effect=OSError("probe failed"))
     @patch("smolvm.host.doctor.which")
@@ -328,6 +360,10 @@ class TestDoctorQemu:
         assert checks["qemu-version"].status == "warn"
         assert "probe failed" in checks["qemu-version"].detail
 
+    @patch(
+        "smolvm.host.doctor._check_container_runtime",
+        new=lambda: _pass("container-runtime"),
+    )
     @patch("smolvm.host.doctor.platform.system", return_value="Linux")
     @patch("smolvm.host.doctor.subprocess.run", side_effect=RuntimeError("boom"))
     @patch("smolvm.host.doctor.which")
