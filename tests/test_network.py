@@ -29,6 +29,16 @@ def _disable_native_extension():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _reset_native_unprivileged_flag():
+    """Reset the cached EPERM flag so tests don't leak state into each other."""
+    import smolvm.host.network as net
+
+    net._native_unprivileged = False
+    yield
+    net._native_unprivileged = False
+
+
 def _collect_nft_scripts(mock_run_command: MagicMock) -> str:
     scripts: list[str] = []
     for call in mock_run_command.call_args_list:
@@ -170,6 +180,26 @@ class TestTapManagement:
         mock_run_command.assert_called_once_with(
             ["ip", "tuntap", "add", "tap2", "mode", "tap", "user", "alice"]
         )
+
+    @patch("smolvm.host.network.run_command")
+    @patch("smolvm.host.network.native")
+    def test_native_unprivileged_flag_skips_subsequent_native_attempts(
+        self, mock_native: MagicMock, mock_run_command: MagicMock
+    ) -> None:
+        """After one EPERM, later calls must not even try the native path."""
+        mock_native.create_tap.side_effect = OSError("tap2: errno 1")
+        mock_run_command.return_value = MagicMock(stdout="")
+
+        with patch("smolvm.host.network.HAS_NETLINK", True):
+            nm = NetworkManager()
+            nm.create_tap("tap2", "alice")  # trips EPERM, sets flag
+            nm.create_tap("tap3", "alice")  # must skip native entirely
+            nm.add_route("172.16.0.5", "tap3")  # also must skip native
+
+        # native.create_tap was tried exactly once; the second create_tap and the
+        # add_route both short-circuited before touching the native module.
+        assert mock_native.create_tap.call_count == 1
+        mock_native.add_route.assert_not_called()
 
 
 class TestEpermDetector:

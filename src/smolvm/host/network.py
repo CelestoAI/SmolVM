@@ -46,6 +46,27 @@ _EPERM_RE = re.compile(r"\berrno 1\b|Operation not permitted")
 def _is_eperm(err: str) -> bool:
     return bool(_EPERM_RE.search(err))
 
+
+# Once the native ioctl path returns EPERM, every later call in this process
+# will too — short-circuit straight to the subprocess path and stop emitting
+# duplicate warnings (and stop triggering noisy IFLA_INET6_CONF parse warnings
+# from the netlink crate, which happen during the native link lookups).
+_native_unprivileged = False
+
+
+def _native_available() -> bool:
+    return HAS_NETLINK and not _native_unprivileged
+
+
+def _mark_native_unprivileged() -> None:
+    global _native_unprivileged
+    if not _native_unprivileged:
+        _native_unprivileged = True
+        logger.warning(
+            "Native networking lacks CAP_NET_ADMIN; using sudo path for the "
+            "rest of this process"
+        )
+
 # SmolVM-managed nftables objects
 _NFT_NAT_FAMILY = "ip"
 _NFT_NAT_TABLE = "smolvm_nat"
@@ -138,7 +159,7 @@ class NetworkManager:
 
         logger.info("Creating TAP device: %s (user: %s)", tap_name, user)
 
-        if HAS_NETLINK:
+        if _native_available():
             import pwd
 
             try:
@@ -164,9 +185,7 @@ class NetworkManager:
                         time.sleep(delay)
                         continue
                     if _is_eperm(err):
-                        logger.warning(
-                            "Native create_tap lacks CAP_NET_ADMIN; falling back to sudo"
-                        )
+                        _mark_native_unprivileged()
                         break
                     raise SmolVMError(err) from e
             else:
@@ -250,7 +269,7 @@ class NetworkManager:
 
         logger.info("Configuring TAP %s with IP %s/%s", tap_name, host_ip, netmask)
 
-        if HAS_NETLINK:
+        if _native_available():
             try:
                 native.flush_addrs(tap_name)
                 native.add_addr(tap_name, host_ip, int(netmask))
@@ -263,9 +282,7 @@ class NetworkManager:
                     self._write_sysctl(f"net/ipv4/conf/{tap_name}/route_localnet", "1")
                     return
                 if _is_eperm(err):
-                    logger.warning(
-                        "Native configure_tap lacks CAP_NET_ADMIN; falling back to sudo"
-                    )
+                    _mark_native_unprivileged()
                 else:
                     raise SmolVMError(err) from e
 
@@ -322,7 +339,7 @@ class NetworkManager:
 
         logger.info("Adding route: %s via %s", ip_address, device)
 
-        if HAS_NETLINK:
+        if _native_available():
             try:
                 native.add_route(ip_address, 32, device)
                 return
@@ -331,9 +348,7 @@ class NetworkManager:
                 if "File exists" in err:
                     return
                 if _is_eperm(err):
-                    logger.warning(
-                        "Native add_route lacks CAP_NET_ADMIN; falling back to sudo"
-                    )
+                    _mark_native_unprivileged()
                 else:
                     raise SmolVMError(err) from e
 
@@ -364,7 +379,7 @@ class NetworkManager:
 
         logger.info("Cleaning up TAP device: %s", tap_name)
 
-        if HAS_NETLINK:
+        if _native_available():
             try:
                 native.delete_tap(tap_name)
                 return
@@ -373,9 +388,7 @@ class NetworkManager:
                 if "Cannot find device" in err or "No such device" in err:
                     return
                 if _is_eperm(err):
-                    logger.warning(
-                        "Native delete_tap lacks CAP_NET_ADMIN; falling back to sudo"
-                    )
+                    _mark_native_unprivileged()
                 else:
                     logger.warning("Failed to delete TAP %s: %s", tap_name, e)
                     return
