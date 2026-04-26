@@ -1,6 +1,6 @@
 [package]
 name = "smolvm-core"
-version = "0.0.10"
+version = "0.0.11a0"
 description = "Rust-native core package for SmolVM"
 documentation = "https://docs.rs/smolvm-core"
 readme = "README.md"
