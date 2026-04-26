@@ -395,8 +395,8 @@ class TestCliCreate:
             on_download=ANY,
         )
         mock_vm_cls.assert_called_once_with(config, ssh_key_path="/tmp/id_ed25519", mounts=None)
-        vm.start.assert_called_once_with(boot_timeout=30.0)
-        vm.wait_for_ssh.assert_called_once_with(timeout=30.0)
+        vm.start.assert_called_once_with(boot_timeout=30.0, on_progress=ANY)
+        vm.wait_for_ssh.assert_called_once_with(timeout=30.0, on_progress=ANY)
         vm.close.assert_called_once()
         out = capsys.readouterr().out
         assert "Created VM 'vm-a1b2c3d4'." in out
@@ -460,8 +460,8 @@ class TestCliCreate:
             on_download=ANY,
         )
         mock_vm_cls.assert_called_once_with(config, ssh_key_path="/tmp/id_ed25519", mounts=None)
-        vm.start.assert_called_once_with(boot_timeout=45.0)
-        vm.wait_for_ssh.assert_called_once_with(timeout=45.0)
+        vm.start.assert_called_once_with(boot_timeout=45.0, on_progress=ANY)
+        vm.wait_for_ssh.assert_called_once_with(timeout=45.0, on_progress=ANY)
         vm.stop.assert_not_called()
         vm.delete.assert_not_called()
         vm.close.assert_called_once()
@@ -512,8 +512,8 @@ class TestCliCreate:
             on_download=ANY,
         )
         mock_vm_cls.assert_called_once_with(config, ssh_key_path="/tmp/id_ed25519", mounts=None)
-        vm.start.assert_called_once_with(boot_timeout=30.0)
-        vm.wait_for_ssh.assert_called_once_with(timeout=30.0)
+        vm.start.assert_called_once_with(boot_timeout=30.0, on_progress=ANY)
+        vm.wait_for_ssh.assert_called_once_with(timeout=30.0, on_progress=ANY)
         vm.close.assert_called_once()
 
     @patch("smolvm.facade._build_auto_config")
@@ -2345,8 +2345,8 @@ class TestCliStart:
             on_download=ANY,
         )
         mock_vm_cls.assert_called_once_with(config, ssh_key_path="/tmp/id_ed25519", mounts=None)
-        vm.start.assert_called_once_with(boot_timeout=30.0)
-        vm.wait_for_ssh.assert_called_once_with(timeout=30.0)
+        vm.start.assert_called_once_with(boot_timeout=30.0, on_progress=ANY)
+        vm.wait_for_ssh.assert_called_once_with(timeout=30.0, on_progress=ANY)
         mock_apply.assert_called_once()
         vm.close.assert_called_once()
 

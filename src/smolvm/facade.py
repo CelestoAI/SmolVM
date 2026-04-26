@@ -950,7 +950,12 @@ class SmolVM:
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def start(self, boot_timeout: float = 30.0) -> SmolVM:
+    def start(
+        self,
+        boot_timeout: float = 30.0,
+        *,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> SmolVM:
         """Start the VM.
 
         If the VM config contains ``env_vars``, they are injected into
@@ -958,6 +963,10 @@ class SmolVM:
 
         Args:
             boot_timeout: Maximum seconds to wait for boot.
+            on_progress: Optional callback invoked with a short label
+                ("Waiting for SSH...", "Mounting workspace(s)...") at
+                each visibly-distinct phase. The CLI uses this to
+                update its spinner; programmatic callers can ignore.
 
         Returns:
             ``self`` for method chaining.
@@ -966,6 +975,8 @@ class SmolVM:
             SmolVMError: If ``env_vars`` is set but the image does not
                 support SSH.
         """
+        notify = on_progress or (lambda _msg: None)
+
         if self._info.status == VMState.RUNNING:
             logger.info("VM %s already running; start() is a no-op", self._vm_id)
             return self
@@ -987,7 +998,7 @@ class SmolVM:
                     "the rootfs at build time.",
                     {"vm_id": self._vm_id},
                 )
-            self.wait_for_ssh(timeout=boot_timeout)
+            self.wait_for_ssh(timeout=boot_timeout, on_progress=on_progress)
             if self._ssh is None:
                 self._ssh = SSHClient(
                     host=self._info.network.guest_ip,
@@ -1004,14 +1015,15 @@ class SmolVM:
             )
 
         # Mount workspace directories after boot if configured.
-        if self._info.config.workspace_mounts:
+        workspace_mounts = self._info.config.workspace_mounts
+        if workspace_mounts:
             if not self.can_run_commands():
                 raise SmolVMError(
                     "Cannot mount workspaces: VM image does not support SSH.",
                     {"vm_id": self._vm_id},
                 )
             if not self._ssh_ready:
-                self.wait_for_ssh(timeout=boot_timeout)
+                self.wait_for_ssh(timeout=boot_timeout, on_progress=on_progress)
             if self._ssh is None:
                 self._ssh = SSHClient(
                     host=self._info.network.guest_ip,
@@ -1019,6 +1031,12 @@ class SmolVM:
                     key_path=self._ssh_key_path,
                 )
                 self._ssh_ready = True
+            count = len(workspace_mounts)
+            notify(
+                "Mounting workspace..."
+                if count == 1
+                else f"Mounting {count} workspaces..."
+            )
             self._mount_workspaces()
 
         return self
@@ -1184,11 +1202,20 @@ class SmolVM:
         ssh = self._ensure_ssh_for_env()
         return read_env_vars(ssh)
 
-    def wait_for_ssh(self, timeout: float = 60.0) -> SmolVM:
+    def wait_for_ssh(
+        self,
+        timeout: float = 60.0,
+        *,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> SmolVM:
         """Wait for SSH to become available on the guest.
 
         Args:
             timeout: Maximum seconds to wait.
+            on_progress: Optional callback invoked with the phase label
+                ``"Waiting for SSH..."`` when an actual wait is needed.
+                Skipped when SSH is already ready, so the CLI doesn't
+                flash a misleading label for a no-op call.
 
         Returns:
             ``self`` for method chaining.
@@ -1211,6 +1238,8 @@ class SmolVM:
                 {"vm_id": self._vm_id},
             )
 
+        if on_progress is not None and not self._ssh_ready:
+            on_progress("Waiting for SSH...")
         self._wait_for_ssh(timeout=timeout)
         return self
 

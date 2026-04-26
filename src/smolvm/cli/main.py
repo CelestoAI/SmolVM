@@ -1536,17 +1536,23 @@ def _build_and_boot_with_progress(
 
         config, ssh_key_path = _build_fn(on_download)
 
-        # Split the boot phase so users see two ticking timers — VM start
-        # is fast (sub-second on warm caches), SSH wait is the long pole
-        # (10-30s on a fresh boot). One label conflated them.
-        start_task = progress.add_task("Starting VM...", total=None)
-        vm = SmolVM(config, ssh_key_path=ssh_key_path, mounts=mounts)
-        vm.start(boot_timeout=boot_timeout)
-        progress.remove_task(start_task)
+        # One task that re-labels as the boot pipeline progresses
+        # (boot → ssh-ready → workspace mount when --mount is set).
+        # Phases come from start()/wait_for_ssh() via on_progress, so the
+        # spinner reflects what's actually slow rather than parking on
+        # "Starting VM..." for the full duration.
+        boot_task = progress.add_task("Booting sandbox...", total=None)
 
-        ssh_task = progress.add_task("Waiting for SSH...", total=None)
-        vm.wait_for_ssh(timeout=boot_timeout)
-        progress.remove_task(ssh_task)
+        def on_phase(phase: str) -> None:
+            progress.update(boot_task, description=phase)
+
+        vm = SmolVM(config, ssh_key_path=ssh_key_path, mounts=mounts)
+        vm.start(boot_timeout=boot_timeout, on_progress=on_phase)
+        # Idempotent: a no-op when start() already waited (mounts/env_vars
+        # path), and the on_progress flips the label only when a real wait
+        # actually happens.
+        vm.wait_for_ssh(timeout=boot_timeout, on_progress=on_phase)
+        progress.remove_task(boot_task)
 
     return vm
 
