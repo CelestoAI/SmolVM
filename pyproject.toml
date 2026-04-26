@@ -28,7 +28,7 @@ classifiers = [
     "Topic :: System :: Emulators",
 ]
 dependencies = [
-    "smolvm-core~=0.0.10",
+    "smolvm-core~=0.0.11",
     "paramiko>=3.0",
     "pycdlib>=1.14.0",
     "pydantic>=2.0",
