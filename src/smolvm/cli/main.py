@@ -43,6 +43,7 @@ from rich.progress import (
 from rich.table import Table
 from rich.text import Text
 
+from smolvm.cli._kvm_session import maybe_reexec_for_kvm_group
 from smolvm.cli.cleanup import add_cleanup_args, add_delete_args, run_cleanup, run_delete
 from smolvm.cli.output import console_stdout, emit_json, render_empty, render_error, status_style
 from smolvm.cli.version_check import maybe_print_update_notice
@@ -2772,6 +2773,12 @@ def _run_browser(args: argparse.Namespace) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entrypoint for `smolvm`."""
+    # Best-effort: if the user has been added to the kvm group but the
+    # current shell session hasn't picked it up yet, re-exec under
+    # `sg kvm -c …` so /dev/kvm becomes accessible without a manual
+    # `newgrp kvm` or relog. Linux-only; no-op everywhere else.
+    maybe_reexec_for_kvm_group(argv)
+
     parser = build_parser()
     args = parser.parse_args(argv)
 
