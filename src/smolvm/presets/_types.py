@@ -100,6 +100,11 @@ class Preset:
             them to the same parser; the canonical ``name`` is what
             ``args.preset_name`` carries.
         summary: One-line description for ``--help`` output.
+        setup_script: Optional bash script run before ``install_script``
+            to prepare the guest (e.g. apt + Node 20). Split out so
+            users see two distinct progress phases — "Installing system
+            packages..." then "Installing {preset}..." — instead of one
+            opaque step that stalls for the full duration.
         install_script: Bash script run via ``ssh.run`` after boot.
             Should be idempotent and self-contained.
         host_env_vars: Names of host environment variables. Each one
@@ -117,6 +122,7 @@ class Preset:
     name: str
     summary: str
     install_script: str
+    setup_script: str = ""
     aliases: tuple[str, ...] = field(default_factory=tuple)
     host_env_vars: tuple[str, ...] = field(default_factory=tuple)
     host_configs: tuple[HostConfigCopy, ...] = field(default_factory=tuple)

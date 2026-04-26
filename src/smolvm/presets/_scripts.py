@@ -46,7 +46,13 @@ fi
 
 
 def npm_install_global(package: str) -> str:
-    """Return a script that ensures Node 20+ and globally installs *package*."""
+    """Return a script that globally installs *package* via npm.
+
+    Assumes Node is already on PATH — pair this with
+    :data:`NODE20_BOOTSTRAP` as the preset's ``setup_script`` so that
+    the apt/Node phase and the npm phase show up as two separate
+    progress steps in the CLI.
+    """
     if not _SAFE_NPM_NAME_RE.match(package):
         raise ValueError(f"Refusing to install unsafe npm package name: {package!r}")
-    return NODE20_BOOTSTRAP + f"\nnpm install -g --silent {package}\n"
+    return f"set -euo pipefail\nnpm install -g --silent {package}\n"

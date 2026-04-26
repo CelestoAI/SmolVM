@@ -37,6 +37,7 @@ from rich.progress import (
     Progress,
     SpinnerColumn,
     TextColumn,
+    TimeElapsedColumn,
     TransferSpeedColumn,
 )
 from rich.table import Table
@@ -1521,6 +1522,7 @@ def _build_and_boot_with_progress(
         BarColumn(),
         DownloadColumn(),
         TransferSpeedColumn(),
+        TimeElapsedColumn(),
         console=_console,
         transient=True,
     ) as progress:
@@ -1534,13 +1536,17 @@ def _build_and_boot_with_progress(
 
         config, ssh_key_path = _build_fn(on_download)
 
-        boot_task = progress.add_task(
-            "Booting computer and waiting for SSH...", total=None
-        )
+        # Split the boot phase so users see two ticking timers — VM start
+        # is fast (sub-second on warm caches), SSH wait is the long pole
+        # (10-30s on a fresh boot). One label conflated them.
+        start_task = progress.add_task("Starting VM...", total=None)
         vm = SmolVM(config, ssh_key_path=ssh_key_path, mounts=mounts)
         vm.start(boot_timeout=boot_timeout)
+        progress.remove_task(start_task)
+
+        ssh_task = progress.add_task("Waiting for SSH...", total=None)
         vm.wait_for_ssh(timeout=boot_timeout)
-        progress.remove_task(boot_task)
+        progress.remove_task(ssh_task)
 
     return vm
 
@@ -1923,6 +1929,7 @@ def _apply_preset_with_progress(
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
         console=_console,
         transient=True,
     ) as progress:

@@ -80,7 +80,10 @@ def apply_preset(
     # Git configs piggyback on host_configs so dir copies (e.g. ~/.ssh)
     # preserve 0o600 modes via tar and the run summary surfaces them
     # under the existing copied_configs key.
-    for cfg in (*preset.host_configs, *GIT_HOST_CONFIGS):
+    all_configs = (*preset.host_configs, *GIT_HOST_CONFIGS)
+    if all_configs:
+        notify("Copying host credentials (gitconfig, ssh keys, CLI configs)...")
+    for cfg in all_configs:
         local = Path(cfg.host_path).expanduser()
         if not local.exists():
             if cfg.required:
@@ -90,13 +93,17 @@ def apply_preset(
                 )
             logger.debug("Skipping missing host config: %s", local)
             continue
-        notify(f"Copying {local} → {cfg.guest_path}")
         _copy_to_guest(ssh, local, cfg.guest_path, file_mode=cfg.file_mode)
         copied_configs.append(cfg.guest_path)
 
     # Keychain step runs after host_configs so a directory copy that
     # targets the same parent (e.g. ~/.claude → /root/.claude) cannot
     # tar-extract over a credential file we just wrote.
+    #
+    # Notify is per-found-secret rather than rolled up because keychain
+    # entries are user-visible (typically 1 OAuth blob) and the user
+    # cares whether their login actually transferred — a missing secret
+    # must not produce a "copied X" message.
     extracted_secrets: list[str] = []
     for secret in preset.host_keychain_secrets:
         # Default the account to the current macOS login user. This is
@@ -119,28 +126,26 @@ def apply_preset(
     env_vars = collect_host_env(preset)
     injected_keys: list[str] = []
     if env_vars:
-        notify(f"Injecting {len(env_vars)} env var(s) from host")
+        notify(f"Forwarding {len(env_vars)} environment variable(s)...")
         injected_keys = inject_env_vars(ssh, env_vars)
 
+    # Setup phase (apt + Node toolchain) runs before install_script so
+    # the user sees two distinct progress steps instead of one opaque
+    # "Installing..." line that stalls for the full duration.
+    if preset.setup_script.strip():
+        notify("Installing system packages (apt + Node 20)...")
+        _run_install_phase(ssh, preset, preset.setup_script, install_timeout, phase="setup")
+
     if preset.install_script.strip():
-        notify(f"Installing {preset.name} (this may take a minute)")
-        result = ssh.run(preset.install_script, timeout=install_timeout)
-        if not result.ok:
-            stderr_tail = (result.stderr or "").strip().splitlines()[-20:]
-            raise SmolVMError(
-                f"Preset {preset.name!r} install failed (exit {result.exit_code})",
-                {
-                    "preset": preset.name,
-                    "exit_code": result.exit_code,
-                    "stderr_tail": "\n".join(stderr_tail),
-                },
-            )
+        notify(f"Installing {preset.name}...")
+        _run_install_phase(ssh, preset, preset.install_script, install_timeout, phase="install")
 
     # Trust the workspace mounts so git stops refusing to operate on the
     # 9p-shared repo with "fatal: detected dubious ownership". Runs after
     # the install script because the upstream Ubuntu minimal cloudimg ships
     # without git; the bootstrap in NODE20_BOOTSTRAP is what actually puts
     # the binary on PATH.
+    notify("Trusting workspace mount(s)...")
     register_workspace_safe_directories(ssh)
 
     return {
@@ -149,6 +154,33 @@ def apply_preset(
         "extracted_keychain_secrets": extracted_secrets,
         "injected_env_keys": injected_keys,
     }
+
+
+def _run_install_phase(
+    ssh: SSHClient,
+    preset: Preset,
+    script: str,
+    install_timeout: int,
+    *,
+    phase: str,
+) -> None:
+    """Run a setup or install bash script and surface failures uniformly.
+
+    *phase* tags the SmolVMError context (``"setup"`` or ``"install"``) so
+    JSON consumers can tell which step failed without parsing the message.
+    """
+    result = ssh.run(script, timeout=install_timeout)
+    if not result.ok:
+        stderr_tail = (result.stderr or "").strip().splitlines()[-20:]
+        raise SmolVMError(
+            f"Preset {preset.name!r} {phase} failed (exit {result.exit_code})",
+            {
+                "preset": preset.name,
+                "phase": phase,
+                "exit_code": result.exit_code,
+                "stderr_tail": "\n".join(stderr_tail),
+            },
+        )
 
 
 def _copy_to_guest(

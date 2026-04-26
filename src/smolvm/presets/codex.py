@@ -16,12 +16,13 @@
 
 from __future__ import annotations
 
-from smolvm.presets._scripts import npm_install_global
+from smolvm.presets._scripts import NODE20_BOOTSTRAP, npm_install_global
 from smolvm.presets._types import HostConfigCopy, Preset
 
 CODEX_PRESET = Preset(
     name="codex",
     summary="Start a sandbox with OpenAI's codex CLI preinstalled.",
+    setup_script=NODE20_BOOTSTRAP,
     install_script=npm_install_global("@openai/codex"),
     host_env_vars=("OPENAI_API_KEY",),
     host_configs=(HostConfigCopy(host_path="~/.codex", guest_path="/root/.codex"),),

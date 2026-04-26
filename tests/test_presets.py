@@ -415,9 +415,9 @@ class TestApplyPreset:
 
         apply_preset(ssh, preset, on_progress=messages.append)
 
-        # We expect at least: copy, inject env, install
+        # We expect at least: copy, forward env, install
         assert any("Copying" in m for m in messages)
-        assert any("env var" in m for m in messages)
+        assert any("environment variable" in m for m in messages)
         assert any("Installing test" in m for m in messages)
 
 
@@ -732,18 +732,18 @@ class TestGitCredentialInjection:
     def _stub_codex_preset(self) -> Preset:
         """Codex preset with the install step neutered.
 
-        The preset's real install_script runs apt-via-NodeSource which
-        doesn't make sense against a MagicMock; replace with a no-op so
-        the test focuses on the copy stage.
+        The preset's real setup/install scripts run apt-via-NodeSource
+        and npm, which don't make sense against a MagicMock; replace
+        with no-ops so the test focuses on the copy stage.
         """
         from dataclasses import replace
 
-        return replace(CODEX_PRESET, install_script="")
+        return replace(CODEX_PRESET, setup_script="", install_script="")
 
     def _stub_claude_code_preset(self) -> Preset:
         from dataclasses import replace
 
-        return replace(CLAUDE_CODE_PRESET, install_script="")
+        return replace(CLAUDE_CODE_PRESET, setup_script="", install_script="")
 
     def test_codex_apply_copies_git_files(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

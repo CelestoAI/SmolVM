@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from smolvm.presets._scripts import npm_install_global
+from smolvm.presets._scripts import NODE20_BOOTSTRAP, npm_install_global
 from smolvm.presets._types import HostConfigCopy, HostKeychainSecret, Preset
 
 # Drop host-specific install metadata from the copied ~/.claude.json.
@@ -48,6 +48,7 @@ CLAUDE_CODE_PRESET = Preset(
     name="claude-code",
     aliases=("claude",),
     summary="Start a sandbox with Anthropic's Claude Code CLI preinstalled.",
+    setup_script=NODE20_BOOTSTRAP,
     install_script=npm_install_global("@anthropic-ai/claude-code") + _RESET_INSTALL_METHOD,
     host_env_vars=("ANTHROPIC_API_KEY",),
     host_configs=(
