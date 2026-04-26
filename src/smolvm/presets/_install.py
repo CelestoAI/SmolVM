@@ -94,12 +94,6 @@ def apply_preset(
         _copy_to_guest(ssh, local, cfg.guest_path, file_mode=cfg.file_mode)
         copied_configs.append(cfg.guest_path)
 
-    # Trust the workspace mounts so git stops refusing to operate on the
-    # 9p-shared repo with "fatal: detected dubious ownership". Runs after
-    # the host gitconfig copy so this entry appends to it rather than
-    # being clobbered.
-    register_workspace_safe_directories(ssh)
-
     # Keychain step runs after host_configs so a directory copy that
     # targets the same parent (e.g. ~/.claude → /root/.claude) cannot
     # tar-extract over a credential file we just wrote.
@@ -141,6 +135,13 @@ def apply_preset(
                     "stderr_tail": "\n".join(stderr_tail),
                 },
             )
+
+    # Trust the workspace mounts so git stops refusing to operate on the
+    # 9p-shared repo with "fatal: detected dubious ownership". Runs after
+    # the install script because the upstream Ubuntu minimal cloudimg ships
+    # without git; the bootstrap in NODE20_BOOTSTRAP is what actually puts
+    # the binary on PATH.
+    register_workspace_safe_directories(ssh)
 
     return {
         "preset": preset.name,

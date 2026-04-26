@@ -375,7 +375,6 @@ class TestApplyPreset:
         ssh = MagicMock()
         # First .run for inject_env (read_env_vars) succeeds, then install fails.
         ssh.run.side_effect = [
-            _ok(),  # register_workspace_safe_directories
             _ok(),  # read_env_vars in inject_env_vars
             _ok(),  # _atomic_write inside inject_env_vars
             _fail(stderr="line1\nline2\nE: bad apt key\n"),  # install script

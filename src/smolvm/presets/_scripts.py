@@ -29,7 +29,7 @@ cloud-init status --wait >/dev/null 2>&1 || true
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update -qq
-apt-get install -y -qq --no-install-recommends curl ca-certificates gnupg
+apt-get install -y -qq --no-install-recommends curl ca-certificates gnupg git
 
 needs_node=1
 if command -v node >/dev/null 2>&1; then
