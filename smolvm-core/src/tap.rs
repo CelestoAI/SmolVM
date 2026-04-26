@@ -1,7 +1,6 @@
 //! TAP device creation and deletion via ioctl + netlink.
 
 use crate::error::NetlinkError;
-use std::ffi::CString;
 use std::os::fd::AsRawFd;
 
 /// Maximum retry attempts for EBUSY on TUNSETPERSIST.
@@ -108,7 +107,7 @@ fn create_once(name: &str, owner_uid: u32) -> Result<(), NetlinkError> {
 
 /// Delete a TAP device via netlink.
 pub fn delete(name: &str) -> Result<(), NetlinkError> {
-    use crate::route::{runtime, with_netlink};
+    use crate::route::with_netlink;
 
     with_netlink(async {
         let (connection, handle, _) = rtnetlink::new_connection().map_err(|e| {
