@@ -63,8 +63,9 @@ def _mark_native_unprivileged() -> None:
     if not _native_unprivileged:
         _native_unprivileged = True
         logger.warning(
-            "Native networking lacks CAP_NET_ADMIN; using sudo path for the "
-            "rest of this process"
+            "Using the slower networking path. VMs will still work; "
+            "each is a fraction of a second slower to start. "
+            "Run with sudo to use the faster path."
         )
 
 # SmolVM-managed nftables objects
