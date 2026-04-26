@@ -43,20 +43,46 @@ _REEXEC_DONE_ENV = "SMOLVM_KVM_REEXEC_DONE"
 # useful for advanced users, scripts, or debugging.
 _REEXEC_DISABLE_ENV = "SMOLVM_NO_KVM_REEXEC"
 
-# Subcommands that should *not* trigger a re-exec. ``doctor`` and ``setup``
-# are diagnostic/administrative — silently switching the process's primary
-# gid would hide the very state the user invoked them to inspect or fix.
-# ``--help``/``--version`` short-circuit before any kvm work happens.
+# Subcommands that should *not* trigger a re-exec. Two groups:
+#
+#   1. Diagnostic/administrative verbs whose job is to *report* state —
+#      silently switching the process's primary gid would hide the very
+#      thing the user invoked them to inspect (``doctor``) or fix
+#      (``setup``).
+#
+#   2. Read-only or VM-process-targeted verbs that don't open ``/dev/kvm``
+#      themselves — listing, inspecting, ssh'ing into an already-running
+#      sandbox, signalling stop/pause, removing state files. Re-execing
+#      under ``sg kvm`` would only add startup latency and a confusing
+#      "activating kvm group" notice for an operation that doesn't need
+#      kvm at all.
+#
+# ``-h``/``--help``/``-V``/``--version`` are checked separately because they
+# can appear at *any* depth (e.g. ``smolvm create --help``), not just as
+# the first argument.
 _SKIP_FIRST_ARGS: frozenset[str] = frozenset(
     {
+        # Diagnostic / administrative
         "doctor",
         "setup",
-        "-h",
-        "--help",
-        "-V",
-        "--version",
+        # Read-only state inspection
+        "list",
+        "info",
+        "env",
+        # VM-process-targeted (talks to an already-running sandbox; no kvm open)
+        "ssh",
+        "stop",
+        "pause",
+        # State-file maintenance
+        "delete",
+        "cleanup",
     }
 )
+
+# Help/version flags can appear anywhere in argv (top-level *or* per-verb,
+# e.g. ``smolvm create --help``). When any of these is present, argparse
+# is going to short-circuit before any kvm work happens, so we should too.
+_HELP_VERSION_FLAGS: frozenset[str] = frozenset({"-h", "--help", "-V", "--version"})
 
 _KVM_DEV = Path("/dev/kvm")
 _KVM_GROUP = "kvm"
@@ -82,7 +108,11 @@ def maybe_reexec_for_kvm_group(argv: Sequence[str] | None = None) -> None:
         return
 
     # Mark the env so the child doesn't loop, then exec. After execvp
-    # succeeds, this Python process is replaced and never returns.
+    # succeeds, this Python process is replaced and never returns; if it
+    # raises (rare — sg disappeared between which() and execvp(), bad
+    # interpreter, etc.) we must drop the marker so the regular kvm
+    # permission failure surfaces normally instead of being silenced by a
+    # loop guard meant for the *next* process.
     child_env_marker_set()
     inner_cmd = shlex.join([sys.executable, *sys.argv])
     print(
@@ -91,12 +121,25 @@ def maybe_reexec_for_kvm_group(argv: Sequence[str] | None = None) -> None:
         file=sys.stderr,
         flush=True,
     )
-    os.execvp(sg_path, [sg_path, _KVM_GROUP, "-c", inner_cmd])
+    try:
+        os.execvp(sg_path, [sg_path, _KVM_GROUP, "-c", inner_cmd])
+    except BaseException:
+        # execvp normally never returns; if it raises, drop the loop guard
+        # so the parent process doesn't carry a stale marker, then re-raise
+        # so the original failure isn't silently swallowed.
+        child_env_marker_unset()
+        raise
 
 
 def child_env_marker_set() -> None:
     """Set the loop-guard env var. Extracted for test seams."""
     os.environ[_REEXEC_DONE_ENV] = "1"
+
+
+def child_env_marker_unset() -> None:
+    """Clear the loop-guard env var. Used when execvp fails so the parent
+    process does not carry a stale marker into subsequent logic."""
+    os.environ.pop(_REEXEC_DONE_ENV, None)
 
 
 def _should_attempt_reexec(argv: Sequence[str] | None) -> bool:
@@ -110,6 +153,8 @@ def _should_attempt_reexec(argv: Sequence[str] | None) -> bool:
 
     args = list(argv) if argv is not None else sys.argv[1:]
     if args and args[0] in _SKIP_FIRST_ARGS:
+        return False
+    if any(arg in _HELP_VERSION_FLAGS for arg in args):
         return False
 
     if not _KVM_DEV.exists():

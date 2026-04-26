@@ -209,7 +209,10 @@ install_kvm_udev_rule() {
 KERNEL=="kvm", GROUP="kvm", MODE="0660", TAG+="uaccess"
 '
 
-    if [[ -f "${rule_path}" ]] && [[ "$(cat "${rule_path}")" == "${rule_body}" ]]; then
+    # `$(cat …)` strips trailing newlines, so re-append one before comparing
+    # against rule_body (which ends with a newline) — otherwise this idempotency
+    # check would never match and we'd re-write + re-trigger udev on every run.
+    if [[ -f "${rule_path}" ]] && [[ "$(cat "${rule_path}")"$'\n' == "${rule_body}" ]]; then
         echo "✅ KVM udev rule already in place at ${rule_path}"
         return 0
     fi
@@ -228,8 +231,12 @@ KERNEL=="kvm", GROUP="kvm", MODE="0660", TAG+="uaccess"
     if udevadm control --reload >/dev/null 2>&1; then
         # Apply immediately so the current session sees the new mode/group
         # without waiting for the next kernel device event.
-        udevadm trigger /dev/kvm >/dev/null 2>&1 || true
-        echo "✅ KVM udev rule installed and applied"
+        if udevadm trigger /dev/kvm >/dev/null 2>&1; then
+            echo "✅ KVM udev rule installed and applied"
+        else
+            echo "⚠️  Wrote ${rule_path} but 'udevadm trigger /dev/kvm' failed."
+            echo "    Run 'sudo udevadm trigger /dev/kvm' or reboot to apply."
+        fi
     else
         echo "⚠️  Wrote ${rule_path} but 'udevadm control --reload' failed."
         echo "    The rule will take effect on next reboot."

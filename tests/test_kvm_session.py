@@ -19,14 +19,30 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from smolvm.cli import _kvm_session
 
 
-def _mock_kvm_grp(members: list[str], gid: int = 999) -> MagicMock:
+@pytest.fixture(autouse=True)
+def _reset_reexec_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Strip both kvm-reexec env vars before every test.
+
+    Several tests in this module exercise the real ``_should_attempt_reexec``
+    flow and would short-circuit if a previous test left
+    ``SMOLVM_KVM_REEXEC_DONE`` or ``SMOLVM_NO_KVM_REEXEC`` set in this
+    process — notably the exec-path test below, which mocks ``os.execvp`` and
+    so doesn't actually replace the process the way real execvp would.
+    """
+    monkeypatch.delenv("SMOLVM_KVM_REEXEC_DONE", raising=False)
+    monkeypatch.delenv("SMOLVM_NO_KVM_REEXEC", raising=False)
+
+
+def _mock_kvm_grp(members: list[str], gid: int = 999) -> SimpleNamespace:
     return SimpleNamespace(gr_mem=members, gr_gid=gid)
 
 
-def _mock_pwd_user(name: str) -> MagicMock:
+def _mock_pwd_user(name: str) -> SimpleNamespace:
     return SimpleNamespace(pw_name=name)
 
 
@@ -72,11 +88,29 @@ class TestShouldAttemptReexec:
     def test_help_short_circuits(self, _mock_system: MagicMock) -> None:
         assert _kvm_session._should_attempt_reexec(["--help"]) is False
 
+    @patch("smolvm.cli._kvm_session.platform.system", return_value="Linux")
+    def test_verb_level_help_short_circuits(self, _mock_system: MagicMock) -> None:
+        # ``smolvm create --help`` argparse's into ["create", "--help"] —
+        # this should not trigger a re-exec even though ``create`` is a
+        # kvm-using verb, because no kvm work will actually run.
+        assert _kvm_session._should_attempt_reexec(["create", "--help"]) is False
+        assert _kvm_session._should_attempt_reexec(["snapshot", "create", "-h"]) is False
+        assert _kvm_session._should_attempt_reexec(["create", "--name", "x", "-V"]) is False
+
+    @patch("smolvm.cli._kvm_session.platform.system", return_value="Linux")
+    def test_read_only_verbs_skip(self, _mock_system: MagicMock) -> None:
+        # Read-only / VM-process-targeted verbs don't need /dev/kvm; a
+        # re-exec for them would just print a confusing notice.
+        for verb in ("list", "info", "env", "ssh", "stop", "pause", "delete", "cleanup"):
+            assert _kvm_session._should_attempt_reexec([verb]) is False, (
+                f"expected {verb!r} to skip re-exec"
+            )
+
     @patch("smolvm.cli._kvm_session._KVM_DEV")
     @patch("smolvm.cli._kvm_session.platform.system", return_value="Linux")
     def test_no_dev_kvm_skips(self, _mock_system: MagicMock, mock_dev: MagicMock) -> None:
         mock_dev.exists.return_value = False
-        assert _kvm_session._should_attempt_reexec(["list"]) is False
+        assert _kvm_session._should_attempt_reexec(["create"]) is False
 
     @patch("smolvm.cli._kvm_session.os.access", return_value=True)
     @patch("smolvm.cli._kvm_session._KVM_DEV")
@@ -88,7 +122,7 @@ class TestShouldAttemptReexec:
         _mock_access: MagicMock,
     ) -> None:
         mock_dev.exists.return_value = True
-        assert _kvm_session._should_attempt_reexec(["list"]) is False
+        assert _kvm_session._should_attempt_reexec(["create"]) is False
 
     @patch("smolvm.cli._kvm_session.os.getuid", return_value=1000)
     @patch("smolvm.cli._kvm_session.os.access", return_value=False)
@@ -108,7 +142,7 @@ class TestShouldAttemptReexec:
             patch("grp.getgrnam", return_value=_mock_kvm_grp(members=["other"])),
             patch("pwd.getpwuid", return_value=_mock_pwd_user("alice")),
         ):
-            assert _kvm_session._should_attempt_reexec(["list"]) is False
+            assert _kvm_session._should_attempt_reexec(["create"]) is False
 
     @patch("smolvm.cli._kvm_session.os.getgroups", return_value=[999])
     @patch("smolvm.cli._kvm_session.os.getuid", return_value=1000)
@@ -134,7 +168,7 @@ class TestShouldAttemptReexec:
             ),
             patch("pwd.getpwuid", return_value=_mock_pwd_user("alice")),
         ):
-            assert _kvm_session._should_attempt_reexec(["list"]) is False
+            assert _kvm_session._should_attempt_reexec(["create"]) is False
 
     @patch("smolvm.cli._kvm_session.os.getgroups", return_value=[1000])
     @patch("smolvm.cli._kvm_session.os.getuid", return_value=1000)
@@ -157,7 +191,7 @@ class TestShouldAttemptReexec:
             ),
             patch("pwd.getpwuid", return_value=_mock_pwd_user("alice")),
         ):
-            assert _kvm_session._should_attempt_reexec(["list"]) is True
+            assert _kvm_session._should_attempt_reexec(["create"]) is True
 
 
 class TestMaybeReexec:
@@ -207,3 +241,25 @@ class TestMaybeReexec:
         import sys
 
         assert sys.executable in argv[3]
+
+    @patch(
+        "smolvm.cli._kvm_session.os.execvp",
+        side_effect=OSError("sg vanished between which() and execvp()"),
+    )
+    @patch("smolvm.cli._kvm_session.shutil.which", return_value="/usr/bin/sg")
+    @patch("smolvm.cli._kvm_session._should_attempt_reexec", return_value=True)
+    def test_exec_failure_clears_loop_guard_and_reraises(
+        self,
+        _mock_should: MagicMock,
+        _mock_which: MagicMock,
+        _mock_execvp: MagicMock,
+    ) -> None:
+        # If execvp raises, the loop-guard env var must not linger in this
+        # process — otherwise subsequent invocations within the same parent
+        # would silently skip the re-exec on a stale marker. The original
+        # exception must still propagate so the user sees the real failure.
+        import os
+
+        with pytest.raises(OSError, match="vanished"):
+            _kvm_session.maybe_reexec_for_kvm_group([])
+        assert os.environ.get("SMOLVM_KVM_REEXEC_DONE") is None

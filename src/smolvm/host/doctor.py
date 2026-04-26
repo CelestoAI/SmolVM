@@ -346,11 +346,7 @@ def _check_kvm_runtime() -> DoctorCheck:
             name=name,
             status="fail",
             detail="/dev/kvm not found on this host",
-            fix=(
-                "Run on a host with hardware virtualization (KVM) enabled. "
-                "If this image was built with 'smolvm setup --for-bake', "
-                "/dev/kvm is expected only on the runtime host, not the builder."
-            ),
+            fix="Enable hardware virtualization (KVM) on this host or run on a host that has it.",
         )
     if not os.access(_KVM_DEV, os.R_OK | os.W_OK):
         if _user_is_pending_kvm_group():
@@ -382,8 +378,14 @@ def _check_kvm_runtime() -> DoctorCheck:
 
 def _user_is_pending_kvm_group() -> bool:
     """True iff the current user is listed in /etc/group's kvm but the gid
-    is not in the current process's effective group set — i.e. a usermod
-    has been run but no fresh login session has rebuilt the group set."""
+    is not effective for this process — i.e. a usermod has been run but no
+    fresh login session has rebuilt the group set.
+
+    The effective check covers two paths: the kvm gid in the supplementary
+    group list (``os.getgroups()``), and the kvm gid as the process's
+    primary group (``os.getegid()``) — Linux does not always include the
+    primary gid in the supplementary list, so checking only one would
+    falsely flag users whose primary group is kvm."""
     try:
         import grp
         import pwd
@@ -394,7 +396,7 @@ def _user_is_pending_kvm_group() -> bool:
         return False
     if current_user not in kvm_entry.gr_mem:
         return False
-    return kvm_entry.gr_gid not in os.getgroups()
+    return kvm_entry.gr_gid not in os.getgroups() and os.getegid() != kvm_entry.gr_gid
 
 
 def _check_kvm_permissions() -> DoctorCheck:

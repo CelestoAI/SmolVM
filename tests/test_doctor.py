@@ -407,6 +407,7 @@ class TestKvmRuntimeCheck:
         """User added to kvm group but current shell hasn't picked it up."""
         from smolvm.host.doctor import _check_kvm_runtime
 
+        mock_dev.exists.return_value = True
         result = _check_kvm_runtime()
 
         assert result.status == "fail"
