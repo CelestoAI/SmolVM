@@ -31,6 +31,7 @@ from uuid import uuid4
 
 from smolvm.env import inject_env_vars
 from smolvm.exceptions import SmolVMError
+from smolvm.presets._git import GIT_HOST_CONFIGS
 
 if TYPE_CHECKING:
     from smolvm.presets._types import Preset
@@ -76,7 +77,10 @@ def apply_preset(
     notify = on_progress or (lambda _msg: None)
 
     copied_configs: list[str] = []
-    for cfg in preset.host_configs:
+    # Git configs piggyback on host_configs so dir copies (e.g. ~/.ssh)
+    # preserve 0o600 modes via tar and the run summary surfaces them
+    # under the existing copied_configs key.
+    for cfg in (*preset.host_configs, *GIT_HOST_CONFIGS):
         local = Path(cfg.host_path).expanduser()
         if not local.exists():
             if cfg.required:

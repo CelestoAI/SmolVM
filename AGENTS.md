@@ -25,6 +25,20 @@ SmolVM is specifically designed to provide a secure "sandbox" for AI agents to e
   subcommand and put its actions underneath, instead of overloading a
   global verb.
 
+### Git credentials in presets
+
+Both `codex start` and `claude-code start` also copy `~/.gitconfig`,
+`~/.config/git/config`, `~/.git-credentials`, `~/.ssh/`, and
+`~/.config/gh/` from the host into the guest so `git`, `gh`, and
+`ssh git@github.com` work inside the sandbox without re-auth. Missing
+files are skipped silently. SSH keys land at 0600 — the directory
+goes through tar, which preserves modes. Trust note: anyone with
+shell access to the sandbox can read these keys, same trust model
+as `OPENAI_API_KEY` forwarding. macOS `osxkeychain` helper items for
+HTTPS GitHub auth are not yet copied; on macOS run
+`git config --global credential.helper store` once on the host if
+you rely on that helper.
+
 ### Core writing principles
 - Follow progressive disclosure of complexity.
 - Lead with outcomes, not implementation details.
