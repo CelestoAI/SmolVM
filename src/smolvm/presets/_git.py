@@ -29,7 +29,13 @@ from smolvm.presets._types import HostConfigCopy
 GIT_HOST_CONFIGS: tuple[HostConfigCopy, ...] = (
     HostConfigCopy(host_path="~/.gitconfig", guest_path="/root/.gitconfig"),
     HostConfigCopy(host_path="~/.config/git/config", guest_path="/root/.config/git/config"),
-    HostConfigCopy(host_path="~/.git-credentials", guest_path="/root/.git-credentials"),
+    # ~/.git-credentials holds plaintext "https://user:token@host" lines;
+    # SFTP would otherwise drop it at the server's umask (typically 0644).
+    HostConfigCopy(
+        host_path="~/.git-credentials",
+        guest_path="/root/.git-credentials",
+        file_mode=0o600,
+    ),
     HostConfigCopy(host_path="~/.ssh", guest_path="/root/.ssh"),
     HostConfigCopy(host_path="~/.config/gh", guest_path="/root/.config/gh"),
 )

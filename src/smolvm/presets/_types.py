@@ -28,11 +28,18 @@ class HostConfigCopy:
         guest_path: Destination path inside the guest (absolute).
         required: If True, raise an error when the host path is missing.
             If False (default), the copy is silently skipped.
+        file_mode: Octal permission bits to apply to the guest file
+            after upload. Single-file copies only — directory copies
+            inherit modes from the tar archive. Use this for credential
+            files (e.g. ``~/.git-credentials``) that the SFTP server's
+            umask would otherwise leave world-readable. ``None``
+            (default) leaves the SFTP-applied mode in place.
     """
 
     host_path: str
     guest_path: str
     required: bool = False
+    file_mode: int | None = None
 
 
 @dataclass(frozen=True)

@@ -91,7 +91,7 @@ def apply_preset(
             logger.debug("Skipping missing host config: %s", local)
             continue
         notify(f"Copying {local} → {cfg.guest_path}")
-        _copy_to_guest(ssh, local, cfg.guest_path)
+        _copy_to_guest(ssh, local, cfg.guest_path, file_mode=cfg.file_mode)
         copied_configs.append(cfg.guest_path)
 
     # Keychain step runs after host_configs so a directory copy that
@@ -144,10 +144,16 @@ def apply_preset(
     }
 
 
-def _copy_to_guest(ssh: SSHClient, local: Path, guest_path: str) -> None:
-    """Copy a host file or directory tree to *guest_path* inside the VM."""
+def _copy_to_guest(
+    ssh: SSHClient, local: Path, guest_path: str, *, file_mode: int | None = None
+) -> None:
+    """Copy a host file or directory tree to *guest_path* inside the VM.
+
+    *file_mode* applies only to single-file copies; directory copies
+    inherit per-file modes from the tar archive.
+    """
     if local.is_file():
-        _copy_file(ssh, local, guest_path)
+        _copy_file(ssh, local, guest_path, file_mode=file_mode)
         return
     if local.is_dir():
         _copy_dir(ssh, local, guest_path)
@@ -158,8 +164,17 @@ def _copy_to_guest(ssh: SSHClient, local: Path, guest_path: str) -> None:
     )
 
 
-def _copy_file(ssh: SSHClient, local: Path, guest_path: str) -> None:
-    """Upload a single host file to *guest_path* via SFTP, mkdir parent first."""
+def _copy_file(
+    ssh: SSHClient, local: Path, guest_path: str, *, file_mode: int | None = None
+) -> None:
+    """Upload a single host file to *guest_path* via SFTP, mkdir parent first.
+
+    SFTP ``put`` does not preserve mode and the SFTP server applies its
+    own umask (typically 0644). When the source is a credential file
+    (e.g. ``~/.git-credentials`` with plaintext OAuth tokens), pass
+    *file_mode* to chmod the guest file after the upload so it does
+    not land world-readable.
+    """
     parent = _posix_dirname(guest_path)
     if parent:
         result = ssh.run(f"mkdir -p -- {shlex.quote(parent)}", timeout=10)
@@ -169,16 +184,32 @@ def _copy_file(ssh: SSHClient, local: Path, guest_path: str) -> None:
                 {"exit_code": result.exit_code, "stderr": result.stderr},
             )
     ssh.put_file(local, guest_path)
+    if file_mode is not None:
+        chmod_cmd = f"chmod {file_mode:o} -- {shlex.quote(guest_path)}"
+        result = ssh.run(chmod_cmd, timeout=5)
+        if not result.ok:
+            raise SmolVMError(
+                f"Failed to chmod {guest_path!r} on guest",
+                {"exit_code": result.exit_code, "stderr": result.stderr},
+            )
 
 
 def _copy_dir(ssh: SSHClient, local: Path, guest_path: str) -> None:
-    """Tar a host directory tree and untar it into *guest_path* on the guest."""
+    """Tar a host directory tree and untar it into *guest_path* on the guest.
+
+    Strips ownership (uid/gid/uname/gname) on every TarInfo so the guest
+    extraction — which runs as root and defaults to ``--same-owner`` —
+    does not preserve host uids (e.g. macOS ``501:20``). With host uids
+    intact, ``/root/.ssh/id_ed25519`` would land owned by uid 501 and
+    sshd would reject the key with "Bad owner or permissions". File
+    modes (the 0o600 we care about for SSH keys) are untouched.
+    """
     tmp_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tmp:
             tmp_path = Path(tmp.name)
         with tarfile.open(tmp_path, "w") as tf:
-            tf.add(local, arcname=".")
+            tf.add(local, arcname=".", filter=_strip_tar_owner)
 
         guest_tmp = f"/tmp/.smolvm-preset-{uuid4().hex}.tar"
         ssh.put_file(tmp_path, guest_tmp)
@@ -197,6 +228,15 @@ def _copy_dir(ssh: SSHClient, local: Path, guest_path: str) -> None:
     finally:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
+
+
+def _strip_tar_owner(ti: tarfile.TarInfo) -> tarfile.TarInfo:
+    """Reset every TarInfo's owner to root before it lands in the archive."""
+    ti.uid = 0
+    ti.gid = 0
+    ti.uname = ""
+    ti.gname = ""
+    return ti
 
 
 def _posix_dirname(path: str) -> str:

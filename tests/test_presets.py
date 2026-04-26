@@ -822,3 +822,96 @@ class TestGitCredentialInjection:
         assert any(
             "tar -xf" in cmd and "/root/.ssh" in cmd for cmd in commands_run
         ), commands_run
+
+    def test_git_ssh_tar_owner_stripped_to_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The tar staged for the guest must zero uid/gid on every entry.
+
+        Guests extract as root with default ``--same-owner``; if host
+        uids (e.g. macOS 501:20) survive, ``/root/.ssh/id_ed25519``
+        ends up owned by uid 501 and sshd refuses the key with "Bad
+        owner or permissions". File modes (the 0o600 we care about)
+        must remain intact.
+        """
+        import tarfile
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        ssh_dir = tmp_path / ".ssh"
+        ssh_dir.mkdir()
+        key = ssh_dir / "id_ed25519"
+        key.write_text("PRIVATE")
+        key.chmod(0o600)
+
+        ssh = MagicMock()
+        ssh.run.return_value = _ok()
+        staged_tars: list[Path] = []
+
+        def capture_put(local: object, _remote: str) -> None:
+            path = Path(str(local))
+            if path.suffix == ".tar":
+                # Copy aside before _copy_dir's finally clause unlinks it.
+                snapshot = tmp_path / f"snapshot-{len(staged_tars)}.tar"
+                snapshot.write_bytes(path.read_bytes())
+                staged_tars.append(snapshot)
+
+        ssh.put_file.side_effect = capture_put
+
+        apply_preset(ssh, self._stub_codex_preset())
+
+        assert staged_tars, "no tar archive was staged"
+        with tarfile.open(staged_tars[0]) as tf:
+            members = tf.getmembers()
+        assert members, "tar archive is empty"
+        assert all(m.uid == 0 and m.gid == 0 for m in members), [
+            (m.name, m.uid, m.gid) for m in members
+        ]
+        assert all(m.uname == "" and m.gname == "" for m in members), [
+            (m.name, m.uname, m.gname) for m in members
+        ]
+        # Mode bits survive — the SSH private key stays at 0o600.
+        key_member = next(m for m in members if m.name.endswith("id_ed25519"))
+        assert key_member.mode & 0o777 == 0o600
+
+    def test_git_credentials_chmodded_to_0600_after_upload(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``~/.git-credentials`` is plaintext OAuth tokens. SFTP drops
+        the file at the server's umask (typically 0644). The applier
+        must chmod 0600 after upload so the file does not land
+        world-readable inside the guest."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / ".git-credentials").write_text(
+            "https://user:token@github.com\n"
+        )
+
+        ssh = MagicMock()
+        ssh.run.return_value = _ok()
+
+        apply_preset(ssh, self._stub_codex_preset())
+
+        commands_run = [call.args[0] for call in ssh.run.call_args_list]
+        assert any(
+            "chmod 600" in cmd and "/root/.git-credentials" in cmd
+            for cmd in commands_run
+        ), commands_run
+
+    def test_gitconfig_not_chmodded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``~/.gitconfig`` is conventionally world-readable; only
+        credential files get the 0600 treatment. Guards against
+        accidentally tightening every file_mode."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / ".gitconfig").write_text("[user]\n\temail = u@example.com\n")
+
+        ssh = MagicMock()
+        ssh.run.return_value = _ok()
+
+        apply_preset(ssh, self._stub_codex_preset())
+
+        chmod_targets = [
+            cmd for cmd in (call.args[0] for call in ssh.run.call_args_list)
+            if "chmod" in cmd and "/root/.gitconfig" in cmd
+        ]
+        assert chmod_targets == [], chmod_targets
