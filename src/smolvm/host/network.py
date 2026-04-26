@@ -39,6 +39,13 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST_IP = "172.16.0.1"
 DEFAULT_NETMASK = "16"
 
+# Matches the native EPERM signal precisely (\b prevents "errno 13" matching).
+_EPERM_RE = re.compile(r"\berrno 1\b|Operation not permitted")
+
+
+def _is_eperm(err: str) -> bool:
+    return bool(_EPERM_RE.search(err))
+
 # SmolVM-managed nftables objects
 _NFT_NAT_FAMILY = "ip"
 _NFT_NAT_TABLE = "smolvm_nat"
@@ -156,8 +163,14 @@ class NetworkManager:
                         )
                         time.sleep(delay)
                         continue
+                    if _is_eperm(err):
+                        logger.warning(
+                            "Native create_tap lacks CAP_NET_ADMIN; falling back to sudo"
+                        )
+                        break
                     raise SmolVMError(err) from e
-            return
+            else:
+                return
 
         max_busy_retries = 3
         for attempt in range(max_busy_retries + 1):
@@ -242,11 +255,19 @@ class NetworkManager:
                 native.flush_addrs(tap_name)
                 native.add_addr(tap_name, host_ip, int(netmask))
                 native.set_link_up(tap_name)
+                self._write_sysctl(f"net/ipv4/conf/{tap_name}/route_localnet", "1")
+                return
             except OSError as e:
-                if "RTNETLINK answers: File exists" not in str(e) and "File exists" not in str(e):
-                    raise SmolVMError(str(e)) from e
-            self._write_sysctl(f"net/ipv4/conf/{tap_name}/route_localnet", "1")
-            return
+                err = str(e)
+                if "RTNETLINK answers: File exists" in err or "File exists" in err:
+                    self._write_sysctl(f"net/ipv4/conf/{tap_name}/route_localnet", "1")
+                    return
+                if _is_eperm(err):
+                    logger.warning(
+                        "Native configure_tap lacks CAP_NET_ADMIN; falling back to sudo"
+                    )
+                else:
+                    raise SmolVMError(err) from e
 
         batch = [
             f"addr flush dev {tap_name}",
@@ -304,10 +325,17 @@ class NetworkManager:
         if HAS_NETLINK:
             try:
                 native.add_route(ip_address, 32, device)
+                return
             except OSError as e:
-                if "File exists" not in str(e):
-                    raise SmolVMError(str(e)) from e
-            return
+                err = str(e)
+                if "File exists" in err:
+                    return
+                if _is_eperm(err):
+                    logger.warning(
+                        "Native add_route lacks CAP_NET_ADMIN; falling back to sudo"
+                    )
+                else:
+                    raise SmolVMError(err) from e
 
         try:
             run_command(["ip", "route", "add", f"{ip_address}/32", "dev", device])
@@ -339,11 +367,18 @@ class NetworkManager:
         if HAS_NETLINK:
             try:
                 native.delete_tap(tap_name)
+                return
             except OSError as e:
                 err = str(e)
-                if "Cannot find device" not in err and "No such device" not in err:
+                if "Cannot find device" in err or "No such device" in err:
+                    return
+                if _is_eperm(err):
+                    logger.warning(
+                        "Native delete_tap lacks CAP_NET_ADMIN; falling back to sudo"
+                    )
+                else:
                     logger.warning("Failed to delete TAP %s: %s", tap_name, e)
-            return
+                    return
 
         try:
             run_command(["ip", "link", "delete", tap_name])

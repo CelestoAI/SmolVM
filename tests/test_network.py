@@ -153,6 +153,48 @@ class TestTapManagement:
         assert mock_run_command.call_count == 4
         assert mock_sleep.call_count == 3
 
+    @patch("smolvm.host.network.run_command")
+    @patch("smolvm.host.network.native")
+    def test_create_tap_falls_back_to_subprocess_on_eperm(
+        self, mock_native: MagicMock, mock_run_command: MagicMock
+    ) -> None:
+        """When the native ioctl returns EPERM, fall through to sudo ip path."""
+        mock_native.create_tap.side_effect = OSError("tap2: errno 1")
+        mock_run_command.return_value = MagicMock(stdout="")
+
+        with patch("smolvm.host.network.HAS_NETLINK", True):
+            nm = NetworkManager()
+            nm.create_tap("tap2", "alice")
+
+        mock_native.create_tap.assert_called_once()
+        mock_run_command.assert_called_once_with(
+            ["ip", "tuntap", "add", "tap2", "mode", "tap", "user", "alice"]
+        )
+
+
+class TestEpermDetector:
+    """Pin the regex so 'errno 13' (EACCES) and friends do not match EPERM."""
+
+    def test_matches_bare_errno_1(self) -> None:
+        from smolvm.host.network import _is_eperm
+
+        assert _is_eperm("tap2: errno 1")
+
+    def test_matches_operation_not_permitted(self) -> None:
+        from smolvm.host.network import _is_eperm
+
+        assert _is_eperm("Operation not permitted")
+
+    def test_does_not_match_errno_13(self) -> None:
+        from smolvm.host.network import _is_eperm
+
+        assert not _is_eperm("tap2: errno 13")
+
+    def test_does_not_match_errno_100(self) -> None:
+        from smolvm.host.network import _is_eperm
+
+        assert not _is_eperm("tap2: errno 100")
+
 
 class TestLocalPortForwarding:
     """Tests for localhost-only forwarding rule setup/cleanup."""
