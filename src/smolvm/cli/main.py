@@ -1570,6 +1570,13 @@ def _run_create(args: argparse.Namespace) -> int:
 
     vm: SmolVM | None = None
     try:
+        # Workspace mounts ride a virtio-9p share, which only the QEMU backend
+        # exposes today. Auto-pick QEMU when the user asked for --mount but did
+        # not pin a backend; an explicit --backend other than 'auto' is left
+        # alone so the downstream check still catches incompatible combos.
+        if args.mounts and args.backend in (None, "auto"):
+            args.backend = "qemu"
+
         resolved_backend = resolve_backend(args.backend)
         image_uri: str | None = getattr(args, "image", None)
         use_s3_image = image_uri is not None

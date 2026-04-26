@@ -574,6 +574,90 @@ class TestCliMountFlag:
         args = parser.parse_args(["create"])
         assert args.mounts is None
 
+    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade._build_auto_config")
+    def test_create_with_mount_and_no_backend_selects_qemu(
+        self,
+        mock_build_auto_config: MagicMock,
+        mock_smolvm_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """`smolvm create --mount /path` (no --backend) must auto-select QEMU
+        at the CLI layer. Without this, _build_auto_config gets backend=None,
+        resolves to the platform default (firecracker on Linux), and the
+        downstream guard rejects the mount + firecracker combo with a
+        confusing 'Re-run without --backend' message — the user already did."""
+        from smolvm.cli.main import _run_create, build_parser
+
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+
+        mock_build_auto_config.return_value = (
+            VMConfig(
+                vm_id="vm-mnt",
+                kernel_path=kernel,
+                rootfs_path=rootfs,
+                backend="qemu",
+            ),
+            None,
+        )
+        mock_smolvm_cls.return_value.vm_id = "vm-mnt"
+        mock_smolvm_cls.return_value.info.status = VMState.RUNNING
+
+        parser = build_parser()
+        args = parser.parse_args(
+            ["create", "--mount", str(tmp_path / "project"), "--json"]
+        )
+
+        _run_create(args)
+
+        assert args.backend == "qemu"
+        assert mock_build_auto_config.call_args.kwargs["backend"] == "qemu"
+
+    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade._build_auto_config")
+    def test_create_with_mount_and_explicit_firecracker_left_alone(
+        self,
+        mock_build_auto_config: MagicMock,
+        mock_smolvm_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Explicit `--backend firecracker --mount /path` must NOT be silently
+        upgraded; the downstream guard should still fire so the user sees the
+        incompatibility they explicitly requested."""
+        from smolvm.cli.main import _run_create, build_parser
+
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+
+        mock_build_auto_config.return_value = (
+            VMConfig(
+                vm_id="vm-mnt",
+                kernel_path=kernel,
+                rootfs_path=rootfs,
+                backend="firecracker",
+            ),
+            None,
+        )
+        mock_smolvm_cls.return_value.vm_id = "vm-mnt"
+        mock_smolvm_cls.return_value.info.status = VMState.RUNNING
+
+        parser = build_parser()
+        args = parser.parse_args([
+            "create",
+            "--mount", str(tmp_path / "project"),
+            "--backend", "firecracker",
+            "--json",
+        ])
+
+        _run_create(args)
+
+        assert args.backend == "firecracker"
+
 
 # ── Mount spec parsing ──────────────────────────────────────────────
 
