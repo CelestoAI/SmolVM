@@ -24,7 +24,6 @@ through the same pipeline as harness-specific configs (e.g.
 
 from __future__ import annotations
 
-import shlex
 from typing import TYPE_CHECKING
 
 from smolvm.exceptions import SmolVMError
@@ -64,9 +63,24 @@ WORKSPACE_SAFE_DIRECTORIES: tuple[str, ...] = ("/workspace*", "/workspace*/**")
 
 
 def register_workspace_safe_directories(ssh: SSHClient) -> None:
-    """Add WORKSPACE_SAFE_DIRECTORIES to the guest's global git config."""
-    args = " ".join(shlex.quote(path) for path in WORKSPACE_SAFE_DIRECTORIES)
-    cmd = f"for p in {args}; do git config --global --add safe.directory \"$p\"; done"
+    """Add WORKSPACE_SAFE_DIRECTORIES to the guest's global git config.
+
+    Idempotent: uses ``--replace-all`` per path with a value-regex that
+    matches only that exact path, so re-runs collapse to one entry per
+    path instead of appending duplicates, and any unrelated
+    ``safe.directory`` entries the user's host gitconfig brought along
+    are preserved.
+    """
+    parts: list[str] = []
+    for path in WORKSPACE_SAFE_DIRECTORIES:
+        # WORKSPACE_SAFE_DIRECTORIES values contain only `/`, letters,
+        # and `*` (the only regex metachar), so escaping by hand is
+        # safe and clearer than pulling in `re.escape`.
+        regex = "^" + path.replace("*", r"\*") + "$"
+        parts.append(
+            f"git config --global --replace-all safe.directory '{path}' '{regex}'"
+        )
+    cmd = " && ".join(parts)
     result = ssh.run(cmd, timeout=10)
     if not result.ok:
         raise SmolVMError(

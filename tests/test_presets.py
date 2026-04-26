@@ -924,8 +924,17 @@ class TestGitCredentialInjection:
         git refuses to operate on them with ``fatal: detected dubious
         ownership`` (CVE-2022-24765). The applier must register the
         mount paths in the guest's global git config so users do not
-        hit that error on first ``git status``. Two patterns cover
-        both shapes — the mount itself and repos nested below it."""
+        hit that error on first ``git status``.
+
+        Verifies three properties at once:
+          * Both wildcard patterns are registered (mount point itself
+            and any repo nested below it).
+          * ``--replace-all`` is used so re-runs collapse to one entry
+            per path instead of appending duplicates.
+          * The value-pattern is anchored to the exact path so we do
+            not clobber unrelated ``safe.directory`` entries the
+            user's host gitconfig brought into the guest.
+        """
         monkeypatch.setenv("HOME", str(tmp_path))
 
         ssh = MagicMock()
@@ -934,11 +943,11 @@ class TestGitCredentialInjection:
         apply_preset(ssh, self._stub_codex_preset())
 
         commands_run = [call.args[0] for call in ssh.run.call_args_list]
-        config_cmds = [
-            cmd for cmd in commands_run
-            if "git config --global --add safe.directory" in cmd
-        ]
+        config_cmds = [cmd for cmd in commands_run if "safe.directory" in cmd]
         assert config_cmds, commands_run
         joined = " ".join(config_cmds)
-        assert "/workspace*" in joined
-        assert "/workspace*/**" in joined
+        assert "--replace-all safe.directory" in joined
+        assert "'/workspace*'" in joined
+        assert "'/workspace*/**'" in joined
+        assert r"'^/workspace\*$'" in joined
+        assert r"'^/workspace\*/\*\*$'" in joined
