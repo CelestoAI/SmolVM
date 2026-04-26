@@ -44,6 +44,8 @@ async fn get_link_index(
 
 /// Set a network interface to UP state.
 pub fn set_link_up(name: &str) -> Result<(), NetlinkError> {
+    use rtnetlink::LinkUnspec;
+
     with_netlink(async {
         let (connection, handle, _) = rtnetlink::new_connection()
             .map_err(|e| NetlinkError::Other(format!("netlink: {}", e)))?;
@@ -52,8 +54,7 @@ pub fn set_link_up(name: &str) -> Result<(), NetlinkError> {
         let index = get_link_index(&handle, name).await?;
         handle
             .link()
-            .set(index)
-            .up()
+            .set(LinkUnspec::new_with_index(index).up().build())
             .execute()
             .await
             .map_err(|e| NetlinkError::Other(format!("set_link_up {}: {}", name, e)))?;
@@ -123,6 +124,8 @@ pub fn add_addr(name: &str, ip: &str, prefix_len: u8) -> Result<(), NetlinkError
 
 /// Add a route: dest/prefix_len via device.
 pub fn add_route(dest: &str, prefix_len: u8, dev: &str) -> Result<(), NetlinkError> {
+    use rtnetlink::RouteMessageBuilder;
+
     let dest_addr: Ipv4Addr = dest
         .parse()
         .map_err(|e| NetlinkError::Other(format!("invalid dest {}: {}", dest, e)))?;
@@ -133,12 +136,13 @@ pub fn add_route(dest: &str, prefix_len: u8, dev: &str) -> Result<(), NetlinkErr
         tokio::spawn(connection);
 
         let index = get_link_index(&handle, dev).await?;
-        handle
-            .route()
-            .add()
-            .v4()
+        let route = RouteMessageBuilder::<Ipv4Addr>::new()
             .destination_prefix(dest_addr, prefix_len)
             .output_interface(index)
+            .build();
+        handle
+            .route()
+            .add(route)
             .execute()
             .await
             .map_err(|e| {
@@ -157,6 +161,8 @@ pub fn add_route(dest: &str, prefix_len: u8, dev: &str) -> Result<(), NetlinkErr
 
 /// Get the default outbound network interface name.
 pub fn get_default_interface() -> Result<String, NetlinkError> {
+    use rtnetlink::RouteMessageBuilder;
+
     with_netlink(async {
         let (connection, handle, _) = rtnetlink::new_connection()
             .map_err(|e| NetlinkError::Other(format!("netlink: {}", e)))?;
@@ -165,7 +171,8 @@ pub fn get_default_interface() -> Result<String, NetlinkError> {
         use futures_util::TryStreamExt;
         use netlink_packet_route::route::RouteAttribute;
 
-        let mut routes = handle.route().get(rtnetlink::IpVersion::V4).execute();
+        let route_filter = RouteMessageBuilder::<Ipv4Addr>::new().build();
+        let mut routes = handle.route().get(route_filter).execute();
         while let Some(route) = routes.try_next().await.map_err(|e| {
             NetlinkError::Other(format!("get routes: {}", e))
         })? {
