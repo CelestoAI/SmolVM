@@ -30,6 +30,7 @@ Each microVM boots in milliseconds, runs any code or software you throw at it, k
 - **Browser sessions** — Full browser agents can see and control.
 - **Host mounts** — Give sandboxes read access to local directories.
 - **Snapshots** — Save and restore VM state instantly.
+- **Coding agents** — Start enviornment with a pre-installed coding agent.
 - **OpenClaw** — GUI Linux apps inside a sandbox.
 
 
@@ -98,6 +99,18 @@ Open a shell inside a running sandbox:
 
 ```bash
 smolvm ssh my-sandbox
+```
+
+## Coding agents
+
+It sucks to “press enter and accept changes” every few seconds while using coding agents. SmolVM makes it easy to isolate the agent coding environment from the host (laptops).
+
+With a single command you get a claude/codex pre-installed sandbox ready with git credential to make you build a billion dollar business without making any mistake ;)
+
+```bash
+smolvm codex start  # start a new environment with codex preinstalled
+
+smolvm claude start  # start a new environment with codex preinstalled
 ```
 
 
