@@ -417,6 +417,16 @@ def _add_preset_parsers(
             ),
         )
         start_p.add_argument(
+            "--writable-mounts",
+            action="store_true",
+            dest="writable_mounts",
+            help=(
+                "Allow the sandbox to write back to mounted host directories. "
+                "Default is read-only with a writable in-VM overlay; writes "
+                "from the guest do not reach the host."
+            ),
+        )
+        start_p.add_argument(
             "--install-timeout",
             type=_positive_float,
             default=600.0,
@@ -723,9 +733,20 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Host directory to mount inside the sandbox. "
             "Defaults to /workspace if no guest path is given. "
-            "The host directory stays read-only; writes go to an "
-            "overlay and do not affect the host. "
+            "The host directory stays read-only by default; writes go "
+            "to an overlay and do not affect the host. "
+            "Pass --writable-mounts to allow guest writes to reach the host. "
             "Can be repeated for multiple mounts."
+        ),
+    )
+    create_parser.add_argument(
+        "--writable-mounts",
+        action="store_true",
+        dest="writable_mounts",
+        help=(
+            "Allow the sandbox to write back to mounted host directories. "
+            "Default is read-only with a writable in-VM overlay; writes "
+            "from the guest do not reach the host."
         ),
     )
     _add_boot_timeout_arg(create_parser)
@@ -1498,6 +1519,7 @@ def _build_and_boot_with_progress(
     build_fn: object,
     boot_timeout: int,
     mounts: list[str] | None = None,
+    writable_mounts: bool = False,
 ) -> object:
     """Build a VM config and boot it, showing a Rich progress bar.
 
@@ -1547,7 +1569,12 @@ def _build_and_boot_with_progress(
         def on_phase(phase: str) -> None:
             progress.update(boot_task, description=phase)
 
-        vm = SmolVM(config, ssh_key_path=ssh_key_path, mounts=mounts)
+        vm = SmolVM(
+            config,
+            ssh_key_path=ssh_key_path,
+            mounts=mounts,
+            writable_mounts=writable_mounts,
+        )
         vm.start(boot_timeout=boot_timeout, on_progress=on_phase)
         # Idempotent: a no-op when start() already waited (mounts/env_vars
         # path), and the on_progress flips the label only when a real wait
@@ -1621,6 +1648,7 @@ def _run_create(args: argparse.Namespace) -> int:
                     ),
                     boot_timeout=args.boot_timeout,
                     mounts=args.mounts,
+                    writable_mounts=args.writable_mounts,
                 )
             else:
                 config, ssh_key_path = _build_s3_image_config(
@@ -1630,7 +1658,12 @@ def _run_create(args: argparse.Namespace) -> int:
                     memory=args.memory_mib,
                     ssh_key_path=None,
                 )
-                vm = SmolVM(config, ssh_key_path=ssh_key_path, mounts=args.mounts)
+                vm = SmolVM(
+                    config,
+                    ssh_key_path=ssh_key_path,
+                    mounts=args.mounts,
+                    writable_mounts=args.writable_mounts,
+                )
                 vm.start(boot_timeout=args.boot_timeout)
                 vm.wait_for_ssh(timeout=args.boot_timeout)
         else:
@@ -1650,6 +1683,7 @@ def _run_create(args: argparse.Namespace) -> int:
                     ),
                     boot_timeout=args.boot_timeout,
                     mounts=args.mounts,
+                    writable_mounts=args.writable_mounts,
                 )
             else:
                 config, ssh_key_path = _build_auto_config(
@@ -1660,7 +1694,12 @@ def _run_create(args: argparse.Namespace) -> int:
                     disk_size_mib=args.disk_size_mib,
                     ssh_key_path=None,
                 )
-                vm = SmolVM(config, ssh_key_path=ssh_key_path, mounts=args.mounts)
+                vm = SmolVM(
+                    config,
+                    ssh_key_path=ssh_key_path,
+                    mounts=args.mounts,
+                    writable_mounts=args.writable_mounts,
+                )
                 vm.start(boot_timeout=args.boot_timeout)
                 vm.wait_for_ssh(timeout=args.boot_timeout)
 
@@ -1780,6 +1819,7 @@ def _run_start(args: argparse.Namespace) -> int:
                 ),
                 boot_timeout=args.boot_timeout,
                 mounts=args.mounts,
+                writable_mounts=args.writable_mounts,
             )
             apply_summary = _apply_preset_with_progress(
                 console=console,
@@ -1797,7 +1837,12 @@ def _run_start(args: argparse.Namespace) -> int:
                 disk_size_mib=disk_size_mib,
                 ssh_key_path=None,
             )
-            vm = SmolVM(config, ssh_key_path=ssh_key_path, mounts=args.mounts)
+            vm = SmolVM(
+                config,
+                ssh_key_path=ssh_key_path,
+                mounts=args.mounts,
+                writable_mounts=args.writable_mounts,
+            )
             vm.start(boot_timeout=args.boot_timeout)
             vm.wait_for_ssh(timeout=args.boot_timeout)
             ssh = vm._ensure_ssh_for_env()

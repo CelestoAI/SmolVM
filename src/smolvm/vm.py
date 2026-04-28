@@ -1614,13 +1614,13 @@ class SmolVMManager:
             tag = ws.resolved_tag(index)
             fsdev_id = f"fsdev-{tag}"
             workspace_fsdev_ids.append((fsdev_id, tag))
-            cmd.extend(
-                [
-                    "-fsdev",
-                    f"local,id={fsdev_id},path={ws.host_path},"
-                    f"security_model=mapped-xattr,readonly=on",
-                ]
+            fsdev_opts = (
+                f"local,id={fsdev_id},path={ws.host_path},"
+                f"security_model=mapped-xattr"
             )
+            if not ws.writable:
+                fsdev_opts += ",readonly=on"
+            cmd.extend(["-fsdev", fsdev_opts])
 
         if control_socket_path is not None:
             cmd.extend(

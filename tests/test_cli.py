@@ -394,7 +394,12 @@ class TestCliCreate:
             ssh_key_path=None,
             on_download=ANY,
         )
-        mock_vm_cls.assert_called_once_with(config, ssh_key_path="/tmp/id_ed25519", mounts=None)
+        mock_vm_cls.assert_called_once_with(
+            config,
+            ssh_key_path="/tmp/id_ed25519",
+            mounts=None,
+            writable_mounts=False,
+        )
         vm.start.assert_called_once_with(boot_timeout=30.0, on_progress=ANY)
         vm.wait_for_ssh.assert_called_once_with(timeout=30.0, on_progress=ANY)
         vm.close.assert_called_once()
@@ -459,7 +464,12 @@ class TestCliCreate:
             ssh_key_path=None,
             on_download=ANY,
         )
-        mock_vm_cls.assert_called_once_with(config, ssh_key_path="/tmp/id_ed25519", mounts=None)
+        mock_vm_cls.assert_called_once_with(
+            config,
+            ssh_key_path="/tmp/id_ed25519",
+            mounts=None,
+            writable_mounts=False,
+        )
         vm.start.assert_called_once_with(boot_timeout=45.0, on_progress=ANY)
         vm.wait_for_ssh.assert_called_once_with(timeout=45.0, on_progress=ANY)
         vm.stop.assert_not_called()
@@ -511,7 +521,12 @@ class TestCliCreate:
             ssh_key_path=None,
             on_download=ANY,
         )
-        mock_vm_cls.assert_called_once_with(config, ssh_key_path="/tmp/id_ed25519", mounts=None)
+        mock_vm_cls.assert_called_once_with(
+            config,
+            ssh_key_path="/tmp/id_ed25519",
+            mounts=None,
+            writable_mounts=False,
+        )
         vm.start.assert_called_once_with(boot_timeout=30.0, on_progress=ANY)
         vm.wait_for_ssh.assert_called_once_with(timeout=30.0, on_progress=ANY)
         vm.close.assert_called_once()
@@ -2344,7 +2359,12 @@ class TestCliStart:
             ssh_key_path=None,
             on_download=ANY,
         )
-        mock_vm_cls.assert_called_once_with(config, ssh_key_path="/tmp/id_ed25519", mounts=None)
+        mock_vm_cls.assert_called_once_with(
+            config,
+            ssh_key_path="/tmp/id_ed25519",
+            mounts=None,
+            writable_mounts=False,
+        )
         vm.start.assert_called_once_with(boot_timeout=30.0, on_progress=ANY)
         vm.wait_for_ssh.assert_called_once_with(timeout=30.0, on_progress=ANY)
         mock_apply.assert_called_once()

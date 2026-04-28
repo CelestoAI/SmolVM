@@ -124,21 +124,29 @@ class VsockConfig(BaseModel):
 
 
 class WorkspaceMount(BaseModel):
-    """Host directory to mount inside the guest via virtio-9p + overlayfs.
+    """Host directory to mount inside the guest via virtio-9p.
 
-    The host directory is exposed read-only through QEMU's virtio-9p
-    passthrough.  An overlayfs layer on top lets the guest read and write
-    freely — but changes stay inside the VM and never touch the host.
+    By default the host directory is exposed read-only through QEMU's
+    virtio-9p passthrough, with an overlayfs layer on top so the guest
+    can read and write freely — changes stay inside the VM and never
+    touch the host.
+
+    When ``writable`` is True the host directory is exposed read-write
+    and mounted directly at ``guest_path`` (no overlay), so writes from
+    the guest are visible on the host.
 
     Attributes:
         host_path: Absolute path to a directory on the host.
         guest_path: Mount point inside the guest (default ``/workspace``).
         mount_tag: 9p mount tag passed to QEMU.  Auto-generated when omitted.
+        writable: When True, guest writes propagate to the host directory.
+            Default False (read-only host, writable overlay in guest).
     """
 
     host_path: Path
     guest_path: str = "/workspace"
     mount_tag: str | None = None
+    writable: bool = False
 
     @field_validator("host_path")
     @classmethod

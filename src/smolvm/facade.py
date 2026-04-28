@@ -316,11 +316,16 @@ def _resolve_auto_config_public_key(ssh_key_path: str | None) -> tuple[str, Path
     return ssh_key_path, public_key
 
 
-def _parse_mount_specs(specs: list[str]) -> list[WorkspaceMount]:
+def _parse_mount_specs(
+    specs: list[str], *, writable: bool = False
+) -> list[WorkspaceMount]:
     """Parse ``HOST_PATH[:GUEST_PATH]`` strings into WorkspaceMount objects.
 
     If no guest path is given, the mount defaults to ``/workspace``
     (for a single mount) or ``/workspace-N`` (for multiples).
+
+    When ``writable`` is True, every parsed mount is marked writable so
+    guest writes propagate to the host directory.
     """
     mounts: list[WorkspaceMount] = []
     for index, spec in enumerate(specs):
@@ -330,7 +335,11 @@ def _parse_mount_specs(specs: list[str]) -> list[WorkspaceMount]:
         else:
             host_str = spec
             guest_path = "/workspace" if len(specs) == 1 else f"/workspace-{index}"
-        mounts.append(WorkspaceMount(host_path=Path(host_str), guest_path=guest_path))
+        mounts.append(
+            WorkspaceMount(
+                host_path=Path(host_str), guest_path=guest_path, writable=writable
+            )
+        )
     return mounts
 
 
@@ -726,6 +735,7 @@ class SmolVM:
         ssh_key_path: str | None = None,
         internet_settings: InternetSettings | dict[str, Any] | None = None,
         mounts: list[str] | None = None,
+        writable_mounts: bool = False,
     ) -> None:
         if config is not None and vm_id is not None:
             raise ValueError("Provide either config or vm_id, not both.")
@@ -802,7 +812,7 @@ class SmolVM:
         if mounts is not None:
             if vm_id is not None:
                 raise ValueError("mounts cannot be set when reconnecting to an existing VM.")
-            workspace_mounts = _parse_mount_specs(mounts)
+            workspace_mounts = _parse_mount_specs(mounts, writable=writable_mounts)
             if config is not None:
                 if config.workspace_mounts:
                     raise ValueError(
@@ -810,6 +820,8 @@ class SmolVM:
                         "pass it in one place only."
                     )
                 config = config.model_copy(update={"workspace_mounts": workspace_mounts})
+        elif writable_mounts:
+            raise ValueError("writable_mounts requires --mount; nothing to make writable.")
 
         self._ssh_user = ssh_user
         self._ssh_key_path = ssh_key_path
@@ -1857,27 +1869,37 @@ class SmolVM:
                 {"vm_id": self._vm_id, "ssh_user": self._ssh_user},
             )
 
-        self._ensure_9p_workspace_support()
+        needs_overlay = any(not ws.writable for ws in workspace_mounts)
+        self._ensure_9p_workspace_support(need_overlay=needs_overlay)
 
         for index, ws in enumerate(workspace_mounts):
             tag = ws.resolved_tag(index)
             guest_path = shlex.quote(ws.guest_path)
-            lower = shlex.quote(f"/mnt/.smolvm-ws-{tag}")
-            upper = shlex.quote(f"/tmp/.smolvm-ws-{tag}-upper")
-            work = shlex.quote(f"/tmp/.smolvm-ws-{tag}-work")
             qtag = shlex.quote(tag)
 
-            mount_script = (
-                f"modprobe 9p 2>/dev/null; "
-                f"modprobe 9pnet_virtio 2>/dev/null; "
-                f"modprobe overlay 2>/dev/null; "
-                f"mkdir -p {lower} {upper} {work} {guest_path} && "
-                f"mount -t 9p -o trans=virtio,version=9p2000.L,ro "
-                f"{qtag} {lower} && "
-                f"mount -t overlay overlay "
-                f"-o lowerdir={lower},upperdir={upper},workdir={work} "
-                f"{guest_path}"
-            )
+            if ws.writable:
+                mount_script = (
+                    f"modprobe 9p 2>/dev/null; "
+                    f"modprobe 9pnet_virtio 2>/dev/null; "
+                    f"mkdir -p {guest_path} && "
+                    f"mount -t 9p -o trans=virtio,version=9p2000.L,rw "
+                    f"{qtag} {guest_path}"
+                )
+            else:
+                lower = shlex.quote(f"/mnt/.smolvm-ws-{tag}")
+                upper = shlex.quote(f"/tmp/.smolvm-ws-{tag}-upper")
+                work = shlex.quote(f"/tmp/.smolvm-ws-{tag}-work")
+                mount_script = (
+                    f"modprobe 9p 2>/dev/null; "
+                    f"modprobe 9pnet_virtio 2>/dev/null; "
+                    f"modprobe overlay 2>/dev/null; "
+                    f"mkdir -p {lower} {upper} {work} {guest_path} && "
+                    f"mount -t 9p -o trans=virtio,version=9p2000.L,ro "
+                    f"{qtag} {lower} && "
+                    f"mount -t overlay overlay "
+                    f"-o lowerdir={lower},upperdir={upper},workdir={work} "
+                    f"{guest_path}"
+                )
             result = self._ssh.run(mount_script, timeout=15)
             if result.exit_code != 0:
                 stderr = result.stderr.strip()
@@ -1898,26 +1920,30 @@ class SmolVM:
                     },
                 )
             logger.info(
-                "VM %s: mounted workspace '%s' at %s (overlay)",
+                "VM %s: mounted workspace '%s' at %s (%s)",
                 self._vm_id,
                 tag,
                 ws.guest_path,
+                "writable" if ws.writable else "overlay",
             )
 
-    def _ensure_9p_workspace_support(self) -> None:
+    def _ensure_9p_workspace_support(self, *, need_overlay: bool = True) -> None:
         """Best-effort repair for Ubuntu cloud images missing 9p modules."""
         assert self._ssh is not None  # noqa: S101 — caller guarantees SSH ready
 
+        overlay_probe = " && modprobe overlay 2>/dev/null" if need_overlay else ""
         probe_script = (
             "modprobe 9p 2>/dev/null && "
-            "modprobe 9pnet_virtio 2>/dev/null && "
-            "modprobe overlay 2>/dev/null"
+            "modprobe 9pnet_virtio 2>/dev/null"
+            f"{overlay_probe}"
         )
         probe = self._ssh.run(probe_script, timeout=15)
         if probe.exit_code == 0:
             return
 
-        install_script = r"""
+        overlay_modprobe = "\nmodprobe overlay" if need_overlay else ""
+        install_script = (
+            r"""
 set -eu
 . /etc/os-release 2>/dev/null || ID=
 if [ "${ID:-}" != "ubuntu" ] || ! command -v apt-get >/dev/null 2>&1; then
@@ -1937,9 +1963,9 @@ APT_OPTS='-o DPkg::Lock::Timeout=120 -o Acquire::Retries=3'
 apt-get $APT_OPTS update -qq
 apt-get $APT_OPTS install -y -qq "linux-modules-extra-$(uname -r)"
 modprobe 9p
-modprobe 9pnet_virtio
-modprobe overlay
-""".strip()
+modprobe 9pnet_virtio""".strip()
+            + overlay_modprobe
+        )
         install = self._ssh.run(install_script, timeout=240)
         if install.exit_code == 0:
             logger.info(
@@ -1948,8 +1974,9 @@ modprobe overlay
             )
             return
 
+        missing = "9p or overlay" if need_overlay else "9p"
         raise SmolVMError(
-            "Cannot mount workspaces: guest is missing 9p or overlay kernel support. "
+            f"Cannot mount workspaces: guest is missing {missing} kernel support. "
             "Ubuntu guests can usually be repaired by installing "
             "linux-modules-extra-$(uname -r); this guest could not be repaired "
             "automatically.",

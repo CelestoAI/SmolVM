@@ -156,7 +156,7 @@ See [docs/concepts/network-egress-controls.md](docs/deep-dive/network-egress-con
 
 ## Mount host directories
 
-You can give a sandbox read access to a folder on your machine. This is useful when an agent needs to work with an existing project without copying files back and forth.
+You can give a sandbox access to a folder on your machine. This is useful when an agent needs to work with an existing project without copying files back and forth.
 
 ```bash
 smolvm create --mount ~/Projects/my-app
@@ -164,7 +164,7 @@ smolvm ssh my-sandbox
 ls /workspace   # your host files appear here
 ```
 
-The host folder is read-only — the sandbox can read every file, but changes stay inside the sandbox and never touch the originals. If the agent creates or edits files under `/workspace`, those changes live only in the VM's overlay layer.
+By default the host folder is read-only — the sandbox can read every file, but changes stay inside the sandbox and never touch the originals. If the agent creates or edits files under `/workspace`, those changes live only in the VM's overlay layer.
 
 Mount at a custom path, or mount multiple directories:
 
@@ -172,17 +172,22 @@ Mount at a custom path, or mount multiple directories:
 smolvm create --mount ~/Projects/my-app:/code --mount ~/data:/mnt/data
 ```
 
+When you do want the sandbox to edit your host files, add `--writable-mounts`:
+
+```bash
+smolvm create --mount ~/Projects/my-app --writable-mounts
+```
+
+Every directory passed with `--mount` becomes writable; writes from the guest are visible on the host immediately. The flag applies to all mounts on that command, so don't pair a folder you want the sandbox to modify with one you want kept untouched.
+
 The same works from Python:
 
 ```python
 from smolvm import SmolVM
 
-with SmolVM(mounts=["~/Projects/my-app"]) as vm:
-    result = vm.run("ls /workspace")
-    print(result.stdout)
+with SmolVM(mounts=["~/Projects/my-app"], writable_mounts=True) as vm:
+    vm.run("echo hello > /workspace/from-sandbox.txt")
 ```
-
-> **Note:** This feature is read-only for now. Any changes you make inside the sandbox do not travel back to the host. Write-back support is planned for a future release.
 
 
 ## Examples

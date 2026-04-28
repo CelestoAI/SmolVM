@@ -68,6 +68,14 @@ class TestWorkspaceMountValidation:
         assert ws.resolved_tag(0) == "workspace0"
         assert ws.resolved_tag(3) == "workspace3"
 
+    def test_writable_defaults_to_false(self, tmp_path: Path) -> None:
+        ws = WorkspaceMount(host_path=tmp_path)
+        assert ws.writable is False
+
+    def test_writable_can_be_set(self, tmp_path: Path) -> None:
+        ws = WorkspaceMount(host_path=tmp_path, writable=True)
+        assert ws.writable is True
+
     def test_missing_host_path_loads_under_validate_paths_false(self, tmp_path: Path) -> None:
         """Persisted configs reload even when the host path was deleted.
 
@@ -232,6 +240,58 @@ def test_start_qemu_includes_9p_workspace_args(
 
     # Find the virtio-9p device (aarch64 → virtio-9p-device)
     assert "virtio-9p-device,fsdev=fsdev-workspace0,mount_tag=workspace0" in cmd
+
+
+@patch("smolvm.vm.subprocess.Popen")
+@patch.object(
+    SmolVMManager,
+    "_find_qemu_binary",
+    return_value=Path("/opt/homebrew/bin/qemu-system-aarch64"),
+)
+def test_start_qemu_writable_mount_omits_readonly(
+    _mock_find_qemu_binary: MagicMock,
+    mock_popen: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """A writable mount must NOT pass readonly=on to QEMU's -fsdev."""
+    kernel = tmp_path / "vmlinux"
+    rootfs = tmp_path / "rootfs.ext4"
+    kernel.touch()
+    rootfs.touch()
+
+    ws_dir = tmp_path / "project"
+    ws_dir.mkdir()
+
+    config = VMConfig(
+        vm_id="vm-ws-rw",
+        kernel_path=kernel,
+        rootfs_path=rootfs,
+        backend="qemu",
+        boot_args="console=ttyAMA0 reboot=k panic=1 init=/init",
+        workspace_mounts=[WorkspaceMount(host_path=ws_dir, writable=True)],
+    )
+
+    sdk = SmolVMManager(
+        data_dir=tmp_path / "data",
+        socket_dir=tmp_path / "sockets",
+        backend="qemu",
+    )
+    with patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_convert:
+        mock_convert.side_effect = lambda source, target: target.touch()
+        vm_info = sdk.create(config)
+
+    proc = MagicMock()
+    proc.pid = 12345
+    mock_popen.return_value = proc
+
+    with patch("smolvm.vm.platform.system", return_value="Darwin"):
+        sdk._start_qemu(vm_info, tmp_path / "vm-ws-rw.log")
+
+    cmd = mock_popen.call_args.args[0]
+    fsdev_arg = cmd[cmd.index("-fsdev") + 1]
+    assert f"path={ws_dir.resolve()}" in fsdev_arg
+    assert "security_model=mapped-xattr" in fsdev_arg
+    assert "readonly" not in fsdev_arg
 
 
 @patch("smolvm.vm.subprocess.Popen")
@@ -574,6 +634,24 @@ class TestCliMountFlag:
         args = parser.parse_args(["create"])
         assert args.mounts is None
 
+    def test_writable_mounts_defaults_to_false(self) -> None:
+        from smolvm.cli.main import build_parser
+
+        parser = build_parser()
+        args = parser.parse_args(["create", "--mount", "/tmp/project"])
+        assert args.writable_mounts is False
+
+    def test_writable_mounts_flag_sets_true(self) -> None:
+        from smolvm.cli.main import build_parser
+
+        parser = build_parser()
+        args = parser.parse_args([
+            "create",
+            "--mount", "/tmp/project",
+            "--writable-mounts",
+        ])
+        assert args.writable_mounts is True
+
     @patch("smolvm.facade.SmolVM")
     @patch("smolvm.facade._build_auto_config")
     def test_create_with_mount_and_no_backend_selects_qemu(
@@ -701,6 +779,22 @@ class TestParseMountSpecs:
         mounts = _parse_mount_specs([str(d1), f"{d2}:/data"])
         assert mounts[0].guest_path == "/workspace-0"
         assert mounts[1].guest_path == "/data"
+
+    def test_writable_flag_propagates_to_all_mounts(self, tmp_path: Path) -> None:
+        from smolvm.facade import _parse_mount_specs
+
+        d1 = tmp_path / "a"
+        d2 = tmp_path / "b"
+        d1.mkdir()
+        d2.mkdir()
+        mounts = _parse_mount_specs([str(d1), f"{d2}:/data"], writable=True)
+        assert all(m.writable for m in mounts)
+
+    def test_writable_defaults_to_false(self, tmp_path: Path) -> None:
+        from smolvm.facade import _parse_mount_specs
+
+        mounts = _parse_mount_specs([str(tmp_path)])
+        assert mounts[0].writable is False
 
 
 # ── Facade guards ───────────────────────────────────────────────────
@@ -830,3 +924,40 @@ class TestFacadeWorkspaceGuards:
             vm._mount_workspaces()
 
         assert vm._ssh.run.call_count == 2
+
+    def test_mount_workspaces_writable_uses_rw_without_overlay(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Writable mounts must mount 9p directly with rw and skip overlayfs."""
+        ws_dir = tmp_path / "project"
+        ws_dir.mkdir()
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+        config = VMConfig(
+            vm_id="vm-rw",
+            kernel_path=kernel,
+            rootfs_path=rootfs,
+            backend="qemu",
+            workspace_mounts=[WorkspaceMount(host_path=ws_dir, writable=True)],
+        )
+
+        vm = object.__new__(SmolVM)
+        vm._vm_id = "vm-rw"
+        vm._ssh_user = "root"
+        vm._info = MagicMock(config=config)
+        vm._ssh = MagicMock()
+        vm._ssh.run.side_effect = [
+            CommandResult(exit_code=0, stdout="", stderr=""),  # probe (no overlay)
+            CommandResult(exit_code=0, stdout="", stderr=""),  # mount
+        ]
+
+        vm._mount_workspaces()
+
+        probe_script = vm._ssh.run.call_args_list[0].args[0]
+        mount_script = vm._ssh.run.call_args_list[1].args[0]
+        assert "modprobe overlay" not in probe_script
+        assert "version=9p2000.L,rw" in mount_script
+        assert "mount -t overlay" not in mount_script
