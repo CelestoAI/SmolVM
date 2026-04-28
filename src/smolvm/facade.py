@@ -713,6 +713,16 @@ class SmolVM:
             :class:`~smolvm.types.InternetSettings` instance or a dict
             (e.g. ``{"allowed_domains": ["https://example.com/"]}``).
             When set, only the listed domains are reachable from the VM.
+        mounts: Host directories to mount inside the guest, as
+            ``HOST_PATH[:GUEST_PATH]`` strings. Equivalent to passing
+            ``WorkspaceMount`` instances on a :class:`VMConfig`.
+        writable_mounts: When ``True``, every entry in *mounts* is
+            exposed read-write so guest writes propagate to the host
+            directory. Default ``False`` keeps the host read-only with
+            a writable in-VM overlay (changes stay inside the VM).
+            For per-mount control, set
+            :attr:`~smolvm.types.WorkspaceMount.writable` directly on
+            ``config.workspace_mounts`` instead.
 
     Raises:
         ValueError: If both *config* and *vm_id* are given, or if auto-config-only
@@ -821,7 +831,11 @@ class SmolVM:
                     )
                 config = config.model_copy(update={"workspace_mounts": workspace_mounts})
         elif writable_mounts:
-            raise ValueError("writable_mounts requires --mount; nothing to make writable.")
+            raise ValueError(
+                "writable_mounts requires the mounts= argument; nothing to "
+                "make writable. Alternatively, set "
+                "WorkspaceMount(writable=True) on config.workspace_mounts."
+            )
 
         self._ssh_user = ssh_user
         self._ssh_key_path = ssh_key_path
