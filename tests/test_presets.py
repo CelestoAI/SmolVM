@@ -26,6 +26,7 @@ from smolvm.presets import (
     CLAUDE_CODE_PRESET,
     CODEX_PRESET,
     GIT_HOST_CONFIGS,
+    PI_PRESET,
     HostConfigCopy,
     HostKeychainSecret,
     Preset,
@@ -67,13 +68,13 @@ def _isolate_home(
 class TestRegistry:
     """Built-in preset registration."""
 
-    def test_codex_and_claude_code_registered(self) -> None:
-        assert preset_names() == ["claude-code", "codex"]
+    def test_builtin_presets_registered(self) -> None:
+        assert preset_names() == ["claude-code", "codex", "pi"]
 
     def test_list_presets_sorted_by_name(self) -> None:
         names = [p.name for p in list_presets()]
         assert names == sorted(names)
-        assert {p.name for p in list_presets()} == {"codex", "claude-code"}
+        assert {p.name for p in list_presets()} == {"codex", "claude-code", "pi"}
 
     def test_get_preset_returns_codex(self) -> None:
         assert get_preset("codex") is CODEX_PRESET
@@ -81,8 +82,11 @@ class TestRegistry:
     def test_get_preset_returns_claude_code(self) -> None:
         assert get_preset("claude-code") is CLAUDE_CODE_PRESET
 
+    def test_get_preset_returns_pi(self) -> None:
+        assert get_preset("pi") is PI_PRESET
+
     def test_unknown_preset_lists_available(self) -> None:
-        with pytest.raises(KeyError, match="Available: claude-code, codex"):
+        with pytest.raises(KeyError, match="Available: claude-code, codex, pi"):
             get_preset("hermes")
 
 
@@ -185,6 +189,48 @@ class TestClaudeCodePreset:
             check=False,
         )
         assert completed.returncode == 0, completed.stderr
+
+
+class TestPiPreset:
+    """Pi preset wires up the right keys, paths, and install command."""
+
+    def test_pi_preset_shape(self) -> None:
+        assert PI_PRESET.name == "pi"
+        assert PI_PRESET.aliases == ()
+        assert PI_PRESET.launch_command == "pi"
+        assert PI_PRESET.host_env_vars == ("ANTHROPIC_API_KEY", "OPENAI_API_KEY")
+
+    def test_pi_forwards_union_of_provider_credentials(self) -> None:
+        """Pi reuses on-disk credentials from codex and claude-code in
+        addition to its own ~/.pi config, so a prior `codex login` or
+        `claude login` on the host carries through into the guest."""
+        guest_paths = {cfg.host_path: cfg.guest_path for cfg in PI_PRESET.host_configs}
+        assert guest_paths == {
+            "~/.pi": "/root/.pi",
+            "~/.codex": "/root/.codex",
+            "~/.claude.json": "/root/.claude.json",
+            "~/.claude": "/root/.claude",
+        }
+
+    def test_pi_pulls_oauth_from_macos_keychain(self) -> None:
+        """Match claude-code: on macOS the Claude Code OAuth tokens live
+        in the keychain, and Pi reads ~/.claude/.credentials.json when
+        delegating to the Claude Pro/Max subscription."""
+        assert PI_PRESET.host_keychain_secrets == (
+            HostKeychainSecret(
+                service="Claude Code-credentials",
+                guest_path="/root/.claude/.credentials.json",
+            ),
+        )
+
+    def test_pi_install_runs_npm_install(self) -> None:
+        assert "@mariozechner/pi-coding-agent" in PI_PRESET.install_script
+        assert "npm install -g" in PI_PRESET.install_script
+
+    def test_pi_setup_uses_node20_bootstrap(self) -> None:
+        from smolvm.presets._scripts import NODE20_BOOTSTRAP
+
+        assert PI_PRESET.setup_script == NODE20_BOOTSTRAP
 
 
 class TestNpmInstallGlobalSafety:

@@ -26,8 +26,9 @@ from smolvm.presets._install import apply_preset, collect_host_env
 from smolvm.presets._types import HostConfigCopy, HostKeychainSecret, Preset
 from smolvm.presets.claude_code import CLAUDE_CODE_PRESET
 from smolvm.presets.codex import CODEX_PRESET
+from smolvm.presets.pi import PI_PRESET
 
-_BUILTIN_PRESETS: tuple[Preset, ...] = (CODEX_PRESET, CLAUDE_CODE_PRESET)
+_BUILTIN_PRESETS: tuple[Preset, ...] = (CODEX_PRESET, CLAUDE_CODE_PRESET, PI_PRESET)
 
 _REGISTRY: dict[str, Preset] = {p.name: p for p in _BUILTIN_PRESETS}
 
@@ -74,6 +75,7 @@ __all__ = [
     "CLAUDE_CODE_PRESET",
     "CODEX_PRESET",
     "GIT_HOST_CONFIGS",
+    "PI_PRESET",
     "HostConfigCopy",
     "HostKeychainSecret",
     "Preset",
