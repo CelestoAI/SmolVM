@@ -119,12 +119,11 @@ class TestClaudeCodePreset:
         Claude Code on macOS keeps tokens in the keychain (not in
         ``~/.claude/.credentials.json``); without this entry the guest
         sees the user's profile but says "Not logged in"."""
-        assert CLAUDE_CODE_PRESET.host_keychain_secrets == (
-            HostKeychainSecret(
-                service="Claude Code-credentials",
-                guest_path="/root/.claude/.credentials.json",
-            ),
-        )
+        from smolvm.presets.claude_code import CLAUDE_CODE_KEYCHAIN_SECRET
+
+        assert CLAUDE_CODE_PRESET.host_keychain_secrets == (CLAUDE_CODE_KEYCHAIN_SECRET,)
+        assert CLAUDE_CODE_KEYCHAIN_SECRET.service == "Claude Code-credentials"
+        assert CLAUDE_CODE_KEYCHAIN_SECRET.guest_path == "/root/.claude/.credentials.json"
 
     def test_claude_code_install_runs_npm_install(self) -> None:
         assert "@anthropic-ai/claude-code" in CLAUDE_CODE_PRESET.install_script
@@ -156,9 +155,9 @@ class TestClaudeCodePreset:
 
         # Extract just the cleanup snippet (after the npm install line)
         # and rewrite the hard-coded /root/ path to our temp dir.
-        from smolvm.presets.claude_code import _RESET_INSTALL_METHOD
+        from smolvm.presets.claude_code import CLAUDE_RESET_INSTALL_METHOD
 
-        snippet = _RESET_INSTALL_METHOD.replace("/root/", f"{root}/")
+        snippet = CLAUDE_RESET_INSTALL_METHOD.replace("/root/", f"{root}/")
         completed = subprocess.run(
             ["bash", "-c", f"set -euo pipefail; {snippet}"],
             capture_output=True,
@@ -178,10 +177,10 @@ class TestClaudeCodePreset:
         copied (e.g. a fresh user with no host config)."""
         import subprocess
 
-        from smolvm.presets.claude_code import _RESET_INSTALL_METHOD
+        from smolvm.presets.claude_code import CLAUDE_RESET_INSTALL_METHOD
 
         # Point at an empty dir — the file does not exist.
-        snippet = _RESET_INSTALL_METHOD.replace("/root/", f"{tmp_path}/")
+        snippet = CLAUDE_RESET_INSTALL_METHOD.replace("/root/", f"{tmp_path}/")
         completed = subprocess.run(
             ["bash", "-c", f"set -euo pipefail; {snippet}"],
             capture_output=True,
@@ -203,29 +202,39 @@ class TestPiPreset:
     def test_pi_forwards_union_of_provider_credentials(self) -> None:
         """Pi reuses on-disk credentials from codex and claude-code in
         addition to its own ~/.pi config, so a prior `codex login` or
-        `claude login` on the host carries through into the guest."""
-        guest_paths = {cfg.host_path: cfg.guest_path for cfg in PI_PRESET.host_configs}
-        assert guest_paths == {
-            "~/.pi": "/root/.pi",
-            "~/.codex": "/root/.codex",
-            "~/.claude.json": "/root/.claude.json",
-            "~/.claude": "/root/.claude",
-        }
+        `claude login` on the host carries through into the guest.
+
+        Compared as an ordered list of (host, guest) pairs so a
+        duplicate ``HostConfigCopy`` cannot silently dedupe through a
+        dict-based assertion."""
+        pairs = [(cfg.host_path, cfg.guest_path) for cfg in PI_PRESET.host_configs]
+        assert pairs == [
+            ("~/.pi", "/root/.pi"),
+            ("~/.codex", "/root/.codex"),
+            ("~/.claude.json", "/root/.claude.json"),
+            ("~/.claude", "/root/.claude"),
+        ]
 
     def test_pi_pulls_oauth_from_macos_keychain(self) -> None:
-        """Match claude-code: on macOS the Claude Code OAuth tokens live
-        in the keychain, and Pi reads ~/.claude/.credentials.json when
-        delegating to the Claude Pro/Max subscription."""
-        assert PI_PRESET.host_keychain_secrets == (
-            HostKeychainSecret(
-                service="Claude Code-credentials",
-                guest_path="/root/.claude/.credentials.json",
-            ),
-        )
+        """Pi delegates Claude Pro/Max auth through Claude Code's
+        ~/.claude/.credentials.json, so it must reuse the same keychain
+        extraction."""
+        from smolvm.presets.claude_code import CLAUDE_CODE_KEYCHAIN_SECRET
+
+        assert PI_PRESET.host_keychain_secrets == (CLAUDE_CODE_KEYCHAIN_SECRET,)
 
     def test_pi_install_runs_npm_install(self) -> None:
         assert "@mariozechner/pi-coding-agent" in PI_PRESET.install_script
         assert "npm install -g" in PI_PRESET.install_script
+
+    def test_pi_install_strips_claude_install_method(self) -> None:
+        """Pi forwards ~/.claude.json, so its install must append the
+        same installMethod cleanup that claude-code uses — otherwise
+        the host's ``installMethod`` value carries into the guest and
+        breaks claude/Pi's claude-subscription path on first launch."""
+        from smolvm.presets.claude_code import CLAUDE_RESET_INSTALL_METHOD
+
+        assert CLAUDE_RESET_INSTALL_METHOD in PI_PRESET.install_script
 
     def test_pi_setup_uses_node20_bootstrap(self) -> None:
         from smolvm.presets._scripts import NODE20_BOOTSTRAP

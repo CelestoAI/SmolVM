@@ -28,7 +28,11 @@ from smolvm.presets._types import HostConfigCopy, HostKeychainSecret, Preset
 # with "claude command not found at /root/.local/bin/claude" on first
 # start. Removing the key lets claude re-detect the install method
 # fresh on the guest. python3 ships in the Ubuntu cloud image.
-_RESET_INSTALL_METHOD = r"""
+#
+# Public so the Pi preset can append the same cleanup when it
+# forwards ~/.claude.json (Pi delegates Claude Pro/Max auth through
+# Claude Code's on-disk config).
+CLAUDE_RESET_INSTALL_METHOD = r"""
 if [ -f /root/.claude.json ]; then
   python3 - <<'PY' || true
 import json, pathlib
@@ -44,30 +48,34 @@ PY
 fi
 """
 
+# On macOS, claude stores its OAuth tokens in the keychain (not in
+# ~/.claude/.credentials.json — that file does not exist on a
+# signed-in Mac). Pull the keychain item into the guest as the
+# credentials file Linux claude reads at startup; without this the
+# guest greets the user by name (from oauthAccount in the copied
+# ~/.claude.json) but says "Not logged in". The keychain item is
+# named "Claude Code-credentials" and its value is already the JSON
+# body credentials.json expects.
+#
+# Public so the Pi preset can reuse the same secret — Pi reads
+# ~/.claude/.credentials.json when delegating to the Claude
+# subscription, so the keychain extraction has to happen there too.
+CLAUDE_CODE_KEYCHAIN_SECRET = HostKeychainSecret(
+    service="Claude Code-credentials",
+    guest_path="/root/.claude/.credentials.json",
+)
+
 CLAUDE_CODE_PRESET = Preset(
     name="claude-code",
     aliases=("claude",),
     summary="Start a sandbox with Anthropic's Claude Code CLI preinstalled.",
     setup_script=NODE20_BOOTSTRAP,
-    install_script=npm_install_global("@anthropic-ai/claude-code") + _RESET_INSTALL_METHOD,
+    install_script=npm_install_global("@anthropic-ai/claude-code") + CLAUDE_RESET_INSTALL_METHOD,
     host_env_vars=("ANTHROPIC_API_KEY",),
     host_configs=(
         HostConfigCopy(host_path="~/.claude.json", guest_path="/root/.claude.json"),
         HostConfigCopy(host_path="~/.claude", guest_path="/root/.claude"),
     ),
-    # On macOS, claude stores its OAuth tokens in the keychain (not in
-    # ~/.claude/.credentials.json — that file does not exist on a
-    # signed-in Mac). Pull the keychain item into the guest as the
-    # credentials file Linux claude reads at startup; without this the
-    # guest greets the user by name (from oauthAccount in the copied
-    # ~/.claude.json) but says "Not logged in". The keychain item is
-    # named "Claude Code-credentials" and its value is already the JSON
-    # body credentials.json expects.
-    host_keychain_secrets=(
-        HostKeychainSecret(
-            service="Claude Code-credentials",
-            guest_path="/root/.claude/.credentials.json",
-        ),
-    ),
+    host_keychain_secrets=(CLAUDE_CODE_KEYCHAIN_SECRET,),
     launch_command="claude",
 )

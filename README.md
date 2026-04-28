@@ -110,7 +110,7 @@ With a single command you get a claude/codex pre-installed sandbox ready with gi
 ```bash
 smolvm codex start  # start a new environment with codex preinstalled
 
-smolvm claude start  # start a new environment with codex preinstalled
+smolvm claude start  # start a new environment with claude preinstalled
 
 smolvm pi start  # start a new environment with the Pi coding agent preinstalled
 ```
