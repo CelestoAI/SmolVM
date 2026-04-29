@@ -438,6 +438,23 @@ class TestCliFile:
             make_dirs=False,
         )
 
+    def test_file_upload_closes_vm_on_failure(
+        self,
+        mock_vm_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """If `upload_file` raises, the CLI must still close the VM and return nonzero."""
+        source = tmp_path / "note.txt"
+        source.write_text("hello")
+        vm = MagicMock()
+        vm.upload_file.side_effect = RuntimeError("boom")
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(["file", "upload", "vm001", str(source), "/tmp/"])
+
+        assert ret != 0
+        vm.close.assert_called_once()
+
 
 class TestCliCreate:
     """Tests for `smolvm create`."""

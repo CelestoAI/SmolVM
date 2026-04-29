@@ -2189,6 +2189,39 @@ class TestVMFileUpload:
         ssh.put_file.assert_called_once_with(source, "/tmp/uploads/note.txt")
 
     @patch("smolvm.facade.SmolVMManager")
+    def test_upload_file_skips_mkdir_when_make_dirs_false(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        source = tmp_path / "note.txt"
+        source.write_text("hello")
+
+        config = sample_config.model_copy(update={"ssh_capable": True})
+        running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
+        running_info.config = config
+        running_info.network.guest_ip = "172.16.0.2"
+        running_info.network.ssh_host_port = None
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = running_info
+        mock_sdk.get.return_value = running_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        ssh = MagicMock()
+
+        vm = SmolVM(config)
+        vm._ssh = ssh
+        vm._ssh_ready = True
+
+        guest_path = vm.upload_file(source, "/tmp/path/note.txt", make_dirs=False)
+
+        assert guest_path == "/tmp/path/note.txt"
+        ssh.run.assert_not_called()
+        ssh.put_file.assert_called_once_with(source, "/tmp/path/note.txt")
+
+    @patch("smolvm.facade.SmolVMManager")
     def test_upload_file_rejects_directory(
         self,
         mock_sdk_cls: MagicMock,

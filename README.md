@@ -217,6 +217,9 @@ vm.upload_file("./prompt.txt", "/tmp/prompt.txt")
 vm.close()
 ```
 
+The destination must be an absolute path inside the sandbox (starting
+with `/`), and any existing file at that path is overwritten.
+
 
 ## Examples
 
