@@ -19,19 +19,21 @@
 ---
 
 SmolVM gives AI agents their own disposable computer. 
-Each microVM boots in milliseconds, runs any code or software you throw at it, keeps state when you need it, and vanishes when you don't — nothing touches your host.
+Each microVM boots in milliseconds, runs any code or software you throw at it, persists files and state across sessions, and disappears when you're done — built for scale in production.
 
 
 ## Features
 
-- **Sub-second boot** — VMs ready in ~500 ms.
-- **Hardware isolation** — Stronger security than containers.
-- **Network controls** — Domain allowlists for egress filtering.
-- **Browser sessions** — Full browser agents can see and control.
-- **Host mounts** — Give sandboxes read access to local directories.
-- **Snapshots** — Save and restore VM state instantly.
-- **Coding agents** — Start enviornment with a pre-installed coding agent.
-- **OpenClaw** — GUI Linux apps inside a sandbox.
+| Feature | What it means for you |
+| --- | --- |
+| **[Sub-second boot](#performance)** | Your agent has a running VM before the API call returns (~500 ms). |
+| **[Hardware isolation](#security)** | Real VM boundaries, not containers. Untrusted code can't escape. |
+| **[Network controls](#network-controls)** | Lock down egress to specific domains so agents can't call home. |
+| **[Browser sessions](#browser-sessions)** | Agents get a full browser they can see and control in real time. |
+| **[File sharing](#mount-host-directories)** | Share local directories with the sandbox, read-only or writable. |
+| **Snapshots** | Pause a sandbox and resume it later with everything intact. |
+| **[Coding agents](#coding-agents)** | One command to launch a sandbox with Claude Code, Codex, or Pi pre-installed. |
+| **[OpenClaw](examples/openclaw.py)** | Run GUI Linux apps (IDEs, browsers, tools) inside an isolated sandbox. |
 
 
 ## Use cases
