@@ -22,8 +22,6 @@ SmolVM gives AI agents their own disposable computer.
 Each microVM boots in milliseconds, runs any code or software you throw at it, persists files and state across sessions, and disappears when you're done — ready to handle thousands of sandboxes in production.
 
 
-## Features
-
 | Feature | What it means for you |
 | :--- | :--- |
 | **[Sub-second boot](#performance)** | Your agent has a running VM before the API call returns (~500 ms). |
