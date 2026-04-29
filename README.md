@@ -66,9 +66,9 @@ On supported Linux and macOS systems, `pip install smolvm` also pulls in the mat
 
 Linux may prompt for `sudo` during setup so it can install host dependencies and configure runtime permissions.
 
-</details>
-
 For golden-AMI builds, two-stage deploys, pinning the Firecracker version, and other non-default install paths, see [docs/installation.md](docs/installation.md).
+
+</details>
 
 ### Start a sandbox in Python
 
