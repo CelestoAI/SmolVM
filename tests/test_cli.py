@@ -355,6 +355,90 @@ class TestCliEnv:
         vm.close.assert_called_once()
 
 
+class TestCliFile:
+    """Tests for `smolvm file` subcommands."""
+
+    @pytest.fixture
+    def mock_vm_cls(self) -> MagicMock:
+        with patch("smolvm.facade.SmolVM") as m:
+            yield m
+
+    def test_file_upload_success(
+        self,
+        mock_vm_cls: MagicMock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm file upload` should copy a local file into a sandbox."""
+        source = tmp_path / "note.txt"
+        source.write_text("hello")
+        vm = MagicMock()
+        vm.upload_file.return_value = "/tmp/note.txt"
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(["file", "upload", "vm001", str(source), "/tmp/"])
+
+        assert ret == 0
+        mock_vm_cls.from_id.assert_called_once_with(
+            "vm001",
+            ssh_user="root",
+            ssh_key_path=None,
+        )
+        vm.upload_file.assert_called_once_with(
+            str(source),
+            "/tmp/",
+            make_dirs=True,
+        )
+        vm.close.assert_called_once()
+        assert "Uploaded" in capsys.readouterr().out
+
+    def test_file_upload_json(
+        self,
+        mock_vm_cls: MagicMock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm file upload --json` should emit the upload destination."""
+        source = tmp_path / "note.txt"
+        source.write_text("hello")
+        vm = MagicMock()
+        vm.upload_file.return_value = "/tmp/note.txt"
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(["file", "upload", "vm001", str(source), "/tmp/", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["command"] == "file.upload"
+        assert payload["ok"] is True
+        assert payload["data"]["vm_id"] == "vm001"
+        assert payload["data"]["local_path"] == str(source)
+        assert payload["data"]["guest_path"] == "/tmp/note.txt"
+
+    def test_file_upload_can_skip_directory_creation(
+        self,
+        mock_vm_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """`--no-create-dirs` should pass make_dirs=False."""
+        source = tmp_path / "note.txt"
+        source.write_text("hello")
+        vm = MagicMock()
+        vm.upload_file.return_value = "/tmp/note.txt"
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(
+            ["file", "upload", "vm001", str(source), "/tmp/note.txt", "--no-create-dirs"]
+        )
+
+        assert ret == 0
+        vm.upload_file.assert_called_once_with(
+            str(source),
+            "/tmp/note.txt",
+            make_dirs=False,
+        )
+
+
 class TestCliCreate:
     """Tests for `smolvm create`."""
 

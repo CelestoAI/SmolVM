@@ -2112,3 +2112,94 @@ class TestVMEnvManagement:
         vm.close()
 
         mock_sdk.close.assert_called_once()
+
+
+class TestVMFileUpload:
+    """Tests for facade-level guest file upload."""
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_upload_file_creates_parent_and_puts_file(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        source = tmp_path / "note.txt"
+        source.write_text("hello")
+
+        config = sample_config.model_copy(update={"ssh_capable": True})
+        running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
+        running_info.config = config
+        running_info.network.guest_ip = "172.16.0.2"
+        running_info.network.ssh_host_port = None
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = running_info
+        mock_sdk.get.return_value = running_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        ssh = MagicMock()
+        ssh.run.return_value = MagicMock(exit_code=0, stderr="")
+
+        vm = SmolVM(config)
+        vm._ssh = ssh
+        vm._ssh_ready = True
+
+        guest_path = vm.upload_file(source, "/tmp/smolvm/note.txt")
+
+        assert guest_path == "/tmp/smolvm/note.txt"
+        ssh.run.assert_called_once_with(
+            "mkdir -p -- /tmp/smolvm",
+            timeout=30,
+            shell="raw",
+        )
+        ssh.put_file.assert_called_once_with(source, "/tmp/smolvm/note.txt")
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_upload_file_appends_name_for_guest_directory(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        source = tmp_path / "note.txt"
+        source.write_text("hello")
+
+        config = sample_config.model_copy(update={"ssh_capable": True})
+        running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
+        running_info.config = config
+        running_info.network.guest_ip = "172.16.0.2"
+        running_info.network.ssh_host_port = None
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = running_info
+        mock_sdk.get.return_value = running_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        ssh = MagicMock()
+        ssh.run.return_value = MagicMock(exit_code=0, stderr="")
+
+        vm = SmolVM(config)
+        vm._ssh = ssh
+        vm._ssh_ready = True
+
+        guest_path = vm.upload_file(source, "/tmp/uploads/")
+
+        assert guest_path == "/tmp/uploads/note.txt"
+        ssh.put_file.assert_called_once_with(source, "/tmp/uploads/note.txt")
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_upload_file_rejects_directory(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.RUNNING)
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = SmolVM(sample_config)
+
+        with pytest.raises(ValueError, match="local_path must be a file"):
+            vm.upload_file(tmp_path, "/tmp/uploaded")

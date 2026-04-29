@@ -233,6 +233,14 @@ class SnapshotRestorePayload(TypedDict):
     vm: SnapshotRestoreVmPayload
 
 
+class FileUploadPayload(TypedDict):
+    """JSON payload for ``smolvm file upload``."""
+
+    vm_id: str
+    local_path: str
+    guest_path: str
+
+
 class BrowserRow(TypedDict):
     """Machine-readable data for a listed browser session."""
 
@@ -873,6 +881,35 @@ def build_parser() -> argparse.ArgumentParser:
     ssh_parser.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
     _add_ssh_auth_args(ssh_parser)
     _add_boot_timeout_arg(ssh_parser)
+
+    file_parser = subparsers.add_parser(
+        "file",
+        help="Copy files into a sandbox.",
+    )
+    file_sub = file_parser.add_subparsers(dest="file_action")
+
+    file_upload = file_sub.add_parser(
+        "upload",
+        help="Upload one local file into a running sandbox.",
+    )
+    file_upload.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
+    file_upload.add_argument("local_path", metavar="local-path", help="File on this machine.")
+    file_upload.add_argument(
+        "guest_path",
+        metavar="guest-path",
+        help="Destination path in the sandbox.",
+    )
+    file_upload.add_argument(
+        "--no-create-dirs",
+        action="store_true",
+        help="Do not create the destination directory in the sandbox.",
+    )
+    file_upload.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output.",
+    )
+    _add_ssh_auth_args(file_upload)
 
     browser_parser = subparsers.add_parser(
         "browser",
@@ -2478,6 +2515,65 @@ def _run_env(args: argparse.Namespace) -> int:
             vm.close()
 
 
+def _render_file_upload(data: FileUploadPayload) -> None:
+    """Render a human-facing file upload result."""
+    console = console_stdout()
+    console.print(
+        Panel.fit(
+            (
+                f"Uploaded '{data['local_path']}' to '{data['guest_path']}' "
+                f"on '{data['vm_id']}'."
+            ),
+            title="File Uploaded",
+            border_style="green",
+        )
+    )
+
+
+def _run_file(args: argparse.Namespace) -> int:
+    """Handle ``smolvm file`` commands."""
+    from smolvm.facade import SmolVM
+
+    if args.file_action is None:
+        render_error("Usage: smolvm file {upload} ...")
+        return 2
+
+    json_output = getattr(args, "json", False)
+    command_name = f"file.{args.file_action}"
+    vm: SmolVM | None = None
+    try:
+        vm = SmolVM.from_id(
+            args.vm_id,
+            ssh_user=args.ssh_user,
+            ssh_key_path=args.ssh_key,
+        )
+
+        if args.file_action == "upload":
+            guest_path = vm.upload_file(
+                args.local_path,
+                args.guest_path,
+                make_dirs=not args.no_create_dirs,
+            )
+            data: FileUploadPayload = {
+                "vm_id": args.vm_id,
+                "local_path": str(Path(args.local_path).expanduser()),
+                "guest_path": guest_path,
+            }
+            if json_output:
+                emit_json(command_name, 0, data=data)
+            else:
+                _render_file_upload(data)
+            return 0
+
+        render_error("Usage: smolvm file {upload} ...")
+        return 2
+    except Exception as exc:
+        return _emit_cli_error(command_name, 1, exc, json_output=json_output)
+    finally:
+        if vm is not None:
+            vm.close()
+
+
 def _run_ssh(args: argparse.Namespace) -> int:
     """Handle ``smolvm ssh``."""
     from smolvm.facade import SmolVM
@@ -2888,6 +2984,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "ssh":
         return _run_ssh(args)
+
+    if args.command == "file":
+        return _run_file(args)
 
     if args.command == "doctor":
         return run_doctor(
