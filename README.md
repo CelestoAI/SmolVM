@@ -28,7 +28,7 @@ Each microVM boots in milliseconds, runs any code or software you throw at it, p
 | **[Sub-second boot](#performance)** | Your agent has a running VM before the API call returns (~500 ms). |
 | **[Hardware&nbsp;isolation](#security)** &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | Each sandbox runs in its own virtual machine with hardware-level separation. Untrusted code can't escape or access your system. |
 | **[Network controls](#network-controls)** | Lock down egress to specific domains so agents can't call home. |
-| **[Browser sessions](#browser-sessions)** | Agents get a full browser they can see and control in real time. |
+| **[Browser sandbox](#browser-sandbox)** | Agents get a full browser they can see and control in real time. |
 | **[File sharing](#mount-host-directories)** | Share local directories with the sandbox, read-only or writable. |
 | **Snapshots** | Pause a sandbox and resume it later with everything intact. |
 | **[Coding agents](#coding-agents)** | One command to launch a sandbox with Claude Code, Codex, or Pi pre-installed. |
@@ -117,7 +117,7 @@ smolvm pi start  # start a new environment with the Pi coding agent preinstalled
 ```
 
 
-## Browser sessions
+## Browser sandbox
 
 SmolVM can also start a full browser inside a sandbox. This is useful when agents need to navigate websites, fill out forms, or take screenshots.
 
