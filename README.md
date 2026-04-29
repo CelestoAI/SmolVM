@@ -24,9 +24,9 @@ Each microVM boots in milliseconds, runs any code or software you throw at it, p
 
 ## Features
 
-| Feature &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | What it means for you |
-| --- | --- |
-| **[Sub-second boot](#performance)** | Your agent has a running VM before the API call returns (~500 ms). |
+| Feature | What it means for you |
+| :--- | :--- |
+| **[Sub-second boot](#performance)** &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | Your agent has a running VM before the API call returns (~500 ms). |
 | **[Hardware isolation](#security)** | Each sandbox runs in its own virtual machine with hardware-level separation. Untrusted code can't escape or access your system. |
 | **[Network controls](#network-controls)** | Lock down egress to specific domains so agents can't call home. |
 | **[Browser sessions](#browser-sessions)** | Agents get a full browser they can see and control in real time. |
