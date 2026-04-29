@@ -1248,10 +1248,12 @@ class SmolVM:
     ) -> str:
         """Upload one local file into a running VM.
 
+        Overwrites the destination if it already exists.
+
         Args:
             local_path: File on the host machine.
-            guest_path: Destination path inside the guest. If it ends with
-                ``/``, the local filename is appended.
+            guest_path: Absolute POSIX path inside the guest. If it ends
+                with ``/``, the local filename is appended.
             make_dirs: Create the destination parent directory first.
 
         Returns:
@@ -1259,16 +1261,25 @@ class SmolVM:
 
         Raises:
             ValueError: If *local_path* is missing, is not a file, or if
-                *guest_path* is empty.
+                *guest_path* is empty or not an absolute POSIX path.
             SmolVMError: If the VM is not running or file transfer fails.
         """
         source = Path(local_path).expanduser()
         if not source.exists():
-            raise ValueError(f"local_path does not exist: {source}")
+            raise ValueError(
+                f"Local file not found: {source}. Check the path and try again."
+            )
         if not source.is_file():
-            raise ValueError(f"local_path must be a file: {source}")
+            raise ValueError(
+                f"Not a file: {source}. Pass a path to a single file, not a directory."
+            )
         if not guest_path:
-            raise ValueError("guest_path cannot be empty")
+            raise ValueError("Destination path in the sandbox cannot be empty.")
+        if not guest_path.startswith("/"):
+            raise ValueError(
+                f"Destination path in the sandbox must be absolute "
+                f"(start with '/'): {guest_path!r}."
+            )
 
         destination = guest_path
         if destination.endswith("/"):
@@ -1278,11 +1289,13 @@ class SmolVM:
         if make_dirs:
             parent = _guest_parent_dir(destination)
             if parent:
-                result = ssh.run(f"mkdir -p -- {shlex.quote(parent)}", timeout=30, shell="raw")
+                result = ssh.run(
+                    f"mkdir -p -- {shlex.quote(parent)}", timeout=30, shell="raw"
+                )
                 if result.exit_code != 0:
                     stderr = result.stderr.strip()
                     raise SmolVMError(
-                        f"Failed to create guest directory '{parent}': {stderr}",
+                        f"Could not create directory {parent!r} in the sandbox: {stderr}",
                         {"vm_id": self._vm_id, "guest_path": destination},
                     )
         ssh.put_file(source, destination)
@@ -2076,30 +2089,20 @@ modprobe 9pnet_virtio""".strip()
 
     def _ensure_ssh_for_file_transfer(self) -> SSHClient:
         """Return a ready SSH client for file transfer operations."""
-        return self._ensure_ssh_for_operation(
-            action="transfer files",
-            unavailable_prefix="Cannot transfer files",
-        )
+        return self._ensure_ssh_for_operation(action="transfer files")
 
     def _ensure_ssh_for_env(self) -> SSHClient:
         """Return a ready SSH client for env operations on a running VM."""
-        return self._ensure_ssh_for_operation(
-            action="manage environment variables",
-            unavailable_prefix="Cannot manage environment variables",
-        )
+        return self._ensure_ssh_for_operation(action="manage environment variables")
 
-    def _ensure_ssh_for_operation(
-        self,
-        *,
-        action: str,
-        unavailable_prefix: str,
-    ) -> SSHClient:
+    def _ensure_ssh_for_operation(self, *, action: str) -> SSHClient:
         """Return a ready SSH client for operations that need guest SSH."""
+        prefix = f"Cannot {action}"
         self._refresh_info()
 
         if self._info.status != VMState.RUNNING:
             raise SmolVMError(
-                f"{unavailable_prefix}: VM is {self._info.status.value}",
+                f"{prefix}: VM is {self._info.status.value}",
                 {"vm_id": self._vm_id},
             )
         if not self.can_run_commands():
@@ -2113,7 +2116,7 @@ modprobe 9pnet_virtio""".strip()
             )
         if self._info.network is None:
             raise SmolVMError(
-                f"{unavailable_prefix}: VM has no network configuration",
+                f"{prefix}: VM has no network configuration",
                 {"vm_id": self._vm_id},
             )
 
@@ -2122,7 +2125,7 @@ modprobe 9pnet_virtio""".strip()
 
         if self._ssh is None:
             raise SmolVMError(
-                f"Cannot {action}: SSH client is not initialized",
+                f"{prefix}: SSH client is not initialized",
                 {"vm_id": self._vm_id},
             )
 

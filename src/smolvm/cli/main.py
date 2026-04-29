@@ -2538,7 +2538,7 @@ def _run_file(args: argparse.Namespace) -> int:
         render_error("Usage: smolvm file {upload} ...")
         return 2
 
-    json_output = getattr(args, "json", False)
+    json_output = args.json
     command_name = f"file.{args.file_action}"
     vm: SmolVM | None = None
     try:

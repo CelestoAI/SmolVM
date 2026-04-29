@@ -2201,5 +2201,95 @@ class TestVMFileUpload:
 
         vm = SmolVM(sample_config)
 
-        with pytest.raises(ValueError, match="local_path must be a file"):
+        with pytest.raises(ValueError, match="Not a file"):
             vm.upload_file(tmp_path, "/tmp/uploaded")
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_upload_file_rejects_relative_guest_path(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        source = tmp_path / "note.txt"
+        source.write_text("hello")
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.RUNNING)
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = SmolVM(sample_config)
+
+        with pytest.raises(ValueError, match="must be absolute"):
+            vm.upload_file(source, "~/note.txt")
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_upload_file_quotes_paths_with_spaces(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        source = tmp_path / "note.txt"
+        source.write_text("hello")
+
+        config = sample_config.model_copy(update={"ssh_capable": True})
+        running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
+        running_info.config = config
+        running_info.network.guest_ip = "172.16.0.2"
+        running_info.network.ssh_host_port = None
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = running_info
+        mock_sdk.get.return_value = running_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        ssh = MagicMock()
+        ssh.run.return_value = MagicMock(exit_code=0, stderr="")
+
+        vm = SmolVM(config)
+        vm._ssh = ssh
+        vm._ssh_ready = True
+
+        guest_path = vm.upload_file(source, "/tmp/with space/note.txt")
+
+        assert guest_path == "/tmp/with space/note.txt"
+        ssh.run.assert_called_once_with(
+            "mkdir -p -- '/tmp/with space'",
+            timeout=30,
+            shell="raw",
+        )
+        ssh.put_file.assert_called_once_with(source, "/tmp/with space/note.txt")
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_upload_file_raises_when_mkdir_fails(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        source = tmp_path / "note.txt"
+        source.write_text("hello")
+
+        config = sample_config.model_copy(update={"ssh_capable": True})
+        running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
+        running_info.config = config
+        running_info.network.guest_ip = "172.16.0.2"
+        running_info.network.ssh_host_port = None
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = running_info
+        mock_sdk.get.return_value = running_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        ssh = MagicMock()
+        ssh.run.return_value = MagicMock(exit_code=1, stderr="permission denied")
+
+        vm = SmolVM(config)
+        vm._ssh = ssh
+        vm._ssh_ready = True
+
+        with pytest.raises(SmolVMError, match="permission denied"):
+            vm.upload_file(source, "/root/forbidden/note.txt")
+
+        ssh.put_file.assert_not_called()
