@@ -21,9 +21,19 @@ import re
 # npm package names. ``@scope/name`` is the only multi-segment form allowed.
 _SAFE_NPM_NAME_RE = re.compile(r"^@?[a-zA-Z0-9._\-]+(/[a-zA-Z0-9._\-]+)?$")
 
-# Wait for cloud-init to release the apt lock, install Node.js 20 from
-# NodeSource if it's missing or older than 20. Idempotent.
-NODE20_BOOTSTRAP = r"""
+# PyPI package names — alphanumerics, hyphens, underscores, dots, optional extras.
+_SAFE_PYPI_NAME_RE = re.compile(r"^[a-zA-Z0-9._\-]+(\[[a-zA-Z0-9,._\-]+\])?$")
+
+
+def node_bootstrap(major: int = 20) -> str:
+    """Return a bash script that installs Node.js *major* via NodeSource.
+
+    Waits for cloud-init to release the apt lock, then installs Node
+    from NodeSource if it is missing or older than *major*. Idempotent.
+    """
+    if not isinstance(major, int) or major < 16:
+        raise ValueError(f"Unsupported Node major version: {major}")
+    return rf"""
 set -euo pipefail
 cloud-init status --wait >/dev/null 2>&1 || true
 export DEBIAN_FRONTEND=noninteractive
@@ -34,13 +44,32 @@ apt-get install -y -qq --no-install-recommends curl ca-certificates gnupg git
 needs_node=1
 if command -v node >/dev/null 2>&1; then
     major=$(node --version | sed 's/^v//' | cut -d. -f1)
-    if [ "${major:-0}" -ge 20 ]; then
+    if [ "${{major:-0}}" -ge {major} ]; then
         needs_node=0
     fi
 fi
 if [ "$needs_node" = "1" ]; then
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    curl -fsSL https://deb.nodesource.com/setup_{major}.x | bash -
     apt-get install -y -qq --no-install-recommends nodejs
+fi
+"""
+
+
+# Backward-compatible constant used by existing presets.
+NODE20_BOOTSTRAP = node_bootstrap(20)
+
+PYTHON_BOOTSTRAP = r"""
+set -euo pipefail
+cloud-init status --wait >/dev/null 2>&1 || true
+export DEBIAN_FRONTEND=noninteractive
+
+apt-get update -qq
+apt-get install -y -qq --no-install-recommends \
+    python3 python3-pip python3-venv curl ca-certificates git
+
+export PATH="$HOME/.local/bin:$PATH"
+if ! command -v uv >/dev/null 2>&1; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
 """
 
@@ -56,3 +85,19 @@ def npm_install_global(package: str) -> str:
     if not _SAFE_NPM_NAME_RE.match(package):
         raise ValueError(f"Refusing to install unsafe npm package name: {package!r}")
     return f"set -euo pipefail\nnpm install -g --silent {package}\n"
+
+
+def uv_install_global(package: str) -> str:
+    """Return a script that installs *package* system-wide via ``uv pip``.
+
+    Pair with :data:`PYTHON_BOOTSTRAP` as the preset's ``setup_script``
+    so that the apt/uv phase and the pip-install phase show up as two
+    separate progress steps in the CLI.
+    """
+    if not _SAFE_PYPI_NAME_RE.match(package):
+        raise ValueError(f"Refusing to install unsafe PyPI package name: {package!r}")
+    return (
+        "set -euo pipefail\n"
+        'export PATH="$HOME/.local/bin:$PATH"\n'
+        f"uv pip install --system {package}\n"
+    )

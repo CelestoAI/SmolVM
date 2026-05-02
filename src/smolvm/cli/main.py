@@ -1794,7 +1794,6 @@ def _render_start_result(data: StartPayload) -> None:
         Text(str(vm_data["status"]), style=status_style(str(vm_data["status"]))),
     )
     details.add_row("OS", str(vm_data["os"]))
-    details.add_row("Backend", str(vm_data["backend"]))
     details.add_row("IP Address", str(vm_data["ip_address"] or "-"))
     details.add_row(
         "SSH Port",

@@ -2290,7 +2290,7 @@ class TestCliStart:
     def test_unknown_preset_errors(self, capsys: pytest.CaptureFixture) -> None:
         """An unknown preset name should fail at argparse-level."""
         with pytest.raises(SystemExit):
-            main(["hermes", "start"])
+            main(["nonexistent-agent", "start"])
         err = capsys.readouterr().err
         # argparse produces "invalid choice" for unknown subcommand
         assert "invalid choice" in err or "argument command" in err

@@ -133,7 +133,7 @@ def apply_preset(
     # the user sees two distinct progress steps instead of one opaque
     # "Installing..." line that stalls for the full duration.
     if preset.setup_script.strip():
-        notify("Installing system packages (apt + Node 20)...")
+        notify("Installing system packages...")
         _run_install_phase(ssh, preset, preset.setup_script, install_timeout, phase="setup")
 
     if preset.install_script.strip():

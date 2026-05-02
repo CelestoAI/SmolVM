@@ -26,6 +26,8 @@ from smolvm.presets import (
     CLAUDE_CODE_PRESET,
     CODEX_PRESET,
     GIT_HOST_CONFIGS,
+    HERMES_PRESET,
+    OPENCLAW_PRESET,
     PI_PRESET,
     HostConfigCopy,
     HostKeychainSecret,
@@ -36,7 +38,7 @@ from smolvm.presets import (
     list_presets,
     preset_names,
 )
-from smolvm.presets._scripts import npm_install_global
+from smolvm.presets._scripts import npm_install_global, uv_install_global
 from smolvm.types import CommandResult
 
 
@@ -69,12 +71,18 @@ class TestRegistry:
     """Built-in preset registration."""
 
     def test_builtin_presets_registered(self) -> None:
-        assert preset_names() == ["claude-code", "codex", "pi"]
+        assert preset_names() == ["claude-code", "codex", "hermes", "openclaw", "pi"]
 
     def test_list_presets_sorted_by_name(self) -> None:
         names = [p.name for p in list_presets()]
         assert names == sorted(names)
-        assert {p.name for p in list_presets()} == {"codex", "claude-code", "pi"}
+        assert {p.name for p in list_presets()} == {
+            "codex",
+            "claude-code",
+            "hermes",
+            "openclaw",
+            "pi",
+        }
 
     def test_get_preset_returns_codex(self) -> None:
         assert get_preset("codex") is CODEX_PRESET
@@ -85,9 +93,15 @@ class TestRegistry:
     def test_get_preset_returns_pi(self) -> None:
         assert get_preset("pi") is PI_PRESET
 
+    def test_get_preset_returns_openclaw(self) -> None:
+        assert get_preset("openclaw") is OPENCLAW_PRESET
+
+    def test_get_preset_returns_hermes(self) -> None:
+        assert get_preset("hermes") is HERMES_PRESET
+
     def test_unknown_preset_lists_available(self) -> None:
-        with pytest.raises(KeyError, match="Available: claude-code, codex, pi"):
-            get_preset("hermes")
+        with pytest.raises(KeyError, match="Available: claude-code, codex, hermes, openclaw, pi"):
+            get_preset("nonexistent")
 
 
 class TestCodexPreset:
@@ -242,6 +256,66 @@ class TestPiPreset:
         assert PI_PRESET.setup_script == NODE20_BOOTSTRAP
 
 
+class TestOpenClawPreset:
+    """OpenClaw preset wires up the right keys, paths, and install command."""
+
+    def test_openclaw_preset_shape(self) -> None:
+        assert OPENCLAW_PRESET.name == "openclaw"
+        assert OPENCLAW_PRESET.aliases == ("claw",)
+        assert OPENCLAW_PRESET.launch_command == "openclaw"
+        assert OPENCLAW_PRESET.host_env_vars == ("OPENROUTER_API_KEY", "OPENAI_API_KEY")
+
+    def test_openclaw_copies_config_dir(self) -> None:
+        pairs = [(cfg.host_path, cfg.guest_path) for cfg in OPENCLAW_PRESET.host_configs]
+        assert pairs == [("~/.openclaw", "/root/.openclaw")]
+
+    def test_openclaw_install_runs_npm_install(self) -> None:
+        assert "openclaw" in OPENCLAW_PRESET.install_script
+        assert "npm install -g" in OPENCLAW_PRESET.install_script
+
+    def test_openclaw_setup_uses_node22(self) -> None:
+        assert "setup_22.x" in OPENCLAW_PRESET.setup_script
+        assert "-ge 22" in OPENCLAW_PRESET.setup_script
+
+    def test_openclaw_no_keychain_secrets(self) -> None:
+        assert OPENCLAW_PRESET.host_keychain_secrets == ()
+
+
+class TestHermesPreset:
+    """Hermes preset wires up the right keys, paths, and install command."""
+
+    def test_hermes_preset_shape(self) -> None:
+        assert HERMES_PRESET.name == "hermes"
+        assert HERMES_PRESET.aliases == ()
+        assert HERMES_PRESET.launch_command == "hermes"
+        assert HERMES_PRESET.host_env_vars == (
+            "OPENROUTER_API_KEY",
+            "OPENAI_API_KEY",
+            "GOOGLE_API_KEY",
+            "HF_TOKEN",
+        )
+
+    def test_hermes_copies_config_dir(self) -> None:
+        pairs = [(cfg.host_path, cfg.guest_path) for cfg in HERMES_PRESET.host_configs]
+        assert pairs == [("~/.hermes", "/root/.hermes")]
+
+    def test_hermes_install_clones_and_pip_installs(self) -> None:
+        assert "git clone" in HERMES_PRESET.install_script
+        assert "NousResearch/hermes-agent" in HERMES_PRESET.install_script
+        assert "uv venv" in HERMES_PRESET.install_script
+        assert "uv pip install" in HERMES_PRESET.install_script
+
+    def test_hermes_setup_installs_python(self) -> None:
+        assert "python3" in HERMES_PRESET.setup_script
+        assert "uv" in HERMES_PRESET.setup_script
+
+    def test_hermes_disk_bumped(self) -> None:
+        assert HERMES_PRESET.default_disk_mib == 10240
+
+    def test_hermes_no_keychain_secrets(self) -> None:
+        assert HERMES_PRESET.host_keychain_secrets == ()
+
+
 class TestNpmInstallGlobalSafety:
     """The npm install helper rejects unsafe package names."""
 
@@ -270,6 +344,56 @@ class TestNpmInstallGlobalSafety:
     def test_accepts_safe_names(self, name: str) -> None:
         script = npm_install_global(name)
         assert name in script
+
+
+class TestUvInstallGlobalSafety:
+    """The uv install helper rejects unsafe package names."""
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "evil; rm -rf /",
+            "pkg && curl bad.example",
+            "name with spaces",
+        ],
+    )
+    def test_rejects_shell_metacharacters(self, name: str) -> None:
+        with pytest.raises(ValueError, match="unsafe PyPI package name"):
+            uv_install_global(name)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "hermes-agent",
+            "some-package.v2",
+            "package_name",
+        ],
+    )
+    def test_accepts_safe_names(self, name: str) -> None:
+        script = uv_install_global(name)
+        assert name in script
+
+
+class TestNodeBootstrapFunction:
+    """The parameterized node_bootstrap() helper."""
+
+    def test_node_bootstrap_20_matches_legacy_constant(self) -> None:
+        from smolvm.presets._scripts import NODE20_BOOTSTRAP, node_bootstrap
+
+        assert node_bootstrap(20) == NODE20_BOOTSTRAP
+
+    def test_node_bootstrap_22_uses_correct_version(self) -> None:
+        from smolvm.presets._scripts import node_bootstrap
+
+        script = node_bootstrap(22)
+        assert "setup_22.x" in script
+        assert "-ge 22" in script
+
+    def test_node_bootstrap_rejects_too_low(self) -> None:
+        from smolvm.presets._scripts import node_bootstrap
+
+        with pytest.raises(ValueError, match="Unsupported Node major version"):
+            node_bootstrap(10)
 
 
 class TestCollectHostEnv:
@@ -874,9 +998,7 @@ class TestGitCredentialInjection:
         apply_preset(ssh, self._stub_codex_preset())
 
         commands_run = [call.args[0] for call in ssh.run.call_args_list]
-        assert any(
-            "tar -xf" in cmd and "/root/.ssh" in cmd for cmd in commands_run
-        ), commands_run
+        assert any("tar -xf" in cmd and "/root/.ssh" in cmd for cmd in commands_run), commands_run
 
     def test_git_ssh_tar_owner_stripped_to_root(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -936,9 +1058,7 @@ class TestGitCredentialInjection:
         must chmod 0600 after upload so the file does not land
         world-readable inside the guest."""
         monkeypatch.setenv("HOME", str(tmp_path))
-        (tmp_path / ".git-credentials").write_text(
-            "https://user:token@github.com\n"
-        )
+        (tmp_path / ".git-credentials").write_text("https://user:token@github.com\n")
 
         ssh = MagicMock()
         ssh.run.return_value = _ok()
@@ -947,13 +1067,10 @@ class TestGitCredentialInjection:
 
         commands_run = [call.args[0] for call in ssh.run.call_args_list]
         assert any(
-            "chmod 600" in cmd and "/root/.git-credentials" in cmd
-            for cmd in commands_run
+            "chmod 600" in cmd and "/root/.git-credentials" in cmd for cmd in commands_run
         ), commands_run
 
-    def test_gitconfig_not_chmodded(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_gitconfig_not_chmodded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """``~/.gitconfig`` is conventionally world-readable; only
         credential files get the 0600 treatment. Guards against
         accidentally tightening every file_mode."""
@@ -966,7 +1083,8 @@ class TestGitCredentialInjection:
         apply_preset(ssh, self._stub_codex_preset())
 
         chmod_targets = [
-            cmd for cmd in (call.args[0] for call in ssh.run.call_args_list)
+            cmd
+            for cmd in (call.args[0] for call in ssh.run.call_args_list)
             if "chmod" in cmd and "/root/.gitconfig" in cmd
         ]
         assert chmod_targets == [], chmod_targets
