@@ -28,4 +28,8 @@ OPENCLAW_PRESET = Preset(
     host_env_vars=("OPENROUTER_API_KEY", "OPENAI_API_KEY"),
     host_configs=(HostConfigCopy(host_path="~/.openclaw", guest_path="/root/.openclaw"),),
     launch_command="openclaw",
+    no_env_hint=(
+        "No API key found. Set OPENROUTER_API_KEY or OPENAI_API_KEY on your"
+        " machine, or run 'openclaw onboard' inside the sandbox."
+    ),
 )

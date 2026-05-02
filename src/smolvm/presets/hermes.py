@@ -47,4 +47,8 @@ HERMES_PRESET = Preset(
     host_configs=(HostConfigCopy(host_path="~/.hermes", guest_path="/root/.hermes"),),
     default_disk_mib=10240,
     launch_command="hermes",
+    no_env_hint=(
+        "No API key found. Set OPENROUTER_API_KEY on your machine,"
+        " or run 'hermes setup' inside the sandbox."
+    ),
 )

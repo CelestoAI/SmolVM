@@ -131,3 +131,5 @@ class Preset:
     default_disk_mib: int = 8192
     launch_command: str | None = None
     """Guest command run when the user attaches after install — e.g. ``"codex"``."""
+    no_env_hint: str | None = None
+    """Shown after sandbox details when no ``host_env_vars`` were forwarded."""
