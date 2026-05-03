@@ -99,10 +99,6 @@ class TestLookup:
         with pytest.raises(ImageError, match=r"Available: \(none\)"):
             lookup("codex", "amd64", manifest={})
 
-    def test_error_mentions_local_build_fallback(self) -> None:
-        with pytest.raises(ImageError, match="smolvm dev build-image"):
-            lookup("codex", "amd64", manifest={})
-
     def test_default_manifest_used_when_not_overridden(self) -> None:
         # MANIFEST starts empty in this release; resolution should fail
         # with the helpful 'no published image' message rather than

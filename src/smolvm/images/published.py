@@ -84,9 +84,7 @@ def lookup(
     if entry is None:
         available = ", ".join(sorted(f"{p}/{a}" for (p, a) in catalog)) or "(none)"
         raise ImageError(
-            f"No published image for preset '{preset}' on arch '{arch}'. "
-            f"Available: {available}. To build locally instead, run "
-            f"'smolvm dev build-image {preset}'."
+            f"No published image for preset '{preset}' on arch '{arch}'. Available: {available}."
         )
     return entry
 
