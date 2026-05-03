@@ -323,19 +323,20 @@ RUN rm -f /etc/ssh/ssh_host_* && \
     sed -i 's/#PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config && \
     sed -i 's/#PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
 
-COPY authorized_keys /root/.ssh/authorized_keys
-RUN chmod 600 /root/.ssh/authorized_keys && chown -R root:root /root/.ssh
-
 COPY init /init
 RUN chmod +x /init
 """
 
+        # ssh_public_key is intentionally not in the fingerprint and not baked
+        # into the rootfs. Per-VM keys are injected via the kernel cmdline at
+        # boot (see VMConfig.ssh_public_key + /init parser), so two users with
+        # different keys can share one cached image.
+        _ = key_value
         fingerprint_data = self._fingerprint_with_content(
             {
                 "rootfs_size_mb": rootfs_size_mb,
                 "kernel_url": resolved_kernel_url,
                 "kernel_profile": kernel_profile.value,
-                "ssh_public_key": key_value,
             },
             dockerfile_content,
             init_script,
@@ -351,7 +352,7 @@ RUN chmod +x /init
             if not self.check_docker():
                 raise self.docker_requirement_error()
 
-            logger.info("SSH key or config changed for image '%s'. Rebuilding...", name)
+            logger.info("Inputs changed for image '%s'. Rebuilding...", name)
             # Remove stale files
             kernel_path.unlink(missing_ok=True)
             rootfs_path.unlink(missing_ok=True)
@@ -370,7 +371,6 @@ RUN chmod +x /init
                 kernel_path,
                 rootfs_path,
                 rootfs_size_mb,
-                extra_files={"authorized_keys": f"{key_value}\n"},
                 kernel_url=resolved_kernel_url,
                 fingerprint_data=fingerprint_data,
             )
@@ -438,19 +438,18 @@ RUN rm -f /etc/ssh/ssh_host_* && \\
     sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config && \\
     sed -ri 's/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
 
-COPY authorized_keys /root/.ssh/authorized_keys
-RUN chmod 600 /root/.ssh/authorized_keys && chown -R root:root /root/.ssh
-
 COPY init /init
 RUN chmod +x /init
 """
 
+        # ssh_public_key is intentionally not in the fingerprint and not baked
+        # into the rootfs — see VMConfig.ssh_public_key + /init parser.
+        _ = key_value
         fingerprint_data = self._fingerprint_with_content(
             {
                 "rootfs_size_mb": rootfs_size_mb,
                 "kernel_url": resolved_kernel_url,
                 "kernel_profile": kernel_profile.value,
-                "ssh_public_key": key_value,
                 "base_image": base_image,
             },
             dockerfile_content,
@@ -486,7 +485,6 @@ RUN chmod +x /init
                 kernel_path,
                 rootfs_path,
                 rootfs_size_mb,
-                extra_files={"authorized_keys": f"{key_value}\n"},
                 kernel_url=resolved_kernel_url,
                 fingerprint_data=fingerprint_data,
             )
@@ -794,9 +792,6 @@ RUN rm -f /etc/ssh/ssh_host_* && \\
     sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config && \\
     sed -ri 's/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
 
-COPY authorized_keys /root/.ssh/authorized_keys
-RUN chmod 600 /root/.ssh/authorized_keys && chown -R root:root /root/.ssh
-
 RUN mkdir -p \\
     /opt/smolvm-browser/profiles \\
     /opt/smolvm-browser/downloads \\
@@ -810,12 +805,14 @@ COPY init /init
 RUN chmod +x /init
 """
 
+        # ssh_public_key is intentionally not in the fingerprint and not baked
+        # into the rootfs — see VMConfig.ssh_public_key + /init parser.
+        _ = key_value
         fingerprint_data = self._fingerprint_with_content(
             {
                 "rootfs_size_mb": rootfs_size_mb,
                 "kernel_url": resolved_kernel_url,
                 "kernel_profile": kernel_profile.value,
-                "ssh_public_key": key_value,
                 "base_image": base_image,
                 "image_type": "browser-chromium-v3",
                 "_browser_session_sha256": hashlib.sha256(browser_session_sh.encode()).hexdigest(),
@@ -849,7 +846,6 @@ RUN chmod +x /init
                 rootfs_path,
                 rootfs_size_mb,
                 extra_files={
-                    "authorized_keys": f"{key_value}\n",
                     "smolvm-browser-session": browser_session_sh,
                     "smolvm-browser-wait-port": wait_port_py,
                 },
@@ -1021,10 +1017,6 @@ RUN rm -f /etc/ssh/ssh_host_* && \\
     sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config && \\
     echo "root:${{SSH_PASSWORD}}" | chpasswd
 
-# Inject authorized_keys if provided
-COPY authorized_keys /root/.ssh/authorized_keys
-RUN chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true
-
 # Prepare OpenClaw directories and workspace
 RUN useradd -m -s /bin/bash node 2>/dev/null || true && \\
     mkdir -p /opt/openclaw /home/node/.openclaw/devices /workspace && \\
@@ -1051,12 +1043,14 @@ COPY init /init
 RUN chmod +x /init
 """
 
+        # ssh_public_key is intentionally not in the fingerprint and not baked
+        # into the rootfs — see VMConfig.ssh_public_key + /init parser.
+        _ = key_value
         fingerprint_data = self._fingerprint_with_content(
             {
                 "rootfs_size_mb": rootfs_size_mb,
                 "kernel_url": kernel_url,
                 "ssh_password": ssh_password,
-                "ssh_public_key": key_value,
                 "extra_packages": extra_packages,
                 "_device_approver_sha256": hashlib.sha256(device_approver_py.encode()).hexdigest(),
                 "_watch_devices_sha256": hashlib.sha256(watch_devices_sh.encode()).hexdigest(),
@@ -1093,7 +1087,6 @@ RUN chmod +x /init
                     "device-approver.py": device_approver_py,
                     "watch-devices.sh": watch_devices_sh,
                     "systemctl": systemctl_proxy_sh,
-                    "authorized_keys": f"{key_value}\n" if key_value else "",
                 },
                 build_args={"SSH_PASSWORD": ssh_password},
                 kernel_url=kernel_url,

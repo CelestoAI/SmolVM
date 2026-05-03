@@ -153,6 +153,43 @@ def test_build_browser_vm_config_allocates_qemu_live_port_forwards(
     assert mock_allocate_host_port.call_count == 2
 
 
+@patch("smolvm.utils.ensure_ssh_key")
+@patch("smolvm.images.builder.ImageBuilder")
+def test_build_browser_vm_config_passes_pubkey_to_vmconfig(
+    mock_builder_cls: MagicMock,
+    mock_ensure_ssh_key: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """Browser VMConfig must carry the user's pubkey so /init injects it at boot.
+
+    Browser images no longer bake authorized_keys at build time
+    (see src/smolvm/images/builder.py build_browser_rootfs); the key is
+    delivered via the kernel cmdline, which only fires when ssh_public_key
+    is set on VMConfig.
+    """
+    kernel = tmp_path / "kernel"
+    rootfs = tmp_path / "rootfs.ext4"
+    private_key = tmp_path / "id_ed25519"
+    public_key = tmp_path / "id_ed25519.pub"
+    kernel.touch()
+    rootfs.touch()
+    private_key.touch()
+    pubkey_value = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKey user@test"
+    public_key.write_text(f"{pubkey_value}\n")
+
+    mock_ensure_ssh_key.return_value = (private_key, public_key)
+    mock_builder = MagicMock()
+    mock_builder.build_browser_rootfs.return_value = (kernel, rootfs)
+    mock_builder_cls.return_value = mock_builder
+
+    vm_config, _ = _build_browser_vm_config(
+        session_id="browser-key-test",
+        browser_config=BrowserSessionConfig(session_id="browser-key-test"),
+    )
+
+    assert vm_config.ssh_public_key == pubkey_value
+
+
 @patch("smolvm.browser.SmolVM")
 @patch("smolvm.browser._build_browser_vm_config")
 def test_browser_session_start_persists_ready_state(

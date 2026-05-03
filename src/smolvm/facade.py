@@ -316,9 +316,7 @@ def _resolve_auto_config_public_key(ssh_key_path: str | None) -> tuple[str, Path
     return ssh_key_path, public_key
 
 
-def _parse_mount_specs(
-    specs: list[str], *, writable: bool = False
-) -> list[WorkspaceMount]:
+def _parse_mount_specs(specs: list[str], *, writable: bool = False) -> list[WorkspaceMount]:
     """Parse ``HOST_PATH[:GUEST_PATH]`` strings into WorkspaceMount objects.
 
     If no guest path is given, the mount defaults to ``/workspace``
@@ -336,9 +334,7 @@ def _parse_mount_specs(
             host_str = spec
             guest_path = "/workspace" if len(specs) == 1 else f"/workspace-{index}"
         mounts.append(
-            WorkspaceMount(
-                host_path=Path(host_str), guest_path=guest_path, writable=writable
-            )
+            WorkspaceMount(host_path=Path(host_str), guest_path=guest_path, writable=writable)
         )
     return mounts
 
@@ -676,6 +672,7 @@ def _build_auto_config(
         rootfs_path=rootfs,
         boot_args=boot_args,
         backend=resolved_backend,
+        ssh_public_key=public_key_value,
     )
     logger.info(
         "Auto-configured VM: %s (os=%s, backend=%s)",
@@ -1069,11 +1066,7 @@ class SmolVM:
                 )
                 self._ssh_ready = True
             count = len(workspace_mounts)
-            notify(
-                "Mounting workspace..."
-                if count == 1
-                else f"Mounting {count} workspaces..."
-            )
+            notify("Mounting workspace..." if count == 1 else f"Mounting {count} workspaces...")
             self._mount_workspaces()
 
         return self
@@ -1266,9 +1259,7 @@ class SmolVM:
         """
         source = Path(local_path).expanduser()
         if not source.exists():
-            raise ValueError(
-                f"Local file not found: {source}. Check the path and try again."
-            )
+            raise ValueError(f"Local file not found: {source}. Check the path and try again.")
         if not source.is_file():
             raise ValueError(
                 f"Not a file: {source}. Pass a path to a single file, not a directory."
@@ -1289,9 +1280,7 @@ class SmolVM:
         if make_dirs:
             parent = _guest_parent_dir(destination)
             if parent:
-                result = ssh.run(
-                    f"mkdir -p -- {shlex.quote(parent)}", timeout=30, shell="raw"
-                )
+                result = ssh.run(f"mkdir -p -- {shlex.quote(parent)}", timeout=30, shell="raw")
                 if result.exit_code != 0:
                     stderr = result.stderr.strip()
                     raise SmolVMError(
@@ -2020,9 +2009,7 @@ class SmolVM:
 
         overlay_probe = " && modprobe overlay 2>/dev/null" if need_overlay else ""
         probe_script = (
-            "modprobe 9p 2>/dev/null && "
-            "modprobe 9pnet_virtio 2>/dev/null"
-            f"{overlay_probe}"
+            f"modprobe 9p 2>/dev/null && modprobe 9pnet_virtio 2>/dev/null{overlay_probe}"
         )
         probe = self._ssh.run(probe_script, timeout=15)
         if probe.exit_code == 0:

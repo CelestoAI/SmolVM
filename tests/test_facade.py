@@ -182,6 +182,48 @@ class TestVMInit:
     @patch("smolvm.facade.SmolVMManager")
     @patch("smolvm.images.builder.ImageBuilder")
     @patch("smolvm.utils.ensure_ssh_key")
+    @patch("smolvm.runtime.backends.platform.system", return_value="Linux")
+    def test_autoconfigure_passes_pubkey_to_vmconfig(
+        self,
+        _: MagicMock,
+        mock_ensure_ssh_key: MagicMock,
+        mock_builder_cls: MagicMock,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Auto-config VMConfig must carry the user's pubkey for /init to inject at boot.
+
+        Alpine/Debian SSH-key images no longer bake authorized_keys at build
+        time (see src/smolvm/images/builder.py); the key is delivered via the
+        kernel cmdline, which only fires when ssh_public_key is set.
+        """
+        kernel = tmp_path / "auto-kernel"
+        rootfs = tmp_path / "auto-rootfs.ext4"
+        private_key = tmp_path / "id_ed25519"
+        public_key = tmp_path / "id_ed25519.pub"
+        kernel.touch()
+        rootfs.touch()
+        private_key.touch()
+        pubkey_value = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKey user@test"
+        public_key.write_text(f"{pubkey_value}\n")
+
+        mock_ensure_ssh_key.return_value = (private_key, public_key)
+        mock_builder = MagicMock()
+        mock_builder.build_alpine_ssh_key.return_value = (kernel, rootfs)
+        mock_builder_cls.return_value = mock_builder
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        mock_sdk_cls.return_value = mock_sdk
+
+        SmolVM()
+
+        created_config = mock_sdk.create.call_args[0][0]
+        assert created_config.ssh_public_key == pubkey_value
+
+    @patch("smolvm.facade.SmolVMManager")
+    @patch("smolvm.images.builder.ImageBuilder")
+    @patch("smolvm.utils.ensure_ssh_key")
     def test_autoconfigure_with_debian_firecracker_uses_debian_builder(
         self,
         mock_ensure_ssh_key: MagicMock,

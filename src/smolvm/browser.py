@@ -152,6 +152,7 @@ def _build_browser_vm_config(
         retain_disk_on_delete=browser_config.profile_mode == "persistent",
         env_vars=browser_config.env_vars,
         port_forwards=port_forwards,
+        ssh_public_key=public_key.read_text().strip(),
     )
     return config, resolved_ssh_key_path
 
