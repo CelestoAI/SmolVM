@@ -82,7 +82,16 @@ jobs:
           preset = os.environ["PRESET"]
           builder = ImageBuilder()
           if preset == "openclaw":
-              kernel, rootfs = builder.build_openclaw_rootfs(name=f"{preset}-amd64")
+              # Default rootfs_size_mb=2048 doesn't fit the openclaw image
+              # content today (Node 22 + npm globals + apt deps overflow).
+              # 4096 MiB gives comfortable headroom; the published artifact
+              # is sparse and zstd-compresses well, so the wire size is
+              # unaffected. Default in build_openclaw_rootfs should
+              # probably be bumped too — tracked separately.
+              kernel, rootfs = builder.build_openclaw_rootfs(
+                  name=f"{preset}-amd64",
+                  rootfs_size_mb=4096,
+              )
           else:
               sys.exit(f"unknown preset: {preset}")
 
