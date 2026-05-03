@@ -1224,7 +1224,7 @@ log_ts "ssh-hostkey-check-done"
 # launching user's key without rebuilding the rootfs.
 log_ts "ssh-authkey-inject-start"
 AUTHKEY_B64=$(cat /proc/cmdline | tr ' ' '\n' \
-    | grep '^smolvm.authorized_key_b64=' | head -1 | cut -d= -f2-)
+    | grep '^smolvm\\.authorized_key_b64=' | head -1 | cut -d= -f2-)
 if [ -n "$AUTHKEY_B64" ]; then
     DECODED=$(echo "$AUTHKEY_B64" | base64 -d 2>/dev/null)
     if [ -n "$DECODED" ]; then
