@@ -161,8 +161,7 @@ def _create_progress_message(backend: str, guest_os: GuestOS) -> str:
             "(first run may download the kernel, initrd, and rootfs)..."
         )
     return (
-        f"Preparing {guest_os.value} operating system image "
-        "(first run may build or download it)..."
+        f"Preparing {guest_os.value} operating system image (first run may build or download it)..."
     )
 
 
@@ -449,8 +448,7 @@ def _add_preset_parsers(
                 action="store_true",
                 default=None,
                 help=(
-                    f"After install, ssh in and run `{preset.launch_command}` "
-                    "without prompting."
+                    f"After install, ssh in and run `{preset.launch_command}` without prompting."
                 ),
             )
             attach_group.add_argument(
@@ -668,9 +666,7 @@ def build_parser() -> argparse.ArgumentParser:
         "info",
         help="Show full details for a sandbox.",
     )
-    info_parser.add_argument(
-        "vm_id", metavar="sandbox", help="Name or ID of the sandbox."
-    )
+    info_parser.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
     info_parser.add_argument(
         "--json",
         action="store_true",
@@ -832,7 +828,9 @@ def build_parser() -> argparse.ArgumentParser:
         "restore",
         help="Restore a snapshot back into its original sandbox.",
     )
-    snapshot_restore.add_argument("snapshot_id", metavar="snapshot", help="Name or ID of the snapshot.")
+    snapshot_restore.add_argument(
+        "snapshot_id", metavar="snapshot", help="Name or ID of the snapshot."
+    )
     snapshot_restore.add_argument(
         "--resume",
         action="store_true",
@@ -853,7 +851,9 @@ def build_parser() -> argparse.ArgumentParser:
         "delete",
         help="Delete a snapshot and its files.",
     )
-    snapshot_delete.add_argument("snapshot_id", metavar="snapshot", help="Name or ID of the snapshot.")
+    snapshot_delete.add_argument(
+        "snapshot_id", metavar="snapshot", help="Name or ID of the snapshot."
+    )
     snapshot_delete.add_argument(
         "--json",
         action="store_true",
@@ -1037,13 +1037,17 @@ def build_parser() -> argparse.ArgumentParser:
         "open",
         help="Open a live browser session in your default browser.",
     )
-    browser_open.add_argument("session_id", metavar="session", help="Session ID (printed by 'browser start').")
+    browser_open.add_argument(
+        "session_id", metavar="session", help="Session ID (printed by 'browser start')."
+    )
 
     browser_logs = browser_sub.add_parser(
         "logs",
         help="Print browser session logs.",
     )
-    browser_logs.add_argument("session_id", metavar="session", help="Session ID (printed by 'browser start').")
+    browser_logs.add_argument(
+        "session_id", metavar="session", help="Session ID (printed by 'browser start')."
+    )
     browser_logs.add_argument(
         "--tail",
         type=int,
@@ -1463,11 +1467,7 @@ def _render_info_result(data: InfoPayload) -> None:
     else:
         memory_str = f"{vm_data['memory']} MiB"
 
-    disk_str = (
-        f"{vm_data['disk_size']} MiB"
-        if vm_data["disk_size"] is not None
-        else "-"
-    )
+    disk_str = f"{vm_data['disk_size']} MiB" if vm_data["disk_size"] is not None else "-"
 
     details = Table(title="VM Details", show_header=False)
     details.add_column("Field")
@@ -1590,9 +1590,7 @@ def _build_and_boot_with_progress(
 
         def on_download(label: str, chunk: int, total: int | None) -> None:
             if label not in download_tasks:
-                download_tasks[label] = progress.add_task(
-                    f"Downloading {label}", total=total
-                )
+                download_tasks[label] = progress.add_task(f"Downloading {label}", total=total)
             progress.update(download_tasks[label], advance=chunk)
 
         config, ssh_key_path = _build_fn(on_download)
@@ -1815,12 +1813,153 @@ def _render_start_result(data: StartPayload) -> None:
     console.print(f"Next: [bold]{next_step['ssh_command']}[/bold]")
 
 
+# Map preset name → boot args for the Firecracker published-image path. When
+# we add per-preset bake builders, the boot_args should move onto the Preset
+# itself; for now openclaw is the only published preset and this lookup
+# reflects that.
+_PUBLISHED_IMAGE_BOOT_ARGS = {
+    "openclaw": "reboot=k panic=1 pci=off init=/init 8250.nr_uarts=0",
+}
+
+
+def _published_path_enabled() -> bool:
+    """Opt-in switch for the published-image launch path.
+
+    Set ``SMOLVM_USE_PUBLISHED=1`` to bypass the install-at-boot flow and
+    download a pre-built rootfs from GitHub Releases instead. Default is
+    off — flipped on once the published flow has been smoke-tested
+    end-to-end (separate PR).
+    """
+    return os.environ.get("SMOLVM_USE_PUBLISHED", "").strip().lower() in {"1", "true", "yes"}
+
+
+def _host_arch_for_published() -> str:
+    """Host CPU architecture in the form the manifest uses (``amd64``/``arm64``)."""
+    machine = platform.machine().lower()
+    if machine in {"arm64", "aarch64"}:
+        return "arm64"
+    if machine in {"x86_64", "amd64"}:
+        return "amd64"
+    raise RuntimeError(
+        f"Unsupported host architecture for published images: {machine!r}. "
+        f"Set SMOLVM_USE_PUBLISHED=0 (or unset) to fall back to the local build."
+    )
+
+
+def _run_start_with_published_image(args: argparse.Namespace, preset: object) -> int:
+    """Launch a sandbox using a pre-built published image.
+
+    Bypasses the default install-at-boot flow:
+    - downloads the kernel + rootfs from GitHub Releases (cached at
+      ``~/.smolvm/images/<preset>-v<version>-<arch>/``)
+    - boots Firecracker (matching how images are built in CI)
+    - skips ``apply_preset`` since the preset's tools are already baked in
+    - injects the user's pubkey via the kernel cmdline so SSH works on
+      first boot
+
+    Falls back to a clean error message when the preset has no published
+    image yet (e.g. presets without bake builders).
+    """
+    from smolvm.exceptions import ImageError
+    from smolvm.facade import SmolVM, _resolve_vm_name
+    from smolvm.images.published import ensure_published_image
+    from smolvm.presets._types import Preset
+    from smolvm.types import VMConfig
+    from smolvm.utils import ensure_ssh_key
+
+    _preset: Preset = preset  # type: ignore[assignment]
+
+    if _preset.name not in _PUBLISHED_IMAGE_BOOT_ARGS:
+        return _emit_cli_error(
+            "start",
+            2,
+            ValueError(
+                f"Preset {_preset.name!r} has no boot_args configured for the "
+                f"published-image path. Unset SMOLVM_USE_PUBLISHED to use the "
+                f"default install-at-boot flow."
+            ),
+            json_output=args.json,
+        )
+
+    try:
+        arch = _host_arch_for_published()
+        private_key, public_key_path = ensure_ssh_key()
+        public_key_value = public_key_path.read_text().strip()
+
+        # Raises ImageError with a clear message if the (preset, arch) pair
+        # has no manifest entry — the manifest is bundled in published.py
+        # and starts empty until the auto-update PR populates it.
+        local_image = ensure_published_image(_preset.name, arch)  # type: ignore[arg-type]
+
+        config = VMConfig(
+            vm_id=_resolve_vm_name(args.name, prefix=_preset.name),
+            memory=args.memory_mib if args.memory_mib is not None else _preset.default_mem_mib,
+            kernel_path=local_image.kernel_path,
+            rootfs_path=local_image.rootfs_path,
+            boot_args=_PUBLISHED_IMAGE_BOOT_ARGS[_preset.name],
+            backend="firecracker",
+            ssh_public_key=public_key_value,
+        )
+
+        vm: SmolVM | None = None
+        try:
+            vm = SmolVM(
+                config,
+                ssh_key_path=str(private_key),
+                mounts=args.mounts,
+                writable_mounts=args.writable_mounts,
+            )
+            vm.start(boot_timeout=args.boot_timeout)
+            vm.wait_for_ssh(timeout=args.boot_timeout)
+
+            network = vm.info.network
+            data: StartPayload = {
+                "vm": {
+                    "name": vm.vm_id,
+                    "status": (
+                        vm.info.status.value
+                        if isinstance(vm.info.status, VMState)
+                        else VMState.RUNNING.value
+                    ),
+                    "os": "debian-bookworm",
+                    "backend": "firecracker",
+                    "ip_address": network.guest_ip if network else None,
+                    "ssh_port": network.ssh_host_port if network else None,
+                },
+                "preset": {
+                    "name": _preset.name,
+                    "copied_configs": [],
+                    "injected_env_keys": [],
+                    "no_env_hint": _preset.no_env_hint,
+                },
+                "next": {"ssh_command": f"smolvm ssh {vm.vm_id}"},
+            }
+            if args.json:
+                emit_json("start", 0, data=data)
+            else:
+                _render_start_result(data)
+
+            if not args.json and _preset.launch_command:
+                return _maybe_attach_and_launch(vm, _preset, attach=getattr(args, "attach", None))
+            return 0
+        finally:
+            if vm is not None:
+                vm.close()
+    except ImageError as exc:
+        return _emit_cli_error("start", 1, exc, json_output=args.json)
+    except Exception as exc:
+        return _emit_cli_error("start", 1, exc, json_output=args.json)
+
+
 def _run_start(args: argparse.Namespace) -> int:
     """Handle ``smolvm <preset> start``."""
     from smolvm.facade import SmolVM, _build_auto_config
     from smolvm.presets import apply_preset, get_preset
 
     preset = get_preset(args.preset_name)
+
+    if _published_path_enabled():
+        return _run_start_with_published_image(args, preset)
 
     backend = args.backend or "qemu"
     if backend != "qemu":
@@ -1829,9 +1968,7 @@ def _run_start(args: argparse.Namespace) -> int:
         return _emit_cli_error(
             "start",
             2,
-            ValueError(
-                f"Preset {preset.name!r} requires --backend qemu (got {backend!r})."
-            ),
+            ValueError(f"Preset {preset.name!r} requires --backend qemu (got {backend!r})."),
             json_output=args.json,
         )
 
@@ -1958,10 +2095,7 @@ def _maybe_attach_and_launch(
     if attach is None:
         if not sys.stdin.isatty():
             return 0
-        prompt = (
-            f"\nLaunch [bold]{_preset.launch_command}[/bold] in "
-            f"'{_vm.vm_id}' now? \\[Y/n] "
-        )
+        prompt = f"\nLaunch [bold]{_preset.launch_command}[/bold] in '{_vm.vm_id}' now? \\[Y/n] "
         try:
             console.print(prompt, end="")
             answer = input("").strip().lower()
@@ -1997,7 +2131,7 @@ def _exec_launch_command(vm: object, launch_command: str) -> int:
     # warning. SSH non-login shells skip /etc/profile, and Ubuntu's
     # default root PATH does not include ~/.local/bin.
     cmd.append(
-        f'[ -r {ENV_FILE} ] && . {ENV_FILE}; '
+        f"[ -r {ENV_FILE} ] && . {ENV_FILE}; "
         f'export PATH="$HOME/.local/bin:$PATH"; '
         f"exec {launch_command}"
     )
@@ -2488,8 +2622,7 @@ def _run_env(args: argparse.Namespace) -> int:
                         title="Environment Updated",
                         border_style="yellow",
                         message=(
-                            f"No matching variables found on '{args.vm_id}': "
-                            f"{', '.join(args.keys)}"
+                            f"No matching variables found on '{args.vm_id}': {', '.join(args.keys)}"
                         ),
                         rows=[],
                         show_reload_hint=False,
@@ -2497,10 +2630,7 @@ def _run_env(args: argparse.Namespace) -> int:
             return 0
 
         current = vm.list_env_vars()
-        variables = {
-            key: current[key] if args.show_values else "****"
-            for key in sorted(current)
-        }
+        variables = {key: current[key] if args.show_values else "****" for key in sorted(current)}
         data = {
             "vm_id": args.vm_id,
             "masked": not args.show_values,
@@ -2523,10 +2653,7 @@ def _render_file_upload(data: FileUploadPayload) -> None:
     console = console_stdout()
     console.print(
         Panel.fit(
-            (
-                f"Uploaded '{data['local_path']}' to '{data['guest_path']}' "
-                f"on '{data['vm_id']}'."
-            ),
+            (f"Uploaded '{data['local_path']}' to '{data['guest_path']}' on '{data['vm_id']}'."),
             title="File Uploaded",
             border_style="green",
         )
@@ -2591,16 +2718,12 @@ def _run_ssh(args: argparse.Namespace) -> int:
 
         console = console_stdout()
         if vm.status in {VMState.CREATED, VMState.STOPPED}:
-            with console.status(
-                f"Starting sandbox '{args.vm_id}'...", spinner="dots"
-            ) as status:
+            with console.status(f"Starting sandbox '{args.vm_id}'...", spinner="dots") as status:
                 vm.start(boot_timeout=args.boot_timeout)
                 status.update("Waiting for SSH...")
                 vm.wait_for_ssh(timeout=args.boot_timeout)
         elif vm.status == VMState.PAUSED:
-            with console.status(
-                f"Resuming sandbox '{args.vm_id}'...", spinner="dots"
-            ) as status:
+            with console.status(f"Resuming sandbox '{args.vm_id}'...", spinner="dots") as status:
                 vm.resume()
                 status.update("Waiting for SSH...")
                 vm.wait_for_ssh(timeout=args.boot_timeout)
@@ -2868,9 +2991,7 @@ def _run_browser(args: argparse.Namespace) -> int:
         try:
             session = BrowserSession.from_id(args.session_id)
             if session.live_url is None:
-                raise RuntimeError(
-                    f"Browser session '{args.session_id}' does not have a live_url."
-                )
+                raise RuntimeError(f"Browser session '{args.session_id}' does not have a live_url.")
             opened = session.open_live_view()
             if not opened:
                 print(f"Open this URL manually: {session.live_url}")

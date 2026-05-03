@@ -427,9 +427,7 @@ class TestCliFile:
         vm.upload_file.return_value = "/tmp/note.txt"
         mock_vm_cls.from_id.return_value = vm
 
-        ret = main(
-            ["file", "upload", "vm001", str(source), "/tmp/note.txt", "--no-create-dirs"]
-        )
+        ret = main(["file", "upload", "vm001", str(source), "/tmp/note.txt", "--no-create-dirs"])
 
         assert ret == 0
         vm.upload_file.assert_called_once_with(
@@ -818,13 +816,19 @@ class TestCliCreateImage:
     def test_image_with_name_and_memory(self) -> None:
         """--image should work alongside --name, --memory, and --disk-size."""
         parser = build_parser()
-        args = parser.parse_args([
-            "create",
-            "--image", "s3://bucket/img/",
-            "--name", "my-vm",
-            "--memory", "1024",
-            "--disk-size", "2048",
-        ])
+        args = parser.parse_args(
+            [
+                "create",
+                "--image",
+                "s3://bucket/img/",
+                "--name",
+                "my-vm",
+                "--memory",
+                "1024",
+                "--disk-size",
+                "2048",
+            ]
+        )
         assert args.image == "s3://bucket/img/"
         assert args.name == "my-vm"
         assert args.memory_mib == 1024
@@ -835,11 +839,15 @@ class TestCliCreateImage:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """--disk-size has no effect on prebuilt S3 images and must be rejected."""
-        ret = main([
-            "create",
-            "--image", "s3://bucket/img/",
-            "--disk-size", "8192",
-        ])
+        ret = main(
+            [
+                "create",
+                "--image",
+                "s3://bucket/img/",
+                "--disk-size",
+                "8192",
+            ]
+        )
 
         assert ret == 1
         err = capsys.readouterr().err
@@ -1515,9 +1523,7 @@ class TestCliBrowser:
         assert payload["data"]["cdp_url"] == "http://127.0.0.1:39222"
 
     @patch("smolvm.browser.BrowserSession")
-    def test_browser_start_live_shortcut(
-        self, mock_browser_cls: MagicMock
-    ) -> None:
+    def test_browser_start_live_shortcut(self, mock_browser_cls: MagicMock) -> None:
         """`smolvm browser start --live` should map to live mode."""
         session = MagicMock()
         session.session_id = "browser-abc123"
@@ -2268,9 +2274,7 @@ class TestCliStart:
         vm.info.network.ssh_host_port = 2200
         return vm
 
-    def test_top_level_help_lists_known_presets(
-        self, capsys: pytest.CaptureFixture
-    ) -> None:
+    def test_top_level_help_lists_known_presets(self, capsys: pytest.CaptureFixture) -> None:
         """`smolvm --help` should list every registered preset as a top-level command."""
         with pytest.raises(SystemExit):
             main(["--help"])
@@ -2278,9 +2282,7 @@ class TestCliStart:
         assert "codex" in out
         assert "claude-code" in out
 
-    def test_preset_help_lists_start_action(
-        self, capsys: pytest.CaptureFixture
-    ) -> None:
+    def test_preset_help_lists_start_action(self, capsys: pytest.CaptureFixture) -> None:
         """`smolvm codex --help` should list the `start` action."""
         with pytest.raises(SystemExit):
             main(["codex", "--help"])
@@ -2295,9 +2297,7 @@ class TestCliStart:
         # argparse produces "invalid choice" for unknown subcommand
         assert "invalid choice" in err or "argument command" in err
 
-    def test_launch_snippet_runs_when_env_file_missing(
-        self, tmp_path: Path
-    ) -> None:
+    def test_launch_snippet_runs_when_env_file_missing(self, tmp_path: Path) -> None:
         """The remote command built by `_exec_launch_command` must exec the
         harness even when /etc/profile.d/smolvm_env.sh does not exist —
         regression for claude-code with subscription auth where no
@@ -2332,9 +2332,7 @@ class TestCliStart:
         # The snippet calls `exec claude`; for the runtime check we
         # substitute a benign command we can verify ran.
         snippet = remote.replace("exec claude", "echo LAUNCHED")
-        snippet = snippet.replace(
-            "/etc/profile.d/smolvm_env.sh", str(missing_env_file)
-        )
+        snippet = snippet.replace("/etc/profile.d/smolvm_env.sh", str(missing_env_file))
         completed = subprocess.run(
             ["bash", "-c", snippet], capture_output=True, text=True, check=False
         )
@@ -2342,9 +2340,7 @@ class TestCliStart:
         assert "LAUNCHED" in completed.stdout
         assert "No such file" not in completed.stderr
 
-    def test_launch_snippet_prepends_local_bin_to_path(
-        self, tmp_path: Path
-    ) -> None:
+    def test_launch_snippet_prepends_local_bin_to_path(self, tmp_path: Path) -> None:
         """The launch snippet must prepend ``~/.local/bin`` to PATH so a
         harness that self-installed there (claude-code's npm postinstall
         migrates to ``~/.local/bin/claude``) is found by the non-login
@@ -2380,9 +2376,7 @@ class TestCliStart:
 
         missing_env_file = tmp_path / "missing.sh"
         snippet = remote.replace("exec claude", "command -v claude")
-        snippet = snippet.replace(
-            "/etc/profile.d/smolvm_env.sh", str(missing_env_file)
-        )
+        snippet = snippet.replace("/etc/profile.d/smolvm_env.sh", str(missing_env_file))
         completed = subprocess.run(
             ["bash", "-c", snippet],
             capture_output=True,
@@ -2406,9 +2400,7 @@ class TestCliStart:
         assert args.command == "claude"
         assert args.preset_name == "claude-code"
 
-    def test_top_level_help_lists_claude_alias(
-        self, capsys: pytest.CaptureFixture
-    ) -> None:
+    def test_top_level_help_lists_claude_alias(self, capsys: pytest.CaptureFixture) -> None:
         """The alias should appear in the top-level help so the
         shorthand is discoverable, not a hidden trick."""
         import re
@@ -2602,9 +2594,7 @@ class TestCliStart:
             "exec must chain with ';' not '&&' so a missing env file does "
             f"not abort the launch — got {remote!r}"
         )
-        assert "[ -r " in remote, (
-            "env file source must be guarded with a file-existence check"
-        )
+        assert "[ -r " in remote, "env file source must be guarded with a file-existence check"
 
     @patch("smolvm.cli.main.subprocess.run")
     @patch("smolvm.cli.main._apply_preset_with_progress")
@@ -2728,3 +2718,168 @@ class TestCliStart:
 
         assert ret == 0
         mock_subprocess_run.assert_not_called()
+
+
+class TestPublishedImageLaunchPath:
+    """Tests for the SMOLVM_USE_PUBLISHED opt-in launch path.
+
+    When set, ``smolvm <preset> start`` skips the install-at-boot flow
+    (build alpine_ssh_key + apply_preset) and instead downloads a
+    pre-built rootfs from GitHub Releases via ensure_published_image,
+    then boots Firecracker directly. Tooling assumed to be preinstalled
+    in the image.
+    """
+
+    def test_env_helper_default_off(self) -> None:
+        from smolvm.cli.main import _published_path_enabled
+
+        # Use monkeypatch-style explicit cleanup so this test is hermetic.
+        prev = os.environ.pop("SMOLVM_USE_PUBLISHED", None)
+        try:
+            assert _published_path_enabled() is False
+        finally:
+            if prev is not None:
+                os.environ["SMOLVM_USE_PUBLISHED"] = prev
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("1", True),
+            ("true", True),
+            ("TRUE", True),
+            ("yes", True),
+            ("YES", True),
+            ("0", False),
+            ("false", False),
+            ("no", False),
+            ("", False),
+        ],
+    )
+    def test_env_helper_parses_truthy(self, value: str, expected: bool) -> None:
+        from smolvm.cli.main import _published_path_enabled
+
+        prev = os.environ.get("SMOLVM_USE_PUBLISHED")
+        try:
+            os.environ["SMOLVM_USE_PUBLISHED"] = value
+            assert _published_path_enabled() is expected
+        finally:
+            if prev is None:
+                os.environ.pop("SMOLVM_USE_PUBLISHED", None)
+            else:
+                os.environ["SMOLVM_USE_PUBLISHED"] = prev
+
+    @patch("smolvm.cli.main.platform.machine")
+    def test_arch_helper_normalizes(self, mock_machine: MagicMock) -> None:
+        from smolvm.cli.main import _host_arch_for_published
+
+        for raw, expected in [
+            ("x86_64", "amd64"),
+            ("amd64", "amd64"),
+            ("AMD64", "amd64"),
+            ("arm64", "arm64"),
+            ("aarch64", "arm64"),
+            ("ARM64", "arm64"),
+        ]:
+            mock_machine.return_value = raw
+            assert _host_arch_for_published() == expected, raw
+
+    @patch("smolvm.cli.main.platform.machine", return_value="riscv64")
+    def test_arch_helper_rejects_unsupported(self, _mock_machine: MagicMock) -> None:
+        from smolvm.cli.main import _host_arch_for_published
+
+        with pytest.raises(RuntimeError, match="Unsupported host architecture"):
+            _host_arch_for_published()
+
+    @patch.dict(os.environ, {"SMOLVM_USE_PUBLISHED": "1"})
+    @patch("smolvm.cli.main._run_start_with_published_image")
+    def test_start_routes_to_published_path_when_env_set(
+        self,
+        mock_published_path: MagicMock,
+    ) -> None:
+        """SMOLVM_USE_PUBLISHED=1 must short-circuit before the legacy path."""
+        mock_published_path.return_value = 0
+
+        ret = main(["openclaw", "start", "--json"])
+
+        assert ret == 0
+        mock_published_path.assert_called_once()
+        # First positional is args, second is the resolved preset.
+        called_args = mock_published_path.call_args[0]
+        assert called_args[1].name == "openclaw"
+
+    @patch.dict(os.environ, {"SMOLVM_USE_PUBLISHED": "1"})
+    @patch("smolvm.images.published.ensure_published_image")
+    def test_published_path_surfaces_missing_manifest_error(
+        self,
+        mock_ensure: MagicMock,
+    ) -> None:
+        """An empty manifest entry should produce a clean CLI error, not a crash."""
+        from smolvm.exceptions import ImageError
+
+        mock_ensure.side_effect = ImageError(
+            "No published image for preset 'openclaw' on arch 'amd64' (available: (none))."
+        )
+
+        ret = main(["openclaw", "start", "--json"])
+
+        assert ret == 1
+        mock_ensure.assert_called_once()
+
+    @patch.dict(os.environ, {"SMOLVM_USE_PUBLISHED": "1"})
+    @patch("smolvm.cli.main.subprocess.run")
+    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.utils.ensure_ssh_key")
+    @patch("smolvm.images.published.ensure_published_image")
+    @patch("smolvm.cli.main.platform.machine", return_value="x86_64")
+    def test_published_path_happy_path_skips_apply_preset(
+        self,
+        _mock_machine: MagicMock,
+        mock_ensure_image: MagicMock,
+        mock_ensure_ssh_key: MagicMock,
+        mock_vm_cls: MagicMock,
+        _mock_subprocess: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """End-to-end: download → VMConfig → start, no apply_preset call."""
+        from smolvm.images.manager import LocalImage
+
+        kernel = tmp_path / "vmlinux.bin"
+        rootfs = tmp_path / "rootfs.ext4"
+        priv = tmp_path / "id_ed25519"
+        pub = tmp_path / "id_ed25519.pub"
+        kernel.touch()
+        rootfs.touch()
+        priv.touch()
+        pub.write_text("ssh-ed25519 AAAAExampleKey user@host\n")
+
+        mock_ensure_image.return_value = LocalImage(
+            name="openclaw-v0.0.13-amd64",
+            kernel_path=kernel,
+            rootfs_path=rootfs,
+        )
+        mock_ensure_ssh_key.return_value = (priv, pub)
+        mock_vm = MagicMock()
+        mock_vm.vm_id = "sbx-published-1"
+        mock_vm.info.status = VMState.RUNNING
+        mock_vm.info.config.backend = "firecracker"
+        mock_vm.info.network = MagicMock(spec=NetworkConfig)
+        mock_vm.info.network.guest_ip = "172.16.0.2"
+        mock_vm.info.network.ssh_host_port = 2200
+        mock_vm_cls.return_value = mock_vm
+
+        # If apply_preset gets called, this test should fail loudly.
+        with patch("smolvm.presets.apply_preset") as mock_apply:
+            ret = main(["openclaw", "start", "--json"])
+
+            mock_apply.assert_not_called()
+
+        assert ret == 0
+        mock_ensure_image.assert_called_once_with("openclaw", "amd64")
+
+        # Verify VMConfig was built with the right wiring.
+        config_arg = mock_vm_cls.call_args[0][0]
+        assert config_arg.kernel_path == kernel
+        assert config_arg.rootfs_path == rootfs
+        assert config_arg.backend == "firecracker"
+        assert config_arg.ssh_public_key == "ssh-ed25519 AAAAExampleKey user@host"
+        assert "init=/init" in config_arg.boot_args
