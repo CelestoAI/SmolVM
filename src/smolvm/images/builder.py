@@ -234,9 +234,9 @@ RUN apk add --no-cache \\
     curl \\
     bash
 
-# Configure SSH
-RUN ssh-keygen -A && \\
-    sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \\
+# Configure SSH (host keys are generated at first boot in /init, not here,
+# so each VM gets a unique SSH identity — required for safely sharing images.)
+RUN sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \\
     sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config && \\
     echo "root:${SSH_PASSWORD}" | chpasswd
 
@@ -336,8 +336,8 @@ RUN apk add --no-cache \
     curl \
     bash
 
-RUN ssh-keygen -A && \
-    mkdir -p /root/.ssh && chmod 700 /root/.ssh && \
+# Host keys generated at first boot in /init, not here, so each VM has unique identity.
+RUN mkdir -p /root/.ssh && chmod 700 /root/.ssh && \
     sed -i 's/#PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config && \
     sed -i 's/#PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config && \
     sed -i 's/#PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
@@ -446,8 +446,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     ca-certificates \\
     && rm -rf /var/lib/apt/lists/*
 
-RUN ssh-keygen -A && \\
-    mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh && \\
+# Host keys generated at first boot in /init, not here, so each VM has unique identity.
+RUN mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh && \\
     sed -ri 's/^#?PermitRootLogin .*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config && \\
     sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config && \\
     sed -ri 's/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
@@ -791,8 +791,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     tar \\
     && rm -rf /var/lib/apt/lists/*
 
-RUN ssh-keygen -A && \\
-    mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh && \\
+# Host keys generated at first boot in /init, not here, so each VM has unique identity.
+RUN mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh && \\
     sed -ri 's/^#?PermitRootLogin .*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config && \\
     sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config && \\
     sed -ri 's/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
@@ -1009,8 +1009,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     {packages_str} \\
     && rm -rf /var/lib/apt/lists/*
 
-RUN ssh-keygen -A && \\
-    mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh && \\
+# Host keys generated at first boot in /init, not here, so each VM has unique identity.
+RUN mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh && \\
     sed -ri 's/^#?PermitRootLogin .*/PermitRootLogin yes/' /etc/ssh/sshd_config && \\
     sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config && \\
     echo "root:${{SSH_PASSWORD}}" | chpasswd
