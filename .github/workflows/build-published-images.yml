@@ -1,0 +1,114 @@
+# Build a SmolVM preset image in CI and upload it as a GitHub Actions artifact.
+#
+# This is the proof-of-pipeline workflow — it validates that ImageBuilder can
+# run inside a GH Actions runner end-to-end (Docker available, ext4 build via
+# the docker fallback path since the loopfs helper isn't installed, no privileges
+# beyond what ubuntu-latest grants by default). Future PRs add: matrix expansion
+# (preset × arch), GH Releases upload (instead of artifacts), cosign keyless
+# signing, and an auto-generated PR that populates the bundled MANIFEST.
+#
+# Manual trigger only for now. Artifacts expire after 7 days so we don't burn
+# storage on experiments.
+
+name: Build Published Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      preset:
+        description: "Preset to build"
+        type: choice
+        default: openclaw
+        options:
+          - openclaw
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ hashFiles('Cargo.toml', 'smolvm-core/Cargo.toml') }}
+          restore-keys: rust-${{ runner.os }}-
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Confirm Docker is available
+        run: |
+          docker --version
+          docker info >/dev/null
+
+      - name: Build image
+        id: build
+        env:
+          PRESET: ${{ inputs.preset }}
+        run: |
+          # Calls the existing builder method directly. No SSH key is provided —
+          # published images don't bake authorized_keys (see PR #232); the user's
+          # key is injected at boot via the kernel cmdline.
+          uv run python <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+          from smolvm.images.builder import ImageBuilder
+
+          preset = os.environ["PRESET"]
+          builder = ImageBuilder()
+          if preset == "openclaw":
+              kernel, rootfs = builder.build_openclaw_rootfs(name=f"{preset}-amd64")
+          else:
+              sys.exit(f"unknown preset: {preset}")
+
+          # Emit the artifact paths so the next step can find them.
+          out = Path(os.environ["GITHUB_OUTPUT"])
+          out.write_text(
+              f"kernel_path={kernel}\nrootfs_path={rootfs}\n",
+              encoding="utf-8",
+          )
+          print(f"kernel: {kernel} ({kernel.stat().st_size:,} bytes)")
+          print(f"rootfs: {rootfs} ({rootfs.stat().st_size:,} bytes)")
+          PY
+
+      - name: Compress rootfs
+        run: |
+          # zstd is preinstalled on ubuntu-latest. Compresses the sparse ext4
+          # to ~30-50% of its used size, which matters once we ship via Releases.
+          zstd -19 -T0 --rm -o rootfs.ext4.zst "${{ steps.build.outputs.rootfs_path }}"
+          ls -lh rootfs.ext4.zst "${{ steps.build.outputs.kernel_path }}"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.preset }}-amd64
+          path: |
+            ${{ steps.build.outputs.kernel_path }}
+            rootfs.ext4.zst
+          retention-days: 7
+          if-no-files-found: error
