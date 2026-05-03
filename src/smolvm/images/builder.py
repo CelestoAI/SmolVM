@@ -867,10 +867,6 @@ RUN chmod +x /init
     def build_openclaw_rootfs(
         self,
         name: str = "openclaw",
-        # Kept for backward compatibility with existing callers; ignored.
-        # The image is now key-only (PasswordAuthentication no) so published
-        # rootfs files cannot be exploited via the previous default password.
-        ssh_password: str = "smolvm",
         ssh_public_key: str | Path | None = None,
         rootfs_size_mb: int = 2048,
         kernel_url: str | None = None,
@@ -891,9 +887,6 @@ RUN chmod +x /init
 
         Args:
             name: Image name for caching.
-            ssh_password: Deprecated and ignored; kept for backward compatibility.
-                The image is key-only — pubkeys are injected per-VM via the
-                kernel cmdline at boot.
             ssh_public_key: Public key content or path to a public key file.
             rootfs_size_mb: Size of rootfs in MB (default: 2048).
             kernel_url: Optional kernel URL override.
