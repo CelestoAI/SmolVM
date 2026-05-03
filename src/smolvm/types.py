@@ -304,6 +304,12 @@ class VMConfig(BaseModel):
         env_vars: Environment variables to inject into the guest
             after boot via SSH. Keys must be valid shell identifiers.
         port_forwards: Optional host TCP forwards configured at VM launch.
+        ssh_public_key: Optional OpenSSH public key (one-line ``authorized_keys``
+            format) to install in the guest's ``/root/.ssh/authorized_keys`` at
+            first boot. Passed via the kernel command line as
+            ``smolvm.authorized_key_b64=<base64>`` and read by ``/init``. Use
+            this for published pre-built images that don't bake keys at build
+            time, so each VM gets the launching user's key without rebuilding.
     """
 
     vm_id: Annotated[
@@ -331,6 +337,7 @@ class VMConfig(BaseModel):
     vsock: VsockConfig | None = None
     internet_settings: InternetSettings | None = None
     workspace_mounts: list[WorkspaceMount] = []
+    ssh_public_key: str | None = None
 
     @field_validator("vm_id", mode="before")
     @classmethod

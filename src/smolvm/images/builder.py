@@ -1218,6 +1218,27 @@ if ! ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1; then
 fi
 log_ts "ssh-hostkey-check-done"
 
+# Pull authorized_keys from the kernel cmdline if the host injected one.
+# Format: smolvm.authorized_key_b64=<base64-of-the-pubkey-line>. Used for
+# published images that don't bake keys at build time, so each VM gets the
+# launching user's key without rebuilding the rootfs.
+log_ts "ssh-authkey-inject-start"
+AUTHKEY_B64=$(cat /proc/cmdline | tr ' ' '\n' \
+    | grep '^smolvm.authorized_key_b64=' | head -1 | cut -d= -f2-)
+if [ -n "$AUTHKEY_B64" ]; then
+    DECODED=$(echo "$AUTHKEY_B64" | base64 -d 2>/dev/null)
+    if [ -n "$DECODED" ]; then
+        mkdir -p /root/.ssh
+        chmod 700 /root/.ssh
+        echo "$DECODED" > /root/.ssh/authorized_keys
+        chmod 600 /root/.ssh/authorized_keys
+        echo "SmolVM init: installed authorized_keys from cmdline"
+    else
+        echo "SmolVM init: smolvm.authorized_key_b64 present but failed to decode"
+    fi
+fi
+log_ts "ssh-authkey-inject-done"
+
 log_ts "sshd-start"
 /usr/sbin/sshd -e
 log_ts "sshd-invoked"

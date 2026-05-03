@@ -29,7 +29,7 @@ from smolvm.exceptions import (
     VMAlreadyExistsError,
     VMNotFoundError,
 )
-from smolvm.types import VMConfig, VMState
+from smolvm.types import VMConfig, VMInfo, VMState
 from smolvm.vm import SmolVMManager
 
 
@@ -864,3 +864,98 @@ class TestProcessLifecycle:
 
         assert process.poll() is not None
         assert process.pid not in smol_vm._process_handles
+
+
+class TestResolveBootArgs:
+    """Tests for boot-args resolution, including SSH-key cmdline injection.
+
+    Published images don't bake authorized_keys at build time. The launching
+    user's pubkey is injected via the kernel cmdline as a base64-encoded
+    ``smolvm.authorized_key_b64`` param, which the guest's ``/init`` decodes
+    and writes to ``/root/.ssh/authorized_keys`` before sshd starts.
+    """
+
+    _ED25519_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBxampleKeyForTestingOnly user@host"
+
+    def _vm_info(
+        self,
+        smol_vm: SmolVMManager,
+        sample_config: VMConfig,
+        *,
+        ssh_public_key: str | None = None,
+        boot_args: str | None = None,
+    ) -> VMInfo:
+        config_updates: dict[str, object] = {}
+        if ssh_public_key is not None:
+            config_updates["ssh_public_key"] = ssh_public_key
+        if boot_args is not None:
+            config_updates["boot_args"] = boot_args
+        if config_updates:
+            config = sample_config.model_copy(update=config_updates)
+        else:
+            config = sample_config
+        return VMInfo(vm_id=config.vm_id, status=VMState.STOPPED, config=config)
+
+    def test_no_key_means_no_cmdline_injection(
+        self, smol_vm: SmolVMManager, sample_config: VMConfig
+    ) -> None:
+        info = self._vm_info(smol_vm, sample_config)
+        assert "smolvm.authorized_key_b64=" not in smol_vm._resolve_boot_args(info)
+
+    def test_key_is_base64_encoded_into_cmdline(
+        self, smol_vm: SmolVMManager, sample_config: VMConfig
+    ) -> None:
+        import base64
+
+        info = self._vm_info(smol_vm, sample_config, ssh_public_key=self._ED25519_KEY)
+        args = smol_vm._resolve_boot_args(info)
+
+        token = next(
+            (p for p in args.split() if p.startswith("smolvm.authorized_key_b64=")),
+            None,
+        )
+        assert token is not None, args
+        encoded = token.split("=", 1)[1]
+        # Base64 is space-free — that's the whole point. Round-trip must match.
+        assert " " not in encoded
+        decoded = base64.b64decode(encoded).decode("utf-8")
+        assert decoded == self._ED25519_KEY
+
+    def test_key_in_existing_boot_args_is_not_duplicated(
+        self, smol_vm: SmolVMManager, sample_config: VMConfig
+    ) -> None:
+        info = self._vm_info(
+            smol_vm,
+            sample_config,
+            ssh_public_key=self._ED25519_KEY,
+            boot_args="console=ttyS0 smolvm.authorized_key_b64=PRESET",
+        )
+        args = smol_vm._resolve_boot_args(info)
+        tokens = [p for p in args.split() if p.startswith("smolvm.authorized_key_b64=")]
+        assert tokens == ["smolvm.authorized_key_b64=PRESET"]
+
+    def test_key_strip_whitespace_before_encoding(
+        self, smol_vm: SmolVMManager, sample_config: VMConfig
+    ) -> None:
+        """Trailing newlines from key files shouldn't end up in the encoded token."""
+        import base64
+
+        info = self._vm_info(smol_vm, sample_config, ssh_public_key=f"  {self._ED25519_KEY}\n\n")
+        args = smol_vm._resolve_boot_args(info)
+
+        token = next(p for p in args.split() if p.startswith("smolvm.authorized_key_b64="))
+        decoded = base64.b64decode(token.split("=", 1)[1]).decode("utf-8")
+        assert decoded == self._ED25519_KEY
+
+    def test_init_script_parses_authorized_key_cmdline(self) -> None:
+        """The /init script must contain the parser block — keep host + guest in sync."""
+        from smolvm.images.builder import ImageBuilder
+
+        script = ImageBuilder()._default_init_script()
+        assert "smolvm.authorized_key_b64=" in script
+        assert "base64 -d" in script
+        assert "/root/.ssh/authorized_keys" in script
+        # Parser must run BEFORE sshd starts, otherwise the new key isn't picked up.
+        authkey_at = script.find("ssh-authkey-inject-start")
+        sshd_at = script.find("sshd-start")
+        assert 0 <= authkey_at < sshd_at, "key install must precede sshd start"

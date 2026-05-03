@@ -20,6 +20,7 @@ Orchestrates VM lifecycle, networking, and state management across runtimes.
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import os
 import platform
@@ -1614,10 +1615,7 @@ class SmolVMManager:
             tag = ws.resolved_tag(index)
             fsdev_id = f"fsdev-{tag}"
             workspace_fsdev_ids.append((fsdev_id, tag))
-            fsdev_opts = (
-                f"local,id={fsdev_id},path={ws.host_path},"
-                f"security_model=mapped-xattr"
-            )
+            fsdev_opts = f"local,id={fsdev_id},path={ws.host_path},security_model=mapped-xattr"
             if not ws.writable:
                 fsdev_opts += ",readonly=on"
             cmd.extend(["-fsdev", fsdev_opts])
@@ -1926,7 +1924,7 @@ class SmolVMManager:
                     fh.close()
 
     def _resolve_boot_args(self, vm_info: VMInfo) -> str:
-        """Resolve final boot args, injecting static IP config when absent."""
+        """Resolve final boot args, injecting static IP config and SSH key when absent."""
         args = vm_info.config.boot_args.strip()
         parts = args.split()
 
@@ -1937,6 +1935,18 @@ class SmolVMManager:
             if not any(part.startswith("root=") for part in parts):
                 parts.extend(["root=/dev/vda", "rw"])
             args = " ".join(parts).strip()
+            parts = args.split()
+
+        ssh_public_key = vm_info.config.ssh_public_key
+        if ssh_public_key and not any(
+            part.startswith("smolvm.authorized_key_b64=") for part in parts
+        ):
+            # Base64-encode so the value is a single space-free token — SSH
+            # public keys contain spaces ("ssh-ed25519 AAAA... user@host") that
+            # would otherwise split into separate cmdline params.
+            encoded = base64.b64encode(ssh_public_key.strip().encode("utf-8")).decode("ascii")
+            args = f"{args} smolvm.authorized_key_b64={encoded}".strip()
+            parts = args.split()
 
         if vm_info.network is None:
             return args
