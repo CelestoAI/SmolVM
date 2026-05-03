@@ -234,9 +234,12 @@ RUN apk add --no-cache \\
     curl \\
     bash
 
-# Configure SSH (host keys are generated at first boot in /init, not here,
-# so each VM gets a unique SSH identity — required for safely sharing images.)
-RUN sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \\
+# Configure SSH. Host keys are generated at first boot in /init, not here,
+# so each VM gets a unique SSH identity — required for safely sharing images.
+# The 'rm -f' purges any keys planted by the openssh package install (e.g.
+# Debian's openssh-server postinst runs ssh-keygen -A automatically).
+RUN rm -f /etc/ssh/ssh_host_* && \\
+    sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \\
     sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config && \\
     echo "root:${SSH_PASSWORD}" | chpasswd
 
@@ -336,8 +339,10 @@ RUN apk add --no-cache \
     curl \
     bash
 
-# Host keys generated at first boot in /init, not here, so each VM has unique identity.
-RUN mkdir -p /root/.ssh && chmod 700 /root/.ssh && \
+# Host keys generated at first boot in /init so each VM has unique identity.
+# 'rm -f' purges keys planted by the openssh install postinst.
+RUN rm -f /etc/ssh/ssh_host_* && \
+    mkdir -p /root/.ssh && chmod 700 /root/.ssh && \
     sed -i 's/#PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config && \
     sed -i 's/#PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config && \
     sed -i 's/#PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
@@ -446,8 +451,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     ca-certificates \\
     && rm -rf /var/lib/apt/lists/*
 
-# Host keys generated at first boot in /init, not here, so each VM has unique identity.
-RUN mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh && \\
+# Host keys generated at first boot in /init so each VM has unique identity.
+# 'rm -f' purges keys planted by the openssh-server postinst on Debian.
+RUN rm -f /etc/ssh/ssh_host_* && \\
+    mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh && \\
     sed -ri 's/^#?PermitRootLogin .*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config && \\
     sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config && \\
     sed -ri 's/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
@@ -791,8 +798,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     tar \\
     && rm -rf /var/lib/apt/lists/*
 
-# Host keys generated at first boot in /init, not here, so each VM has unique identity.
-RUN mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh && \\
+# Host keys generated at first boot in /init so each VM has unique identity.
+# 'rm -f' purges keys planted by the openssh-server postinst on Debian.
+RUN rm -f /etc/ssh/ssh_host_* && \\
+    mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh && \\
     sed -ri 's/^#?PermitRootLogin .*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config && \\
     sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config && \\
     sed -ri 's/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
@@ -1009,8 +1018,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     {packages_str} \\
     && rm -rf /var/lib/apt/lists/*
 
-# Host keys generated at first boot in /init, not here, so each VM has unique identity.
-RUN mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh && \\
+# Host keys generated at first boot in /init so each VM has unique identity.
+# 'rm -f' purges keys planted by the openssh-server postinst on Debian.
+RUN rm -f /etc/ssh/ssh_host_* && \\
+    mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh && \\
     sed -ri 's/^#?PermitRootLogin .*/PermitRootLogin yes/' /etc/ssh/sshd_config && \\
     sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config && \\
     echo "root:${{SSH_PASSWORD}}" | chpasswd
