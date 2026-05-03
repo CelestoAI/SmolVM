@@ -196,28 +196,7 @@ class ImageBuilder:
         kernel_path = image_dir / "vmlinux.bin"
         rootfs_path = image_dir / "rootfs.ext4"
 
-        # Check fingerprint cache
         resolved_kernel_url = self._resolve_kernel_url(kernel_profile, kernel_url)
-
-        fingerprint_data = {
-            "rootfs_size_mb": rootfs_size_mb,
-            "kernel_url": resolved_kernel_url,
-            "kernel_profile": kernel_profile.value,
-            "ssh_password": ssh_password,
-        }
-        if (
-            kernel_path.exists()
-            and rootfs_path.exists()
-            and self._check_fingerprint(image_dir, fingerprint_data)
-        ):
-            logger.info("Image '%s' already exists and fingerprint matches at %s", name, image_dir)
-            return (kernel_path, rootfs_path)
-
-        if not self.check_docker():
-            raise self.docker_requirement_error()
-
-        logger.info("Building Alpine SSH image '%s'...", name)
-        image_dir.mkdir(parents=True, exist_ok=True)
 
         # The /init script runs as PID 1 inside the VM and brings up SSH.
         init_script = self._default_init_script()
@@ -247,6 +226,30 @@ RUN rm -f /etc/ssh/ssh_host_* && \\
 COPY init /init
 RUN chmod +x /init
 """
+
+        fingerprint_data = self._fingerprint_with_content(
+            {
+                "rootfs_size_mb": rootfs_size_mb,
+                "kernel_url": resolved_kernel_url,
+                "kernel_profile": kernel_profile.value,
+                "ssh_password": ssh_password,
+            },
+            dockerfile_content,
+            init_script,
+        )
+        if (
+            kernel_path.exists()
+            and rootfs_path.exists()
+            and self._check_fingerprint(image_dir, fingerprint_data)
+        ):
+            logger.info("Image '%s' already exists and fingerprint matches at %s", name, image_dir)
+            return (kernel_path, rootfs_path)
+
+        if not self.check_docker():
+            raise self.docker_requirement_error()
+
+        logger.info("Building Alpine SSH image '%s'...", name)
+        image_dir.mkdir(parents=True, exist_ok=True)
 
         try:
             self._do_build(
@@ -301,33 +304,6 @@ RUN chmod +x /init
 
         resolved_kernel_url = self._resolve_kernel_url(kernel_profile, kernel_url)
 
-        fingerprint_data = {
-            "rootfs_size_mb": rootfs_size_mb,
-            "kernel_url": resolved_kernel_url,
-            "kernel_profile": kernel_profile.value,
-            "ssh_public_key": key_value,
-        }
-
-        if kernel_path.exists() and rootfs_path.exists():
-            if self._check_fingerprint(image_dir, fingerprint_data):
-                logger.info(
-                    "Image '%s' already exists and fingerprint matches at %s", name, image_dir
-                )
-                return (kernel_path, rootfs_path)
-
-            if not self.check_docker():
-                raise self.docker_requirement_error()
-
-            logger.info("SSH key or config changed for image '%s'. Rebuilding...", name)
-            # Remove stale files
-            kernel_path.unlink(missing_ok=True)
-            rootfs_path.unlink(missing_ok=True)
-        elif not self.check_docker():
-            raise self.docker_requirement_error()
-
-        logger.info("Building Alpine key-only SSH image '%s'...", name)
-        image_dir.mkdir(parents=True, exist_ok=True)
-
         init_script = self._default_init_script()
 
         dockerfile_content = """
@@ -353,6 +329,37 @@ RUN chmod 600 /root/.ssh/authorized_keys && chown -R root:root /root/.ssh
 COPY init /init
 RUN chmod +x /init
 """
+
+        fingerprint_data = self._fingerprint_with_content(
+            {
+                "rootfs_size_mb": rootfs_size_mb,
+                "kernel_url": resolved_kernel_url,
+                "kernel_profile": kernel_profile.value,
+                "ssh_public_key": key_value,
+            },
+            dockerfile_content,
+            init_script,
+        )
+
+        if kernel_path.exists() and rootfs_path.exists():
+            if self._check_fingerprint(image_dir, fingerprint_data):
+                logger.info(
+                    "Image '%s' already exists and fingerprint matches at %s", name, image_dir
+                )
+                return (kernel_path, rootfs_path)
+
+            if not self.check_docker():
+                raise self.docker_requirement_error()
+
+            logger.info("SSH key or config changed for image '%s'. Rebuilding...", name)
+            # Remove stale files
+            kernel_path.unlink(missing_ok=True)
+            rootfs_path.unlink(missing_ok=True)
+        elif not self.check_docker():
+            raise self.docker_requirement_error()
+
+        logger.info("Building Alpine key-only SSH image '%s'...", name)
+        image_dir.mkdir(parents=True, exist_ok=True)
 
         try:
             self._do_build(
@@ -408,34 +415,6 @@ RUN chmod +x /init
 
         resolved_kernel_url = self._resolve_kernel_url(kernel_profile, kernel_url)
 
-        fingerprint_data = {
-            "rootfs_size_mb": rootfs_size_mb,
-            "kernel_url": resolved_kernel_url,
-            "kernel_profile": kernel_profile.value,
-            "ssh_public_key": key_value,
-            "base_image": base_image,
-        }
-
-        if kernel_path.exists() and rootfs_path.exists():
-            if self._check_fingerprint(image_dir, fingerprint_data):
-                logger.info(
-                    "Image '%s' already exists and fingerprint matches at %s", name, image_dir
-                )
-                return (kernel_path, rootfs_path)
-
-            if not self.check_docker():
-                raise self.docker_requirement_error()
-
-            logger.info("Inputs changed for image '%s'. Rebuilding...", name)
-            # Remove stale files
-            kernel_path.unlink(missing_ok=True)
-            rootfs_path.unlink(missing_ok=True)
-        elif not self.check_docker():
-            raise self.docker_requirement_error()
-
-        logger.info("Building Debian key-only SSH image '%s'...", name)
-        image_dir.mkdir(parents=True, exist_ok=True)
-
         init_script = self._default_init_script()
 
         dockerfile_content = f"""
@@ -465,6 +444,38 @@ RUN chmod 600 /root/.ssh/authorized_keys && chown -R root:root /root/.ssh
 COPY init /init
 RUN chmod +x /init
 """
+
+        fingerprint_data = self._fingerprint_with_content(
+            {
+                "rootfs_size_mb": rootfs_size_mb,
+                "kernel_url": resolved_kernel_url,
+                "kernel_profile": kernel_profile.value,
+                "ssh_public_key": key_value,
+                "base_image": base_image,
+            },
+            dockerfile_content,
+            init_script,
+        )
+
+        if kernel_path.exists() and rootfs_path.exists():
+            if self._check_fingerprint(image_dir, fingerprint_data):
+                logger.info(
+                    "Image '%s' already exists and fingerprint matches at %s", name, image_dir
+                )
+                return (kernel_path, rootfs_path)
+
+            if not self.check_docker():
+                raise self.docker_requirement_error()
+
+            logger.info("Inputs changed for image '%s'. Rebuilding...", name)
+            # Remove stale files
+            kernel_path.unlink(missing_ok=True)
+            rootfs_path.unlink(missing_ok=True)
+        elif not self.check_docker():
+            raise self.docker_requirement_error()
+
+        logger.info("Building Debian key-only SSH image '%s'...", name)
+        image_dir.mkdir(parents=True, exist_ok=True)
 
         try:
             self._do_build(
@@ -519,29 +530,6 @@ RUN chmod +x /init
         rootfs_path = image_dir / "rootfs.ext4"
 
         resolved_kernel_url = self._resolve_kernel_url(kernel_profile, kernel_url)
-
-        fingerprint_data = {
-            "rootfs_size_mb": rootfs_size_mb,
-            "kernel_url": resolved_kernel_url,
-            "kernel_profile": kernel_profile.value,
-            "ssh_public_key": key_value,
-            "base_image": base_image,
-            "image_type": "browser-chromium-v3",
-        }
-
-        if kernel_path.exists() and rootfs_path.exists():
-            if self._check_fingerprint(image_dir, fingerprint_data):
-                logger.info(
-                    "Image '%s' already exists and fingerprint matches at %s", name, image_dir
-                )
-                return (kernel_path, rootfs_path)
-
-            logger.info("Inputs changed for browser image '%s'. Rebuilding...", name)
-            kernel_path.unlink(missing_ok=True)
-            rootfs_path.unlink(missing_ok=True)
-
-        logger.info("Building browser image '%s'...", name)
-        image_dir.mkdir(parents=True, exist_ok=True)
 
         init_script = self._default_init_script()
 
@@ -822,6 +810,35 @@ COPY init /init
 RUN chmod +x /init
 """
 
+        fingerprint_data = self._fingerprint_with_content(
+            {
+                "rootfs_size_mb": rootfs_size_mb,
+                "kernel_url": resolved_kernel_url,
+                "kernel_profile": kernel_profile.value,
+                "ssh_public_key": key_value,
+                "base_image": base_image,
+                "image_type": "browser-chromium-v3",
+                "_browser_session_sha256": hashlib.sha256(browser_session_sh.encode()).hexdigest(),
+                "_wait_port_sha256": hashlib.sha256(wait_port_py.encode()).hexdigest(),
+            },
+            dockerfile_content,
+            init_script,
+        )
+
+        if kernel_path.exists() and rootfs_path.exists():
+            if self._check_fingerprint(image_dir, fingerprint_data):
+                logger.info(
+                    "Image '%s' already exists and fingerprint matches at %s", name, image_dir
+                )
+                return (kernel_path, rootfs_path)
+
+            logger.info("Inputs changed for browser image '%s'. Rebuilding...", name)
+            kernel_path.unlink(missing_ok=True)
+            rootfs_path.unlink(missing_ok=True)
+
+        logger.info("Building browser image '%s'...", name)
+        image_dir.mkdir(parents=True, exist_ok=True)
+
         try:
             self._do_build(
                 name,
@@ -914,29 +931,7 @@ RUN chmod +x /init
         kernel_path = image_dir / "vmlinux.bin"
         rootfs_path = image_dir / "rootfs.ext4"
 
-        fingerprint_data = {
-            "rootfs_size_mb": rootfs_size_mb,
-            "kernel_url": kernel_url,
-            "ssh_password": ssh_password,
-            "ssh_public_key": key_value,
-            "extra_packages": extra_packages,
-        }
-
-        if kernel_path.exists() and rootfs_path.exists():
-            if self._check_fingerprint(image_dir, fingerprint_data):
-                logger.info(
-                    "Image '%s' already exists and fingerprint matches at %s", name, image_dir
-                )
-                return (kernel_path, rootfs_path)
-
-            logger.info("Inputs changed for OpenClaw image '%s'. Rebuilding...", name)
-            kernel_path.unlink(missing_ok=True)
-            rootfs_path.unlink(missing_ok=True)
-
         packages_str = " ".join(extra_packages)
-
-        logger.info("Building OpenClaw image '%s' with extra packages: %s...", name, packages_str)
-        image_dir.mkdir(parents=True, exist_ok=True)
 
         init_script = self._openclaw_init_script()
 
@@ -1055,6 +1050,35 @@ RUN chmod +x \\
 COPY init /init
 RUN chmod +x /init
 """
+
+        fingerprint_data = self._fingerprint_with_content(
+            {
+                "rootfs_size_mb": rootfs_size_mb,
+                "kernel_url": kernel_url,
+                "ssh_password": ssh_password,
+                "ssh_public_key": key_value,
+                "extra_packages": extra_packages,
+                "_device_approver_sha256": hashlib.sha256(device_approver_py.encode()).hexdigest(),
+                "_watch_devices_sha256": hashlib.sha256(watch_devices_sh.encode()).hexdigest(),
+                "_systemctl_proxy_sha256": hashlib.sha256(systemctl_proxy_sh.encode()).hexdigest(),
+            },
+            dockerfile_content,
+            init_script,
+        )
+
+        if kernel_path.exists() and rootfs_path.exists():
+            if self._check_fingerprint(image_dir, fingerprint_data):
+                logger.info(
+                    "Image '%s' already exists and fingerprint matches at %s", name, image_dir
+                )
+                return (kernel_path, rootfs_path)
+
+            logger.info("Inputs changed for OpenClaw image '%s'. Rebuilding...", name)
+            kernel_path.unlink(missing_ok=True)
+            rootfs_path.unlink(missing_ok=True)
+
+        logger.info("Building OpenClaw image '%s' with extra packages: %s...", name, packages_str)
+        image_dir.mkdir(parents=True, exist_ok=True)
 
         try:
             self._do_build(
@@ -1303,6 +1327,24 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
         if kernel_url is not None:
             return kernel_url
         return resolve_kernel_url(kernel_profile, self._host_arch_key())
+
+    def _fingerprint_with_content(
+        self,
+        fingerprint_data: dict[str, typing.Any],
+        dockerfile_content: str,
+        init_script: str,
+    ) -> dict[str, typing.Any]:
+        """Augment the input-only fingerprint with Dockerfile and init-script hashes.
+
+        Without this, edits to the Dockerfile or /init script are invisible to
+        the fingerprint check — the cache keeps serving the old image even
+        though the build recipe has changed.
+        """
+        return {
+            **fingerprint_data,
+            "_dockerfile_sha256": hashlib.sha256(dockerfile_content.encode()).hexdigest(),
+            "_init_script_sha256": hashlib.sha256(init_script.encode()).hexdigest(),
+        }
 
     def _check_fingerprint(self, image_dir: Path, data: dict[str, typing.Any]) -> bool:
         """Check if the cached image fingerprint matches the current build inputs."""
