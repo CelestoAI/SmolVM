@@ -96,7 +96,7 @@ class TestLookup:
             lookup("openclaw", "amd64", manifest=sample_manifest)
 
     def test_error_when_manifest_empty(self) -> None:
-        with pytest.raises(ImageError, match=r"Available: \(none\)"):
+        with pytest.raises(ImageError, match=r"available: \(none\)"):
             lookup("codex", "amd64", manifest={})
 
     def test_default_manifest_used_when_not_overridden(self) -> None:
@@ -164,6 +164,7 @@ class TestEnsurePublishedImage:
             call["i"] += 1
             resp = MagicMock()
             resp.raise_for_status = MagicMock()
+            resp.headers.get.return_value = None
             resp.iter_content = lambda chunk_size, body=body: iter([body])
             return resp
 

@@ -84,7 +84,7 @@ def lookup(
     if entry is None:
         available = ", ".join(sorted(f"{p}/{a}" for (p, a) in catalog)) or "(none)"
         raise ImageError(
-            f"No published image for preset '{preset}' on arch '{arch}'. Available: {available}."
+            f"No published image for preset '{preset}' on arch '{arch}' (available: {available})."
         )
     return entry
 
