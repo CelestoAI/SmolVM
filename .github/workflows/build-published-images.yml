@@ -93,7 +93,9 @@ jobs:
           if [ -n "$INPUT_TAG" ]; then
             tag="$INPUT_TAG"
           else
-            version=$(uv run python -c "import tomllib; print(tomllib.loads(open('pyproject.toml','rb').read())['project']['version'])")
+            # tomllib.load() takes a binary file; tomllib.loads() takes a str
+            # (NOT bytes). The file-handle form is the simpler one to get right.
+            version=$(uv run python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
             tag="images-v${version}"
           fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
