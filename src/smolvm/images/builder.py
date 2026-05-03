@@ -867,8 +867,9 @@ RUN chmod +x /init
     def build_openclaw_rootfs(
         self,
         name: str = "openclaw",
-        # Note: 'smolvm' is intentionally kept as the default for simplified local
-        # demos and testing fixtures. Production usages should override this value.
+        # Kept for backward compatibility with existing callers; ignored.
+        # The image is now key-only (PasswordAuthentication no) so published
+        # rootfs files cannot be exploited via the previous default password.
         ssh_password: str = "smolvm",
         ssh_public_key: str | Path | None = None,
         rootfs_size_mb: int = 2048,
@@ -890,7 +891,9 @@ RUN chmod +x /init
 
         Args:
             name: Image name for caching.
-            ssh_password: Root password for SSH (default: smolvm).
+            ssh_password: Deprecated and ignored; kept for backward compatibility.
+                The image is key-only — pubkeys are injected per-VM via the
+                kernel cmdline at boot.
             ssh_public_key: Public key content or path to a public key file.
             rootfs_size_mb: Size of rootfs in MB (default: 2048).
             kernel_url: Optional kernel URL override.
@@ -995,7 +998,6 @@ exit 0
         dockerfile_content = f"""
 FROM node:22.12.0-bookworm-slim
 
-ARG SSH_PASSWORD
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \\
@@ -1013,9 +1015,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
 # 'rm -f' purges keys planted by the openssh-server postinst on Debian.
 RUN rm -f /etc/ssh/ssh_host_* && \\
     mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh && \\
-    sed -ri 's/^#?PermitRootLogin .*/PermitRootLogin yes/' /etc/ssh/sshd_config && \\
-    sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config && \\
-    echo "root:${{SSH_PASSWORD}}" | chpasswd
+    sed -ri 's/^#?PermitRootLogin .*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config && \\
+    sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config && \\
+    sed -ri 's/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
 
 # Prepare OpenClaw directories and workspace
 RUN useradd -m -s /bin/bash node 2>/dev/null || true && \\
@@ -1050,7 +1052,6 @@ RUN chmod +x /init
             {
                 "rootfs_size_mb": rootfs_size_mb,
                 "kernel_url": kernel_url,
-                "ssh_password": ssh_password,
                 "extra_packages": extra_packages,
                 "_device_approver_sha256": hashlib.sha256(device_approver_py.encode()).hexdigest(),
                 "_watch_devices_sha256": hashlib.sha256(watch_devices_sh.encode()).hexdigest(),
@@ -1088,7 +1089,6 @@ RUN chmod +x /init
                     "watch-devices.sh": watch_devices_sh,
                     "systemctl": systemctl_proxy_sh,
                 },
-                build_args={"SSH_PASSWORD": ssh_password},
                 kernel_url=kernel_url,
                 fingerprint_data=fingerprint_data,
             )
