@@ -1,9 +1,8 @@
 # SmolVM QEMU/libkrun Kernel
 
 This directory holds the recipe for the Linux kernel SmolVM ships to
-QEMU and libkrun users. The kernel built here is what makes a sandbox
-boot all the way through and print log output on macOS — without it,
-the screen stays blank.
+QEMU and libkrun users. QEMU runs on Linux and macOS; this kernel makes
+those sandboxes boot all the way through and print log output.
 
 ## Why this exists
 
@@ -14,8 +13,8 @@ exposes virtual hardware to the guest over a "MMIO" bus and uses an
 the same devices over **PCI** instead, and use the ARM PL011 UART on
 aarch64 — different drivers entirely. Empirically the Firecracker
 kernel produces **zero serial output** under QEMU: it boots into a
-hardware model it has no drivers for. macOS users have to use QEMU
-(or libkrun), so they need a kernel built for that hardware.
+hardware model it has no drivers for. Linux and macOS users running
+QEMU or libkrun need a kernel built for that hardware.
 
 [fc-ci]: https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.6/
 

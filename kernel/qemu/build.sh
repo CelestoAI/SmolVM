@@ -67,14 +67,14 @@ job_count() {
 
 MAKE_BIN="$(find_make || true)"
 if [ -z "$MAKE_BIN" ]; then
-    echo "GNU Make 4.0 or newer is required. Install it with 'brew install make' on macOS, then run 'MAKE=gmake bash build.sh'." >&2
+    echo "GNU Make 4.0 or newer is required. On macOS, install it with 'brew install make', then run 'MAKE=gmake bash build.sh'." >&2
     exit 2
 fi
 
-MAKE_VERSION="$("$MAKE_BIN" --version | sed -n '1s/.*Make //p')"
+MAKE_VERSION="$("$MAKE_BIN" --version 2>/dev/null | sed -n '1s/.*Make //p' || true)"
 MAKE_VERSION="${MAKE_VERSION%% *}"
 if ! version_at_least_4 "$MAKE_VERSION"; then
-    echo "GNU Make 4.0 or newer is required; '$MAKE_BIN' is version ${MAKE_VERSION:-unknown}. Install it with 'brew install make' on macOS, then run 'MAKE=gmake bash build.sh'." >&2
+    echo "GNU Make 4.0 or newer is required; '$MAKE_BIN' is version ${MAKE_VERSION:-unknown}. On macOS, install it with 'brew install make', then run 'MAKE=gmake bash build.sh'." >&2
     exit 2
 fi
 
