@@ -2808,10 +2808,12 @@ class TestPublishedImageLaunchPath:
         assert called_args[1].name == "openclaw"
 
     @patch.dict(os.environ, {"SMOLVM_USE_PUBLISHED": "1"})
+    @patch("smolvm.cli.main.platform.system", return_value="Linux")
     @patch("smolvm.images.published.ensure_published_image")
     def test_published_path_surfaces_missing_manifest_error(
         self,
         mock_ensure: MagicMock,
+        _mock_system: MagicMock,
     ) -> None:
         """An empty manifest entry should produce a clean CLI error, not a crash."""
         from smolvm.exceptions import ImageError
@@ -2826,13 +2828,43 @@ class TestPublishedImageLaunchPath:
         mock_ensure.assert_called_once()
 
     @patch.dict(os.environ, {"SMOLVM_USE_PUBLISHED": "1"})
+    @patch("smolvm.cli.main.platform.system", return_value="Darwin")
+    @patch("smolvm.images.published.ensure_published_image")
+    def test_published_path_rejects_macos_up_front(
+        self,
+        mock_ensure: MagicMock,
+        _mock_system: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """macOS hits Firecracker's KVM/TAP requirements; reject before that.
+
+        The pre-fix failure cascade was confusing: sudo prompt → missing
+        ``ip`` binary → cleanup-also-fails. One clear error pointing at
+        the install-at-boot fallback is much friendlier.
+        """
+        ret = main(["openclaw", "start", "--json"])
+
+        captured = capsys.readouterr()
+        envelope = json.loads(captured.out)
+
+        assert ret == 2  # ValueError → exit 2 (matches existing CLI convention)
+        assert envelope["exit_code"] == 2
+        assert envelope["error"] is not None
+        assert "Linux-only" in envelope["error"]["message"]
+        # Most importantly, ensure_published_image must NOT have been called —
+        # we should error before trying to download anything.
+        mock_ensure.assert_not_called()
+
+    @patch.dict(os.environ, {"SMOLVM_USE_PUBLISHED": "1"})
     @patch("smolvm.cli.main.subprocess.run")
     @patch("smolvm.facade.SmolVM")
     @patch("smolvm.utils.ensure_ssh_key")
     @patch("smolvm.images.published.ensure_published_image")
     @patch("smolvm.cli.main.platform.machine", return_value="x86_64")
+    @patch("smolvm.cli.main.platform.system", return_value="Linux")
     def test_published_path_happy_path_skips_apply_preset(
         self,
+        _mock_system: MagicMock,
         _mock_machine: MagicMock,
         mock_ensure_image: MagicMock,
         mock_ensure_ssh_key: MagicMock,
