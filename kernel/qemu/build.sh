@@ -151,6 +151,8 @@ scripts/kconfig/merge_config.sh -m -O . .config "$COMMON_FRAGMENT" "$ARCH_FRAGME
 # downgrades =y, or a new Kconfig dep forces modules on) — actionable signal
 # that the fragment needs adjustment, not a silent failure to debug at boot.
 echo "==> Verifying fragments were honored"
+# `fail` is intentionally NOT local in verify_fragment — it accumulates
+# across both calls below so we report ALL violations in one pass.
 fail=0
 verify_fragment() {
     local fragment="$1"
@@ -190,14 +192,17 @@ verify_fragment "$COMMON_FRAGMENT"
 verify_fragment "$ARCH_FRAGMENT"
 [ "$fail" -eq 0 ] || { echo "==> Fragment verification failed"; exit 1; }
 
-# Local-iteration knob: when set, stop after fragment verification — the
+# Local-iteration knob: when truthy, stop after fragment verification — the
 # kernel compile is the long pole and not what changes when iterating on
 # the fragments. CI runs the full build; this is just for fast feedback
-# loops on a dev machine (or a Linux container).
-if [ -n "${SMOLVM_VERIFY_ONLY:-}" ]; then
-    echo "==> SMOLVM_VERIFY_ONLY set; skipping kernel compile."
-    exit 0
-fi
+# loops on a dev machine (or a Linux container). Truthy = 1/true/yes
+# (case-insensitive); empty/0/false/no = full build.
+case "$(printf '%s' "${SMOLVM_VERIFY_ONLY:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes)
+        echo "==> SMOLVM_VERIFY_ONLY set; skipping kernel compile."
+        exit 0
+        ;;
+esac
 
 # 5. Build the kernel image.
 echo "==> Building kernel ($JOBS jobs)"
