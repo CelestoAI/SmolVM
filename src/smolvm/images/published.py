@@ -19,10 +19,17 @@ lock-step to the CLI version: SmolVM ``X.Y.Z`` always pulls images from
 the ``images-vX.Y.Z`` release tag. The ``MANIFEST`` below is the bundled
 catalog the CLI ships with — entries are appended as CI publishes them.
 
-Resolution flow: ``ensure_published_image(preset, arch)`` looks up the
+Resolution flow: ``ensure_published_image(preset, arch, vmm)`` looks up the
 matching entry, converts it to an :class:`ImageSource`, delegates to
 :class:`ImageManager` for caching + SHA-256-verified download, and
 decompresses the rootfs if the URL ends in ``.zst``.
+
+Why ``vmm`` is a separate dimension: the kernel must be tuned for the
+hypervisor it runs under (Firecracker uses MMIO virtio + 8250 UART; QEMU
+uses PCI virtio + PL011 UART on aarch64). The same rootfs works for both
+since it's just a filesystem, but different kernels are required. The CLI
+auto-derives ``vmm`` from ``platform.system()`` — that policy lives at the
+CLI layer, not here.
 """
 
 from __future__ import annotations
@@ -38,6 +45,9 @@ from smolvm.images.manager import ImageManager, ImageSource, LocalImage
 
 Arch = Literal["amd64", "arm64"]
 Preset = Literal["codex", "claude-code", "openclaw", "hermes"]
+# ``libkrun`` is reserved here for a future spike — manifest accepts the type
+# but the CLI never resolves a host to it until libkrun support is wired.
+Vmm = Literal["firecracker", "qemu", "libkrun"]
 
 
 class PublishedImage(BaseModel):
@@ -45,6 +55,7 @@ class PublishedImage(BaseModel):
 
     preset: Preset
     arch: Arch
+    vmm: Vmm
     kernel_url: str
     kernel_sha256: str
     rootfs_url: str
@@ -58,13 +69,19 @@ def release_tag(version: str = __version__) -> str:
     return f"images-v{version}"
 
 
-def cache_name(preset: Preset, arch: Arch, version: str = __version__) -> str:
+def cache_name(preset: Preset, arch: Arch, vmm: Vmm, version: str = __version__) -> str:
     """Cache directory name under ``~/.smolvm/images/``.
 
-    Versioned + arch-suffixed so multiple installs and architectures
-    coexist on the same machine without overwriting each other.
+    Versioned + arch- + vmm-suffixed so multiple installs, architectures,
+    and hypervisors coexist on the same machine without overwriting each
+    other. A user switching backends mid-session gets a fresh cache dir
+    per vmm rather than fighting over one.
+
+    Note: caches from before the vmm dimension landed (no ``-<vmm>``
+    suffix) become orphaned and ignored. They stay on disk untouched
+    until the user clears them.
     """
-    return f"{preset}-v{version}-{arch}"
+    return f"{preset}-v{version}-{arch}-{vmm}"
 
 
 def _release_asset_url(preset: Preset, arch: Arch, suffix: str, version: str) -> str:
@@ -88,23 +105,25 @@ def _release_asset_url(preset: Preset, arch: Arch, suffix: str, version: str) ->
 # pyproject.toml version bumps don't ship with stale manifest entries.
 _MANIFEST_VERSION = "0.0.13"
 
-# Bundled manifest. New (preset, arch) entries land here as CI publishes
+# Bundled manifest. New (preset, arch, vmm) entries land here as CI publishes
 # images — paired by version with this CLI release. The SHA-256s and URLs
 # below match the artifacts produced by the CI workflow at
 # .github/workflows/build-published-images.yml; they're also visible in
 # the corresponding GH release's step summary on each successful run.
-MANIFEST: dict[tuple[Preset, Arch], PublishedImage] = {
-    ("openclaw", "amd64"): PublishedImage(
+MANIFEST: dict[tuple[Preset, Arch, Vmm], PublishedImage] = {
+    ("openclaw", "amd64", "firecracker"): PublishedImage(
         preset="openclaw",
         arch="amd64",
+        vmm="firecracker",
         kernel_url=_release_asset_url("openclaw", "amd64", "vmlinux.bin", _MANIFEST_VERSION),
         kernel_sha256="d361a5f2e67b2e243964ad93f25a2d9e5bee320204a84a7af089949228af5c2a",
         rootfs_url=_release_asset_url("openclaw", "amd64", "rootfs.ext4.zst", _MANIFEST_VERSION),
         rootfs_sha256="5d3fe222b017f350f5bb2f01c1fa28cd3425b5dddb32d6377d97bc0e3fea355b",
     ),
-    ("openclaw", "arm64"): PublishedImage(
+    ("openclaw", "arm64", "firecracker"): PublishedImage(
         preset="openclaw",
         arch="arm64",
+        vmm="firecracker",
         kernel_url=_release_asset_url("openclaw", "arm64", "vmlinux.bin", _MANIFEST_VERSION),
         kernel_sha256="7d8dc0bce701037ea5ceccfc997c05b11f99aba215c73ed18a2269154837c497",
         rootfs_url=_release_asset_url("openclaw", "arm64", "rootfs.ext4.zst", _MANIFEST_VERSION),
@@ -116,16 +135,18 @@ MANIFEST: dict[tuple[Preset, Arch], PublishedImage] = {
 def lookup(
     preset: Preset,
     arch: Arch,
+    vmm: Vmm,
     *,
-    manifest: dict[tuple[Preset, Arch], PublishedImage] | None = None,
+    manifest: dict[tuple[Preset, Arch, Vmm], PublishedImage] | None = None,
 ) -> PublishedImage:
     """Look up a manifest entry, raising :class:`ImageError` if missing."""
     catalog = MANIFEST if manifest is None else manifest
-    entry = catalog.get((preset, arch))
+    entry = catalog.get((preset, arch, vmm))
     if entry is None:
-        available = ", ".join(sorted(f"{p}/{a}" for (p, a) in catalog)) or "(none)"
+        available = ", ".join(sorted(f"{p}/{a}/{v}" for (p, a, v) in catalog)) or "(none)"
         raise ImageError(
-            f"No published image for preset '{preset}' on arch '{arch}' (available: {available})."
+            f"No published image for preset '{preset}' on arch '{arch}' under "
+            f"vmm '{vmm}' (available: {available})."
         )
     return entry
 
@@ -140,7 +161,7 @@ def to_image_source(entry: PublishedImage, version: str = __version__) -> ImageS
     """
     rootfs_filename = "rootfs.ext4.zst" if entry.rootfs_url.endswith(".zst") else "rootfs.ext4"
     return ImageSource(
-        name=cache_name(entry.preset, entry.arch, version),
+        name=cache_name(entry.preset, entry.arch, entry.vmm, version),
         kernel_url=entry.kernel_url,
         kernel_sha256=entry.kernel_sha256,
         rootfs_url=entry.rootfs_url,
@@ -165,9 +186,10 @@ def _decompress_zstd(src: Path, dst: Path) -> None:
 def ensure_published_image(
     preset: Preset,
     arch: Arch,
+    vmm: Vmm,
     *,
     cache_dir: Path | None = None,
-    manifest: dict[tuple[Preset, Arch], PublishedImage] | None = None,
+    manifest: dict[tuple[Preset, Arch, Vmm], PublishedImage] | None = None,
     version: str = __version__,
 ) -> LocalImage:
     """Download (if needed) and return paths to a published preset image.
@@ -175,6 +197,9 @@ def ensure_published_image(
     Args:
         preset: Preset name (e.g. ``"codex"``).
         arch: Guest CPU architecture (``"amd64"`` or ``"arm64"``).
+        vmm: Hypervisor variant the image was built for (``"firecracker"``,
+            ``"qemu"``, or ``"libkrun"``). Caller must pre-resolve this from
+            host platform — this module is policy-free.
         cache_dir: Override the default cache directory (mainly for tests).
         manifest: Override the bundled manifest (mainly for tests).
         version: Override the CLI version used to compute the cache name.
@@ -187,10 +212,10 @@ def ensure_published_image(
         produced lazily.
 
     Raises:
-        ImageError: If no manifest entry exists for the (preset, arch) pair,
-            or if download / SHA-256 verification fails.
+        ImageError: If no manifest entry exists for the (preset, arch, vmm)
+            tuple, or if download / SHA-256 verification fails.
     """
-    entry = lookup(preset, arch, manifest=manifest)
+    entry = lookup(preset, arch, vmm, manifest=manifest)
     source = to_image_source(entry, version=version)
     manager = ImageManager(cache_dir=cache_dir, registry={source.name: source})
     local = manager.ensure_image(source.name)

@@ -1886,10 +1886,12 @@ def _run_start_with_published_image(args: argparse.Namespace, preset: object) ->
         private_key, public_key_path = ensure_ssh_key()
         public_key_value = public_key_path.read_text().strip()
 
-        # Raises ImageError with a clear message if the (preset, arch) pair
-        # has no manifest entry — the manifest is bundled in published.py
-        # and starts empty until the auto-update PR populates it.
-        local_image = ensure_published_image(_preset.name, arch)  # type: ignore[arg-type]
+        # Raises ImageError with a clear message if the (preset, arch, vmm)
+        # tuple has no manifest entry. ``vmm`` is hardcoded to firecracker
+        # here and reflects the only kernel variant we publish today; the
+        # CLI-side platform-to-vmm mapping (Linux→firecracker, Darwin→qemu)
+        # lands in a follow-up PR alongside the QEMU kernel rows.
+        local_image = ensure_published_image(_preset.name, arch, "firecracker")  # type: ignore[arg-type]
 
         config = VMConfig(
             vm_id=_resolve_vm_name(args.name, prefix=_preset.name),
