@@ -20,8 +20,9 @@ the ``images-vX.Y.Z`` release tag. The ``MANIFEST`` below is the bundled
 catalog the CLI ships with — entries are appended as CI publishes them.
 
 Resolution flow: ``ensure_published_image(preset, arch)`` looks up the
-matching entry, converts it to an :class:`ImageSource`, and delegates to
-:class:`ImageManager` for caching, downloading, and SHA-256 verification.
+matching entry, converts it to an :class:`ImageSource`, delegates to
+:class:`ImageManager` for caching + SHA-256-verified download, and
+decompresses the rootfs if the URL ends in ``.zst``.
 """
 
 from __future__ import annotations
@@ -66,10 +67,43 @@ def cache_name(preset: Preset, arch: Arch, version: str = __version__) -> str:
     return f"{preset}-v{version}-{arch}"
 
 
-# Bundled manifest. Empty until CI publishes its first ``images-v*``
-# release. Append entries here keyed by ``(preset, arch)`` once the
-# corresponding artifacts are uploaded to the matching release.
-MANIFEST: dict[tuple[Preset, Arch], PublishedImage] = {}
+def _release_asset_url(preset: Preset, arch: Arch, suffix: str, version: str) -> str:
+    """Construct the post-publish GH Releases asset URL for one artifact.
+
+    Once the draft release at ``images-v<version>`` is published, GH
+    Releases serves assets at this canonical URL (the draft itself uses
+    a temporary ``untagged-*`` slug — these URLs only resolve after
+    the draft is published manually).
+    """
+    return (
+        f"https://github.com/CelestoAI/SmolVM/releases/download/"
+        f"{release_tag(version)}/{preset}-{arch}-{suffix}"
+    )
+
+
+# Bundled manifest. New (preset, arch) entries land here as CI publishes
+# images — paired by version with this CLI release. The SHA-256s and URLs
+# below match the artifacts produced by the CI workflow at
+# .github/workflows/build-published-images.yml; they're also visible in
+# the corresponding GH release's step summary on each successful run.
+MANIFEST: dict[tuple[Preset, Arch], PublishedImage] = {
+    ("openclaw", "amd64"): PublishedImage(
+        preset="openclaw",
+        arch="amd64",
+        kernel_url=_release_asset_url("openclaw", "amd64", "vmlinux.bin", "0.0.13"),
+        kernel_sha256="d361a5f2e67b2e243964ad93f25a2d9e5bee320204a84a7af089949228af5c2a",
+        rootfs_url=_release_asset_url("openclaw", "amd64", "rootfs.ext4.zst", "0.0.13"),
+        rootfs_sha256="5d3fe222b017f350f5bb2f01c1fa28cd3425b5dddb32d6377d97bc0e3fea355b",
+    ),
+    ("openclaw", "arm64"): PublishedImage(
+        preset="openclaw",
+        arch="arm64",
+        kernel_url=_release_asset_url("openclaw", "arm64", "vmlinux.bin", "0.0.13"),
+        kernel_sha256="7d8dc0bce701037ea5ceccfc997c05b11f99aba215c73ed18a2269154837c497",
+        rootfs_url=_release_asset_url("openclaw", "arm64", "rootfs.ext4.zst", "0.0.13"),
+        rootfs_sha256="48d86a4e4a75f8c101ebab3f76067cc2c92473ac0c30d5a2fd71a1dd2f43f6c7",
+    ),
+}
 
 
 def lookup(
@@ -90,14 +124,35 @@ def lookup(
 
 
 def to_image_source(entry: PublishedImage, version: str = __version__) -> ImageSource:
-    """Convert a manifest entry into an :class:`ImageSource` for the manager."""
+    """Convert a manifest entry into an :class:`ImageSource` for the manager.
+
+    When the rootfs URL is zstd-compressed (``*.zst``), the cache filename
+    keeps the ``.zst`` suffix so :class:`ImageManager` verifies the SHA-256
+    of the compressed bytes that ship over the wire. ``ensure_published_image``
+    decompresses alongside afterward.
+    """
+    rootfs_filename = "rootfs.ext4.zst" if entry.rootfs_url.endswith(".zst") else "rootfs.ext4"
     return ImageSource(
         name=cache_name(entry.preset, entry.arch, version),
         kernel_url=entry.kernel_url,
         kernel_sha256=entry.kernel_sha256,
         rootfs_url=entry.rootfs_url,
         rootfs_sha256=entry.rootfs_sha256,
+        rootfs_filename=rootfs_filename,
     )
+
+
+def _decompress_zstd(src: Path, dst: Path) -> None:
+    """Stream-decompress a zstd file. Writes to ``dst.tmp`` then renames."""
+    import zstandard
+
+    tmp = dst.with_suffix(dst.suffix + ".tmp")
+    try:
+        with src.open("rb") as src_f, tmp.open("wb") as dst_f:
+            zstandard.ZstdDecompressor().copy_stream(src_f, dst_f)
+        tmp.replace(dst)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def ensure_published_image(
@@ -118,7 +173,11 @@ def ensure_published_image(
         version: Override the CLI version used to compute the cache name.
 
     Returns:
-        :class:`LocalImage` with paths to the kernel and rootfs.
+        :class:`LocalImage` with paths to the kernel and (decompressed)
+        rootfs. When the manifest entry's rootfs URL is zstd-compressed,
+        the compressed file stays in cache (so SHA verification can re-run
+        on subsequent calls) and a sibling decompressed ``rootfs.ext4`` is
+        produced lazily.
 
     Raises:
         ImageError: If no manifest entry exists for the (preset, arch) pair,
@@ -127,4 +186,20 @@ def ensure_published_image(
     entry = lookup(preset, arch, manifest=manifest)
     source = to_image_source(entry, version=version)
     manager = ImageManager(cache_dir=cache_dir, registry={source.name: source})
-    return manager.ensure_image(source.name)
+    local = manager.ensure_image(source.name)
+
+    # Wire-format short-circuit: nothing to decompress.
+    if not source.rootfs_filename.endswith(".zst"):
+        return local
+
+    # Decompress alongside, only on cache miss for the decompressed file.
+    decompressed_path = local.rootfs_path.with_suffix("")
+    if not decompressed_path.is_file():
+        _decompress_zstd(local.rootfs_path, decompressed_path)
+
+    return LocalImage(
+        name=local.name,
+        kernel_path=local.kernel_path,
+        initrd_path=local.initrd_path,
+        rootfs_path=decompressed_path,
+    )
