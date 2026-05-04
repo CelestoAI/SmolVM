@@ -110,7 +110,7 @@ With a single command you get a claude/codex pre-installed sandbox ready with gi
 
 Video tutorial:
 
-[![Coding agents in a sandbox](https://img.youtube.com/vi/j1qyrTsI0Jw/maxresdefault.jpg)](https://youtu.be/j1qyrTsI0Jw)
+<a href="https://youtu.be/j1qyrTsI0Jw"><img src="https://img.youtube.com/vi/j1qyrTsI0Jw/maxresdefault.jpg" alt="Coding agents in a sandbox" width="480"></a>
 
 ```bash
 smolvm codex start  # start a new environment with codex preinstalled
