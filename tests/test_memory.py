@@ -87,9 +87,8 @@ class TestSQLiteMemoryBackend:
     @pytest.fixture
     def backend(self, temp_db: Path) -> SQLiteMemoryBackend:
         """Create SQLite backend with mock embedder."""
-        backend = SQLiteMemoryBackend(temp_db)
-        # Inject mock embedder for deterministic tests
-        backend.indexer = MockEmbedder()  # type: ignore
+        with patch("smolvm.memory._sqlite.EmbeddingIndexer", return_value=MockEmbedder()):
+            backend = SQLiteMemoryBackend(temp_db)
         return backend
 
     def test_store_and_retrieve_fact(self, backend: SQLiteMemoryBackend) -> None:
@@ -204,8 +203,8 @@ class TestMemoryManager:
     @pytest.fixture
     def manager(self, temp_db: Path) -> MemoryManager:
         """Create memory manager with mock backend."""
-        backend = SQLiteMemoryBackend(temp_db)
-        backend.indexer = MockEmbedder()  # type: ignore
+        with patch("smolvm.memory._sqlite.EmbeddingIndexer", return_value=MockEmbedder()):
+            backend = SQLiteMemoryBackend(temp_db)
         return MemoryManager(backend)
 
     def test_record_command_execution_success(self, manager: MemoryManager) -> None:
@@ -219,13 +218,13 @@ class TestMemoryManager:
             duration_sec=0.05,
         )
 
-        assert fact_id.startswith("exec-")
+        assert fact_id.startswith("cmd-")
 
         # Verify stored
         facts = manager.list_vm_facts("vm-001")
         assert len(facts) == 1
         assert facts[0]["event_type"] == "command_executed"
-        assert facts[0]["metadata"]["success"] is True
+        assert facts[0]["metadata"]["return_code"] == 0
 
     def test_record_command_execution_failure(self, manager: MemoryManager) -> None:
         """Record failed command execution."""
@@ -240,7 +239,7 @@ class TestMemoryManager:
 
         facts = manager.list_vm_facts("vm-001")
         assert facts[0]["event_type"] == "command_failed"
-        assert facts[0]["metadata"]["success"] is False
+        assert facts[0]["metadata"]["return_code"] == 1
         assert facts[0]["metadata"]["duration_sec"] == 45.0
 
     def test_record_user_note(self, manager: MemoryManager) -> None:
