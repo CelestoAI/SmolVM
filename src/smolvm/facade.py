@@ -492,11 +492,12 @@ def _build_auto_config(
             filename="rootfs.qcow2",
             on_download=on_download,
         )
-        # Pull the SmolVM-built base kernel (universal across Firecracker/QEMU/
-        # libkrun, no initrd needed — see kernel/qemu/README.md).
+        # Pull the SmolVM-built base kernel — Image format for QEMU
+        # (Firecracker would use the ELF; this branch is QEMU-only).
         host_arch = platform.machine()
         kernel_path = ensure_base_kernel(
             to_published_arch(host_arch),
+            "image",
             cache_dir=image_manager.cache_dir,
         )
 
@@ -650,12 +651,20 @@ def _build_auto_config(
         disk_size_mib=resolved_disk_size_mib,
     )
 
+    # Pick the kernel format the runtime backend requires. Same kernel source,
+    # different container: ``elf`` for Firecracker / libkrun, ``image`` for QEMU.
+    from smolvm.images.published import BASE_KERNELS, _kernel_format_for_vmm
+
+    kernel_fmt = _kernel_format_for_vmm(resolved_backend)  # type: ignore[arg-type]
+    base_kernel_url = BASE_KERNELS[to_published_arch(platform.machine())].url_for(kernel_fmt)
+
     if resolved_os is GuestOS.DEBIAN:
         kernel, rootfs = builder.build_debian_ssh_key(
             public_key_path,
             name=image_name,
             rootfs_size_mb=resolved_disk_size_mib,
             kernel_profile=kernel_profile,
+            kernel_url=base_kernel_url,
         )
     else:
         kernel, rootfs = builder.build_alpine_ssh_key(
@@ -663,6 +672,7 @@ def _build_auto_config(
             name=image_name,
             rootfs_size_mb=resolved_disk_size_mib,
             kernel_profile=kernel_profile,
+            kernel_url=base_kernel_url,
         )
 
     resolved_vm_name = _resolve_vm_name(vm_name, prefix=name_prefix)

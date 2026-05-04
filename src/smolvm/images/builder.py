@@ -1326,16 +1326,23 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
             raise ImageError(str(exc)) from exc
 
     def _kernel_url_for_host(self) -> str:
-        """Return the SmolVM-built base kernel URL for the current host arch."""
+        """Return the SmolVM-built base kernel URL for the current host arch.
+
+        Defaults to the ELF format (Firecracker-compatible). Callers that
+        need the Image format must pass an explicit ``kernel_url`` override.
+        """
         return self._resolve_kernel_url(KernelBootProfile.MICROVM_DIRECT)
 
     def qemu_kernel_url_for_host(self) -> str:
-        """Return the SmolVM-built base kernel URL for the current host arch.
+        """Return the SmolVM-built Image-format base kernel URL.
 
         Retained for back-compat with callers that branched on boot profile;
-        post-0.0.14a0 the QEMU and Firecracker paths use the same kernel.
+        returns the ``.image`` artifact (QEMU-compatible).
         """
-        return self._resolve_kernel_url(KernelBootProfile.QEMU_DESKTOP_INITRAMFS)
+        from smolvm.images.published import BASE_KERNELS
+
+        smolvm_arch = "amd64" if self._host_arch_key() == "x86_64" else "arm64"
+        return BASE_KERNELS[smolvm_arch].image_url
 
     def _resolve_kernel_url(
         self,
@@ -1344,17 +1351,17 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
     ) -> str:
         """Return the effective kernel URL for an image build.
 
-        Both ``MICROVM_DIRECT`` and ``QEMU_DESKTOP_INITRAMFS`` resolve to the
-        same SmolVM-built artifact ([BASE_KERNELS](smolvm.images.published)) —
-        the per-profile URL split is gone after the kernel-source migration.
-        Callers passing an explicit ``kernel_url`` override that as before.
+        Defaults to the ELF artifact (Firecracker-compatible). Callers wanting
+        the Image format pass it explicitly via ``kernel_url`` — typically
+        derived in ``_build_auto_config`` from ``BASE_KERNELS[arch].url_for(fmt)``
+        based on the resolved backend.
         """
         if kernel_url is not None:
             return kernel_url
         from smolvm.images.published import BASE_KERNELS
 
         smolvm_arch = "amd64" if self._host_arch_key() == "x86_64" else "arm64"
-        return BASE_KERNELS[smolvm_arch].kernel_url
+        return BASE_KERNELS[smolvm_arch].elf_url
 
     def _fingerprint_with_content(
         self,
@@ -1411,10 +1418,15 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
         """
         from smolvm.images.published import BASE_KERNELS, ensure_base_kernel
 
-        # Recognise our own published kernel URLs and use the verified path.
+        # Recognise our own published kernel URLs (either format) and use the
+        # SHA-verified cached path.
         for arch, entry in BASE_KERNELS.items():
-            if entry.kernel_url == url:
-                cached = ensure_base_kernel(arch)
+            if url == entry.elf_url:
+                cached = ensure_base_kernel(arch, "elf")
+                shutil.copy2(cached, dest)
+                return
+            if url == entry.image_url:
+                cached = ensure_base_kernel(arch, "image")
                 shutil.copy2(cached, dest)
                 return
 

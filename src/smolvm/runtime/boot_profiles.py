@@ -116,13 +116,25 @@ def get_boot_profile_spec(profile: KernelBootProfile) -> BootProfileSpec:
     return _BOOT_PROFILE_SPECS[profile]
 
 
-def resolve_kernel_path(arch: str, *, cache_dir: Path | None = None) -> Path:
-    """Return the local path to the SmolVM-built base kernel for ``arch``.
+def resolve_kernel_path(
+    arch: str,
+    backend: str,
+    *,
+    cache_dir: Path | None = None,
+) -> Path:
+    """Return the local path to the SmolVM-built base kernel.
+
+    Picks the binary format by backend:
+    - ``firecracker`` / ``libkrun`` → ELF (their kernel loaders require it)
+    - ``qemu`` → Image / bzImage (QEMU on aarch64 ``virt`` empirically refuses
+      to boot a Linux ELF; on x86 q35 either format works but we standardise
+      on Image for consistency)
 
     Downloads (with SHA-256 verification) on cache miss, returns a cached
-    path on hit. Same artifact across all boot profiles — what differs
-    between profiles is the *boot args*, not the kernel binary.
+    path on hit. Same source build under both formats; what differs is just
+    the container.
     """
-    from smolvm.images.published import ensure_base_kernel
+    from smolvm.images.published import _kernel_format_for_vmm, ensure_base_kernel
 
-    return ensure_base_kernel(to_published_arch(arch), cache_dir=cache_dir)
+    fmt = _kernel_format_for_vmm(backend)  # type: ignore[arg-type]
+    return ensure_base_kernel(to_published_arch(arch), fmt, cache_dir=cache_dir)

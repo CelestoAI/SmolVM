@@ -193,8 +193,10 @@ class TestBrowserImageBuilder:
             assert init_script.startswith("#!/bin/sh")
             assert rootfs_size_mb == 4096
             # Post-0.0.14a0 the kernel URL resolves to the SmolVM-built
-            # universal microvm kernel (same artifact across firecracker/qemu).
-            assert kwargs["kernel_url"] == BASE_KERNELS["amd64"].kernel_url
+            # base kernel. Builder default is the ELF format (Firecracker —
+            # the typical Linux backend); QEMU callers thread an explicit
+            # kernel_url override via _build_auto_config.
+            assert kwargs["kernel_url"] == BASE_KERNELS["amd64"].elf_url
             assert kwargs["fingerprint_data"]["kernel_profile"] == "microvm_direct"
             assert kwargs["fingerprint_data"]["image_type"] == "browser-chromium-v3"
             helper_script = kwargs["extra_files"]["smolvm-browser-session"]

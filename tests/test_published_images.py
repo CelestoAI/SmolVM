@@ -436,56 +436,77 @@ class TestZstdDecompression:
 
 
 class TestBaseKernels:
-    """Sanity checks for the universal SmolVM-built kernels (BASE_KERNELS)."""
+    """Sanity checks for the SmolVM-built kernels (BASE_KERNELS).
+
+    Each entry carries TWO formats — ELF for Firecracker, Image for QEMU —
+    from a single source build. See :class:`BaseKernel` docstring.
+    """
 
     def test_amd64_entry_shape(self) -> None:
         entry = BASE_KERNELS.get("amd64")
         assert entry is not None
         assert isinstance(entry, BaseKernel)
         assert entry.arch == "amd64"
-        assert len(entry.kernel_sha256) == 64  # SHA-256 hex
-        assert entry.kernel_url.endswith("vmlinux-amd64-qemu.bin")
-        assert "images-v" in entry.kernel_url
+        assert len(entry.elf_sha256) == 64
+        assert len(entry.image_sha256) == 64
+        assert entry.elf_url.endswith("vmlinux-amd64.elf")
+        assert entry.image_url.endswith("vmlinux-amd64.image")
+        assert "images-v" in entry.elf_url
 
     def test_arm64_entry_shape(self) -> None:
         entry = BASE_KERNELS.get("arm64")
         assert entry is not None
         assert entry.arch == "arm64"
-        assert len(entry.kernel_sha256) == 64
-        assert entry.kernel_url.endswith("vmlinux-arm64-qemu.bin")
+        assert entry.elf_url.endswith("vmlinux-arm64.elf")
+        assert entry.image_url.endswith("vmlinux-arm64.image")
 
-    def test_amd64_and_arm64_have_distinct_shas(self) -> None:
-        """Sanity: copy-paste error would give both arches the same kernel SHA."""
+    def test_url_for_format_dispatches(self) -> None:
+        amd = BASE_KERNELS["amd64"]
+        assert amd.url_for("elf") == amd.elf_url
+        assert amd.url_for("image") == amd.image_url
+        assert amd.sha256_for("elf") == amd.elf_sha256
+        assert amd.sha256_for("image") == amd.image_sha256
+
+    def test_amd64_and_arm64_have_distinct_urls(self) -> None:
+        """Sanity: per-arch URLs are distinct (catches copy-paste regressions)."""
         amd = BASE_KERNELS["amd64"]
         arm = BASE_KERNELS["arm64"]
-        assert amd.kernel_sha256 != arm.kernel_sha256
-        assert amd.kernel_url != arm.kernel_url
+        assert amd.elf_url != arm.elf_url
+        assert amd.image_url != arm.image_url
+
+    def test_elf_and_image_urls_are_distinct(self) -> None:
+        """Format URLs must point at different artifacts."""
+        for arch in ("amd64", "arm64"):
+            entry = BASE_KERNELS[arch]
+            assert entry.elf_url != entry.image_url
 
     def test_manifest_rows_reuse_base_kernel_shas(self) -> None:
-        """Every MANIFEST row's kernel must mirror the matching BASE_KERNELS entry.
+        """Every MANIFEST row's kernel must mirror the matching BASE_KERNELS
+        entry's URL+SHA for the format implied by its vmm.
 
-        BASE_KERNELS is the source of truth for the universal kernel — if a
-        manifest row drifts (e.g. someone hand-edits a SHA), the same
-        kernel binary would be referenced as two different SHAs across
-        rows, and one of them would fail SHA verification at download time.
+        BASE_KERNELS is the source of truth — if a manifest row drifts
+        (e.g. someone hand-edits a SHA), SHA verification at download
+        time would fail.
         """
-        for (_preset, arch, _vmm), row in MANIFEST.items():
+        from smolvm.images.published import _kernel_format_for_vmm
+
+        for (_preset, arch, vmm), row in MANIFEST.items():
             base = BASE_KERNELS[arch]
-            assert row.kernel_url == base.kernel_url, f"{(_preset, arch, _vmm)} kernel_url drift"
-            assert row.kernel_sha256 == base.kernel_sha256, (
-                f"{(_preset, arch, _vmm)} kernel_sha256 drift"
+            fmt = _kernel_format_for_vmm(vmm)
+            assert row.kernel_url == base.url_for(fmt), f"{(_preset, arch, vmm)} kernel_url drift"
+            assert row.kernel_sha256 == base.sha256_for(fmt), (
+                f"{(_preset, arch, vmm)} kernel_sha256 drift"
             )
 
     def test_ensure_base_kernel_unknown_arch_raises(self, tmp_path: Path) -> None:
         with pytest.raises(ImageError, match="No base kernel registered"):
-            ensure_base_kernel("riscv64", cache_dir=tmp_path, registry={})  # type: ignore[arg-type]
+            ensure_base_kernel("riscv64", "elf", cache_dir=tmp_path, registry={})  # type: ignore[arg-type]
 
     def test_ensure_base_kernel_uses_cache_layout(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """ensure_base_kernel should land at base-kernel-v<version>-<arch>/vmlinux.bin
-        and surface SHA mismatches via the underlying ImageManager rather than
-        silently caching a corrupt artifact."""
+        """ensure_base_kernel should land at base-kernel-v<version>-<arch>/vmlinux.<fmt>
+        and request the right SHA per format."""
         import smolvm.images.published as published
 
         captured: dict[str, object] = {}
@@ -503,22 +524,26 @@ class TestBaseKernels:
             captured["url"] = url
             captured["filename"] = filename
             captured["sha256"] = sha256
-            return tmp_path / "vmlinux.bin"
+            return tmp_path / filename
 
         monkeypatch.setattr(
             published.ImageManager,
             "ensure_rootfs_only",
             fake_ensure_rootfs_only,
         )
-        path = ensure_base_kernel("amd64", cache_dir=tmp_path, version="9.9.9z")
-        assert path == tmp_path / "vmlinux.bin"
+
+        path_elf = ensure_base_kernel("amd64", "elf", cache_dir=tmp_path, version="9.9.9z")
+        assert path_elf == tmp_path / "vmlinux.elf"
         assert captured["name"] == "base-kernel-v9.9.9z-amd64"
-        assert captured["filename"] == "vmlinux.bin"
-        assert captured["sha256"] == BASE_KERNELS["amd64"].kernel_sha256
-        # URL is computed via _release_kernel_url, so this confirms version is
-        # threaded through to the URL too — using the registry param to avoid
-        # depending on what BASE_KERNELS computes for our injected version.
-        assert captured["url"] == BASE_KERNELS["amd64"].kernel_url
+        assert captured["filename"] == "vmlinux.elf"
+        assert captured["sha256"] == BASE_KERNELS["amd64"].elf_sha256
+        assert captured["url"] == BASE_KERNELS["amd64"].elf_url
+
+        path_img = ensure_base_kernel("amd64", "image", cache_dir=tmp_path, version="9.9.9z")
+        assert path_img == tmp_path / "vmlinux.image"
+        assert captured["filename"] == "vmlinux.image"
+        assert captured["sha256"] == BASE_KERNELS["amd64"].image_sha256
+        assert captured["url"] == BASE_KERNELS["amd64"].image_url
 
 
 class TestBundledManifest:
@@ -530,24 +555,30 @@ class TestBundledManifest:
         assert len(entry.rootfs_sha256) == 64  # SHA-256 hex
         assert len(entry.kernel_sha256) == 64
         assert entry.rootfs_url.endswith("openclaw-amd64-rootfs.ext4.zst")
-        # Post-0.0.14a0 the kernel URL is the universal SmolVM-built artifact
-        # (vmlinux-<arch>-qemu.bin), not a per-preset firecracker kernel.
-        assert entry.kernel_url.endswith("vmlinux-amd64-qemu.bin")
-        assert "images-v" in entry.rootfs_url  # tag-based URL pattern
+        # Firecracker rows get the ELF-format kernel.
+        assert entry.kernel_url.endswith("vmlinux-amd64.elf")
+        assert "images-v" in entry.rootfs_url
 
     def test_openclaw_arm64_firecracker_entry_shape(self) -> None:
         entry = MANIFEST.get(("openclaw", "arm64", "firecracker"))
         assert entry is not None
         assert len(entry.rootfs_sha256) == 64
         assert entry.rootfs_url.endswith("openclaw-arm64-rootfs.ext4.zst")
-        assert entry.kernel_url.endswith("vmlinux-arm64-qemu.bin")
+        assert entry.kernel_url.endswith("vmlinux-arm64.elf")
 
-    def test_amd64_and_arm64_have_distinct_shas(self) -> None:
-        """Sanity: copy-paste error would give both arches the same SHA."""
+    def test_openclaw_qemu_rows_use_image_format(self) -> None:
+        """QEMU rows must use the Image-format kernel — see _kernel_format_for_vmm."""
+        amd_qemu = MANIFEST[("openclaw", "amd64", "qemu")]
+        arm_qemu = MANIFEST[("openclaw", "arm64", "qemu")]
+        assert amd_qemu.kernel_url.endswith("vmlinux-amd64.image")
+        assert arm_qemu.kernel_url.endswith("vmlinux-arm64.image")
+
+    def test_arches_have_distinct_rootfs_shas(self) -> None:
+        """Sanity: copy-paste error would give both arches the same rootfs SHA."""
         amd = MANIFEST[("openclaw", "amd64", "firecracker")]
         arm = MANIFEST[("openclaw", "arm64", "firecracker")]
         assert amd.rootfs_sha256 != arm.rootfs_sha256
-        assert amd.kernel_sha256 != arm.kernel_sha256
+        assert amd.rootfs_url != arm.rootfs_url
 
     def test_manifest_version_matches_cli_version(self) -> None:
         """Catch drift if pyproject.toml is bumped without regenerating MANIFEST.
