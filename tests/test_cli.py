@@ -2884,6 +2884,27 @@ class TestPublishedImageLaunchPath:
             assert "console=" not in result
             assert "8250.nr_uarts=0" in result
 
+    @patch.dict(os.environ, {"SMOLVM_USE_PUBLISHED": "1"})
+    @patch("smolvm.cli.main.platform.system", return_value="Linux")
+    @patch(
+        "smolvm.cli.main._PUBLISHED_IMAGE_BOOT_ARGS",
+        new={},  # nothing registered → unconditional miss
+    )
+    def test_published_path_rejects_unconfigured_preset_vmm(
+        self,
+        _mock_system: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A preset with no boot_args entry for the resolved vmm must
+        produce a clean exit-2 error, not a KeyError further down."""
+        ret = main(["openclaw", "start", "--json"])
+
+        envelope = json.loads(capsys.readouterr().out)
+        assert ret == 2
+        assert envelope["exit_code"] == 2
+        assert "no boot_args" in envelope["error"]["message"]
+        assert "SMOLVM_USE_PUBLISHED" in envelope["error"]["message"]
+
     @pytest.mark.parametrize(
         "system,machine,expected_arch,expected_vmm,expected_backend",
         [

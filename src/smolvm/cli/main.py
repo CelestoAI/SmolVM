@@ -1825,6 +1825,16 @@ _PUBLISHED_IMAGE_BOOT_ARGS: dict[tuple[str, Vmm], str] = {
     ("openclaw", "libkrun"): "reboot=k panic=1 init=/init",
 }
 
+# vmm → SmolVM runtime backend. libkrun ships a Firecracker-API-compatible
+# control plane; we route it through the qemu backend on macOS until the
+# libkrun spike lands its own runtime path. Explicit dict (vs ternary)
+# keeps that intentional aliasing visible at the call site.
+_VMM_TO_BACKEND: dict[Vmm, str] = {
+    "firecracker": "firecracker",
+    "qemu": "qemu",
+    "libkrun": "qemu",
+}
+
 
 def _boot_args_for(preset_name: str, vmm: Vmm, arch: Arch) -> str:
     """Resolve boot args for the published-image path.
@@ -1940,10 +1950,7 @@ def _run_start_with_published_image(args: argparse.Namespace, preset: object) ->
         # yet.
         local_image = ensure_published_image(_preset.name, arch, vmm)
 
-        # vmm → backend: firecracker maps to the firecracker runtime; qemu
-        # and libkrun both run under the qemu backend on macOS today (libkrun
-        # support arrives in a separate spike).
-        backend = "firecracker" if vmm == "firecracker" else "qemu"
+        backend = _VMM_TO_BACKEND[vmm]
 
         config = VMConfig(
             vm_id=_resolve_vm_name(args.name, prefix=_preset.name),
