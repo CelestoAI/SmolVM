@@ -100,8 +100,13 @@ def normalize_arch(arch: str) -> str:
     raise ValueError(f"Unsupported host architecture '{arch}'")
 
 
-def _to_published_arch(arch: str) -> PublishedArch:
-    """Map kernel-style arch (`x86_64`/`aarch64`) to SmolVM-style (`amd64`/`arm64`)."""
+def to_published_arch(arch: str) -> PublishedArch:
+    """Map kernel-style arch (`x86_64`/`aarch64`) to SmolVM-style (`amd64`/`arm64`).
+
+    Bridges the two arch namings that live next to each other in this codebase:
+    ``boot_profiles`` and Linux internals use ``x86_64``/``aarch64``; the
+    published-image manifest and the auto-config flow use ``amd64``/``arm64``.
+    """
     normalized = normalize_arch(arch)
     return "amd64" if normalized == "x86_64" else "arm64"
 
@@ -120,4 +125,4 @@ def resolve_kernel_path(arch: str, *, cache_dir: Path | None = None) -> Path:
     """
     from smolvm.images.published import ensure_base_kernel
 
-    return ensure_base_kernel(_to_published_arch(arch), cache_dir=cache_dir)
+    return ensure_base_kernel(to_published_arch(arch), cache_dir=cache_dir)

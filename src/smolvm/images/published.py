@@ -140,14 +140,13 @@ _MANIFEST_VERSION = "0.0.14a0"
 
 # Per-arch SmolVM-built universal kernels. Replaces the previously-fetched
 # Firecracker-CI vmlinux from S3 and the Ubuntu cloud kernel — same artifact
-# now boots all three runtimes (Firecracker / QEMU / libkrun). Same URL is
-# used by every MANIFEST row below; this registry is the source of truth so
-# adding a future preset doesn't drift kernel SHAs across rows.
+# now boots all three runtimes (Firecracker / QEMU / libkrun). Source of
+# truth for kernel URL+SHA: the MANIFEST rows below reference these entries
+# so adding a future preset can't drift kernel SHAs across rows.
 #
-# SHA-256 placeholders ("0" * 64) are filled in once build-qemu-kernel.yml
-# CI completes for the matching tag (images-v<_MANIFEST_VERSION>). The
-# drift-detection test in test_published_images.py refuses to load with
-# placeholder SHAs in a published manifest version.
+# SHAs come from the build-qemu-kernel.yml CI run that publishes
+# `vmlinux-<arch>-qemu.bin` to release tag `images-v<_MANIFEST_VERSION>`;
+# they're also visible in that workflow's step summary.
 BASE_KERNELS: dict[Arch, BaseKernel] = {
     "amd64": BaseKernel(
         arch="amd64",
@@ -162,10 +161,10 @@ BASE_KERNELS: dict[Arch, BaseKernel] = {
 }
 
 # Bundled preset manifest. The kernel URL/SHA on each row mirrors BASE_KERNELS
-# above (same artifact across firecracker/qemu rows) — kept duplicated on the
-# rows because consumers look up the full (preset, arch, vmm) tuple. Boot args
-# are what actually differ between firecracker and qemu rows. Rootfs SHAs
-# are placeholders until build-published-images.yml CI completes.
+# above (same artifact across firecracker/qemu rows) — the kernel is shared
+# but rows are kept distinct because consumers look up the full
+# (preset, arch, vmm) tuple, and boot args differ between firecracker and qemu.
+# Rootfs SHAs come from build-published-images.yml CI for the matching tag.
 MANIFEST: dict[tuple[Preset, Arch, Vmm], PublishedImage] = {
     ("openclaw", "amd64", "firecracker"): PublishedImage(
         preset="openclaw",

@@ -58,7 +58,12 @@ from smolvm.images.cloud_init import (
 )
 from smolvm.images.manager import ImageManager
 from smolvm.runtime.backends import BACKEND_LIBKRUN, BACKEND_QEMU, resolve_backend
-from smolvm.runtime.boot_profiles import KernelBootProfile, get_boot_profile_spec
+from smolvm.runtime.boot_profiles import (
+    KernelBootProfile,
+    get_boot_profile_spec,
+    normalize_arch,
+    to_published_arch,
+)
 from smolvm.ssh import SSHClient
 from smolvm.types import (
     CommandResult,
@@ -489,9 +494,11 @@ def _build_auto_config(
         )
         # Pull the SmolVM-built base kernel (universal across Firecracker/QEMU/
         # libkrun, no initrd needed — see kernel/qemu/README.md).
-        host_arch = platform.machine().lower()
-        smolvm_arch = "amd64" if host_arch in {"x86_64", "amd64"} else "arm64"
-        kernel_path = ensure_base_kernel(smolvm_arch, cache_dir=image_manager.cache_dir)
+        host_arch = platform.machine()
+        kernel_path = ensure_base_kernel(
+            to_published_arch(host_arch),
+            cache_dir=image_manager.cache_dir,
+        )
 
         if resolved_disk_size_mib > default_disk_size_mib:
             rootfs_path, _resolved_size = _prepare_sized_qcow2(
@@ -514,8 +521,7 @@ def _build_auto_config(
         # ship a custom /init shell script). Ubuntu's rootfs has no /init —
         # init lives at /sbin/init (systemd). Letting the kernel pick its
         # default search path lands on systemd, which kicks cloud-init.
-        normalized_arch = "aarch64" if platform.machine().lower() in {"arm64", "aarch64"} else "x86_64"
-        console = "ttyAMA0" if normalized_arch == "aarch64" else "ttyS0"
+        console = "ttyAMA0" if normalize_arch(host_arch) == "aarch64" else "ttyS0"
         boot_args = f"console={console} reboot=k panic=1 root=/dev/vda1 rw"
 
         user_data = default_user_data(public_key_value)
