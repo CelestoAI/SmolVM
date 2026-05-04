@@ -1,0 +1,165 @@
+# Build SmolVM's QEMU/libkrun-tuned Linux kernel and upload it to the
+# images-v<version> draft GitHub Release.
+#
+# Decoupled from build-published-images.yml on purpose: kernel cadence
+# differs from rootfs cadence. This workflow re-runs only when the inputs
+# in kernel/qemu/ change (linux.version, config.fragment, build.sh) — not
+# every time a preset's tools update.
+#
+# Output assets per arch:
+#   vmlinux-<arch>-qemu.bin           — the kernel
+#   vmlinux-<arch>-qemu.config        — the resolved .config (debugging aid)
+#
+# These artifacts are preset-independent (one kernel boots all presets).
+# That's why the naming doesn't include a preset, unlike the existing
+# per-preset Firecracker assets.
+
+name: Build QEMU Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: >-
+          Release tag to upload to (e.g. images-v0.0.13). Created as a draft
+          if missing. Leave empty to derive from pyproject version.
+        type: string
+        default: ""
+  push:
+    paths:
+      - "kernel/qemu/**"
+      - ".github/workflows/build-qemu-kernel.yml"
+    branches:
+      - main
+
+permissions:
+  contents: write  # required to create/upload to GitHub Releases
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          # bc, flex, bison, libelf-dev, libssl-dev are required by the
+          # Linux kernel build. ubuntu-latest already has most of them but
+          # libelf-dev + a couple others aren't preinstalled.
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+              bc bison flex libelf-dev libssl-dev xz-utils
+
+      - name: Cache built kernel by input hash
+        id: cache
+        uses: actions/cache@v4
+        with:
+          # Cached artifact lives next to the workflow's checkout dir. Keyed
+          # on the inputs alone — same Linux + same fragment + same script
+          # produces the same kernel byte-for-byte (modulo nondeterminism
+          # we'd want to track separately if it bites).
+          path: kernel-out
+          key: linux-kernel-${{ matrix.arch }}-${{ hashFiles('kernel/qemu/linux.version', 'kernel/qemu/linux.sha256', 'kernel/qemu/config.fragment', 'kernel/qemu/build.sh') }}
+
+      - name: Build kernel
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          OUT_DIR: ${{ github.workspace }}/kernel-out
+          SMOLVM_ARCH_OVERRIDE: ${{ matrix.arch }}
+        run: |
+          mkdir -p "$OUT_DIR"
+          bash kernel/qemu/build.sh
+
+      - name: Sanity-check artifact
+        run: |
+          ARTIFACT="kernel-out/vmlinux-${{ matrix.arch }}-qemu.bin"
+          test -f "$ARTIFACT" || { echo "missing: $ARTIFACT"; exit 1; }
+          # Kernel images are MBs, not bytes. Catches the silent
+          # "build produced an empty file" failure mode.
+          size=$(stat -c '%s' "$ARTIFACT")
+          test "$size" -gt 1000000 || { echo "$ARTIFACT is suspiciously small ($size bytes)"; exit 1; }
+          file "$ARTIFACT"
+          ls -lh kernel-out/
+
+      - name: Resolve release tag
+        id: release
+        env:
+          INPUT_TAG: ${{ inputs.release_tag }}
+        run: |
+          if [ -n "${INPUT_TAG:-}" ]; then
+            tag="$INPUT_TAG"
+          else
+            # tomllib.load() takes a binary file; tomllib.loads() takes a str
+            # (NOT bytes). Same idiom as build-published-images.yml.
+            version=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+            tag="images-v${version}"
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Release tag: ${tag}"
+
+      - name: Compute SHA-256
+        id: sha
+        env:
+          NAME: vmlinux-${{ matrix.arch }}-qemu.bin
+        run: |
+          kernel_sha=$(sha256sum "kernel-out/${NAME}" | cut -d' ' -f1)
+          kernel_size=$(stat -c '%s' "kernel-out/${NAME}")
+          {
+            echo "kernel_sha=${kernel_sha}"
+            echo "kernel_size=${kernel_size}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload to GitHub Releases (draft)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          # Idempotent draft create. Race between matrix cells handled the
+          # same way as build-published-images.yml.
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft \
+              --title "Published images $TAG" \
+              --notes "Auto-generated draft release for SmolVM published images. Verify SHA-256 sums and content before publishing." \
+              || echo "Draft already exists (race with another matrix cell), continuing."
+          fi
+          # --clobber overwrites any prior asset with the same name, so re-runs
+          # of the workflow for the same tag replace existing artifacts cleanly.
+          gh release upload "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber \
+            "kernel-out/vmlinux-${ARCH}-qemu.bin" \
+            "kernel-out/vmlinux-${ARCH}-qemu.config"
+
+      - name: Step summary
+        env:
+          ARCH: ${{ matrix.arch }}
+          TAG: ${{ steps.release.outputs.tag }}
+          KERNEL_SHA: ${{ steps.sha.outputs.kernel_sha }}
+          KERNEL_SIZE: ${{ steps.sha.outputs.kernel_size }}
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+        run: |
+          {
+            echo "## QEMU kernel build: \`${ARCH}\`"
+            echo ""
+            echo "Uploaded to draft release [\`${TAG}\`](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG})."
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Cache hit | \`${CACHE_HIT}\` |"
+            echo "| Linux version | \`$(cat kernel/qemu/linux.version)\` |"
+            echo "| Artifact | \`vmlinux-${ARCH}-qemu.bin\` |"
+            echo "| Size | $(numfmt --to=iec-i --suffix=B ${KERNEL_SIZE}) |"
+            echo "| SHA-256 | \`${KERNEL_SHA}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

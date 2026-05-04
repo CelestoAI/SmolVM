@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# Build the SmolVM QEMU/libkrun-tuned Linux kernel from upstream source.
+#
+# Inputs (alongside this script in kernel/qemu/):
+#   linux.version    Pinned tarball version (e.g. "6.12.10")
+#   linux.sha256     SHA-256 line for `sha256sum -c`
+#   config.fragment  Our deltas merged onto microvm_defconfig (x86) or
+#                    defconfig (arm64)
+#
+# Output: vmlinux-<arch>-qemu.bin in $OUT_DIR (default: $PWD).
+#
+# Usage:
+#   bash build.sh                      # builds for host arch
+#   ARCH=arm64 bash build.sh           # cross-build (needs cross toolchain)
+#   OUT_DIR=/tmp/k bash build.sh       # custom output dir
+#
+# In CI, the workflow runs this on a native runner per arch, so ARCH defaults
+# to the host. Local devs on Apple Silicon get arm64; on Intel Macs/Linux
+# x86 boxes, amd64.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+LINUX_VERSION="$(cat "$SCRIPT_DIR/linux.version" | tr -d '[:space:]')"
+LINUX_SHA256_LINE="$(cat "$SCRIPT_DIR/linux.sha256")"
+CONFIG_FRAGMENT="$SCRIPT_DIR/config.fragment"
+
+# Host arch → SmolVM arch label. Same mapping the manifest uses.
+HOST_ARCH="$(uname -m)"
+case "$HOST_ARCH" in
+    x86_64|amd64)    SMOLVM_ARCH=amd64 ;;
+    aarch64|arm64)   SMOLVM_ARCH=arm64 ;;
+    *) echo "unsupported host arch: $HOST_ARCH" >&2; exit 2 ;;
+esac
+SMOLVM_ARCH="${SMOLVM_ARCH_OVERRIDE:-$SMOLVM_ARCH}"
+
+# SmolVM arch label → kernel ARCH= variable.
+case "$SMOLVM_ARCH" in
+    amd64)  KARCH=x86_64; KIMAGE_REL=arch/x86/boot/bzImage; DEFCONFIG=microvm_defconfig ;;
+    arm64)  KARCH=arm64;  KIMAGE_REL=arch/arm64/boot/Image; DEFCONFIG=defconfig ;;
+    *) echo "internal error: unhandled SMOLVM_ARCH $SMOLVM_ARCH" >&2; exit 2 ;;
+esac
+
+OUT_DIR="${OUT_DIR:-$PWD}"
+WORK_DIR="${WORK_DIR:-$(mktemp -d)}"
+TARBALL="$WORK_DIR/linux-$LINUX_VERSION.tar.xz"
+SRC_DIR="$WORK_DIR/linux-$LINUX_VERSION"
+ARTIFACT="$OUT_DIR/vmlinux-$SMOLVM_ARCH-qemu.bin"
+
+echo "==> Linux $LINUX_VERSION → $SMOLVM_ARCH (kernel ARCH=$KARCH)"
+echo "    work dir: $WORK_DIR"
+echo "    output:   $ARTIFACT"
+
+# 1. Download the tarball and verify against our pinned SHA.
+if [ ! -f "$TARBALL" ]; then
+    echo "==> Downloading linux-$LINUX_VERSION.tar.xz"
+    curl --fail --location --silent --show-error \
+        --output "$TARBALL" \
+        "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$LINUX_VERSION.tar.xz"
+fi
+
+echo "==> Verifying tarball SHA-256"
+(cd "$WORK_DIR" && echo "$LINUX_SHA256_LINE" | sha256sum -c -)
+
+# 2. Extract.
+if [ ! -d "$SRC_DIR" ]; then
+    echo "==> Extracting"
+    tar -C "$WORK_DIR" -xf "$TARBALL"
+fi
+
+cd "$SRC_DIR"
+
+# 3. Apply baseline defconfig + our fragment.
+echo "==> Generating .config (baseline=$DEFCONFIG + config.fragment)"
+make ARCH="$KARCH" "$DEFCONFIG" >/dev/null
+
+# merge_config.sh wants the fragment via positional args; -m mode merges,
+# preserving any settings not mentioned in the fragment.
+scripts/kconfig/merge_config.sh -m -O . .config "$CONFIG_FRAGMENT" >/dev/null
+
+# olddefconfig fills in any new symbols introduced by Linux that weren't in
+# the merged base — picks each one's default. Without this, a Linux bump can
+# leave half-configured symbols that fail the build cryptically.
+make ARCH="$KARCH" olddefconfig >/dev/null
+
+# 4. Sanity check: every symbol in our fragment must end up =y in .config.
+# Catches the case where olddefconfig silently downgrades one of our deltas
+# (e.g. because a dependency is missing) — that's an actionable signal that
+# the fragment needs adjustment, not a silent failure to debug at boot.
+echo "==> Verifying fragment was honored"
+fail=0
+while IFS= read -r raw; do
+    line="${raw%%#*}"  # strip inline comments
+    line="${line%"${line##*[![:space:]]}"}"  # rtrim
+    line="${line#"${line%%[![:space:]]*}"}"  # ltrim
+    case "$line" in
+        ""|"# CONFIG_"*) continue ;;
+        "CONFIG_"*=y)
+            symbol="${line%%=*}"
+            grep -qE "^${symbol}=y$" .config && continue
+            echo "  MISSING: $symbol — wanted =y, .config has: $(grep -E "^# ?${symbol}[ =]" .config || echo '<absent>')"
+            fail=1
+            ;;
+    esac
+done < "$CONFIG_FRAGMENT"
+[ "$fail" -eq 0 ] || { echo "==> Fragment verification failed"; exit 1; }
+
+# 5. Build the kernel image.
+echo "==> Building kernel ($(nproc) jobs)"
+make ARCH="$KARCH" -j"$(nproc)" "$(basename "$KIMAGE_REL")"
+
+# 6. Stage the artifact + record the resolved config (debugging aid).
+mkdir -p "$OUT_DIR"
+cp "$KIMAGE_REL" "$ARTIFACT"
+cp .config "$OUT_DIR/vmlinux-$SMOLVM_ARCH-qemu.config"
+
+echo "==> Done."
+echo "    $ARTIFACT  ($(wc -c <"$ARTIFACT" | tr -d ' ') bytes)"
+echo "    $OUT_DIR/vmlinux-$SMOLVM_ARCH-qemu.config"
