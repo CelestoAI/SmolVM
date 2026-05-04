@@ -134,7 +134,7 @@ MANIFEST: dict[tuple[Preset, Arch, Vmm], PublishedImage] = {
         kernel_url=_release_asset_url("openclaw", "amd64", "vmlinux.bin", _MANIFEST_VERSION),
         kernel_sha256="d361a5f2e67b2e243964ad93f25a2d9e5bee320204a84a7af089949228af5c2a",
         rootfs_url=_release_asset_url("openclaw", "amd64", "rootfs.ext4.zst", _MANIFEST_VERSION),
-        rootfs_sha256="5d3fe222b017f350f5bb2f01c1fa28cd3425b5dddb32d6377d97bc0e3fea355b",
+        rootfs_sha256="919eea4fdaae8674c6749cb6acd9a1b51235369e412a08d38c5062519eaf8875",
     ),
     ("openclaw", "arm64", "firecracker"): PublishedImage(
         preset="openclaw",
@@ -143,7 +143,7 @@ MANIFEST: dict[tuple[Preset, Arch, Vmm], PublishedImage] = {
         kernel_url=_release_asset_url("openclaw", "arm64", "vmlinux.bin", _MANIFEST_VERSION),
         kernel_sha256="7d8dc0bce701037ea5ceccfc997c05b11f99aba215c73ed18a2269154837c497",
         rootfs_url=_release_asset_url("openclaw", "arm64", "rootfs.ext4.zst", _MANIFEST_VERSION),
-        rootfs_sha256="48d86a4e4a75f8c101ebab3f76067cc2c92473ac0c30d5a2fd71a1dd2f43f6c7",
+        rootfs_sha256="bb5c42ffdd757ffb48c62f9d841230ff4e345a75fc40df210722d0a598626f29",
     ),
     # QEMU rows reuse the firecracker rootfs (same userspace; only the
     # kernel differs). Kernels come from the SmolVM-built QEMU/libkrun
@@ -156,7 +156,7 @@ MANIFEST: dict[tuple[Preset, Arch, Vmm], PublishedImage] = {
         kernel_url=_release_kernel_url("amd64", "qemu", _MANIFEST_VERSION),
         kernel_sha256="db6ddc88e5b88941164df53f5f798d080b95a90c411df8d2b9f501eb18fb89aa",
         rootfs_url=_release_asset_url("openclaw", "amd64", "rootfs.ext4.zst", _MANIFEST_VERSION),
-        rootfs_sha256="5d3fe222b017f350f5bb2f01c1fa28cd3425b5dddb32d6377d97bc0e3fea355b",
+        rootfs_sha256="919eea4fdaae8674c6749cb6acd9a1b51235369e412a08d38c5062519eaf8875",
     ),
     ("openclaw", "arm64", "qemu"): PublishedImage(
         preset="openclaw",
@@ -165,7 +165,7 @@ MANIFEST: dict[tuple[Preset, Arch, Vmm], PublishedImage] = {
         kernel_url=_release_kernel_url("arm64", "qemu", _MANIFEST_VERSION),
         kernel_sha256="6f4f42cfa1d3038bd06d99e09887119e4c7fdd2d1da02913e1b6b10359376752",
         rootfs_url=_release_asset_url("openclaw", "arm64", "rootfs.ext4.zst", _MANIFEST_VERSION),
-        rootfs_sha256="48d86a4e4a75f8c101ebab3f76067cc2c92473ac0c30d5a2fd71a1dd2f43f6c7",
+        rootfs_sha256="bb5c42ffdd757ffb48c62f9d841230ff4e345a75fc40df210722d0a598626f29",
     ),
 }
 
