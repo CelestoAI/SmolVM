@@ -51,6 +51,7 @@ from smolvm.host.doctor import run_doctor
 from smolvm.types import BrowserSessionState, GuestOS, VMState
 
 if TYPE_CHECKING:
+    from smolvm.images.published import Arch
     from smolvm.types import BrowserSessionInfo, SnapshotInfo, VMInfo
 
 DASHBOARD_ALLOW_BETA_ENV = "SMOLVM_DASHBOARD_ALLOW_BETA"
@@ -1833,7 +1834,7 @@ def _published_path_enabled() -> bool:
     return os.environ.get("SMOLVM_USE_PUBLISHED", "").strip().lower() in {"1", "true", "yes"}
 
 
-def _host_arch_for_published() -> str:
+def _host_arch_for_published() -> Arch:
     """Host CPU architecture in the form the manifest uses (``amd64``/``arm64``)."""
     machine = platform.machine().lower()
     if machine in {"arm64", "aarch64"}:

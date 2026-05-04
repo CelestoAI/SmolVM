@@ -27,9 +27,9 @@ decompresses the rootfs if the URL ends in ``.zst``.
 Why ``vmm`` is a separate dimension: the kernel must be tuned for the
 hypervisor it runs under (Firecracker uses MMIO virtio + 8250 UART; QEMU
 uses PCI virtio + PL011 UART on aarch64). The same rootfs works for both
-since it's just a filesystem, but different kernels are required. The CLI
-auto-derives ``vmm`` from ``platform.system()`` — that policy lives at the
-CLI layer, not here.
+since it's just a filesystem, but different kernels are required. The
+caller (typically the CLI) decides which ``vmm`` to request — this module
+is policy-free.
 """
 
 from __future__ import annotations
