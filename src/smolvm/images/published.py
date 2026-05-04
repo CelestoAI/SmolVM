@@ -169,21 +169,20 @@ _MANIFEST_VERSION = "0.0.14a0"
 # Placeholder zeros are filled in by the next CI run after build.sh changes
 # the artifact split. Until then, downloads will fail SHA verification —
 # which is the right failure mode (we don't want to ship stale SHAs).
-_PLACEHOLDER_SHA = "0000000000000000000000000000000000000000000000000000000000000000"
 BASE_KERNELS: dict[Arch, BaseKernel] = {
     "amd64": BaseKernel(
         arch="amd64",
         elf_url=_release_kernel_url("amd64", "elf", _MANIFEST_VERSION),
-        elf_sha256=_PLACEHOLDER_SHA,
+        elf_sha256="f652d798efb2b19c4923e5e7ff4e7b2e9db31ec8347cec2a5e6a27b813b2d5a1",
         image_url=_release_kernel_url("amd64", "image", _MANIFEST_VERSION),
-        image_sha256=_PLACEHOLDER_SHA,
+        image_sha256="55061bc45706eca229afdad31451d63e0695ce990fb1d46301194b4771e607f0",
     ),
     "arm64": BaseKernel(
         arch="arm64",
         elf_url=_release_kernel_url("arm64", "elf", _MANIFEST_VERSION),
-        elf_sha256=_PLACEHOLDER_SHA,
+        elf_sha256="d837ec0f6c12d6dd9b96885464db876699e3984c9c8b0c3699569e2000221fc2",
         image_url=_release_kernel_url("arm64", "image", _MANIFEST_VERSION),
-        image_sha256=_PLACEHOLDER_SHA,
+        image_sha256="200862461ac269baf56c636a76a96db204e216fc8d16a983b910cd22bf72469b",
     ),
 }
 
