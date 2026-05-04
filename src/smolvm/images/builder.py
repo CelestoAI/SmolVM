@@ -1465,9 +1465,13 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
         """
         logger.info("  [3/4] Creating ext4 filesystem via Docker helper (%dMB)...", rootfs_size_mb)
 
-        rootfs_dir = tmpdir / "rootfs-dir"
-        rootfs_dir.mkdir()
-
+        # Validate tar member paths up-front so a malicious docker export
+        # can't trick the in-container extraction either. Python's tarfile
+        # is the cheapest tool for the security check; the actual extract
+        # happens below as root inside the container so file uids/gids are
+        # preserved (extracting on the host as the unprivileged runner uid
+        # silently rewrites everything to that uid, then mke2fs -d bakes
+        # those bogus uids into the ext4 inodes — was a real bug).
         with tarfile.open(tar_path, "r") as tar:
             for member in tar.getmembers():
                 member_path = Path(member.name)
@@ -1476,21 +1480,14 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
                         f"Refusing to extract suspicious tar path from docker export: {member.name}"
                     )
 
-            # Python 3.14 defaults to a restrictive extraction filter that rejects
-            # absolute symlink targets commonly present in container rootfs archives.
-            # We already validated member names above, so trusted extraction is safe here.
-            try:
-                tar.extractall(path=rootfs_dir, filter="fully_trusted")
-            except TypeError:
-                # Python <3.12 does not support the 'filter' argument.
-                tar.extractall(path=rootfs_dir)
-
         rootfs_path.unlink(missing_ok=True)
         rootfs_name = shlex.quote(rootfs_path.name)
         shell_cmd = (
             "set -e; "
-            "apk add --no-cache e2fsprogs >/dev/null; "
-            f"mke2fs -d /work/rootfs -t ext4 -F /work/out/{rootfs_name} "
+            "apk add --no-cache e2fsprogs tar >/dev/null; "
+            "mkdir -p /work/rootfs-staging; "
+            "tar -xf /work/in/rootfs.tar -C /work/rootfs-staging; "
+            f"mke2fs -d /work/rootfs-staging -t ext4 -F /work/out/{rootfs_name} "
             f"{rootfs_size_mb}M >/dev/null"
         )
 
@@ -1501,7 +1498,7 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
                     "run",
                     "--rm",
                     "-v",
-                    f"{rootfs_dir.resolve()}:/work/rootfs:ro",
+                    f"{tar_path.resolve()}:/work/in/rootfs.tar:ro",
                     "-v",
                     f"{rootfs_path.parent.resolve()}:/work/out",
                     "alpine:3.19",
@@ -1518,7 +1515,7 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
             stderr = (e.stderr or "").strip()
             raise ImageError(
                 "Failed to create ext4 image via Docker helper.\n"
-                f"Command: docker run ... mke2fs\n"
+                f"Command: docker run ... tar | mke2fs\n"
                 f"stderr: {stderr}"
             ) from e
 
