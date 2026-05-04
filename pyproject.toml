@@ -57,10 +57,14 @@ dashboard = [
     "uvicorn[standard]>=0.34.0",
     "websockets>=14.0",
 ]
+memory = [
+    "sentence-transformers>=2.2.0",
+]
 all = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.34.0",
     "websockets>=14.0",
+    "sentence-transformers>=2.2.0",
 ]
 
 [project.scripts]

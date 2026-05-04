@@ -59,6 +59,7 @@ from smolvm.types import (
     WorkspaceMount,
 )
 from smolvm.vm import SmolVMManager
+from smolvm.memory import MemoryManager
 
 __version__ = _pkg_version("smolvm")
 
@@ -67,6 +68,7 @@ __all__ = [
     "SmolVM",
     "BrowserSession",
     "SmolVMManager",
+    "MemoryManager",
     # Image management
     "ImageManager",
     "ImageBuilder",

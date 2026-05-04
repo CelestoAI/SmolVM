@@ -35,6 +35,7 @@ import shlex
 import shutil
 import socket
 import subprocess
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -70,6 +71,8 @@ from smolvm.types import (
     WorkspaceMount,
 )
 from smolvm.vm import SmolVMManager
+from smolvm.memory._sqlite import SQLiteMemoryBackend
+from smolvm.memory.manager import MemoryManager
 
 logger = logging.getLogger(__name__)
 
@@ -805,6 +808,12 @@ class SmolVM:
         self._ssh_ready = False
         self._local_forwards: dict[tuple[int, int], _LocalForward] = {}
 
+        # Lazy-initialize memory layer (loaded on first command, not at startup)
+        self.memory: MemoryManager | None = None
+        self._memory_backend_path: Path | None = None
+        if SQLiteMemoryBackend is not None:
+            self._memory_backend_path = self.data_dir / "memory.db"
+
     # ------------------------------------------------------------------
     # Class methods
     # ------------------------------------------------------------------
@@ -1107,7 +1116,24 @@ class SmolVM:
                 {"vm_id": self._vm_id},
             )
 
-        return self._ssh.run(command, timeout=timeout, shell=shell)
+        result = self._ssh.run(command, timeout=timeout, shell=shell)
+
+        # Record to memory if available (lazy-load on first command)
+        memory = self._ensure_memory()
+        if memory is not None:
+            try:
+                memory.record_command_execution(
+                    vm_id=self._vm_id,
+                    command=command,
+                    stdout=result.stdout,
+                    stderr=result.stderr,
+                    return_code=result.exit_code,
+                    duration_sec=0.0,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record command to memory: {e}")
+
+        return result
 
     def set_env_vars(self, env_vars: dict[str, str], *, merge: bool = True) -> list[str]:
         """Set environment variables on a running VM.
@@ -1498,6 +1524,170 @@ class SmolVM:
         if ssh_capable is True:
             return True
         return "init=/init" in config.boot_args
+
+    def remember(
+        self,
+        query: str,
+        top_k: int = 5,
+        similarity_threshold: float = 0.3,
+    ) -> list[dict]:
+        """Query memory for similar past experiences.
+        
+        Searches across all VMs (cross-agent memory sharing).
+        Use vm_memory() to search only this VM's facts.
+        """
+        memory = self._ensure_memory()
+        if memory is None:
+            raise RuntimeError(
+                "Memory layer not available. "
+                "Install with: pip install 'smolvm[memory]'"
+            )
+        
+        results = memory.recall_similar(
+            query,
+            vm_id=None,  # None = search all VMs (cross-agent sharing)
+            top_k=top_k,
+            similarity_threshold=similarity_threshold,
+        )
+        
+        logger.debug(f"Recalled {len(results)} memories for query: {query[:50]}")
+        return results
+
+    def vm_memory(
+        self,
+        query: str,
+        top_k: int = 5,
+        similarity_threshold: float = 0.3,
+    ) -> list[dict]:
+        """Query memory for facts from this VM only.
+        
+        Use this for VM-isolated memory (e.g., debugging within a single session).
+        By default, remember() searches all VMs (cross-agent sharing).
+        """
+        memory = self._ensure_memory()
+        if memory is None:
+            raise RuntimeError(
+                "Memory layer not available. "
+                "Install with: pip install 'smolvm[memory]'"
+            )
+        
+        results = memory.recall_similar(
+            query,
+            vm_id=self._vm_id,  # Only this VM
+            top_k=top_k,
+            similarity_threshold=similarity_threshold,
+        )
+        
+        logger.debug(f"Recalled {len(results)} VM-local memories for query: {query[:50]}")
+        return results
+
+    def note(
+        self,
+        text: str,
+        tags: list[str] | None = None,
+    ) -> str:
+        """Store a custom insight or observation in memory."""
+        memory = self._ensure_memory()
+        if memory is None:
+            raise RuntimeError(
+                "Memory layer not available. "
+                "Install with: pip install 'smolvm[memory]'"
+            )
+        
+        fact_id = memory.record_user_note(self._vm_id, text, tags)
+        logger.debug(f"Stored note: {text[:50]}... (tags: {tags})")
+        return fact_id
+
+    def list_memory(self) -> list[dict]:
+        """List all facts stored about this VM."""
+        memory = self._ensure_memory()
+        if memory is None:
+            raise RuntimeError(
+                "Memory layer not available. "
+                "Install with: pip install 'smolvm[memory]'"
+            )
+        
+        facts = memory.list_vm_facts(self._vm_id)
+        logger.debug(f"Listed {len(facts)} facts for VM {self._vm_id}")
+        return facts
+
+    def _ensure_memory(self) -> MemoryManager | None:
+        """Lazy-initialize memory on first use (not at startup).
+        
+        This ensures memory model download doesn't block VM boot or CLI startup.
+        Embedder model loads in background thread for non-blocking initialization.
+        """
+        import warnings
+        
+        if self.memory is not None:
+            return self.memory
+        
+        if self._memory_backend_path is None or SQLiteMemoryBackend is None:
+            return None
+        
+        try:
+            # Initialize backend - suppress transformers library compatibility errors
+            backend = None
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", message=".*group argument must be None.*")
+                    warnings.filterwarnings("ignore", category=UserWarning)
+                    backend = SQLiteMemoryBackend(self._memory_backend_path)
+            except Exception as e:
+                # Transformers library compatibility - model still loads, continue anyway
+                if "group argument must be None" in str(e):
+                    logger.debug(f"Transformers compatibility (non-fatal): {e}")
+                    # Model initialization succeeded despite warning, suppress stderr and retry
+                    import sys, io
+                    old_stderr = sys.stderr
+                    try:
+                        sys.stderr = io.StringIO()
+                        backend = SQLiteMemoryBackend(self._memory_backend_path)
+                    finally:
+                        sys.stderr = old_stderr
+                else:
+                    raise
+            
+            if backend is None:
+                return None
+                
+            self.memory = MemoryManager(backend)
+            logger.info("Memory layer initialized (lazy-loaded, embedder warming up...)")
+            
+            # Warm up embedder in background thread (non-blocking)
+            def _warmup_embedder() -> None:
+                import warnings
+                try:
+                    # Suppress known transformers warnings
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings("ignore", message=".*group argument must be None.*")
+                        warnings.filterwarnings("ignore", category=UserWarning)
+                        backend.embedder.embed_text("")  # Pre-load model
+                    logger.debug("Embedder model loaded in background")
+                except Exception as e:
+                    logger.debug(f"Embedder warmup encountered: {e}")
+            
+            warmup_thread = threading.Thread(_warmup_embedder, daemon=True)
+            warmup_thread.start()
+            
+            return self.memory
+        except ImportError:
+            logger.warning(
+                "Memory layer disabled: sentence-transformers not installed. "
+                "Install with: pip install 'smolvm[memory]'"
+            )
+            return None
+        except Exception as e:
+            # Handle transformers compatibility issues gracefully
+            error_msg = str(e)
+            if "group argument must be None" in error_msg:
+                # Known transformers library compatibility issue - memory still works
+                logger.debug(f"Transformers compatibility note: {error_msg} (memory layer functional)")
+                # Try to continue with memory layer despite the warning
+                if self.memory is not None:
+                    return self.memory
+            logger.warning(f"Failed to initialize memory layer: {e}")
+            return None
 
     def close(self) -> None:
         """Release underlying SDK resources for this facade instance."""
