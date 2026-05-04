@@ -14,7 +14,6 @@
 # - Built-in (`=y`), not modular (`=m`): we ship one vmlinux and no initrd.
 #   If a driver needed at boot is `=m`, the kernel can't mount the rootfs to
 #   load it — chicken-and-egg.
-# - KVM_GUEST/PARAVIRT: small perf wins under Hypervisor.framework + KVM.
 
 # ── Bus + virtio ─────────────────────────────────────────────────────
 CONFIG_PCI=y                    # why: QEMU virt + libkrun use virtio-PCI
@@ -44,10 +43,6 @@ CONFIG_DEVTMPFS_MOUNT=y         # why: auto-mount /dev at boot
 CONFIG_NET=y                    # why: required for virtio-net + sshd
 CONFIG_INET=y                   # why: TCP/IP for SSH
 CONFIG_PACKET=y                 # why: AF_PACKET for some userspace tools
-
-# ── Hypervisor paravirt (small wins) ─────────────────────────────────
-CONFIG_KVM_GUEST=y              # why: PV-clock, PV-spinlocks under KVM
-CONFIG_PARAVIRT=y               # why: enables KVM_GUEST machinery
 
 # ── No modules, ever ─────────────────────────────────────────────────
 # Forces every config above to be `=y` (built into vmlinux). Removes the

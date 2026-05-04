@@ -4,7 +4,7 @@
 # Inputs (alongside this script in kernel/qemu/):
 #   linux.version    Pinned tarball version (e.g. "6.12.10")
 #   linux.sha256     SHA-256 line for `sha256sum -c`
-#   config.fragment  Our deltas merged onto microvm_defconfig (x86) or
+#   config.fragment  Our deltas merged onto x86_64_defconfig (x86) or
 #                    defconfig (arm64)
 #
 # Output: vmlinux-<arch>-qemu.bin in $OUT_DIR (default: $PWD).
@@ -89,7 +89,7 @@ SMOLVM_ARCH="${SMOLVM_ARCH_OVERRIDE:-$SMOLVM_ARCH}"
 
 # SmolVM arch label → kernel ARCH= variable.
 case "$SMOLVM_ARCH" in
-    amd64)  KARCH=x86_64; KIMAGE_REL=arch/x86/boot/bzImage; DEFCONFIG=microvm_defconfig ;;
+    amd64)  KARCH=x86_64; KIMAGE_REL=arch/x86/boot/bzImage; DEFCONFIG=x86_64_defconfig ;;
     arm64)  KARCH=arm64;  KIMAGE_REL=arch/arm64/boot/Image; DEFCONFIG=defconfig ;;
     *) echo "internal error: unhandled SMOLVM_ARCH $SMOLVM_ARCH" >&2; exit 2 ;;
 esac
