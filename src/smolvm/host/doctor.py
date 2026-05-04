@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import os
 import platform
 import re
 import subprocess
@@ -329,6 +330,75 @@ def _check_kvm_nx_huge_pages() -> DoctorCheck:
     )
 
 
+def _check_kvm_runtime() -> DoctorCheck:
+    """Check that /dev/kvm exists and the current user can read & write it.
+
+    Distinguishes the four states a first-time user actually hits:
+    no /dev/kvm at all (no virt support), /dev/kvm present but the user is
+    not in the kvm group (fresh install), /dev/kvm present and the user is
+    in the kvm group on disk but the current shell session hasn't picked
+    it up yet (the common "I just ran usermod and it still fails" case),
+    or fully accessible.
+    """
+    name = "kvm"
+    if not _KVM_DEV.exists():
+        return DoctorCheck(
+            name=name,
+            status="fail",
+            detail="/dev/kvm not found on this host",
+            fix="Enable hardware virtualization (KVM) on this host or run on a host that has it.",
+        )
+    if not os.access(_KVM_DEV, os.R_OK | os.W_OK):
+        if _user_is_pending_kvm_group():
+            return DoctorCheck(
+                name=name,
+                status="fail",
+                detail=(
+                    "/dev/kvm exists and your user is in the kvm group, "
+                    "but this shell session predates the change"
+                ),
+                fix=(
+                    "Log out of this shell and reconnect to apply the new group, "
+                    "or run any other 'smolvm' command (such as 'smolvm list') — "
+                    "it will auto-activate the group via 'sg kvm' for that run."
+                ),
+            )
+        return DoctorCheck(
+            name=name,
+            status="fail",
+            detail="/dev/kvm exists but your user can't read or write it",
+            fix=(
+                "Add your user to the kvm group, then start a new login session: "
+                "'sudo usermod -aG kvm $USER' and either log out and back in, "
+                "or run 'newgrp kvm' in this shell."
+            ),
+        )
+    return DoctorCheck(name=name, status="pass", detail="/dev/kvm is available")
+
+
+def _user_is_pending_kvm_group() -> bool:
+    """True iff the current user is listed in /etc/group's kvm but the gid
+    is not effective for this process — i.e. a usermod has been run but no
+    fresh login session has rebuilt the group set.
+
+    The effective check covers two paths: the kvm gid in the supplementary
+    group list (``os.getgroups()``), and the kvm gid as the process's
+    primary group (``os.getegid()``) — Linux does not always include the
+    primary gid in the supplementary list, so checking only one would
+    falsely flag users whose primary group is kvm."""
+    try:
+        import grp
+        import pwd
+
+        kvm_entry = grp.getgrnam("kvm")
+        current_user = pwd.getpwuid(os.getuid()).pw_name
+    except (KeyError, ImportError):
+        return False
+    if current_user not in kvm_entry.gr_mem:
+        return False
+    return kvm_entry.gr_gid not in os.getgroups() and os.getegid() != kvm_entry.gr_gid
+
+
 def _check_kvm_permissions() -> DoctorCheck:
     """Firecracker (jailer) needs /dev/kvm with 660 + kvm group ownership."""
     name = "worker:kvm-permissions"
@@ -420,23 +490,7 @@ def generate_doctor_report(backend: str | None = None) -> DoctorReport:
     if resolved == BACKEND_FIRECRACKER:
         host = HostManager()
 
-        kvm_ok = host.check_kvm()
-        checks.append(
-            DoctorCheck(
-                name="kvm",
-                status="pass" if kvm_ok else "fail",
-                detail="/dev/kvm is available" if kvm_ok else "/dev/kvm unavailable",
-                fix=(
-                    None
-                    if kvm_ok
-                    else (
-                        "Run on a KVM-enabled host. If this image was built with "
-                        "'smolvm setup --for-bake', /dev/kvm is expected only on the "
-                        "runtime host, not the builder."
-                    )
-                ),
-            )
-        )
+        checks.append(_check_kvm_runtime())
 
         firecracker_path = host.find_firecracker()
         checks.append(
@@ -512,7 +566,7 @@ def generate_doctor_report(backend: str | None = None) -> DoctorReport:
                     status="pass",
                     detail=f"{qemu_name} ({qemu_path})",
                 )
-                    )
+            )
 
             checks.append(_check_qemu_version(qemu_path))
             if platform.system() == "Darwin":

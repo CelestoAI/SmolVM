@@ -196,28 +196,7 @@ class ImageBuilder:
         kernel_path = image_dir / "vmlinux.bin"
         rootfs_path = image_dir / "rootfs.ext4"
 
-        # Check fingerprint cache
         resolved_kernel_url = self._resolve_kernel_url(kernel_profile, kernel_url)
-
-        fingerprint_data = {
-            "rootfs_size_mb": rootfs_size_mb,
-            "kernel_url": resolved_kernel_url,
-            "kernel_profile": kernel_profile.value,
-            "ssh_password": ssh_password,
-        }
-        if (
-            kernel_path.exists()
-            and rootfs_path.exists()
-            and self._check_fingerprint(image_dir, fingerprint_data)
-        ):
-            logger.info("Image '%s' already exists and fingerprint matches at %s", name, image_dir)
-            return (kernel_path, rootfs_path)
-
-        if not self.check_docker():
-            raise self.docker_requirement_error()
-
-        logger.info("Building Alpine SSH image '%s'...", name)
-        image_dir.mkdir(parents=True, exist_ok=True)
 
         # The /init script runs as PID 1 inside the VM and brings up SSH.
         init_script = self._default_init_script()
@@ -234,8 +213,11 @@ RUN apk add --no-cache \\
     curl \\
     bash
 
-# Configure SSH
-RUN ssh-keygen -A && \\
+# Configure SSH. Host keys are generated at first boot in /init, not here,
+# so each VM gets a unique SSH identity — required for safely sharing images.
+# The 'rm -f' purges any keys planted by the openssh package install (e.g.
+# Debian's openssh-server postinst runs ssh-keygen -A automatically).
+RUN rm -f /etc/ssh/ssh_host_* && \\
     sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \\
     sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config && \\
     echo "root:${SSH_PASSWORD}" | chpasswd
@@ -244,6 +226,30 @@ RUN ssh-keygen -A && \\
 COPY init /init
 RUN chmod +x /init
 """
+
+        fingerprint_data = self._fingerprint_with_content(
+            {
+                "rootfs_size_mb": rootfs_size_mb,
+                "kernel_url": resolved_kernel_url,
+                "kernel_profile": kernel_profile.value,
+                "ssh_password": ssh_password,
+            },
+            dockerfile_content,
+            init_script,
+        )
+        if (
+            kernel_path.exists()
+            and rootfs_path.exists()
+            and self._check_fingerprint(image_dir, fingerprint_data)
+        ):
+            logger.info("Image '%s' already exists and fingerprint matches at %s", name, image_dir)
+            return (kernel_path, rootfs_path)
+
+        if not self.check_docker():
+            raise self.docker_requirement_error()
+
+        logger.info("Building Alpine SSH image '%s'...", name)
+        image_dir.mkdir(parents=True, exist_ok=True)
 
         try:
             self._do_build(
@@ -298,33 +304,6 @@ RUN chmod +x /init
 
         resolved_kernel_url = self._resolve_kernel_url(kernel_profile, kernel_url)
 
-        fingerprint_data = {
-            "rootfs_size_mb": rootfs_size_mb,
-            "kernel_url": resolved_kernel_url,
-            "kernel_profile": kernel_profile.value,
-            "ssh_public_key": key_value,
-        }
-
-        if kernel_path.exists() and rootfs_path.exists():
-            if self._check_fingerprint(image_dir, fingerprint_data):
-                logger.info(
-                    "Image '%s' already exists and fingerprint matches at %s", name, image_dir
-                )
-                return (kernel_path, rootfs_path)
-
-            if not self.check_docker():
-                raise self.docker_requirement_error()
-
-            logger.info("SSH key or config changed for image '%s'. Rebuilding...", name)
-            # Remove stale files
-            kernel_path.unlink(missing_ok=True)
-            rootfs_path.unlink(missing_ok=True)
-        elif not self.check_docker():
-            raise self.docker_requirement_error()
-
-        logger.info("Building Alpine key-only SSH image '%s'...", name)
-        image_dir.mkdir(parents=True, exist_ok=True)
-
         init_script = self._default_init_script()
 
         dockerfile_content = """
@@ -336,18 +315,52 @@ RUN apk add --no-cache \
     curl \
     bash
 
-RUN ssh-keygen -A && \
+# Host keys generated at first boot in /init so each VM has unique identity.
+# 'rm -f' purges keys planted by the openssh install postinst.
+RUN rm -f /etc/ssh/ssh_host_* && \
     mkdir -p /root/.ssh && chmod 700 /root/.ssh && \
     sed -i 's/#PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config && \
     sed -i 's/#PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config && \
     sed -i 's/#PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
 
-COPY authorized_keys /root/.ssh/authorized_keys
-RUN chmod 600 /root/.ssh/authorized_keys && chown -R root:root /root/.ssh
-
 COPY init /init
 RUN chmod +x /init
 """
+
+        # ssh_public_key is intentionally not in the fingerprint and not baked
+        # into the rootfs. Per-VM keys are injected via the kernel cmdline at
+        # boot (see VMConfig.ssh_public_key + /init parser), so two users with
+        # different keys can share one cached image.
+        _ = key_value
+        fingerprint_data = self._fingerprint_with_content(
+            {
+                "rootfs_size_mb": rootfs_size_mb,
+                "kernel_url": resolved_kernel_url,
+                "kernel_profile": kernel_profile.value,
+            },
+            dockerfile_content,
+            init_script,
+        )
+
+        if kernel_path.exists() and rootfs_path.exists():
+            if self._check_fingerprint(image_dir, fingerprint_data):
+                logger.info(
+                    "Image '%s' already exists and fingerprint matches at %s", name, image_dir
+                )
+                return (kernel_path, rootfs_path)
+
+            if not self.check_docker():
+                raise self.docker_requirement_error()
+
+            logger.info("Inputs changed for image '%s'. Rebuilding...", name)
+            # Remove stale files
+            kernel_path.unlink(missing_ok=True)
+            rootfs_path.unlink(missing_ok=True)
+        elif not self.check_docker():
+            raise self.docker_requirement_error()
+
+        logger.info("Building Alpine key-only SSH image '%s'...", name)
+        image_dir.mkdir(parents=True, exist_ok=True)
 
         try:
             self._do_build(
@@ -358,7 +371,6 @@ RUN chmod +x /init
                 kernel_path,
                 rootfs_path,
                 rootfs_size_mb,
-                extra_files={"authorized_keys": f"{key_value}\n"},
                 kernel_url=resolved_kernel_url,
                 fingerprint_data=fingerprint_data,
             )
@@ -403,13 +415,46 @@ RUN chmod +x /init
 
         resolved_kernel_url = self._resolve_kernel_url(kernel_profile, kernel_url)
 
-        fingerprint_data = {
-            "rootfs_size_mb": rootfs_size_mb,
-            "kernel_url": resolved_kernel_url,
-            "kernel_profile": kernel_profile.value,
-            "ssh_public_key": key_value,
-            "base_image": base_image,
-        }
+        init_script = self._default_init_script()
+
+        dockerfile_content = f"""
+FROM {base_image}
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    openssh-server \\
+    iproute2 \\
+    curl \\
+    bash \\
+    ca-certificates \\
+    && rm -rf /var/lib/apt/lists/*
+
+# Host keys generated at first boot in /init so each VM has unique identity.
+# 'rm -f' purges keys planted by the openssh-server postinst on Debian.
+RUN rm -f /etc/ssh/ssh_host_* && \\
+    mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh && \\
+    sed -ri 's/^#?PermitRootLogin .*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config && \\
+    sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config && \\
+    sed -ri 's/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+
+COPY init /init
+RUN chmod +x /init
+"""
+
+        # ssh_public_key is intentionally not in the fingerprint and not baked
+        # into the rootfs — see VMConfig.ssh_public_key + /init parser.
+        _ = key_value
+        fingerprint_data = self._fingerprint_with_content(
+            {
+                "rootfs_size_mb": rootfs_size_mb,
+                "kernel_url": resolved_kernel_url,
+                "kernel_profile": kernel_profile.value,
+                "base_image": base_image,
+            },
+            dockerfile_content,
+            init_script,
+        )
 
         if kernel_path.exists() and rootfs_path.exists():
             if self._check_fingerprint(image_dir, fingerprint_data):
@@ -431,34 +476,6 @@ RUN chmod +x /init
         logger.info("Building Debian key-only SSH image '%s'...", name)
         image_dir.mkdir(parents=True, exist_ok=True)
 
-        init_script = self._default_init_script()
-
-        dockerfile_content = f"""
-FROM {base_image}
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    openssh-server \\
-    iproute2 \\
-    curl \\
-    bash \\
-    ca-certificates \\
-    && rm -rf /var/lib/apt/lists/*
-
-RUN ssh-keygen -A && \\
-    mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh && \\
-    sed -ri 's/^#?PermitRootLogin .*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config && \\
-    sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config && \\
-    sed -ri 's/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
-
-COPY authorized_keys /root/.ssh/authorized_keys
-RUN chmod 600 /root/.ssh/authorized_keys && chown -R root:root /root/.ssh
-
-COPY init /init
-RUN chmod +x /init
-"""
-
         try:
             self._do_build(
                 name,
@@ -468,7 +485,6 @@ RUN chmod +x /init
                 kernel_path,
                 rootfs_path,
                 rootfs_size_mb,
-                extra_files={"authorized_keys": f"{key_value}\n"},
                 kernel_url=resolved_kernel_url,
                 fingerprint_data=fingerprint_data,
             )
@@ -512,29 +528,6 @@ RUN chmod +x /init
         rootfs_path = image_dir / "rootfs.ext4"
 
         resolved_kernel_url = self._resolve_kernel_url(kernel_profile, kernel_url)
-
-        fingerprint_data = {
-            "rootfs_size_mb": rootfs_size_mb,
-            "kernel_url": resolved_kernel_url,
-            "kernel_profile": kernel_profile.value,
-            "ssh_public_key": key_value,
-            "base_image": base_image,
-            "image_type": "browser-chromium-v3",
-        }
-
-        if kernel_path.exists() and rootfs_path.exists():
-            if self._check_fingerprint(image_dir, fingerprint_data):
-                logger.info(
-                    "Image '%s' already exists and fingerprint matches at %s", name, image_dir
-                )
-                return (kernel_path, rootfs_path)
-
-            logger.info("Inputs changed for browser image '%s'. Rebuilding...", name)
-            kernel_path.unlink(missing_ok=True)
-            rootfs_path.unlink(missing_ok=True)
-
-        logger.info("Building browser image '%s'...", name)
-        image_dir.mkdir(parents=True, exist_ok=True)
 
         init_script = self._default_init_script()
 
@@ -791,14 +784,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     tar \\
     && rm -rf /var/lib/apt/lists/*
 
-RUN ssh-keygen -A && \\
+# Host keys generated at first boot in /init so each VM has unique identity.
+# 'rm -f' purges keys planted by the openssh-server postinst on Debian.
+RUN rm -f /etc/ssh/ssh_host_* && \\
     mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh && \\
     sed -ri 's/^#?PermitRootLogin .*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config && \\
     sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config && \\
     sed -ri 's/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
-
-COPY authorized_keys /root/.ssh/authorized_keys
-RUN chmod 600 /root/.ssh/authorized_keys && chown -R root:root /root/.ssh
 
 RUN mkdir -p \\
     /opt/smolvm-browser/profiles \\
@@ -813,6 +805,37 @@ COPY init /init
 RUN chmod +x /init
 """
 
+        # ssh_public_key is intentionally not in the fingerprint and not baked
+        # into the rootfs — see VMConfig.ssh_public_key + /init parser.
+        _ = key_value
+        fingerprint_data = self._fingerprint_with_content(
+            {
+                "rootfs_size_mb": rootfs_size_mb,
+                "kernel_url": resolved_kernel_url,
+                "kernel_profile": kernel_profile.value,
+                "base_image": base_image,
+                "image_type": "browser-chromium-v3",
+                "_browser_session_sha256": hashlib.sha256(browser_session_sh.encode()).hexdigest(),
+                "_wait_port_sha256": hashlib.sha256(wait_port_py.encode()).hexdigest(),
+            },
+            dockerfile_content,
+            init_script,
+        )
+
+        if kernel_path.exists() and rootfs_path.exists():
+            if self._check_fingerprint(image_dir, fingerprint_data):
+                logger.info(
+                    "Image '%s' already exists and fingerprint matches at %s", name, image_dir
+                )
+                return (kernel_path, rootfs_path)
+
+            logger.info("Inputs changed for browser image '%s'. Rebuilding...", name)
+            kernel_path.unlink(missing_ok=True)
+            rootfs_path.unlink(missing_ok=True)
+
+        logger.info("Building browser image '%s'...", name)
+        image_dir.mkdir(parents=True, exist_ok=True)
+
         try:
             self._do_build(
                 name,
@@ -823,7 +846,6 @@ RUN chmod +x /init
                 rootfs_path,
                 rootfs_size_mb,
                 extra_files={
-                    "authorized_keys": f"{key_value}\n",
                     "smolvm-browser-session": browser_session_sh,
                     "smolvm-browser-wait-port": wait_port_py,
                 },
@@ -845,9 +867,6 @@ RUN chmod +x /init
     def build_openclaw_rootfs(
         self,
         name: str = "openclaw",
-        # Note: 'smolvm' is intentionally kept as the default for simplified local
-        # demos and testing fixtures. Production usages should override this value.
-        ssh_password: str = "smolvm",
         ssh_public_key: str | Path | None = None,
         rootfs_size_mb: int = 2048,
         kernel_url: str | None = None,
@@ -868,7 +887,6 @@ RUN chmod +x /init
 
         Args:
             name: Image name for caching.
-            ssh_password: Root password for SSH (default: smolvm).
             ssh_public_key: Public key content or path to a public key file.
             rootfs_size_mb: Size of rootfs in MB (default: 2048).
             kernel_url: Optional kernel URL override.
@@ -905,29 +923,7 @@ RUN chmod +x /init
         kernel_path = image_dir / "vmlinux.bin"
         rootfs_path = image_dir / "rootfs.ext4"
 
-        fingerprint_data = {
-            "rootfs_size_mb": rootfs_size_mb,
-            "kernel_url": kernel_url,
-            "ssh_password": ssh_password,
-            "ssh_public_key": key_value,
-            "extra_packages": extra_packages,
-        }
-
-        if kernel_path.exists() and rootfs_path.exists():
-            if self._check_fingerprint(image_dir, fingerprint_data):
-                logger.info(
-                    "Image '%s' already exists and fingerprint matches at %s", name, image_dir
-                )
-                return (kernel_path, rootfs_path)
-
-            logger.info("Inputs changed for OpenClaw image '%s'. Rebuilding...", name)
-            kernel_path.unlink(missing_ok=True)
-            rootfs_path.unlink(missing_ok=True)
-
         packages_str = " ".join(extra_packages)
-
-        logger.info("Building OpenClaw image '%s' with extra packages: %s...", name, packages_str)
-        image_dir.mkdir(parents=True, exist_ok=True)
 
         init_script = self._openclaw_init_script()
 
@@ -995,7 +991,6 @@ exit 0
         dockerfile_content = f"""
 FROM node:22.12.0-bookworm-slim
 
-ARG SSH_PASSWORD
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \\
@@ -1009,15 +1004,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     {packages_str} \\
     && rm -rf /var/lib/apt/lists/*
 
-RUN ssh-keygen -A && \\
+# Host keys generated at first boot in /init so each VM has unique identity.
+# 'rm -f' purges keys planted by the openssh-server postinst on Debian.
+RUN rm -f /etc/ssh/ssh_host_* && \\
     mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh && \\
-    sed -ri 's/^#?PermitRootLogin .*/PermitRootLogin yes/' /etc/ssh/sshd_config && \\
-    sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config && \\
-    echo "root:${{SSH_PASSWORD}}" | chpasswd
-
-# Inject authorized_keys if provided
-COPY authorized_keys /root/.ssh/authorized_keys
-RUN chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true
+    sed -ri 's/^#?PermitRootLogin .*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config && \\
+    sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config && \\
+    sed -ri 's/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
 
 # Prepare OpenClaw directories and workspace
 RUN useradd -m -s /bin/bash node 2>/dev/null || true && \\
@@ -1029,7 +1022,19 @@ RUN npm init -y && \\
     npm --prefix /opt/openclaw install -g openclaw && \\
     ln -sf /opt/openclaw/bin/openclaw /usr/local/bin/openclaw && \\
     touch /var/log/openclaw.log && \\
-    chown node:node /var/log/openclaw.log
+    chown node:node /var/log/openclaw.log && \\
+    npm cache clean --force >/dev/null 2>&1 || true
+
+# Strip @node-llama-cpp GPU and non-host-arch backends. Inside Firecracker
+# there is no GPU passthrough, so the CUDA/Vulkan binaries are dead weight
+# (~600+ MiB on amd64). On arm64 only the matching arch package exists, so
+# the rm calls are no-ops there. The path reflects npm's `-g --prefix`
+# layout: /opt/openclaw/lib/node_modules/openclaw/node_modules/...
+RUN rm -rf \\
+    /opt/openclaw/lib/node_modules/openclaw/node_modules/@node-llama-cpp/linux-x64-cuda \\
+    /opt/openclaw/lib/node_modules/openclaw/node_modules/@node-llama-cpp/linux-x64-cuda-ext \\
+    /opt/openclaw/lib/node_modules/openclaw/node_modules/@node-llama-cpp/linux-x64-vulkan \\
+    /opt/openclaw/lib/node_modules/openclaw/node_modules/@node-llama-cpp/linux-armv7l
 
 # Sidecar and proxy scripts
 COPY device-approver.py /usr/local/bin/device-approver.py
@@ -1045,6 +1050,36 @@ COPY init /init
 RUN chmod +x /init
 """
 
+        # ssh_public_key is intentionally not in the fingerprint and not baked
+        # into the rootfs — see VMConfig.ssh_public_key + /init parser.
+        _ = key_value
+        fingerprint_data = self._fingerprint_with_content(
+            {
+                "rootfs_size_mb": rootfs_size_mb,
+                "kernel_url": kernel_url,
+                "extra_packages": extra_packages,
+                "_device_approver_sha256": hashlib.sha256(device_approver_py.encode()).hexdigest(),
+                "_watch_devices_sha256": hashlib.sha256(watch_devices_sh.encode()).hexdigest(),
+                "_systemctl_proxy_sha256": hashlib.sha256(systemctl_proxy_sh.encode()).hexdigest(),
+            },
+            dockerfile_content,
+            init_script,
+        )
+
+        if kernel_path.exists() and rootfs_path.exists():
+            if self._check_fingerprint(image_dir, fingerprint_data):
+                logger.info(
+                    "Image '%s' already exists and fingerprint matches at %s", name, image_dir
+                )
+                return (kernel_path, rootfs_path)
+
+            logger.info("Inputs changed for OpenClaw image '%s'. Rebuilding...", name)
+            kernel_path.unlink(missing_ok=True)
+            rootfs_path.unlink(missing_ok=True)
+
+        logger.info("Building OpenClaw image '%s' with extra packages: %s...", name, packages_str)
+        image_dir.mkdir(parents=True, exist_ok=True)
+
         try:
             self._do_build(
                 name,
@@ -1058,9 +1093,7 @@ RUN chmod +x /init
                     "device-approver.py": device_approver_py,
                     "watch-devices.sh": watch_devices_sh,
                     "systemctl": systemctl_proxy_sh,
-                    "authorized_keys": f"{key_value}\n" if key_value else "",
                 },
-                build_args={"SSH_PASSWORD": ssh_password},
                 kernel_url=kernel_url,
                 fingerprint_data=fingerprint_data,
             )
@@ -1183,6 +1216,27 @@ if ! ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1; then
 fi
 log_ts "ssh-hostkey-check-done"
 
+# Pull authorized_keys from the kernel cmdline if the host injected one.
+# Format: smolvm.authorized_key_b64=<base64-of-the-pubkey-line>. Used for
+# published images that don't bake keys at build time, so each VM gets the
+# launching user's key without rebuilding the rootfs.
+log_ts "ssh-authkey-inject-start"
+AUTHKEY_B64=$(cat /proc/cmdline | tr ' ' '\n' \
+    | grep '^smolvm\\.authorized_key_b64=' | head -1 | cut -d= -f2-)
+if [ -n "$AUTHKEY_B64" ]; then
+    DECODED=$(echo "$AUTHKEY_B64" | base64 -d 2>/dev/null)
+    if [ -n "$DECODED" ]; then
+        mkdir -p /root/.ssh
+        chmod 700 /root/.ssh
+        echo "$DECODED" > /root/.ssh/authorized_keys
+        chmod 600 /root/.ssh/authorized_keys
+        echo "SmolVM init: installed authorized_keys from cmdline"
+    else
+        echo "SmolVM init: smolvm.authorized_key_b64 present but failed to decode"
+    fi
+fi
+log_ts "ssh-authkey-inject-done"
+
 log_ts "sshd-start"
 /usr/sbin/sshd -e
 log_ts "sshd-invoked"
@@ -1292,6 +1346,24 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
         if kernel_url is not None:
             return kernel_url
         return resolve_kernel_url(kernel_profile, self._host_arch_key())
+
+    def _fingerprint_with_content(
+        self,
+        fingerprint_data: dict[str, typing.Any],
+        dockerfile_content: str,
+        init_script: str,
+    ) -> dict[str, typing.Any]:
+        """Augment the input-only fingerprint with Dockerfile and init-script hashes.
+
+        Without this, edits to the Dockerfile or /init script are invisible to
+        the fingerprint check — the cache keeps serving the old image even
+        though the build recipe has changed.
+        """
+        return {
+            **fingerprint_data,
+            "_dockerfile_sha256": hashlib.sha256(dockerfile_content.encode()).hexdigest(),
+            "_init_script_sha256": hashlib.sha256(init_script.encode()).hexdigest(),
+        }
 
     def _check_fingerprint(self, image_dir: Path, data: dict[str, typing.Any]) -> bool:
         """Check if the cached image fingerprint matches the current build inputs."""

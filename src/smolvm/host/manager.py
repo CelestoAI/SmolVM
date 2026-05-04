@@ -118,13 +118,11 @@ class HostManager:
         kvm_path = Path("/dev/kvm")
 
         if not kvm_path.exists():
-            logger.warning("/dev/kvm does not exist")
+            logger.debug("/dev/kvm does not exist")
             return False
 
         if not os.access(kvm_path, os.R_OK | os.W_OK):
-            logger.warning(
-                "/dev/kvm exists but is not readable/writable. Try: sudo usermod -aG kvm $USER"
-            )
+            logger.debug("/dev/kvm exists but is not readable/writable by current user")
             return False
 
         logger.debug("/dev/kvm is available with R/W access")

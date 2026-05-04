@@ -2,7 +2,18 @@
 members = ["smolvm-core"]
 resolver = "2"
 
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+authors = ["Celesto AI <hello@celesto.ai>"]
+homepage = "https://github.com/CelestoAI/SmolVM"
+repository = "https://github.com/CelestoAI/SmolVM"
+keywords = ["sandbox", "vm", "microvm", "pyo3", "agents"]
+categories = ["virtualization", "api-bindings"]
+
 [profile.release]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
+strip = "symbols"

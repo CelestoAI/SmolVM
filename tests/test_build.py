@@ -410,3 +410,63 @@ def test_rebuild_preserves_cached_artifacts_when_docker_is_unavailable(
 
     assert kernel_path.exists()
     assert rootfs_path.exists()
+
+
+class TestFingerprintWithContent:
+    """Tests for the cache-key augmentation that includes Dockerfile/init hashes.
+
+    Without this, edits to the Dockerfile or init script don't invalidate the
+    local cache — the user keeps getting the old image even though the recipe
+    changed.
+    """
+
+    def test_same_inputs_and_content_produce_stable_key(self, tmp_path: Path) -> None:
+        builder = ImageBuilder(cache_dir=tmp_path)
+        inputs = {"size_mb": 512, "ssh_password": "smolvm"}
+        a = builder._fingerprint_with_content(inputs, "FROM alpine:3.19", "#!/bin/sh\nexec /init")
+        b = builder._fingerprint_with_content(inputs, "FROM alpine:3.19", "#!/bin/sh\nexec /init")
+        assert a == b
+
+    def test_dockerfile_change_invalidates_key(self, tmp_path: Path) -> None:
+        builder = ImageBuilder(cache_dir=tmp_path)
+        inputs = {"size_mb": 512}
+        before = builder._fingerprint_with_content(inputs, "FROM alpine:3.19", "init")
+        after = builder._fingerprint_with_content(inputs, "FROM alpine:3.20", "init")
+        assert before["_dockerfile_sha256"] != after["_dockerfile_sha256"]
+
+    def test_init_script_change_invalidates_key(self, tmp_path: Path) -> None:
+        builder = ImageBuilder(cache_dir=tmp_path)
+        inputs = {"size_mb": 512}
+        before = builder._fingerprint_with_content(inputs, "FROM alpine", "echo old")
+        after = builder._fingerprint_with_content(inputs, "FROM alpine", "echo new")
+        assert before["_init_script_sha256"] != after["_init_script_sha256"]
+
+    def test_inputs_passthrough(self, tmp_path: Path) -> None:
+        """Augmentation must keep the original inputs alongside the content hashes."""
+        builder = ImageBuilder(cache_dir=tmp_path)
+        inputs = {"size_mb": 512, "ssh_password": "smolvm", "extra_packages": ["git"]}
+        result = builder._fingerprint_with_content(inputs, "df", "init")
+        for key, value in inputs.items():
+            assert result[key] == value
+
+    def test_old_fingerprint_files_invalidate_after_dockerfile_change(self, tmp_path: Path) -> None:
+        """End-to-end: a stored fingerprint becomes stale when the Dockerfile changes.
+
+        This is the bug that motivated the helper — without it, a fingerprint
+        written before a Dockerfile edit would still match after the edit.
+        """
+        builder = ImageBuilder(cache_dir=tmp_path)
+        image_dir = tmp_path / "preset"
+        image_dir.mkdir()
+
+        original = builder._fingerprint_with_content(
+            {"ssh_password": "smolvm"}, "FROM alpine:3.19", "init"
+        )
+        builder._write_fingerprint(image_dir, original)
+        assert builder._check_fingerprint(image_dir, original)
+
+        # Dockerfile changes — same inputs, but the cache key shifts.
+        edited = builder._fingerprint_with_content(
+            {"ssh_password": "smolvm"}, "FROM alpine:3.20", "init"
+        )
+        assert not builder._check_fingerprint(image_dir, edited)

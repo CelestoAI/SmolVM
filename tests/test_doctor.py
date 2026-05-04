@@ -38,8 +38,11 @@ def _pass(name: str) -> DoctorCheck:
 class TestDoctorFirecracker:
     """Firecracker backend diagnostic tests."""
 
+    @patch("smolvm.host.doctor._check_kvm_runtime", new=lambda: _pass("kvm"))
     @patch("smolvm.host.doctor._check_kvm_permissions", new=lambda: _pass("worker:kvm-permissions"))
-    @patch("smolvm.host.doctor._check_kvm_nx_huge_pages", new=lambda: _pass("worker:kvm-nx-huge-pages"))
+    @patch(
+        "smolvm.host.doctor._check_kvm_nx_huge_pages", new=lambda: _pass("worker:kvm-nx-huge-pages")
+    )
     @patch("smolvm.host.doctor._check_thp_disabled", new=lambda: _pass("worker:thp-disabled"))
     @patch("smolvm.host.doctor._check_ksm_disabled", new=lambda: _pass("worker:ksm-disabled"))
     @patch("smolvm.host.doctor._check_swap_disabled", new=lambda: _pass("worker:swap-disabled"))
@@ -74,8 +77,11 @@ class TestDoctorFirecracker:
         assert report.failures == []
         assert report.warnings == []
 
+    @patch("smolvm.host.doctor._check_kvm_runtime", new=lambda: _pass("kvm"))
     @patch("smolvm.host.doctor._check_kvm_permissions", new=lambda: _pass("worker:kvm-permissions"))
-    @patch("smolvm.host.doctor._check_kvm_nx_huge_pages", new=lambda: _pass("worker:kvm-nx-huge-pages"))
+    @patch(
+        "smolvm.host.doctor._check_kvm_nx_huge_pages", new=lambda: _pass("worker:kvm-nx-huge-pages")
+    )
     @patch(
         "smolvm.host.doctor._check_thp_disabled",
         new=lambda: DoctorCheck(
@@ -131,8 +137,11 @@ class TestDoctorFirecracker:
             "worker:thp-disabled",
         }
 
+    @patch("smolvm.host.doctor._check_kvm_runtime", new=lambda: _pass("kvm"))
     @patch("smolvm.host.doctor._check_kvm_permissions", new=lambda: _pass("worker:kvm-permissions"))
-    @patch("smolvm.host.doctor._check_kvm_nx_huge_pages", new=lambda: _pass("worker:kvm-nx-huge-pages"))
+    @patch(
+        "smolvm.host.doctor._check_kvm_nx_huge_pages", new=lambda: _pass("worker:kvm-nx-huge-pages")
+    )
     @patch("smolvm.host.doctor._check_thp_disabled", new=lambda: _pass("worker:thp-disabled"))
     @patch("smolvm.host.doctor._check_ksm_disabled", new=lambda: _pass("worker:ksm-disabled"))
     @patch("smolvm.host.doctor._check_swap_disabled", new=lambda: _pass("worker:swap-disabled"))
@@ -172,8 +181,11 @@ class TestDoctorFirecracker:
         assert "strict mode treats warnings as failures" in output
         assert "\033[" not in output
 
+    @patch("smolvm.host.doctor._check_kvm_runtime", new=lambda: _pass("kvm"))
     @patch("smolvm.host.doctor._check_kvm_permissions", new=lambda: _pass("worker:kvm-permissions"))
-    @patch("smolvm.host.doctor._check_kvm_nx_huge_pages", new=lambda: _pass("worker:kvm-nx-huge-pages"))
+    @patch(
+        "smolvm.host.doctor._check_kvm_nx_huge_pages", new=lambda: _pass("worker:kvm-nx-huge-pages")
+    )
     @patch(
         "smolvm.host.doctor._check_thp_disabled",
         new=lambda: DoctorCheck(
@@ -347,6 +359,77 @@ class TestDoctorQemu:
 
         with pytest.raises(RuntimeError, match="boom"):
             generate_doctor_report(backend="qemu")
+
+
+class TestKvmRuntimeCheck:
+    """Tests for the user-facing kvm doctor row."""
+
+    @patch("smolvm.host.doctor._KVM_DEV")
+    def test_missing_dev_kvm_fails_with_kvm_host_fix(self, mock_dev: MagicMock) -> None:
+        from smolvm.host.doctor import _check_kvm_runtime
+
+        mock_dev.exists.return_value = False
+        result = _check_kvm_runtime()
+
+        assert result.status == "fail"
+        assert "not found" in result.detail
+        assert result.fix is not None and "hardware virtualization" in result.fix
+
+    @patch("smolvm.host.doctor._user_is_pending_kvm_group", return_value=False)
+    @patch("smolvm.host.doctor.os.access", return_value=False)
+    @patch("smolvm.host.doctor._KVM_DEV")
+    def test_inaccessible_dev_kvm_fails_with_usermod_fix(
+        self,
+        mock_dev: MagicMock,
+        _mock_access: MagicMock,
+        _mock_pending: MagicMock,
+    ) -> None:
+        from smolvm.host.doctor import _check_kvm_runtime
+
+        mock_dev.exists.return_value = True
+        result = _check_kvm_runtime()
+
+        assert result.status == "fail"
+        assert "can't read or write" in result.detail
+        assert result.fix is not None
+        assert "usermod -aG kvm" in result.fix
+        assert "newgrp kvm" in result.fix
+
+    @patch("smolvm.host.doctor._user_is_pending_kvm_group", return_value=True)
+    @patch("smolvm.host.doctor.os.access", return_value=False)
+    @patch("smolvm.host.doctor._KVM_DEV")
+    def test_pending_kvm_group_session_fails_with_relog_fix(
+        self,
+        mock_dev: MagicMock,
+        _mock_access: MagicMock,
+        _mock_pending: MagicMock,
+    ) -> None:
+        """User added to kvm group but current shell hasn't picked it up."""
+        from smolvm.host.doctor import _check_kvm_runtime
+
+        mock_dev.exists.return_value = True
+        result = _check_kvm_runtime()
+
+        assert result.status == "fail"
+        assert "in the kvm group" in result.detail
+        assert "predates the change" in result.detail
+        assert result.fix is not None
+        assert "Log out" in result.fix
+        assert "sg kvm" in result.fix
+
+    @patch("smolvm.host.doctor.os.access", return_value=True)
+    @patch("smolvm.host.doctor._KVM_DEV")
+    def test_accessible_dev_kvm_passes(
+        self,
+        mock_dev: MagicMock,
+        _mock_access: MagicMock,
+    ) -> None:
+        from smolvm.host.doctor import _check_kvm_runtime
+
+        mock_dev.exists.return_value = True
+        result = _check_kvm_runtime()
+
+        assert result.status == "pass"
 
 
 class TestWorkerNodeSecurityChecks:

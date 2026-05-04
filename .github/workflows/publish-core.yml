@@ -14,12 +14,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify tag and package versions
+      - name: Verify tag matches Cargo.toml
         run: |
           python3 - <<'PY'
           import os
           import re
-          import tomllib
           from pathlib import Path
 
           tag = os.environ["GITHUB_REF_NAME"]
@@ -40,36 +39,7 @@ jobs:
                   f"Tag {tag!r} does not match smolvm-core/Cargo.toml version {cargo_version!r}."
               )
 
-          pyproject = tomllib.loads(Path("pyproject.toml").read_text())
-          smolvm_version = pyproject["project"]["version"]
-          expected_dep = f"smolvm-core=={version}"
-          version_match = re.fullmatch(r"(?P<base>\d+\.\d+\.\d+)(?P<suffix>.*)", smolvm_version)
-          if version_match is None:
-              raise SystemExit(
-                  f"Unsupported pyproject.toml version format {smolvm_version!r}."
-              )
-
-          smolvm_base = version_match.group("base")
-          smolvm_suffix = version_match.group("suffix")
-          same_release_line = smolvm_version == version
-          prerelease_of_core = smolvm_base == version and bool(smolvm_suffix)
-          if not (same_release_line or prerelease_of_core):
-              raise SystemExit(
-                  f"pyproject.toml version {smolvm_version!r} must either match core release "
-                  f"{version!r} exactly or be a prerelease of the same base version."
-              )
-          if expected_dep not in pyproject["project"]["dependencies"]:
-              raise SystemExit(
-                  f"pyproject.toml must pin {expected_dep!r} before publishing smolvm-core."
-              )
-
-          if prerelease_of_core:
-              print(
-                  f"Release preflight OK for smolvm-core {version}: smolvm {smolvm_version} "
-                  f"is a prerelease pinned to this stable core."
-              )
-          else:
-              print(f"Release preflight OK for smolvm-core {version}.")
+          print(f"Release preflight OK for smolvm-core {version}.")
           PY
 
   build-linux:

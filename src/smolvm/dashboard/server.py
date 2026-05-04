@@ -430,7 +430,7 @@ def _vm_info_to_dict(vm: VMInfo) -> dict[str, Any]:
         "status": vm.status.value,
         "config": {
             "vcpu_count": vm.config.vcpu_count,
-            "mem_size_mib": vm.config.mem_size_mib,
+            "memory": vm.config.memory,
         },
         "network": (
             {
