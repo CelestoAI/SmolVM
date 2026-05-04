@@ -24,7 +24,9 @@ QEMU or libkrun need a kernel built for that hardware.
 |---|---|
 | `linux.version` | Single line: the upstream Linux release we build (e.g. `6.12.10`). LTS-line for stability. |
 | `linux.sha256` | One `sha256sum -c` line for the tarball at `cdn.kernel.org`. |
-| `config.fragment` | Our deltas vs `microvm_defconfig` (x86) / `defconfig` (arm64). Every line carries an inline `# why:` comment — that's the source of truth for "why is this in our kernel." |
+| `config.fragment` | Common deltas vs `x86_64_defconfig` (x86) / `defconfig` (arm64) — symbols that exist on both archs. Every line carries an inline `# why:` comment — that's the source of truth for "why is this in our kernel." |
+| `config.amd64.fragment` | x86-only deltas (8250 console). Merged on top of `config.fragment` for amd64 builds. |
+| `config.arm64.fragment` | arm64-only deltas (PCI host-generic, PL011 console). Merged on top of `config.fragment` for arm64 builds. |
 | `build.sh` | The exact recipe CI runs. Also runnable locally — see below. |
 
 ## Building locally
@@ -118,7 +120,7 @@ older Firecracker naming is a future task.
   needed at boot is `=y` (in-kernel). Without modules we don't need an
   initrd, which keeps the image set simple. Cost: any future preset that
   needs a kernel module (zfs, btrfs, NFS, etc.) requires adding the symbol
-  to `config.fragment` as `=y`.
+  to `config.fragment` (or the per-arch fragment) as `=y`.
 - **Maintenance burden.** Bumping Linux means re-running `build.sh` once
   to verify the fragment still applies, then committing. CI cache by input
   hash means the rebuild is free until inputs change.

@@ -24,7 +24,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LINUX_VERSION="$(cat "$SCRIPT_DIR/linux.version" | tr -d '[:space:]')"
 LINUX_SHA256_LINE="$(cat "$SCRIPT_DIR/linux.sha256")"
-CONFIG_FRAGMENT="$SCRIPT_DIR/config.fragment"
+COMMON_FRAGMENT="$SCRIPT_DIR/config.fragment"
+# Per-arch fragment is filled in once SMOLVM_ARCH is resolved, below.
 
 find_make() {
     if [ -n "${MAKE:-}" ]; then
@@ -94,6 +95,12 @@ case "$SMOLVM_ARCH" in
     *) echo "internal error: unhandled SMOLVM_ARCH $SMOLVM_ARCH" >&2; exit 2 ;;
 esac
 
+ARCH_FRAGMENT="$SCRIPT_DIR/config.$SMOLVM_ARCH.fragment"
+if [ ! -f "$ARCH_FRAGMENT" ]; then
+    echo "internal error: missing $ARCH_FRAGMENT" >&2
+    exit 2
+fi
+
 OUT_DIR="${OUT_DIR:-$PWD}"
 WORK_DIR="${WORK_DIR:-$(mktemp -d)}"
 TARBALL="$WORK_DIR/linux-$LINUX_VERSION.tar.xz"
@@ -125,58 +132,72 @@ fi
 
 cd "$SRC_DIR"
 
-# 3. Apply baseline defconfig + our fragment.
-echo "==> Generating .config (baseline=$DEFCONFIG + config.fragment)"
+# 3. Apply baseline defconfig + our fragments (common + per-arch).
+echo "==> Generating .config (baseline=$DEFCONFIG + common + $SMOLVM_ARCH fragments)"
 "$MAKE_BIN" ARCH="$KARCH" "$DEFCONFIG" >/dev/null
 
-# merge_config.sh wants the fragment via positional args; -m mode merges,
-# preserving any settings not mentioned in the fragment.
-scripts/kconfig/merge_config.sh -m -O . .config "$CONFIG_FRAGMENT" >/dev/null
+# merge_config.sh accepts multiple fragments; -m mode merges, preserving any
+# settings not mentioned. Common first, per-arch second.
+scripts/kconfig/merge_config.sh -m -O . .config "$COMMON_FRAGMENT" "$ARCH_FRAGMENT" >/dev/null
 
 # olddefconfig fills in any new symbols introduced by Linux that weren't in
 # the merged base — picks each one's default. Without this, a Linux bump can
 # leave half-configured symbols that fail the build cryptically.
 "$MAKE_BIN" ARCH="$KARCH" olddefconfig >/dev/null
 
-# 4. Sanity check: every directive in our fragment must hold in .config —
+# 4. Sanity check: every directive in our fragments must hold in .config —
 # both `CONFIG_X=y` and `# CONFIG_X is not set`. Catches the case where
 # olddefconfig silently flips one of our deltas (e.g. a missing dependency
 # downgrades =y, or a new Kconfig dep forces modules on) — actionable signal
 # that the fragment needs adjustment, not a silent failure to debug at boot.
-echo "==> Verifying fragment was honored"
+echo "==> Verifying fragments were honored"
 fail=0
-while IFS= read -r raw; do
-    # ltrim + rtrim WITHOUT stripping '#' — we need to detect "is not set"
-    # lines, which look like comments but are real Kconfig directives.
-    trimmed="${raw#"${raw%%[![:space:]]*}"}"
-    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
-    case "$trimmed" in
-        "# CONFIG_"*" is not set")
-            rest="${trimmed#"# "}"
-            symbol="${rest%% *}"
-            if grep -qE "^${symbol}=(y|m)$" .config; then
-                echo "  MISSING: $symbol — wanted unset, .config has: $(grep -E "^${symbol}=" .config)"
+verify_fragment() {
+    local fragment="$1"
+    while IFS= read -r raw; do
+        # ltrim + rtrim WITHOUT stripping '#' — we need to detect "is not set"
+        # lines, which look like comments but are real Kconfig directives.
+        local trimmed="${raw#"${raw%%[![:space:]]*}"}"
+        trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+        case "$trimmed" in
+            "# CONFIG_"*" is not set")
+                local rest="${trimmed#"# "}"
+                local symbol="${rest%% *}"
+                if grep -qE "^${symbol}=(y|m)$" .config; then
+                    echo "  MISSING: $symbol — wanted unset, .config has: $(grep -E "^${symbol}=" .config) (from $(basename "$fragment"))"
+                    fail=1
+                fi
+                continue
+                ;;
+        esac
+        # Plain comments (not "is not set" directives) and inline comments are
+        # discarded only after the "is not set" check above.
+        local line="${raw%%#*}"
+        line="${line%"${line##*[![:space:]]}"}"
+        line="${line#"${line%%[![:space:]]*}"}"
+        case "$line" in
+            "") continue ;;
+            "CONFIG_"*=y)
+                local symbol="${line%%=*}"
+                grep -qE "^${symbol}=y$" .config && continue
+                echo "  MISSING: $symbol — wanted =y, .config has: $(grep -E "^# ?${symbol}[ =]" .config || echo '<absent>') (from $(basename "$fragment"))"
                 fail=1
-            fi
-            continue
-            ;;
-    esac
-    # Plain comments (not "is not set" directives) and inline comments are
-    # discarded only after the "is not set" check above.
-    line="${raw%%#*}"
-    line="${line%"${line##*[![:space:]]}"}"
-    line="${line#"${line%%[![:space:]]*}"}"
-    case "$line" in
-        "") continue ;;
-        "CONFIG_"*=y)
-            symbol="${line%%=*}"
-            grep -qE "^${symbol}=y$" .config && continue
-            echo "  MISSING: $symbol — wanted =y, .config has: $(grep -E "^# ?${symbol}[ =]" .config || echo '<absent>')"
-            fail=1
-            ;;
-    esac
-done < "$CONFIG_FRAGMENT"
+                ;;
+        esac
+    done < "$fragment"
+}
+verify_fragment "$COMMON_FRAGMENT"
+verify_fragment "$ARCH_FRAGMENT"
 [ "$fail" -eq 0 ] || { echo "==> Fragment verification failed"; exit 1; }
+
+# Local-iteration knob: when set, stop after fragment verification — the
+# kernel compile is the long pole and not what changes when iterating on
+# the fragments. CI runs the full build; this is just for fast feedback
+# loops on a dev machine (or a Linux container).
+if [ -n "${SMOLVM_VERIFY_ONLY:-}" ]; then
+    echo "==> SMOLVM_VERIFY_ONLY set; skipping kernel compile."
+    exit 0
+fi
 
 # 5. Build the kernel image.
 echo "==> Building kernel ($JOBS jobs)"

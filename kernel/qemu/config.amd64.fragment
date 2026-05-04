@@ -1,0 +1,10 @@
+# SmolVM QEMU/libkrun kernel config fragment — amd64-only deltas.
+#
+# Merged on top of `config.fragment` for x86 builds. These symbols
+# don't exist on arm64 (8250 is broadly available but only relevant
+# under QEMU/libkrun on x86), so they live here to keep the common
+# fragment portable across both archs.
+
+# ── Serial / console ─────────────────────────────────────────────────
+CONFIG_SERIAL_8250=y                # why: x86 console on QEMU + libkrun
+CONFIG_SERIAL_8250_CONSOLE=y        # why: register 8250 as boot console

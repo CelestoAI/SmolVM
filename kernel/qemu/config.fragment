@@ -1,23 +1,20 @@
-# SmolVM QEMU/libkrun kernel config fragment.
+# SmolVM QEMU/libkrun kernel config fragment — common deltas.
 #
-# Applied on top of `microvm_defconfig` (x86) or `defconfig` (arm64) via
-# scripts/kconfig/merge_config.sh during build. Only deltas live here —
-# the upstream defconfig handles the 7000+ baseline symbols.
+# Applied on top of `x86_64_defconfig` (x86) or `defconfig` (arm64) via
+# scripts/kconfig/merge_config.sh during build. Only the symbols that
+# exist on BOTH archs live here. Arch-specific symbols (PCI_HOST_GENERIC,
+# PL011, 8250) live in `config.<arch>.fragment` and are merged on top.
 #
 # Why each delta exists:
 # - virtio-PCI bus + drivers: QEMU's `virt` machine + libkrun expose virtio
 #   devices via PCI, not MMIO (which Firecracker uses). Without these the
 #   guest can't see its rootfs or NIC.
-# - PL011 UART: QEMU's `virt` machine wires the console to an ARM AMBA PL011.
-#   Without this driver, the kernel has nothing to write to on aarch64 — first
-#   spike showed zero serial output, hence this whole exercise.
 # - Built-in (`=y`), not modular (`=m`): we ship one vmlinux and no initrd.
 #   If a driver needed at boot is `=m`, the kernel can't mount the rootfs to
 #   load it — chicken-and-egg.
 
 # ── Bus + virtio ─────────────────────────────────────────────────────
 CONFIG_PCI=y                    # why: QEMU virt + libkrun use virtio-PCI
-CONFIG_PCI_HOST_GENERIC=y       # why: arm64 virt has a generic PCI host
 CONFIG_PCI_MSI=y                # why: virtio-PCI uses MSI-X interrupts
 CONFIG_VIRTIO=y                 # why: core virtio framework
 CONFIG_VIRTIO_PCI=y             # why: PCI transport for virtio devices
@@ -26,12 +23,6 @@ CONFIG_VIRTIO_BLK=y             # why: rootfs is a virtio-blk device
 CONFIG_VIRTIO_NET=y             # why: networking via virtio-net
 CONFIG_VIRTIO_CONSOLE=y         # why: hvc0 fallback console under virt
 CONFIG_VIRTIO_BALLOON=y         # why: memory pressure feedback to host
-
-# ── Serial / console ─────────────────────────────────────────────────
-CONFIG_SERIAL_AMBA_PL011=y          # why: aarch64 QEMU virt console
-CONFIG_SERIAL_AMBA_PL011_CONSOLE=y  # why: register PL011 as boot console
-CONFIG_SERIAL_8250=y                # why: x86 console on QEMU+libkrun
-CONFIG_SERIAL_8250_CONSOLE=y        # why: register 8250 as boot console
 
 # ── Filesystems built in (no initrd) ─────────────────────────────────
 CONFIG_EXT4_FS=y                # why: rootfs is ext4

@@ -1,0 +1,13 @@
+# SmolVM QEMU/libkrun kernel config fragment — arm64-only deltas.
+#
+# Merged on top of `config.fragment` for arm64 builds. These symbols
+# don't exist on x86 (PCI_HOST_GENERIC is the arm64 generic PCI host
+# bridge driver; PL011 is an ARM AMBA peripheral), so they live here
+# to keep the common fragment portable across both archs.
+
+# ── PCI host bridge ──────────────────────────────────────────────────
+CONFIG_PCI_HOST_GENERIC=y           # why: arm64 virt has a generic PCI host
+
+# ── Serial / console ─────────────────────────────────────────────────
+CONFIG_SERIAL_AMBA_PL011=y          # why: aarch64 QEMU virt console
+CONFIG_SERIAL_AMBA_PL011_CONSOLE=y  # why: register PL011 as boot console

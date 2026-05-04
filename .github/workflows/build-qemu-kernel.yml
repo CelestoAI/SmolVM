@@ -3,8 +3,8 @@
 #
 # Decoupled from build-published-images.yml on purpose: kernel cadence
 # differs from rootfs cadence. This workflow re-runs only when the inputs
-# in kernel/qemu/ change (linux.version, config.fragment, build.sh) — not
-# every time a preset's tools update.
+# in kernel/qemu/ change (linux.version, config.*.fragment, build.sh) —
+# not every time a preset's tools update.
 #
 # Output assets per arch:
 #   vmlinux-<arch>-qemu.bin           — the kernel
@@ -68,7 +68,7 @@ jobs:
           # produces the same kernel byte-for-byte (modulo nondeterminism
           # we'd want to track separately if it bites).
           path: kernel-out
-          key: linux-kernel-${{ matrix.arch }}-${{ hashFiles('kernel/qemu/linux.version', 'kernel/qemu/linux.sha256', 'kernel/qemu/config.fragment', 'kernel/qemu/build.sh') }}
+          key: linux-kernel-${{ matrix.arch }}-${{ hashFiles('kernel/qemu/linux.version', 'kernel/qemu/linux.sha256', 'kernel/qemu/config.fragment', 'kernel/qemu/config.amd64.fragment', 'kernel/qemu/config.arm64.fragment', 'kernel/qemu/build.sh') }}
 
       - name: Build kernel
         if: steps.cache.outputs.cache-hit != 'true'
