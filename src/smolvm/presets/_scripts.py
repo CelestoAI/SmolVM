@@ -84,7 +84,13 @@ def npm_install_global(package: str) -> str:
     """
     if not _SAFE_NPM_NAME_RE.match(package):
         raise ValueError(f"Refusing to install unsafe npm package name: {package!r}")
-    return f"set -euo pipefail\nnpm install -g --silent {package}\n"
+    # Cleaning the cache after install removes ~350-700 MB of leftover
+    # tarballs from /root/.npm/_cacache; npm rebuilds it on demand.
+    return (
+        "set -euo pipefail\n"
+        f"npm install -g --silent {package}\n"
+        "npm cache clean --force >/dev/null 2>&1 || true\n"
+    )
 
 
 def uv_install_global(package: str) -> str:
