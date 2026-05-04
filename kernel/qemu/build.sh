@@ -89,11 +89,20 @@ esac
 SMOLVM_ARCH="${SMOLVM_ARCH_OVERRIDE:-$SMOLVM_ARCH}"
 
 # SmolVM arch label → kernel ARCH= variable.
+#
+# We ship the ELF `vmlinux` (kernel-source root), NOT the boot wrappers
+# (bzImage on x86, Image on arm64). Firecracker REQUIRES an uncompressed
+# ELF — `Kernel Loader: Invalid Elf magic number` otherwise. QEMU's
+# `-kernel` accepts both ELF and the boot wrappers, so the ELF works
+# universally. Build target stays `bzImage`/`Image` because those targets
+# always produce the ELF as a prerequisite, but we copy the ELF to the
+# output instead of the wrapper.
 case "$SMOLVM_ARCH" in
-    amd64)  KARCH=x86_64; KIMAGE_REL=arch/x86/boot/bzImage; DEFCONFIG=x86_64_defconfig ;;
-    arm64)  KARCH=arm64;  KIMAGE_REL=arch/arm64/boot/Image; DEFCONFIG=defconfig ;;
+    amd64)  KARCH=x86_64; KMAKE_TARGET=bzImage; DEFCONFIG=x86_64_defconfig ;;
+    arm64)  KARCH=arm64;  KMAKE_TARGET=Image;   DEFCONFIG=defconfig ;;
     *) echo "internal error: unhandled SMOLVM_ARCH $SMOLVM_ARCH" >&2; exit 2 ;;
 esac
+KIMAGE_REL=vmlinux  # ELF, root of the kernel source tree
 
 ARCH_FRAGMENT="$SCRIPT_DIR/config.$SMOLVM_ARCH.fragment"
 if [ ! -f "$ARCH_FRAGMENT" ]; then
@@ -205,13 +214,23 @@ case "$(printf '%s' "${SMOLVM_VERIFY_ONLY:-}" | tr '[:upper:]' '[:lower:]')" in
 esac
 
 # 5. Build the kernel image.
+# We invoke the boot-wrapper target (bzImage/Image) because that's what the
+# kernel build system uses to drive a full link — the ELF `vmlinux` falls out
+# as a prerequisite. Then we copy the ELF, not the wrapper.
 echo "==> Building kernel ($JOBS jobs)"
-"$MAKE_BIN" ARCH="$KARCH" -j"$JOBS" "$(basename "$KIMAGE_REL")"
+"$MAKE_BIN" ARCH="$KARCH" -j"$JOBS" "$KMAKE_TARGET"
 
 # 6. Stage the artifact + record the resolved config (debugging aid).
 mkdir -p "$OUT_DIR"
 cp "$KIMAGE_REL" "$ARTIFACT"
 cp .config "$OUT_DIR/vmlinux-$SMOLVM_ARCH-qemu.config"
+
+# Sanity check: Firecracker rejects anything that isn't an uncompressed
+# ELF with `Invalid Elf magic number`. ELF magic = 7f 45 4c 46.
+if [ "$(head -c 4 "$ARTIFACT" | od -An -tx1 | tr -d ' ')" != "7f454c46" ]; then
+    echo "==> ERROR: $ARTIFACT is not an ELF binary (Firecracker will reject it)" >&2
+    exit 1
+fi
 
 echo "==> Done."
 echo "    $ARTIFACT  ($(wc -c <"$ARTIFACT" | tr -d ' ') bytes)"
