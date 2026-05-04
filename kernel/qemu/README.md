@@ -1,22 +1,29 @@
-# SmolVM QEMU/libkrun Kernel
+# SmolVM Universal microvm Kernel
 
-This directory holds the recipe for the Linux kernel SmolVM ships to
-QEMU and libkrun users. QEMU runs on Linux and macOS; this kernel makes
-those sandboxes boot all the way through and print log output.
+This directory holds the recipe for the **only** Linux kernel SmolVM
+ships. One vmlinux per arch boots all three runtimes — Firecracker,
+QEMU, and (future) libkrun — across both Linux and macOS hosts. The
+filename is still `vmlinux-<arch>-qemu.bin` for compat with the existing
+publish pipeline; renaming to `vmlinux-<arch>.bin` is a future cleanup.
 
 ## Why this exists
 
-Our default-published kernel is fetched from
-[Firecracker's CI S3 bucket][fc-ci]. It's tuned for Firecracker, which
-exposes virtual hardware to the guest over a "MMIO" bus and uses an
-8250 serial chip on aarch64. QEMU's `virt` machine and libkrun expose
-the same devices over **PCI** instead, and use the ARM PL011 UART on
-aarch64 — different drivers entirely. Empirically the Firecracker
-kernel produces **zero serial output** under QEMU: it boots into a
-hardware model it has no drivers for. Linux and macOS users running
-QEMU or libkrun need a kernel built for that hardware.
+Before 0.0.14a0 SmolVM fetched kernels from two external CDNs:
 
-[fc-ci]: https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.6/
+- **Firecracker's CI S3 bucket** (`s3.amazonaws.com/spec.ccfc.min/.../vmlinux-5.10.198`) — for Firecracker on Linux. Tuned for Firecracker's virtio-MMIO transport.
+- **Ubuntu cloud-images** (`cloud-images.ubuntu.com/.../vmlinuz-generic`) — paired with a matching initrd for the QEMU+Ubuntu auto-config path.
+
+Two kernels meant two CVE-watch lists, two test surfaces, and two CDN
+failure modes (we hit a `cloud-images.ubuntu.com` outage in practice).
+Both upstream kernels are also generic-purpose with hundreds of drivers
+we don't need (Bluetooth, USB, sound, gpio, …) — extra attack surface
+for a sandbox that just needs virtio + ext4 + sshd.
+
+The kernel built here closes that gap: a single in-house artifact tuned
+for microvm use, with both `CONFIG_VIRTIO_MMIO=y` (Firecracker) and
+`CONFIG_VIRTIO_PCI=y` (QEMU/libkrun) enabled, plus `CONFIG_ISO9660_FS=y`
+for the cloud-init NoCloud seed disk so we don't need an initrd to boot
+the Ubuntu cloud rootfs.
 
 ## What's pinned
 

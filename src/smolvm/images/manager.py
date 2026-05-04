@@ -296,26 +296,12 @@ def _require_boto3() -> S3Client:
 # ---------------------------------------------------------------------------
 # Built-in image registry
 #
-# Version-pinned URLs from Firecracker's official CI/quickstart assets.
-# To add a new image, append an ImageSource entry here.
+# Empty by default — SmolVM ships its kernel via :data:`BASE_KERNELS` in
+# `smolvm.images.published` and rootfs images via :data:`MANIFEST` there.
+# This registry remains for tests and SDK callers that want a custom
+# (kernel_url, rootfs_url) pair without going through the published path.
 # ---------------------------------------------------------------------------
-BUILTIN_IMAGES: dict[str, ImageSource] = {
-    "hello": ImageSource(
-        name="hello",
-        kernel_url=("https://s3.amazonaws.com/spec.ccfc.min/img/hello/kernel/hello-vmlinux.bin"),
-        rootfs_url=("https://s3.amazonaws.com/spec.ccfc.min/img/hello/fsfiles/hello-rootfs.ext4"),
-    ),
-    "quickstart-x86_64": ImageSource(
-        name="quickstart-x86_64",
-        kernel_url=(
-            "https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/x86_64/kernels/vmlinux.bin"
-        ),
-        rootfs_url=(
-            "https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide"
-            "/x86_64/rootfs/bionic.rootfs.ext4"
-        ),
-    ),
-}
+BUILTIN_IMAGES: dict[str, ImageSource] = {}
 
 
 class ImageManager:

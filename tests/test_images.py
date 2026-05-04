@@ -492,11 +492,16 @@ class TestImageManagerInit:
         mgr = ImageManager(cache_dir=tmp_path, registry=registry)
         assert mgr.list_available() == []
 
-    def test_default_has_builtin_images(self) -> None:
-        """Test default registry has built-in images."""
+    def test_default_registry_is_empty_after_kernel_migration(self) -> None:
+        """Default BUILTIN_IMAGES is intentionally empty post-0.0.14a0.
+
+        SmolVM ships its kernel via ``smolvm.images.published.BASE_KERNELS``
+        and rootfs via ``MANIFEST`` there. The legacy demo entries
+        (``hello``, ``quickstart-x86_64``) pointed at retired Firecracker S3
+        URLs and have been removed.
+        """
         mgr = ImageManager()
-        names = mgr.list_available()
-        assert "hello" in names
+        assert mgr.list_available() == []
 
 
 # -----------------------------------------------------------------------

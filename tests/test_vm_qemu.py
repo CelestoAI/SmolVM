@@ -108,10 +108,13 @@ def test_start_qemu_uses_distinct_block_backend_and_node_names(
 
     cmd = mock_popen.call_args.args[0]
     drive_arg = cmd[cmd.index("-drive") + 1]
-    block_device_arg = cmd[cmd.index("-device") + 1]
     assert "id=rootdisk0-drive" in drive_arg
     assert "node-name=rootdisk0" in drive_arg
-    assert block_device_arg == "virtio-blk-device,drive=rootdisk0-drive"
+    # Rootdisk must be the LAST virtio-blk-device on aarch64 (MMIO transport
+    # enumerates devices in reverse declaration order; the kernel-side /dev/vda
+    # ends up being whichever virtio-blk-device was added last).
+    blk_devs = [a for a in cmd if isinstance(a, str) and a.startswith("virtio-blk-device,")]
+    assert blk_devs[-1] == "virtio-blk-device,drive=rootdisk0-drive"
 
 
 def test_create_qemu_uses_managed_qcow2_disk(tmp_path: Path) -> None:

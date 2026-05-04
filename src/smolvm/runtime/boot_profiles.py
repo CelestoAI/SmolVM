@@ -12,34 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Internal kernel boot-profile definitions for SmolVM images."""
+"""Internal kernel boot-profile definitions for SmolVM images.
+
+After 0.0.14a0 SmolVM ships a single universal microvm kernel
+([build-qemu-kernel.yml](.github/workflows/build-qemu-kernel.yml)) that boots
+under Firecracker (virtio-MMIO) AND QEMU/libkrun (virtio-PCI). The previous
+external sources (Firecracker-CI on S3, Ubuntu cloud-images vmlinuz) are
+retired. Boot profiles still distinguish *boot modes* (direct kernel vs
+kernel+initramfs for user-supplied S3 images), but the kernel artifact is
+the same across all SmolVM-built profiles.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Literal
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal
 
 from smolvm.runtime.backends import BACKEND_FIRECRACKER, BACKEND_LIBKRUN, BACKEND_QEMU
 
-# Firecracker-compatible uncompressed kernels.
-FIRECRACKER_KERNEL_URLS: dict[str, str] = {
-    "x86_64": "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.6/x86_64/vmlinux-5.10.198",
-    "aarch64": "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.6/aarch64/vmlinux-5.10.198",
-}
-
-# Future desktop-capable QEMU path: distro kernels that are expected to boot
-# together with a matching initramfs/modules set.
-QEMU_DESKTOP_KERNEL_URLS: dict[str, str] = {
-    "x86_64": (
-        "https://cloud-images.ubuntu.com/noble/current/unpacked/"
-        "noble-server-cloudimg-amd64-vmlinuz-generic"
-    ),
-    "aarch64": (
-        "https://cloud-images.ubuntu.com/noble/current/unpacked/"
-        "noble-server-cloudimg-arm64-vmlinuz-generic"
-    ),
-}
+if TYPE_CHECKING:
+    from smolvm.images.published import Arch as PublishedArch
 
 _MICROVM_DIRECT_FIRECRACKER_BOOT_ARGS = (
     "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/init"
@@ -58,7 +52,6 @@ class BootProfileSpec:
     """Structured boot-profile metadata for internal image selection."""
 
     profile: KernelBootProfile
-    kernel_url_by_arch: dict[str, str]
     boot_mode: Literal["direct_kernel", "kernel_plus_initramfs"]
 
     def base_boot_args_for_backend(self, backend: str, arch: str) -> str:
@@ -88,12 +81,10 @@ class BootProfileSpec:
 _BOOT_PROFILE_SPECS: dict[KernelBootProfile, BootProfileSpec] = {
     KernelBootProfile.MICROVM_DIRECT: BootProfileSpec(
         profile=KernelBootProfile.MICROVM_DIRECT,
-        kernel_url_by_arch=FIRECRACKER_KERNEL_URLS,
         boot_mode="direct_kernel",
     ),
     KernelBootProfile.QEMU_DESKTOP_INITRAMFS: BootProfileSpec(
         profile=KernelBootProfile.QEMU_DESKTOP_INITRAMFS,
-        kernel_url_by_arch=QEMU_DESKTOP_KERNEL_URLS,
         boot_mode="kernel_plus_initramfs",
     ),
 }
@@ -109,13 +100,24 @@ def normalize_arch(arch: str) -> str:
     raise ValueError(f"Unsupported host architecture '{arch}'")
 
 
+def _to_published_arch(arch: str) -> PublishedArch:
+    """Map kernel-style arch (`x86_64`/`aarch64`) to SmolVM-style (`amd64`/`arm64`)."""
+    normalized = normalize_arch(arch)
+    return "amd64" if normalized == "x86_64" else "arm64"
+
+
 def get_boot_profile_spec(profile: KernelBootProfile) -> BootProfileSpec:
     """Return the metadata for the requested internal boot profile."""
     return _BOOT_PROFILE_SPECS[profile]
 
 
-def resolve_kernel_url(profile: KernelBootProfile, arch: str) -> str:
-    """Return the kernel URL for a boot profile and architecture."""
-    normalized_arch = normalize_arch(arch)
-    spec = get_boot_profile_spec(profile)
-    return spec.kernel_url_by_arch[normalized_arch]
+def resolve_kernel_path(arch: str, *, cache_dir: Path | None = None) -> Path:
+    """Return the local path to the SmolVM-built base kernel for ``arch``.
+
+    Downloads (with SHA-256 verification) on cache miss, returns a cached
+    path on hit. Same artifact across all boot profiles — what differs
+    between profiles is the *boot args*, not the kernel binary.
+    """
+    from smolvm.images.published import ensure_base_kernel
+
+    return ensure_base_kernel(_to_published_arch(arch), cache_dir=cache_dir)

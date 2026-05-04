@@ -64,6 +64,23 @@ class PublishedImage(BaseModel):
     model_config = {"frozen": True}
 
 
+class BaseKernel(BaseModel):
+    """Per-arch SmolVM-built universal microvm kernel.
+
+    Single artifact that boots under Firecracker (virtio-MMIO transport) AND
+    QEMU/libkrun (virtio-PCI transport) — the ``kernel/qemu/build.sh`` recipe
+    enables both transports + ISO9660 (cloud-init NoCloud seed disk). Used
+    by the auto-config and preset-bake paths; replaces the previously-fetched
+    Firecracker-CI kernel and the Ubuntu cloud-image kernel.
+    """
+
+    arch: Arch
+    kernel_url: str
+    kernel_sha256: str
+
+    model_config = {"frozen": True}
+
+
 def release_tag(version: str = __version__) -> str:
     """GitHub Releases tag images for ``version`` are published under."""
     return f"images-v{version}"
@@ -121,51 +138,70 @@ def _release_kernel_url(arch: Arch, vmm: Vmm, version: str) -> str:
 # pyproject.toml version bumps don't ship with stale manifest entries.
 _MANIFEST_VERSION = "0.0.14a0"
 
-# Bundled manifest. New (preset, arch, vmm) entries land here as CI publishes
-# images — paired by version with this CLI release. The SHA-256s and URLs
-# below match the artifacts produced by the CI workflow at
-# .github/workflows/build-published-images.yml; they're also visible in
-# the corresponding GH release's step summary on each successful run.
+# Per-arch SmolVM-built universal kernels. Replaces the previously-fetched
+# Firecracker-CI vmlinux from S3 and the Ubuntu cloud kernel — same artifact
+# now boots all three runtimes (Firecracker / QEMU / libkrun). Same URL is
+# used by every MANIFEST row below; this registry is the source of truth so
+# adding a future preset doesn't drift kernel SHAs across rows.
+#
+# SHA-256 placeholders ("0" * 64) are filled in once build-qemu-kernel.yml
+# CI completes for the matching tag (images-v<_MANIFEST_VERSION>). The
+# drift-detection test in test_published_images.py refuses to load with
+# placeholder SHAs in a published manifest version.
+BASE_KERNELS: dict[Arch, BaseKernel] = {
+    "amd64": BaseKernel(
+        arch="amd64",
+        kernel_url=_release_kernel_url("amd64", "qemu", _MANIFEST_VERSION),
+        kernel_sha256="fa657a2c30e680ebdbc13c433cfa3b32fa30f6b59d2865ea31637d82cae7f0c5",
+    ),
+    "arm64": BaseKernel(
+        arch="arm64",
+        kernel_url=_release_kernel_url("arm64", "qemu", _MANIFEST_VERSION),
+        kernel_sha256="f937f2990b89ec55049cda69de729d4acc0d0fa9b2c86fbc457438ceed6ffff6",
+    ),
+}
+
+# Bundled preset manifest. The kernel URL/SHA on each row mirrors BASE_KERNELS
+# above (same artifact across firecracker/qemu rows) — kept duplicated on the
+# rows because consumers look up the full (preset, arch, vmm) tuple. Boot args
+# are what actually differ between firecracker and qemu rows. Rootfs SHAs
+# are placeholders until build-published-images.yml CI completes.
 MANIFEST: dict[tuple[Preset, Arch, Vmm], PublishedImage] = {
     ("openclaw", "amd64", "firecracker"): PublishedImage(
         preset="openclaw",
         arch="amd64",
         vmm="firecracker",
-        kernel_url=_release_asset_url("openclaw", "amd64", "vmlinux.bin", _MANIFEST_VERSION),
-        kernel_sha256="d361a5f2e67b2e243964ad93f25a2d9e5bee320204a84a7af089949228af5c2a",
+        kernel_url=BASE_KERNELS["amd64"].kernel_url,
+        kernel_sha256=BASE_KERNELS["amd64"].kernel_sha256,
         rootfs_url=_release_asset_url("openclaw", "amd64", "rootfs.ext4.zst", _MANIFEST_VERSION),
-        rootfs_sha256="919eea4fdaae8674c6749cb6acd9a1b51235369e412a08d38c5062519eaf8875",
+        rootfs_sha256="a332941df1dfe3d29c849072267148d84919e6b13fa810870049a0a3567be8f9",
     ),
     ("openclaw", "arm64", "firecracker"): PublishedImage(
         preset="openclaw",
         arch="arm64",
         vmm="firecracker",
-        kernel_url=_release_asset_url("openclaw", "arm64", "vmlinux.bin", _MANIFEST_VERSION),
-        kernel_sha256="7d8dc0bce701037ea5ceccfc997c05b11f99aba215c73ed18a2269154837c497",
+        kernel_url=BASE_KERNELS["arm64"].kernel_url,
+        kernel_sha256=BASE_KERNELS["arm64"].kernel_sha256,
         rootfs_url=_release_asset_url("openclaw", "arm64", "rootfs.ext4.zst", _MANIFEST_VERSION),
-        rootfs_sha256="bb5c42ffdd757ffb48c62f9d841230ff4e345a75fc40df210722d0a598626f29",
+        rootfs_sha256="87a8d855801a1dc89bafa4ac9596767a5de221536a5f6a43bc57e308059af937",
     ),
-    # QEMU rows reuse the firecracker rootfs (same userspace; only the
-    # kernel differs). Kernels come from the SmolVM-built QEMU/libkrun
-    # kernel workflow (.github/workflows/build-qemu-kernel.yml) and use
-    # the preset-independent naming `vmlinux-<arch>-qemu.bin`.
     ("openclaw", "amd64", "qemu"): PublishedImage(
         preset="openclaw",
         arch="amd64",
         vmm="qemu",
-        kernel_url=_release_kernel_url("amd64", "qemu", _MANIFEST_VERSION),
-        kernel_sha256="db6ddc88e5b88941164df53f5f798d080b95a90c411df8d2b9f501eb18fb89aa",
+        kernel_url=BASE_KERNELS["amd64"].kernel_url,
+        kernel_sha256=BASE_KERNELS["amd64"].kernel_sha256,
         rootfs_url=_release_asset_url("openclaw", "amd64", "rootfs.ext4.zst", _MANIFEST_VERSION),
-        rootfs_sha256="919eea4fdaae8674c6749cb6acd9a1b51235369e412a08d38c5062519eaf8875",
+        rootfs_sha256="a332941df1dfe3d29c849072267148d84919e6b13fa810870049a0a3567be8f9",
     ),
     ("openclaw", "arm64", "qemu"): PublishedImage(
         preset="openclaw",
         arch="arm64",
         vmm="qemu",
-        kernel_url=_release_kernel_url("arm64", "qemu", _MANIFEST_VERSION),
-        kernel_sha256="6f4f42cfa1d3038bd06d99e09887119e4c7fdd2d1da02913e1b6b10359376752",
+        kernel_url=BASE_KERNELS["arm64"].kernel_url,
+        kernel_sha256=BASE_KERNELS["arm64"].kernel_sha256,
         rootfs_url=_release_asset_url("openclaw", "arm64", "rootfs.ext4.zst", _MANIFEST_VERSION),
-        rootfs_sha256="bb5c42ffdd757ffb48c62f9d841230ff4e345a75fc40df210722d0a598626f29",
+        rootfs_sha256="87a8d855801a1dc89bafa4ac9596767a5de221536a5f6a43bc57e308059af937",
     ),
 }
 
@@ -268,3 +304,48 @@ def ensure_published_image(
         _decompress_zstd(local.rootfs_path, decompressed_path)
 
     return local.model_copy(update={"rootfs_path": decompressed_path})
+
+
+def ensure_base_kernel(
+    arch: Arch,
+    *,
+    cache_dir: Path | None = None,
+    registry: dict[Arch, BaseKernel] | None = None,
+    version: str = __version__,
+) -> Path:
+    """Download (if needed) and return the local path to the base kernel.
+
+    The base kernel is a single SmolVM-built artifact per arch that boots
+    under Firecracker, QEMU, and libkrun (see :class:`BaseKernel`). Replaces
+    every external kernel SmolVM previously fetched (Firecracker-CI on S3,
+    Ubuntu cloud-images vmlinuz). All consumers — the auto-config flow,
+    the preset image builder, the published-image launcher — funnel through
+    this function so there is exactly one kernel binary on disk per arch.
+
+    Args:
+        arch: Guest CPU architecture.
+        cache_dir: Override the default cache directory (mainly for tests).
+        registry: Override :data:`BASE_KERNELS` (mainly for tests).
+        version: Override the CLI version used to compute the cache name.
+
+    Returns:
+        Absolute path to the cached, SHA-256-verified vmlinux file.
+
+    Raises:
+        ImageError: If no base kernel is registered for ``arch``, or if
+            download / SHA verification fails.
+    """
+    catalog = BASE_KERNELS if registry is None else registry
+    entry = catalog.get(arch)
+    if entry is None:
+        available = ", ".join(sorted(catalog)) or "(none)"
+        raise ImageError(
+            f"No base kernel registered for arch '{arch}' (available: {available})."
+        )
+    manager = ImageManager(cache_dir=cache_dir)
+    return manager.ensure_rootfs_only(
+        name=f"base-kernel-v{version}-{arch}",
+        url=entry.kernel_url,
+        filename="vmlinux.bin",
+        sha256=entry.kernel_sha256,
+    )

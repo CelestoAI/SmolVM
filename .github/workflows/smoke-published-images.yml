@@ -1,0 +1,206 @@
+# Boot-smoke the SmolVM-built universal kernel against published rootfs
+# images BEFORE we commit a new manifest version. Catches the class of
+# bug where a Kconfig delta (or a kernel bump) silently breaks boot for
+# one of (Ubuntu cloud rootfs, openclaw rootfs) — which is otherwise
+# only discovered by the first user trying `smolvm create`.
+#
+# Each cell:
+#   - Downloads the published kernel + rootfs from the draft release
+#     `images-v<pyproject-version>` (no SHA pinning — we want to test
+#     whatever CI just produced, not what's pinned in the manifest).
+#   - Boots qemu-system-<arch> -accel kvm with the kernel, the rootfs
+#     as virtio-blk, a cloud-init NoCloud seed (for the Ubuntu cell),
+#     port-forwards SSH to the host.
+#   - Polls for sshd readiness for up to ~90 s. Failure → red x.
+#
+# nested-virt note: KVM is available on GH-hosted ubuntu-latest /
+# ubuntu-24.04-arm runners as of 2023. macOS HVF cannot be exercised
+# in CI (no nested-virt on hosted macOS runners) — that path is
+# validated by developers locally + first-user opt-in.
+
+name: Smoke Published Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: >-
+          Release tag to smoke-test (e.g. images-v0.0.14a0). Leave empty to
+          derive from pyproject version (matches the build-* workflows).
+        type: string
+        default: ""
+  workflow_run:
+    workflows: ["Build QEMU Kernel", "Build Published Images"]
+    types:
+      - completed
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    # Only run after a successful build — failed builds left the assets in
+    # an unknown state.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+        rootfs: [openclaw, ubuntu]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install QEMU + tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+              qemu-system-x86 qemu-system-arm qemu-utils \
+              cloud-image-utils zstd \
+              netcat-openbsd
+          # KVM access — GH runners ship /dev/kvm but the runner user isn't
+          # always in the kvm group. Add it; sudo on the qemu invocation also
+          # works as a fallback.
+          sudo usermod -a -G kvm $USER || true
+
+      - name: Resolve release tag
+        id: release
+        env:
+          INPUT_TAG: ${{ inputs.release_tag }}
+        run: |
+          if [ -n "${INPUT_TAG:-}" ]; then
+            tag="$INPUT_TAG"
+          else
+            version=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+            tag="images-v${version}"
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Download kernel
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p smoke
+          gh release download "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern "vmlinux-${ARCH}-qemu.bin" \
+              -D smoke
+
+      - name: Download rootfs (openclaw)
+        if: matrix.rootfs == 'openclaw'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          gh release download "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern "openclaw-${ARCH}-rootfs.ext4.zst" \
+              -D smoke
+          zstd -d "smoke/openclaw-${ARCH}-rootfs.ext4.zst" -o smoke/rootfs.raw
+          rm "smoke/openclaw-${ARCH}-rootfs.ext4.zst"
+
+      - name: Download rootfs (ubuntu)
+        if: matrix.rootfs == 'ubuntu'
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          # ubuntu cloud-images for noble; same one the auto-config flow uses
+          if [ "$ARCH" = "amd64" ]; then
+            url="https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img"
+          else
+            url="https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img"
+          fi
+          curl -fL -o smoke/rootfs.raw "$url"
+
+      - name: Build cloud-init seed
+        run: |
+          ssh-keygen -t ed25519 -N "" -f smoke/id_ed25519 -C smoke
+          cat > smoke/user-data <<EOF
+          #cloud-config
+          users:
+            - name: root
+              ssh_authorized_keys:
+                - $(cat smoke/id_ed25519.pub)
+          ssh_pwauth: false
+          chpasswd:
+            expire: false
+          EOF
+          echo "instance-id: smoke; local-hostname: smoke" > smoke/meta-data
+          cloud-localds smoke/seed.iso smoke/user-data smoke/meta-data
+
+      - name: Boot the VM and wait for SSH
+        env:
+          ARCH: ${{ matrix.arch }}
+          ROOTFS: ${{ matrix.rootfs }}
+        run: |
+          set -euo pipefail
+          if [ "$ARCH" = "amd64" ]; then
+            QEMU=qemu-system-x86_64
+            MACHINE="-machine pc-q35-4.2,accel=kvm -cpu host"
+            CONSOLE=ttyS0
+          else
+            QEMU=qemu-system-aarch64
+            MACHINE="-machine virt,accel=kvm -cpu host"
+            CONSOLE=ttyAMA0
+          fi
+          # Same root= the production code uses for each rootfs flavor.
+          if [ "$ROOTFS" = "openclaw" ]; then
+            ROOT_ARG="root=/dev/vda"
+          else
+            ROOT_ARG="root=/dev/vda1"
+          fi
+          sudo $QEMU \
+              $MACHINE -smp 2 -m 2048 \
+              -kernel smoke/vmlinux-${ARCH}-qemu.bin \
+              -drive file=smoke/rootfs.raw,if=none,id=root,format=raw \
+              -device virtio-blk-pci,drive=root \
+              -drive file=smoke/seed.iso,if=none,id=seed,format=raw,readonly=on \
+              -device virtio-blk-pci,drive=seed \
+              -netdev user,id=net0,hostfwd=tcp::2223-:22 \
+              -device virtio-net-pci,netdev=net0 \
+              -append "console=${CONSOLE} reboot=k panic=1 ${ROOT_ARG} rw" \
+              -nographic -no-reboot \
+              > smoke/boot.log 2>&1 &
+          QPID=$!
+          # Poll for sshd
+          ok=0
+          for i in $(seq 1 120); do
+            sleep 1
+            if ssh-keyscan -T 2 -p 2223 127.0.0.1 2>/dev/null | grep -q "ssh-"; then
+              echo "sshd ready after ${i}s"
+              ok=1
+              break
+            fi
+          done
+          sudo kill $QPID 2>/dev/null || true
+          sleep 2
+          sudo kill -9 $QPID 2>/dev/null || true
+          echo "--- last 80 lines of boot log ---"
+          tail -80 smoke/boot.log
+          if [ "$ok" -ne 1 ]; then
+            echo "::error::sshd did not become ready within 120s on ${ARCH}/${ROOTFS}"
+            exit 1
+          fi
+
+      - name: Step summary
+        if: always()
+        env:
+          ARCH: ${{ matrix.arch }}
+          ROOTFS: ${{ matrix.rootfs }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          {
+            echo "## Smoke: \`${ARCH}\` × \`${ROOTFS}\` from \`${TAG}\`"
+            echo ""
+            echo "Status: ${{ job.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1633,18 +1633,7 @@ class SmolVMManager:
         if "aarch64" in qemu_name:
             machine = "virt,accel=hvf" if system == "Darwin" else "virt"
             cpu = "host" if system == "Darwin" else "cortex-a72"
-            cmd.extend(
-                [
-                    "-machine",
-                    machine,
-                    "-cpu",
-                    cpu,
-                    "-device",
-                    f"virtio-blk-device,drive={root_drive_id}",
-                    "-device",
-                    f"virtio-net-device,netdev=net0,mac={guest_mac}",
-                ]
-            )
+            cmd.extend(["-machine", machine, "-cpu", cpu])
             if vm_info.config.boot_mode == "firmware":
                 firmware_path = _find_aarch64_uefi_firmware()
                 if firmware_path is None:
@@ -1656,10 +1645,25 @@ class SmolVMManager:
                         "install 'qemu-efi-aarch64'."
                     )
                 cmd.extend(["-bios", str(firmware_path)])
+            # virtio-MMIO device ordering note: on `-machine virt`, kernel
+            # enumeration of virtio-mmio slots is the REVERSE of the order
+            # the `-device` flags appear on the command line. To make sure
+            # the rootdisk lands at /dev/vda (and not /dev/vdb behind the
+            # cloud-init seed), the rootdisk-block device must be the LAST
+            # virtio-blk-device added. Workspace fsdevs and the NIC must
+            # come before it too.
             for drive_id in extra_drive_ids:
                 cmd.extend(["-device", f"virtio-blk-device,drive={drive_id}"])
             for fsdev_id, tag in workspace_fsdev_ids:
                 cmd.extend(["-device", f"virtio-9p-device,fsdev={fsdev_id},mount_tag={tag}"])
+            cmd.extend(
+                [
+                    "-device",
+                    f"virtio-net-device,netdev=net0,mac={guest_mac}",
+                    "-device",
+                    f"virtio-blk-device,drive={root_drive_id}",
+                ]
+            )
         else:
             machine = "q35,accel=hvf" if system == "Darwin" else "q35"
             cpu = "host" if system == "Darwin" else "max"

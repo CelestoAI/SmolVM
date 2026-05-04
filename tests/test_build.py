@@ -23,7 +23,8 @@ import pytest
 
 from smolvm.exceptions import ImageError, SmolVMError
 from smolvm.images.builder import ImageBuilder
-from smolvm.runtime.boot_profiles import KernelBootProfile, resolve_kernel_url
+from smolvm.images.published import BASE_KERNELS
+from smolvm.runtime.boot_profiles import KernelBootProfile
 
 
 def _ok_subprocess_run(
@@ -191,10 +192,9 @@ class TestBrowserImageBuilder:
             assert "x11vnc" in dockerfile_content
             assert init_script.startswith("#!/bin/sh")
             assert rootfs_size_mb == 4096
-            assert kwargs["kernel_url"] == resolve_kernel_url(
-                KernelBootProfile.MICROVM_DIRECT,
-                "x86_64",
-            )
+            # Post-0.0.14a0 the kernel URL resolves to the SmolVM-built
+            # universal microvm kernel (same artifact across firecracker/qemu).
+            assert kwargs["kernel_url"] == BASE_KERNELS["amd64"].kernel_url
             assert kwargs["fingerprint_data"]["kernel_profile"] == "microvm_direct"
             assert kwargs["fingerprint_data"]["image_type"] == "browser-chromium-v3"
             helper_script = kwargs["extra_files"]["smolvm-browser-session"]

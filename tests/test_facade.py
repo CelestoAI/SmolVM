@@ -556,22 +556,22 @@ class TestVMInit:
     @patch("smolvm.facade.build_seed_iso")
     @patch("smolvm.facade.ImageManager")
     @patch("smolvm.utils.ensure_ssh_key")
+    @patch("smolvm.images.published.ensure_base_kernel")
     def test_named_auto_config_qemu_keeps_backend_specific_settings(
         self,
+        mock_ensure_base_kernel: MagicMock,
         mock_ensure_ssh_key: MagicMock,
         mock_image_manager_cls: MagicMock,
         mock_build_seed_iso: MagicMock,
         _: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """QEMU auto-config should use the prebuilt image path."""
-        kernel = tmp_path / "vmlinuz"
-        initrd = tmp_path / "initrd"
+        """QEMU auto-config should use the prebuilt rootfs + SmolVM base kernel."""
+        kernel = tmp_path / "vmlinux.bin"
         rootfs = tmp_path / "rootfs.qcow2"
         private_key = tmp_path / "id_ed25519"
         public_key = tmp_path / "id_ed25519.pub"
         kernel.touch()
-        initrd.touch()
         rootfs.touch()
         private_key.touch()
         public_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKey user@test\n")
@@ -583,31 +583,29 @@ class TestVMInit:
         )[-1]
         mock_image_manager = MagicMock()
         mock_image_manager.cache_dir = tmp_path
-        mock_image_manager.ensure_image.return_value = MagicMock(
-            kernel_path=kernel,
-            initrd_path=initrd,
-            rootfs_path=rootfs,
-        )
+        mock_image_manager.ensure_rootfs_only.return_value = rootfs
         mock_image_manager_cls.return_value = mock_image_manager
+        mock_ensure_base_kernel.return_value = kernel
 
         config, _ = _build_auto_config(vm_name="project-spacex", backend="qemu")
 
         assert config.backend == "qemu"
-        assert config.initrd_path == initrd
+        assert config.kernel_path == kernel
+        assert config.initrd_path is None  # direct kernel boot, no initrd
         assert config.ssh_capable is True
-        assert "root=LABEL=cloudimg-rootfs" in config.boot_args
+        assert "root=/dev/vda1" in config.boot_args
         assert config.extra_drives[0].suffix == ".iso"
-        mock_image_manager.ensure_image.assert_called_once_with(
-            "ubuntu-noble-minimal-qemu-aarch64",
-            on_download=None,
-        )
+        mock_image_manager.ensure_rootfs_only.assert_called_once()
+        mock_ensure_base_kernel.assert_called_once()
 
     @patch("smolvm.facade.platform.machine", return_value="arm64")
     @patch("smolvm.facade.build_seed_iso")
     @patch("smolvm.facade.ImageManager")
     @patch("smolvm.utils.ensure_ssh_key")
+    @patch("smolvm.images.published.ensure_base_kernel")
     def test_named_auto_config_qemu_uses_explicit_ssh_key_for_seed(
         self,
+        mock_ensure_base_kernel: MagicMock,
         mock_ensure_ssh_key: MagicMock,
         mock_image_manager_cls: MagicMock,
         mock_build_seed_iso: MagicMock,
@@ -615,15 +613,13 @@ class TestVMInit:
         tmp_path: Path,
     ) -> None:
         """QEMU auto-config should honor an explicit SSH key when building the seed ISO."""
-        kernel = tmp_path / "vmlinuz"
-        initrd = tmp_path / "initrd"
+        kernel = tmp_path / "vmlinux.bin"
         rootfs = tmp_path / "rootfs.qcow2"
         default_private = tmp_path / "id_ed25519"
         default_public = tmp_path / "id_ed25519.pub"
         custom_private = tmp_path / "custom_id_ed25519"
         custom_public = tmp_path / "custom_id_ed25519.pub"
         kernel.touch()
-        initrd.touch()
         rootfs.touch()
         default_private.touch()
         default_public.write_text("ssh-ed25519 AAAAC3NzaDefault user@test\n")
@@ -637,12 +633,9 @@ class TestVMInit:
         )[-1]
         mock_image_manager = MagicMock()
         mock_image_manager.cache_dir = tmp_path
-        mock_image_manager.ensure_image.return_value = MagicMock(
-            kernel_path=kernel,
-            initrd_path=initrd,
-            rootfs_path=rootfs,
-        )
+        mock_image_manager.ensure_rootfs_only.return_value = rootfs
         mock_image_manager_cls.return_value = mock_image_manager
+        mock_ensure_base_kernel.return_value = kernel
 
         config, ssh_key_path = _build_auto_config(
             vm_name="project-spacex",
