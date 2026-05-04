@@ -1869,6 +1869,27 @@ def _run_start_with_published_image(args: argparse.Namespace, preset: object) ->
 
     _preset: Preset = preset  # type: ignore[assignment]
 
+    # Published images are built with a Firecracker-CI kernel (virtio-MMIO,
+    # no PCI drivers) and the launch path below uses backend="firecracker",
+    # which requires KVM and the Linux `ip` toolchain for TAP setup.
+    # Neither exists on macOS — the failure cascades through several
+    # confusing error messages (sudo, missing `ip`, network-cleanup also
+    # fails). Reject up-front with one clear message instead. Tracked as a
+    # follow-up to validate libkrun (Firecracker-API-compatible runtime
+    # backed by Hypervisor.framework) for macOS parity.
+    if platform.system() != "Linux":
+        return _emit_cli_error(
+            "start",
+            2,
+            ValueError(
+                f"Published images are Linux-only for now: the Firecracker "
+                f"runtime they use requires KVM, which is unavailable on "
+                f"{platform.system()}. Run `smolvm {_preset.name} start` "
+                f"without SMOLVM_USE_PUBLISHED to use the default flow."
+            ),
+            json_output=args.json,
+        )
+
     if _preset.name not in _PUBLISHED_IMAGE_BOOT_ARGS:
         return _emit_cli_error(
             "start",
