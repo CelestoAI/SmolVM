@@ -10,13 +10,14 @@
 # Output: vmlinux-<arch>-qemu.bin in $OUT_DIR (default: $PWD).
 #
 # Usage:
-#   bash build.sh                      # builds for host arch
-#   ARCH=arm64 bash build.sh           # cross-build (needs cross toolchain)
-#   OUT_DIR=/tmp/k bash build.sh       # custom output dir
+#   bash build.sh                                # builds for host arch
+#   SMOLVM_ARCH_OVERRIDE=arm64 bash build.sh     # cross-build (needs cross toolchain)
+#   OUT_DIR=/tmp/k bash build.sh                 # custom output dir
+#   MAKE=gmake bash build.sh                     # use a specific GNU Make
 #
-# In CI, the workflow runs this on a native runner per arch, so ARCH defaults
-# to the host. Local devs on Apple Silicon get arm64; on Intel Macs/Linux
-# x86 boxes, amd64.
+# In CI, the workflow runs this on a native runner per arch, so the arch
+# defaults to the host. Local devs on Apple Silicon get arm64; on Intel
+# Macs/Linux x86 boxes, amd64.
 
 set -euo pipefail
 
@@ -24,6 +25,58 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LINUX_VERSION="$(cat "$SCRIPT_DIR/linux.version" | tr -d '[:space:]')"
 LINUX_SHA256_LINE="$(cat "$SCRIPT_DIR/linux.sha256")"
 CONFIG_FRAGMENT="$SCRIPT_DIR/config.fragment"
+
+find_make() {
+    if [ -n "${MAKE:-}" ]; then
+        command -v "$MAKE"
+        return
+    fi
+
+    if command -v gmake >/dev/null 2>&1; then
+        command -v gmake
+        return
+    fi
+
+    command -v make
+}
+
+version_at_least_4() {
+    case "$1" in
+        ''|*[!0-9.]*)
+            return 1
+            ;;
+    esac
+
+    major="${1%%.*}"
+    [ "$major" -ge 4 ]
+}
+
+job_count() {
+    if command -v nproc >/dev/null 2>&1; then
+        nproc
+        return
+    fi
+
+    if command -v sysctl >/dev/null 2>&1; then
+        sysctl -n hw.ncpu
+        return
+    fi
+
+    echo 1
+}
+
+MAKE_BIN="$(find_make || true)"
+if [ -z "$MAKE_BIN" ]; then
+    echo "GNU Make 4.0 or newer is required. Install it with 'brew install make' on macOS, then run 'MAKE=gmake bash build.sh'." >&2
+    exit 2
+fi
+
+MAKE_VERSION="$("$MAKE_BIN" --version | sed -n '1s/.*Make //p')"
+MAKE_VERSION="${MAKE_VERSION%% *}"
+if ! version_at_least_4 "$MAKE_VERSION"; then
+    echo "GNU Make 4.0 or newer is required; '$MAKE_BIN' is version ${MAKE_VERSION:-unknown}. Install it with 'brew install make' on macOS, then run 'MAKE=gmake bash build.sh'." >&2
+    exit 2
+fi
 
 # Host arch → SmolVM arch label. Same mapping the manifest uses.
 HOST_ARCH="$(uname -m)"
@@ -46,10 +99,12 @@ WORK_DIR="${WORK_DIR:-$(mktemp -d)}"
 TARBALL="$WORK_DIR/linux-$LINUX_VERSION.tar.xz"
 SRC_DIR="$WORK_DIR/linux-$LINUX_VERSION"
 ARTIFACT="$OUT_DIR/vmlinux-$SMOLVM_ARCH-qemu.bin"
+JOBS="$(job_count)"
 
 echo "==> Linux $LINUX_VERSION → $SMOLVM_ARCH (kernel ARCH=$KARCH)"
 echo "    work dir: $WORK_DIR"
 echo "    output:   $ARTIFACT"
+echo "    make:     $MAKE_BIN ($MAKE_VERSION)"
 
 # 1. Download the tarball and verify against our pinned SHA.
 if [ ! -f "$TARBALL" ]; then
@@ -72,7 +127,7 @@ cd "$SRC_DIR"
 
 # 3. Apply baseline defconfig + our fragment.
 echo "==> Generating .config (baseline=$DEFCONFIG + config.fragment)"
-make ARCH="$KARCH" "$DEFCONFIG" >/dev/null
+"$MAKE_BIN" ARCH="$KARCH" "$DEFCONFIG" >/dev/null
 
 # merge_config.sh wants the fragment via positional args; -m mode merges,
 # preserving any settings not mentioned in the fragment.
@@ -81,20 +136,38 @@ scripts/kconfig/merge_config.sh -m -O . .config "$CONFIG_FRAGMENT" >/dev/null
 # olddefconfig fills in any new symbols introduced by Linux that weren't in
 # the merged base — picks each one's default. Without this, a Linux bump can
 # leave half-configured symbols that fail the build cryptically.
-make ARCH="$KARCH" olddefconfig >/dev/null
+"$MAKE_BIN" ARCH="$KARCH" olddefconfig >/dev/null
 
-# 4. Sanity check: every symbol in our fragment must end up =y in .config.
-# Catches the case where olddefconfig silently downgrades one of our deltas
-# (e.g. because a dependency is missing) — that's an actionable signal that
-# the fragment needs adjustment, not a silent failure to debug at boot.
+# 4. Sanity check: every directive in our fragment must hold in .config —
+# both `CONFIG_X=y` and `# CONFIG_X is not set`. Catches the case where
+# olddefconfig silently flips one of our deltas (e.g. a missing dependency
+# downgrades =y, or a new Kconfig dep forces modules on) — actionable signal
+# that the fragment needs adjustment, not a silent failure to debug at boot.
 echo "==> Verifying fragment was honored"
 fail=0
 while IFS= read -r raw; do
-    line="${raw%%#*}"  # strip inline comments
-    line="${line%"${line##*[![:space:]]}"}"  # rtrim
-    line="${line#"${line%%[![:space:]]*}"}"  # ltrim
+    # ltrim + rtrim WITHOUT stripping '#' — we need to detect "is not set"
+    # lines, which look like comments but are real Kconfig directives.
+    trimmed="${raw#"${raw%%[![:space:]]*}"}"
+    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+    case "$trimmed" in
+        "# CONFIG_"*" is not set")
+            rest="${trimmed#"# "}"
+            symbol="${rest%% *}"
+            if grep -qE "^${symbol}=(y|m)$" .config; then
+                echo "  MISSING: $symbol — wanted unset, .config has: $(grep -E "^${symbol}=" .config)"
+                fail=1
+            fi
+            continue
+            ;;
+    esac
+    # Plain comments (not "is not set" directives) and inline comments are
+    # discarded only after the "is not set" check above.
+    line="${raw%%#*}"
+    line="${line%"${line##*[![:space:]]}"}"
+    line="${line#"${line%%[![:space:]]*}"}"
     case "$line" in
-        ""|"# CONFIG_"*) continue ;;
+        "") continue ;;
         "CONFIG_"*=y)
             symbol="${line%%=*}"
             grep -qE "^${symbol}=y$" .config && continue
@@ -106,8 +179,8 @@ done < "$CONFIG_FRAGMENT"
 [ "$fail" -eq 0 ] || { echo "==> Fragment verification failed"; exit 1; }
 
 # 5. Build the kernel image.
-echo "==> Building kernel ($(nproc) jobs)"
-make ARCH="$KARCH" -j"$(nproc)" "$(basename "$KIMAGE_REL")"
+echo "==> Building kernel ($JOBS jobs)"
+"$MAKE_BIN" ARCH="$KARCH" -j"$JOBS" "$(basename "$KIMAGE_REL")"
 
 # 6. Stage the artifact + record the resolved config (debugging aid).
 mkdir -p "$OUT_DIR"

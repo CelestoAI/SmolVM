@@ -1,18 +1,21 @@
 # SmolVM QEMU/libkrun Kernel
 
-This directory pins the inputs to a custom Linux kernel SmolVM builds in CI
-for the published-image pipeline. It's the **QEMU/libkrun** variant — built
-for hypervisors that expose virtio over **PCI** (vs Firecracker's MMIO bus)
-and use the ARM PL011 UART on aarch64 (vs Firecracker's 8250-MMIO).
+This directory holds the recipe for the Linux kernel SmolVM ships to
+QEMU and libkrun users. The kernel built here is what makes a sandbox
+boot all the way through and print log output on macOS — without it,
+the screen stays blank.
 
 ## Why this exists
 
 Our default-published kernel is fetched from
-[Firecracker's CI S3 bucket][fc-ci]. It's tuned for Firecracker — virtio-MMIO
-+ 8250 UART, no PCI, no PL011. Empirically that kernel produces **zero serial
-output** under QEMU `virt` machine: the kernel boots into a hardware model it
-has no drivers for. macOS users have to use QEMU (or libkrun) — they need a
-kernel built for that hardware, not Firecracker's.
+[Firecracker's CI S3 bucket][fc-ci]. It's tuned for Firecracker, which
+exposes virtual hardware to the guest over a "MMIO" bus and uses an
+8250 serial chip on aarch64. QEMU's `virt` machine and libkrun expose
+the same devices over **PCI** instead, and use the ARM PL011 UART on
+aarch64 — different drivers entirely. Empirically the Firecracker
+kernel produces **zero serial output** under QEMU: it boots into a
+hardware model it has no drivers for. macOS users have to use QEMU
+(or libkrun), so they need a kernel built for that hardware.
 
 [fc-ci]: https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.6/
 
@@ -33,6 +36,13 @@ bash build.sh
 # Produces vmlinux-<host_arch>-qemu.bin in the current directory.
 ```
 
+The build needs GNU Make 4.0 or newer. macOS ships an older `make`,
+so install the Homebrew version with `brew install make` and run:
+
+```sh
+MAKE=gmake bash build.sh
+```
+
 Cross-builds work too if you have the toolchain:
 
 ```sh
@@ -42,6 +52,12 @@ SMOLVM_ARCH_OVERRIDE=arm64 ARCH=arm64 \
 ```
 
 ## Smoke-testing locally
+
+The example below is for **macOS Apple Silicon**, which uses the
+Hypervisor.framework accelerator (`hvf`). On **Linux** with KVM,
+swap `accel=hvf` for `accel=kvm` and drop `-cpu host` (or keep it —
+KVM accepts it too). On Linux without KVM, use `accel=tcg` and expect
+slow boot.
 
 ```sh
 qemu-system-aarch64 -machine virt,accel=hvf -cpu host -smp 2 -m 1024 \
@@ -65,18 +81,27 @@ check the rootfs has a valid `/init`. If you see nothing at all, check
 # 1. Pick a newer 6.12.x patch from https://kernel.org
 echo 6.12.X > linux.version
 
-# 2. Fetch the official sha256sum for your version
-curl -sL https://cdn.kernel.org/pub/linux/kernel/v6.x/sha256sums.asc \
-    | grep "linux-$(cat linux.version).tar.xz" \
-    > linux.sha256
+# 2. One-time setup: import the kernel.org release signing keys so we can
+#    verify checksums cryptographically, not just over HTTPS. Trusting only
+#    HTTPS means a CDN/TLS compromise could feed us a bogus checksum file.
+#    Keys and fingerprints: https://www.kernel.org/signature.html
+gpg --locate-keys torvalds@kernel.org gregkh@kernel.org
+
+# 3. Fetch the clearsigned checksum file, verify the signature, then extract
+#    the line for our pinned version. `gpg --verify` exits non-zero if the
+#    signature is bad or the signer isn't in your keyring.
+curl -sLO https://cdn.kernel.org/pub/linux/kernel/v6.x/sha256sums.asc
+gpg --verify sha256sums.asc
+grep "linux-$(cat linux.version).tar.xz" sha256sums.asc > linux.sha256
+rm sha256sums.asc
 cat linux.sha256  # sanity check
 
-# 3. Build locally to confirm the fragment still applies cleanly
+# 4. Build locally to confirm the fragment still applies cleanly
 bash build.sh
 # If "Fragment verification failed", a symbol was renamed/moved in upstream
 # Linux. Check the message, find the new symbol name, update fragment.
 
-# 4. Commit and push — CI rebuilds and re-uploads the kernel.
+# 5. Commit and push — CI rebuilds and re-uploads the kernel.
 ```
 
 ## Naming convention (asymmetric, by design)
