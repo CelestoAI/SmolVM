@@ -35,6 +35,19 @@ CONFIG_NET=y                    # why: required for virtio-net + sshd
 CONFIG_INET=y                   # why: TCP/IP for SSH
 CONFIG_PACKET=y                 # why: AF_PACKET for some userspace tools
 
+# ── vsock (host↔guest control channel) ──────────────────────────────
+# Both libkrun and Firecracker enable these; libkrun uses vsock for its
+# init protocol, and we'll need it once the libkrun spike lands. Cheap
+# insurance — adds a few KB and unlocks `socat VSOCK-LISTEN:N FORK,REUSEADDR`-
+# style debugging plus future host↔guest agents.
+CONFIG_VSOCKETS=y               # why: AF_VSOCK socket family
+CONFIG_VIRTIO_VSOCKETS=y        # why: virtio transport for vsock
+
+# Note: RANDOM_TRUST_CPU / RANDOM_TRUST_BOOTLOADER are no longer Kconfig
+# symbols (removed during the random.c rewrite). Both are now defaulted
+# ON; override at runtime via the cmdline (random.trust_cpu=off, etc.).
+# So we get the "fast sshd hostkey gen" behavior for free here.
+
 # ── No modules, ever ─────────────────────────────────────────────────
 # Forces every config above to be `=y` (built into vmlinux). Removes the
 # need for an initrd to load drivers before mounting rootfs.

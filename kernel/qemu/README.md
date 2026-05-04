@@ -52,6 +52,35 @@ SMOLVM_ARCH_OVERRIDE=arm64 ARCH=arm64 \
     bash build.sh
 ```
 
+### Validating in Docker
+
+`make defconfig` itself needs GNU `ld`, which macOS doesn't ship. Easiest
+path on a Mac is to run the build in an Ubuntu container — same toolchain
+CI uses. On Apple Silicon, **always pass `--platform`** (Docker silently
+selects amd64 otherwise, then emulates, and the kernel build dies on
+mismatched gcc flags):
+
+```sh
+# Quick: stop after fragment verification (~30 s, no kernel compile).
+docker run --rm --platform=linux/arm64 \
+    -v "$PWD":/src:ro -e SMOLVM_VERIFY_ONLY=1 \
+    -e SMOLVM_ARCH_OVERRIDE=arm64 ubuntu:24.04 \
+    bash -c 'apt-get update -qq && \
+        apt-get install -y --no-install-recommends \
+        build-essential bc bison flex libssl-dev libelf-dev \
+        xz-utils curl ca-certificates kmod cpio python3 >/dev/null && \
+        cp -r /src/kernel /tmp/kernel && \
+        cd /tmp/kernel/qemu && bash build.sh'
+
+# Full: produces a real vmlinux in /tmp/out (~5–8 min on M-series).
+mkdir -p /tmp/out && docker run --rm --platform=linux/arm64 \
+    -v "$PWD":/src:ro -v /tmp/out:/out -e OUT_DIR=/out \
+    -e SMOLVM_ARCH_OVERRIDE=arm64 ubuntu:24.04 \
+    bash -c '<same setup as above, drop SMOLVM_VERIFY_ONLY>'
+```
+
+Swap `--platform=linux/amd64` + `SMOLVM_ARCH_OVERRIDE=amd64` for the x86 build.
+
 ## Smoke-testing locally
 
 The example below is for **macOS Apple Silicon**, which uses the
