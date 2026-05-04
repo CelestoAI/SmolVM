@@ -1963,6 +1963,7 @@ def _run_start_with_published_image(args: argparse.Namespace, preset: object) ->
         )
 
         vm: SmolVM | None = None
+        success = False
         try:
             vm = SmolVM(
                 config,
@@ -2000,11 +2001,23 @@ def _run_start_with_published_image(args: argparse.Namespace, preset: object) ->
             else:
                 _render_start_result(data)
 
+            success = True
             if not args.json and _preset.launch_command:
                 return _maybe_attach_and_launch(vm, _preset, attach=getattr(args, "attach", None))
             return 0
         finally:
             if vm is not None:
+                # On failure (e.g. wait_for_ssh timeout) the VM is unusable
+                # to the caller, but the underlying QEMU/Firecracker process
+                # is still alive and burning CPU. close() only releases
+                # SDK handles, not the runtime — explicitly stop+delete to
+                # reap the process. On success we leave the VM running so
+                # the user can ssh into it.
+                if not success:
+                    with suppress(Exception):
+                        vm.stop()
+                    with suppress(Exception):
+                        vm.delete()
                 vm.close()
     except ImageError as exc:
         return _emit_cli_error("start", 1, exc, json_output=args.json)

@@ -2985,3 +2985,62 @@ class TestPublishedImageLaunchPath:
         if expected_vmm == "qemu":
             expected_console = "ttyAMA0" if expected_arch == "arm64" else "ttyS0"
             assert f"console={expected_console}" in config_arg.boot_args
+
+        # Success path: VM is left running so the user can ssh in. stop()
+        # and delete() must NOT have been called — only close() to release
+        # SDK handles.
+        mock_vm.stop.assert_not_called()
+        mock_vm.delete.assert_not_called()
+        mock_vm.close.assert_called_once()
+
+    @patch.dict(os.environ, {"SMOLVM_USE_PUBLISHED": "1"})
+    @patch("smolvm.cli.main.subprocess.run")
+    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.utils.ensure_ssh_key")
+    @patch("smolvm.images.published.ensure_published_image")
+    @patch("smolvm.cli.main.platform.machine", return_value="arm64")
+    @patch("smolvm.cli.main.platform.system", return_value="Darwin")
+    def test_published_path_reaps_vm_on_failure(
+        self,
+        _mock_system: MagicMock,
+        _mock_machine: MagicMock,
+        mock_ensure_image: MagicMock,
+        mock_ensure_ssh_key: MagicMock,
+        mock_vm_cls: MagicMock,
+        _mock_subprocess: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """If wait_for_ssh fails, the VM (and its QEMU process) must be
+        stopped and deleted — not just close()d, which only releases SDK
+        handles and leaves the runtime burning CPU."""
+        from smolvm.exceptions import OperationTimeoutError
+        from smolvm.images.manager import LocalImage
+
+        kernel = tmp_path / "vmlinux.bin"
+        rootfs = tmp_path / "rootfs.ext4"
+        priv = tmp_path / "id_ed25519"
+        pub = tmp_path / "id_ed25519.pub"
+        for p in (kernel, rootfs, priv):
+            p.touch()
+        pub.write_text("ssh-ed25519 AAAAExampleKey user@host\n")
+
+        mock_ensure_image.return_value = LocalImage(
+            name="openclaw-v0.0.13-arm64-qemu",
+            kernel_path=kernel,
+            rootfs_path=rootfs,
+        )
+        mock_ensure_ssh_key.return_value = (priv, pub)
+        mock_vm = MagicMock()
+        mock_vm.vm_id = "sbx-published-leak"
+        mock_vm.wait_for_ssh.side_effect = OperationTimeoutError(
+            "wait_for_ssh: simulated timeout", 30.0
+        )
+        mock_vm_cls.return_value = mock_vm
+
+        ret = main(["openclaw", "start", "--json"])
+
+        assert ret == 1  # OperationTimeoutError → exit 1
+        mock_vm.start.assert_called_once()
+        mock_vm.stop.assert_called_once()
+        mock_vm.delete.assert_called_once()
+        mock_vm.close.assert_called_once()
