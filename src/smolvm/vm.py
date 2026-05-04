@@ -1631,8 +1631,16 @@ class SmolVMManager:
             cmd.append("-S")
 
         if "aarch64" in qemu_name:
-            machine = "virt,accel=hvf" if system == "Darwin" else "virt"
-            cpu = "host" if system == "Darwin" else "cortex-a72"
+            # Pick a hardware accelerator. Without one, QEMU falls back to
+            # TCG (software emulation), which is 10-50x slower and routinely
+            # blows past the 30s wait_for_ssh budget on cloud-init boots.
+            # macOS → Hypervisor.framework; Linux → KVM (if /dev/kvm is
+            # missing the user couldn't run firecracker either, so requiring
+            # KVM here is consistent).
+            if system == "Darwin":
+                machine, cpu = "virt,accel=hvf", "host"
+            else:
+                machine, cpu = "virt,accel=kvm", "host"
             cmd.extend(["-machine", machine, "-cpu", cpu])
             if vm_info.config.boot_mode == "firmware":
                 firmware_path = _find_aarch64_uefi_firmware()
@@ -1665,8 +1673,13 @@ class SmolVMManager:
                 ]
             )
         else:
-            machine = "q35,accel=hvf" if system == "Darwin" else "q35"
-            cpu = "host" if system == "Darwin" else "max"
+            # See accel comment on the aarch64 branch above. Without
+            # accel=kvm on Linux, QEMU runs TCG and Ubuntu cloud-init blows
+            # past wait_for_ssh in seconds vs minutes.
+            if system == "Darwin":
+                machine, cpu = "q35,accel=hvf", "host"
+            else:
+                machine, cpu = "q35,accel=kvm", "host"
             cmd.extend(
                 [
                     "-machine",
