@@ -119,7 +119,7 @@ def _release_kernel_url(arch: Arch, vmm: Vmm, version: str) -> str:
 # fresh CI run (new artifacts → new SHAs → new URLs). The drift-detection
 # test in test_published_images.py asserts this matches __version__ so
 # pyproject.toml version bumps don't ship with stale manifest entries.
-_MANIFEST_VERSION = "0.0.13"
+_MANIFEST_VERSION = "0.0.14a0"
 
 # Bundled manifest. New (preset, arch, vmm) entries land here as CI publishes
 # images — paired by version with this CLI release. The SHA-256s and URLs

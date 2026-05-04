@@ -1,4 +1,4 @@
-# SmolVM QEMU/libkrun kernel config fragment — common deltas.
+# SmolVM universal microvm kernel config fragment — common deltas.
 #
 # Applied on top of `x86_64_defconfig` (x86) or `defconfig` (arm64) via
 # scripts/kconfig/merge_config.sh during build. Only the symbols that
@@ -6,26 +6,29 @@
 # PL011, 8250) live in `config.<arch>.fragment` and are merged on top.
 #
 # Why each delta exists:
-# - virtio-PCI bus + drivers: QEMU's `virt` machine + libkrun expose virtio
-#   devices via PCI, not MMIO (which Firecracker uses). Without these the
-#   guest can't see its rootfs or NIC.
+# - Both virtio transports: QEMU's `virt` machine + libkrun expose virtio
+#   over PCI; Firecracker exposes it over MMIO. Same kernel boots under all
+#   three, so we enable both transports.
 # - Built-in (`=y`), not modular (`=m`): we ship one vmlinux and no initrd.
 #   If a driver needed at boot is `=m`, the kernel can't mount the rootfs to
 #   load it — chicken-and-egg.
 
 # ── Bus + virtio ─────────────────────────────────────────────────────
-CONFIG_PCI=y                    # why: QEMU virt + libkrun use virtio-PCI
-CONFIG_PCI_MSI=y                # why: virtio-PCI uses MSI-X interrupts
-CONFIG_VIRTIO=y                 # why: core virtio framework
-CONFIG_VIRTIO_PCI=y             # why: PCI transport for virtio devices
-CONFIG_VIRTIO_PCI_LEGACY=y      # why: libkrun uses the legacy interface
-CONFIG_VIRTIO_BLK=y             # why: rootfs is a virtio-blk device
-CONFIG_VIRTIO_NET=y             # why: networking via virtio-net
-CONFIG_VIRTIO_CONSOLE=y         # why: hvc0 fallback console under virt
-CONFIG_VIRTIO_BALLOON=y         # why: memory pressure feedback to host
+CONFIG_PCI=y                            # why: QEMU virt + libkrun use virtio-PCI
+CONFIG_PCI_MSI=y                        # why: virtio-PCI uses MSI-X interrupts
+CONFIG_VIRTIO=y                         # why: core virtio framework
+CONFIG_VIRTIO_PCI=y                     # why: PCI transport for virtio devices
+CONFIG_VIRTIO_PCI_LEGACY=y              # why: libkrun uses the legacy interface
+CONFIG_VIRTIO_MMIO=y                    # why: Firecracker exposes virtio over MMIO (both archs)
+CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES=y    # why: discover MMIO devices via cmdline (Firecracker uses this)
+CONFIG_VIRTIO_BLK=y                     # why: rootfs is a virtio-blk device
+CONFIG_VIRTIO_NET=y                     # why: networking via virtio-net
+CONFIG_VIRTIO_CONSOLE=y                 # why: hvc0 fallback console under virt
+CONFIG_VIRTIO_BALLOON=y                 # why: memory pressure feedback to host
 
 # ── Filesystems built in (no initrd) ─────────────────────────────────
 CONFIG_EXT4_FS=y                # why: rootfs is ext4
+CONFIG_ISO9660_FS=y             # why: cloud-init NoCloud seed disk is an iso9660 image
 CONFIG_TMPFS=y                  # why: /tmp + tmpfs root for /init bootstrap
 CONFIG_DEVTMPFS=y               # why: /dev populated by kernel at mount
 CONFIG_DEVTMPFS_MOUNT=y         # why: auto-mount /dev at boot
