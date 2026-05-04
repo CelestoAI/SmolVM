@@ -25,11 +25,17 @@ OPENCLAW_PRESET = Preset(
     summary="Start a sandbox with the OpenClaw CLI preinstalled.",
     setup_script=node_bootstrap(22),
     install_script=npm_install_global("openclaw"),
-    host_env_vars=("OPENROUTER_API_KEY", "OPENAI_API_KEY"),
+    host_env_vars=(
+        "OPENROUTER_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENCLAW_GATEWAY_TOKEN",
+        "OPENCLAW_GATEWAY_PASSWORD",
+    ),
     host_configs=(HostConfigCopy(host_path="~/.openclaw", guest_path="/root/.openclaw"),),
     launch_command="openclaw",
     no_env_hint=(
-        "No API key found. Set OPENROUTER_API_KEY or OPENAI_API_KEY on your"
-        " machine, or run 'openclaw onboard' inside the sandbox."
+        "No API key found. Set OPENROUTER_API_KEY, OPENAI_API_KEY, or"
+        " OPENCLAW_GATEWAY_TOKEN on your machine, or run 'openclaw onboard'"
+        " inside the sandbox."
     ),
 )

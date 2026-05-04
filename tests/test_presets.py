@@ -263,7 +263,12 @@ class TestOpenClawPreset:
         assert OPENCLAW_PRESET.name == "openclaw"
         assert OPENCLAW_PRESET.aliases == ("claw",)
         assert OPENCLAW_PRESET.launch_command == "openclaw"
-        assert OPENCLAW_PRESET.host_env_vars == ("OPENROUTER_API_KEY", "OPENAI_API_KEY")
+        assert OPENCLAW_PRESET.host_env_vars == (
+            "OPENROUTER_API_KEY",
+            "OPENAI_API_KEY",
+            "OPENCLAW_GATEWAY_TOKEN",
+            "OPENCLAW_GATEWAY_PASSWORD",
+        )
 
     def test_openclaw_copies_config_dir(self) -> None:
         pairs = [(cfg.host_path, cfg.guest_path) for cfg in OPENCLAW_PRESET.host_configs]
