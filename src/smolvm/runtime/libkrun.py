@@ -94,22 +94,7 @@ class LibkrunRuntimeAdapter(RuntimeAdapter):
         )
 
     async def async_stop(self, vm_info: VMInfo, *, timeout: float) -> None:
-        if vm_info.pid and self._context.is_process_running(vm_info.pid):
-            if self._context.async_kill_process:
-                await self._context.async_kill_process(vm_info.pid)
-            else:
-                self._context.kill_process(vm_info.pid)
-
-            if self._context.async_wait_for_process:
-                await self._context.async_wait_for_process(vm_info.pid, timeout)
-            else:
-                await asyncio.to_thread(self._context.wait_for_process, vm_info.pid, timeout)
-
-        if vm_info.pid and self._context.is_process_running(vm_info.pid):
-            raise SmolVMError(
-                f"libkrun process did not exit for VM '{vm_info.vm_id}'",
-                {"pid": vm_info.pid},
-            )
+        await asyncio.to_thread(self.stop, vm_info, timeout=timeout)
 
     def _wait_for_runtime(self, process: Any, boot_timeout: float) -> None:
         import time
@@ -137,10 +122,7 @@ class LibkrunRuntimeAdapter(RuntimeAdapter):
             continue
 
         with suppress(Exception):
-            if self._context.async_kill_process:
-                await self._context.async_kill_process(process.pid)
-            else:
-                self._context.kill_process(process.pid)
+            self._context.kill_process(process.pid)
         raise SmolVMError(
             "Timed out waiting for libkrun runtime to become ready",
             {"timeout_seconds": boot_timeout, "pid": process.pid},

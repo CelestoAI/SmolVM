@@ -1,27 +1,34 @@
 [package]
 name = "smolvm-core"
-version = "0.0.9"
-edition = "2021"
-license = "Apache-2.0"
+version = "0.0.11"
 description = "Rust-native core package for SmolVM"
-homepage = "https://github.com/CelestoAI/SmolVM"
-repository = "https://github.com/CelestoAI/SmolVM"
+documentation = "https://docs.rs/smolvm-core"
 readme = "README.md"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [lib]
 name = "_smolvm_core"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+extension-module = ["pyo3/extension-module"]
+
 [dependencies]
-pyo3 = { version = "0.28", features = ["extension-module"] }
+pyo3 = "0.28"
 libc = "0.2"
-thiserror = "1"
+thiserror = "2"
 pyo3-log = "0.13"
 log = "0.4"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-nix = { version = "0.29", features = ["ioctl", "net", "user"] }
-rtnetlink = "0.14"
-netlink-packet-route = "0.19"
+rtnetlink = "0.21"
+netlink-packet-route = "0.30"
 tokio = { version = "1", features = ["rt", "net", "macros"] }
 futures-util = "0.3"

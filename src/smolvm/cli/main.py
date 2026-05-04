@@ -23,7 +23,10 @@ import os
 import platform
 import re
 import subprocess
+import sys
 from collections.abc import Sequence
+from contextlib import suppress
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
@@ -34,11 +37,13 @@ from rich.progress import (
     Progress,
     SpinnerColumn,
     TextColumn,
+    TimeElapsedColumn,
     TransferSpeedColumn,
 )
 from rich.table import Table
 from rich.text import Text
 
+from smolvm.cli._kvm_session import maybe_reexec_for_kvm_group
 from smolvm.cli.cleanup import add_cleanup_args, add_delete_args, run_cleanup, run_delete
 from smolvm.cli.output import console_stdout, emit_json, render_empty, render_error, status_style
 from smolvm.cli.version_check import maybe_print_update_notice
@@ -65,6 +70,7 @@ class VmRow(TypedDict):
     pid: int | None
     ip_address: str | None
     ssh_port: int | None
+    warnings: list[str]
 
 
 class ListFiltersPayload(TypedDict):
@@ -87,21 +93,63 @@ class CreateVmPayload(TypedDict):
     name: str
     status: str
     os: str
-    backend: str
-    ip_address: str | None
-    ssh_port: int | None
+    started_at: str
 
 
 class CreateNextPayload(TypedDict):
-    """Suggested follow-up action for ``smolvm create``."""
+    """Suggested follow-up actions for ``smolvm create``."""
 
     ssh_command: str
+    info_command: str
+
+
+class InfoVmPayload(TypedDict):
+    """Machine-readable VM details for ``smolvm info``.
+
+    Memory and disk fields are in MiB (SmolVM's house unit, matching
+    :attr:`VMConfig.memory`).
+    """
+
+    name: str
+    status: str
+    os: str | None
+    backend: str
+    ip_address: str | None
+    ssh_port: int | None
+    pid: int | None
+    vcpus: int
+    memory: int
+    memory_used: int | None
+    disk_size: int | None
+
+
+class InfoPayload(TypedDict):
+    """JSON payload for ``smolvm info``."""
+
+    vm: InfoVmPayload
 
 
 class CreatePayload(TypedDict):
     """JSON payload for ``smolvm create``."""
 
     vm: CreateVmPayload
+    next: CreateNextPayload
+
+
+class StartPresetPayload(TypedDict):
+    """Preset application summary for ``smolvm <preset> start``."""
+
+    name: str
+    copied_configs: list[str]
+    injected_env_keys: list[str]
+    no_env_hint: str | None
+
+
+class StartPayload(TypedDict):
+    """JSON payload for ``smolvm <preset> start``."""
+
+    vm: CreateVmPayload
+    preset: StartPresetPayload
     next: CreateNextPayload
 
 
@@ -113,8 +161,7 @@ def _create_progress_message(backend: str, guest_os: GuestOS) -> str:
             "(first run may download the kernel, initrd, and rootfs)..."
         )
     return (
-        f"Preparing {guest_os.value} operating system image "
-        "(first run may build or download it)..."
+        f"Preparing {guest_os.value} operating system image (first run may build or download it)..."
     )
 
 
@@ -184,6 +231,14 @@ class SnapshotRestorePayload(TypedDict):
 
     snapshot: SnapshotRow
     vm: SnapshotRestoreVmPayload
+
+
+class FileUploadPayload(TypedDict):
+    """JSON payload for ``smolvm file upload``."""
+
+    vm_id: str
+    local_path: str
+    guest_path: str
 
 
 class BrowserRow(TypedDict):
@@ -292,6 +347,134 @@ def _add_boot_timeout_arg(command_parser: argparse.ArgumentParser) -> None:
         default=30.0,
         help="Seconds to wait for the sandbox to be ready (default: 30).",
     )
+
+
+def _add_preset_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    """Wire ``smolvm <preset> <action>`` into the CLI.
+
+    Each agent harness is a top-level subcommand (``smolvm codex``,
+    ``smolvm claude-code``) with its own action subcommands. This follows
+    the project's NOUN-VERB CLI convention so future harness actions
+    (``logs``, ``status``, etc.) compose naturally.
+    """
+    from smolvm.presets import list_presets
+
+    for preset in list_presets():
+        preset_parser = subparsers.add_parser(
+            preset.name,
+            aliases=list(preset.aliases),
+            help=preset.summary,
+            description=preset.summary,
+        )
+        action_sub = preset_parser.add_subparsers(
+            dest="preset_action",
+            metavar="ACTION",
+            required=True,
+        )
+
+        start_p = action_sub.add_parser(
+            "start",
+            help=f"Start a sandbox preconfigured for {preset.name}.",
+            description=(
+                f"Boot a fresh sandbox and preinstall {preset.name}. "
+                "Copies relevant host config (e.g. ~/.codex, ~/.claude) "
+                "and forwards API keys from the host environment."
+            ),
+        )
+        start_p.set_defaults(preset_name=preset.name)
+
+        start_p.add_argument(
+            "-n",
+            "--name",
+            help="Name for the sandbox (default: auto-generated).",
+        )
+        start_p.add_argument(
+            "--memory",
+            dest="memory_mib",
+            type=int,
+            default=None,
+            metavar="MIB",
+            help=f"Sandbox memory in MiB (default: {preset.default_mem_mib}).",
+        )
+        start_p.add_argument(
+            "--disk-size",
+            dest="disk_size_mib",
+            type=int,
+            default=None,
+            metavar="MIB",
+            help=f"Sandbox disk size in MiB (default: {preset.default_disk_mib}).",
+        )
+        start_p.add_argument(
+            "--backend",
+            choices=["auto", "firecracker", "qemu", "libkrun"],
+            default=None,
+            help="Virtualization backend (default: qemu, required by ubuntu).",
+        )
+        start_p.add_argument(
+            "--mount",
+            action="append",
+            default=None,
+            dest="mounts",
+            metavar="HOST_PATH[:GUEST_PATH]",
+            help=(
+                "Host directory to mount inside the sandbox. "
+                "Defaults to /workspace if no guest path is given. "
+                "Can be repeated."
+            ),
+        )
+        start_p.add_argument(
+            "--writable-mounts",
+            action="store_true",
+            dest="writable_mounts",
+            help=(
+                "Allow the sandbox to write back to mounted host directories. "
+                "Default is read-only with a writable in-VM overlay; writes "
+                "from the guest do not reach the host."
+            ),
+        )
+        start_p.add_argument(
+            "--install-timeout",
+            type=_positive_float,
+            default=600.0,
+            help="Seconds to wait for the harness install (default: 600).",
+        )
+        if preset.launch_command is not None:
+            attach_group = start_p.add_mutually_exclusive_group()
+            attach_group.add_argument(
+                "--attach",
+                dest="attach",
+                action="store_true",
+                default=None,
+                help=(
+                    f"After install, ssh in and run `{preset.launch_command}` without prompting."
+                ),
+            )
+            attach_group.add_argument(
+                "--no-attach",
+                dest="attach",
+                action="store_false",
+                help="Skip the post-install attach prompt.",
+            )
+        start_p.add_argument(
+            "--json",
+            action="store_true",
+            help="Emit machine-readable JSON output.",
+        )
+        _add_boot_timeout_arg(start_p)
+
+
+def _is_preset_command(args: argparse.Namespace) -> bool:
+    """Return True when ``args`` came from ``smolvm <preset> ...``.
+
+    Accepts canonical preset names and aliases (e.g. ``claude`` for
+    ``claude-code``); argparse stores whichever spelling the user typed
+    in ``args.command``.
+    """
+    from smolvm.presets import preset_command_names
+
+    return args.command in preset_command_names()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -479,6 +662,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit machine-readable JSON output.",
     )
 
+    info_parser = subparsers.add_parser(
+        "info",
+        help="Show full details for a sandbox.",
+    )
+    info_parser.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
+    info_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output.",
+    )
+
     create_parser = subparsers.add_parser(
         "create",
         help="Create a sandbox and leave it running.",
@@ -505,18 +699,22 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     create_parser.add_argument(
-        "--memory-mib",
+        "--memory",
+        dest="memory_mib",
         type=int,
         default=None,
+        metavar="MIB",
         help="Sandbox memory in MiB (default: 512).",
     )
     create_parser.add_argument(
-        "--disk-size-mib",
+        "--disk-size",
+        dest="disk_size_mib",
         type=int,
         default=None,
+        metavar="MIB",
         help=(
             "Sandbox disk size in MiB. Defaults: 512 for alpine, "
-            "2048 for debian/ubuntu. Minimum: 64 for alpine; 2048 for "
+            "4096 for debian/ubuntu. Minimum: 64 for alpine; 2048 for "
             "debian/ubuntu on qemu (values below 2048 are rejected)."
         ),
     )
@@ -540,12 +738,25 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Host directory to mount inside the sandbox. "
             "Defaults to /workspace if no guest path is given. "
-            "The host directory stays read-only; writes go to an "
-            "overlay and do not affect the host. "
+            "The host directory stays read-only by default; writes go "
+            "to an overlay and do not affect the host. "
+            "Pass --writable-mounts to allow guest writes to reach the host. "
             "Can be repeated for multiple mounts."
         ),
     )
+    create_parser.add_argument(
+        "--writable-mounts",
+        action="store_true",
+        dest="writable_mounts",
+        help=(
+            "Allow the sandbox to write back to mounted host directories. "
+            "Default is read-only with a writable in-VM overlay; writes "
+            "from the guest do not reach the host."
+        ),
+    )
     _add_boot_timeout_arg(create_parser)
+
+    _add_preset_parsers(subparsers)
 
     stop_parser = subparsers.add_parser(
         "stop",
@@ -617,7 +828,9 @@ def build_parser() -> argparse.ArgumentParser:
         "restore",
         help="Restore a snapshot back into its original sandbox.",
     )
-    snapshot_restore.add_argument("snapshot_id", metavar="snapshot", help="Name or ID of the snapshot.")
+    snapshot_restore.add_argument(
+        "snapshot_id", metavar="snapshot", help="Name or ID of the snapshot."
+    )
     snapshot_restore.add_argument(
         "--resume",
         action="store_true",
@@ -638,7 +851,9 @@ def build_parser() -> argparse.ArgumentParser:
         "delete",
         help="Delete a snapshot and its files.",
     )
-    snapshot_delete.add_argument("snapshot_id", metavar="snapshot", help="Name or ID of the snapshot.")
+    snapshot_delete.add_argument(
+        "snapshot_id", metavar="snapshot", help="Name or ID of the snapshot."
+    )
     snapshot_delete.add_argument(
         "--json",
         action="store_true",
@@ -667,6 +882,35 @@ def build_parser() -> argparse.ArgumentParser:
     ssh_parser.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
     _add_ssh_auth_args(ssh_parser)
     _add_boot_timeout_arg(ssh_parser)
+
+    file_parser = subparsers.add_parser(
+        "file",
+        help="Copy files into a sandbox.",
+    )
+    file_sub = file_parser.add_subparsers(dest="file_action")
+
+    file_upload = file_sub.add_parser(
+        "upload",
+        help="Upload one local file into a running sandbox.",
+    )
+    file_upload.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
+    file_upload.add_argument("local_path", metavar="local-path", help="File on this machine.")
+    file_upload.add_argument(
+        "guest_path",
+        metavar="guest-path",
+        help="Destination path in the sandbox.",
+    )
+    file_upload.add_argument(
+        "--no-create-dirs",
+        action="store_true",
+        help="Do not create the destination directory in the sandbox.",
+    )
+    file_upload.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output.",
+    )
+    _add_ssh_auth_args(file_upload)
 
     browser_parser = subparsers.add_parser(
         "browser",
@@ -724,15 +968,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Browser viewport height (default: 720).",
     )
     browser_start.add_argument(
-        "--memory-mib",
+        "--memory",
+        dest="memory_mib",
         type=int,
         default=2048,
+        metavar="MIB",
         help="Sandbox memory in MiB (default: 2048).",
     )
     browser_start.add_argument(
-        "--disk-size-mib",
+        "--disk-size",
+        dest="disk_size_mib",
         type=int,
         default=4096,
+        metavar="MIB",
         help="Sandbox disk size in MiB (default: 4096).",
     )
     browser_start.add_argument(
@@ -789,13 +1037,17 @@ def build_parser() -> argparse.ArgumentParser:
         "open",
         help="Open a live browser session in your default browser.",
     )
-    browser_open.add_argument("session_id", metavar="session", help="Session ID (printed by 'browser start').")
+    browser_open.add_argument(
+        "session_id", metavar="session", help="Session ID (printed by 'browser start')."
+    )
 
     browser_logs = browser_sub.add_parser(
         "logs",
         help="Print browser session logs.",
     )
-    browser_logs.add_argument("session_id", metavar="session", help="Session ID (printed by 'browser start').")
+    browser_logs.add_argument(
+        "session_id", metavar="session", help="Session ID (printed by 'browser start')."
+    )
     browser_logs.add_argument(
         "--tail",
         type=int,
@@ -917,6 +1169,26 @@ def _emit_cli_error(
     return exit_code
 
 
+def _vm_warnings(vm: VMInfo) -> list[str]:
+    """Collect human-facing warnings about a VM's persisted config.
+
+    Today this only covers stale workspace-mount host paths. The
+    message is one short sentence that names the missing folder and
+    the recovery commands; it deliberately makes no claim about
+    consequences (e.g. "cannot restart") because those are either
+    false (running sandbox) or irrelevant to the user's intent.
+    """
+    warnings: list[str] = []
+    for mount in vm.config.workspace_mounts:
+        if not mount.host_path.exists():
+            warnings.append(
+                f"Shared folder is missing on your machine: "
+                f"'{mount.host_path}'. Restore it, or run "
+                f"'smolvm delete {vm.vm_id}' to remove the sandbox."
+            )
+    return warnings
+
+
 def _vm_rows(vms: Sequence[VMInfo]) -> list[VmRow]:
     """Normalize VM info objects into CLI list rows."""
     rows: list[VmRow] = []
@@ -929,6 +1201,7 @@ def _vm_rows(vms: Sequence[VMInfo]) -> list[VmRow]:
                 "pid": vm.pid,
                 "ip_address": network.guest_ip if network else None,
                 "ssh_port": network.ssh_host_port if network else None,
+                "warnings": _vm_warnings(vm),
             }
         )
     return rows
@@ -941,8 +1214,11 @@ def _render_list(rows: list[VmRow]) -> None:
     table.add_column("Status")
     table.add_column("PID", justify="right")
     for row in rows:
+        name = str(row["name"])
+        if row["warnings"]:
+            name = f"⚠ {name}"
         table.add_row(
-            str(row["name"]),
+            name,
             Text(str(row["status"]), style=status_style(str(row["status"]))),
             str(row["pid"] or "-"),
         )
@@ -950,6 +1226,14 @@ def _render_list(rows: list[VmRow]) -> None:
     console = console_stdout()
     console.print(table)
     console.print(f"Total: {len(rows)} VM(s).")
+
+    flagged = [row for row in rows if row["warnings"]]
+    if flagged:
+        console.print()
+        console.print(Text("Warnings:", style="bold yellow"))
+        for row in flagged:
+            for warning in row["warnings"]:
+                console.print(f"  • {warning}")
 
 
 def _run_setup(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
@@ -1038,6 +1322,205 @@ def _run_list(*, include_all: bool, status_filter: str | None, json_output: bool
             return _emit_cli_error("list", 1, exc, json_output=json_output)
 
 
+_OS_HINT_KEYWORDS = ("ubuntu", "debian", "alpine")
+
+
+def _guess_os_from_paths(vm: VMInfo) -> str | None:
+    """Best-effort guess of the guest OS from cached image paths.
+
+    The per-VM rootfs clone lives under ``data_dir/disks/`` so it carries no
+    OS hint, but ``kernel_path`` (kernel-boot images) and the original rootfs
+    cache directory still embed the OS name. Returns ``None`` when no known
+    OS keyword is found.
+    """
+    candidates: list[str] = []
+    config = vm.config
+    if config.kernel_path is not None:
+        candidates.append(str(config.kernel_path))
+    if config.initrd_path is not None:
+        candidates.append(str(config.initrd_path))
+    candidates.append(str(config.rootfs_path))
+    for path in candidates:
+        lowered = path.lower()
+        for keyword in _OS_HINT_KEYWORDS:
+            if keyword in lowered:
+                return keyword
+    return None
+
+
+def _query_live_vm_info(vm: VMInfo) -> dict[str, object]:
+    """Query a running VM via SSH for OS pretty-name and used memory.
+
+    Connects directly with a short ``connect_timeout`` so half-dead VMs
+    (status=running in state but SSH unreachable) fail fast instead of
+    blocking on the SmolVM facade's 30-second SSH-ready wait.
+
+    Returns an empty dict on any failure so the caller can render fall-through
+    placeholders without surfacing transient SSH errors to the user.
+    """
+    from smolvm.ssh import SSHClient
+
+    network = vm.network
+    if network is None:
+        return {}
+
+    if network.ssh_host_port is not None:
+        host, port = "127.0.0.1", network.ssh_host_port
+    else:
+        host, port = network.guest_ip, 22
+
+    key_path = Path.home() / ".smolvm" / "keys" / "id_ed25519"
+    client = SSHClient(
+        host=host,
+        port=port,
+        key_path=str(key_path) if key_path.exists() else None,
+        connect_timeout=3,
+    )
+
+    cmd = (
+        "(. /etc/os-release 2>/dev/null && printf '%s' \"${PRETTY_NAME:-}\"); "
+        "printf '\\n---\\n'; "
+        "free -m 2>/dev/null | awk 'NR==2 {print $3}'"
+    )
+    try:
+        result = client.run(cmd, timeout=5, shell="raw")
+    except Exception:  # noqa: BLE001 - any SSH failure means "skip live data"
+        return {}
+    finally:
+        # Best-effort cleanup; a failed close on a dead transport is harmless.
+        with suppress(Exception):
+            client.close()
+
+    if result.exit_code != 0:
+        return {}
+    parts = result.stdout.split("---")
+    out: dict[str, object] = {}
+    if parts and parts[0].strip():
+        out["os"] = parts[0].strip()
+    if len(parts) > 1:
+        try:
+            out["memory_used"] = int(parts[1].strip())
+        except ValueError:
+            # `free -m` output unparseable on this guest (busybox variant,
+            # locale, etc.) — omit the field rather than fail the whole probe.
+            pass
+    return out
+
+
+def _disk_size_mib(rootfs_path: Path | None) -> int | None:
+    """Return the rootfs disk size visible to the guest, in MiB.
+
+    For qcow2 images, the host file footprint can be far smaller than the
+    guest-visible disk because of qcow2's sparse/copy-on-write semantics, so
+    we shell out to ``qemu-img`` for the virtual size. Other image formats
+    (raw, ext4) match the host file size, where ``stat`` is sufficient.
+    """
+    if rootfs_path is None:
+        return None
+    if rootfs_path.suffix.lower() == ".qcow2":
+        from smolvm.facade import _qcow2_virtual_size_mib
+
+        try:
+            return _qcow2_virtual_size_mib(rootfs_path)
+        except Exception:  # noqa: BLE001 - qemu-img missing or image unreadable
+            pass
+    try:
+        return rootfs_path.stat().st_size // (1024 * 1024)
+    except OSError:
+        return None
+
+
+def _info_payload(vm: VMInfo, *, live_data: dict[str, object] | None = None) -> InfoPayload:
+    """Build the info command payload from a VMInfo plus optional live data."""
+    network = vm.network
+    config = vm.config
+    live = live_data or {}
+
+    disk_size = _disk_size_mib(config.rootfs_path)
+    os_value = live.get("os") or _guess_os_from_paths(vm)
+    memory_used = live.get("memory_used")
+
+    return {
+        "vm": {
+            "name": vm.vm_id,
+            "status": vm.status.value,
+            "os": str(os_value) if os_value else None,
+            "backend": config.backend or "auto",
+            "ip_address": network.guest_ip if network else None,
+            "ssh_port": network.ssh_host_port if network else None,
+            "pid": vm.pid,
+            "vcpus": config.vcpu_count,
+            "memory": config.memory,
+            "memory_used": memory_used if isinstance(memory_used, int) else None,
+            "disk_size": disk_size,
+        }
+    }
+
+
+def _render_info_result(data: InfoPayload) -> None:
+    """Render the human-facing info result."""
+    console = console_stdout()
+    vm_data = data["vm"]
+
+    if vm_data["memory_used"] is not None:
+        memory_str = f"{vm_data['memory_used']} / {vm_data['memory']} MiB used"
+    else:
+        memory_str = f"{vm_data['memory']} MiB"
+
+    disk_str = f"{vm_data['disk_size']} MiB" if vm_data["disk_size"] is not None else "-"
+
+    details = Table(title="VM Details", show_header=False)
+    details.add_column("Field")
+    details.add_column("Value")
+    details.add_row("Name", str(vm_data["name"]))
+    details.add_row(
+        "Status",
+        Text(str(vm_data["status"]), style=status_style(str(vm_data["status"]))),
+    )
+    details.add_row("OS", str(vm_data["os"] or "-"))
+    details.add_row("Backend", str(vm_data["backend"]))
+    details.add_row("IP Address", str(vm_data["ip_address"] or "-"))
+    details.add_row(
+        "SSH Port",
+        str(vm_data["ssh_port"]) if vm_data["ssh_port"] is not None else "-",
+    )
+    details.add_row("CPUs", str(vm_data["vcpus"]))
+    details.add_row("Memory", memory_str)
+    details.add_row("Disk Size", disk_str)
+    details.add_row(
+        "PID",
+        str(vm_data["pid"]) if vm_data["pid"] is not None else "-",
+    )
+    console.print(details)
+
+
+def _run_info(*, vm_id: str, json_output: bool) -> int:
+    """Handle ``smolvm info``."""
+    from smolvm.vm import SmolVMManager
+
+    with SmolVMManager() as sdk:
+        try:
+            vm = sdk.state.get_vm(vm_id)
+            live_data: dict[str, object] | None = None
+            if vm.status == VMState.RUNNING:
+                live_data = _query_live_vm_info(vm)
+            data = _info_payload(vm, live_data=live_data)
+            if json_output:
+                emit_json("info", 0, data=data)
+            else:
+                _render_info_result(data)
+            return 0
+        except Exception as exc:
+            return _emit_cli_error("info", 1, exc, json_output=json_output)
+
+
+def _format_started_at(iso_ts: str) -> str:
+    """Render an ISO timestamp as ``YYYY-MM-DD HH:MM:SS UTC``."""
+    dt = datetime.fromisoformat(iso_ts)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
 
 def _render_create_result(data: CreatePayload) -> None:
     """Render the human-facing create result."""
@@ -1062,14 +1545,10 @@ def _render_create_result(data: CreatePayload) -> None:
         Text(str(vm_data["status"]), style=status_style(str(vm_data["status"]))),
     )
     details.add_row("OS", str(vm_data["os"]))
-    details.add_row("Backend", str(vm_data["backend"]))
-    details.add_row("IP Address", str(vm_data["ip_address"] or "-"))
-    details.add_row(
-        "SSH Port",
-        str(vm_data["ssh_port"]) if vm_data["ssh_port"] is not None else "-",
-    )
+    details.add_row("Started", _format_started_at(vm_data["started_at"]))
     console.print(details)
     console.print(f"Next: [bold]{next_step['ssh_command']}[/bold]")
+    console.print(f"      [bold]{next_step['info_command']}[/bold]")
 
 
 def _build_and_boot_with_progress(
@@ -1078,6 +1557,7 @@ def _build_and_boot_with_progress(
     build_fn: object,
     boot_timeout: int,
     mounts: list[str] | None = None,
+    writable_mounts: bool = False,
 ) -> object:
     """Build a VM config and boot it, showing a Rich progress bar.
 
@@ -1103,25 +1583,39 @@ def _build_and_boot_with_progress(
         BarColumn(),
         DownloadColumn(),
         TransferSpeedColumn(),
+        TimeElapsedColumn(),
         console=_console,
         transient=True,
     ) as progress:
 
         def on_download(label: str, chunk: int, total: int | None) -> None:
             if label not in download_tasks:
-                download_tasks[label] = progress.add_task(
-                    f"Downloading {label}", total=total
-                )
+                download_tasks[label] = progress.add_task(f"Downloading {label}", total=total)
             progress.update(download_tasks[label], advance=chunk)
 
         config, ssh_key_path = _build_fn(on_download)
 
-        boot_task = progress.add_task(
-            "Booting computer and waiting for SSH...", total=None
+        # One task that re-labels as the boot pipeline progresses
+        # (boot → ssh-ready → workspace mount when --mount is set).
+        # Phases come from start()/wait_for_ssh() via on_progress, so the
+        # spinner reflects what's actually slow rather than parking on
+        # "Starting VM..." for the full duration.
+        boot_task = progress.add_task("Booting sandbox...", total=None)
+
+        def on_phase(phase: str) -> None:
+            progress.update(boot_task, description=phase)
+
+        vm = SmolVM(
+            config,
+            ssh_key_path=ssh_key_path,
+            mounts=mounts,
+            writable_mounts=writable_mounts,
         )
-        vm = SmolVM(config, ssh_key_path=ssh_key_path, mounts=mounts)
-        vm.start(boot_timeout=boot_timeout)
-        vm.wait_for_ssh(timeout=boot_timeout)
+        vm.start(boot_timeout=boot_timeout, on_progress=on_phase)
+        # Idempotent: a no-op when start() already waited (mounts/env_vars
+        # path), and the on_progress flips the label only when a real wait
+        # actually happens.
+        vm.wait_for_ssh(timeout=boot_timeout, on_progress=on_phase)
         progress.remove_task(boot_task)
 
     return vm
@@ -1139,6 +1633,13 @@ def _run_create(args: argparse.Namespace) -> int:
 
     vm: SmolVM | None = None
     try:
+        # Workspace mounts ride a virtio-9p share, which only the QEMU backend
+        # exposes today. Auto-pick QEMU when the user asked for --mount but did
+        # not pin a backend; an explicit --backend other than 'auto' is left
+        # alone so the downstream check still catches incompatible combos.
+        if args.mounts and args.backend in (None, "auto"):
+            args.backend = "qemu"
+
         resolved_backend = resolve_backend(args.backend)
         image_uri: str | None = getattr(args, "image", None)
         use_s3_image = image_uri is not None
@@ -1148,6 +1649,24 @@ def _run_create(args: argparse.Namespace) -> int:
             if args.os is not None
             else _default_guest_os_for_backend(resolved_backend)
         )
+
+        # --disk-size has no effect for prebuilt S3 images (the rootfs size
+        # is baked into the image). Reject it explicitly so users aren't
+        # silently misled into thinking it took effect.
+        if use_s3_image and args.disk_size_mib is not None:
+            raise ValueError(
+                "--disk-size is incompatible with --image: the disk size of "
+                "an S3 image is fixed by the image itself."
+            )
+
+        # CLI default: roomier disk for debian/ubuntu so package installs
+        # and apt cache don't fill the rootfs on a basic `smolvm create`.
+        if (
+            not use_s3_image
+            and args.disk_size_mib is None
+            and resolved_guest_os in {GuestOS.DEBIAN, GuestOS.UBUNTU}
+        ):
+            args.disk_size_mib = 4096
 
         if use_s3_image:
             # S3 image path
@@ -1159,22 +1678,28 @@ def _run_create(args: argparse.Namespace) -> int:
                         image=image_uri,
                         vm_name=args.name,
                         backend=args.backend,
-                        mem_size_mib=args.memory_mib,
+                        memory=args.memory_mib,
                         ssh_key_path=None,
                         on_download=on_download,
                     ),
                     boot_timeout=args.boot_timeout,
                     mounts=args.mounts,
+                    writable_mounts=args.writable_mounts,
                 )
             else:
                 config, ssh_key_path = _build_s3_image_config(
                     image=image_uri,
                     vm_name=args.name,
                     backend=args.backend,
-                    mem_size_mib=args.memory_mib,
+                    memory=args.memory_mib,
                     ssh_key_path=None,
                 )
-                vm = SmolVM(config, ssh_key_path=ssh_key_path, mounts=args.mounts)
+                vm = SmolVM(
+                    config,
+                    ssh_key_path=ssh_key_path,
+                    mounts=args.mounts,
+                    writable_mounts=args.writable_mounts,
+                )
                 vm.start(boot_timeout=args.boot_timeout)
                 vm.wait_for_ssh(timeout=args.boot_timeout)
         else:
@@ -1187,29 +1712,34 @@ def _run_create(args: argparse.Namespace) -> int:
                         vm_name=args.name,
                         os=args.os,
                         backend=args.backend,
-                        mem_size_mib=args.memory_mib,
+                        memory=args.memory_mib,
                         disk_size_mib=args.disk_size_mib,
                         ssh_key_path=None,
                         on_download=on_download,
                     ),
                     boot_timeout=args.boot_timeout,
                     mounts=args.mounts,
+                    writable_mounts=args.writable_mounts,
                 )
             else:
                 config, ssh_key_path = _build_auto_config(
                     vm_name=args.name,
                     os=args.os,
                     backend=args.backend,
-                    mem_size_mib=args.memory_mib,
+                    memory=args.memory_mib,
                     disk_size_mib=args.disk_size_mib,
                     ssh_key_path=None,
                 )
-                vm = SmolVM(config, ssh_key_path=ssh_key_path, mounts=args.mounts)
+                vm = SmolVM(
+                    config,
+                    ssh_key_path=ssh_key_path,
+                    mounts=args.mounts,
+                    writable_mounts=args.writable_mounts,
+                )
                 vm.start(boot_timeout=args.boot_timeout)
                 vm.wait_for_ssh(timeout=args.boot_timeout)
 
         os_label = "s3-image" if use_s3_image else resolved_guest_os.value
-        network = vm.info.network
         data: CreatePayload = {
             "vm": {
                 "name": vm.vm_id,
@@ -1219,12 +1749,11 @@ def _run_create(args: argparse.Namespace) -> int:
                     else VMState.RUNNING.value
                 ),
                 "os": os_label,
-                "backend": vm.info.config.backend or "auto",
-                "ip_address": network.guest_ip if network else None,
-                "ssh_port": network.ssh_host_port if network else None,
+                "started_at": datetime.now(timezone.utc).isoformat(),
             },
             "next": {
                 "ssh_command": f"smolvm ssh {vm.vm_id}",
+                "info_command": f"smolvm info {vm.vm_id}",
             },
         }
 
@@ -1238,6 +1767,419 @@ def _run_create(args: argparse.Namespace) -> int:
     finally:
         if vm is not None:
             vm.close()
+
+
+def _render_start_result(data: StartPayload) -> None:
+    """Render the human-facing ``smolvm <preset> start`` result."""
+    console = console_stdout()
+    vm_data = data["vm"]
+    preset = data["preset"]
+    next_step = data["next"]
+
+    console.print(
+        Panel.fit(
+            f"Started '{vm_data['name']}' with [bold]{preset['name']}[/bold] preinstalled.",
+            title="Sandbox Ready",
+            border_style="green",
+        )
+    )
+
+    details = Table(title="Sandbox Details", show_header=False)
+    details.add_column("Field")
+    details.add_column("Value")
+    details.add_row("Name", str(vm_data["name"]))
+    details.add_row(
+        "Status",
+        Text(str(vm_data["status"]), style=status_style(str(vm_data["status"]))),
+    )
+    details.add_row("OS", str(vm_data["os"]))
+    details.add_row("IP Address", str(vm_data["ip_address"] or "-"))
+    details.add_row(
+        "SSH Port",
+        str(vm_data["ssh_port"]) if vm_data["ssh_port"] is not None else "-",
+    )
+    details.add_row("Preset", preset["name"])
+    details.add_row(
+        "Configs Copied",
+        ", ".join(preset["copied_configs"]) if preset["copied_configs"] else "-",
+    )
+    details.add_row(
+        "Env Vars Forwarded",
+        ", ".join(preset["injected_env_keys"]) if preset["injected_env_keys"] else "-",
+    )
+    console.print(details)
+    if not preset["injected_env_keys"] and preset.get("no_env_hint"):
+        console.print(f"\n[yellow]{preset['no_env_hint']}[/yellow]")
+    console.print(f"Next: [bold]{next_step['ssh_command']}[/bold]")
+
+
+# Map preset name → boot args for the Firecracker published-image path. When
+# we add per-preset bake builders, the boot_args should move onto the Preset
+# itself; for now openclaw is the only published preset and this lookup
+# reflects that.
+_PUBLISHED_IMAGE_BOOT_ARGS = {
+    "openclaw": "reboot=k panic=1 pci=off init=/init 8250.nr_uarts=0",
+}
+
+
+def _published_path_enabled() -> bool:
+    """Opt-in switch for the published-image launch path.
+
+    Set ``SMOLVM_USE_PUBLISHED=1`` to bypass the install-at-boot flow and
+    download a pre-built rootfs from GitHub Releases instead. Default is
+    off — flipped on once the published flow has been smoke-tested
+    end-to-end (separate PR).
+    """
+    return os.environ.get("SMOLVM_USE_PUBLISHED", "").strip().lower() in {"1", "true", "yes"}
+
+
+def _host_arch_for_published() -> str:
+    """Host CPU architecture in the form the manifest uses (``amd64``/``arm64``)."""
+    machine = platform.machine().lower()
+    if machine in {"arm64", "aarch64"}:
+        return "arm64"
+    if machine in {"x86_64", "amd64"}:
+        return "amd64"
+    raise RuntimeError(
+        f"Unsupported host architecture for published images: {machine!r}. "
+        f"Set SMOLVM_USE_PUBLISHED=0 (or unset) to fall back to the local build."
+    )
+
+
+def _run_start_with_published_image(args: argparse.Namespace, preset: object) -> int:
+    """Launch a sandbox using a pre-built published image.
+
+    Bypasses the default install-at-boot flow:
+    - downloads the kernel + rootfs from GitHub Releases (cached at
+      ``~/.smolvm/images/<preset>-v<version>-<arch>/``)
+    - boots Firecracker (matching how images are built in CI)
+    - skips ``apply_preset`` since the preset's tools are already baked in
+    - injects the user's pubkey via the kernel cmdline so SSH works on
+      first boot
+
+    Falls back to a clean error message when the preset has no published
+    image yet (e.g. presets without bake builders).
+    """
+    from smolvm.exceptions import ImageError
+    from smolvm.facade import SmolVM, _resolve_vm_name
+    from smolvm.images.published import ensure_published_image
+    from smolvm.presets._types import Preset
+    from smolvm.types import VMConfig
+    from smolvm.utils import ensure_ssh_key
+
+    _preset: Preset = preset  # type: ignore[assignment]
+
+    if _preset.name not in _PUBLISHED_IMAGE_BOOT_ARGS:
+        return _emit_cli_error(
+            "start",
+            2,
+            ValueError(
+                f"Preset {_preset.name!r} has no boot_args configured for the "
+                f"published-image path. Unset SMOLVM_USE_PUBLISHED to use the "
+                f"default install-at-boot flow."
+            ),
+            json_output=args.json,
+        )
+
+    try:
+        arch = _host_arch_for_published()
+        private_key, public_key_path = ensure_ssh_key()
+        public_key_value = public_key_path.read_text().strip()
+
+        # Raises ImageError with a clear message if the (preset, arch) pair
+        # has no manifest entry — the manifest is bundled in published.py
+        # and starts empty until the auto-update PR populates it.
+        local_image = ensure_published_image(_preset.name, arch)  # type: ignore[arg-type]
+
+        config = VMConfig(
+            vm_id=_resolve_vm_name(args.name, prefix=_preset.name),
+            memory=args.memory_mib if args.memory_mib is not None else _preset.default_mem_mib,
+            kernel_path=local_image.kernel_path,
+            rootfs_path=local_image.rootfs_path,
+            boot_args=_PUBLISHED_IMAGE_BOOT_ARGS[_preset.name],
+            backend="firecracker",
+            ssh_public_key=public_key_value,
+        )
+
+        vm: SmolVM | None = None
+        try:
+            vm = SmolVM(
+                config,
+                ssh_key_path=str(private_key),
+                mounts=args.mounts,
+                writable_mounts=args.writable_mounts,
+            )
+            vm.start(boot_timeout=args.boot_timeout)
+            vm.wait_for_ssh(timeout=args.boot_timeout)
+
+            network = vm.info.network
+            data: StartPayload = {
+                "vm": {
+                    "name": vm.vm_id,
+                    "status": (
+                        vm.info.status.value
+                        if isinstance(vm.info.status, VMState)
+                        else VMState.RUNNING.value
+                    ),
+                    "os": "debian-bookworm",
+                    "backend": "firecracker",
+                    "ip_address": network.guest_ip if network else None,
+                    "ssh_port": network.ssh_host_port if network else None,
+                },
+                "preset": {
+                    "name": _preset.name,
+                    "copied_configs": [],
+                    "injected_env_keys": [],
+                    "no_env_hint": _preset.no_env_hint,
+                },
+                "next": {"ssh_command": f"smolvm ssh {vm.vm_id}"},
+            }
+            if args.json:
+                emit_json("start", 0, data=data)
+            else:
+                _render_start_result(data)
+
+            if not args.json and _preset.launch_command:
+                return _maybe_attach_and_launch(vm, _preset, attach=getattr(args, "attach", None))
+            return 0
+        finally:
+            if vm is not None:
+                vm.close()
+    except ImageError as exc:
+        return _emit_cli_error("start", 1, exc, json_output=args.json)
+    except Exception as exc:
+        return _emit_cli_error("start", 1, exc, json_output=args.json)
+
+
+def _run_start(args: argparse.Namespace) -> int:
+    """Handle ``smolvm <preset> start``."""
+    from smolvm.facade import SmolVM, _build_auto_config
+    from smolvm.presets import apply_preset, get_preset
+
+    preset = get_preset(args.preset_name)
+
+    if _published_path_enabled():
+        return _run_start_with_published_image(args, preset)
+
+    backend = args.backend or "qemu"
+    if backend != "qemu":
+        # Built-in presets target the ubuntu cloud image, which only boots on
+        # qemu in this codebase. Fail loudly rather than silently downgrade.
+        return _emit_cli_error(
+            "start",
+            2,
+            ValueError(f"Preset {preset.name!r} requires --backend qemu (got {backend!r})."),
+            json_output=args.json,
+        )
+
+    memory_mib = args.memory_mib if args.memory_mib is not None else preset.default_mem_mib
+    disk_size_mib = (
+        args.disk_size_mib if args.disk_size_mib is not None else preset.default_disk_mib
+    )
+
+    vm: SmolVM | None = None
+    try:
+        if not args.json:
+            console = console_stdout()
+            vm = _build_and_boot_with_progress(
+                console=console,
+                build_fn=lambda on_download: _build_auto_config(
+                    vm_name=args.name,
+                    name_prefix=preset.name,
+                    os=GuestOS.UBUNTU,
+                    backend=backend,
+                    memory=memory_mib,
+                    disk_size_mib=disk_size_mib,
+                    ssh_key_path=None,
+                    on_download=on_download,
+                ),
+                boot_timeout=args.boot_timeout,
+                mounts=args.mounts,
+                writable_mounts=args.writable_mounts,
+            )
+            apply_summary = _apply_preset_with_progress(
+                console=console,
+                vm=vm,
+                preset=preset,
+                install_timeout=int(args.install_timeout),
+            )
+        else:
+            config, ssh_key_path = _build_auto_config(
+                vm_name=args.name,
+                name_prefix=preset.name,
+                os=GuestOS.UBUNTU,
+                backend=backend,
+                memory=memory_mib,
+                disk_size_mib=disk_size_mib,
+                ssh_key_path=None,
+            )
+            vm = SmolVM(
+                config,
+                ssh_key_path=ssh_key_path,
+                mounts=args.mounts,
+                writable_mounts=args.writable_mounts,
+            )
+            vm.start(boot_timeout=args.boot_timeout)
+            vm.wait_for_ssh(timeout=args.boot_timeout)
+            ssh = vm._ensure_ssh_for_env()
+            apply_summary = apply_preset(
+                ssh,
+                preset,
+                install_timeout=int(args.install_timeout),
+            )
+
+        network = vm.info.network
+        data: StartPayload = {
+            "vm": {
+                "name": vm.vm_id,
+                "status": (
+                    vm.info.status.value
+                    if isinstance(vm.info.status, VMState)
+                    else VMState.RUNNING.value
+                ),
+                "os": GuestOS.UBUNTU.value,
+                "backend": vm.info.config.backend or "auto",
+                "ip_address": network.guest_ip if network else None,
+                "ssh_port": network.ssh_host_port if network else None,
+            },
+            "preset": {
+                "name": str(apply_summary["preset"]),
+                "copied_configs": list(apply_summary["copied_configs"]),  # type: ignore[arg-type]
+                "injected_env_keys": list(apply_summary["injected_env_keys"]),  # type: ignore[arg-type]
+                "no_env_hint": preset.no_env_hint,
+            },
+            "next": {
+                "ssh_command": f"smolvm ssh {vm.vm_id}",
+            },
+        }
+
+        if args.json:
+            emit_json("start", 0, data=data)
+        else:
+            _render_start_result(data)
+
+        if not args.json and preset.launch_command:
+            return _maybe_attach_and_launch(vm, preset, attach=getattr(args, "attach", None))
+        return 0
+    except Exception as exc:
+        return _emit_cli_error("start", 1, exc, json_output=args.json)
+    finally:
+        if vm is not None:
+            vm.close()
+
+
+def _maybe_attach_and_launch(
+    vm: object,
+    preset: object,
+    *,
+    attach: bool | None,
+) -> int:
+    """Maybe SSH into *vm* and exec the preset's launch command.
+
+    *attach* tri-state: ``True`` skip prompt and attach; ``False`` skip
+    everything; ``None`` (default) ask the user when stdin is a TTY.
+    Returns the exit code of the SSH session, or 0 when no attach happens.
+    """
+    from smolvm.facade import SmolVM
+    from smolvm.presets._types import Preset
+
+    _vm: SmolVM = vm  # type: ignore[assignment]
+    _preset: Preset = preset  # type: ignore[assignment]
+    if _preset.launch_command is None:
+        return 0
+
+    if attach is False:
+        return 0
+
+    console = console_stdout()
+    if attach is None:
+        if not sys.stdin.isatty():
+            return 0
+        prompt = f"\nLaunch [bold]{_preset.launch_command}[/bold] in '{_vm.vm_id}' now? \\[Y/n] "
+        try:
+            console.print(prompt, end="")
+            answer = input("").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            console.print()
+            return 0
+        if answer in {"n", "no"}:
+            return 0
+
+    return _exec_launch_command(_vm, _preset.launch_command)
+
+
+def _exec_launch_command(vm: object, launch_command: str) -> int:
+    """SSH into *vm* with a TTY and run *launch_command* under a login shell."""
+    from smolvm.env import ENV_FILE
+    from smolvm.facade import SmolVM
+
+    _vm: SmolVM = vm  # type: ignore[assignment]
+    cmd = list(_vm._ssh_attach_command())
+    # Insert -t before user@host so OpenSSH allocates a TTY for the remote
+    # command. Source profile.d so injected env vars (API keys) are visible
+    # to the harness, then exec to keep signal handling clean.
+    #
+    # The env file is only created when at least one host env var was
+    # injected (env.inject_env_vars short-circuits on an empty mapping),
+    # so it may legitimately not exist — e.g. claude-code with subscription
+    # auth where ANTHROPIC_API_KEY is unset on the host. Guard the source
+    # and chain with ';' so a missing file never prevents the launch.
+    cmd.insert(-1, "-t")
+    # Prepend ~/.local/bin to PATH so harnesses that self-migrate to a
+    # native install on first run (claude-code drops a binary there via
+    # its npm postinstall) are picked up without a "not in your PATH"
+    # warning. SSH non-login shells skip /etc/profile, and Ubuntu's
+    # default root PATH does not include ~/.local/bin.
+    cmd.append(
+        f"[ -r {ENV_FILE} ] && . {ENV_FILE}; "
+        f'export PATH="$HOME/.local/bin:$PATH"; '
+        f"exec {launch_command}"
+    )
+    completed = subprocess.run(cmd, check=False)
+    return completed.returncode
+
+
+def _apply_preset_with_progress(
+    *,
+    console: object,
+    vm: object,
+    preset: object,
+    install_timeout: int,
+) -> dict[str, object]:
+    """Run :func:`apply_preset` with a Rich spinner showing each step."""
+    from rich.console import Console
+
+    from smolvm.facade import SmolVM
+    from smolvm.presets import apply_preset
+    from smolvm.presets._types import Preset
+
+    _console: Console = console  # type: ignore[assignment]
+    _vm: SmolVM = vm  # type: ignore[assignment]
+    _preset: Preset = preset  # type: ignore[assignment]
+
+    ssh = _vm._ensure_ssh_for_env()
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
+        console=_console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task(f"Preparing {_preset.name}...", total=None)
+
+        def on_progress(message: str) -> None:
+            progress.update(task, description=message)
+
+        summary = apply_preset(
+            ssh,
+            _preset,
+            on_progress=on_progress,
+            install_timeout=install_timeout,
+        )
+        progress.remove_task(task)
+
+    return summary
 
 
 def _render_vm_lifecycle_result(
@@ -1680,8 +2622,7 @@ def _run_env(args: argparse.Namespace) -> int:
                         title="Environment Updated",
                         border_style="yellow",
                         message=(
-                            f"No matching variables found on '{args.vm_id}': "
-                            f"{', '.join(args.keys)}"
+                            f"No matching variables found on '{args.vm_id}': {', '.join(args.keys)}"
                         ),
                         rows=[],
                         show_reload_hint=False,
@@ -1689,10 +2630,7 @@ def _run_env(args: argparse.Namespace) -> int:
             return 0
 
         current = vm.list_env_vars()
-        variables = {
-            key: current[key] if args.show_values else "****"
-            for key in sorted(current)
-        }
+        variables = {key: current[key] if args.show_values else "****" for key in sorted(current)}
         data = {
             "vm_id": args.vm_id,
             "masked": not args.show_values,
@@ -1703,6 +2641,62 @@ def _run_env(args: argparse.Namespace) -> int:
         else:
             _render_env_list(args.vm_id, data)
         return 0
+    except Exception as exc:
+        return _emit_cli_error(command_name, 1, exc, json_output=json_output)
+    finally:
+        if vm is not None:
+            vm.close()
+
+
+def _render_file_upload(data: FileUploadPayload) -> None:
+    """Render a human-facing file upload result."""
+    console = console_stdout()
+    console.print(
+        Panel.fit(
+            (f"Uploaded '{data['local_path']}' to '{data['guest_path']}' on '{data['vm_id']}'."),
+            title="File Uploaded",
+            border_style="green",
+        )
+    )
+
+
+def _run_file(args: argparse.Namespace) -> int:
+    """Handle ``smolvm file`` commands."""
+    from smolvm.facade import SmolVM
+
+    if args.file_action is None:
+        render_error("Usage: smolvm file {upload} ...")
+        return 2
+
+    json_output = args.json
+    command_name = f"file.{args.file_action}"
+    vm: SmolVM | None = None
+    try:
+        vm = SmolVM.from_id(
+            args.vm_id,
+            ssh_user=args.ssh_user,
+            ssh_key_path=args.ssh_key,
+        )
+
+        if args.file_action == "upload":
+            guest_path = vm.upload_file(
+                args.local_path,
+                args.guest_path,
+                make_dirs=not args.no_create_dirs,
+            )
+            data: FileUploadPayload = {
+                "vm_id": args.vm_id,
+                "local_path": str(Path(args.local_path).expanduser()),
+                "guest_path": guest_path,
+            }
+            if json_output:
+                emit_json(command_name, 0, data=data)
+            else:
+                _render_file_upload(data)
+            return 0
+
+        render_error("Usage: smolvm file {upload} ...")
+        return 2
     except Exception as exc:
         return _emit_cli_error(command_name, 1, exc, json_output=json_output)
     finally:
@@ -1724,16 +2718,12 @@ def _run_ssh(args: argparse.Namespace) -> int:
 
         console = console_stdout()
         if vm.status in {VMState.CREATED, VMState.STOPPED}:
-            with console.status(
-                f"Starting sandbox '{args.vm_id}'...", spinner="dots"
-            ) as status:
+            with console.status(f"Starting sandbox '{args.vm_id}'...", spinner="dots") as status:
                 vm.start(boot_timeout=args.boot_timeout)
                 status.update("Waiting for SSH...")
                 vm.wait_for_ssh(timeout=args.boot_timeout)
         elif vm.status == VMState.PAUSED:
-            with console.status(
-                f"Resuming sandbox '{args.vm_id}'...", spinner="dots"
-            ) as status:
+            with console.status(f"Resuming sandbox '{args.vm_id}'...", spinner="dots") as status:
                 vm.resume()
                 status.update("Waiting for SSH...")
                 vm.wait_for_ssh(timeout=args.boot_timeout)
@@ -1913,7 +2903,7 @@ def _run_browser(args: argparse.Namespace) -> int:
                 viewport={"width": args.viewport_width, "height": args.viewport_height},
                 record_video=args.record_video,
                 allow_downloads=not args.no_downloads,
-                mem_size_mib=args.memory_mib,
+                memory=args.memory_mib,
                 disk_size_mib=args.disk_size_mib,
             )
             session = BrowserSession(config)
@@ -2001,9 +2991,7 @@ def _run_browser(args: argparse.Namespace) -> int:
         try:
             session = BrowserSession.from_id(args.session_id)
             if session.live_url is None:
-                raise RuntimeError(
-                    f"Browser session '{args.session_id}' does not have a live_url."
-                )
+                raise RuntimeError(f"Browser session '{args.session_id}' does not have a live_url.")
             opened = session.open_live_view()
             if not opened:
                 print(f"Open this URL manually: {session.live_url}")
@@ -2057,6 +3045,12 @@ def _run_browser(args: argparse.Namespace) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entrypoint for `smolvm`."""
+    # Best-effort: if the user has been added to the kvm group but the
+    # current shell session hasn't picked it up yet, re-exec under
+    # `sg kvm -c …` so /dev/kvm becomes accessible without a manual
+    # `newgrp kvm` or relog. Linux-only; no-op everywhere else.
+    maybe_reexec_for_kvm_group(argv)
+
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -2091,8 +3085,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             json_output=args.json,
         )
 
+    if args.command == "info":
+        return _run_info(vm_id=args.vm_id, json_output=args.json)
+
     if args.command == "create":
         return _run_create(args)
+
+    if _is_preset_command(args):
+        return _run_start(args)
 
     if args.command == "stop":
         return _run_stop(args)
@@ -2108,6 +3108,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "ssh":
         return _run_ssh(args)
+
+    if args.command == "file":
+        return _run_file(args)
 
     if args.command == "doctor":
         return run_doctor(

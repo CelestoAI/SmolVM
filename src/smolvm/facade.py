@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from smolvm._naming import generate_sandbox_name
 from smolvm.env import inject_env_vars, read_env_vars, remove_env_vars
 from smolvm.exceptions import (
     CommandExecutionUnavailableError,
@@ -274,6 +275,36 @@ def _prepare_sized_qcow2(
     return sized_qcow2, target_mib
 
 
+def _existing_vm_ids() -> set[str]:
+    """Best-effort lookup of existing VM IDs for collision-free auto-naming.
+
+    Returns an empty set if the state store cannot be read (e.g. the data dir
+    doesn't exist yet on a fresh install). The downstream ``create`` call still
+    enforces uniqueness via the storage layer, so a stale or empty answer
+    here can never produce a duplicate VM — at worst it triggers one extra
+    retry.
+    """
+    from smolvm.storage import create_state_manager
+    from smolvm.vm import resolve_data_dir
+
+    try:
+        db_path = resolve_data_dir() / "smolvm.db"
+        if not db_path.exists():
+            return set()
+        state = create_state_manager(db_path=db_path)
+        return {info.vm_id for info in state.list_vms()}
+    except Exception as exc:
+        logger.debug("Could not enumerate existing VM IDs for auto-naming: %s", exc)
+        return set()
+
+
+def _resolve_vm_name(vm_name: str | None, *, prefix: str = "sbx") -> str:
+    """Return the user-supplied name or auto-generate one with *prefix*."""
+    if vm_name is not None:
+        return vm_name
+    return generate_sandbox_name(_existing_vm_ids(), prefix=prefix)
+
+
 def _resolve_auto_config_public_key(ssh_key_path: str | None) -> tuple[str, Path]:
     """Resolve the SSH private key path and matching public key for auto-config."""
     from smolvm.utils import ensure_ssh_key
@@ -288,11 +319,14 @@ def _resolve_auto_config_public_key(ssh_key_path: str | None) -> tuple[str, Path
     return ssh_key_path, public_key
 
 
-def _parse_mount_specs(specs: list[str]) -> list[WorkspaceMount]:
+def _parse_mount_specs(specs: list[str], *, writable: bool = False) -> list[WorkspaceMount]:
     """Parse ``HOST_PATH[:GUEST_PATH]`` strings into WorkspaceMount objects.
 
     If no guest path is given, the mount defaults to ``/workspace``
     (for a single mount) or ``/workspace-N`` (for multiples).
+
+    When ``writable`` is True, every parsed mount is marked writable so
+    guest writes propagate to the host directory.
     """
     mounts: list[WorkspaceMount] = []
     for index, spec in enumerate(specs):
@@ -302,8 +336,21 @@ def _parse_mount_specs(specs: list[str]) -> list[WorkspaceMount]:
         else:
             host_str = spec
             guest_path = "/workspace" if len(specs) == 1 else f"/workspace-{index}"
-        mounts.append(WorkspaceMount(host_path=Path(host_str), guest_path=guest_path))
+        mounts.append(
+            WorkspaceMount(host_path=Path(host_str), guest_path=guest_path, writable=writable)
+        )
     return mounts
+
+
+def _guest_parent_dir(path: str) -> str:
+    """Return the POSIX parent directory for a guest path, if it has one."""
+    normalized = path.rstrip("/")
+    if not normalized:
+        return ""
+    if "/" not in normalized:
+        return ""
+    parent = normalized.rsplit("/", 1)[0]
+    return parent or "/"
 
 
 def _build_auto_config_image_name(
@@ -329,8 +376,9 @@ def _build_s3_image_config(
     *,
     image: str,
     vm_name: str | None = None,
+    name_prefix: str = "sbx",
     backend: str | None = None,
-    mem_size_mib: int | None = None,
+    memory: int | None = None,
     ssh_key_path: str | None = None,
     on_download: Callable[[str, int, int | None], None] | None = None,
 ) -> tuple[VMConfig, str | None]:
@@ -392,11 +440,11 @@ def _build_s3_image_config(
                 )
             extra_drives.append(seed_path)
 
-    resolved_vm_name = vm_name or f"vm-{uuid.uuid4().hex[:8]}"
+    resolved_vm_name = _resolve_vm_name(vm_name, prefix=name_prefix)
     config = VMConfig(
         vm_id=resolved_vm_name,
         vcpu_count=1,
-        mem_size_mib=mem_size_mib or 512,
+        memory=memory or 512,
         kernel_path=local_image.kernel_path,
         initrd_path=local_image.initrd_path,
         rootfs_path=local_image.rootfs_path,
@@ -417,9 +465,10 @@ def _build_s3_image_config(
 def _build_auto_config(
     *,
     vm_name: str | None = None,
+    name_prefix: str = "sbx",
     os: GuestOS | str | None = None,
     backend: str | None = None,
-    mem_size_mib: int | None = None,
+    memory: int | None = None,
     disk_size_mib: int | None = None,
     ssh_key_path: str | None = None,
     on_download: Callable[[str, int, int | None], None] | None = None,
@@ -432,9 +481,9 @@ def _build_auto_config(
     resolved_ssh_key_path, public_key_path = _resolve_auto_config_public_key(ssh_key_path)
     public_key_value = public_key_path.read_text().strip()
 
-    resolved_mem_size_mib = _AUTO_CONFIG_DEFAULT_MEM_SIZE_MIB[resolved_os]
-    if mem_size_mib is not None:
-        resolved_mem_size_mib = mem_size_mib
+    resolved_memory = _AUTO_CONFIG_DEFAULT_MEM_SIZE_MIB[resolved_os]
+    if memory is not None:
+        resolved_memory = memory
     default_disk_size_mib = _AUTO_CONFIG_DEFAULT_DISK_SIZE_MIB[resolved_os]
     resolved_disk_size_mib = default_disk_size_mib if disk_size_mib is None else disk_size_mib
     if resolved_disk_size_mib < 64:
@@ -494,11 +543,11 @@ def _build_auto_config(
                 ),
             )
 
-        resolved_vm_name = vm_name or f"vm-{uuid.uuid4().hex[:8]}"
+        resolved_vm_name = _resolve_vm_name(vm_name, prefix=name_prefix)
         config = VMConfig(
             vm_id=resolved_vm_name,
             vcpu_count=1,
-            mem_size_mib=resolved_mem_size_mib,
+            memory=resolved_memory,
             kernel_path=image.kernel_path,
             initrd_path=image.initrd_path,
             rootfs_path=rootfs_path,
@@ -570,11 +619,11 @@ def _build_auto_config(
                 ),
             )
 
-        resolved_vm_name = vm_name or f"vm-{uuid.uuid4().hex[:8]}"
+        resolved_vm_name = _resolve_vm_name(vm_name, prefix=name_prefix)
         config = VMConfig(
             vm_id=resolved_vm_name,
             vcpu_count=1,
-            mem_size_mib=resolved_mem_size_mib,
+            memory=resolved_memory,
             boot_mode="firmware",
             kernel_path=None,
             rootfs_path=rootfs_path,
@@ -617,15 +666,16 @@ def _build_auto_config(
             kernel_profile=kernel_profile,
         )
 
-    resolved_vm_name = vm_name or f"vm-{uuid.uuid4().hex[:8]}"
+    resolved_vm_name = _resolve_vm_name(vm_name, prefix=name_prefix)
     config = VMConfig(
         vm_id=resolved_vm_name,
         vcpu_count=1,
-        mem_size_mib=resolved_mem_size_mib,
+        memory=resolved_memory,
         kernel_path=kernel,
         rootfs_path=rootfs,
         boot_args=boot_args,
         backend=resolved_backend,
+        ssh_public_key=public_key_value,
     )
     logger.info(
         "Auto-configured VM: %s (os=%s, backend=%s)",
@@ -664,8 +714,8 @@ class SmolVM:
         socket_dir: Override the default socket directory.
         backend: Runtime backend override (``firecracker``, ``qemu``, or ``auto``).
         os: Guest OS for auto-config mode (``"alpine"`` or ``"debian"``).
-        mem_size_mib: Guest memory in MiB for auto-config mode (``SmolVM()`` only).
-        disk_size_mib: Root filesystem size in MiB for auto-config mode (``SmolVM()`` only).
+        memory: Guest memory in MiB for auto-config mode (``SmolVM()`` only).
+        disk_size: Root filesystem size in MiB for auto-config mode (``SmolVM()`` only).
         ssh_user: SSH user for :meth:`run` (default ``root``).
         ssh_key_path: Optional SSH private key path. If omitted,
             SmolVM first tries default SSH auth, then falls back to
@@ -674,6 +724,16 @@ class SmolVM:
             :class:`~smolvm.types.InternetSettings` instance or a dict
             (e.g. ``{"allowed_domains": ["https://example.com/"]}``).
             When set, only the listed domains are reachable from the VM.
+        mounts: Host directories to mount inside the guest, as
+            ``HOST_PATH[:GUEST_PATH]`` strings. Equivalent to passing
+            ``WorkspaceMount`` instances on a :class:`VMConfig`.
+        writable_mounts: When ``True``, every entry in *mounts* is
+            exposed read-write so guest writes propagate to the host
+            directory. Default ``False`` keeps the host read-only with
+            a writable in-VM overlay (changes stay inside the VM).
+            For per-mount control, set
+            :attr:`~smolvm.types.WorkspaceMount.writable` directly on
+            ``config.workspace_mounts`` instead.
 
     Raises:
         ValueError: If both *config* and *vm_id* are given, or if auto-config-only
@@ -690,12 +750,13 @@ class SmolVM:
         socket_dir: Path | None = None,
         backend: str | None = None,
         os: GuestOS | str | None = None,
-        mem_size_mib: int | None = None,
-        disk_size_mib: int | None = None,
+        memory: int | None = None,
+        disk_size: int | None = None,
         ssh_user: str = "root",
         ssh_key_path: str | None = None,
         internet_settings: InternetSettings | dict[str, Any] | None = None,
         mounts: list[str] | None = None,
+        writable_mounts: bool = False,
     ) -> None:
         if config is not None and vm_id is not None:
             raise ValueError("Provide either config or vm_id, not both.")
@@ -710,10 +771,10 @@ class SmolVM:
             )
 
         if (config is not None or vm_id is not None) and (
-            mem_size_mib is not None or disk_size_mib is not None or os is not None
+            memory is not None or disk_size is not None or os is not None
         ):
             raise ValueError(
-                "mem_size_mib, disk_size_mib, and os can only be set when both "
+                "memory, disk_size, and os can only be set when both "
                 "config and vm_id are omitted (auto-config mode)."
             )
 
@@ -723,12 +784,14 @@ class SmolVM:
         # VMConfig — default to QEMU. Callers who explicitly set `backend`
         # (on the kwarg or the config) still get the SmolVMManager error if
         # their choice can't host mounts.
-        wants_mounts = bool(mounts) or (
-            config is not None and bool(config.workspace_mounts)
-        )
-        if backend is None and wants_mounts and vm_id is None:
-            if config is None or config.backend is None:
-                backend = BACKEND_QEMU
+        wants_mounts = bool(mounts) or (config is not None and bool(config.workspace_mounts))
+        if (
+            backend is None
+            and wants_mounts
+            and vm_id is None
+            and (config is None or config.backend is None)
+        ):
+            backend = BACKEND_QEMU
 
         if image is not None:
             # S3 image mode
@@ -736,7 +799,7 @@ class SmolVM:
             config, ssh_key_path = _build_s3_image_config(
                 image=image,
                 backend=backend,
-                mem_size_mib=mem_size_mib,
+                memory=memory,
                 ssh_key_path=ssh_key_path,
             )
         elif config is None and vm_id is None:
@@ -745,8 +808,8 @@ class SmolVM:
             config, ssh_key_path = _build_auto_config(
                 os=os,
                 backend=backend,
-                mem_size_mib=mem_size_mib,
-                disk_size_mib=disk_size_mib,
+                memory=memory,
+                disk_size_mib=disk_size,
                 ssh_key_path=ssh_key_path,
             )
 
@@ -770,7 +833,7 @@ class SmolVM:
         if mounts is not None:
             if vm_id is not None:
                 raise ValueError("mounts cannot be set when reconnecting to an existing VM.")
-            workspace_mounts = _parse_mount_specs(mounts)
+            workspace_mounts = _parse_mount_specs(mounts, writable=writable_mounts)
             if config is not None:
                 if config.workspace_mounts:
                     raise ValueError(
@@ -778,6 +841,12 @@ class SmolVM:
                         "pass it in one place only."
                     )
                 config = config.model_copy(update={"workspace_mounts": workspace_mounts})
+        elif writable_mounts:
+            raise ValueError(
+                "writable_mounts requires the mounts= argument; nothing to "
+                "make writable. Alternatively, set "
+                "WorkspaceMount(writable=True) on config.workspace_mounts."
+            )
 
         self._ssh_user = ssh_user
         self._ssh_key_path = ssh_key_path
@@ -924,7 +993,12 @@ class SmolVM:
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def start(self, boot_timeout: float = 30.0) -> SmolVM:
+    def start(
+        self,
+        boot_timeout: float = 30.0,
+        *,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> SmolVM:
         """Start the VM.
 
         If the VM config contains ``env_vars``, they are injected into
@@ -932,6 +1006,10 @@ class SmolVM:
 
         Args:
             boot_timeout: Maximum seconds to wait for boot.
+            on_progress: Optional callback invoked with a short label
+                ("Waiting for SSH...", "Mounting workspace(s)...") at
+                each visibly-distinct phase. The CLI uses this to
+                update its spinner; programmatic callers can ignore.
 
         Returns:
             ``self`` for method chaining.
@@ -940,6 +1018,8 @@ class SmolVM:
             SmolVMError: If ``env_vars`` is set but the image does not
                 support SSH.
         """
+        notify = on_progress or (lambda _msg: None)
+
         if self._info.status == VMState.RUNNING:
             logger.info("VM %s already running; start() is a no-op", self._vm_id)
             return self
@@ -961,7 +1041,7 @@ class SmolVM:
                     "the rootfs at build time.",
                     {"vm_id": self._vm_id},
                 )
-            self.wait_for_ssh(timeout=boot_timeout)
+            self.wait_for_ssh(timeout=boot_timeout, on_progress=on_progress)
             if self._ssh is None:
                 self._ssh = SSHClient(
                     host=self._info.network.guest_ip,
@@ -978,14 +1058,15 @@ class SmolVM:
             )
 
         # Mount workspace directories after boot if configured.
-        if self._info.config.workspace_mounts:
+        workspace_mounts = self._info.config.workspace_mounts
+        if workspace_mounts:
             if not self.can_run_commands():
                 raise SmolVMError(
                     "Cannot mount workspaces: VM image does not support SSH.",
                     {"vm_id": self._vm_id},
                 )
             if not self._ssh_ready:
-                self.wait_for_ssh(timeout=boot_timeout)
+                self.wait_for_ssh(timeout=boot_timeout, on_progress=on_progress)
             if self._ssh is None:
                 self._ssh = SSHClient(
                     host=self._info.network.guest_ip,
@@ -993,6 +1074,8 @@ class SmolVM:
                     key_path=self._ssh_key_path,
                 )
                 self._ssh_ready = True
+            count = len(workspace_mounts)
+            notify("Mounting workspace..." if count == 1 else f"Mounting {count} workspaces...")
             self._mount_workspaces()
 
         return self
@@ -1082,7 +1165,8 @@ class SmolVM:
 
         if self._info.status != VMState.RUNNING:
             raise SmolVMError(
-                f"VM is not running. Start the VM using vm.start() before running commands (current state: {self._info.status.value})",
+                "VM is not running. Start the VM using vm.start() before "
+                f"running commands (current state: {self._info.status.value})",
                 {"vm_id": self._vm_id},
             )
         if not self.can_run_commands():
@@ -1174,11 +1258,78 @@ class SmolVM:
         ssh = self._ensure_ssh_for_env()
         return read_env_vars(ssh)
 
-    def wait_for_ssh(self, timeout: float = 60.0) -> SmolVM:
+    def upload_file(
+        self,
+        local_path: str | Path,
+        guest_path: str,
+        *,
+        make_dirs: bool = True,
+    ) -> str:
+        """Upload one local file into a running VM.
+
+        Overwrites the destination if it already exists.
+
+        Args:
+            local_path: File on the host machine.
+            guest_path: Absolute POSIX path inside the guest. If it ends
+                with ``/``, the local filename is appended.
+            make_dirs: Create the destination parent directory first.
+
+        Returns:
+            The resolved guest destination path.
+
+        Raises:
+            ValueError: If *local_path* is missing, is not a file, or if
+                *guest_path* is empty or not an absolute POSIX path.
+            SmolVMError: If the VM is not running or file transfer fails.
+        """
+        source = Path(local_path).expanduser()
+        if not source.exists():
+            raise ValueError(f"Local file not found: {source}. Check the path and try again.")
+        if not source.is_file():
+            raise ValueError(
+                f"Not a file: {source}. Pass a path to a single file, not a directory."
+            )
+        if not guest_path:
+            raise ValueError("Destination path in the sandbox cannot be empty.")
+        if not guest_path.startswith("/"):
+            raise ValueError(
+                f"Destination path in the sandbox must be absolute "
+                f"(start with '/'): {guest_path!r}."
+            )
+
+        destination = guest_path
+        if destination.endswith("/"):
+            destination = f"{destination}{source.name}"
+
+        ssh = self._ensure_ssh_for_file_transfer()
+        if make_dirs:
+            parent = _guest_parent_dir(destination)
+            if parent:
+                result = ssh.run(f"mkdir -p -- {shlex.quote(parent)}", timeout=30, shell="raw")
+                if result.exit_code != 0:
+                    stderr = result.stderr.strip()
+                    raise SmolVMError(
+                        f"Could not create directory {parent!r} in the sandbox: {stderr}",
+                        {"vm_id": self._vm_id, "guest_path": destination},
+                    )
+        ssh.put_file(source, destination)
+        return destination
+
+    def wait_for_ssh(
+        self,
+        timeout: float = 60.0,
+        *,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> SmolVM:
         """Wait for SSH to become available on the guest.
 
         Args:
             timeout: Maximum seconds to wait.
+            on_progress: Optional callback invoked with the phase label
+                ``"Waiting for SSH..."`` when an actual wait is needed.
+                Skipped when SSH is already ready, so the CLI doesn't
+                flash a misleading label for a no-op call.
 
         Returns:
             ``self`` for method chaining.
@@ -1191,7 +1342,8 @@ class SmolVM:
 
         if self._info.status != VMState.RUNNING:
             raise SmolVMError(
-                f"VM is not running. Start the VM using vm.start() before waiting for SSH (current state: {self._info.status.value})",
+                "VM is not running. Start the VM using vm.start() before "
+                f"waiting for SSH (current state: {self._info.status.value})",
                 {"vm_id": self._vm_id},
             )
         if self._info.network is None:
@@ -1200,6 +1352,8 @@ class SmolVM:
                 {"vm_id": self._vm_id},
             )
 
+        if on_progress is not None and not self._ssh_ready:
+            on_progress("Waiting for SSH...")
         self._wait_for_ssh(timeout=timeout)
         return self
 
@@ -1981,25 +2135,37 @@ class SmolVM:
                 {"vm_id": self._vm_id, "ssh_user": self._ssh_user},
             )
 
+        needs_overlay = any(not ws.writable for ws in workspace_mounts)
+        self._ensure_9p_workspace_support(need_overlay=needs_overlay)
+
         for index, ws in enumerate(workspace_mounts):
             tag = ws.resolved_tag(index)
             guest_path = shlex.quote(ws.guest_path)
-            lower = shlex.quote(f"/mnt/.smolvm-ws-{tag}")
-            upper = shlex.quote(f"/tmp/.smolvm-ws-{tag}-upper")
-            work = shlex.quote(f"/tmp/.smolvm-ws-{tag}-work")
             qtag = shlex.quote(tag)
 
-            mount_script = (
-                f"modprobe 9p 2>/dev/null; "
-                f"modprobe 9pnet_virtio 2>/dev/null; "
-                f"modprobe overlay 2>/dev/null; "
-                f"mkdir -p {lower} {upper} {work} {guest_path} && "
-                f"mount -t 9p -o trans=virtio,version=9p2000.L,ro "
-                f"{qtag} {lower} && "
-                f"mount -t overlay overlay "
-                f"-o lowerdir={lower},upperdir={upper},workdir={work} "
-                f"{guest_path}"
-            )
+            if ws.writable:
+                mount_script = (
+                    f"modprobe 9p 2>/dev/null; "
+                    f"modprobe 9pnet_virtio 2>/dev/null; "
+                    f"mkdir -p {guest_path} && "
+                    f"mount -t 9p -o trans=virtio,version=9p2000.L,rw "
+                    f"{qtag} {guest_path}"
+                )
+            else:
+                lower = shlex.quote(f"/mnt/.smolvm-ws-{tag}")
+                upper = shlex.quote(f"/tmp/.smolvm-ws-{tag}-upper")
+                work = shlex.quote(f"/tmp/.smolvm-ws-{tag}-work")
+                mount_script = (
+                    f"modprobe 9p 2>/dev/null; "
+                    f"modprobe 9pnet_virtio 2>/dev/null; "
+                    f"modprobe overlay 2>/dev/null; "
+                    f"mkdir -p {lower} {upper} {work} {guest_path} && "
+                    f"mount -t 9p -o trans=virtio,version=9p2000.L,ro "
+                    f"{qtag} {lower} && "
+                    f"mount -t overlay overlay "
+                    f"-o lowerdir={lower},upperdir={upper},workdir={work} "
+                    f"{guest_path}"
+                )
             result = self._ssh.run(mount_script, timeout=15)
             if result.exit_code != 0:
                 stderr = result.stderr.strip()
@@ -2020,11 +2186,73 @@ class SmolVM:
                     },
                 )
             logger.info(
-                "VM %s: mounted workspace '%s' at %s (overlay)",
+                "VM %s: mounted workspace '%s' at %s (%s)",
                 self._vm_id,
                 tag,
                 ws.guest_path,
+                "writable" if ws.writable else "overlay",
             )
+
+    def _ensure_9p_workspace_support(self, *, need_overlay: bool = True) -> None:
+        """Best-effort repair for Ubuntu cloud images missing 9p modules."""
+        assert self._ssh is not None  # noqa: S101 — caller guarantees SSH ready
+
+        overlay_probe = " && modprobe overlay 2>/dev/null" if need_overlay else ""
+        probe_script = (
+            f"modprobe 9p 2>/dev/null && modprobe 9pnet_virtio 2>/dev/null{overlay_probe}"
+        )
+        probe = self._ssh.run(probe_script, timeout=15)
+        if probe.exit_code == 0:
+            return
+
+        overlay_modprobe = "\nmodprobe overlay" if need_overlay else ""
+        install_script = (
+            r"""
+set -eu
+. /etc/os-release 2>/dev/null || ID=
+if [ "${ID:-}" != "ubuntu" ] || ! command -v apt-get >/dev/null 2>&1; then
+  exit 42
+fi
+export DEBIAN_FRONTEND=noninteractive
+APT_LOCKS="/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock"
+deadline=$(( $(date +%s) + 120 ))
+while command -v fuser >/dev/null 2>&1 && fuser $APT_LOCKS >/dev/null 2>&1; do
+  if [ "$(date +%s)" -ge "$deadline" ]; then
+    echo "Timed out waiting for apt/dpkg locks" >&2
+    exit 43
+  fi
+  sleep 2
+done
+APT_OPTS='-o DPkg::Lock::Timeout=120 -o Acquire::Retries=3'
+apt-get $APT_OPTS update -qq
+apt-get $APT_OPTS install -y -qq "linux-modules-extra-$(uname -r)"
+modprobe 9p
+modprobe 9pnet_virtio""".strip()
+            + overlay_modprobe
+        )
+        install = self._ssh.run(install_script, timeout=240)
+        if install.exit_code == 0:
+            logger.info(
+                "VM %s: installed Ubuntu linux-modules-extra for workspace mounts",
+                self._vm_id,
+            )
+            return
+
+        missing = "9p or overlay" if need_overlay else "9p"
+        raise SmolVMError(
+            f"Cannot mount workspaces: guest is missing {missing} kernel support. "
+            "Ubuntu guests can usually be repaired by installing "
+            "linux-modules-extra-$(uname -r); this guest could not be repaired "
+            "automatically.",
+            {
+                "vm_id": self._vm_id,
+                "probe_exit_code": probe.exit_code,
+                "probe_stderr": probe.stderr.strip(),
+                "install_exit_code": install.exit_code,
+                "install_stdout": install.stdout.strip(),
+                "install_stderr": install.stderr.strip(),
+            },
+        )
 
     def _reset_runtime_state(self, *, close_ssh: bool = True) -> None:
         """Clear cached runtime connection state after lifecycle changes."""
@@ -2036,13 +2264,22 @@ class SmolVM:
         if hasattr(self, "_probed_endpoint"):
             self._probed_endpoint = None
 
+    def _ensure_ssh_for_file_transfer(self) -> SSHClient:
+        """Return a ready SSH client for file transfer operations."""
+        return self._ensure_ssh_for_operation(action="transfer files")
+
     def _ensure_ssh_for_env(self) -> SSHClient:
         """Return a ready SSH client for env operations on a running VM."""
+        return self._ensure_ssh_for_operation(action="manage environment variables")
+
+    def _ensure_ssh_for_operation(self, *, action: str) -> SSHClient:
+        """Return a ready SSH client for operations that need guest SSH."""
+        prefix = f"Cannot {action}"
         self._refresh_info()
 
         if self._info.status != VMState.RUNNING:
             raise SmolVMError(
-                f"Cannot manage environment variables: VM is {self._info.status.value}",
+                f"{prefix}: VM is {self._info.status.value}",
                 {"vm_id": self._vm_id},
             )
         if not self.can_run_commands():
@@ -2056,7 +2293,7 @@ class SmolVM:
             )
         if self._info.network is None:
             raise SmolVMError(
-                "Cannot manage environment variables: VM has no network configuration",
+                f"{prefix}: VM has no network configuration",
                 {"vm_id": self._vm_id},
             )
 
@@ -2065,7 +2302,7 @@ class SmolVM:
 
         if self._ssh is None:
             raise SmolVMError(
-                "Cannot manage environment variables: SSH client is not initialized",
+                f"{prefix}: SSH client is not initialized",
                 {"vm_id": self._vm_id},
             )
 

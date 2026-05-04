@@ -23,6 +23,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
+from smolvm._naming import generate_sandbox_name
+
 
 class VMState(str, Enum):
     """VM lifecycle states."""
@@ -54,7 +56,7 @@ class GuestOS(str, Enum):
 
 def _generate_vm_id() -> str:
     """Generate a VM identifier compatible with VMConfig validation."""
-    return f"vm-{uuid4().hex[:8]}"
+    return generate_sandbox_name()
 
 
 def _generate_browser_session_id() -> str:
@@ -68,6 +70,17 @@ def _generate_snapshot_id() -> str:
 
 
 _IDENTIFIER_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$|^[a-z0-9]$"
+
+
+def _should_validate_paths(info: ValidationInfo) -> bool:
+    """Return whether path-existence checks should run for this validation.
+
+    Storage reads (``vm_config_from_json``) pass ``validate_paths=False`` in
+    the validation context so a stale or missing host path on disk does not
+    blow up read-only commands like ``smolvm list``. Defaults to ``True`` so
+    direct construction (creates, tests) keeps its safety net.
+    """
+    return bool((info.context or {}).get("validate_paths", True))
 
 
 class BrowserViewport(BaseModel):
@@ -111,27 +124,43 @@ class VsockConfig(BaseModel):
 
 
 class WorkspaceMount(BaseModel):
-    """Host directory to mount inside the guest via virtio-9p + overlayfs.
+    """Host directory to mount inside the guest via virtio-9p.
 
-    The host directory is exposed read-only through QEMU's virtio-9p
-    passthrough.  An overlayfs layer on top lets the guest read and write
-    freely — but changes stay inside the VM and never touch the host.
+    By default the host directory is exposed read-only through QEMU's
+    virtio-9p passthrough, with an overlayfs layer on top so the guest
+    can read and write freely — changes stay inside the VM and never
+    touch the host.
+
+    When ``writable`` is True the host directory is exposed read-write
+    and mounted directly at ``guest_path`` (no overlay), so writes from
+    the guest are visible on the host.
 
     Attributes:
         host_path: Absolute path to a directory on the host.
         guest_path: Mount point inside the guest (default ``/workspace``).
         mount_tag: 9p mount tag passed to QEMU.  Auto-generated when omitted.
+        writable: When True, guest writes propagate to the host directory.
+            Default False (read-only host, writable overlay in guest).
     """
 
     host_path: Path
     guest_path: str = "/workspace"
     mount_tag: str | None = None
+    writable: bool = False
 
     @field_validator("host_path")
     @classmethod
-    def validate_host_path(cls, v: Path) -> Path:
-        """Ensure the host path exists and is a directory."""
+    def validate_host_path(cls, v: Path, info: ValidationInfo) -> Path:
+        """Ensure the host path exists and is a directory.
+
+        Existence and directory checks are skipped when the validation
+        context has ``validate_paths=False`` so persisted configs with
+        stale mount paths still load (read-only commands surface them as
+        warnings instead of crashing).
+        """
         v = v.resolve()
+        if not _should_validate_paths(info):
+            return v
         if not v.exists():
             raise ValueError(f"Workspace path does not exist: {v}")
         if not v.is_dir():
@@ -244,7 +273,7 @@ class VMConfig(BaseModel):
         vm_id: Optional unique identifier (lowercase alphanumeric with hyphens).
             If omitted, SmolVM auto-generates one.
         vcpu_count: Number of virtual CPUs (1-32).
-        mem_size_mib: Memory size in MiB (128-16384).
+        memory: Memory size in MiB (128-16384).
         boot_mode: How the guest boots:
 
             - ``"direct_kernel"`` (default): the hypervisor loads
@@ -275,6 +304,12 @@ class VMConfig(BaseModel):
         env_vars: Environment variables to inject into the guest
             after boot via SSH. Keys must be valid shell identifiers.
         port_forwards: Optional host TCP forwards configured at VM launch.
+        ssh_public_key: Optional OpenSSH public key (one-line ``authorized_keys``
+            format) to install in the guest's ``/root/.ssh/authorized_keys`` at
+            first boot. Passed via the kernel command line as
+            ``smolvm.authorized_key_b64=<base64>`` and read by ``/init``. Use
+            this for published pre-built images that don't bake keys at build
+            time, so each VM gets the launching user's key without rebuilding.
     """
 
     vm_id: Annotated[
@@ -285,7 +320,7 @@ class VMConfig(BaseModel):
         ),
     ]
     vcpu_count: Annotated[int, Field(ge=1, le=32)] = 2
-    mem_size_mib: Annotated[int, Field(ge=128, le=16384)] = 512
+    memory: Annotated[int, Field(ge=128, le=16384)] = 512
     boot_mode: Literal["direct_kernel", "firmware"] = "direct_kernel"
     kernel_path: Path | None = None
     initrd_path: Path | None = None
@@ -302,6 +337,7 @@ class VMConfig(BaseModel):
     vsock: VsockConfig | None = None
     internet_settings: InternetSettings | None = None
     workspace_mounts: list[WorkspaceMount] = []
+    ssh_public_key: str | None = None
 
     @field_validator("vm_id", mode="before")
     @classmethod
@@ -317,7 +353,7 @@ class VMConfig(BaseModel):
         """Ensure paths exist on the filesystem."""
         if v is None:
             return None
-        if not cls._should_validate_paths(info):
+        if not _should_validate_paths(info):
             return v
         return cls._validate_file_path(v)
 
@@ -352,7 +388,7 @@ class VMConfig(BaseModel):
         """Ensure optional paths exist on the filesystem."""
         if v is None:
             return None
-        if not cls._should_validate_paths(info):
+        if not _should_validate_paths(info):
             return v
         return cls._validate_file_path(v)
 
@@ -360,7 +396,7 @@ class VMConfig(BaseModel):
     @classmethod
     def validate_extra_drives(cls, v: list[Path], info: ValidationInfo) -> list[Path]:
         """Ensure all extra drive paths exist and are files."""
-        if not cls._should_validate_paths(info):
+        if not _should_validate_paths(info):
             return v
         for path in v:
             cls._validate_file_path(path)
@@ -374,11 +410,6 @@ class VMConfig(BaseModel):
         if not v.is_file():
             raise ValueError(f"Path is not a file: {v}")
         return v
-
-    @staticmethod
-    def _should_validate_paths(info: ValidationInfo) -> bool:
-        """Allow storage reads to skip filesystem existence checks."""
-        return bool((info.context or {}).get("validate_paths", True))
 
     @field_validator("env_vars")
     @classmethod

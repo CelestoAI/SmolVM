@@ -20,6 +20,7 @@ Orchestrates VM lifecycle, networking, and state management across runtimes.
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import os
 import platform
@@ -222,6 +223,9 @@ class SmolVMManager:
 
         # Track open log file handles per VM for proper cleanup
         self._log_files: dict[str, TextIO] = {}
+        # Retain Popen handles so SIGKILL'd children can be reaped via Popen.wait()
+        # — without this, killed VMs linger as zombies and _is_process_running stays True.
+        self._process_handles: dict[int, subprocess.Popen[bytes]] = {}
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._closed = False
 
@@ -287,6 +291,10 @@ class SmolVMManager:
             with suppress(Exception):
                 fh.close()
         self._log_files.clear()
+        for handle in self._process_handles.values():
+            with suppress(Exception):
+                handle.wait(timeout=0)
+        self._process_handles.clear()
         for task in list(self._background_tasks):
             if not task.done():
                 task.cancel()
@@ -319,6 +327,7 @@ class SmolVMManager:
             data_dir=self.data_dir,
             socket_dir=self.socket_dir,
             log_files=self._log_files,
+            process_handles=self._process_handles,
             resolve_boot_args=self._resolve_boot_args,
             start_firecracker=self._start_firecracker,
             start_qemu=self._start_qemu,
@@ -523,6 +532,34 @@ class SmolVMManager:
             return None
         return expected
 
+    def _check_workspace_mounts(self, vm_info: VMInfo) -> None:
+        """Verify each workspace mount's host folder is still usable.
+
+        The Pydantic validator on ``WorkspaceMount.host_path`` runs at
+        create time, but storage reads pass ``validate_paths=False`` so a
+        config can reach start time after its host folder was deleted or
+        replaced. Catch both cases here (missing path, or path that's no
+        longer a directory) and raise a single friendly error, instead of
+        letting QEMU fail later with a host-side message a first-time user
+        cannot interpret.
+        """
+        bad_paths = [
+            mount.host_path
+            for mount in vm_info.config.workspace_mounts
+            if not (mount.host_path.exists() and mount.host_path.is_dir())
+        ]
+        if not bad_paths:
+            return
+        paths = ", ".join(str(p) for p in bad_paths)
+        raise SmolVMError(
+            f"Cannot start sandbox '{vm_info.vm_id}': shared folder is missing: "
+            f"{paths}. Restore it, or run 'smolvm delete {vm_info.vm_id}'.",
+            {
+                "vm_id": vm_info.vm_id,
+                "missing_mounts": [str(p) for p in bad_paths],
+            },
+        )
+
     def _ensure_snapshot_supported(self, vm_info: VMInfo) -> None:
         """Validate whether snapshot operations are supported for a VM."""
         if vm_info.config.disk_mode != "isolated":
@@ -537,7 +574,7 @@ class SmolVMManager:
     def _warn_low_disk_space_for_snapshot(self, vm_info: VMInfo) -> None:
         """Warn when snapshot creation looks likely to exhaust local disk space."""
         rootfs_size = vm_info.config.rootfs_path.stat().st_size
-        mem_size = vm_info.config.mem_size_mib * 1024 * 1024
+        mem_size = vm_info.config.memory * 1024 * 1024
         required_bytes = rootfs_size + (2 * mem_size)
         free_bytes = shutil.disk_usage(self.snapshot_dir).free
         if free_bytes < required_bytes:
@@ -929,6 +966,8 @@ class SmolVMManager:
                 "VM has no network configuration",
                 {"vm_id": vm_id},
             )
+
+        self._check_workspace_mounts(vm_info)
 
         backend = self._backend_for_vm(vm_info)
         log_path = self.data_dir / f"{vm_id}.log"
@@ -1522,7 +1561,7 @@ class SmolVMManager:
             "-smp",
             str(vm_info.config.vcpu_count),
             "-m",
-            str(vm_info.config.mem_size_mib),
+            str(vm_info.config.memory),
         ]
         # Boot mode: direct-kernel passes -kernel/-append (optionally -initrd);
         # firmware mode lets QEMU boot the rootfs disk via default firmware
@@ -1576,13 +1615,10 @@ class SmolVMManager:
             tag = ws.resolved_tag(index)
             fsdev_id = f"fsdev-{tag}"
             workspace_fsdev_ids.append((fsdev_id, tag))
-            cmd.extend(
-                [
-                    "-fsdev",
-                    f"local,id={fsdev_id},path={ws.host_path},"
-                    f"security_model=mapped-xattr,readonly=on",
-                ]
-            )
+            fsdev_opts = f"local,id={fsdev_id},path={ws.host_path},security_model=mapped-xattr"
+            if not ws.writable:
+                fsdev_opts += ",readonly=on"
+            cmd.extend(["-fsdev", fsdev_opts])
 
         if control_socket_path is not None:
             cmd.extend(
@@ -1662,6 +1698,7 @@ class SmolVMManager:
 
         key = f"qemu:{vm_info.vm_id}"
         self._log_files[key] = log_file
+        self._process_handles[process.pid] = process
 
         logger.debug("Started QEMU: PID=%d, vm_id=%s", process.pid, vm_info.vm_id)
         return process
@@ -1711,6 +1748,7 @@ class SmolVMManager:
         # Derive a key from the socket path so we can close the handle later
         key = str(socket_path)
         self._log_files[key] = log_file
+        self._process_handles[process.pid] = process
 
         logger.debug("Started Firecracker: PID=%d, socket=%s", process.pid, socket_path)
         return process
@@ -1735,7 +1773,7 @@ class SmolVMManager:
             "--cpus",
             str(vm_info.config.vcpu_count),
             "--memory",
-            str(vm_info.config.mem_size_mib),
+            str(vm_info.config.memory),
             "--kernel",
             str(vm_info.config.kernel_path),
             "--rootfs",
@@ -1765,6 +1803,7 @@ class SmolVMManager:
 
         key = f"libkrun:{vm_info.vm_id}"
         self._log_files[key] = log_file
+        self._process_handles[process.pid] = process
         logger.debug("Started libkrun: PID=%d, vm_id=%s", process.pid, vm_info.vm_id)
         return process
 
@@ -1813,6 +1852,12 @@ class SmolVMManager:
             except Exception:
                 logger.warning("Failed to kill process %d", pid)
 
+        handle = self._process_handles.get(pid)
+        if handle is not None:
+            with suppress(subprocess.TimeoutExpired):
+                handle.wait(timeout=0.1)
+                self._process_handles.pop(pid, None)
+
     def _is_process_running(self, pid: int) -> bool:
         """Check if a process is running.
 
@@ -1822,6 +1867,12 @@ class SmolVMManager:
         Returns:
             True if running.
         """
+        # Reap any zombie via the retained Popen handle so os.kill(pid, 0) below
+        # cannot mistake a not-yet-reaped corpse for a live process.
+        handle = self._process_handles.get(pid)
+        if handle is not None and handle.poll() is not None:
+            self._process_handles.pop(pid, None)
+            return False
         try:
             os.kill(pid, 0)
             return True
@@ -1837,6 +1888,13 @@ class SmolVMManager:
             pid: Process ID to wait for.
             timeout: Maximum seconds to wait.
         """
+        handle = self._process_handles.get(pid)
+        if handle is not None:
+            with suppress(subprocess.TimeoutExpired):
+                handle.wait(timeout=timeout)
+                self._process_handles.pop(pid, None)
+            return
+
         start = time.time()
         while time.time() - start < timeout:
             if not self._is_process_running(pid):
@@ -1866,7 +1924,7 @@ class SmolVMManager:
                     fh.close()
 
     def _resolve_boot_args(self, vm_info: VMInfo) -> str:
-        """Resolve final boot args, injecting static IP config when absent."""
+        """Resolve final boot args, injecting static IP config and SSH key when absent."""
         args = vm_info.config.boot_args.strip()
         parts = args.split()
 
@@ -1877,6 +1935,18 @@ class SmolVMManager:
             if not any(part.startswith("root=") for part in parts):
                 parts.extend(["root=/dev/vda", "rw"])
             args = " ".join(parts).strip()
+            parts = args.split()
+
+        ssh_public_key = vm_info.config.ssh_public_key
+        if ssh_public_key and not any(
+            part.startswith("smolvm.authorized_key_b64=") for part in parts
+        ):
+            # Base64-encode so the value is a single space-free token — SSH
+            # public keys contain spaces ("ssh-ed25519 AAAA... user@host") that
+            # would otherwise split into separate cmdline params.
+            encoded = base64.b64encode(ssh_public_key.strip().encode("utf-8")).decode("ascii")
+            args = f"{args} smolvm.authorized_key_b64={encoded}".strip()
+            parts = args.split()
 
         if vm_info.network is None:
             return args
@@ -2095,6 +2165,8 @@ class SmolVMManager:
         if vm_info.network is None:
             raise SmolVMError("VM has no network configuration", {"vm_id": vm_id})
 
+        self._check_workspace_mounts(vm_info)
+
         backend = self._backend_for_vm(vm_info)
         log_path = self.data_dir / f"{vm_id}.log"
         adapter = self._runtime_adapter_for_backend(backend)
@@ -2253,31 +2325,6 @@ class SmolVMManager:
             if result.returncode != 0:
                 raise SmolVMError(f"Failed to remove stale socket: {socket_path}") from None
 
-    async def _async_kill_process(self, pid: int) -> None:
-        """Async version of :meth:`_kill_process`."""
-        from smolvm.utils import async_run_command
-
-        try:
-            os.kill(pid, signal.SIGKILL)
-            logger.debug("Killed process: %d", pid)
-        except ProcessLookupError:
-            # Process is already gone; nothing to do.
-            logger.debug("Process %d not found when attempting to kill", pid)
-        except PermissionError:
-            try:
-                await async_run_command(["kill", "-9", str(pid)], check=False)
-            except Exception:
-                logger.warning("Failed to kill process %d", pid)
-
-    async def _async_wait_for_process(self, pid: int, timeout: float) -> None:
-        """Async version of :meth:`_wait_for_process`."""
-
-        start = time.time()
-        while time.time() - start < timeout:
-            if not self._is_process_running(pid):
-                return
-            await asyncio.sleep(0.1)
-
     async def _async_start_libkrun(
         self,
         vm_info: VMInfo,
@@ -2296,7 +2343,7 @@ class SmolVMManager:
             "--cpus",
             str(vm_info.config.vcpu_count),
             "--memory",
-            str(vm_info.config.mem_size_mib),
+            str(vm_info.config.memory),
             "--kernel",
             str(vm_info.config.kernel_path),
             "--rootfs",
@@ -2332,247 +2379,6 @@ class SmolVMManager:
             try:
                 await process.wait()
             finally:
-                try:
-                    log_file.close()
-                finally:
-                    self._log_files.pop(key, None)
-
-        task = asyncio.create_task(_close_log_when_done())
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
-        return process
-
-    async def _async_start_qemu(
-        self,
-        vm_info: VMInfo,
-        log_path: Path,
-        *,
-        control_socket_path: Path | None = None,
-        start_paused: bool = False,
-        root_node_name: str = QEMU_ROOT_NODE_NAME,
-    ) -> asyncio.subprocess.Process:
-        """Async version of :meth:`_start_qemu`.
-
-        Reuses the sync method for command building and log file setup,
-        then launches via asyncio.create_subprocess_exec.
-        """
-        import asyncio
-
-        # Build command using the same logic as _start_qemu (up to the Popen call)
-        # We call the sync _start_qemu's internal logic by extracting the process
-        # launching step. Since _start_qemu does both cmd building + Popen,
-        # we replicate the cmd building here.
-        qemu_bin = self._find_qemu_binary()
-        if qemu_bin is None:
-            raise SmolVMError(
-                "QEMU backend selected but no qemu-system binary was found. "
-                "Install with: brew install qemu"
-            )
-
-        if vm_info.network is None or vm_info.network.ssh_host_port is None:
-            raise SmolVMError("QEMU backend requires a reserved ssh_host_port")
-
-        ssh_port = vm_info.network.ssh_host_port
-        guest_mac = vm_info.network.guest_mac.lower()
-        boot_args = self._resolve_boot_args(vm_info)
-
-        qemu_name = qemu_bin.name
-        system = platform.system()
-
-        disk_format = "qcow2" if vm_info.config.rootfs_path.suffix == ".qcow2" else "raw"
-        root_drive_id = f"{root_node_name}-drive"
-        drive_arg = (
-            f"file={vm_info.config.rootfs_path},if=none,format={disk_format},"
-            f"id={root_drive_id},node-name={root_node_name}"
-        )
-        hostfwd_rules = [f"hostfwd=tcp:127.0.0.1:{ssh_port}-:22"]
-        for forward in vm_info.config.port_forwards:
-            hostfwd_rules.append(
-                f"hostfwd=tcp:{forward.host_address}:{forward.host_port}-:{forward.guest_port}"
-            )
-        netdev_arg = f"user,id=net0,dns={QEMU_SLIRP_DNS},{','.join(hostfwd_rules)}"
-
-        cmd: list[str] = [
-            str(qemu_bin),
-            "-smp",
-            str(vm_info.config.vcpu_count),
-            "-m",
-            str(vm_info.config.mem_size_mib),
-        ]
-        # Boot mode: direct-kernel passes -kernel/-append (optionally -initrd);
-        # firmware mode lets QEMU boot the rootfs disk via default firmware
-        # (OVMF on aarch64, SeaBIOS on x86_64) — the guest kernel lives inside
-        # the rootfs image.
-        if vm_info.config.boot_mode == "direct_kernel":
-            cmd.extend(
-                [
-                    "-kernel",
-                    str(vm_info.config.kernel_path),
-                    "-append",
-                    boot_args,
-                ]
-            )
-        cmd.extend(
-            [
-                "-drive",
-                drive_arg,
-                "-netdev",
-                netdev_arg,
-                "-nographic",
-                "-no-reboot",
-            ]
-        )
-        if vm_info.config.boot_mode == "direct_kernel" and vm_info.config.initrd_path is not None:
-            cmd.extend(["-initrd", str(vm_info.config.initrd_path)])
-
-        extra_drive_ids: list[str] = []
-        for index, drive_path in enumerate(vm_info.config.extra_drives):
-            drive_id = f"extra{index}-drive"
-            node_name = f"extra{index}"
-            extra_drive_ids.append(drive_id)
-            drive_suffix = drive_path.suffix.lower()
-            drive_format = "qcow2" if drive_suffix == ".qcow2" else "raw"
-            readonly = ["readonly=on"] if drive_suffix == ".iso" else []
-            extra_drive_arg = ",".join(
-                [
-                    f"file={drive_path}",
-                    "if=none",
-                    f"format={drive_format}",
-                    *readonly,
-                    f"id={drive_id}",
-                    f"node-name={node_name}",
-                ]
-            )
-            cmd.extend(["-drive", extra_drive_arg])
-
-        # ── virtio-9p workspace mounts ──────────────────────────────
-        workspace_fsdev_ids: list[tuple[str, str]] = []
-        for index, ws in enumerate(vm_info.config.workspace_mounts):
-            tag = ws.resolved_tag(index)
-            fsdev_id = f"fsdev-{tag}"
-            workspace_fsdev_ids.append((fsdev_id, tag))
-            cmd.extend(
-                [
-                    "-fsdev",
-                    f"local,id={fsdev_id},path={ws.host_path},"
-                    f"security_model=mapped-xattr,readonly=on",
-                ]
-            )
-
-        if control_socket_path is not None:
-            cmd.extend(["-qmp", f"unix:{control_socket_path},server=on,wait=off"])
-        if start_paused:
-            cmd.append("-S")
-
-        if "aarch64" in qemu_name:
-            machine = "virt,accel=hvf" if system == "Darwin" else "virt"
-            cpu = "host" if system == "Darwin" else "cortex-a72"
-            cmd.extend(
-                [
-                    "-machine",
-                    machine,
-                    "-cpu",
-                    cpu,
-                    "-device",
-                    f"virtio-blk-device,drive={root_drive_id}",
-                    "-device",
-                    f"virtio-net-device,netdev=net0,mac={guest_mac}",
-                ]
-            )
-            if vm_info.config.boot_mode == "firmware":
-                firmware_path = _find_aarch64_uefi_firmware()
-                if firmware_path is None:
-                    raise SmolVMError(
-                        "aarch64 firmware-boot requires UEFI firmware (edk2/AAVMF) "
-                        "but none was found. Searched: "
-                        f"{', '.join(_AARCH64_EDK2_FIRMWARE_CANDIDATES)}. "
-                        "On macOS run 'brew reinstall qemu'; on Debian/Ubuntu "
-                        "install 'qemu-efi-aarch64'."
-                    )
-                cmd.extend(["-bios", str(firmware_path)])
-            for drive_id in extra_drive_ids:
-                cmd.extend(["-device", f"virtio-blk-device,drive={drive_id}"])
-            for fsdev_id, tag in workspace_fsdev_ids:
-                cmd.extend(["-device", f"virtio-9p-device,fsdev={fsdev_id},mount_tag={tag}"])
-        else:
-            machine = "q35,accel=hvf" if system == "Darwin" else "q35"
-            cpu = "host" if system == "Darwin" else "max"
-            cmd.extend(
-                [
-                    "-machine",
-                    machine,
-                    "-cpu",
-                    cpu,
-                    "-device",
-                    f"virtio-blk-pci,drive={root_drive_id}",
-                    "-device",
-                    f"virtio-net-pci,netdev=net0,mac={guest_mac}",
-                ]
-            )
-            for drive_id in extra_drive_ids:
-                cmd.extend(["-device", f"virtio-blk-pci,drive={drive_id}"])
-            for fsdev_id, tag in workspace_fsdev_ids:
-                cmd.extend(["-device", f"virtio-9p-pci,fsdev={fsdev_id},mount_tag={tag}"])
-
-        log_file = open(log_path, "w")  # noqa: SIM115
-        key = f"qemu:{vm_info.vm_id}"
-        self._log_files[key] = log_file
-
-        logger.info("Starting QEMU (async): %s", " ".join(cmd))
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=log_file,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-        except Exception:
-            # Ensure log file is not leaked if process creation fails.
-            with suppress(Exception):
-                log_file.close()
-            self._log_files.pop(key, None)
-            raise
-        return process
-
-    async def _async_start_firecracker(
-        self,
-        control_socket_path: Path,
-        log_path: Path,
-    ) -> asyncio.subprocess.Process:
-        """Async version of :meth:`_start_firecracker`."""
-        import asyncio
-
-        binary_path = self._find_firecracker_binary()
-        if binary_path is None:
-            raise SmolVMError("Firecracker binary not found")
-
-        vm_id = control_socket_path.stem.replace("fc-", "")
-        log_file = open(log_path, "w")  # noqa: SIM115
-        key = f"firecracker:{vm_id}"
-        self._log_files[key] = log_file
-
-        cmd = [str(binary_path), "--api-sock", str(control_socket_path)]
-        logger.info("Starting Firecracker (async): %s", " ".join(cmd))
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=log_file,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-        except Exception:
-            # Ensure the log file does not leak if process creation fails.
-            try:
-                log_file.close()
-            finally:
-                self._log_files.pop(key, None)
-            raise
-
-        async def _close_log_when_done() -> None:
-            try:
-                await process.wait()
-            finally:
-                # Safely close and deregister the log file when the process exits.
                 try:
                     log_file.close()
                 finally:

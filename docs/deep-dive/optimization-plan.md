@@ -88,7 +88,7 @@ S3 bucket
 **CLI:**
 ```bash
 smolvm create --image s3://bucket/images/alpine-ssh/
-smolvm create --image s3://bucket/images/alpine-ssh/ --name my-vm --memory-mib 1024
+smolvm create --image s3://bucket/images/alpine-ssh/ --name my-vm --memory 1024
 ```
 `--image` and `--os` are mutually exclusive.
 

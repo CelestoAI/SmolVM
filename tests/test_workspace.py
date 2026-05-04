@@ -21,7 +21,7 @@ import pytest
 from pydantic import ValidationError
 
 from smolvm.facade import SmolVM
-from smolvm.types import VMConfig, VMState, WorkspaceMount
+from smolvm.types import CommandResult, VMConfig, VMState, WorkspaceMount
 from smolvm.vm import SmolVMManager
 
 # ── WorkspaceMount validation ───────────────────────────────────────
@@ -67,6 +67,30 @@ class TestWorkspaceMountValidation:
         ws = WorkspaceMount(host_path=tmp_path)
         assert ws.resolved_tag(0) == "workspace0"
         assert ws.resolved_tag(3) == "workspace3"
+
+    def test_writable_defaults_to_false(self, tmp_path: Path) -> None:
+        ws = WorkspaceMount(host_path=tmp_path)
+        assert ws.writable is False
+
+    def test_writable_can_be_set(self, tmp_path: Path) -> None:
+        ws = WorkspaceMount(host_path=tmp_path, writable=True)
+        assert ws.writable is True
+
+    def test_missing_host_path_loads_under_validate_paths_false(self, tmp_path: Path) -> None:
+        """Persisted configs reload even when the host path was deleted.
+
+        Read-only commands like ``smolvm list`` pass
+        ``context={"validate_paths": False}`` so a stale mount path on disk
+        does not crash the whole command. The validator must respect that.
+        """
+        ws_dir = tmp_path / "gone"
+        ws_dir.mkdir()
+        raw = WorkspaceMount(host_path=ws_dir).model_dump_json()
+        ws_dir.rmdir()
+
+        ws = WorkspaceMount.model_validate_json(raw, context={"validate_paths": False})
+
+        assert ws.host_path == ws_dir.resolve()
 
 
 # ── VMConfig workspace_mounts validation ────────────────────────────
@@ -133,6 +157,28 @@ class TestVMConfigWorkspaceMounts:
                 ],
             )
 
+    def test_persisted_config_reloads_with_missing_mount_host(self, tmp_path: Path) -> None:
+        """Storage reads must succeed when a workspace host folder is gone.
+
+        Reproduces the ``smolvm list`` crash where a deleted Conductor
+        worktree caused the whole command to fail. The fix is that
+        ``WorkspaceMount`` honors the ``validate_paths=False`` context the
+        storage layer already passes via ``vm_config_from_json``.
+        """
+        ws_dir = tmp_path / "project"
+        ws_dir.mkdir()
+        config = self._make_config(
+            tmp_path,
+            workspace_mounts=[WorkspaceMount(host_path=ws_dir)],
+        )
+        raw = config.model_dump_json()
+        ws_dir.rmdir()
+
+        reloaded = VMConfig.model_validate_json(raw, context={"validate_paths": False})
+
+        assert len(reloaded.workspace_mounts) == 1
+        assert reloaded.workspace_mounts[0].host_path == ws_dir.resolve()
+
 
 # ── QEMU command builder ────────────────────────────────────────────
 
@@ -194,6 +240,215 @@ def test_start_qemu_includes_9p_workspace_args(
 
     # Find the virtio-9p device (aarch64 → virtio-9p-device)
     assert "virtio-9p-device,fsdev=fsdev-workspace0,mount_tag=workspace0" in cmd
+
+
+@patch("smolvm.vm.subprocess.Popen")
+@patch.object(
+    SmolVMManager,
+    "_find_qemu_binary",
+    return_value=Path("/opt/homebrew/bin/qemu-system-aarch64"),
+)
+def test_start_qemu_writable_mount_omits_readonly(
+    _mock_find_qemu_binary: MagicMock,
+    mock_popen: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """A writable mount must NOT pass readonly=on to QEMU's -fsdev."""
+    kernel = tmp_path / "vmlinux"
+    rootfs = tmp_path / "rootfs.ext4"
+    kernel.touch()
+    rootfs.touch()
+
+    ws_dir = tmp_path / "project"
+    ws_dir.mkdir()
+
+    config = VMConfig(
+        vm_id="vm-ws-rw",
+        kernel_path=kernel,
+        rootfs_path=rootfs,
+        backend="qemu",
+        boot_args="console=ttyAMA0 reboot=k panic=1 init=/init",
+        workspace_mounts=[WorkspaceMount(host_path=ws_dir, writable=True)],
+    )
+
+    sdk = SmolVMManager(
+        data_dir=tmp_path / "data",
+        socket_dir=tmp_path / "sockets",
+        backend="qemu",
+    )
+    with patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_convert:
+        mock_convert.side_effect = lambda source, target: target.touch()
+        vm_info = sdk.create(config)
+
+    proc = MagicMock()
+    proc.pid = 12345
+    mock_popen.return_value = proc
+
+    with patch("smolvm.vm.platform.system", return_value="Darwin"):
+        sdk._start_qemu(vm_info, tmp_path / "vm-ws-rw.log")
+
+    cmd = mock_popen.call_args.args[0]
+    fsdev_arg = cmd[cmd.index("-fsdev") + 1]
+    assert f"path={ws_dir.resolve()}" in fsdev_arg
+    assert "security_model=mapped-xattr" in fsdev_arg
+    assert "readonly" not in fsdev_arg
+
+
+@patch("smolvm.vm.subprocess.Popen")
+@patch.object(
+    SmolVMManager,
+    "_find_qemu_binary",
+    return_value=Path("/opt/homebrew/bin/qemu-system-aarch64"),
+)
+def test_start_friendly_error_when_workspace_host_path_missing(
+    _mock_find_qemu_binary: MagicMock,
+    mock_popen: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """`start` should refuse with a plain-English error when a mount's host
+    folder has been deleted since the VM was created — no Pydantic stack."""
+    from smolvm.exceptions import SmolVMError
+
+    kernel = tmp_path / "vmlinux"
+    rootfs = tmp_path / "rootfs.ext4"
+    kernel.touch()
+    rootfs.touch()
+
+    ws_dir = tmp_path / "project"
+    ws_dir.mkdir()
+
+    config = VMConfig(
+        vm_id="vm-stale-mount",
+        kernel_path=kernel,
+        rootfs_path=rootfs,
+        backend="qemu",
+        boot_args="console=ttyAMA0 reboot=k panic=1 init=/init",
+        workspace_mounts=[WorkspaceMount(host_path=ws_dir)],
+    )
+
+    sdk = SmolVMManager(
+        data_dir=tmp_path / "data",
+        socket_dir=tmp_path / "sockets",
+        backend="qemu",
+    )
+    with patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_convert:
+        mock_convert.side_effect = lambda source, target: target.touch()
+        sdk.create(config)
+
+    ws_dir.rmdir()  # simulate Conductor worktree cleanup
+
+    with pytest.raises(SmolVMError, match="shared folder is missing") as exc_info:
+        sdk.start("vm-stale-mount")
+    # The error names the sandbox and the recovery command, so a first-time
+    # user can act on it without reading the source.
+    message = str(exc_info.value)
+    assert "vm-stale-mount" in message
+    assert "smolvm delete vm-stale-mount" in message
+    mock_popen.assert_not_called()
+
+
+@patch("smolvm.vm.subprocess.Popen")
+@patch.object(
+    SmolVMManager,
+    "_find_qemu_binary",
+    return_value=Path("/opt/homebrew/bin/qemu-system-aarch64"),
+)
+def test_start_friendly_error_when_workspace_host_path_is_a_file(
+    _mock_find_qemu_binary: MagicMock,
+    mock_popen: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """The preflight should also fire when the path now points to a file
+    instead of a directory — covers the gap where the path technically
+    exists but the original Pydantic ``is_dir()`` check would have
+    rejected it. Without this we'd fall through to a backend error."""
+    from smolvm.exceptions import SmolVMError
+
+    kernel = tmp_path / "vmlinux"
+    rootfs = tmp_path / "rootfs.ext4"
+    kernel.touch()
+    rootfs.touch()
+
+    ws_dir = tmp_path / "project"
+    ws_dir.mkdir()
+
+    config = VMConfig(
+        vm_id="vm-mount-is-file",
+        kernel_path=kernel,
+        rootfs_path=rootfs,
+        backend="qemu",
+        boot_args="console=ttyAMA0 reboot=k panic=1 init=/init",
+        workspace_mounts=[WorkspaceMount(host_path=ws_dir)],
+    )
+
+    sdk = SmolVMManager(
+        data_dir=tmp_path / "data",
+        socket_dir=tmp_path / "sockets",
+        backend="qemu",
+    )
+    with patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_convert:
+        mock_convert.side_effect = lambda source, target: target.touch()
+        sdk.create(config)
+
+    # Replace the directory with a file at the same path.
+    ws_dir.rmdir()
+    ws_dir.touch()
+
+    with pytest.raises(SmolVMError, match="shared folder is missing"):
+        sdk.start("vm-mount-is-file")
+    mock_popen.assert_not_called()
+
+
+@patch("smolvm.vm.subprocess.Popen")
+@patch.object(
+    SmolVMManager,
+    "_find_qemu_binary",
+    return_value=Path("/opt/homebrew/bin/qemu-system-aarch64"),
+)
+def test_async_start_runs_the_same_workspace_preflight(
+    _mock_find_qemu_binary: MagicMock,
+    mock_popen: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """``async_start`` is a parallel code path; if it skips the preflight
+    the friendly error becomes a backend failure for async callers. The
+    helper is shared so both surfaces give the same plain-English error.
+    """
+    import asyncio
+
+    from smolvm.exceptions import SmolVMError
+
+    kernel = tmp_path / "vmlinux"
+    rootfs = tmp_path / "rootfs.ext4"
+    kernel.touch()
+    rootfs.touch()
+
+    ws_dir = tmp_path / "project"
+    ws_dir.mkdir()
+
+    config = VMConfig(
+        vm_id="vm-async-stale",
+        kernel_path=kernel,
+        rootfs_path=rootfs,
+        backend="qemu",
+        boot_args="console=ttyAMA0 reboot=k panic=1 init=/init",
+        workspace_mounts=[WorkspaceMount(host_path=ws_dir)],
+    )
+
+    sdk = SmolVMManager(
+        data_dir=tmp_path / "data",
+        socket_dir=tmp_path / "sockets",
+        backend="qemu",
+    )
+    with patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_convert:
+        mock_convert.side_effect = lambda source, target: target.touch()
+        sdk.create(config)
+
+    ws_dir.rmdir()
+
+    with pytest.raises(SmolVMError, match="shared folder is missing"):
+        asyncio.run(sdk.async_start("vm-async-stale"))
+    mock_popen.assert_not_called()
 
 
 # ── Firecracker rejection ───────────────────────────────────────────
@@ -379,6 +634,108 @@ class TestCliMountFlag:
         args = parser.parse_args(["create"])
         assert args.mounts is None
 
+    def test_writable_mounts_defaults_to_false(self) -> None:
+        from smolvm.cli.main import build_parser
+
+        parser = build_parser()
+        args = parser.parse_args(["create", "--mount", "/tmp/project"])
+        assert args.writable_mounts is False
+
+    def test_writable_mounts_flag_sets_true(self) -> None:
+        from smolvm.cli.main import build_parser
+
+        parser = build_parser()
+        args = parser.parse_args([
+            "create",
+            "--mount", "/tmp/project",
+            "--writable-mounts",
+        ])
+        assert args.writable_mounts is True
+
+    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade._build_auto_config")
+    def test_create_with_mount_and_no_backend_selects_qemu(
+        self,
+        mock_build_auto_config: MagicMock,
+        mock_smolvm_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """`smolvm create --mount /path` (no --backend) must auto-select QEMU
+        at the CLI layer. Without this, _build_auto_config gets backend=None,
+        resolves to the platform default (firecracker on Linux), and the
+        downstream guard rejects the mount + firecracker combo with a
+        confusing 'Re-run without --backend' message — the user already did."""
+        from smolvm.cli.main import _run_create, build_parser
+
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+
+        mock_build_auto_config.return_value = (
+            VMConfig(
+                vm_id="vm-mnt",
+                kernel_path=kernel,
+                rootfs_path=rootfs,
+                backend="qemu",
+            ),
+            None,
+        )
+        mock_smolvm_cls.return_value.vm_id = "vm-mnt"
+        mock_smolvm_cls.return_value.info.status = VMState.RUNNING
+
+        parser = build_parser()
+        args = parser.parse_args(
+            ["create", "--mount", str(tmp_path / "project"), "--json"]
+        )
+
+        _run_create(args)
+
+        assert args.backend == "qemu"
+        assert mock_build_auto_config.call_args.kwargs["backend"] == "qemu"
+
+    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.facade._build_auto_config")
+    def test_create_with_mount_and_explicit_firecracker_left_alone(
+        self,
+        mock_build_auto_config: MagicMock,
+        mock_smolvm_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Explicit `--backend firecracker --mount /path` must NOT be silently
+        upgraded; the downstream guard should still fire so the user sees the
+        incompatibility they explicitly requested."""
+        from smolvm.cli.main import _run_create, build_parser
+
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+
+        mock_build_auto_config.return_value = (
+            VMConfig(
+                vm_id="vm-mnt",
+                kernel_path=kernel,
+                rootfs_path=rootfs,
+                backend="firecracker",
+            ),
+            None,
+        )
+        mock_smolvm_cls.return_value.vm_id = "vm-mnt"
+        mock_smolvm_cls.return_value.info.status = VMState.RUNNING
+
+        parser = build_parser()
+        args = parser.parse_args([
+            "create",
+            "--mount", str(tmp_path / "project"),
+            "--backend", "firecracker",
+            "--json",
+        ])
+
+        _run_create(args)
+
+        assert args.backend == "firecracker"
+
 
 # ── Mount spec parsing ──────────────────────────────────────────────
 
@@ -422,6 +779,22 @@ class TestParseMountSpecs:
         mounts = _parse_mount_specs([str(d1), f"{d2}:/data"])
         assert mounts[0].guest_path == "/workspace-0"
         assert mounts[1].guest_path == "/data"
+
+    def test_writable_flag_propagates_to_all_mounts(self, tmp_path: Path) -> None:
+        from smolvm.facade import _parse_mount_specs
+
+        d1 = tmp_path / "a"
+        d2 = tmp_path / "b"
+        d1.mkdir()
+        d2.mkdir()
+        mounts = _parse_mount_specs([str(d1), f"{d2}:/data"], writable=True)
+        assert all(m.writable for m in mounts)
+
+    def test_writable_defaults_to_false(self, tmp_path: Path) -> None:
+        from smolvm.facade import _parse_mount_specs
+
+        mounts = _parse_mount_specs([str(tmp_path)])
+        assert mounts[0].writable is False
 
 
 # ── Facade guards ───────────────────────────────────────────────────
@@ -475,3 +848,116 @@ class TestFacadeWorkspaceGuards:
                  patch.object(vm, "wait_for_ssh"), \
                  patch("smolvm.facade.SSHClient"):
                 vm.start()
+
+    def test_mount_workspaces_repairs_ubuntu_missing_9p_modules(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Ubuntu guests missing 9p modules should install linux-modules-extra."""
+        ws_dir = tmp_path / "project"
+        ws_dir.mkdir()
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+        config = VMConfig(
+            vm_id="vm-repair",
+            kernel_path=kernel,
+            rootfs_path=rootfs,
+            backend="qemu",
+            workspace_mounts=[WorkspaceMount(host_path=ws_dir)],
+        )
+
+        vm = object.__new__(SmolVM)
+        vm._vm_id = "vm-repair"
+        vm._ssh_user = "root"
+        vm._info = MagicMock(config=config)
+        vm._ssh = MagicMock()
+        vm._ssh.run.side_effect = [
+            CommandResult(exit_code=1, stdout="", stderr="modprobe: FATAL: Module 9p"),
+            CommandResult(exit_code=0, stdout="", stderr=""),
+            CommandResult(exit_code=0, stdout="", stderr=""),
+        ]
+
+        vm._mount_workspaces()
+
+        install_script = vm._ssh.run.call_args_list[1].args[0]
+        mount_script = vm._ssh.run.call_args_list[2].args[0]
+        assert "DPkg::Lock::Timeout=120" in install_script
+        assert "Acquire::Retries=3" in install_script
+        assert "fuser $APT_LOCKS" in install_script
+        assert "linux-modules-extra-$(uname -r)" in install_script
+        assert "mount -t 9p" in mount_script
+
+    def test_mount_workspaces_reports_unrepairable_missing_9p(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Non-Ubuntu or unrepairable guests should fail before the mount loop."""
+        from smolvm.exceptions import SmolVMError
+
+        ws_dir = tmp_path / "project"
+        ws_dir.mkdir()
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+        config = VMConfig(
+            vm_id="vm-unrepairable",
+            kernel_path=kernel,
+            rootfs_path=rootfs,
+            backend="qemu",
+            workspace_mounts=[WorkspaceMount(host_path=ws_dir)],
+        )
+
+        vm = object.__new__(SmolVM)
+        vm._vm_id = "vm-unrepairable"
+        vm._ssh_user = "root"
+        vm._info = MagicMock(config=config)
+        vm._ssh = MagicMock()
+        vm._ssh.run.side_effect = [
+            CommandResult(exit_code=1, stdout="", stderr="modprobe: FATAL: Module 9p"),
+            CommandResult(exit_code=42, stdout="", stderr="not ubuntu"),
+        ]
+
+        with pytest.raises(SmolVMError, match="missing 9p or overlay"):
+            vm._mount_workspaces()
+
+        assert vm._ssh.run.call_count == 2
+
+    def test_mount_workspaces_writable_uses_rw_without_overlay(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Writable mounts must mount 9p directly with rw and skip overlayfs."""
+        ws_dir = tmp_path / "project"
+        ws_dir.mkdir()
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+        config = VMConfig(
+            vm_id="vm-rw",
+            kernel_path=kernel,
+            rootfs_path=rootfs,
+            backend="qemu",
+            workspace_mounts=[WorkspaceMount(host_path=ws_dir, writable=True)],
+        )
+
+        vm = object.__new__(SmolVM)
+        vm._vm_id = "vm-rw"
+        vm._ssh_user = "root"
+        vm._info = MagicMock(config=config)
+        vm._ssh = MagicMock()
+        vm._ssh.run.side_effect = [
+            CommandResult(exit_code=0, stdout="", stderr=""),  # probe (no overlay)
+            CommandResult(exit_code=0, stdout="", stderr=""),  # mount
+        ]
+
+        vm._mount_workspaces()
+
+        probe_script = vm._ssh.run.call_args_list[0].args[0]
+        mount_script = vm._ssh.run.call_args_list[1].args[0]
+        assert "modprobe overlay" not in probe_script
+        assert "version=9p2000.L,rw" in mount_script
+        assert "mount -t overlay" not in mount_script

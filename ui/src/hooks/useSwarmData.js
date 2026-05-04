@@ -50,7 +50,7 @@ function mapVmToNode(vm) {
         sshHostPort: network.ssh_host_port ?? null,
         pid: vm.pid ?? null,
         vcpu: config.vcpu_count ?? 0,
-        memory: config.mem_size_mib ?? 0,
+        memory: config.memory ?? 0,
     }
 }
 

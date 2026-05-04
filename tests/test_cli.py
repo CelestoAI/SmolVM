@@ -28,7 +28,7 @@ from smolvm.cli.main import (
     build_parser,
     main,
 )
-from smolvm.types import BrowserSessionState, NetworkConfig, VMState
+from smolvm.types import BrowserSessionState, NetworkConfig, VMState, WorkspaceMount
 
 
 def _make_vm_info(
@@ -37,12 +37,14 @@ def _make_vm_info(
     guest_ip: str = "172.16.0.2",
     ssh_host_port: int | None = 2200,
     pid: int | None = 12345,
+    workspace_mounts: list[WorkspaceMount] | None = None,
 ) -> MagicMock:
     """Build a lightweight VMInfo-like mock for list tests."""
     vm = MagicMock()
     vm.vm_id = vm_id
     vm.status = status
     vm.pid = pid
+    vm.config.workspace_mounts = workspace_mounts or []
     if guest_ip:
         vm.network = MagicMock(spec=NetworkConfig)
         vm.network.guest_ip = guest_ip
@@ -50,6 +52,28 @@ def _make_vm_info(
     else:
         vm.network = None
     return vm
+
+
+def _make_vm_with_stale_mount(
+    tmp_path: Path,
+    *,
+    vm_id: str = "vm-abc123",
+    status: VMState = VMState.RUNNING,
+) -> tuple[MagicMock, Path]:
+    """Build a VMInfo mock whose workspace mount points at a now-deleted folder.
+
+    The mount is a real ``WorkspaceMount`` (not a loose ``MagicMock()``) so
+    if ``WorkspaceMount`` ever renames its public attributes, these tests
+    fail loudly instead of silently spoofing the API.
+
+    Returns ``(vm_info_mock, missing_host_path)``.
+    """
+    ws_dir = tmp_path / f"{vm_id}-deleted-worktree"
+    ws_dir.mkdir()
+    mount = WorkspaceMount(host_path=ws_dir)
+    ws_dir.rmdir()
+    vm = _make_vm_info(vm_id, status, workspace_mounts=[mount])
+    return vm, mount.host_path
 
 
 def _make_snapshot_info(
@@ -331,6 +355,105 @@ class TestCliEnv:
         vm.close.assert_called_once()
 
 
+class TestCliFile:
+    """Tests for `smolvm file` subcommands."""
+
+    @pytest.fixture
+    def mock_vm_cls(self) -> MagicMock:
+        with patch("smolvm.facade.SmolVM") as m:
+            yield m
+
+    def test_file_upload_success(
+        self,
+        mock_vm_cls: MagicMock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm file upload` should copy a local file into a sandbox."""
+        source = tmp_path / "note.txt"
+        source.write_text("hello")
+        vm = MagicMock()
+        vm.upload_file.return_value = "/tmp/note.txt"
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(["file", "upload", "vm001", str(source), "/tmp/"])
+
+        assert ret == 0
+        mock_vm_cls.from_id.assert_called_once_with(
+            "vm001",
+            ssh_user="root",
+            ssh_key_path=None,
+        )
+        vm.upload_file.assert_called_once_with(
+            str(source),
+            "/tmp/",
+            make_dirs=True,
+        )
+        vm.close.assert_called_once()
+        assert "Uploaded" in capsys.readouterr().out
+
+    def test_file_upload_json(
+        self,
+        mock_vm_cls: MagicMock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm file upload --json` should emit the upload destination."""
+        source = tmp_path / "note.txt"
+        source.write_text("hello")
+        vm = MagicMock()
+        vm.upload_file.return_value = "/tmp/note.txt"
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(["file", "upload", "vm001", str(source), "/tmp/", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["command"] == "file.upload"
+        assert payload["ok"] is True
+        assert payload["data"]["vm_id"] == "vm001"
+        assert payload["data"]["local_path"] == str(source)
+        assert payload["data"]["guest_path"] == "/tmp/note.txt"
+
+    def test_file_upload_can_skip_directory_creation(
+        self,
+        mock_vm_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """`--no-create-dirs` should pass make_dirs=False."""
+        source = tmp_path / "note.txt"
+        source.write_text("hello")
+        vm = MagicMock()
+        vm.upload_file.return_value = "/tmp/note.txt"
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(["file", "upload", "vm001", str(source), "/tmp/note.txt", "--no-create-dirs"])
+
+        assert ret == 0
+        vm.upload_file.assert_called_once_with(
+            str(source),
+            "/tmp/note.txt",
+            make_dirs=False,
+        )
+
+    def test_file_upload_closes_vm_on_failure(
+        self,
+        mock_vm_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """If `upload_file` raises, the CLI must still close the VM and return nonzero."""
+        source = tmp_path / "note.txt"
+        source.write_text("hello")
+        vm = MagicMock()
+        vm.upload_file.side_effect = RuntimeError("boom")
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(["file", "upload", "vm001", str(source), "/tmp/"])
+
+        assert ret != 0
+        vm.close.assert_called_once()
+
+
 class TestCliCreate:
     """Tests for `smolvm create`."""
 
@@ -365,20 +488,30 @@ class TestCliCreate:
             vm_name=None,
             os=None,
             backend=None,
-            mem_size_mib=None,
-            disk_size_mib=None,
+            memory=None,
+            disk_size_mib=4096,
             ssh_key_path=None,
             on_download=ANY,
         )
-        mock_vm_cls.assert_called_once_with(config, ssh_key_path="/tmp/id_ed25519", mounts=None)
-        vm.start.assert_called_once_with(boot_timeout=30.0)
-        vm.wait_for_ssh.assert_called_once_with(timeout=30.0)
+        mock_vm_cls.assert_called_once_with(
+            config,
+            ssh_key_path="/tmp/id_ed25519",
+            mounts=None,
+            writable_mounts=False,
+        )
+        vm.start.assert_called_once_with(boot_timeout=30.0, on_progress=ANY)
+        vm.wait_for_ssh.assert_called_once_with(timeout=30.0, on_progress=ANY)
         vm.close.assert_called_once()
         out = capsys.readouterr().out
         assert "Created VM 'vm-a1b2c3d4'." in out
         assert "OS" in out
         assert "ubuntu" in out
+        assert "Started" in out
         assert "smolvm ssh vm-a1b2c3d4" in out
+        assert "smolvm info vm-a1b2c3d4" in out
+        assert "Backend" not in out
+        assert "IP Address" not in out
+        assert "SSH Port" not in out
 
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
@@ -409,9 +542,9 @@ class TestCliCreate:
                 "create",
                 "--name",
                 "project-spacex",
-                "--memory-mib",
+                "--memory",
                 "1024",
-                "--disk-size-mib",
+                "--disk-size",
                 "2048",
                 "--backend",
                 "qemu",
@@ -425,14 +558,19 @@ class TestCliCreate:
             vm_name="project-spacex",
             os=None,
             backend="qemu",
-            mem_size_mib=1024,
+            memory=1024,
             disk_size_mib=2048,
             ssh_key_path=None,
             on_download=ANY,
         )
-        mock_vm_cls.assert_called_once_with(config, ssh_key_path="/tmp/id_ed25519", mounts=None)
-        vm.start.assert_called_once_with(boot_timeout=45.0)
-        vm.wait_for_ssh.assert_called_once_with(timeout=45.0)
+        mock_vm_cls.assert_called_once_with(
+            config,
+            ssh_key_path="/tmp/id_ed25519",
+            mounts=None,
+            writable_mounts=False,
+        )
+        vm.start.assert_called_once_with(boot_timeout=45.0, on_progress=ANY)
+        vm.wait_for_ssh.assert_called_once_with(timeout=45.0, on_progress=ANY)
         vm.stop.assert_not_called()
         vm.delete.assert_not_called()
         vm.close.assert_called_once()
@@ -440,20 +578,25 @@ class TestCliCreate:
         assert "Created VM 'project-spacex'." in out
         assert "OS" in out
         assert "ubuntu" in out
-        assert "Backend" in out
-        assert "qemu" in out
-        assert "172.16.0.2" in out
-        assert "2200" in out
+        assert "Started" in out
         assert "smolvm ssh project-spacex" in out
+        assert "smolvm info project-spacex" in out
+        assert "Backend" not in out
+        assert "172.16.0.2" not in out
+        assert "2200" not in out
 
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.runtime.backends.platform.system", return_value="Darwin")
     def test_create_success_with_short_name_flag(
         self,
+        _: MagicMock,
         mock_vm_cls: MagicMock,
         mock_build_auto_config: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """`smolvm create -n ...` should behave the same as `--name`."""
+        monkeypatch.delenv("SMOLVM_BACKEND", raising=False)
         config = MagicMock(vm_id="computer")
         mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
 
@@ -472,14 +615,19 @@ class TestCliCreate:
             vm_name="computer",
             os=None,
             backend=None,
-            mem_size_mib=None,
-            disk_size_mib=None,
+            memory=None,
+            disk_size_mib=4096,
             ssh_key_path=None,
             on_download=ANY,
         )
-        mock_vm_cls.assert_called_once_with(config, ssh_key_path="/tmp/id_ed25519", mounts=None)
-        vm.start.assert_called_once_with(boot_timeout=30.0)
-        vm.wait_for_ssh.assert_called_once_with(timeout=30.0)
+        mock_vm_cls.assert_called_once_with(
+            config,
+            ssh_key_path="/tmp/id_ed25519",
+            mounts=None,
+            writable_mounts=False,
+        )
+        vm.start.assert_called_once_with(boot_timeout=30.0, on_progress=ANY)
+        vm.wait_for_ssh.assert_called_once_with(timeout=30.0, on_progress=ANY)
         vm.close.assert_called_once()
 
     @patch("smolvm.facade._build_auto_config")
@@ -515,8 +663,9 @@ class TestCliCreate:
         assert payload["command"] == "create"
         assert payload["data"]["vm"]["name"] == "project-spacex"
         assert payload["data"]["vm"]["os"] == "ubuntu"
-        assert payload["data"]["vm"]["backend"] == "qemu"
+        assert payload["data"]["vm"]["started_at"]
         assert payload["data"]["next"]["ssh_command"] == "smolvm ssh project-spacex"
+        assert payload["data"]["next"]["info_command"] == "smolvm info project-spacex"
 
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
@@ -545,12 +694,46 @@ class TestCliCreate:
             vm_name="project-spacex",
             os="debian",
             backend=None,
-            mem_size_mib=None,
-            disk_size_mib=None,
+            memory=None,
+            disk_size_mib=4096,
             ssh_key_path=None,
         )
         payload = json.loads(capsys.readouterr().out)
         assert payload["data"]["vm"]["os"] == "debian"
+
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_create_alpine_does_not_get_disk_size_default(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The 4096 MiB CLI default only applies to debian/ubuntu, not alpine."""
+        monkeypatch.delenv("SMOLVM_BACKEND", raising=False)
+        mock_build_auto_config.return_value = (MagicMock(vm_id="vm"), "/tmp/id_ed25519")
+        vm = MagicMock()
+        vm.vm_id = "vm"
+        vm.info.config.backend = "firecracker"
+        vm.info.network = MagicMock(spec=NetworkConfig)
+        vm.info.network.guest_ip = "172.16.0.2"
+        vm.info.network.ssh_host_port = 2200
+        mock_vm_cls.return_value = vm
+
+        ret = main(["create", "--os", "alpine", "--json"])
+
+        assert ret == 0
+        mock_build_auto_config.assert_called_once_with(
+            vm_name=None,
+            os="alpine",
+            backend=None,
+            memory=None,
+            disk_size_mib=None,
+            ssh_key_path=None,
+        )
+        vm.start.assert_called_once_with(boot_timeout=30.0)
+        vm.wait_for_ssh.assert_called_once_with(timeout=30.0)
+        vm.close.assert_called_once()
 
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
@@ -631,17 +814,44 @@ class TestCliCreateImage:
         assert "not allowed" in capsys.readouterr().err
 
     def test_image_with_name_and_memory(self) -> None:
-        """--image should work alongside --name and --memory-mib."""
+        """--image should work alongside --name, --memory, and --disk-size."""
         parser = build_parser()
-        args = parser.parse_args([
-            "create",
-            "--image", "s3://bucket/img/",
-            "--name", "my-vm",
-            "--memory-mib", "1024",
-        ])
+        args = parser.parse_args(
+            [
+                "create",
+                "--image",
+                "s3://bucket/img/",
+                "--name",
+                "my-vm",
+                "--memory",
+                "1024",
+                "--disk-size",
+                "2048",
+            ]
+        )
         assert args.image == "s3://bucket/img/"
         assert args.name == "my-vm"
         assert args.memory_mib == 1024
+        assert args.disk_size_mib == 2048
+
+    def test_image_with_disk_size_is_rejected(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--disk-size has no effect on prebuilt S3 images and must be rejected."""
+        ret = main(
+            [
+                "create",
+                "--image",
+                "s3://bucket/img/",
+                "--disk-size",
+                "8192",
+            ]
+        )
+
+        assert ret == 1
+        err = capsys.readouterr().err
+        assert "--disk-size is incompatible with --image" in err
 
 
 class TestCliStop:
@@ -1313,9 +1523,7 @@ class TestCliBrowser:
         assert payload["data"]["cdp_url"] == "http://127.0.0.1:39222"
 
     @patch("smolvm.browser.BrowserSession")
-    def test_browser_start_live_shortcut(
-        self, mock_browser_cls: MagicMock
-    ) -> None:
+    def test_browser_start_live_shortcut(self, mock_browser_cls: MagicMock) -> None:
         """`smolvm browser start --live` should map to live mode."""
         session = MagicMock()
         session.session_id = "browser-abc123"
@@ -1712,6 +1920,7 @@ class TestCliList:
                 "ip_address": "172.16.0.2",
                 "ssh_port": 2200,
                 "pid": 12345,
+                "warnings": [],
             }
         ]
         mock_sdk_cls.return_value.list_vms.assert_called_once_with(status=VMState.RUNNING)
@@ -1779,3 +1988,898 @@ class TestCliList:
         assert ret == 1
         assert "Error: db unavailable" in capsys.readouterr().err
         mock_sdk_cls.return_value.close.assert_called_once()
+
+    def test_list_flags_stale_workspace_mount(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+        tmp_path: Path,
+    ) -> None:
+        """`smolvm list` should keep listing VMs whose host mount is gone,
+        and print a warning naming the missing path."""
+        vm, missing = _make_vm_with_stale_mount(tmp_path)
+        mock_sdk_cls.return_value.list_vms.return_value = [vm]
+
+        ret = main(["list"])
+
+        # Rich may wrap long tmp paths across lines; flatten before asserting.
+        out = capsys.readouterr().out.replace("\n", "")
+        assert ret == 0
+        assert "vm-abc123" in out
+        assert "Warnings:" in out
+        assert str(missing) in out
+        # The warning explains what to do, not just what's wrong.
+        assert "smolvm delete vm-abc123" in out
+
+    def test_list_warning_does_not_claim_running_sandbox_cannot_start(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+        tmp_path: Path,
+    ) -> None:
+        """The warning must not falsely claim a running sandbox can't start.
+
+        The user can SSH into a sandbox that was already running when its
+        host folder got deleted — saying 'cannot start' contradicts what
+        they're seeing. The chosen wording sidesteps the consequence
+        entirely and just states the fact + the recovery.
+        """
+        vm, _ = _make_vm_with_stale_mount(tmp_path, vm_id="sbx-running")
+        mock_sdk_cls.return_value.list_vms.return_value = [vm]
+
+        ret = main(["list", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        warning = payload["data"]["vms"][0]["warnings"][0]
+        assert "cannot start" not in warning.lower()
+
+    def test_list_json_includes_warnings(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+        tmp_path: Path,
+    ) -> None:
+        """`smolvm list --json` should expose stale mounts via `warnings`."""
+        vm, missing = _make_vm_with_stale_mount(tmp_path)
+        mock_sdk_cls.return_value.list_vms.return_value = [vm]
+
+        ret = main(["list", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        warnings = payload["data"]["vms"][0]["warnings"]
+        assert len(warnings) == 1
+        # JSON consumers (agents) get the same self-contained message:
+        # what's wrong, the missing path, and how to recover.
+        assert str(missing) in warnings[0]
+        assert "missing" in warnings[0]
+        assert "smolvm delete vm-abc123" in warnings[0]
+
+
+class TestCliInfo:
+    """Tests for `smolvm info`."""
+
+    @pytest.fixture
+    def mock_sdk_cls(self) -> MagicMock:
+        with patch("smolvm.vm.SmolVMManager") as m:
+            m.return_value.__enter__.return_value = m.return_value
+            m.return_value.__exit__.side_effect = lambda *args: m.return_value.close()
+            yield m
+
+    @staticmethod
+    def _make_info_vm(
+        vm_id: str = "sbx-pauling",
+        status: VMState = VMState.RUNNING,
+        backend: str = "qemu",
+        guest_ip: str | None = "10.0.2.15",
+        ssh_host_port: int | None = 2200,
+        pid: int | None = 4242,
+        vcpus: int = 2,
+        memory_mib: int = 1024,
+        rootfs_path: Path | None = None,
+        kernel_path: Path | None = None,
+        initrd_path: Path | None = None,
+    ) -> MagicMock:
+        vm = MagicMock()
+        vm.vm_id = vm_id
+        vm.status = status
+        vm.config.backend = backend
+        vm.config.vcpu_count = vcpus
+        vm.config.memory = memory_mib
+        vm.config.rootfs_path = rootfs_path
+        vm.config.kernel_path = kernel_path
+        vm.config.initrd_path = initrd_path
+        vm.pid = pid
+        if guest_ip is not None:
+            vm.network = MagicMock(spec=NetworkConfig)
+            vm.network.guest_ip = guest_ip
+            vm.network.ssh_host_port = ssh_host_port
+        else:
+            vm.network = None
+        return vm
+
+    def test_info_renders_full_table(
+        self,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm info <name>` should show the full details table."""
+        rootfs = tmp_path / "ubuntu-noble-minimal-qemu-x86_64" / "rootfs.qcow2"
+        rootfs.parent.mkdir(parents=True)
+        rootfs.write_bytes(b"\0" * (5 * 1024 * 1024))  # 5 MiB
+        mock_sdk_cls.return_value.state.get_vm.return_value = self._make_info_vm(
+            status=VMState.STOPPED, rootfs_path=rootfs
+        )
+
+        ret = main(["info", "sbx-pauling"])
+
+        assert ret == 0
+        out = capsys.readouterr().out
+        assert "sbx-pauling" in out
+        assert "stopped" in out
+        assert "qemu" in out
+        assert "10.0.2.15" in out
+        assert "2200" in out
+        assert "4242" in out
+        assert "CPUs" in out
+        assert "Memory" in out
+        assert "1024 MiB" in out
+        assert "Disk Size" in out
+        assert "5 MiB" in out
+        assert "ubuntu" in out
+        mock_sdk_cls.return_value.state.get_vm.assert_called_once_with("sbx-pauling")
+        mock_sdk_cls.return_value.close.assert_called_once()
+
+    def test_info_running_vm_queries_live_data(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """For running VMs, info should overlay OS and used memory from SSH."""
+        vm_info = self._make_info_vm(status=VMState.RUNNING)
+        mock_sdk_cls.return_value.state.get_vm.return_value = vm_info
+        with patch("smolvm.cli.main._query_live_vm_info") as mock_query:
+            mock_query.return_value = {
+                "os": "Ubuntu 24.04.1 LTS",
+                "memory_used": 312,
+            }
+
+            ret = main(["info", "sbx-pauling"])
+
+        assert ret == 0
+        out = capsys.readouterr().out
+        assert "Ubuntu 24.04.1 LTS" in out
+        assert "312 / 1024 MiB used" in out
+        mock_query.assert_called_once_with(vm_info)
+
+    def test_info_running_vm_with_unreachable_ssh(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """If SSH probe fails, info should still render with placeholders."""
+        mock_sdk_cls.return_value.state.get_vm.return_value = self._make_info_vm(
+            status=VMState.RUNNING
+        )
+        with patch("smolvm.cli.main._query_live_vm_info") as mock_query:
+            mock_query.return_value = {}
+
+            ret = main(["info", "sbx-pauling"])
+
+        assert ret == 0
+        out = capsys.readouterr().out
+        assert "1024 MiB" in out
+        # No "used" suffix when memory_used is unavailable.
+        assert "used" not in out
+
+    def test_info_handles_missing_network(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm info` should render '-' when the VM has no network."""
+        mock_sdk_cls.return_value.state.get_vm.return_value = self._make_info_vm(
+            status=VMState.STOPPED, guest_ip=None, ssh_host_port=None, pid=None
+        )
+
+        ret = main(["info", "sbx-pauling"])
+
+        assert ret == 0
+        out = capsys.readouterr().out
+        assert "stopped" in out
+        assert "-" in out
+
+    def test_info_json(
+        self,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm info --json` should emit a structured envelope."""
+        rootfs = tmp_path / "alpine-virt" / "rootfs.ext4"
+        rootfs.parent.mkdir(parents=True)
+        rootfs.write_bytes(b"\0" * (3 * 1024 * 1024))  # 3 MiB
+        mock_sdk_cls.return_value.state.get_vm.return_value = self._make_info_vm(
+            status=VMState.STOPPED, rootfs_path=rootfs
+        )
+
+        ret = main(["info", "sbx-pauling", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["command"] == "info"
+        assert payload["ok"] is True
+        assert payload["data"]["vm"] == {
+            "name": "sbx-pauling",
+            "status": "stopped",
+            "os": "alpine",
+            "backend": "qemu",
+            "ip_address": "10.0.2.15",
+            "ssh_port": 2200,
+            "pid": 4242,
+            "vcpus": 2,
+            "memory": 1024,
+            "memory_used": None,
+            "disk_size": 3,
+        }
+
+    def test_info_not_found(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm info` returns 1 and an error message when the VM is missing."""
+        mock_sdk_cls.return_value.state.get_vm.side_effect = RuntimeError("VM 'ghost' not found")
+
+        ret = main(["info", "ghost"])
+
+        assert ret == 1
+        assert "VM 'ghost' not found" in capsys.readouterr().err
+        mock_sdk_cls.return_value.close.assert_called_once()
+
+    def test_info_qcow2_uses_virtual_size(
+        self,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """For qcow2 rootfs, disk size should report the guest-visible virtual size, not the host file footprint."""
+        rootfs = tmp_path / "ubuntu" / "rootfs.qcow2"
+        rootfs.parent.mkdir(parents=True)
+        rootfs.write_bytes(b"\0" * (1 * 1024 * 1024))  # 1 MiB on disk
+        mock_sdk_cls.return_value.state.get_vm.return_value = self._make_info_vm(
+            status=VMState.STOPPED, rootfs_path=rootfs
+        )
+        with patch("smolvm.facade._qcow2_virtual_size_mib", return_value=8192) as mock_qsize:
+            ret = main(["info", "sbx-pauling", "--json"])
+
+        assert ret == 0
+        mock_qsize.assert_called_once_with(rootfs)
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["data"]["vm"]["disk_size"] == 8192
+
+
+class TestCliStart:
+    """Tests for `smolvm <preset> start`."""
+
+    def _make_vm_mock(self, vm_id: str = "sbx-codex") -> MagicMock:
+        vm = MagicMock()
+        vm.vm_id = vm_id
+        vm.info.status = VMState.RUNNING
+        vm.info.config.backend = "qemu"
+        vm.info.network = MagicMock(spec=NetworkConfig)
+        vm.info.network.guest_ip = "172.16.0.2"
+        vm.info.network.ssh_host_port = 2200
+        return vm
+
+    def test_top_level_help_lists_known_presets(self, capsys: pytest.CaptureFixture) -> None:
+        """`smolvm --help` should list every registered preset as a top-level command."""
+        with pytest.raises(SystemExit):
+            main(["--help"])
+        out = capsys.readouterr().out
+        assert "codex" in out
+        assert "claude-code" in out
+
+    def test_preset_help_lists_start_action(self, capsys: pytest.CaptureFixture) -> None:
+        """`smolvm codex --help` should list the `start` action."""
+        with pytest.raises(SystemExit):
+            main(["codex", "--help"])
+        out = capsys.readouterr().out
+        assert "start" in out
+
+    def test_unknown_preset_errors(self, capsys: pytest.CaptureFixture) -> None:
+        """An unknown preset name should fail at argparse-level."""
+        with pytest.raises(SystemExit):
+            main(["nonexistent-agent", "start"])
+        err = capsys.readouterr().err
+        # argparse produces "invalid choice" for unknown subcommand
+        assert "invalid choice" in err or "argument command" in err
+
+    def test_launch_snippet_runs_when_env_file_missing(self, tmp_path: Path) -> None:
+        """The remote command built by `_exec_launch_command` must exec the
+        harness even when /etc/profile.d/smolvm_env.sh does not exist —
+        regression for claude-code with subscription auth where no
+        ANTHROPIC_API_KEY is set on the host, so env injection writes
+        nothing and the file is never created."""
+        import subprocess
+
+        from smolvm.cli.main import _exec_launch_command
+
+        captured: list[list[str]] = []
+
+        class _StubSshVm:
+            def _ssh_attach_command(self) -> list[str]:
+                return ["ssh", "-p", "2200", "root@127.0.0.1"]
+
+        def fake_run(*args: object, **_kwargs: object) -> MagicMock:
+            # Tolerate future kwargs (e.g. text=, env=) on the real
+            # subprocess.run call without rewriting the stub.
+            captured.append(args[0])  # type: ignore[arg-type]
+            result = MagicMock()
+            result.returncode = 0
+            return result
+
+        with patch("smolvm.cli.main.subprocess.run", side_effect=fake_run):
+            _exec_launch_command(_StubSshVm(), "claude")
+
+        remote = captured[0][-1]
+        # Now actually evaluate the remote snippet under bash with a
+        # path that does not exist — the launch (here a `:` no-op
+        # standing in for `exec claude`) must still execute.
+        missing_env_file = tmp_path / "definitely-not-here.sh"
+        # The snippet calls `exec claude`; for the runtime check we
+        # substitute a benign command we can verify ran.
+        snippet = remote.replace("exec claude", "echo LAUNCHED")
+        snippet = snippet.replace("/etc/profile.d/smolvm_env.sh", str(missing_env_file))
+        completed = subprocess.run(
+            ["bash", "-c", snippet], capture_output=True, text=True, check=False
+        )
+        assert completed.returncode == 0
+        assert "LAUNCHED" in completed.stdout
+        assert "No such file" not in completed.stderr
+
+    def test_launch_snippet_prepends_local_bin_to_path(self, tmp_path: Path) -> None:
+        """The launch snippet must prepend ``~/.local/bin`` to PATH so a
+        harness that self-installed there (claude-code's npm postinstall
+        migrates to ``~/.local/bin/claude``) is found by the non-login
+        SSH shell, which otherwise inherits root's default PATH."""
+        import subprocess
+
+        from smolvm.cli.main import _exec_launch_command
+
+        captured: list[list[str]] = []
+
+        class _StubSshVm:
+            def _ssh_attach_command(self) -> list[str]:
+                return ["ssh", "-p", "2200", "root@127.0.0.1"]
+
+        def fake_run(*args: object, **_kwargs: object) -> MagicMock:
+            captured.append(args[0])  # type: ignore[arg-type]
+            result = MagicMock()
+            result.returncode = 0
+            return result
+
+        with patch("smolvm.cli.main.subprocess.run", side_effect=fake_run):
+            _exec_launch_command(_StubSshVm(), "claude")
+
+        remote = captured[0][-1]
+        # Drop a fake binary at $HOME/.local/bin/claude and verify the
+        # snippet would resolve `claude` from there. We swap `exec` for a
+        # `command -v` probe so the test stays in-process.
+        home = tmp_path / "home"
+        local_bin = home / ".local" / "bin"
+        local_bin.mkdir(parents=True)
+        (local_bin / "claude").write_text("#!/bin/sh\necho FROM_LOCAL_BIN\n")
+        (local_bin / "claude").chmod(0o755)
+
+        missing_env_file = tmp_path / "missing.sh"
+        snippet = remote.replace("exec claude", "command -v claude")
+        snippet = snippet.replace("/etc/profile.d/smolvm_env.sh", str(missing_env_file))
+        completed = subprocess.run(
+            ["bash", "-c", snippet],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={"HOME": str(home), "PATH": "/usr/bin:/bin"},
+        )
+        assert completed.returncode == 0
+        assert str(local_bin / "claude") in completed.stdout
+
+    def test_claude_alias_resolves_to_claude_code(self) -> None:
+        """`smolvm claude start` should be accepted as an alias for
+        `smolvm claude-code start` — first-time users keep typing the
+        short name and the previous behaviour was an unfriendly
+        argparse 'invalid choice' error."""
+        parser = build_parser()
+        args = parser.parse_args(["claude", "start"])
+        # argparse stores whichever spelling the user typed in
+        # ``args.command``, but the canonical preset name (set via
+        # ``set_defaults``) is what the dispatch path looks up.
+        assert args.command == "claude"
+        assert args.preset_name == "claude-code"
+
+    def test_top_level_help_lists_claude_alias(self, capsys: pytest.CaptureFixture) -> None:
+        """The alias should appear in the top-level help so the
+        shorthand is discoverable, not a hidden trick."""
+        import re
+
+        with pytest.raises(SystemExit):
+            main(["--help"])
+        out = capsys.readouterr().out
+        # Must check 'claude' as a distinct token, not a substring of
+        # 'claude-code'. argparse renders the choices block as
+        # ``{a,b,claude-code,claude,...}`` so split on whitespace and the
+        # punctuation argparse uses there.
+        tokens = set(re.split(r"[\s{},]+", out))
+        assert "claude" in tokens
+        assert "claude-code" in tokens
+
+    @patch("smolvm.cli.main._apply_preset_with_progress")
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_codex_default_path(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        mock_apply: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm codex start` boots ubuntu/qemu with preset defaults and applies the preset."""
+        from smolvm.types import GuestOS
+
+        config = MagicMock(vm_id="sbx-codex")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+        vm = self._make_vm_mock("sbx-codex")
+        mock_vm_cls.return_value = vm
+        mock_apply.return_value = {
+            "preset": "codex",
+            "copied_configs": ["/root/.codex"],
+            "injected_env_keys": ["OPENAI_API_KEY"],
+        }
+
+        ret = main(["codex", "start", "--name", "sbx-codex"])
+
+        assert ret == 0
+        mock_build_auto_config.assert_called_once_with(
+            vm_name="sbx-codex",
+            name_prefix="codex",
+            os=GuestOS.UBUNTU,
+            backend="qemu",
+            memory=2048,
+            disk_size_mib=8192,
+            ssh_key_path=None,
+            on_download=ANY,
+        )
+        mock_vm_cls.assert_called_once_with(
+            config,
+            ssh_key_path="/tmp/id_ed25519",
+            mounts=None,
+            writable_mounts=False,
+        )
+        vm.start.assert_called_once_with(boot_timeout=30.0, on_progress=ANY)
+        vm.wait_for_ssh.assert_called_once_with(timeout=30.0, on_progress=ANY)
+        mock_apply.assert_called_once()
+        vm.close.assert_called_once()
+
+        out = capsys.readouterr().out
+        assert "sbx-codex" in out
+        assert "codex" in out
+        assert "OPENAI_API_KEY" in out
+        assert "smolvm ssh sbx-codex" in out
+
+    @patch("smolvm.presets.apply_preset")
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_codex_json(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        mock_apply_fn: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm codex start --json` should emit the start envelope."""
+        config = MagicMock(vm_id="sbx-1")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+        vm = self._make_vm_mock("sbx-1")
+        mock_vm_cls.return_value = vm
+        mock_apply_fn.return_value = {
+            "preset": "codex",
+            "copied_configs": [],
+            "injected_env_keys": ["OPENAI_API_KEY"],
+        }
+
+        ret = main(["codex", "start", "--name", "sbx-1", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["command"] == "start"
+        assert payload["ok"] is True
+        assert payload["data"]["vm"]["name"] == "sbx-1"
+        assert payload["data"]["vm"]["os"] == "ubuntu"
+        assert payload["data"]["preset"]["name"] == "codex"
+        assert payload["data"]["preset"]["injected_env_keys"] == ["OPENAI_API_KEY"]
+        assert payload["data"]["next"]["ssh_command"] == "smolvm ssh sbx-1"
+
+    @patch("smolvm.cli.main._apply_preset_with_progress")
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_claude_code_overrides_memory(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        mock_apply: MagicMock,
+    ) -> None:
+        """User --memory should override the preset default."""
+        config = MagicMock(vm_id="sbx")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+        vm = self._make_vm_mock("sbx")
+        mock_vm_cls.return_value = vm
+        mock_apply.return_value = {
+            "preset": "claude-code",
+            "copied_configs": [],
+            "injected_env_keys": [],
+        }
+
+        ret = main(["claude-code", "start", "--memory", "4096", "--disk-size", "16384"])
+
+        assert ret == 0
+        kwargs = mock_build_auto_config.call_args.kwargs
+        assert kwargs["memory"] == 4096
+        assert kwargs["disk_size_mib"] == 16384
+
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_rejects_non_qemu_backend(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Built-in presets target ubuntu, which only boots on qemu."""
+        ret = main(["codex", "start", "--backend", "firecracker"])
+
+        assert ret == 2
+        err = capsys.readouterr().err
+        assert "requires --backend qemu" in err
+        # Nothing should have started.
+        mock_build_auto_config.assert_not_called()
+        mock_vm_cls.assert_not_called()
+
+    @patch("smolvm.cli.main.subprocess.run")
+    @patch("smolvm.cli.main._apply_preset_with_progress")
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_attach_runs_codex_via_ssh(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        mock_apply: MagicMock,
+        mock_subprocess_run: MagicMock,
+    ) -> None:
+        """`--attach` should ssh into the box and exec the launch command."""
+        config = MagicMock(vm_id="sbx")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+        vm = self._make_vm_mock("sbx")
+        vm._ssh_attach_command.return_value = [
+            "ssh",
+            "-p",
+            "2200",
+            "root@127.0.0.1",
+        ]
+        mock_vm_cls.return_value = vm
+        mock_apply.return_value = {
+            "preset": "codex",
+            "copied_configs": [],
+            "injected_env_keys": ["OPENAI_API_KEY"],
+        }
+        completed = MagicMock()
+        completed.returncode = 0
+        mock_subprocess_run.return_value = completed
+
+        ret = main(["codex", "start", "--attach"])
+
+        assert ret == 0
+        mock_subprocess_run.assert_called_once()
+        cmd = mock_subprocess_run.call_args.args[0]
+        # `-t` must come before user@host so OpenSSH allocates a TTY.
+        assert "-t" in cmd
+        assert cmd.index("-t") < cmd.index("root@127.0.0.1")
+        # Remote command must guard the env-file source and still exec the
+        # harness if the file is missing (preset may inject zero env vars).
+        remote = cmd[-1]
+        assert "/etc/profile.d/smolvm_env.sh" in remote
+        assert remote.endswith("; exec codex"), (
+            "exec must chain with ';' not '&&' so a missing env file does "
+            f"not abort the launch — got {remote!r}"
+        )
+        assert "[ -r " in remote, "env file source must be guarded with a file-existence check"
+
+    @patch("smolvm.cli.main.subprocess.run")
+    @patch("smolvm.cli.main._apply_preset_with_progress")
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_no_attach_skips_subprocess(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        mock_apply: MagicMock,
+        mock_subprocess_run: MagicMock,
+    ) -> None:
+        """`--no-attach` should skip both the prompt and the ssh launch."""
+        config = MagicMock(vm_id="sbx")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+        mock_vm_cls.return_value = self._make_vm_mock("sbx")
+        mock_apply.return_value = {
+            "preset": "codex",
+            "copied_configs": [],
+            "injected_env_keys": [],
+        }
+
+        ret = main(["codex", "start", "--no-attach"])
+
+        assert ret == 0
+        mock_subprocess_run.assert_not_called()
+
+    @patch("smolvm.cli.main.subprocess.run")
+    @patch("smolvm.cli.main.sys.stdin")
+    @patch("builtins.input", return_value="y")
+    @patch("smolvm.cli.main._apply_preset_with_progress")
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_prompt_yes_attaches(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        mock_apply: MagicMock,
+        mock_input: MagicMock,
+        mock_stdin: MagicMock,
+        mock_subprocess_run: MagicMock,
+    ) -> None:
+        """Default behavior on a TTY: prompt; ``y`` answer attaches."""
+        mock_stdin.isatty.return_value = True
+
+        config = MagicMock(vm_id="sbx")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+        vm = self._make_vm_mock("sbx")
+        vm._ssh_attach_command.return_value = ["ssh", "root@127.0.0.1"]
+        mock_vm_cls.return_value = vm
+        mock_apply.return_value = {
+            "preset": "codex",
+            "copied_configs": [],
+            "injected_env_keys": [],
+        }
+        completed = MagicMock()
+        completed.returncode = 0
+        mock_subprocess_run.return_value = completed
+
+        ret = main(["codex", "start"])
+
+        assert ret == 0
+        mock_input.assert_called_once()
+        mock_subprocess_run.assert_called_once()
+
+    @patch("smolvm.cli.main.subprocess.run")
+    @patch("smolvm.cli.main.sys.stdin")
+    @patch("builtins.input", return_value="n")
+    @patch("smolvm.cli.main._apply_preset_with_progress")
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_prompt_no_skips_attach(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        mock_apply: MagicMock,
+        mock_input: MagicMock,
+        mock_stdin: MagicMock,
+        mock_subprocess_run: MagicMock,
+    ) -> None:
+        """A ``n`` answer should skip the ssh launch."""
+        mock_stdin.isatty.return_value = True
+
+        config = MagicMock(vm_id="sbx")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+        mock_vm_cls.return_value = self._make_vm_mock("sbx")
+        mock_apply.return_value = {
+            "preset": "codex",
+            "copied_configs": [],
+            "injected_env_keys": [],
+        }
+
+        ret = main(["codex", "start"])
+
+        assert ret == 0
+        mock_input.assert_called_once()
+        mock_subprocess_run.assert_not_called()
+
+    @patch("smolvm.cli.main.subprocess.run")
+    @patch("smolvm.presets.apply_preset")
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_json_never_attaches(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        mock_apply_fn: MagicMock,
+        mock_subprocess_run: MagicMock,
+    ) -> None:
+        """JSON mode should never prompt or attach, even when a launch command exists."""
+        config = MagicMock(vm_id="sbx")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+        mock_vm_cls.return_value = self._make_vm_mock("sbx")
+        mock_apply_fn.return_value = {
+            "preset": "codex",
+            "copied_configs": [],
+            "injected_env_keys": [],
+        }
+
+        ret = main(["codex", "start", "--json"])
+
+        assert ret == 0
+        mock_subprocess_run.assert_not_called()
+
+
+class TestPublishedImageLaunchPath:
+    """Tests for the SMOLVM_USE_PUBLISHED opt-in launch path.
+
+    When set, ``smolvm <preset> start`` skips the install-at-boot flow
+    (build alpine_ssh_key + apply_preset) and instead downloads a
+    pre-built rootfs from GitHub Releases via ensure_published_image,
+    then boots Firecracker directly. Tooling assumed to be preinstalled
+    in the image.
+    """
+
+    def test_env_helper_default_off(self) -> None:
+        from smolvm.cli.main import _published_path_enabled
+
+        # Use monkeypatch-style explicit cleanup so this test is hermetic.
+        prev = os.environ.pop("SMOLVM_USE_PUBLISHED", None)
+        try:
+            assert _published_path_enabled() is False
+        finally:
+            if prev is not None:
+                os.environ["SMOLVM_USE_PUBLISHED"] = prev
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("1", True),
+            ("true", True),
+            ("TRUE", True),
+            ("yes", True),
+            ("YES", True),
+            ("0", False),
+            ("false", False),
+            ("no", False),
+            ("", False),
+        ],
+    )
+    def test_env_helper_parses_truthy(self, value: str, expected: bool) -> None:
+        from smolvm.cli.main import _published_path_enabled
+
+        prev = os.environ.get("SMOLVM_USE_PUBLISHED")
+        try:
+            os.environ["SMOLVM_USE_PUBLISHED"] = value
+            assert _published_path_enabled() is expected
+        finally:
+            if prev is None:
+                os.environ.pop("SMOLVM_USE_PUBLISHED", None)
+            else:
+                os.environ["SMOLVM_USE_PUBLISHED"] = prev
+
+    @patch("smolvm.cli.main.platform.machine")
+    def test_arch_helper_normalizes(self, mock_machine: MagicMock) -> None:
+        from smolvm.cli.main import _host_arch_for_published
+
+        for raw, expected in [
+            ("x86_64", "amd64"),
+            ("amd64", "amd64"),
+            ("AMD64", "amd64"),
+            ("arm64", "arm64"),
+            ("aarch64", "arm64"),
+            ("ARM64", "arm64"),
+        ]:
+            mock_machine.return_value = raw
+            assert _host_arch_for_published() == expected, raw
+
+    @patch("smolvm.cli.main.platform.machine", return_value="riscv64")
+    def test_arch_helper_rejects_unsupported(self, _mock_machine: MagicMock) -> None:
+        from smolvm.cli.main import _host_arch_for_published
+
+        with pytest.raises(RuntimeError, match="Unsupported host architecture"):
+            _host_arch_for_published()
+
+    @patch.dict(os.environ, {"SMOLVM_USE_PUBLISHED": "1"})
+    @patch("smolvm.cli.main._run_start_with_published_image")
+    def test_start_routes_to_published_path_when_env_set(
+        self,
+        mock_published_path: MagicMock,
+    ) -> None:
+        """SMOLVM_USE_PUBLISHED=1 must short-circuit before the legacy path."""
+        mock_published_path.return_value = 0
+
+        ret = main(["openclaw", "start", "--json"])
+
+        assert ret == 0
+        mock_published_path.assert_called_once()
+        # First positional is args, second is the resolved preset.
+        called_args = mock_published_path.call_args[0]
+        assert called_args[1].name == "openclaw"
+
+    @patch.dict(os.environ, {"SMOLVM_USE_PUBLISHED": "1"})
+    @patch("smolvm.images.published.ensure_published_image")
+    def test_published_path_surfaces_missing_manifest_error(
+        self,
+        mock_ensure: MagicMock,
+    ) -> None:
+        """An empty manifest entry should produce a clean CLI error, not a crash."""
+        from smolvm.exceptions import ImageError
+
+        mock_ensure.side_effect = ImageError(
+            "No published image for preset 'openclaw' on arch 'amd64' (available: (none))."
+        )
+
+        ret = main(["openclaw", "start", "--json"])
+
+        assert ret == 1
+        mock_ensure.assert_called_once()
+
+    @patch.dict(os.environ, {"SMOLVM_USE_PUBLISHED": "1"})
+    @patch("smolvm.cli.main.subprocess.run")
+    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.utils.ensure_ssh_key")
+    @patch("smolvm.images.published.ensure_published_image")
+    @patch("smolvm.cli.main.platform.machine", return_value="x86_64")
+    def test_published_path_happy_path_skips_apply_preset(
+        self,
+        _mock_machine: MagicMock,
+        mock_ensure_image: MagicMock,
+        mock_ensure_ssh_key: MagicMock,
+        mock_vm_cls: MagicMock,
+        _mock_subprocess: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """End-to-end: download → VMConfig → start, no apply_preset call."""
+        from smolvm.images.manager import LocalImage
+
+        kernel = tmp_path / "vmlinux.bin"
+        rootfs = tmp_path / "rootfs.ext4"
+        priv = tmp_path / "id_ed25519"
+        pub = tmp_path / "id_ed25519.pub"
+        kernel.touch()
+        rootfs.touch()
+        priv.touch()
+        pub.write_text("ssh-ed25519 AAAAExampleKey user@host\n")
+
+        mock_ensure_image.return_value = LocalImage(
+            name="openclaw-v0.0.13-amd64",
+            kernel_path=kernel,
+            rootfs_path=rootfs,
+        )
+        mock_ensure_ssh_key.return_value = (priv, pub)
+        mock_vm = MagicMock()
+        mock_vm.vm_id = "sbx-published-1"
+        mock_vm.info.status = VMState.RUNNING
+        mock_vm.info.config.backend = "firecracker"
+        mock_vm.info.network = MagicMock(spec=NetworkConfig)
+        mock_vm.info.network.guest_ip = "172.16.0.2"
+        mock_vm.info.network.ssh_host_port = 2200
+        mock_vm_cls.return_value = mock_vm
+
+        # If apply_preset gets called, this test should fail loudly.
+        with patch("smolvm.presets.apply_preset") as mock_apply:
+            ret = main(["openclaw", "start", "--json"])
+
+            mock_apply.assert_not_called()
+
+        assert ret == 0
+        mock_ensure_image.assert_called_once_with("openclaw", "amd64")
+
+        # Verify VMConfig was built with the right wiring.
+        config_arg = mock_vm_cls.call_args[0][0]
+        assert config_arg.kernel_path == kernel
+        assert config_arg.rootfs_path == rootfs
+        assert config_arg.backend == "firecracker"
+        assert config_arg.ssh_public_key == "ssh-ed25519 AAAAExampleKey user@host"
+        assert "init=/init" in config_arg.boot_args

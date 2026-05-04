@@ -2,6 +2,37 @@
 
 Most people install SmolVM with the one-liner from the [README](../README.md#quickstart) and never need to read further. This page is for the cases where you want more control over how SmolVM gets onto a machine — for example, baking it into a golden image, or pinning the exact Firecracker version your AMI ships with.
 
+## macOS Developer Setup
+
+On macOS, SmolVM automatically uses the **QEMU backend** instead of Firecracker (which requires `/dev/kvm` on Linux). QEMU on macOS leverages Hypervisor.framework for hardware acceleration and works out of the box.
+
+**Prerequisites:**
+
+Install QEMU via Homebrew:
+
+```bash
+brew install qemu
+```
+
+**Verification:**
+
+After installing the SmolVM package, verify your setup:
+
+```bash
+pip install smolvm
+smolvm doctor
+```
+
+`smolvm doctor` confirms that QEMU is available and your system is ready to run sandboxes. You do **not** need to run `smolvm setup` on macOS — the system prerequisites are already met once QEMU is installed.
+
+**Example output:**
+
+```
+Backend: qemu
+Platform: Darwin arm64
+Result: OK
+```
+
 ## Standard install
 
 The simplest path:

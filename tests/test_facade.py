@@ -40,7 +40,7 @@ def sample_config(tmp_path: Path) -> VMConfig:
     return VMConfig(
         vm_id="vm001",
         vcpu_count=2,
-        mem_size_mib=512,
+        memory=512,
         kernel_path=kernel,
         rootfs_path=rootfs,
     )
@@ -89,7 +89,7 @@ class TestVMInit:
         vm = SmolVM(config)
 
         assert vm.vm_id == config.vm_id
-        assert vm.vm_id.startswith("vm-")
+        assert vm.vm_id.startswith("sbx-")
         mock_sdk.create.assert_called_once_with(config)
 
     def test_both_config_and_id_raises(self, sample_config: VMConfig) -> None:
@@ -130,14 +130,14 @@ class TestVMInit:
 
         vm = SmolVM()
 
-        assert vm.vm_id.startswith("vm-")
+        assert vm.vm_id.startswith("sbx-")
         mock_builder.build_alpine_ssh_key.assert_called_once()
         assert mock_builder.build_alpine_ssh_key.call_args.args[0] == public_key
         assert mock_builder.build_alpine_ssh_key.call_args.kwargs["rootfs_size_mb"] == 512
         mock_sdk.create.assert_called_once()
         created_config = mock_sdk.create.call_args[0][0]
         assert "init=/init" in created_config.boot_args
-        assert created_config.mem_size_mib == 512
+        assert created_config.memory == 512
 
     @patch("smolvm.facade.SmolVMManager")
     @patch("smolvm.images.builder.ImageBuilder")
@@ -170,14 +170,56 @@ class TestVMInit:
         mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
         mock_sdk_cls.return_value = mock_sdk
 
-        vm = SmolVM(mem_size_mib=2048, disk_size_mib=4096)
+        vm = SmolVM(memory=2048, disk_size=4096)
 
-        assert vm.vm_id.startswith("vm-")
+        assert vm.vm_id.startswith("sbx-")
         mock_builder.build_alpine_ssh_key.assert_called_once()
         assert mock_builder.build_alpine_ssh_key.call_args.kwargs["rootfs_size_mb"] == 4096
         mock_sdk.create.assert_called_once()
         created_config = mock_sdk.create.call_args[0][0]
-        assert created_config.mem_size_mib == 2048
+        assert created_config.memory == 2048
+
+    @patch("smolvm.facade.SmolVMManager")
+    @patch("smolvm.images.builder.ImageBuilder")
+    @patch("smolvm.utils.ensure_ssh_key")
+    @patch("smolvm.runtime.backends.platform.system", return_value="Linux")
+    def test_autoconfigure_passes_pubkey_to_vmconfig(
+        self,
+        _: MagicMock,
+        mock_ensure_ssh_key: MagicMock,
+        mock_builder_cls: MagicMock,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Auto-config VMConfig must carry the user's pubkey for /init to inject at boot.
+
+        Alpine/Debian SSH-key images no longer bake authorized_keys at build
+        time (see src/smolvm/images/builder.py); the key is delivered via the
+        kernel cmdline, which only fires when ssh_public_key is set.
+        """
+        kernel = tmp_path / "auto-kernel"
+        rootfs = tmp_path / "auto-rootfs.ext4"
+        private_key = tmp_path / "id_ed25519"
+        public_key = tmp_path / "id_ed25519.pub"
+        kernel.touch()
+        rootfs.touch()
+        private_key.touch()
+        pubkey_value = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKey user@test"
+        public_key.write_text(f"{pubkey_value}\n")
+
+        mock_ensure_ssh_key.return_value = (private_key, public_key)
+        mock_builder = MagicMock()
+        mock_builder.build_alpine_ssh_key.return_value = (kernel, rootfs)
+        mock_builder_cls.return_value = mock_builder
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        mock_sdk_cls.return_value = mock_sdk
+
+        SmolVM()
+
+        created_config = mock_sdk.create.call_args[0][0]
+        assert created_config.ssh_public_key == pubkey_value
 
     @patch("smolvm.facade.SmolVMManager")
     @patch("smolvm.images.builder.ImageBuilder")
@@ -210,13 +252,13 @@ class TestVMInit:
 
         vm = SmolVM(os="debian", backend="firecracker")
 
-        assert vm.vm_id.startswith("vm-")
+        assert vm.vm_id.startswith("sbx-")
         mock_builder.build_debian_ssh_key.assert_called_once()
         assert mock_builder.build_debian_ssh_key.call_args.args[0] == public_key
         assert mock_builder.build_debian_ssh_key.call_args.kwargs["rootfs_size_mb"] == 2048
         mock_builder.build_alpine_ssh_key.assert_not_called()
         created_config = mock_sdk.create.call_args[0][0]
-        assert created_config.mem_size_mib == 512
+        assert created_config.memory == 512
         assert created_config.boot_mode == "direct_kernel"
 
     @patch("smolvm.facade.SmolVMManager")
@@ -335,7 +377,7 @@ class TestVMInit:
         mock_prepare_sized: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """--disk-size-mib on debian/qemu should be forwarded to resize helper."""
+        """--disk-size on debian/qemu should be forwarded to resize helper."""
         private_key = tmp_path / "id_ed25519"
         public_key = tmp_path / "id_ed25519.pub"
         private_key.touch()
@@ -363,7 +405,7 @@ class TestVMInit:
         self,
         tmp_path: Path,
     ) -> None:
-        """Debian/qemu should reject --disk-size-mib below the default."""
+        """Debian/qemu should reject --disk-size below the default."""
         with pytest.raises(ValueError, match="disk_size_mib >= 2048"):
             _build_auto_config(os="debian", backend="qemu", disk_size_mib=1024)
 
@@ -371,7 +413,7 @@ class TestVMInit:
         self,
         tmp_path: Path,
     ) -> None:
-        """Ubuntu should reject --disk-size-mib below the default."""
+        """Ubuntu should reject --disk-size below the default."""
         with pytest.raises(ValueError, match="disk_size_mib >= 2048"):
             _build_auto_config(os="ubuntu", backend="qemu", disk_size_mib=512)
 
@@ -433,7 +475,7 @@ class TestVMInit:
     def test_custom_auto_sizing_with_config_raises(self, sample_config: VMConfig) -> None:
         """Custom auto sizing options are only valid in zero-config mode."""
         with pytest.raises(ValueError, match="auto-config mode"):
-            SmolVM(sample_config, mem_size_mib=1024)
+            SmolVM(sample_config, memory=1024)
 
     def test_debian_pinned_urls_carry_build_suffix(self) -> None:
         """Each pinned Debian URL must include the build tag in the filename.
@@ -774,7 +816,7 @@ class TestVMImageParam:
         mock_build_s3.assert_called_once_with(
             image="s3://bucket/images/alpine/",
             backend=None,
-            mem_size_mib=None,
+            memory=None,
             ssh_key_path=None,
         )
         assert vm.vm_id == "vm-s3test"
@@ -788,7 +830,7 @@ class TestVMImageParam:
         mock_sdk_cls: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """Backend and mem_size_mib should be forwarded to the S3 config builder."""
+        """Backend and memory should be forwarded to the S3 config builder."""
         kernel = tmp_path / "vmlinux"
         rootfs = tmp_path / "rootfs.ext4"
         kernel.touch()
@@ -807,12 +849,12 @@ class TestVMImageParam:
         mock_sdk.create.return_value = MagicMock(vm_id="vm-s3mem", status=VMState.CREATED)
         mock_sdk_cls.return_value = mock_sdk
 
-        SmolVM(image="s3://bucket/img/", backend="qemu", mem_size_mib=1024)
+        SmolVM(image="s3://bucket/img/", backend="qemu", memory=1024)
 
         mock_build_s3.assert_called_once_with(
             image="s3://bucket/img/",
             backend="qemu",
-            mem_size_mib=1024,
+            memory=1024,
             ssh_key_path=None,
         )
 
@@ -2112,3 +2154,217 @@ class TestVMEnvManagement:
         vm.close()
 
         mock_sdk.close.assert_called_once()
+
+
+class TestVMFileUpload:
+    """Tests for facade-level guest file upload."""
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_upload_file_creates_parent_and_puts_file(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        source = tmp_path / "note.txt"
+        source.write_text("hello")
+
+        config = sample_config.model_copy(update={"ssh_capable": True})
+        running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
+        running_info.config = config
+        running_info.network.guest_ip = "172.16.0.2"
+        running_info.network.ssh_host_port = None
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = running_info
+        mock_sdk.get.return_value = running_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        ssh = MagicMock()
+        ssh.run.return_value = MagicMock(exit_code=0, stderr="")
+
+        vm = SmolVM(config)
+        vm._ssh = ssh
+        vm._ssh_ready = True
+
+        guest_path = vm.upload_file(source, "/tmp/smolvm/note.txt")
+
+        assert guest_path == "/tmp/smolvm/note.txt"
+        ssh.run.assert_called_once_with(
+            "mkdir -p -- /tmp/smolvm",
+            timeout=30,
+            shell="raw",
+        )
+        ssh.put_file.assert_called_once_with(source, "/tmp/smolvm/note.txt")
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_upload_file_appends_name_for_guest_directory(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        source = tmp_path / "note.txt"
+        source.write_text("hello")
+
+        config = sample_config.model_copy(update={"ssh_capable": True})
+        running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
+        running_info.config = config
+        running_info.network.guest_ip = "172.16.0.2"
+        running_info.network.ssh_host_port = None
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = running_info
+        mock_sdk.get.return_value = running_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        ssh = MagicMock()
+        ssh.run.return_value = MagicMock(exit_code=0, stderr="")
+
+        vm = SmolVM(config)
+        vm._ssh = ssh
+        vm._ssh_ready = True
+
+        guest_path = vm.upload_file(source, "/tmp/uploads/")
+
+        assert guest_path == "/tmp/uploads/note.txt"
+        ssh.put_file.assert_called_once_with(source, "/tmp/uploads/note.txt")
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_upload_file_skips_mkdir_when_make_dirs_false(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        source = tmp_path / "note.txt"
+        source.write_text("hello")
+
+        config = sample_config.model_copy(update={"ssh_capable": True})
+        running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
+        running_info.config = config
+        running_info.network.guest_ip = "172.16.0.2"
+        running_info.network.ssh_host_port = None
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = running_info
+        mock_sdk.get.return_value = running_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        ssh = MagicMock()
+
+        vm = SmolVM(config)
+        vm._ssh = ssh
+        vm._ssh_ready = True
+
+        guest_path = vm.upload_file(source, "/tmp/path/note.txt", make_dirs=False)
+
+        assert guest_path == "/tmp/path/note.txt"
+        ssh.run.assert_not_called()
+        ssh.put_file.assert_called_once_with(source, "/tmp/path/note.txt")
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_upload_file_rejects_directory(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.RUNNING)
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = SmolVM(sample_config)
+
+        with pytest.raises(ValueError, match="Not a file"):
+            vm.upload_file(tmp_path, "/tmp/uploaded")
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_upload_file_rejects_relative_guest_path(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        source = tmp_path / "note.txt"
+        source.write_text("hello")
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.RUNNING)
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = SmolVM(sample_config)
+
+        with pytest.raises(ValueError, match="must be absolute"):
+            vm.upload_file(source, "~/note.txt")
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_upload_file_quotes_paths_with_spaces(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        source = tmp_path / "note.txt"
+        source.write_text("hello")
+
+        config = sample_config.model_copy(update={"ssh_capable": True})
+        running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
+        running_info.config = config
+        running_info.network.guest_ip = "172.16.0.2"
+        running_info.network.ssh_host_port = None
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = running_info
+        mock_sdk.get.return_value = running_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        ssh = MagicMock()
+        ssh.run.return_value = MagicMock(exit_code=0, stderr="")
+
+        vm = SmolVM(config)
+        vm._ssh = ssh
+        vm._ssh_ready = True
+
+        guest_path = vm.upload_file(source, "/tmp/with space/note.txt")
+
+        assert guest_path == "/tmp/with space/note.txt"
+        ssh.run.assert_called_once_with(
+            "mkdir -p -- '/tmp/with space'",
+            timeout=30,
+            shell="raw",
+        )
+        ssh.put_file.assert_called_once_with(source, "/tmp/with space/note.txt")
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_upload_file_raises_when_mkdir_fails(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        source = tmp_path / "note.txt"
+        source.write_text("hello")
+
+        config = sample_config.model_copy(update={"ssh_capable": True})
+        running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
+        running_info.config = config
+        running_info.network.guest_ip = "172.16.0.2"
+        running_info.network.ssh_host_port = None
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = running_info
+        mock_sdk.get.return_value = running_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        ssh = MagicMock()
+        ssh.run.return_value = MagicMock(exit_code=1, stderr="permission denied")
+
+        vm = SmolVM(config)
+        vm._ssh = ssh
+        vm._ssh_ready = True
+
+        with pytest.raises(SmolVMError, match="permission denied"):
+            vm.upload_file(source, "/root/forbidden/note.txt")
+
+        ssh.put_file.assert_not_called()

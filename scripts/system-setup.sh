@@ -194,6 +194,55 @@ ensure_kvm_group_membership() {
     ensure_group_membership "kvm" "newgrp kvm"
 }
 
+# Install a udev rule that pins /dev/kvm to mode 0660 + group=kvm and
+# tags it for systemd-logind's `uaccess` ACL helper. The mode/group bits
+# normalize behavior across distros (some leave /dev/kvm root-owned by
+# default); the `uaccess` tag means a desktop user logged in at the
+# active seat gets a per-user POSIX ACL on /dev/kvm without joining
+# the kvm group at all. Headless SSH sessions still rely on the kvm
+# group membership above (uaccess only fires for seat sessions), but
+# the rule is harmless there and avoids a footgun if the host later
+# grows a desktop session.
+install_kvm_udev_rule() {
+    local rule_path="/etc/udev/rules.d/65-smolvm-kvm.rules"
+    local rule_body='# Managed by smolvm setup. Do not edit by hand.
+KERNEL=="kvm", GROUP="kvm", MODE="0660", TAG+="uaccess"
+'
+
+    # `$(cat …)` strips trailing newlines, so re-append one before comparing
+    # against rule_body (which ends with a newline) — otherwise this idempotency
+    # check would never match and we'd re-write + re-trigger udev on every run.
+    if [[ -f "${rule_path}" ]] && [[ "$(cat "${rule_path}")"$'\n' == "${rule_body}" ]]; then
+        echo "✅ KVM udev rule already in place at ${rule_path}"
+        return 0
+    fi
+
+    if ! command -v udevadm >/dev/null 2>&1; then
+        echo "ℹ️  udevadm not found; skipping KVM udev rule install."
+        echo "    /dev/kvm permissions will follow whatever the distro ships."
+        return 0
+    fi
+
+    echo "Installing KVM udev rule at ${rule_path}..."
+    install -d -m 0755 /etc/udev/rules.d
+    printf '%s' "${rule_body}" > "${rule_path}"
+    chmod 0644 "${rule_path}"
+
+    if udevadm control --reload >/dev/null 2>&1; then
+        # Apply immediately so the current session sees the new mode/group
+        # without waiting for the next kernel device event.
+        if udevadm trigger /dev/kvm >/dev/null 2>&1; then
+            echo "✅ KVM udev rule installed and applied"
+        else
+            echo "⚠️  Wrote ${rule_path} but 'udevadm trigger /dev/kvm' failed."
+            echo "    Run 'sudo udevadm trigger /dev/kvm' or reboot to apply."
+        fi
+    else
+        echo "⚠️  Wrote ${rule_path} but 'udevadm control --reload' failed."
+        echo "    The rule will take effect on next reboot."
+    fi
+}
+
 run_runtime_config() {
     local mode="$1"
     local runtime_user
@@ -326,6 +375,7 @@ if [[ ! -e /dev/kvm ]]; then
 fi
 if [[ -e /dev/kvm ]]; then
     ensure_kvm_group_membership
+    install_kvm_udev_rule
 fi
 
 if [[ "${SKIP_DEPS}" == "true" ]]; then
