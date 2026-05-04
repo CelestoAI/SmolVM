@@ -1884,7 +1884,7 @@ def _run_start_with_published_image(args: argparse.Namespace, preset: object) ->
             ValueError(
                 f"Published images are Linux-only for now: the Firecracker "
                 f"runtime they use requires KVM, which is unavailable on "
-                f"{platform.system()}. Run `smolvm {_preset.name} start` "
+                f"{platform.system()}, so run `smolvm {_preset.name} start` "
                 f"without SMOLVM_USE_PUBLISHED to use the default flow."
             ),
             json_output=args.json,

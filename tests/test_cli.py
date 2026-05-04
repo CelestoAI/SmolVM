@@ -2834,6 +2834,7 @@ class TestPublishedImageLaunchPath:
         self,
         mock_ensure: MagicMock,
         _mock_system: MagicMock,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """macOS hits Firecracker's KVM/TAP requirements; reject before that.
 
@@ -2843,7 +2844,13 @@ class TestPublishedImageLaunchPath:
         """
         ret = main(["openclaw", "start", "--json"])
 
+        captured = capsys.readouterr()
+        envelope = json.loads(captured.out)
+
         assert ret == 2  # ValueError → exit 2 (matches existing CLI convention)
+        assert envelope["exit_code"] == 2
+        assert envelope["error"] is not None
+        assert "Linux-only" in envelope["error"]["message"]
         # Most importantly, ensure_published_image must NOT have been called —
         # we should error before trying to download anything.
         mock_ensure.assert_not_called()
