@@ -51,7 +51,7 @@ from smolvm.host.doctor import run_doctor
 from smolvm.types import BrowserSessionState, GuestOS, VMState
 
 if TYPE_CHECKING:
-    from smolvm.images.published import Arch
+    from smolvm.images.published import Arch, Vmm
     from smolvm.types import BrowserSessionInfo, SnapshotInfo, VMInfo
 
 DASHBOARD_ALLOW_BETA_ENV = "SMOLVM_DASHBOARD_ALLOW_BETA"
@@ -1814,13 +1814,55 @@ def _render_start_result(data: StartPayload) -> None:
     console.print(f"Next: [bold]{next_step['ssh_command']}[/bold]")
 
 
-# Map preset name → boot args for the Firecracker published-image path. When
-# we add per-preset bake builders, the boot_args should move onto the Preset
-# itself; for now openclaw is the only published preset and this lookup
-# reflects that.
-_PUBLISHED_IMAGE_BOOT_ARGS = {
-    "openclaw": "reboot=k panic=1 pci=off init=/init 8250.nr_uarts=0",
+# Boot args for the published-image launch path, keyed by (preset, vmm).
+# Firecracker uses MMIO virtio + 8250 silenced (no PCI); QEMU/libkrun use
+# PCI virtio with an arch-specific console (added by _boot_args_for).
+# When we add per-preset bake builders, this can move onto the Preset
+# itself; for now openclaw is the only published preset.
+_PUBLISHED_IMAGE_BOOT_ARGS: dict[tuple[str, Vmm], str] = {
+    ("openclaw", "firecracker"): "reboot=k panic=1 pci=off init=/init 8250.nr_uarts=0",
+    ("openclaw", "qemu"): "reboot=k panic=1 init=/init",
+    ("openclaw", "libkrun"): "reboot=k panic=1 init=/init",
 }
+
+
+def _boot_args_for(preset_name: str, vmm: Vmm, arch: Arch) -> str:
+    """Resolve boot args for the published-image path.
+
+    For QEMU/libkrun, the console driver is arch-specific: arm64's QEMU
+    ``virt`` machine wires the console to a PL011 (ttyAMA0); x86's exposes
+    an 8250 (ttyS0). The Firecracker base string already disables 8250 and
+    relies on Firecracker's own console wiring, so no console= is needed
+    there.
+    """
+    base = _PUBLISHED_IMAGE_BOOT_ARGS[(preset_name, vmm)]
+    if vmm == "firecracker":
+        return base
+    console = "ttyAMA0" if arch == "arm64" else "ttyS0"
+    return f"console={console} {base}"
+
+
+def _vmm_for_host() -> Vmm:
+    """Pick the published-image kernel variant for this host's OS.
+
+    Linux runs Firecracker directly (KVM); macOS runs QEMU on top of
+    Hypervisor.framework. ``libkrun`` is reserved for a future spike and
+    intentionally not returned here yet — the CLI sticks to the two
+    runtimes we ship working kernels + backends for.
+
+    Deliberately doesn't read ``SMOLVM_BACKEND`` — the published path
+    pairs a specific kernel build with a specific runtime, so an env
+    override that swapped only one half would silently mismatch them.
+    """
+    system = platform.system()
+    if system == "Linux":
+        return "firecracker"
+    if system == "Darwin":
+        return "qemu"
+    raise RuntimeError(
+        f"Unsupported host OS for published images: {system!r}. "
+        f"Set SMOLVM_USE_PUBLISHED=0 (or unset) to fall back to the local build."
+    )
 
 
 def _published_path_enabled() -> bool:
@@ -1870,35 +1912,19 @@ def _run_start_with_published_image(args: argparse.Namespace, preset: object) ->
 
     _preset: Preset = preset  # type: ignore[assignment]
 
-    # Published images are built with a Firecracker-CI kernel (virtio-MMIO,
-    # no PCI drivers) and the launch path below uses backend="firecracker",
-    # which requires KVM and the Linux `ip` toolchain for TAP setup.
-    # Neither exists on macOS — the failure cascades through several
-    # confusing error messages (sudo, missing `ip`, network-cleanup also
-    # fails). Reject up-front with one clear message instead. Tracked as a
-    # follow-up to validate libkrun (Firecracker-API-compatible runtime
-    # backed by Hypervisor.framework) for macOS parity.
-    if platform.system() != "Linux":
-        return _emit_cli_error(
-            "start",
-            2,
-            ValueError(
-                f"Published images are Linux-only for now: the Firecracker "
-                f"runtime they use requires KVM, which is unavailable on "
-                f"{platform.system()}, so run `smolvm {_preset.name} start` "
-                f"without SMOLVM_USE_PUBLISHED to use the default flow."
-            ),
-            json_output=args.json,
-        )
+    try:
+        vmm = _vmm_for_host()
+    except RuntimeError as exc:
+        return _emit_cli_error("start", 2, exc, json_output=args.json)
 
-    if _preset.name not in _PUBLISHED_IMAGE_BOOT_ARGS:
+    if (_preset.name, vmm) not in _PUBLISHED_IMAGE_BOOT_ARGS:
         return _emit_cli_error(
             "start",
             2,
             ValueError(
                 f"Preset {_preset.name!r} has no boot_args configured for the "
-                f"published-image path. Unset SMOLVM_USE_PUBLISHED to use the "
-                f"default install-at-boot flow."
+                f"published-image path under vmm {vmm!r}. Unset "
+                f"SMOLVM_USE_PUBLISHED to use the default install-at-boot flow."
             ),
             json_output=args.json,
         )
@@ -1909,19 +1935,23 @@ def _run_start_with_published_image(args: argparse.Namespace, preset: object) ->
         public_key_value = public_key_path.read_text().strip()
 
         # Raises ImageError with a clear message if the (preset, arch, vmm)
-        # tuple has no manifest entry. ``vmm`` is hardcoded to firecracker
-        # here and reflects the only kernel variant we publish today; the
-        # CLI-side platform-to-vmm mapping (Linux→firecracker, Darwin→qemu)
-        # lands in a follow-up PR alongside the QEMU kernel rows.
-        local_image = ensure_published_image(_preset.name, arch, "firecracker")  # type: ignore[arg-type]
+        # tuple has no manifest entry — covers the gap where a host platform
+        # is supported in principle but no published kernel exists for it
+        # yet.
+        local_image = ensure_published_image(_preset.name, arch, vmm)
+
+        # vmm → backend: firecracker maps to the firecracker runtime; qemu
+        # and libkrun both run under the qemu backend on macOS today (libkrun
+        # support arrives in a separate spike).
+        backend = "firecracker" if vmm == "firecracker" else "qemu"
 
         config = VMConfig(
             vm_id=_resolve_vm_name(args.name, prefix=_preset.name),
             memory=args.memory_mib if args.memory_mib is not None else _preset.default_mem_mib,
             kernel_path=local_image.kernel_path,
             rootfs_path=local_image.rootfs_path,
-            boot_args=_PUBLISHED_IMAGE_BOOT_ARGS[_preset.name],
-            backend="firecracker",
+            boot_args=_boot_args_for(_preset.name, vmm, arch),
+            backend=backend,
             ssh_public_key=public_key_value,
         )
 
@@ -1946,7 +1976,7 @@ def _run_start_with_published_image(args: argparse.Namespace, preset: object) ->
                         else VMState.RUNNING.value
                     ),
                     "os": "debian-bookworm",
-                    "backend": "firecracker",
+                    "backend": backend,
                     "ip_address": network.guest_ip if network else None,
                     "ssh_port": network.ssh_host_port if network else None,
                 },

@@ -2827,53 +2827,99 @@ class TestPublishedImageLaunchPath:
         assert ret == 1
         mock_ensure.assert_called_once()
 
-    @patch.dict(os.environ, {"SMOLVM_USE_PUBLISHED": "1"})
-    @patch("smolvm.cli.main.platform.system", return_value="Darwin")
-    @patch("smolvm.images.published.ensure_published_image")
-    def test_published_path_rejects_macos_up_front(
+    @pytest.mark.parametrize(
+        "system,expected_vmm",
+        [
+            ("Linux", "firecracker"),
+            ("Darwin", "qemu"),
+        ],
+    )
+    @patch("smolvm.cli.main.platform.system")
+    def test_vmm_for_host_maps_os_to_kernel_variant(
         self,
-        mock_ensure: MagicMock,
-        _mock_system: MagicMock,
-        capsys: pytest.CaptureFixture[str],
+        mock_system: MagicMock,
+        system: str,
+        expected_vmm: str,
     ) -> None:
-        """macOS hits Firecracker's KVM/TAP requirements; reject before that.
+        from smolvm.cli.main import _vmm_for_host
 
-        The pre-fix failure cascade was confusing: sudo prompt → missing
-        ``ip`` binary → cleanup-also-fails. One clear error pointing at
-        the install-at-boot fallback is much friendlier.
-        """
-        ret = main(["openclaw", "start", "--json"])
+        mock_system.return_value = system
+        assert _vmm_for_host() == expected_vmm
 
-        captured = capsys.readouterr()
-        envelope = json.loads(captured.out)
+    @patch("smolvm.cli.main.platform.system", return_value="FreeBSD")
+    def test_vmm_for_host_rejects_unsupported_os(self, _mock_system: MagicMock) -> None:
+        from smolvm.cli.main import _vmm_for_host
 
-        assert ret == 2  # ValueError → exit 2 (matches existing CLI convention)
-        assert envelope["exit_code"] == 2
-        assert envelope["error"] is not None
-        assert "Linux-only" in envelope["error"]["message"]
-        # Most importantly, ensure_published_image must NOT have been called —
-        # we should error before trying to download anything.
-        mock_ensure.assert_not_called()
+        with pytest.raises(RuntimeError, match="Unsupported host OS"):
+            _vmm_for_host()
 
+    @pytest.mark.parametrize(
+        "vmm,arch,expected_console",
+        [
+            ("qemu", "arm64", "console=ttyAMA0"),
+            ("qemu", "amd64", "console=ttyS0"),
+            ("libkrun", "arm64", "console=ttyAMA0"),
+            ("libkrun", "amd64", "console=ttyS0"),
+        ],
+    )
+    def test_boot_args_for_qemu_picks_console_per_arch(
+        self,
+        vmm: str,
+        arch: str,
+        expected_console: str,
+    ) -> None:
+        from smolvm.cli.main import _boot_args_for
+
+        result = _boot_args_for("openclaw", vmm, arch)  # type: ignore[arg-type]
+        assert expected_console in result
+        assert "init=/init" in result
+
+    def test_boot_args_for_firecracker_omits_console_arg(self) -> None:
+        from smolvm.cli.main import _boot_args_for
+
+        # Firecracker's base string already disables 8250 and uses its own
+        # console wiring — no console= should be added by the helper.
+        for arch in ("amd64", "arm64"):
+            result = _boot_args_for("openclaw", "firecracker", arch)  # type: ignore[arg-type]
+            assert "console=" not in result
+            assert "8250.nr_uarts=0" in result
+
+    @pytest.mark.parametrize(
+        "system,machine,expected_arch,expected_vmm,expected_backend",
+        [
+            ("Linux", "x86_64", "amd64", "firecracker", "firecracker"),
+            ("Linux", "aarch64", "arm64", "firecracker", "firecracker"),
+            ("Darwin", "arm64", "arm64", "qemu", "qemu"),
+            ("Darwin", "x86_64", "amd64", "qemu", "qemu"),
+        ],
+    )
     @patch.dict(os.environ, {"SMOLVM_USE_PUBLISHED": "1"})
     @patch("smolvm.cli.main.subprocess.run")
     @patch("smolvm.facade.SmolVM")
     @patch("smolvm.utils.ensure_ssh_key")
     @patch("smolvm.images.published.ensure_published_image")
-    @patch("smolvm.cli.main.platform.machine", return_value="x86_64")
-    @patch("smolvm.cli.main.platform.system", return_value="Linux")
+    @patch("smolvm.cli.main.platform.machine")
+    @patch("smolvm.cli.main.platform.system")
     def test_published_path_happy_path_skips_apply_preset(
         self,
-        _mock_system: MagicMock,
-        _mock_machine: MagicMock,
+        mock_system: MagicMock,
+        mock_machine: MagicMock,
         mock_ensure_image: MagicMock,
         mock_ensure_ssh_key: MagicMock,
         mock_vm_cls: MagicMock,
         _mock_subprocess: MagicMock,
         tmp_path: Path,
+        system: str,
+        machine: str,
+        expected_arch: str,
+        expected_vmm: str,
+        expected_backend: str,
     ) -> None:
         """End-to-end: download → VMConfig → start, no apply_preset call."""
         from smolvm.images.manager import LocalImage
+
+        mock_system.return_value = system
+        mock_machine.return_value = machine
 
         kernel = tmp_path / "vmlinux.bin"
         rootfs = tmp_path / "rootfs.ext4"
@@ -2885,7 +2931,7 @@ class TestPublishedImageLaunchPath:
         pub.write_text("ssh-ed25519 AAAAExampleKey user@host\n")
 
         mock_ensure_image.return_value = LocalImage(
-            name="openclaw-v0.0.13-amd64",
+            name=f"openclaw-v0.0.13-{expected_arch}-{expected_vmm}",
             kernel_path=kernel,
             rootfs_path=rootfs,
         )
@@ -2893,7 +2939,7 @@ class TestPublishedImageLaunchPath:
         mock_vm = MagicMock()
         mock_vm.vm_id = "sbx-published-1"
         mock_vm.info.status = VMState.RUNNING
-        mock_vm.info.config.backend = "firecracker"
+        mock_vm.info.config.backend = expected_backend
         mock_vm.info.network = MagicMock(spec=NetworkConfig)
         mock_vm.info.network.guest_ip = "172.16.0.2"
         mock_vm.info.network.ssh_host_port = 2200
@@ -2906,12 +2952,15 @@ class TestPublishedImageLaunchPath:
             mock_apply.assert_not_called()
 
         assert ret == 0
-        mock_ensure_image.assert_called_once_with("openclaw", "amd64", "firecracker")
+        mock_ensure_image.assert_called_once_with("openclaw", expected_arch, expected_vmm)
 
         # Verify VMConfig was built with the right wiring.
         config_arg = mock_vm_cls.call_args[0][0]
         assert config_arg.kernel_path == kernel
         assert config_arg.rootfs_path == rootfs
-        assert config_arg.backend == "firecracker"
+        assert config_arg.backend == expected_backend
         assert config_arg.ssh_public_key == "ssh-ed25519 AAAAExampleKey user@host"
         assert "init=/init" in config_arg.boot_args
+        if expected_vmm == "qemu":
+            expected_console = "ttyAMA0" if expected_arch == "arm64" else "ttyS0"
+            assert f"console={expected_console}" in config_arg.boot_args
