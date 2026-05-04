@@ -23,10 +23,12 @@ import pytest
 from smolvm.exceptions import ImageError
 from smolvm.images.manager import LocalImage
 from smolvm.images.published import (
+    _MANIFEST_VERSION,
     MANIFEST,
     Arch,
     Preset,
     PublishedImage,
+    _decompress_zstd,
     cache_name,
     ensure_published_image,
     lookup,
@@ -217,16 +219,19 @@ class TestZstdDecompression:
     """
 
     @pytest.fixture
-    def compressed_entry(self) -> PublishedImage:
-        """A manifest entry with a zstd-encoded rootfs payload."""
+    def compressed_entry(self) -> tuple[PublishedImage, bytes, bytes, bytes]:
+        """A manifest entry whose rootfs SHA matches a real zstd payload.
+
+        Returns ``(entry, kernel_bytes, rootfs_zst, rootfs_plain)`` so each
+        test can both feed the right wire bytes to the mock HTTP handler
+        AND assert on the decompressed payload.
+        """
         import zstandard
 
         kernel_bytes = b"fake-kernel-bytes"
         rootfs_plain = b"this is the plaintext rootfs content for testing"
         rootfs_zst = zstandard.ZstdCompressor(level=3).compress(rootfs_plain)
 
-        # Stash the bytes on the model via a private attribute so the test
-        # can fish them out later for the mock requests handler.
         entry = PublishedImage(
             preset="codex",
             arch="amd64",
@@ -235,9 +240,7 @@ class TestZstdDecompression:
             rootfs_url="https://example.com/codex-amd64-rootfs.ext4.zst",
             rootfs_sha256=hashlib.sha256(rootfs_zst).hexdigest(),
         )
-        # Pydantic frozen=True blocks normal attr assignment; stash on a
-        # sibling object the test can read.
-        return entry, kernel_bytes, rootfs_zst, rootfs_plain  # type: ignore[return-value]
+        return entry, kernel_bytes, rootfs_zst, rootfs_plain
 
     @patch("smolvm.images.manager.requests.get")
     def test_compressed_rootfs_is_decompressed_after_download(
@@ -368,3 +371,50 @@ class TestBundledManifest:
         arm = MANIFEST[("openclaw", "arm64")]
         assert amd.rootfs_sha256 != arm.rootfs_sha256
         assert amd.kernel_sha256 != arm.kernel_sha256
+
+    def test_manifest_version_matches_cli_version(self) -> None:
+        """Catch drift if pyproject.toml is bumped without regenerating MANIFEST.
+
+        The bundled MANIFEST entries point at images-v<_MANIFEST_VERSION>.
+        Shipping a CLI release whose __version__ doesn't match would have
+        the CLI claim to be vX.Y.Z while pulling images for vA.B.C — a
+        subtle inconsistency that surfaces as 404s from URLs the manifest
+        no longer accurately describes.
+        """
+        from smolvm import __version__
+
+        assert __version__ == _MANIFEST_VERSION, (
+            f"MANIFEST is for v{_MANIFEST_VERSION} but CLI is v{__version__}. "
+            f"Either bump _MANIFEST_VERSION + regenerate the entries from a "
+            f"fresh CI run, or revert the pyproject.toml version bump."
+        )
+
+    def test_all_entries_use_manifest_version_in_url(self) -> None:
+        """Every entry's URL must reference the same release tag we claim."""
+        expected_segment = f"/images-v{_MANIFEST_VERSION}/"
+        for key, entry in MANIFEST.items():
+            assert expected_segment in entry.rootfs_url, (
+                f"{key} rootfs_url doesn't reference {expected_segment}"
+            )
+            assert expected_segment in entry.kernel_url, (
+                f"{key} kernel_url doesn't reference {expected_segment}"
+            )
+
+
+class TestDecompressZstd:
+    """Direct tests for the streaming decompressor."""
+
+    def test_corrupted_input_cleans_up_tmp_file(self, tmp_path: Path) -> None:
+        """A failed decompress must not leave a half-written ``.tmp`` behind."""
+        import zstandard
+
+        src = tmp_path / "corrupt.ext4.zst"
+        src.write_bytes(b"this is definitely not a valid zstd stream")
+        dst = tmp_path / "corrupt.ext4"
+
+        with pytest.raises(zstandard.ZstdError):
+            _decompress_zstd(src, dst)
+
+        # Neither the destination nor the .tmp sibling should remain.
+        assert not dst.exists()
+        assert not (dst.parent / (dst.name + ".tmp")).exists()

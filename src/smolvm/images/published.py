@@ -81,6 +81,13 @@ def _release_asset_url(preset: Preset, arch: Arch, suffix: str, version: str) ->
     )
 
 
+# Version of the published images this CLI release was paired with.
+# Bumping this requires regenerating every MANIFEST entry below from a
+# fresh CI run (new artifacts → new SHAs → new URLs). The drift-detection
+# test in test_published_images.py asserts this matches __version__ so
+# pyproject.toml version bumps don't ship with stale manifest entries.
+_MANIFEST_VERSION = "0.0.13"
+
 # Bundled manifest. New (preset, arch) entries land here as CI publishes
 # images — paired by version with this CLI release. The SHA-256s and URLs
 # below match the artifacts produced by the CI workflow at
@@ -90,17 +97,17 @@ MANIFEST: dict[tuple[Preset, Arch], PublishedImage] = {
     ("openclaw", "amd64"): PublishedImage(
         preset="openclaw",
         arch="amd64",
-        kernel_url=_release_asset_url("openclaw", "amd64", "vmlinux.bin", "0.0.13"),
+        kernel_url=_release_asset_url("openclaw", "amd64", "vmlinux.bin", _MANIFEST_VERSION),
         kernel_sha256="d361a5f2e67b2e243964ad93f25a2d9e5bee320204a84a7af089949228af5c2a",
-        rootfs_url=_release_asset_url("openclaw", "amd64", "rootfs.ext4.zst", "0.0.13"),
+        rootfs_url=_release_asset_url("openclaw", "amd64", "rootfs.ext4.zst", _MANIFEST_VERSION),
         rootfs_sha256="5d3fe222b017f350f5bb2f01c1fa28cd3425b5dddb32d6377d97bc0e3fea355b",
     ),
     ("openclaw", "arm64"): PublishedImage(
         preset="openclaw",
         arch="arm64",
-        kernel_url=_release_asset_url("openclaw", "arm64", "vmlinux.bin", "0.0.13"),
+        kernel_url=_release_asset_url("openclaw", "arm64", "vmlinux.bin", _MANIFEST_VERSION),
         kernel_sha256="7d8dc0bce701037ea5ceccfc997c05b11f99aba215c73ed18a2269154837c497",
-        rootfs_url=_release_asset_url("openclaw", "arm64", "rootfs.ext4.zst", "0.0.13"),
+        rootfs_url=_release_asset_url("openclaw", "arm64", "rootfs.ext4.zst", _MANIFEST_VERSION),
         rootfs_sha256="48d86a4e4a75f8c101ebab3f76067cc2c92473ac0c30d5a2fd71a1dd2f43f6c7",
     ),
 }
@@ -143,10 +150,10 @@ def to_image_source(entry: PublishedImage, version: str = __version__) -> ImageS
 
 
 def _decompress_zstd(src: Path, dst: Path) -> None:
-    """Stream-decompress a zstd file. Writes to ``dst.tmp`` then renames."""
+    """Stream-decompress a zstd file. Writes to a sibling ``.tmp`` then renames."""
     import zstandard
 
-    tmp = dst.with_suffix(dst.suffix + ".tmp")
+    tmp = dst.parent / (dst.name + ".tmp")
     try:
         with src.open("rb") as src_f, tmp.open("wb") as dst_f:
             zstandard.ZstdDecompressor().copy_stream(src_f, dst_f)
@@ -197,9 +204,4 @@ def ensure_published_image(
     if not decompressed_path.is_file():
         _decompress_zstd(local.rootfs_path, decompressed_path)
 
-    return LocalImage(
-        name=local.name,
-        kernel_path=local.kernel_path,
-        initrd_path=local.initrd_path,
-        rootfs_path=decompressed_path,
-    )
+    return local.model_copy(update={"rootfs_path": decompressed_path})
