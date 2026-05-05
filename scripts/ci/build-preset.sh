@@ -2,8 +2,16 @@
 # Layer a preset on top of the shared base rootfs.
 #
 # Usage:  build-preset.sh <preset> <base-rootfs.ext4> <output-dir> [size-mb]
+# Env:    OS=ubuntu|alpine (default: ubuntu)
+#         ARCH=amd64|arm64 (default: dpkg/uname)
 #
-# Produces: <output-dir>/<preset>-<arch>-rootfs.ext4
+# Produces:
+#   ubuntu: <output-dir>/<preset>-<arch>-rootfs.ext4
+#   alpine: <output-dir>/<preset>-<arch>-alpine-rootfs.ext4
+#
+# The Ubuntu asset name has no OS suffix for backward compat with the
+# existing release; Alpine introduces the suffix as it lands. Same naming
+# is mirrored in the published manifest's URL builder.
 #
 # Strategy: copy the base ext4, mount it, chroot into it, run the
 # preset-specific install script, unmount. The result is a self-contained
@@ -20,6 +28,7 @@ PRESET="${1:?Usage: build-preset.sh <preset> <base-rootfs.ext4> <output-dir> [si
 BASE_ROOTFS="${2:?Missing base-rootfs.ext4 path}"
 OUT_DIR="${3:?Missing output directory}"
 SIZE_MB="${4:-4096}"
+OS="${OS:-ubuntu}"
 ARCH="${ARCH:-$(dpkg --print-architecture 2>/dev/null || uname -m)}"
 
 # Normalize arch naming
@@ -29,10 +38,41 @@ case "$ARCH" in
   *) echo "Unsupported arch: $ARCH"; exit 1 ;;
 esac
 
-mkdir -p "$OUT_DIR"
-ROOTFS="$OUT_DIR/${PRESET}-${ARCH}-rootfs.ext4"
+case "$OS" in
+  ubuntu)
+    OUT_NAME="${PRESET}-${ARCH}"
+    SHELL_BIN="/bin/bash"
+    ;;
+  alpine)
+    OUT_NAME="${PRESET}-${ARCH}-alpine"
+    # Alpine ships /bin/bash (we apk-install it in the base) so the install
+    # snippets below — which use ``set -euo pipefail`` and other bash-isms —
+    # still run cleanly without busybox-ash quirks.
+    SHELL_BIN="/bin/bash"
+    ;;
+  *)
+    echo "Unsupported OS: $OS (expected: ubuntu | alpine)" >&2
+    exit 1
+    ;;
+esac
 
-echo "==> Copying base rootfs for preset '$PRESET' ($ARCH)..."
+# Phase 1 of the Alpine rollout (#264) restricts which presets are eligible:
+# pure-JS presets only. hermes pulls musllinux-incompatible Python wheels
+# and openclaw pulls glibc-only @node-llama-cpp prebuilts.
+if [ "$OS" = "alpine" ]; then
+  case "$PRESET" in
+    codex|claude-code|pi) ;;
+    *)
+      echo "Preset '$PRESET' is not yet supported on Alpine (Phase 1 covers codex/claude-code/pi)." >&2
+      exit 1
+      ;;
+  esac
+fi
+
+mkdir -p "$OUT_DIR"
+ROOTFS="$OUT_DIR/${OUT_NAME}-rootfs.ext4"
+
+echo "==> Copying base rootfs for preset '$PRESET' ($ARCH, $OS)..."
 cp "$BASE_ROOTFS" "$ROOTFS"
 
 # Resize if needed (base may be smaller than target)
@@ -74,11 +114,11 @@ if [ -e "$MNT/etc/resolv.conf" ]; then
 fi
 cp /etc/resolv.conf "$MNT/etc/resolv.conf" 2>/dev/null || true
 
-echo "==> Installing preset '$PRESET'..."
+echo "==> Installing preset '$PRESET' ($OS)..."
 
 case "$PRESET" in
   codex)
-    chroot "$MNT" /bin/bash -c '
+    chroot "$MNT" "$SHELL_BIN" -c '
       set -euo pipefail
       npm install -g --silent @openai/codex
       npm cache clean --force >/dev/null 2>&1 || true
@@ -87,7 +127,7 @@ case "$PRESET" in
     ;;
 
   claude-code)
-    chroot "$MNT" /bin/bash -c '
+    chroot "$MNT" "$SHELL_BIN" -c '
       set -euo pipefail
       npm install -g --silent @anthropic-ai/claude-code
       npm cache clean --force >/dev/null 2>&1 || true
@@ -96,7 +136,9 @@ case "$PRESET" in
     ;;
 
   hermes)
-    chroot "$MNT" /bin/bash -c '
+    # Ubuntu-only — gated above, but keep the install body here so a
+    # future Alpine-compatible spike can flip the gate without rewriting.
+    chroot "$MNT" "$SHELL_BIN" -c '
       set -euo pipefail
       if [ ! -d /opt/hermes-agent ]; then
         git clone --depth 1 https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent
@@ -114,7 +156,7 @@ case "$PRESET" in
     ;;
 
   pi)
-    chroot "$MNT" /bin/bash -c '
+    chroot "$MNT" "$SHELL_BIN" -c '
       set -euo pipefail
       npm install -g --silent @mariozechner/pi-coding-agent
       npm cache clean --force >/dev/null 2>&1 || true

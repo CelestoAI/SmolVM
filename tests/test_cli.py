@@ -3013,7 +3013,7 @@ class TestPublishedImageLaunchPath:
             mock_apply.assert_not_called()
 
         assert ret == 0
-        mock_ensure_image.assert_called_once_with("openclaw", expected_arch, expected_vmm)
+        mock_ensure_image.assert_called_once_with("openclaw", expected_arch, expected_vmm, "ubuntu")
 
         # Verify VMConfig was built with the right wiring.
         config_arg = mock_vm_cls.call_args[0][0]

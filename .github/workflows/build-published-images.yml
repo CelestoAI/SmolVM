@@ -52,6 +52,10 @@ jobs:
       fail-fast: false
       matrix:
         arch: [amd64, arm64]
+        # Two flavours per arch: Ubuntu 24.04 (current default) and Alpine
+        # 3.20 (smaller footprint, opt-in via ``smolvm <preset> start --os
+        # alpine``). Same kernel boots both — only the rootfs differs.
+        os: [ubuntu, alpine]
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     timeout-minutes: 15
 
@@ -65,13 +69,15 @@ jobs:
         run: docker info >/dev/null
 
       - name: Build base rootfs
+        env:
+          OS: ${{ matrix.os }}
         run: |
-          sudo bash scripts/ci/build-base-rootfs.sh /tmp/base 4096
+          sudo OS="$OS" bash scripts/ci/build-base-rootfs.sh /tmp/base
 
       - name: Upload base rootfs artifact
         uses: actions/upload-artifact@v4
         with:
-          name: base-rootfs-${{ matrix.arch }}
+          name: base-rootfs-${{ matrix.os }}-${{ matrix.arch }}
           path: /tmp/base/base-rootfs.ext4
           retention-days: 1
 
@@ -267,6 +273,15 @@ jobs:
       matrix:
         arch: [amd64, arm64]
         preset: [codex, claude-code, hermes, pi]
+        os: [ubuntu, alpine]
+        # Phase 1 of the Alpine rollout (#264) excludes hermes — its
+        # ``[all]`` extras pull manylinux2014 wheels that don't have
+        # musllinux variants, so the install would fall back to slow
+        # source builds with sometimes-broken results. Re-enable when
+        # we have a curated minimal extras set.
+        exclude:
+          - preset: hermes
+            os: alpine
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     timeout-minutes: 20
 
@@ -321,7 +336,7 @@ jobs:
         if: steps.filter.outputs.skip != 'true'
         uses: actions/download-artifact@v4
         with:
-          name: base-rootfs-${{ matrix.arch }}
+          name: base-rootfs-${{ matrix.os }}-${{ matrix.arch }}
           path: /tmp/base
 
       - name: Layer preset on base rootfs
@@ -330,14 +345,20 @@ jobs:
         env:
           PRESET: ${{ matrix.preset }}
           ARCH: ${{ matrix.arch }}
+          OS: ${{ matrix.os }}
         run: |
           # Hermes needs more disk (Python deps are heavier)
           SIZE=4096
           if [ "$PRESET" = "hermes" ]; then
             SIZE=6144
           fi
+          # Alpine + JS preset is ~half the Ubuntu equivalent — give it
+          # less scratch space so the published artifact stays compact.
+          if [ "$OS" = "alpine" ]; then
+            SIZE=2048
+          fi
 
-          sudo ARCH="$ARCH" bash scripts/ci/build-preset.sh \
+          sudo ARCH="$ARCH" OS="$OS" bash scripts/ci/build-preset.sh \
             "$PRESET" /tmp/base/base-rootfs.ext4 /tmp/out "$SIZE"
 
           # build-preset.sh ran under sudo (mount + chroot need root), so
@@ -345,7 +366,15 @@ jobs:
           # subsequent zstd `--rm` step can delete the source file.
           sudo chown -R "$(id -u):$(id -g)" /tmp/out
 
-          name="${PRESET}-${ARCH}"
+          # Asset naming asymmetry: ubuntu has no OS suffix (legacy from
+          # the single-flavour era), alpine introduces ``-alpine-``. The
+          # published manifest URL builder mirrors this in
+          # ``src/smolvm/images/published.py::_release_asset_url``.
+          if [ "$OS" = "ubuntu" ]; then
+            name="${PRESET}-${ARCH}"
+          else
+            name="${PRESET}-${ARCH}-${OS}"
+          fi
           rootfs="/tmp/out/${name}-rootfs.ext4"
 
           echo "rootfs_path=${rootfs}" >> "$GITHUB_OUTPUT"

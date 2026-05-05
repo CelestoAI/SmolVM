@@ -1,0 +1,66 @@
+# Alpine variant of the shared base rootfs.
+#
+# Same role as Dockerfile.base-rootfs (Ubuntu) — provides Node 22, Python 3,
+# uv, git, openssh, common system packages — but built on Alpine 3.20 + musl
+# libc + busybox userland. The resulting ext4 lands at roughly half the size
+# of the Ubuntu base (~200 MB vs ~419 MB), and there's correspondingly less
+# data to page in at boot.
+#
+# Tradeoff: musl libc breaks upstream binaries that ship glibc-only prebuilts
+# (``@node-llama-cpp``, some ``manylinux2014`` Python wheels). Phase 1
+# restricts the Alpine variant to pure-JS presets (codex, claude-code, pi).
+# hermes (heavy ML wheels) and openclaw (node-llama-cpp prebuilts) stay
+# Ubuntu-only until those upstream gaps are closed — see issue #264.
+
+FROM alpine:3.20
+
+# ── System packages ─────────────────────────────────────────────
+# Single RUN keeps everything in one layer. ``--no-cache`` is the apk
+# equivalent of apt's "clean + rm -rf /var/lib/apt/lists/*" — it skips
+# writing the package index to /var/cache/apk in the first place.
+RUN apk add --no-cache \
+        openssh-server \
+        openssh-keygen \
+        openrc \
+        iproute2 \
+        curl \
+        ca-certificates \
+        git \
+        bash \
+        nodejs \
+        npm \
+        python3 \
+        py3-pip \
+    && rm -rf \
+        /usr/share/man \
+        /usr/share/doc \
+        /usr/share/info \
+        /usr/share/locale \
+        /var/cache/apk/* \
+        /tmp/* \
+        /root/.cache \
+    && find /usr -depth -name __pycache__ -type d -exec rm -rf {} + \
+    && find /usr -name '*.pyc' -delete
+
+# ── uv (fast Python package manager) ───────────────────────────
+# Installed system-wide so all presets pick it up without modifying PATH.
+# uv ships musl wheels (``uv-x86_64-unknown-linux-musl`` /
+# ``uv-aarch64-unknown-linux-musl``) so the install script picks the
+# Alpine-compatible binary automatically.
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && cp /root/.local/bin/uv /usr/local/bin/uv \
+    && cp /root/.local/bin/uvx /usr/local/bin/uvx \
+    && rm -rf /root/.local /root/.cache
+
+# ── SSH hardening ───────────────────────────────────────────────
+# Host keys generated at first boot via /init (preset-init.sh runs
+# ``ssh-keygen -A`` if no host keys are present).
+RUN rm -f /etc/ssh/ssh_host_* \
+    && mkdir -p /run/sshd /root/.ssh \
+    && chmod 700 /root/.ssh \
+    && sed -ri 's/^#?PermitRootLogin .*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config \
+    && sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config \
+    && sed -ri 's/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+
+# ── Workspace directory ─────────────────────────────────────────
+RUN mkdir -p /workspace
