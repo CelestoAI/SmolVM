@@ -151,8 +151,8 @@ jobs:
           if [ -n "$INPUT_TAG" ]; then
             tag="$INPUT_TAG"
           else
-            version=$(uv run python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-            tag="images-v${version}"
+            # Single source of truth — published.py::IMAGES_RELEASE_TAG.
+            tag=$(uv run python -c 'from smolvm.images.published import IMAGES_RELEASE_TAG; print(IMAGES_RELEASE_TAG)')
           fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "Release tag: ${tag}"
@@ -222,6 +222,11 @@ jobs:
               || echo "Draft already exists (race with another matrix cell), continuing."
           fi
 
+          # --clobber overwrites any prior asset with the same name, so
+          # re-runs of the workflow for the same tag replace existing
+          # artifacts. NOTE: this allows silent SHA drift relative to the
+          # manifest. Catching that requires a smoke test that verifies
+          # live bytes against recorded SHAs — tracked separately.
           gh release upload "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --clobber \
@@ -294,8 +299,8 @@ jobs:
           if [ -n "$INPUT_TAG" ]; then
             tag="$INPUT_TAG"
           else
-            version=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-            tag="images-v${version}"
+            # Single source of truth — published.py::IMAGES_RELEASE_TAG.
+            tag=$(uv run python -c 'from smolvm.images.published import IMAGES_RELEASE_TAG; print(IMAGES_RELEASE_TAG)')
           fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "Release tag: ${tag}"
@@ -368,6 +373,11 @@ jobs:
               || echo "Draft already exists (race with another matrix cell), continuing."
           fi
 
+          # --clobber overwrites any prior asset with the same name, so
+          # re-runs of the workflow for the same tag replace existing
+          # artifacts. NOTE: this allows silent SHA drift relative to the
+          # manifest. Catching that requires a smoke test that verifies
+          # live bytes against recorded SHAs — tracked separately.
           gh release upload "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --clobber \

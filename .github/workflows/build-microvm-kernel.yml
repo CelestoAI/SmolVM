@@ -101,10 +101,10 @@ jobs:
           if [ -n "${INPUT_TAG:-}" ]; then
             tag="$INPUT_TAG"
           else
-            # tomllib.load() takes a binary file; tomllib.loads() takes a str
-            # (NOT bytes). Same idiom as build-published-images.yml.
-            version=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-            tag="images-v${version}"
+            # Single source of truth — published.py::IMAGES_RELEASE_TAG.
+            # Doesn't auto-track pyproject version; bumped only when image
+            # artifacts are republished (see published.py docstring).
+            tag=$(python3 -c 'import sys; sys.path.insert(0, "src"); from smolvm.images.published import IMAGES_RELEASE_TAG; print(IMAGES_RELEASE_TAG)')
           fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "Release tag: ${tag}"
@@ -141,8 +141,9 @@ jobs:
               --notes "Auto-generated draft release for SmolVM published images. Verify SHA-256 sums and content before publishing." \
               || echo "Draft already exists (race with another matrix cell), continuing."
           fi
-          # --clobber overwrites any prior asset with the same name, so re-runs
-          # of the workflow for the same tag replace existing artifacts cleanly.
+          # --clobber overwrites prior artifacts. NOTE: allows silent SHA
+          # drift relative to BASE_KERNELS — drift detection via live SHA
+          # smoke test is a separate workflow.
           gh release upload "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --clobber \
