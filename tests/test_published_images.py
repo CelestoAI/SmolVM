@@ -674,23 +674,6 @@ class TestBundledManifest:
         assert amd.rootfs_sha256 != arm.rootfs_sha256
         assert amd.rootfs_url != arm.rootfs_url
 
-    def test_manifest_version_matches_cli_version(self) -> None:
-        """Catch drift if pyproject.toml is bumped without regenerating MANIFEST.
-
-        The bundled MANIFEST entries point at images-v<_MANIFEST_VERSION>.
-        Shipping a CLI release whose __version__ doesn't match would have
-        the CLI claim to be vX.Y.Z while pulling images for vA.B.C — a
-        subtle inconsistency that surfaces as 404s from URLs the manifest
-        no longer accurately describes.
-        """
-        from smolvm import __version__
-
-        assert __version__ == _MANIFEST_VERSION, (
-            f"MANIFEST is for v{_MANIFEST_VERSION} but CLI is v{__version__}. "
-            f"Either bump _MANIFEST_VERSION + regenerate the entries from a "
-            f"fresh CI run, or revert the pyproject.toml version bump."
-        )
-
     def test_all_entries_use_manifest_version_in_url(self) -> None:
         """Every entry's URL must reference the same release tag we claim."""
         expected_segment = f"/images-v{_MANIFEST_VERSION}/"

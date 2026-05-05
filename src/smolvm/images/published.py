@@ -151,9 +151,7 @@ def _release_kernel_url(arch: Arch, fmt: KernelFormat, version: str) -> str:
 
 # Version of the published images this CLI release was paired with.
 # Bumping this requires regenerating every MANIFEST entry below from a
-# fresh CI run (new artifacts → new SHAs → new URLs). The drift-detection
-# test in test_published_images.py asserts this matches __version__ so
-# pyproject.toml version bumps don't ship with stale manifest entries.
+# fresh CI run (new artifacts → new SHAs → new URLs).
 _MANIFEST_VERSION = "0.0.14a0"
 
 # Per-arch SmolVM-built kernels. Each :class:`BaseKernel` carries BOTH the

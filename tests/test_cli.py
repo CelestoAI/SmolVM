@@ -2721,57 +2721,12 @@ class TestCliStart:
 
 
 class TestPublishedImageLaunchPath:
-    """Tests for the SMOLVM_USE_PUBLISHED opt-in launch path.
+    """Tests for the published-image launch path.
 
-    When set, ``smolvm <preset> start`` skips the install-at-boot flow
-    (build alpine_ssh_key + apply_preset) and instead downloads a
-    pre-built rootfs from GitHub Releases via ensure_published_image,
-    then boots Firecracker directly. Tooling assumed to be preinstalled
-    in the image.
+    ``smolvm <preset> start`` uses a pre-built rootfs from GitHub Releases
+    via ensure_published_image, then boots directly. Tooling assumed to be
+    preinstalled in the image.
     """
-
-    def test_env_helper_default_on(self) -> None:
-        """Post-0.0.14a0 the published-image path is the default."""
-        from smolvm.cli.main import _published_path_enabled
-
-        prev = os.environ.pop("SMOLVM_USE_PUBLISHED", None)
-        try:
-            assert _published_path_enabled() is True
-        finally:
-            if prev is not None:
-                os.environ["SMOLVM_USE_PUBLISHED"] = prev
-
-    @pytest.mark.parametrize(
-        "value,expected",
-        [
-            # truthy values (also the default when unset)
-            ("1", True),
-            ("true", True),
-            ("TRUE", True),
-            ("yes", True),
-            ("YES", True),
-            ("", True),  # empty string = unset = default ON
-            ("anything-else", True),  # forward-compat: only an explicit opt-out wins
-            # falsy values — explicit opt-out
-            ("0", False),
-            ("false", False),
-            ("FALSE", False),
-            ("no", False),
-            ("NO", False),
-        ],
-    )
-    def test_env_helper_parses_truthy(self, value: str, expected: bool) -> None:
-        from smolvm.cli.main import _published_path_enabled
-
-        prev = os.environ.get("SMOLVM_USE_PUBLISHED")
-        try:
-            os.environ["SMOLVM_USE_PUBLISHED"] = value
-            assert _published_path_enabled() is expected
-        finally:
-            if prev is None:
-                os.environ.pop("SMOLVM_USE_PUBLISHED", None)
-            else:
-                os.environ["SMOLVM_USE_PUBLISHED"] = prev
 
     @patch("smolvm.cli.main.platform.machine")
     def test_arch_helper_normalizes(self, mock_machine: MagicMock) -> None:
@@ -2795,13 +2750,12 @@ class TestPublishedImageLaunchPath:
         with pytest.raises(RuntimeError, match="Unsupported host architecture"):
             _host_arch_for_published()
 
-    @patch.dict(os.environ, {"SMOLVM_USE_PUBLISHED": "1"})
     @patch("smolvm.cli.main._run_start_with_published_image")
     def test_start_routes_to_published_path_when_env_set(
         self,
         mock_published_path: MagicMock,
     ) -> None:
-        """SMOLVM_USE_PUBLISHED=1 must short-circuit before the legacy path."""
+        """Published path must short-circuit before the legacy install-at-boot path."""
         mock_published_path.return_value = 0
 
         ret = main(["openclaw", "start", "--json"])
@@ -2812,7 +2766,6 @@ class TestPublishedImageLaunchPath:
         called_args = mock_published_path.call_args[0]
         assert called_args[1].name == "openclaw"
 
-    @patch.dict(os.environ, {"SMOLVM_USE_PUBLISHED": "1"})
     @patch("smolvm.cli.main.platform.system", return_value="Linux")
     @patch("smolvm.images.published.ensure_published_image")
     def test_published_path_surfaces_missing_manifest_error(
@@ -2889,7 +2842,6 @@ class TestPublishedImageLaunchPath:
             assert "console=" not in result
             assert "8250.nr_uarts=0" in result
 
-    @patch.dict(os.environ, {"SMOLVM_USE_PUBLISHED": "1"})
     @patch("smolvm.cli.main.platform.system", return_value="Linux")
     @patch(
         "smolvm.cli.main._PUBLISHED_IMAGE_BOOT_ARGS",
@@ -2908,7 +2860,6 @@ class TestPublishedImageLaunchPath:
         assert ret == 2
         assert envelope["exit_code"] == 2
         assert "no boot_args" in envelope["error"]["message"]
-        assert "SMOLVM_USE_PUBLISHED" in envelope["error"]["message"]
 
     @pytest.mark.parametrize(
         "system,machine,expected_arch,expected_vmm,expected_backend",
@@ -2919,7 +2870,6 @@ class TestPublishedImageLaunchPath:
             ("Darwin", "x86_64", "amd64", "qemu", "qemu"),
         ],
     )
-    @patch.dict(os.environ, {"SMOLVM_USE_PUBLISHED": "1"})
     @patch("smolvm.cli.main.subprocess.run")
     @patch("smolvm.facade.SmolVM")
     @patch("smolvm.utils.ensure_ssh_key")
@@ -2998,7 +2948,6 @@ class TestPublishedImageLaunchPath:
         mock_vm.delete.assert_not_called()
         mock_vm.close.assert_called_once()
 
-    @patch.dict(os.environ, {"SMOLVM_USE_PUBLISHED": "1"})
     @patch("smolvm.cli.main.subprocess.run")
     @patch("smolvm.facade.SmolVM")
     @patch("smolvm.utils.ensure_ssh_key")
