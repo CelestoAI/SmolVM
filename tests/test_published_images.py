@@ -36,6 +36,7 @@ from smolvm.images.published import (
     cache_name,
     ensure_base_kernel,
     ensure_published_image,
+    is_preset_published,
     lookup,
     release_tag,
     to_image_source,
@@ -139,6 +140,58 @@ class TestLookup:
         # And one that's guaranteed not to:
         with pytest.raises(ImageError, match="No published image"):
             lookup("hermes", "arm64", "firecracker")  # type: ignore[arg-type]
+
+
+class TestIsPresetPublished:
+    def test_true_for_registered_entry(
+        self,
+        sample_manifest: dict[tuple[Preset, Arch, Vmm], PublishedImage],
+    ) -> None:
+        assert is_preset_published("codex", "amd64", "firecracker", manifest=sample_manifest)
+
+    def test_false_for_missing_arch(
+        self,
+        sample_manifest: dict[tuple[Preset, Arch, Vmm], PublishedImage],
+    ) -> None:
+        assert not is_preset_published("codex", "arm64", "firecracker", manifest=sample_manifest)
+
+    def test_false_for_missing_vmm(
+        self,
+        sample_manifest: dict[tuple[Preset, Arch, Vmm], PublishedImage],
+    ) -> None:
+        assert not is_preset_published("codex", "amd64", "qemu", manifest=sample_manifest)
+
+    def test_false_for_unknown_preset(
+        self,
+        sample_manifest: dict[tuple[Preset, Arch, Vmm], PublishedImage],
+    ) -> None:
+        # Accepts arbitrary preset strings so the CLI doesn't need to coerce
+        # against the Preset literal before dispatching.
+        assert not is_preset_published(
+            "claude-code", "amd64", "firecracker", manifest=sample_manifest
+        )
+
+    def test_accepts_arbitrary_preset_string(
+        self,
+        sample_manifest: dict[tuple[Preset, Arch, Vmm], PublishedImage],
+    ) -> None:
+        # Presets that aren't in the Preset literal must just return False, not
+        # raise — the CLI passes user-typed preset names straight through.
+        assert not is_preset_published(
+            "totally-made-up", "amd64", "firecracker", manifest=sample_manifest
+        )
+
+    def test_empty_manifest_returns_false(self) -> None:
+        assert not is_preset_published("codex", "amd64", "firecracker", manifest={})
+
+    def test_default_manifest_used_when_not_overridden(self) -> None:
+        # Cross-check against the bundled MANIFEST: at least one of its entries
+        # must report True, and a guaranteed-missing tuple must report False.
+        if not MANIFEST:
+            pytest.skip("default manifest is empty in this release")
+        preset, arch, vmm = next(iter(MANIFEST))
+        assert is_preset_published(preset, arch, vmm)
+        assert not is_preset_published("definitely-not-a-real-preset", arch, vmm)
 
 
 class TestToImageSource:

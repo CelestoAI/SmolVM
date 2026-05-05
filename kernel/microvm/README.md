@@ -106,7 +106,8 @@ That's what the fragments in this directory encode.
 ```sh
 cd kernel/microvm
 bash build.sh
-# Produces vmlinux-<host_arch>-qemu.bin in the current directory.
+# Produces vmlinux-<host_arch>.elf and vmlinux-<host_arch>.image
+# (and vmlinux-<host_arch>.config) in the current directory.
 ```
 
 The build needs GNU Make 4.0 or newer. macOS ships an older `make`,

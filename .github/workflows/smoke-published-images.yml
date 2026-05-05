@@ -30,6 +30,12 @@ on:
         type: string
         default: ""
   workflow_run:
+    # NB: these are matched by the upstream workflow's `name:` field (the
+    # display name), NOT the YAML filename. Keep them in sync with
+    # build-microvm-kernel.yml (`name: Build microvm Kernel`) and
+    # build-published-images.yml (`name: Build Published Images`). Renaming
+    # either workflow's display name without updating this list silently
+    # disables the smoke gate.
     workflows: ["Build microvm Kernel", "Build Published Images"]
     types:
       - completed
