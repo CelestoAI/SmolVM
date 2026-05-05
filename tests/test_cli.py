@@ -2879,15 +2879,30 @@ class TestPublishedImageLaunchPath:
         called_args = mock_published_path.call_args[0]
         assert called_args[1].name == "openclaw"
 
+    @patch("smolvm.utils.ensure_ssh_key")
     @patch("smolvm.cli.main.platform.system", return_value="Linux")
     @patch("smolvm.images.published.ensure_published_image")
     def test_published_path_surfaces_missing_manifest_error(
         self,
         mock_ensure: MagicMock,
         _mock_system: MagicMock,
+        mock_ensure_ssh_key: MagicMock,
+        tmp_path: Path,
     ) -> None:
-        """An empty manifest entry should produce a clean CLI error, not a crash."""
+        """An empty manifest entry should produce a clean CLI error, not a crash.
+
+        ``ensure_ssh_key`` is mocked because the published-image launch
+        path resolves keys before the manifest lookup runs; on hosts
+        without ssh-keygen on PATH the test would fail there instead of
+        reaching the ImageError it's meant to verify.
+        """
         from smolvm.exceptions import ImageError
+
+        priv = tmp_path / "id_ed25519"
+        pub = tmp_path / "id_ed25519.pub"
+        priv.touch()
+        pub.write_text("ssh-ed25519 AAAAExampleKey test@host\n")
+        mock_ensure_ssh_key.return_value = (priv, pub)
 
         mock_ensure.side_effect = ImageError(
             "No published image for preset 'openclaw' on arch 'amd64' (available: (none))."
