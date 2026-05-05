@@ -328,6 +328,11 @@ jobs:
           sudo ARCH="$ARCH" bash scripts/ci/build-preset.sh \
             "$PRESET" /tmp/base/base-rootfs.ext4 /tmp/out "$SIZE"
 
+          # build-preset.sh ran under sudo (mount + chroot need root), so
+          # /tmp/out is owned by root. Chown to the runner user so the
+          # subsequent zstd `--rm` step can delete the source file.
+          sudo chown -R "$(id -u):$(id -g)" /tmp/out
+
           name="${PRESET}-${ARCH}"
           rootfs="/tmp/out/${name}-rootfs.ext4"
 
