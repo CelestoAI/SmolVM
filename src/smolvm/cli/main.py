@@ -1879,7 +1879,7 @@ def _published_path_enabled() -> bool:
     """Opt-out switch for the published-image launch path.
 
     Default ON (post-0.0.14a0): ``smolvm <preset> start`` pulls a pre-built
-    image from GitHub Releases for fast first-boot (~5–10 s vs 60–120 s for
+    image from GitHub Releases for fast first-boot (~5-10 s vs 60-120 s for
     install-at-boot). Set ``SMOLVM_USE_PUBLISHED=0`` (or ``false``/``no``)
     to opt out and fall back to the install-at-boot flow.
 
@@ -2055,12 +2055,21 @@ def _run_start(args: argparse.Namespace) -> int:
             # to install-at-boot, which has its own platform errors.
             pass
         else:
-            if is_preset_published(preset.name, arch, vmm):
+            # Don't override an explicit --backend. _vmm_for_host() picks the
+            # default vmm for this OS; if the user asked for a different
+            # backend, fall through to install-at-boot rather than silently
+            # booting the wrong runtime.
+            requested_backend = args.backend or "auto"
+            published_backend = _VMM_TO_BACKEND[vmm]
+            if requested_backend in {"auto", published_backend} and is_preset_published(
+                preset.name, arch, vmm
+            ):
                 return _run_start_with_published_image(args, preset)
             # No CI-built rootfs for this preset yet (only openclaw is
-            # published today). Fall through to install-at-boot — the
-            # progress UI from the build flow surfaces clearly enough that
-            # users see the difference.
+            # published today), or the user asked for a different backend.
+            # Fall through to install-at-boot — the progress UI from the
+            # build flow surfaces clearly enough that users see the
+            # difference.
 
     backend = args.backend or "qemu"
     if backend != "qemu":

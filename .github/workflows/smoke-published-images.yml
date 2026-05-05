@@ -98,7 +98,7 @@ jobs:
           mkdir -p smoke
           gh release download "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
-              --pattern "vmlinux-${ARCH}-qemu.bin" \
+              --pattern "vmlinux-${ARCH}.image" \
               -D smoke
 
       - name: Download rootfs (openclaw)
@@ -167,7 +167,7 @@ jobs:
           fi
           sudo $QEMU \
               $MACHINE -smp 2 -m 2048 \
-              -kernel smoke/vmlinux-${ARCH}-qemu.bin \
+              -kernel smoke/vmlinux-${ARCH}.image \
               -drive file=smoke/rootfs.raw,if=none,id=root,format=raw \
               -device virtio-blk-pci,drive=root \
               -drive file=smoke/seed.iso,if=none,id=seed,format=raw,readonly=on \

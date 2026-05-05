@@ -164,7 +164,7 @@ slow boot.
 
 ```sh
 qemu-system-aarch64 -machine virt,accel=hvf -cpu host -smp 2 -m 1024 \
-    -kernel vmlinux-arm64-qemu.bin \
+    -kernel vmlinux-arm64.image \
     -drive file=/path/to/openclaw/rootfs.ext4,format=raw,if=none,id=root \
     -device virtio-blk-pci,drive=root \
     -netdev user,id=net0 -device virtio-net-pci,netdev=net0 \
@@ -176,7 +176,7 @@ Expected: kernel boot messages, `/init` log lines, sshd listening on
 `10.0.2.15:22`. If you see `<<< pl011 console >>>` text but the boot stalls,
 check the rootfs has a valid `/init`. If you see nothing at all, check
 `config.fragment` against the actual `.config` (also written to
-`vmlinux-<arch>-qemu.config` next to the artifact).
+`vmlinux-<arch>.config` next to the artifact).
 
 ## Updating Linux
 
@@ -209,12 +209,14 @@ bash build.sh
 
 ## Naming convention (asymmetric, by design)
 
-The artifact is named `vmlinux-<arch>-qemu.bin` — preset-independent. The
-existing **Firecracker** artifacts are named `<preset>-<arch>-vmlinux.bin`
-— per-preset, even though the kernel itself doesn't depend on the preset.
-That asymmetry is intentional for now: the kernel really is preset-agnostic
-and we don't want to encode that fiction into the new naming. Cleanup of the
-older Firecracker naming is a future task.
+The artifacts are named `vmlinux-<arch>.elf` (Firecracker / libkrun) and
+`vmlinux-<arch>.image` (QEMU) — both preset-independent. The existing
+**Firecracker** artifacts produced by the old per-preset build are named
+`<preset>-<arch>-vmlinux.bin` — per-preset, even though the kernel itself
+doesn't depend on the preset. That asymmetry is intentional for now: the
+kernel really is preset-agnostic and we don't want to encode that fiction
+into the new naming. Cleanup of the older Firecracker naming is a future
+task.
 
 ## Constraints and tradeoffs
 
