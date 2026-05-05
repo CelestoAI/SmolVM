@@ -1863,6 +1863,17 @@ _VMM_TO_BACKEND: dict[Vmm, str] = {
     "libkrun": "qemu",
 }
 
+# Preset → base OS string used in the start-result envelope.
+# openclaw bakes from node:22.12.0-bookworm-slim (Debian 12);
+# codex/claude-code/hermes/pi layer on Ubuntu 24.04 via build-preset.sh.
+_PRESET_OS_LABEL: dict[str, str] = {
+    "openclaw": "debian-bookworm",
+    "codex": "ubuntu-24.04",
+    "claude-code": "ubuntu-24.04",
+    "hermes": "ubuntu-24.04",
+    "pi": "ubuntu-24.04",
+}
+
 
 def _boot_args_for(preset_name: str, vmm: Vmm, arch: Arch) -> str:
     """Resolve boot args for the published-image path.
@@ -1998,7 +2009,7 @@ def _run_start_with_published_image(args: argparse.Namespace, preset: object) ->
                         if isinstance(vm.info.status, VMState)
                         else VMState.RUNNING.value
                     ),
-                    "os": "debian-bookworm",
+                    "os": _PRESET_OS_LABEL.get(_preset.name, "unknown"),
                     "backend": backend,
                     "ip_address": network.guest_ip if network else None,
                     "ssh_port": network.ssh_host_port if network else None,
