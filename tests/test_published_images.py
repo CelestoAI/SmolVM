@@ -376,12 +376,17 @@ class TestZstdDecompression:
         entry, kernel_bytes, rootfs_zst, rootfs_plain = compressed_entry
         manifest = {(entry.preset, entry.arch, entry.vmm): entry}
 
-        # Pre-populate the cache: compressed file + decompressed sibling.
+        # Pre-populate the cache: compressed file + decompressed sibling +
+        # the SHA sidecar that keys the decompressed file to the .zst's
+        # SHA. Without the sidecar matching the manifest's rootfs_sha256,
+        # ensure_published_image re-decompresses (intended behavior — see
+        # the cache-invalidation comment in published.py).
         image_dir = tmp_path / cache_name(entry.preset, entry.arch, entry.vmm, "0.0.13")
         image_dir.mkdir(parents=True)
         (image_dir / "vmlinux.bin").write_bytes(kernel_bytes)
         (image_dir / "rootfs.ext4.zst").write_bytes(rootfs_zst)
         (image_dir / "rootfs.ext4").write_bytes(rootfs_plain)
+        (image_dir / "rootfs.ext4.from-sha256").write_text(entry.rootfs_sha256)
 
         with patch("smolvm.images.published._decompress_zstd") as mock_decompress:
             local = ensure_published_image(
@@ -396,6 +401,42 @@ class TestZstdDecompression:
             mock_get.assert_not_called()
 
         assert local.rootfs_path.read_bytes() == rootfs_plain
+
+    @patch("smolvm.images.manager.requests.get")
+    def test_decompression_reruns_when_zst_sha_changes(
+        self,
+        mock_get: MagicMock,
+        compressed_entry: tuple[PublishedImage, bytes, bytes, bytes],
+        tmp_path: Path,
+    ) -> None:
+        """A refreshed .zst (different SHA) must re-decompress, not silently
+        serve the stale .ext4 from the previous SHA. The bug this guards
+        against: the openclaw rootfs uid bake regression hid behind a
+        cached decompressed .ext4 even after the .zst was re-fetched."""
+        entry, kernel_bytes, rootfs_zst, rootfs_plain = compressed_entry
+        manifest = {(entry.preset, entry.arch, entry.vmm): entry}
+
+        image_dir = tmp_path / cache_name(entry.preset, entry.arch, entry.vmm, "0.0.13")
+        image_dir.mkdir(parents=True)
+        (image_dir / "vmlinux.bin").write_bytes(kernel_bytes)
+        (image_dir / "rootfs.ext4.zst").write_bytes(rootfs_zst)
+        (image_dir / "rootfs.ext4").write_bytes(rootfs_plain)
+        # Sidecar from a PREVIOUS rootfs SHA (not the one in `entry`).
+        (image_dir / "rootfs.ext4.from-sha256").write_text("0" * 64)
+
+        with patch("smolvm.images.published._decompress_zstd") as mock_decompress:
+            ensure_published_image(
+                entry.preset,
+                entry.arch,
+                entry.vmm,
+                cache_dir=tmp_path,
+                manifest=manifest,
+                version="0.0.13",
+            )
+            mock_decompress.assert_called_once()
+            mock_get.assert_not_called()
+
+        assert (image_dir / "rootfs.ext4.from-sha256").read_text().strip() == entry.rootfs_sha256
 
     @patch("smolvm.images.manager.requests.get")
     def test_uncompressed_rootfs_url_skips_decompression_path(

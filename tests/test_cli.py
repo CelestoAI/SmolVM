@@ -2730,13 +2730,13 @@ class TestPublishedImageLaunchPath:
     in the image.
     """
 
-    def test_env_helper_default_off(self) -> None:
+    def test_env_helper_default_on(self) -> None:
+        """Post-0.0.14a0 the published-image path is the default."""
         from smolvm.cli.main import _published_path_enabled
 
-        # Use monkeypatch-style explicit cleanup so this test is hermetic.
         prev = os.environ.pop("SMOLVM_USE_PUBLISHED", None)
         try:
-            assert _published_path_enabled() is False
+            assert _published_path_enabled() is True
         finally:
             if prev is not None:
                 os.environ["SMOLVM_USE_PUBLISHED"] = prev
@@ -2744,15 +2744,20 @@ class TestPublishedImageLaunchPath:
     @pytest.mark.parametrize(
         "value,expected",
         [
+            # truthy values (also the default when unset)
             ("1", True),
             ("true", True),
             ("TRUE", True),
             ("yes", True),
             ("YES", True),
+            ("", True),  # empty string = unset = default ON
+            ("anything-else", True),  # forward-compat: only an explicit opt-out wins
+            # falsy values — explicit opt-out
             ("0", False),
             ("false", False),
+            ("FALSE", False),
             ("no", False),
-            ("", False),
+            ("NO", False),
         ],
     )
     def test_env_helper_parses_truthy(self, value: str, expected: bool) -> None:

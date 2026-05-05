@@ -1876,14 +1876,22 @@ def _vmm_for_host() -> Vmm:
 
 
 def _published_path_enabled() -> bool:
-    """Opt-in switch for the published-image launch path.
+    """Opt-out switch for the published-image launch path.
 
-    Set ``SMOLVM_USE_PUBLISHED=1`` to bypass the install-at-boot flow and
-    download a pre-built rootfs from GitHub Releases instead. Default is
-    off — flipped on once the published flow has been smoke-tested
-    end-to-end (separate PR).
+    Default ON (post-0.0.14a0): ``smolvm <preset> start`` pulls a pre-built
+    image from GitHub Releases for fast first-boot (~5–10 s vs 60–120 s for
+    install-at-boot). Set ``SMOLVM_USE_PUBLISHED=0`` (or ``false``/``no``)
+    to opt out and fall back to the install-at-boot flow.
+
+    The dispatch in ``_run_start`` also gracefully falls back to the
+    install-at-boot flow when no published manifest entry exists for the
+    requested ``(preset, arch, vmm)`` tuple — that's normal for presets
+    other than openclaw today, since they don't have CI-built rootfs yet.
     """
-    return os.environ.get("SMOLVM_USE_PUBLISHED", "").strip().lower() in {"1", "true", "yes"}
+    raw = os.environ.get("SMOLVM_USE_PUBLISHED", "").strip().lower()
+    if raw in {"0", "false", "no"}:
+        return False
+    return True
 
 
 def _host_arch_for_published() -> Arch:
@@ -2028,12 +2036,31 @@ def _run_start_with_published_image(args: argparse.Namespace, preset: object) ->
 def _run_start(args: argparse.Namespace) -> int:
     """Handle ``smolvm <preset> start``."""
     from smolvm.facade import SmolVM, _build_auto_config
+    from smolvm.images.published import is_preset_published
     from smolvm.presets import apply_preset, get_preset
 
     preset = get_preset(args.preset_name)
 
+    # Default-on (post-0.0.14a0): use the published-image fast path if it's
+    # available for this (preset, arch, vmm) tuple. Falls back to the
+    # install-at-boot flow when:
+    #   1) The user opted out via SMOLVM_USE_PUBLISHED=0, or
+    #   2) No manifest entry exists yet (e.g. presets without CI-built rootfs).
     if _published_path_enabled():
-        return _run_start_with_published_image(args, preset)
+        try:
+            arch = _host_arch_for_published()
+            vmm = _vmm_for_host()
+        except RuntimeError:
+            # Unsupported host platform for the published path; fall through
+            # to install-at-boot, which has its own platform errors.
+            pass
+        else:
+            if is_preset_published(preset.name, arch, vmm):
+                return _run_start_with_published_image(args, preset)
+            # No CI-built rootfs for this preset yet (only openclaw is
+            # published today). Fall through to install-at-boot — the
+            # progress UI from the build flow surfaces clearly enough that
+            # users see the difference.
 
     backend = args.backend or "qemu"
     if backend != "qemu":
