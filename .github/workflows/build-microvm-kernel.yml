@@ -1,5 +1,5 @@
-# Build SmolVM's microvm Linux kernel and upload it to the
-# images-v<version> draft GitHub Release.
+# Build SmolVM's microvm Linux kernel and upload it to the GitHub
+# Release named by published.py::IMAGES_RELEASE_TAG.
 #
 # Decoupled from build-published-images.yml on purpose: kernel cadence
 # differs from rootfs cadence. This workflow re-runs only when the inputs
@@ -22,7 +22,8 @@ on:
       release_tag:
         description: >-
           Release tag to upload to (e.g. images-v0.0.14a0). Created as a
-          draft if missing. Leave empty to derive from pyproject version.
+          draft if missing. Leave empty to use IMAGES_RELEASE_TAG from
+          published.py.
         type: string
         default: ""
   push:

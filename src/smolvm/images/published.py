@@ -161,15 +161,6 @@ def _release_kernel_url(arch: Arch, fmt: KernelFormat) -> str:
     )
 
 
-def release_tag(version: str = __version__) -> str:  # noqa: ARG001  # kept for back-compat
-    """Deprecated. Returns :data:`IMAGES_RELEASE_TAG` — argument is ignored.
-
-    Old behavior derived ``images-v<version>`` from the CLI version, but
-    that coupled CLI bumps to image republishes. Kept as a thin shim so
-    external callers don't break.
-    """
-    return IMAGES_RELEASE_TAG
-
 # Per-arch SmolVM-built kernels. Each :class:`BaseKernel` carries BOTH the
 # ELF (Firecracker) and Image (QEMU) URLs+SHAs from the same source build.
 # Source of truth for kernel URL+SHA: the MANIFEST rows below reference

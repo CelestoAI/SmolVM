@@ -38,7 +38,6 @@ from smolvm.images.published import (
     ensure_published_image,
     is_preset_published,
     lookup,
-    release_tag,
     to_image_source,
 )
 
@@ -70,11 +69,10 @@ def sample_manifest(
 
 
 class TestNaming:
-    def test_release_tag_returns_pinned_tag(self) -> None:
-        # release_tag() now ignores its arg and returns IMAGES_RELEASE_TAG
-        # to decouple the images release from CLI version bumps.
-        assert release_tag() == IMAGES_RELEASE_TAG
-        assert release_tag("0.0.13") == IMAGES_RELEASE_TAG
+    def test_release_tag_constant_format(self) -> None:
+        # Sanity: the tag still resembles a release identifier so any
+        # downstream tooling that parses it doesn't break silently.
+        assert IMAGES_RELEASE_TAG.startswith("images-v")
 
     def test_cache_name_includes_preset_version_arch_vmm(self) -> None:
         assert (

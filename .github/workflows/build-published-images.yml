@@ -33,7 +33,7 @@ on:
       release_tag:
         description: >-
           Release tag (e.g. images-v0.0.13). Created as draft if missing.
-          Leave empty to derive from the project version in pyproject.toml.
+          Leave empty to use IMAGES_RELEASE_TAG from published.py.
         type: string
         default: ""
 
