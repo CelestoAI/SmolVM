@@ -2532,6 +2532,7 @@ class TestCliStart:
         mock_build_auto_config.assert_not_called()
         mock_vm_cls.assert_not_called()
 
+    @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.cli.main.subprocess.run")
     @patch("smolvm.cli.main._apply_preset_with_progress")
     @patch("smolvm.facade._build_auto_config")
@@ -2542,6 +2543,7 @@ class TestCliStart:
         mock_build_auto_config: MagicMock,
         mock_apply: MagicMock,
         mock_subprocess_run: MagicMock,
+        _mock_is_published: MagicMock,
     ) -> None:
         """`--attach` should ssh into the box and exec the launch command."""
         config = MagicMock(vm_id="sbx")
@@ -2581,6 +2583,7 @@ class TestCliStart:
         )
         assert "[ -r " in remote, "env file source must be guarded with a file-existence check"
 
+    @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.cli.main.subprocess.run")
     @patch("smolvm.cli.main._apply_preset_with_progress")
     @patch("smolvm.facade._build_auto_config")
@@ -2591,6 +2594,7 @@ class TestCliStart:
         mock_build_auto_config: MagicMock,
         mock_apply: MagicMock,
         mock_subprocess_run: MagicMock,
+        _mock_is_published: MagicMock,
     ) -> None:
         """`--no-attach` should skip both the prompt and the ssh launch."""
         config = MagicMock(vm_id="sbx")
@@ -2607,6 +2611,7 @@ class TestCliStart:
         assert ret == 0
         mock_subprocess_run.assert_not_called()
 
+    @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.cli.main.subprocess.run")
     @patch("smolvm.cli.main.sys.stdin")
     @patch("builtins.input", return_value="y")
@@ -2621,6 +2626,7 @@ class TestCliStart:
         mock_input: MagicMock,
         mock_stdin: MagicMock,
         mock_subprocess_run: MagicMock,
+        _mock_is_published: MagicMock,
     ) -> None:
         """Default behavior on a TTY: prompt; ``y`` answer attaches."""
         mock_stdin.isatty.return_value = True
@@ -2645,6 +2651,7 @@ class TestCliStart:
         mock_input.assert_called_once()
         mock_subprocess_run.assert_called_once()
 
+    @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.cli.main.subprocess.run")
     @patch("smolvm.cli.main.sys.stdin")
     @patch("builtins.input", return_value="n")
@@ -2659,6 +2666,7 @@ class TestCliStart:
         mock_input: MagicMock,
         mock_stdin: MagicMock,
         mock_subprocess_run: MagicMock,
+        _mock_is_published: MagicMock,
     ) -> None:
         """A ``n`` answer should skip the ssh launch."""
         mock_stdin.isatty.return_value = True
@@ -2678,6 +2686,7 @@ class TestCliStart:
         mock_input.assert_called_once()
         mock_subprocess_run.assert_not_called()
 
+    @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.cli.main.subprocess.run")
     @patch("smolvm.presets.apply_preset")
     @patch("smolvm.facade._build_auto_config")
@@ -2688,6 +2697,7 @@ class TestCliStart:
         mock_build_auto_config: MagicMock,
         mock_apply_fn: MagicMock,
         mock_subprocess_run: MagicMock,
+        _mock_is_published: MagicMock,
     ) -> None:
         """JSON mode should never prompt or attach, even when a launch command exists."""
         config = MagicMock(vm_id="sbx")
