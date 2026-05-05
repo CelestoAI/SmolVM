@@ -35,8 +35,23 @@ RUN apt-get update -qq \
     && apt-get purge -y -qq gnupg \
     && apt-get autoremove -y -qq \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* \
-    && rm -rf /var/log/* /tmp/* /root/.cache
+    && rm -rf \
+        /var/lib/apt/lists/* \
+        /var/cache/apt/archives/* \
+        /var/log/* \
+        /tmp/* \
+        /root/.cache \
+        /usr/include \
+        /usr/share/doc \
+        /usr/share/man \
+        /usr/share/info \
+        /usr/share/groff \
+        /usr/share/lintian \
+        /usr/share/linda \
+        /usr/share/help \
+        /usr/share/X11 \
+    && find /usr -depth -name __pycache__ -type d -exec rm -rf {} + \
+    && find /usr -name '*.pyc' -delete
 
 # ── uv (fast Python package manager) ───────────────────────────
 # Installed system-wide so all presets pick it up without modifying PATH.
