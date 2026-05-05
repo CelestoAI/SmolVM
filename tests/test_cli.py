@@ -2506,15 +2506,23 @@ class TestCliStart:
         assert kwargs["memory"] == 4096
         assert kwargs["disk_size_mib"] == 16384
 
+    @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
     def test_start_rejects_non_qemu_backend(
         self,
         mock_vm_cls: MagicMock,
         mock_build_auto_config: MagicMock,
+        _mock_is_published: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """Built-in presets target ubuntu, which only boots on qemu."""
+        """Install-at-boot path rejects non-qemu backends.
+
+        Forces is_preset_published=False so the install-at-boot fallback
+        runs (codex now has firecracker/qemu/libkrun published images,
+        which would otherwise take the fast path on Linux). The rejection
+        only fires when neither path is available.
+        """
         ret = main(["codex", "start", "--backend", "firecracker"])
 
         assert ret == 2
