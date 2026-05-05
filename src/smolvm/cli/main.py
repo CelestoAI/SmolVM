@@ -1343,7 +1343,7 @@ def _run_list(*, include_all: bool, status_filter: str | None, json_output: bool
             return _emit_cli_error("list", 1, exc, json_output=json_output)
 
 
-_OS_HINT_KEYWORDS = ("ubuntu", "debian", "alpine")
+_OS_HINT_KEYWORDS = ("ubuntu", "alpine")
 
 
 def _guess_os_from_paths(vm: VMInfo) -> str | None:
@@ -1680,12 +1680,12 @@ def _run_create(args: argparse.Namespace) -> int:
                 "an S3 image is fixed by the image itself."
             )
 
-        # CLI default: roomier disk for debian/ubuntu so package installs
+        # CLI default: roomier disk for ubuntu so package installs
         # and apt cache don't fill the rootfs on a basic `smolvm create`.
         if (
             not use_s3_image
             and args.disk_size_mib is None
-            and resolved_guest_os in {GuestOS.DEBIAN, GuestOS.UBUNTU}
+            and resolved_guest_os is GuestOS.UBUNTU
         ):
             args.disk_size_mib = 4096
 

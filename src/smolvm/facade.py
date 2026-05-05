@@ -86,12 +86,10 @@ _LOCAL_TUNNEL_START_TIMEOUT = 10.0
 _LOCAL_FORWARD_MAX_PORT_ATTEMPTS = 10
 _AUTO_CONFIG_DEFAULT_MEM_SIZE_MIB = {
     GuestOS.ALPINE: 512,
-    GuestOS.DEBIAN: 512,
     GuestOS.UBUNTU: 1024,
 }
 _AUTO_CONFIG_DEFAULT_DISK_SIZE_MIB = {
     GuestOS.ALPINE: 512,
-    GuestOS.DEBIAN: 2048,
     GuestOS.UBUNTU: 2048,
 }
 _UBUNTU_CURRENT_RELEASE_DATE = "20260406"
@@ -107,37 +105,6 @@ _QEMU_UBUNTU_AUTO_IMAGES: dict[str, str] = {
     "ubuntu-noble-minimal-qemu-aarch64": (
         "https://cloud-images.ubuntu.com/minimal/releases/noble/release/"
         "ubuntu-24.04-minimal-cloudimg-arm64.img"
-    ),
-}
-
-# Debian "genericcloud" is a single bootable qcow2 with the kernel + initrd
-# inside — no separate unpacked assets like Ubuntu publishes. SmolVM uses
-# firmware boot (OVMF/SeaBIOS) for this image, so only the rootfs URL matters.
-#
-# Pinned to a specific dated release (immutable URL) and verified against the
-# upstream SHA-512 digest from that release's SHA512SUMS file. Note the
-# filename inside the dated directory carries the build identifier
-# (e.g. ``-20260413-2447``); only the ``latest/`` symlink view exposes the
-# short un-suffixed name. We pin to the dated path for immutability, so the
-# filename here MUST include the build suffix.
-#
-# To bump:
-#   1. Pick a newer build under https://cloud.debian.org/images/cloud/bookworm/
-#   2. Copy the SHA-512 hex digests from its SHA512SUMS file into this registry
-#   3. Update both the URL build suffix and the _DEBIAN_CURRENT_RELEASE_TAG
-#   4. Verify the partition layout is still a single ext4 partition before
-#      committing — cloud-init growpart assumes this for the disk-resize path
-_DEBIAN_CURRENT_RELEASE_TAG = "20260413-2447"
-_DEBIAN_AUTO_IMAGES: dict[str, tuple[str, str]] = {
-    "debian-bookworm-genericcloud-qemu-x86_64": (
-        f"https://cloud.debian.org/images/cloud/bookworm/{_DEBIAN_CURRENT_RELEASE_TAG}/debian-12-genericcloud-amd64-{_DEBIAN_CURRENT_RELEASE_TAG}.qcow2",
-        "db11b13c4efcc37828ffadae521d101e85079d349e1418074087bb7d306f11ca"
-        "ccdc2b0b539d6fd50d623d40a898f83c6137268a048d7700397dc35b7dcbc927",
-    ),
-    "debian-bookworm-genericcloud-qemu-aarch64": (
-        f"https://cloud.debian.org/images/cloud/bookworm/{_DEBIAN_CURRENT_RELEASE_TAG}/debian-12-genericcloud-arm64-{_DEBIAN_CURRENT_RELEASE_TAG}.qcow2",
-        "15ad6c52e255c84eb0e91001c5907b27199d8a7164d8ac172cfe9c92850dfaf6"
-        "06a6c3161d6af7f0fd5a5fef2aa8dcd9a23c2eb0fedbfcddb38e2bc306cba98f",
     ),
 }
 
@@ -168,8 +135,6 @@ def _qemu_auto_config_image_name(guest_os: GuestOS = GuestOS.UBUNTU) -> str:
     image_arch = "aarch64" if arch in {"arm64", "aarch64"} else "x86_64"
     if guest_os is GuestOS.UBUNTU:
         return f"ubuntu-noble-minimal-qemu-{image_arch}"
-    if guest_os is GuestOS.DEBIAN:
-        return f"debian-bookworm-genericcloud-qemu-{image_arch}"
     raise ValueError(f"No prebuilt QEMU auto-config image for guest OS: {guest_os}")
 
 
@@ -564,81 +529,6 @@ def _build_auto_config(
         )
         return config, resolved_ssh_key_path
 
-    # Debian on QEMU: fetch the upstream genericcloud qcow2 and boot it via
-    # firmware (OVMF/SeaBIOS). On non-QEMU backends (firecracker, libkrun),
-    # fall through to the docker-build path below.
-    if resolved_os is GuestOS.DEBIAN and resolved_backend == BACKEND_QEMU:
-        if resolved_disk_size_mib < default_disk_size_mib:
-            raise ValueError(
-                f"debian auto-config on qemu requires disk_size_mib >= {default_disk_size_mib} "
-                f"(got {resolved_disk_size_mib})"
-            )
-        image_name = _qemu_auto_config_image_name(GuestOS.DEBIAN)
-        debian_entry = _DEBIAN_AUTO_IMAGES.get(image_name)
-        if debian_entry is None:
-            raise SmolVMError(
-                "No prebuilt Debian image registered for this host architecture",
-                {"image_name": image_name},
-            )
-        rootfs_url, rootfs_sha512 = debian_entry
-        image_manager = ImageManager()
-        pristine_rootfs = image_manager.ensure_rootfs_only(
-            image_name,
-            url=rootfs_url,
-            filename="rootfs.qcow2",
-            sha512=rootfs_sha512,
-            on_download=on_download,
-        )
-
-        if resolved_disk_size_mib > default_disk_size_mib:
-            rootfs_path, _resolved_size = _prepare_sized_qcow2(
-                cache_dir=image_manager.cache_dir,
-                base_image_name=image_name,
-                source_qcow2=pristine_rootfs,
-                target_mib=resolved_disk_size_mib,
-            )
-        else:
-            rootfs_path = pristine_rootfs
-
-        user_data = default_user_data(public_key_value)
-        seed_key = seed_cache_key(
-            ssh_public_key=public_key_value,
-            instance_id=f"smolvm-debian-{_DEBIAN_CURRENT_RELEASE_TAG}",
-            hostname="smolvm",
-            user_data=user_data,
-        )
-        seed_dir = image_manager.cache_dir / "cloud-init-seeds"
-        seed_path = seed_dir / f"{seed_key}.iso"
-        if not seed_path.exists():
-            build_seed_iso(
-                seed_path,
-                user_data=user_data,
-                meta_data=default_meta_data(
-                    instance_id=f"smolvm-debian-{_DEBIAN_CURRENT_RELEASE_TAG}",
-                    hostname="smolvm",
-                ),
-            )
-
-        resolved_vm_name = _resolve_vm_name(vm_name, prefix=name_prefix)
-        config = VMConfig(
-            vm_id=resolved_vm_name,
-            vcpu_count=1,
-            memory=resolved_memory,
-            boot_mode="firmware",
-            kernel_path=None,
-            rootfs_path=rootfs_path,
-            extra_drives=[seed_path],
-            ssh_capable=True,
-            backend=resolved_backend,
-        )
-        logger.info(
-            "Auto-configured VM: %s (os=%s, backend=%s, source=prebuilt-debian-firmware)",
-            resolved_vm_name,
-            resolved_os.value,
-            resolved_backend,
-        )
-        return config, resolved_ssh_key_path
-
     kernel_profile = KernelBootProfile.MICROVM_DIRECT
     boot_args = get_boot_profile_spec(kernel_profile).base_boot_args_for_backend(
         resolved_backend,
@@ -658,22 +548,13 @@ def _build_auto_config(
     kernel_fmt = _kernel_format_for_vmm(resolved_backend)  # type: ignore[arg-type]
     base_kernel_url = BASE_KERNELS[to_published_arch(platform.machine())].url_for(kernel_fmt)
 
-    if resolved_os is GuestOS.DEBIAN:
-        kernel, rootfs = builder.build_debian_ssh_key(
-            public_key_path,
-            name=image_name,
-            rootfs_size_mb=resolved_disk_size_mib,
-            kernel_profile=kernel_profile,
-            kernel_url=base_kernel_url,
-        )
-    else:
-        kernel, rootfs = builder.build_alpine_ssh_key(
-            public_key_path,
-            name=image_name,
-            rootfs_size_mb=resolved_disk_size_mib,
-            kernel_profile=kernel_profile,
-            kernel_url=base_kernel_url,
-        )
+    kernel, rootfs = builder.build_alpine_ssh_key(
+        public_key_path,
+        name=image_name,
+        rootfs_size_mb=resolved_disk_size_mib,
+        kernel_profile=kernel_profile,
+        kernel_url=base_kernel_url,
+    )
 
     resolved_vm_name = _resolve_vm_name(vm_name, prefix=name_prefix)
     config = VMConfig(
@@ -722,7 +603,7 @@ class SmolVM:
         data_dir: Override the default data directory.
         socket_dir: Override the default socket directory.
         backend: Runtime backend override (``firecracker``, ``qemu``, or ``auto``).
-        os: Guest OS for auto-config mode (``"alpine"`` or ``"debian"``).
+        os: Guest OS for auto-config mode (``"alpine"`` or ``"ubuntu"``).
         memory: Guest memory in MiB for auto-config mode (``SmolVM()`` only).
         disk_size: Root filesystem size in MiB for auto-config mode (``SmolVM()`` only).
         ssh_user: SSH user for :meth:`run` (default ``root``).
@@ -1656,7 +1537,7 @@ class SmolVM:
            boot path brings up SSH (used by prebuilt cloud images, S3
            images, and firmware-boot VMs).
         2. A microvm direct-kernel boot with ``init=/init`` in the kernel
-           command line (the alpine/debian docker-build path).
+           command line (the alpine docker-build path).
         3. A legacy initrd-backed boot with ``ssh_capable`` implicitly set.
         """
         config = self._info.config

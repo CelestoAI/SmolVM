@@ -537,4 +537,4 @@ def test_guest_os_public_export() -> None:
     """GuestOS should be importable from both public and types modules."""
     assert PublicGuestOS is GuestOS
     assert GuestOS.ALPINE.value == "alpine"
-    assert GuestOS.DEBIAN.value == "debian"
+    assert GuestOS.UBUNTU.value == "ubuntu"

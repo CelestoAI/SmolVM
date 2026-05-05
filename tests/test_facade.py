@@ -26,7 +26,7 @@ from smolvm.exceptions import (
 )
 from smolvm.facade import SmolVM, _build_auto_config
 from smolvm.images.cloud_init import seed_cache_key
-from smolvm.types import GuestOS, VMConfig, VMState
+from smolvm.types import VMConfig, VMState
 
 
 @pytest.fixture
@@ -221,193 +221,6 @@ class TestVMInit:
         created_config = mock_sdk.create.call_args[0][0]
         assert created_config.ssh_public_key == pubkey_value
 
-    @patch("smolvm.facade.SmolVMManager")
-    @patch("smolvm.images.builder.ImageBuilder")
-    @patch("smolvm.utils.ensure_ssh_key")
-    def test_autoconfigure_with_debian_firecracker_uses_debian_builder(
-        self,
-        mock_ensure_ssh_key: MagicMock,
-        mock_builder_cls: MagicMock,
-        mock_sdk_cls: MagicMock,
-        tmp_path: Path,
-    ) -> None:
-        """Debian on firecracker should still use the docker-build fallback."""
-        kernel = tmp_path / "auto-kernel"
-        rootfs = tmp_path / "auto-rootfs.ext4"
-        private_key = tmp_path / "id_ed25519"
-        public_key = tmp_path / "id_ed25519.pub"
-        kernel.touch()
-        rootfs.touch()
-        private_key.touch()
-        public_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKey user@test\n")
-
-        mock_ensure_ssh_key.return_value = (private_key, public_key)
-        mock_builder = MagicMock()
-        mock_builder.build_debian_ssh_key.return_value = (kernel, rootfs)
-        mock_builder_cls.return_value = mock_builder
-
-        mock_sdk = MagicMock()
-        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
-        mock_sdk_cls.return_value = mock_sdk
-
-        vm = SmolVM(os="debian", backend="firecracker")
-
-        assert vm.vm_id.startswith("sbx-")
-        mock_builder.build_debian_ssh_key.assert_called_once()
-        assert mock_builder.build_debian_ssh_key.call_args.args[0] == public_key
-        assert mock_builder.build_debian_ssh_key.call_args.kwargs["rootfs_size_mb"] == 2048
-        mock_builder.build_alpine_ssh_key.assert_not_called()
-        created_config = mock_sdk.create.call_args[0][0]
-        assert created_config.memory == 512
-        assert created_config.boot_mode == "direct_kernel"
-
-    @patch("smolvm.facade.SmolVMManager")
-    @patch("smolvm.images.builder.ImageBuilder")
-    @patch("smolvm.utils.ensure_ssh_key")
-    def test_autoconfigure_with_debian_enum_works(
-        self,
-        mock_ensure_ssh_key: MagicMock,
-        mock_builder_cls: MagicMock,
-        mock_sdk_cls: MagicMock,
-        tmp_path: Path,
-    ) -> None:
-        """GuestOS enum values should work for auto-config."""
-        kernel = tmp_path / "auto-kernel"
-        rootfs = tmp_path / "auto-rootfs.ext4"
-        private_key = tmp_path / "id_ed25519"
-        public_key = tmp_path / "id_ed25519.pub"
-        kernel.touch()
-        rootfs.touch()
-        private_key.touch()
-        public_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKey user@test\n")
-
-        mock_ensure_ssh_key.return_value = (private_key, public_key)
-        mock_builder = MagicMock()
-        mock_builder.build_debian_ssh_key.return_value = (kernel, rootfs)
-        mock_builder_cls.return_value = mock_builder
-
-        mock_sdk = MagicMock()
-        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
-        mock_sdk_cls.return_value = mock_sdk
-
-        SmolVM(os=GuestOS.DEBIAN, backend="firecracker")
-
-        mock_builder.build_debian_ssh_key.assert_called_once()
-
-    @patch("smolvm.images.builder.ImageBuilder")
-    @patch("smolvm.utils.ensure_ssh_key")
-    def test_build_auto_config_debian_firecracker_disk_override(
-        self,
-        mock_ensure_ssh_key: MagicMock,
-        mock_builder_cls: MagicMock,
-        tmp_path: Path,
-    ) -> None:
-        """Explicit disk sizes should override Debian defaults on firecracker."""
-        kernel = tmp_path / "auto-kernel"
-        rootfs = tmp_path / "auto-rootfs.ext4"
-        private_key = tmp_path / "id_ed25519"
-        public_key = tmp_path / "id_ed25519.pub"
-        kernel.touch()
-        rootfs.touch()
-        private_key.touch()
-        public_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKey user@test\n")
-
-        mock_ensure_ssh_key.return_value = (private_key, public_key)
-        mock_builder = MagicMock()
-        mock_builder.build_debian_ssh_key.return_value = (kernel, rootfs)
-        mock_builder_cls.return_value = mock_builder
-
-        _build_auto_config(os="debian", backend="firecracker", disk_size_mib=4096)
-
-        assert mock_builder.build_debian_ssh_key.call_args.kwargs["rootfs_size_mb"] == 4096
-
-    @patch("smolvm.facade._prepare_sized_qcow2")
-    @patch("smolvm.facade.ImageManager")
-    @patch("smolvm.images.builder.ImageBuilder")
-    @patch("smolvm.utils.ensure_ssh_key")
-    def test_autoconfigure_debian_qemu_uses_prebuilt_firmware_boot(
-        self,
-        mock_ensure_ssh_key: MagicMock,
-        mock_builder_cls: MagicMock,
-        mock_image_manager_cls: MagicMock,
-        mock_prepare_sized: MagicMock,
-        tmp_path: Path,
-    ) -> None:
-        """Debian on qemu should fetch the prebuilt qcow2 and use firmware boot."""
-        private_key = tmp_path / "id_ed25519"
-        public_key = tmp_path / "id_ed25519.pub"
-        private_key.touch()
-        public_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKey user@test\n")
-
-        pristine_rootfs = tmp_path / "debian-rootfs.qcow2"
-        pristine_rootfs.touch()
-
-        mock_ensure_ssh_key.return_value = (private_key, public_key)
-
-        mock_image_manager = MagicMock()
-        mock_image_manager.cache_dir = tmp_path / "cache"
-        mock_image_manager.ensure_rootfs_only.return_value = pristine_rootfs
-        mock_image_manager_cls.return_value = mock_image_manager
-
-        # _prepare_sized_qcow2 returns the same path when target == default.
-        mock_prepare_sized.return_value = (pristine_rootfs, 2048)
-
-        mock_builder_cls.return_value = MagicMock()
-
-        config, _ = _build_auto_config(os="debian", backend="qemu")
-
-        # Prebuilt path, not the docker fallback.
-        mock_image_manager.ensure_rootfs_only.assert_called_once()
-        mock_builder_cls.return_value.build_debian_ssh_key.assert_not_called()
-
-        assert config.boot_mode == "firmware"
-        assert config.kernel_path is None
-        assert config.rootfs_path == pristine_rootfs
-        assert len(config.extra_drives) == 1  # cloud-init seed ISO
-        assert config.extra_drives[0].suffix == ".iso"
-        assert config.backend == "qemu"
-
-    @patch("smolvm.facade._prepare_sized_qcow2")
-    @patch("smolvm.facade.ImageManager")
-    @patch("smolvm.utils.ensure_ssh_key")
-    def test_autoconfigure_debian_qemu_disk_override_triggers_resize(
-        self,
-        mock_ensure_ssh_key: MagicMock,
-        mock_image_manager_cls: MagicMock,
-        mock_prepare_sized: MagicMock,
-        tmp_path: Path,
-    ) -> None:
-        """--disk-size on debian/qemu should be forwarded to resize helper."""
-        private_key = tmp_path / "id_ed25519"
-        public_key = tmp_path / "id_ed25519.pub"
-        private_key.touch()
-        public_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKey user@test\n")
-
-        pristine = tmp_path / "pristine.qcow2"
-        sized = tmp_path / "sized.qcow2"
-        pristine.touch()
-        sized.touch()
-
-        mock_ensure_ssh_key.return_value = (private_key, public_key)
-        mock_image_manager = MagicMock()
-        mock_image_manager.cache_dir = tmp_path / "cache"
-        mock_image_manager.ensure_rootfs_only.return_value = pristine
-        mock_image_manager_cls.return_value = mock_image_manager
-        mock_prepare_sized.return_value = (sized, 4096)
-
-        config, _ = _build_auto_config(os="debian", backend="qemu", disk_size_mib=4096)
-
-        mock_prepare_sized.assert_called_once()
-        assert mock_prepare_sized.call_args.kwargs["target_mib"] == 4096
-        assert config.rootfs_path == sized
-
-    def test_autoconfigure_debian_qemu_rejects_undersized_disk(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        """Debian/qemu should reject --disk-size below the default."""
-        with pytest.raises(ValueError, match="disk_size_mib >= 2048"):
-            _build_auto_config(os="debian", backend="qemu", disk_size_mib=1024)
 
     def test_autoconfigure_ubuntu_rejects_undersized_disk(
         self,
@@ -477,47 +290,19 @@ class TestVMInit:
         with pytest.raises(ValueError, match="auto-config mode"):
             SmolVM(sample_config, memory=1024)
 
-    def test_debian_pinned_urls_carry_build_suffix(self) -> None:
-        """Each pinned Debian URL must include the build tag in the filename.
-
-        Debian's dated release directories (e.g. ``bookworm/20260413-2447/``)
-        store files with the build tag *in the filename*, like
-        ``debian-12-genericcloud-arm64-20260413-2447.qcow2``. Only the
-        ``latest/`` symlink view exposes the un-suffixed short names. Pinning
-        to a dated directory with a short filename produces a 404 — this test
-        catches that exact mistake on a future bump.
-        """
-        from smolvm.facade import _DEBIAN_AUTO_IMAGES, _DEBIAN_CURRENT_RELEASE_TAG
-
-        assert _DEBIAN_AUTO_IMAGES, "_DEBIAN_AUTO_IMAGES must not be empty"
-        for image_name, (url, _sha512) in _DEBIAN_AUTO_IMAGES.items():
-            # The dated path must appear in the URL.
-            assert f"/{_DEBIAN_CURRENT_RELEASE_TAG}/" in url, (
-                f"{image_name}: URL missing dated release path "
-                f"{_DEBIAN_CURRENT_RELEASE_TAG!r}: {url}"
-            )
-            # The filename portion must also embed the build tag.
-            filename = url.rsplit("/", 1)[-1]
-            assert _DEBIAN_CURRENT_RELEASE_TAG in filename, (
-                f"{image_name}: filename {filename!r} is missing the build "
-                f"tag {_DEBIAN_CURRENT_RELEASE_TAG!r}. Inside dated release "
-                "directories the filename includes the build identifier; only "
-                "the 'latest/' symlink view uses the short name."
-            )
-
     def test_os_with_config_raises(self, sample_config: VMConfig) -> None:
         """Guest OS selection is only valid in zero-config mode."""
         with pytest.raises(ValueError, match="auto-config mode"):
-            SmolVM(sample_config, os="debian")
+            SmolVM(sample_config, os="ubuntu")
 
     def test_os_with_vm_id_raises(self) -> None:
         """Guest OS selection should be rejected when reconnecting to a VM."""
         with pytest.raises(ValueError, match="auto-config mode"):
-            SmolVM(vm_id="vm001", os="debian")
+            SmolVM(vm_id="vm001", os="ubuntu")
 
     def test_invalid_os_raises(self) -> None:
         """Unsupported guest OS names should raise a helpful error."""
-        with pytest.raises(ValueError, match="Valid values: alpine, debian, ubuntu"):
+        with pytest.raises(ValueError, match="Valid values: alpine, ubuntu"):
             _build_auto_config(os="fedora")
 
     @patch("smolvm.images.builder.ImageBuilder")
@@ -658,55 +443,6 @@ class TestVMInit:
         assert config.ssh_capable is True
         assert "AAAAC3NzaCustom" in actual_user_data
         mock_ensure_ssh_key.assert_not_called()
-
-    @patch("smolvm.facade.platform.machine", return_value="arm64")
-    @patch("smolvm.facade.build_seed_iso")
-    @patch("smolvm.facade.ImageManager")
-    @patch("smolvm.images.builder.ImageBuilder")
-    @patch("smolvm.utils.ensure_ssh_key")
-    def test_named_debian_auto_config_qemu_uses_prebuilt_image(
-        self,
-        mock_ensure_ssh_key: MagicMock,
-        mock_builder_cls: MagicMock,
-        mock_image_manager_cls: MagicMock,
-        mock_build_seed_iso: MagicMock,
-        _: MagicMock,
-        tmp_path: Path,
-    ) -> None:
-        """Debian on qemu should fetch the prebuilt qcow2 under an aarch64 cache key."""
-        rootfs = tmp_path / "rootfs.qcow2"
-        private_key = tmp_path / "id_ed25519"
-        public_key = tmp_path / "id_ed25519.pub"
-        rootfs.touch()
-        private_key.touch()
-        public_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKey user@test\n")
-
-        mock_ensure_ssh_key.return_value = (private_key, public_key)
-        mock_build_seed_iso.side_effect = lambda path, **kwargs: (
-            path.parent.mkdir(parents=True, exist_ok=True),
-            path.touch(),
-        )[-1]
-        mock_image_manager = MagicMock()
-        mock_image_manager.cache_dir = tmp_path
-        mock_image_manager.ensure_rootfs_only.return_value = rootfs
-        mock_image_manager_cls.return_value = mock_image_manager
-
-        config, _ = _build_auto_config(vm_name="project-spacex", os="debian", backend="qemu")
-
-        assert config.backend == "qemu"
-        assert config.boot_mode == "firmware"
-        assert config.kernel_path is None
-        assert config.rootfs_path == rootfs
-        assert config.ssh_capable is True
-        # Cloud-init seed ISO is attached.
-        assert config.extra_drives[0].suffix == ".iso"
-        # Prebuilt path, not the docker fallback.
-        mock_builder_cls.return_value.build_debian_ssh_key.assert_not_called()
-        mock_image_manager.ensure_rootfs_only.assert_called_once()
-        assert (
-            mock_image_manager.ensure_rootfs_only.call_args.args[0]
-            == "debian-bookworm-genericcloud-qemu-aarch64"
-        )
 
     @patch("smolvm.facade.SmolVMManager")
     def test_from_id(self, mock_sdk_cls: MagicMock) -> None:
