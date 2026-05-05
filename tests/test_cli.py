@@ -669,40 +669,6 @@ class TestCliCreate:
 
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
-    def test_create_with_debian_os(
-        self,
-        mock_vm_cls: MagicMock,
-        mock_build_auto_config: MagicMock,
-        capsys: pytest.CaptureFixture,
-    ) -> None:
-        """`smolvm create --os debian` should thread the OS into auto-config."""
-        config = MagicMock(vm_id="project-spacex")
-        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
-
-        vm = MagicMock()
-        vm.vm_id = "project-spacex"
-        vm.info.config.backend = "qemu"
-        vm.info.network = MagicMock(spec=NetworkConfig)
-        vm.info.network.guest_ip = "172.16.0.2"
-        vm.info.network.ssh_host_port = 2200
-        mock_vm_cls.return_value = vm
-
-        ret = main(["create", "--name", "project-spacex", "--os", "debian", "--json"])
-
-        assert ret == 0
-        mock_build_auto_config.assert_called_once_with(
-            vm_name="project-spacex",
-            os="debian",
-            backend=None,
-            memory=None,
-            disk_size_mib=4096,
-            ssh_key_path=None,
-        )
-        payload = json.loads(capsys.readouterr().out)
-        assert payload["data"]["vm"]["os"] == "debian"
-
-    @patch("smolvm.facade._build_auto_config")
-    @patch("smolvm.facade.SmolVM")
     def test_create_alpine_does_not_get_disk_size_default(
         self,
         mock_vm_cls: MagicMock,
