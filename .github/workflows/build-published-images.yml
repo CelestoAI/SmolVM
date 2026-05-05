@@ -42,7 +42,12 @@ permissions:
 
 jobs:
   # ── Stage 1: Build shared base rootfs (once per arch) ─────────
+  #
+  # Skipped when only openclaw is requested — openclaw uses its own
+  # builder and doesn't consume the layered base, so building it in
+  # that case just wastes 3-5 min of runner time per arch.
   base-rootfs:
+    if: ${{ inputs.presets != 'openclaw' }}
     strategy:
       fail-fast: false
       matrix:
@@ -89,7 +94,9 @@ jobs:
         env:
           INPUT_PRESETS: ${{ inputs.presets }}
         run: |
-          if [ "$INPUT_PRESETS" = "all" ] || echo ",$INPUT_PRESETS," | grep -q ",openclaw,"; then
+          # Strip whitespace so "openclaw, codex" matches "openclaw".
+          normalized=$(printf '%s' "$INPUT_PRESETS" | tr -d '[:space:]')
+          if [ "$normalized" = "all" ] || echo ",$normalized," | grep -q ",openclaw,"; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
           else
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -259,7 +266,9 @@ jobs:
           INPUT_PRESETS: ${{ inputs.presets }}
           PRESET: ${{ matrix.preset }}
         run: |
-          if [ "$INPUT_PRESETS" = "all" ] || echo ",$INPUT_PRESETS," | grep -q ",$PRESET,"; then
+          # Strip whitespace so "openclaw, codex" matches each preset.
+          normalized=$(printf '%s' "$INPUT_PRESETS" | tr -d '[:space:]')
+          if [ "$normalized" = "all" ] || echo ",$normalized," | grep -q ",$PRESET,"; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
           else
             echo "skip=true" >> "$GITHUB_OUTPUT"

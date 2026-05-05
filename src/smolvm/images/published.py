@@ -217,10 +217,13 @@ def _preset_rows(
     preset: Preset, amd64_sha: str, arm64_sha: str
 ) -> dict[tuple[Preset, Arch, Vmm], PublishedImage]:
     """Generate all (preset, arch, vmm) manifest rows for a single preset."""
+    vmms: tuple[Vmm, ...] = ("firecracker", "qemu", "libkrun")
+    archs: tuple[Arch, ...] = ("amd64", "arm64")
+    shas: dict[Arch, str] = {"amd64": amd64_sha, "arm64": arm64_sha}
     rows: dict[tuple[Preset, Arch, Vmm], PublishedImage] = {}
-    for vmm in ("firecracker", "qemu", "libkrun"):
-        rows[(preset, "amd64", vmm)] = _manifest_row(preset, "amd64", vmm, amd64_sha)  # type: ignore[arg-type]
-        rows[(preset, "arm64", vmm)] = _manifest_row(preset, "arm64", vmm, arm64_sha)  # type: ignore[arg-type]
+    for arch in archs:
+        for vmm in vmms:
+            rows[(preset, arch, vmm)] = _manifest_row(preset, arch, vmm, shas[arch])
     return rows
 
 

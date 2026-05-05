@@ -64,7 +64,14 @@ mount --bind /sys "$MNT/sys"
 mount --bind /dev "$MNT/dev"
 mount --bind /dev/pts "$MNT/dev/pts" 2>/dev/null || true
 
-# DNS resolution inside chroot
+# DNS resolution inside chroot. Save the original so we can restore it
+# before unmount — otherwise the CI runner's resolv.conf bakes into the
+# published rootfs and ends up on every guest VM.
+RESOLV_BACKUP=""
+if [ -e "$MNT/etc/resolv.conf" ]; then
+  RESOLV_BACKUP=$(mktemp)
+  cp -a "$MNT/etc/resolv.conf" "$RESOLV_BACKUP"
+fi
 cp /etc/resolv.conf "$MNT/etc/resolv.conf" 2>/dev/null || true
 
 echo "==> Installing preset '$PRESET'..."
@@ -120,5 +127,15 @@ case "$PRESET" in
     exit 1
     ;;
 esac
+
+# Restore (or remove) /etc/resolv.conf so the runner's DNS doesn't leak
+# into the published rootfs. Guest cloud-init / systemd-resolved generates
+# a fresh resolv.conf at boot, so removing it on the empty case is safe.
+if [ -n "$RESOLV_BACKUP" ]; then
+  cp -a "$RESOLV_BACKUP" "$MNT/etc/resolv.conf"
+  rm -f "$RESOLV_BACKUP"
+else
+  rm -f "$MNT/etc/resolv.conf"
+fi
 
 echo "==> Preset rootfs: $ROOTFS ($(du -sh "$ROOTFS" | cut -f1))"
