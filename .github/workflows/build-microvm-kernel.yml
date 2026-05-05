@@ -1,5 +1,5 @@
-# Build SmolVM's microvm Linux kernel and upload it to the
-# images-v<version> draft GitHub Release.
+# Build SmolVM's microvm Linux kernel and upload it to the GitHub
+# Release named by published.py::IMAGES_RELEASE_TAG.
 #
 # Decoupled from build-published-images.yml on purpose: kernel cadence
 # differs from rootfs cadence. This workflow re-runs only when the inputs
@@ -22,7 +22,8 @@ on:
       release_tag:
         description: >-
           Release tag to upload to (e.g. images-v0.0.14a0). Created as a
-          draft if missing. Leave empty to derive from pyproject version.
+          draft if missing. Leave empty to use IMAGES_RELEASE_TAG from
+          published.py.
         type: string
         default: ""
   push:
@@ -101,10 +102,16 @@ jobs:
           if [ -n "${INPUT_TAG:-}" ]; then
             tag="$INPUT_TAG"
           else
-            # tomllib.load() takes a binary file; tomllib.loads() takes a str
-            # (NOT bytes). Same idiom as build-published-images.yml.
-            version=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-            tag="images-v${version}"
+            # Single source of truth — published.py::IMAGES_RELEASE_TAG.
+            # Read it as a string instead of importing the package: this
+            # workflow installs only the apt packages it needs to build
+            # a kernel and skips the smolvm Python deps (paramiko etc),
+            # so `from smolvm.images.published import …` would ImportError.
+            tag=$(awk -F'"' '/^IMAGES_RELEASE_TAG[[:space:]]*=/{print $2; exit}' src/smolvm/images/published.py)
+          fi
+          if [ -z "$tag" ]; then
+            echo "ERROR: IMAGES_RELEASE_TAG could not be parsed from src/smolvm/images/published.py" >&2
+            exit 1
           fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "Release tag: ${tag}"
@@ -141,8 +148,9 @@ jobs:
               --notes "Auto-generated draft release for SmolVM published images. Verify SHA-256 sums and content before publishing." \
               || echo "Draft already exists (race with another matrix cell), continuing."
           fi
-          # --clobber overwrites any prior asset with the same name, so re-runs
-          # of the workflow for the same tag replace existing artifacts cleanly.
+          # --clobber overwrites prior artifacts. NOTE: allows silent SHA
+          # drift relative to BASE_KERNELS — drift detection via live SHA
+          # smoke test is a separate workflow.
           gh release upload "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --clobber \

@@ -24,8 +24,8 @@ import pytest
 from smolvm.exceptions import ImageError
 from smolvm.images.manager import LocalImage
 from smolvm.images.published import (
-    _MANIFEST_VERSION,
     BASE_KERNELS,
+    IMAGES_RELEASE_TAG,
     MANIFEST,
     Arch,
     BaseKernel,
@@ -38,7 +38,6 @@ from smolvm.images.published import (
     ensure_published_image,
     is_preset_published,
     lookup,
-    release_tag,
     to_image_source,
 )
 
@@ -70,8 +69,10 @@ def sample_manifest(
 
 
 class TestNaming:
-    def test_release_tag_uses_version(self) -> None:
-        assert release_tag("0.0.13") == "images-v0.0.13"
+    def test_release_tag_constant_format(self) -> None:
+        # Sanity: the tag still resembles a release identifier so any
+        # downstream tooling that parses it doesn't break silently.
+        assert IMAGES_RELEASE_TAG.startswith("images-v")
 
     def test_cache_name_includes_preset_version_arch_vmm(self) -> None:
         assert (
@@ -674,9 +675,9 @@ class TestBundledManifest:
         assert amd.rootfs_sha256 != arm.rootfs_sha256
         assert amd.rootfs_url != arm.rootfs_url
 
-    def test_all_entries_use_manifest_version_in_url(self) -> None:
-        """Every entry's URL must reference the same release tag we claim."""
-        expected_segment = f"/images-v{_MANIFEST_VERSION}/"
+    def test_all_entries_use_release_tag_in_url(self) -> None:
+        """Every entry's URL must reference the pinned release tag."""
+        expected_segment = f"/{IMAGES_RELEASE_TAG}/"
         for key, entry in MANIFEST.items():
             assert expected_segment in entry.rootfs_url, (
                 f"{key} rootfs_url doesn't reference {expected_segment}"

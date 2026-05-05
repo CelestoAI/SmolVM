@@ -102,41 +102,53 @@ class BaseKernel(BaseModel):
         return self.elf_sha256 if fmt == "elf" else self.image_sha256
 
 
-def release_tag(version: str = __version__) -> str:
-    """GitHub Releases tag images for ``version`` are published under."""
-    return f"images-v{version}"
+# SINGLE SOURCE OF TRUTH for the GitHub Releases tag this CLI pulls
+# images from. Independent of the CLI version in ``pyproject.toml`` —
+# coupling them (via the previous ``_MANIFEST_VERSION``) meant a CLI
+# bump silently invalidated every manifest SHA pin.
+#
+# CI workflows (``build-microvm-kernel.yml``,
+# ``build-published-images.yml``) read this constant rather than
+# deriving from pyproject — change here flows to both sides.
+#
+# Bumping protocol — one PR:
+#   1. Edit this string (e.g. ``images-v0.0.15``).
+#   2. Run the kernel + published-image workflows, copy SHAs from the
+#      step summaries into ``BASE_KERNELS`` and ``MANIFEST``.
+#   3. Promote the draft release on GitHub.
+#
+# CI still passes ``--clobber`` to ``gh release upload`` for
+# operational ergonomics, so SHA drift is technically possible. A
+# follow-up smoke test should fetch each ``rootfs_url`` / ``kernel_url``
+# and verify the live bytes match the recorded SHA.
+IMAGES_RELEASE_TAG = "images-v0.0.14a0"
 
 
 def cache_name(preset: Preset, arch: Arch, vmm: Vmm, version: str = __version__) -> str:
     """Cache directory name under ``~/.smolvm/images/``.
 
-    Versioned + arch- + vmm-suffixed so multiple installs, architectures,
-    and hypervisors coexist on the same machine without overwriting each
-    other. A user switching backends mid-session gets a fresh cache dir
-    per vmm rather than fighting over one.
-
-    Note: caches from before the vmm dimension landed (no ``-<vmm>``
-    suffix) become orphaned and ignored. They stay on disk untouched
-    until the user clears them.
+    Keyed on the **CLI** version (not the images tag) so a CLI upgrade
+    invalidates local caches even when the images tag hasn't moved —
+    avoids serving a stale ``.ext4`` decompressed from the prior CLI's
+    decompression sidecar.
     """
     return f"{preset}-v{version}-{arch}-{vmm}"
 
 
-def _release_asset_url(preset: Preset, arch: Arch, suffix: str, version: str) -> str:
+def _release_asset_url(preset: Preset, arch: Arch, suffix: str) -> str:
     """Construct the post-publish GH Releases asset URL for one artifact.
 
-    Once the draft release at ``images-v<version>`` is published, GH
-    Releases serves assets at this canonical URL (the draft itself uses
-    a temporary ``untagged-*`` slug — these URLs only resolve after
-    the draft is published manually).
+    Once the draft at :data:`IMAGES_RELEASE_TAG` is published, GH Releases
+    serves assets at this canonical URL (drafts use a temporary
+    ``untagged-*`` slug — these URLs only resolve after publish).
     """
     return (
         f"https://github.com/CelestoAI/SmolVM/releases/download/"
-        f"{release_tag(version)}/{preset}-{arch}-{suffix}"
+        f"{IMAGES_RELEASE_TAG}/{preset}-{arch}-{suffix}"
     )
 
 
-def _release_kernel_url(arch: Arch, fmt: KernelFormat, version: str) -> str:
+def _release_kernel_url(arch: Arch, fmt: KernelFormat) -> str:
     """URL for a preset-independent kernel artifact.
 
     Asset naming: ``vmlinux-<arch>.{elf|image}``. Same Linux source build
@@ -145,14 +157,9 @@ def _release_kernel_url(arch: Arch, fmt: KernelFormat, version: str) -> str:
     """
     return (
         f"https://github.com/CelestoAI/SmolVM/releases/download/"
-        f"{release_tag(version)}/vmlinux-{arch}.{fmt}"
+        f"{IMAGES_RELEASE_TAG}/vmlinux-{arch}.{fmt}"
     )
 
-
-# Version of the published images this CLI release was paired with.
-# Bumping this requires regenerating every MANIFEST entry below from a
-# fresh CI run (new artifacts → new SHAs → new URLs).
-_MANIFEST_VERSION = "0.0.14a0"
 
 # Per-arch SmolVM-built kernels. Each :class:`BaseKernel` carries BOTH the
 # ELF (Firecracker) and Image (QEMU) URLs+SHAs from the same source build.
@@ -160,23 +167,23 @@ _MANIFEST_VERSION = "0.0.14a0"
 # these entries via ``url_for(format)`` / ``sha256_for(format)``, so adding
 # a future preset can't drift kernel SHAs across rows.
 #
-# SHAs come from the build-microvm-kernel.yml CI run that publishes
-# ``vmlinux-<arch>.{elf,image}`` to release tag ``images-v<_MANIFEST_VERSION>``;
-# they're also visible in that workflow's step summary.
+# SHAs come from the ``Build microvm Kernel`` workflow run that publishes
+# ``vmlinux-<arch>.{elf,image}`` to :data:`IMAGES_RELEASE_TAG`; they're
+# also visible in that workflow's step summary.
 BASE_KERNELS: dict[Arch, BaseKernel] = {
     "amd64": BaseKernel(
         arch="amd64",
-        elf_url=_release_kernel_url("amd64", "elf", _MANIFEST_VERSION),
-        elf_sha256="f652d798efb2b19c4923e5e7ff4e7b2e9db31ec8347cec2a5e6a27b813b2d5a1",
-        image_url=_release_kernel_url("amd64", "image", _MANIFEST_VERSION),
-        image_sha256="55061bc45706eca229afdad31451d63e0695ce990fb1d46301194b4771e607f0",
+        elf_url=_release_kernel_url("amd64", "elf"),
+        elf_sha256="7be5c70c5fd5b12771aad71f6eddf8bf82006c3886c28be2e2f04be0812cd56b",
+        image_url=_release_kernel_url("amd64", "image"),
+        image_sha256="d77c0b8c9fa6bbf163c04aee2067b374ff5a952b10040ed407dbc659a2af2552",
     ),
     "arm64": BaseKernel(
         arch="arm64",
-        elf_url=_release_kernel_url("arm64", "elf", _MANIFEST_VERSION),
-        elf_sha256="d837ec0f6c12d6dd9b96885464db876699e3984c9c8b0c3699569e2000221fc2",
-        image_url=_release_kernel_url("arm64", "image", _MANIFEST_VERSION),
-        image_sha256="200862461ac269baf56c636a76a96db204e216fc8d16a983b910cd22bf72469b",
+        elf_url=_release_kernel_url("arm64", "elf"),
+        elf_sha256="77795663bf9b0fe229d2a8e77bc454cf56cbe2ba94130320ec235fc31a73d92b",
+        image_url=_release_kernel_url("arm64", "image"),
+        image_sha256="ddc7344a2e1298bcdc467dd900236456c08159734ac43cae9b104ded506e3839",
     ),
 }
 
@@ -204,13 +211,21 @@ def _manifest_row(preset: Preset, arch: Arch, vmm: Vmm, rootfs_sha256: str) -> P
         vmm=vmm,
         kernel_url=base.url_for(fmt),
         kernel_sha256=base.sha256_for(fmt),
-        rootfs_url=_release_asset_url(preset, arch, "rootfs.ext4.zst", _MANIFEST_VERSION),
+        rootfs_url=_release_asset_url(preset, arch, "rootfs.ext4.zst"),
         rootfs_sha256=rootfs_sha256,
     )
 
 
-_OPENCLAW_AMD64_ROOTFS_SHA = "a332941df1dfe3d29c849072267148d84919e6b13fa810870049a0a3567be8f9"
-_OPENCLAW_ARM64_ROOTFS_SHA = "87a8d855801a1dc89bafa4ac9596767a5de221536a5f6a43bc57e308059af937"
+# Resync openclaw rootfs SHAs to the latest Build Published Images upload
+# at IMAGES_RELEASE_TAG. The previous values went stale when CI re-ran
+# with --clobber and the new bytes had different SHAs.
+#
+# codex/claude-code/hermes/pi rows are NOT added here even though their
+# rootfs artifacts are published — adding them flips is_preset_published()
+# to True and the CLI's published-path dispatch needs boot_args wired up
+# per (preset, vmm). Only openclaw has that today. Tracked separately.
+_OPENCLAW_AMD64_ROOTFS_SHA = "33dcae2a9ea9ce29ffc0ccdf6103aaf7c0a93dd28b9be6322e1306d6f9c53a77"
+_OPENCLAW_ARM64_ROOTFS_SHA = "8655dd10c77a16e57abaf83d4868653fedaba63688a959931872ac79a7f8091e"
 
 
 def _preset_rows(
@@ -229,9 +244,8 @@ def _preset_rows(
 
 MANIFEST: dict[tuple[Preset, Arch, Vmm], PublishedImage] = {
     **_preset_rows("openclaw", _OPENCLAW_AMD64_ROOTFS_SHA, _OPENCLAW_ARM64_ROOTFS_SHA),
-    # codex, claude-code, hermes, pi: rows added after their first CI build
-    # populates real SHAs. Until then these presets fall through to
-    # install-at-boot via is_preset_published() returning False.
+    # codex, claude-code, hermes, pi: rootfs artifacts exist on the release
+    # page but rows are gated on the runtime boot_args wiring landing first.
 }
 
 
