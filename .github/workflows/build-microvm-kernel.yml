@@ -103,9 +103,11 @@ jobs:
             tag="$INPUT_TAG"
           else
             # Single source of truth — published.py::IMAGES_RELEASE_TAG.
-            # Doesn't auto-track pyproject version; bumped only when image
-            # artifacts are republished (see published.py docstring).
-            tag=$(python3 -c 'import sys; sys.path.insert(0, "src"); from smolvm.images.published import IMAGES_RELEASE_TAG; print(IMAGES_RELEASE_TAG)')
+            # Read it as a string instead of importing the package: this
+            # workflow installs only the apt packages it needs to build
+            # a kernel and skips the smolvm Python deps (paramiko etc),
+            # so `from smolvm.images.published import …` would ImportError.
+            tag=$(awk -F'"' '/^IMAGES_RELEASE_TAG[[:space:]]*=/{print $2; exit}' src/smolvm/images/published.py)
           fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "Release tag: ${tag}"
