@@ -44,7 +44,7 @@ from smolvm.exceptions import ImageError
 from smolvm.images.manager import ImageManager, ImageSource, LocalImage
 
 Arch = Literal["amd64", "arm64"]
-Preset = Literal["codex", "claude-code", "openclaw", "hermes"]
+Preset = Literal["codex", "claude-code", "openclaw", "hermes", "pi"]
 # ``libkrun`` is reserved here for a future spike — manifest accepts the type
 # but the CLI never resolves a host to it until libkrun support is wired.
 Vmm = Literal["firecracker", "qemu", "libkrun"]
@@ -211,31 +211,24 @@ def _manifest_row(preset: Preset, arch: Arch, vmm: Vmm, rootfs_sha256: str) -> P
 
 _OPENCLAW_AMD64_ROOTFS_SHA = "a332941df1dfe3d29c849072267148d84919e6b13fa810870049a0a3567be8f9"
 _OPENCLAW_ARM64_ROOTFS_SHA = "87a8d855801a1dc89bafa4ac9596767a5de221536a5f6a43bc57e308059af937"
+
+
+def _preset_rows(
+    preset: Preset, amd64_sha: str, arm64_sha: str
+) -> dict[tuple[Preset, Arch, Vmm], PublishedImage]:
+    """Generate all (preset, arch, vmm) manifest rows for a single preset."""
+    rows: dict[tuple[Preset, Arch, Vmm], PublishedImage] = {}
+    for vmm in ("firecracker", "qemu", "libkrun"):
+        rows[(preset, "amd64", vmm)] = _manifest_row(preset, "amd64", vmm, amd64_sha)  # type: ignore[arg-type]
+        rows[(preset, "arm64", vmm)] = _manifest_row(preset, "arm64", vmm, arm64_sha)  # type: ignore[arg-type]
+    return rows
+
+
 MANIFEST: dict[tuple[Preset, Arch, Vmm], PublishedImage] = {
-    ("openclaw", "amd64", "firecracker"): _manifest_row(
-        "openclaw", "amd64", "firecracker", _OPENCLAW_AMD64_ROOTFS_SHA
-    ),
-    ("openclaw", "arm64", "firecracker"): _manifest_row(
-        "openclaw", "arm64", "firecracker", _OPENCLAW_ARM64_ROOTFS_SHA
-    ),
-    ("openclaw", "amd64", "qemu"): _manifest_row(
-        "openclaw", "amd64", "qemu", _OPENCLAW_AMD64_ROOTFS_SHA
-    ),
-    ("openclaw", "arm64", "qemu"): _manifest_row(
-        "openclaw", "arm64", "qemu", _OPENCLAW_ARM64_ROOTFS_SHA
-    ),
-    # libkrun is Firecracker-API-compatible (same ELF kernel, same boot
-    # protocol). These rows are stubs: the CLI's _vmm_for_host() doesn't
-    # return "libkrun" until the libkrun runtime spike succeeds. Adding
-    # them now means the libkrun PR can be a one-line plumbing change
-    # rather than a manifest migration. Same rootfs as the firecracker
-    # rows on the same arch.
-    ("openclaw", "amd64", "libkrun"): _manifest_row(
-        "openclaw", "amd64", "libkrun", _OPENCLAW_AMD64_ROOTFS_SHA
-    ),
-    ("openclaw", "arm64", "libkrun"): _manifest_row(
-        "openclaw", "arm64", "libkrun", _OPENCLAW_ARM64_ROOTFS_SHA
-    ),
+    **_preset_rows("openclaw", _OPENCLAW_AMD64_ROOTFS_SHA, _OPENCLAW_ARM64_ROOTFS_SHA),
+    # codex, claude-code, hermes, pi: rows added after their first CI build
+    # populates real SHAs. Until then these presets fall through to
+    # install-at-boot via is_preset_published() returning False.
 }
 
 

@@ -1,19 +1,18 @@
 # Build SmolVM preset images and upload them to a draft GitHub Release.
 #
-# Matrix: arch ∈ {amd64, arm64}. Each cell builds the same preset for its arch
-# on a runner of the matching architecture, compresses the rootfs with zstd,
-# computes SHA-256, and uploads to a draft release tagged with the CLI version
-# (lock-step with the bundled MANIFEST in src/smolvm/images/published.py).
+# Two-stage layered build:
+#   1. base-rootfs: builds a shared Ubuntu 24.04 rootfs with Node 22,
+#      Python 3, uv, git, curl, openssh — once per architecture.
+#   2. preset: layers the preset-specific install on top of the base
+#      rootfs (npm install, git clone, etc.) — one job per (preset, arch).
+#
+# The layered approach means adding a new preset costs ~60s of CI time
+# (just the npm install / pip install), not ~5 min (full apt + Node setup).
+# The base rootfs is passed between stages as a GitHub Actions artifact.
 #
 # The release stays in DRAFT until a human reviews and publishes it. Drafts
 # are invisible to the public and freely deletable, so re-runs and experiments
 # are safe.
-#
-# Currently only the openclaw preset is wired — it's the only preset with a
-# dedicated bake builder (build_openclaw_rootfs). Codex/Claude Code/Hermes use
-# the runtime-install pattern (setup_script + install_script defined in
-# src/smolvm/presets/) and would need their own bake builders before they can
-# be added to this matrix.
 #
 # Manual trigger only for now. Future PRs add: cosign keyless signing of each
 # uploaded asset, an auto-generated PR that populates MANIFEST in published.py
@@ -25,12 +24,12 @@ name: Build Published Images
 on:
   workflow_dispatch:
     inputs:
-      preset:
-        description: "Preset to build"
-        type: choice
-        default: openclaw
-        options:
-          - openclaw
+      presets:
+        description: >-
+          Comma-separated presets to build (e.g. "openclaw,codex,claude-code").
+          Use "all" to build every preset.
+        type: string
+        default: "all"
       release_tag:
         description: >-
           Release tag (e.g. images-v0.0.13). Created as draft if missing.
@@ -42,7 +41,41 @@ permissions:
   contents: write  # required to create/upload to GitHub Releases
 
 jobs:
-  build:
+  # ── Stage 1: Build shared base rootfs (once per arch) ─────────
+  base-rootfs:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Confirm Docker is available
+        run: docker info >/dev/null
+
+      - name: Build base rootfs
+        run: |
+          sudo bash scripts/ci/build-base-rootfs.sh /tmp/base 4096
+
+      - name: Upload base rootfs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: base-rootfs-${{ matrix.arch }}
+          path: /tmp/base/base-rootfs.ext4
+          retention-days: 1
+
+  # ── Stage 2a: Build openclaw (custom builder, not layered) ────
+  #
+  # openclaw has a custom init script, device-approver sidecar, and
+  # systemctl proxy that its Dockerfile bakes in. It uses
+  # builder.build_openclaw_rootfs() rather than the layered path.
+  openclaw:
     strategy:
       fail-fast: false
       matrix:
@@ -51,20 +84,36 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      - name: Check preset filter
+        id: filter
+        env:
+          INPUT_PRESETS: ${{ inputs.presets }}
+        run: |
+          if [ "$INPUT_PRESETS" = "all" ] || echo ",$INPUT_PRESETS," | grep -q ",openclaw,"; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Skipping openclaw (not in filter: $INPUT_PRESETS)"
+          fi
+
       - name: Check out repository
+        if: steps.filter.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
           persist-credentials: false
 
       - name: Set up Python 3.13
+        if: steps.filter.outputs.skip != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
 
       - name: Install Rust toolchain
+        if: steps.filter.outputs.skip != 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Rust build
+        if: steps.filter.outputs.skip != 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -75,17 +124,19 @@ jobs:
           restore-keys: rust-${{ runner.os }}-${{ matrix.arch }}-
 
       - name: Install uv
+        if: steps.filter.outputs.skip != 'true'
         uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
 
       - name: Install dependencies
+        if: steps.filter.outputs.skip != 'true'
         run: uv sync --extra dev
 
       - name: Confirm Docker is available
-        run: |
-          docker --version
-          docker info >/dev/null
+        if: steps.filter.outputs.skip != 'true'
+        run: docker info >/dev/null
 
       - name: Resolve release tag
+        if: steps.filter.outputs.skip != 'true'
         id: release
         env:
           INPUT_TAG: ${{ inputs.release_tag }}
@@ -93,95 +144,68 @@ jobs:
           if [ -n "$INPUT_TAG" ]; then
             tag="$INPUT_TAG"
           else
-            # tomllib.load() takes a binary file; tomllib.loads() takes a str
-            # (NOT bytes). The file-handle form is the simpler one to get right.
             version=$(uv run python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
             tag="images-v${version}"
           fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "Release tag: ${tag}"
 
-      - name: Build image
+      - name: Build openclaw image
+        if: steps.filter.outputs.skip != 'true'
         id: build
         env:
-          PRESET: ${{ inputs.preset }}
           ARCH: ${{ matrix.arch }}
         run: |
-          # Calls the existing builder method directly. No SSH key is provided —
-          # published images don't bake authorized_keys (see PR #232); the user's
-          # key is injected at boot via the kernel cmdline.
           uv run python <<'PY'
           import os
-          import sys
           from pathlib import Path
           from smolvm.images.builder import ImageBuilder
 
-          preset = os.environ["PRESET"]
           arch = os.environ["ARCH"]
-          name = f"{preset}-{arch}"
+          name = f"openclaw-{arch}"
 
           builder = ImageBuilder()
-          if preset == "openclaw":
-              # Default rootfs_size_mb=2048 doesn't fit current openclaw content
-              # (Node 22 + npm globals + apt deps overflow). 4 GiB gives
-              # headroom — the resulting file is sparse and zstd-compresses to
-              # roughly its used size, so wire size impact is minimal. Builder
-              # default should probably be bumped too — tracked in #234/#236.
-              kernel, rootfs = builder.build_openclaw_rootfs(
-                  name=name,
-                  rootfs_size_mb=4096,
-              )
-          else:
-              sys.exit(f"unknown preset: {preset}")
+          kernel, rootfs = builder.build_openclaw_rootfs(
+              name=name,
+              rootfs_size_mb=4096,
+          )
 
-          # Append (don't overwrite) GITHUB_OUTPUT in case any prior step wrote to it.
           with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as fh:
-              fh.write(f"kernel_path={kernel}\n")
               fh.write(f"rootfs_path={rootfs}\n")
               fh.write(f"name={name}\n")
-          print(f"kernel: {kernel} ({kernel.stat().st_size:,} bytes)")
           print(f"rootfs: {rootfs} ({rootfs.stat().st_size:,} bytes)")
           PY
 
       - name: Stage release assets
+        if: steps.filter.outputs.skip != 'true'
         id: stage
         env:
           NAME: ${{ steps.build.outputs.name }}
-          KERNEL_PATH: ${{ steps.build.outputs.kernel_path }}
           ROOTFS_PATH: ${{ steps.build.outputs.rootfs_path }}
         run: |
-          # zstd is preinstalled on the GH-hosted runners. -19 maxes ratio.
-          # Already-compressed payloads (Node binaries, packed JS) limit the
-          # ratio in practice; openclaw lands ~62% of the source on disk.
           zstd -19 -T0 --rm -o "${NAME}-rootfs.ext4.zst" "$ROOTFS_PATH"
-          cp "$KERNEL_PATH" "${NAME}-vmlinux.bin"
-          ls -lh "${NAME}-rootfs.ext4.zst" "${NAME}-vmlinux.bin"
+          ls -lh "${NAME}-rootfs.ext4.zst"
 
       - name: Compute SHA-256
+        if: steps.filter.outputs.skip != 'true'
         id: sha
         env:
           NAME: ${{ steps.build.outputs.name }}
         run: |
           rootfs_sha=$(sha256sum "${NAME}-rootfs.ext4.zst" | cut -d' ' -f1)
-          kernel_sha=$(sha256sum "${NAME}-vmlinux.bin" | cut -d' ' -f1)
           rootfs_size=$(stat -c '%s' "${NAME}-rootfs.ext4.zst")
-          kernel_size=$(stat -c '%s' "${NAME}-vmlinux.bin")
           {
             echo "rootfs_sha=${rootfs_sha}"
-            echo "kernel_sha=${kernel_sha}"
             echo "rootfs_size=${rootfs_size}"
-            echo "kernel_size=${kernel_size}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Upload to GitHub Releases (draft)
+        if: steps.filter.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.release.outputs.tag }}
           NAME: ${{ steps.build.outputs.name }}
         run: |
-          # Idempotent draft create. The matrix may race two cells trying to
-          # create the same draft; the second create fails with "already exists"
-          # which we swallow. Subsequent uploads proceed normally.
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
@@ -191,22 +215,18 @@ jobs:
               || echo "Draft already exists (race with another matrix cell), continuing."
           fi
 
-          # --clobber overwrites any prior asset with the same name, so re-runs
-          # of the workflow for the same tag replace existing artifacts cleanly.
           gh release upload "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --clobber \
-            "${NAME}-rootfs.ext4.zst" \
-            "${NAME}-vmlinux.bin"
+            "${NAME}-rootfs.ext4.zst"
 
       - name: Step summary
+        if: steps.filter.outputs.skip != 'true'
         env:
           NAME: ${{ steps.build.outputs.name }}
           TAG: ${{ steps.release.outputs.tag }}
           ROOTFS_SHA: ${{ steps.sha.outputs.rootfs_sha }}
-          KERNEL_SHA: ${{ steps.sha.outputs.kernel_sha }}
           ROOTFS_SIZE: ${{ steps.sha.outputs.rootfs_size }}
-          KERNEL_SIZE: ${{ steps.sha.outputs.kernel_size }}
         run: |
           {
             echo "## Build summary: \`${NAME}\`"
@@ -215,6 +235,149 @@ jobs:
             echo ""
             echo "| File | Size | SHA-256 |"
             echo "| --- | --- | --- |"
-            echo "| ${NAME}-vmlinux.bin | $(numfmt --to=iec-i --suffix=B ${KERNEL_SIZE}) | \`${KERNEL_SHA}\` |"
+            echo "| ${NAME}-rootfs.ext4.zst | $(numfmt --to=iec-i --suffix=B ${ROOTFS_SIZE}) | \`${ROOTFS_SHA}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Stage 2b: Layer presets on top of base ────────────────────
+  #
+  # codex, claude-code, hermes, pi use the shared base rootfs.
+  # Each job copies the base, chroots in, runs the preset's install.
+  preset:
+    needs: base-rootfs
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+        preset: [codex, claude-code, hermes, pi]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 20
+
+    steps:
+      - name: Check preset filter
+        id: filter
+        env:
+          INPUT_PRESETS: ${{ inputs.presets }}
+          PRESET: ${{ matrix.preset }}
+        run: |
+          if [ "$INPUT_PRESETS" = "all" ] || echo ",$INPUT_PRESETS," | grep -q ",$PRESET,"; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Skipping $PRESET (not in filter: $INPUT_PRESETS)"
+          fi
+
+      - name: Check out repository
+        if: steps.filter.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        if: steps.filter.outputs.skip != 'true'
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+
+      - name: Resolve release tag
+        if: steps.filter.outputs.skip != 'true'
+        id: release
+        env:
+          INPUT_TAG: ${{ inputs.release_tag }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            tag="$INPUT_TAG"
+          else
+            version=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+            tag="images-v${version}"
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Release tag: ${tag}"
+
+      - name: Download base rootfs
+        if: steps.filter.outputs.skip != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: base-rootfs-${{ matrix.arch }}
+          path: /tmp/base
+
+      - name: Layer preset on base rootfs
+        if: steps.filter.outputs.skip != 'true'
+        id: build
+        env:
+          PRESET: ${{ matrix.preset }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          # Hermes needs more disk (Python deps are heavier)
+          SIZE=4096
+          if [ "$PRESET" = "hermes" ]; then
+            SIZE=6144
+          fi
+
+          sudo ARCH="$ARCH" bash scripts/ci/build-preset.sh \
+            "$PRESET" /tmp/base/base-rootfs.ext4 /tmp/out "$SIZE"
+
+          name="${PRESET}-${ARCH}"
+          rootfs="/tmp/out/${name}-rootfs.ext4"
+
+          echo "rootfs_path=${rootfs}" >> "$GITHUB_OUTPUT"
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+
+      - name: Stage release assets
+        if: steps.filter.outputs.skip != 'true'
+        id: stage
+        env:
+          NAME: ${{ steps.build.outputs.name }}
+          ROOTFS_PATH: ${{ steps.build.outputs.rootfs_path }}
+        run: |
+          zstd -19 -T0 --rm -o "${NAME}-rootfs.ext4.zst" "$ROOTFS_PATH"
+          ls -lh "${NAME}-rootfs.ext4.zst"
+
+      - name: Compute SHA-256
+        if: steps.filter.outputs.skip != 'true'
+        id: sha
+        env:
+          NAME: ${{ steps.build.outputs.name }}
+        run: |
+          rootfs_sha=$(sha256sum "${NAME}-rootfs.ext4.zst" | cut -d' ' -f1)
+          rootfs_size=$(stat -c '%s' "${NAME}-rootfs.ext4.zst")
+          {
+            echo "rootfs_sha=${rootfs_sha}"
+            echo "rootfs_size=${rootfs_size}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload to GitHub Releases (draft)
+        if: steps.filter.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+          NAME: ${{ steps.build.outputs.name }}
+        run: |
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft \
+              --title "Published images $TAG" \
+              --notes "Auto-generated draft release for SmolVM published images. Verify SHA-256 sums and content before publishing." \
+              || echo "Draft already exists (race with another matrix cell), continuing."
+          fi
+
+          gh release upload "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber \
+            "${NAME}-rootfs.ext4.zst"
+
+      - name: Step summary
+        if: steps.filter.outputs.skip != 'true'
+        env:
+          NAME: ${{ steps.build.outputs.name }}
+          TAG: ${{ steps.release.outputs.tag }}
+          ROOTFS_SHA: ${{ steps.sha.outputs.rootfs_sha }}
+          ROOTFS_SIZE: ${{ steps.sha.outputs.rootfs_size }}
+        run: |
+          {
+            echo "## Build summary: \`${NAME}\`"
+            echo ""
+            echo "Uploaded to draft release [\`${TAG}\`](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG})."
+            echo ""
+            echo "| File | Size | SHA-256 |"
+            echo "| --- | --- | --- |"
             echo "| ${NAME}-rootfs.ext4.zst | $(numfmt --to=iec-i --suffix=B ${ROOTFS_SIZE}) | \`${ROOTFS_SHA}\` |"
           } >> "$GITHUB_STEP_SUMMARY"

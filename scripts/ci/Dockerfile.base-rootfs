@@ -1,0 +1,58 @@
+# Base rootfs for all SmolVM presets.
+#
+# Shared layer: Ubuntu 24.04 minimal + Node 22 + Python 3 + uv + common
+# system packages. Each preset builds ON TOP of this image by running its
+# own install script (npm install, git clone, etc.) — see build-preset.sh.
+#
+# Kept lean: no preset-specific tooling here. The goal is one base image
+# per architecture that all presets share.
+#
+# Notes on what's NOT here:
+# - python3-pip / python3-venv: presets use uv for all Python ops; pip is
+#   ~30 MB plus its dep tree, and uv brings its own venv implementation.
+# - gnupg: only needed by the NodeSource bootstrap (apt-key); we drop it
+#   in the same RUN that uses it so it doesn't persist into the image.
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ── System packages ─────────────────────────────────────────────
+# Single RUN keeps everything in one layer — apt cache cleanup in this
+# layer actually shrinks the image; in a separate layer it wouldn't.
+RUN apt-get update -qq \
+    && apt-get install -y -qq --no-install-recommends \
+        openssh-server \
+        iproute2 \
+        curl \
+        ca-certificates \
+        gnupg \
+        git \
+        bash \
+        python3 \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y -qq --no-install-recommends nodejs \
+    && apt-get purge -y -qq gnupg \
+    && apt-get autoremove -y -qq \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* \
+    && rm -rf /var/log/* /tmp/* /root/.cache
+
+# ── uv (fast Python package manager) ───────────────────────────
+# Installed system-wide so all presets pick it up without modifying PATH.
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && cp /root/.local/bin/uv /usr/local/bin/uv \
+    && cp /root/.local/bin/uvx /usr/local/bin/uvx \
+    && rm -rf /root/.local /root/.cache
+
+# ── SSH hardening ───────────────────────────────────────────────
+# Host keys generated at first boot via cloud-init or /init.
+RUN rm -f /etc/ssh/ssh_host_* \
+    && mkdir -p /run/sshd /root/.ssh \
+    && chmod 700 /root/.ssh \
+    && sed -ri 's/^#?PermitRootLogin .*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config \
+    && sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config \
+    && sed -ri 's/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+
+# ── Workspace directory ─────────────────────────────────────────
+RUN mkdir -p /workspace
