@@ -1837,12 +1837,20 @@ def _render_start_result(data: StartPayload) -> None:
 # Boot args for the published-image launch path, keyed by (preset, vmm).
 # Firecracker uses MMIO virtio + 8250 silenced (no PCI); QEMU/libkrun use
 # PCI virtio with an arch-specific console (added by _boot_args_for).
-# When we add per-preset bake builders, this can move onto the Preset
-# itself; for now openclaw is the only published preset.
+#
+# Every published preset bakes a SmolVM init script at /init that reads
+# smolvm.authorized_key_b64=<base64> from the cmdline for pubkey injection
+# — openclaw via build_openclaw_rootfs(), the layered presets via
+# scripts/ci/preset-init.sh baked by build-preset.sh.
+_PUBLISHED_BOOT_ARGS_BY_VMM: dict[Vmm, str] = {
+    "firecracker": "reboot=k panic=1 pci=off init=/init 8250.nr_uarts=0",
+    "qemu": "reboot=k panic=1 init=/init",
+    "libkrun": "reboot=k panic=1 init=/init",
+}
 _PUBLISHED_IMAGE_BOOT_ARGS: dict[tuple[str, Vmm], str] = {
-    ("openclaw", "firecracker"): "reboot=k panic=1 pci=off init=/init 8250.nr_uarts=0",
-    ("openclaw", "qemu"): "reboot=k panic=1 init=/init",
-    ("openclaw", "libkrun"): "reboot=k panic=1 init=/init",
+    (preset, vmm): args
+    for preset in ("openclaw", "codex", "claude-code", "hermes", "pi")
+    for vmm, args in _PUBLISHED_BOOT_ARGS_BY_VMM.items()
 }
 
 # vmm → SmolVM runtime backend. libkrun ships a Firecracker-API-compatible
