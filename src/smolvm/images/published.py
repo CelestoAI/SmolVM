@@ -216,8 +216,16 @@ def _manifest_row(preset: Preset, arch: Arch, vmm: Vmm, rootfs_sha256: str) -> P
     )
 
 
-_OPENCLAW_AMD64_ROOTFS_SHA = "a332941df1dfe3d29c849072267148d84919e6b13fa810870049a0a3567be8f9"
-_OPENCLAW_ARM64_ROOTFS_SHA = "87a8d855801a1dc89bafa4ac9596767a5de221536a5f6a43bc57e308059af937"
+# Resync openclaw rootfs SHAs to the latest Build Published Images upload
+# at IMAGES_RELEASE_TAG. The previous values went stale when CI re-ran
+# with --clobber and the new bytes had different SHAs.
+#
+# codex/claude-code/hermes/pi rows are NOT added here even though their
+# rootfs artifacts are published — adding them flips is_preset_published()
+# to True and the CLI's published-path dispatch needs boot_args wired up
+# per (preset, vmm). Only openclaw has that today. Tracked separately.
+_OPENCLAW_AMD64_ROOTFS_SHA = "33dcae2a9ea9ce29ffc0ccdf6103aaf7c0a93dd28b9be6322e1306d6f9c53a77"
+_OPENCLAW_ARM64_ROOTFS_SHA = "8655dd10c77a16e57abaf83d4868653fedaba63688a959931872ac79a7f8091e"
 
 
 def _preset_rows(
@@ -236,9 +244,8 @@ def _preset_rows(
 
 MANIFEST: dict[tuple[Preset, Arch, Vmm], PublishedImage] = {
     **_preset_rows("openclaw", _OPENCLAW_AMD64_ROOTFS_SHA, _OPENCLAW_ARM64_ROOTFS_SHA),
-    # codex, claude-code, hermes, pi: rows added after their first CI build
-    # populates real SHAs. Until then these presets fall through to
-    # install-at-boot via is_preset_published() returning False.
+    # codex, claude-code, hermes, pi: rootfs artifacts exist on the release
+    # page but rows are gated on the runtime boot_args wiring landing first.
 }
 
 
