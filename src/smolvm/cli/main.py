@@ -1869,23 +1869,6 @@ _VMM_TO_BACKEND: dict[Vmm, str] = {
     "libkrun": "qemu",
 }
 
-# Preset+OS → base OS string used in the start-result envelope.
-# openclaw bakes from node:22.12.0-bookworm-slim (Debian 12) — its rootfs
-# is independent of the layered ubuntu/alpine flavours. codex/claude-code/
-# hermes/pi layer on either Ubuntu 24.04 or Alpine 3.20 via build-preset.sh.
-_PRESET_OS_LABEL: dict[tuple[str, str], str] = {
-    ("openclaw", "ubuntu"): "debian-bookworm",
-    ("openclaw", "alpine"): "debian-bookworm",
-    ("codex", "ubuntu"): "ubuntu-24.04",
-    ("codex", "alpine"): "alpine-3.20",
-    ("claude-code", "ubuntu"): "ubuntu-24.04",
-    ("claude-code", "alpine"): "alpine-3.20",
-    ("hermes", "ubuntu"): "ubuntu-24.04",
-    ("hermes", "alpine"): "alpine-3.20",
-    ("pi", "ubuntu"): "ubuntu-24.04",
-    ("pi", "alpine"): "alpine-3.20",
-}
-
 
 def _boot_args_for(preset_name: str, vmm: Vmm, arch: Arch) -> str:
     """Resolve boot args for the published-image path.
@@ -2023,7 +2006,9 @@ def _run_start_with_published_image(args: argparse.Namespace, preset: object) ->
                         if isinstance(vm.info.status, VMState)
                         else VMState.RUNNING.value
                     ),
-                    "os": _PRESET_OS_LABEL.get((_preset.name, requested_os.value), "unknown"),
+                    # Mirrors the install-at-boot path so JSON callers see the
+                    # same vocabulary regardless of which path served the boot.
+                    "os": requested_os.value,
                     "backend": backend,
                     "ip_address": network.guest_ip if network else None,
                     "ssh_port": network.ssh_host_port if network else None,

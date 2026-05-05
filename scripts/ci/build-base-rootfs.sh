@@ -45,7 +45,22 @@ docker build -t "$TAG" -f "$DOCKERFILE" "$SCRIPT_DIR"
 
 echo "==> Exporting container filesystem..."
 CID=$(docker create "$TAG" /bin/true)
-trap 'docker rm -f "$CID" >/dev/null 2>&1 || true' EXIT
+MNT=""
+cleanup() {
+  # Fire-and-forget: errors past the first failing step stop the script,
+  # but cleanup must still try every resource. Loop mount must come down
+  # before the rmdir, and the docker container is independent of both.
+  if [ -n "$MNT" ] && mountpoint -q "$MNT" 2>/dev/null; then
+    umount "$MNT" 2>/dev/null || true
+  fi
+  if [ -n "$MNT" ] && [ -d "$MNT" ]; then
+    rmdir "$MNT" 2>/dev/null || true
+  fi
+  if [ -n "${CID:-}" ]; then
+    docker rm -f "$CID" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
 docker export "$CID" > "$OUT_DIR/rootfs.tar"
 
 echo "==> Creating ${SIZE_MB}M ext4 image..."
@@ -58,6 +73,7 @@ tar -xf "$OUT_DIR/rootfs.tar" -C "$MNT" \
   --exclude='dev/*' --exclude='proc/*' --exclude='sys/*' --exclude='.dockerenv'
 umount "$MNT"
 rmdir "$MNT"
+MNT=""
 
 rm -f "$OUT_DIR/rootfs.tar"
 

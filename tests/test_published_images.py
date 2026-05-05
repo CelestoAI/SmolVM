@@ -256,6 +256,34 @@ class TestToImageSource:
             version="0.0.13",
         )
 
+    def test_name_uses_cache_name_for_alpine_entry(self) -> None:
+        """Alpine entries must round-trip through cache_name with os='alpine'
+        so the on-disk cache namespace matches what to_image_source produces."""
+        entry = PublishedImage(
+            preset="codex",
+            arch="amd64",
+            vmm="firecracker",
+            os="alpine",
+            kernel_url="https://example.com/codex-amd64-vmlinux.bin",
+            kernel_sha256=hashlib.sha256(b"fake-kernel").hexdigest(),
+            rootfs_url="https://example.com/codex-amd64-alpine-rootfs.ext4",
+            rootfs_sha256=hashlib.sha256(b"fake-rootfs").hexdigest(),
+        )
+        source = to_image_source(entry, version="0.0.13")
+        assert source.name == cache_name(
+            entry.preset,
+            entry.arch,
+            entry.vmm,
+            version="0.0.13",
+            os="alpine",
+        )
+        # And the alpine and ubuntu cache names must differ for the same
+        # (preset, arch, vmm) — otherwise running both flavours would
+        # silently share rootfs files on disk.
+        assert source.name != cache_name(
+            entry.preset, entry.arch, entry.vmm, version="0.0.13", os="ubuntu"
+        )
+
 
 class TestEnsurePublishedImage:
     def test_returns_cached_without_download(

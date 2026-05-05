@@ -37,7 +37,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from smolvm import __version__
 from smolvm.exceptions import ImageError
@@ -76,7 +76,10 @@ class PublishedImage(BaseModel):
     rootfs_url: str
     rootfs_sha256: str
 
-    model_config = {"frozen": True}
+    # ``extra="forbid"`` rejects unknown fields at construction so a typo
+    # in a manifest row (e.g. ``kernel_shaa256=...``) fails loudly instead
+    # of being silently ignored and shipping an unverified image.
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
 
 class BaseKernel(BaseModel):
@@ -103,7 +106,7 @@ class BaseKernel(BaseModel):
     image_url: str
     image_sha256: str
 
-    model_config = {"frozen": True}
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     def url_for(self, fmt: KernelFormat) -> str:
         return self.elf_url if fmt == "elf" else self.image_url

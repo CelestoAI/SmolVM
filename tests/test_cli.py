@@ -2481,7 +2481,7 @@ class TestCliStart:
     @patch("smolvm.cli.main._apply_preset_with_progress")
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
-    def test_start_with_alpine_os(
+    def test_start_alpine_falls_through_to_install_at_boot(
         self,
         mock_vm_cls: MagicMock,
         mock_build_auto_config: MagicMock,
@@ -2489,8 +2489,9 @@ class TestCliStart:
         _mock_is_published: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm claude-code start --os alpine` should boot alpine and skip
-        the published-image fast-path (which is OS-fixed today)."""
+        """When no Alpine row is published yet, ``--os alpine`` must thread
+        the OS through ``_build_auto_config`` (install-at-boot path) and
+        echo the flag value back in the JSON envelope."""
         from smolvm.types import GuestOS
 
         config = MagicMock(vm_id="sbx-claude")
@@ -2503,28 +2504,55 @@ class TestCliStart:
             "injected_env_keys": [],
         }
 
-        # Patch the published-image entry-point so a stale openclaw row in
-        # the manifest can't lure this run into the fast path.
-        with patch("smolvm.cli.main._run_start_with_published_image") as mock_published:
-            mock_published.return_value = 0
-            ret = main(
-                [
-                    "claude-code",
-                    "start",
-                    "--name",
-                    "sbx-claude",
-                    "--os",
-                    "alpine",
-                    "--json",
-                ]
-            )
+        ret = main(
+            [
+                "claude-code",
+                "start",
+                "--name",
+                "sbx-claude",
+                "--os",
+                "alpine",
+                "--json",
+            ]
+        )
 
         assert ret == 0
-        mock_published.assert_not_called()
         kwargs = mock_build_auto_config.call_args.kwargs
         assert kwargs["os"] is GuestOS.ALPINE
         payload = json.loads(capsys.readouterr().out)
         assert payload["data"]["vm"]["os"] == "alpine"
+
+    @patch("smolvm.cli.main._run_start_with_published_image", return_value=0)
+    @patch("smolvm.images.published.is_preset_published")
+    def test_start_alpine_uses_published_fast_path_when_available(
+        self,
+        mock_is_published: MagicMock,
+        mock_published_path: MagicMock,
+    ) -> None:
+        """When an Alpine row IS published, ``--os alpine`` must route
+        through the fast path with ``os="alpine"`` — same routing logic as
+        Ubuntu, just keyed on the user's flag.
+
+        Returning True only for the alpine query verifies the OS argument
+        is actually flowing into ``is_preset_published`` (not just lost
+        somewhere upstream).
+        """
+
+        def _published_only_for_alpine(
+            preset: str, arch: object, vmm: object, os: str, *, manifest: object = None
+        ) -> bool:
+            return os == "alpine" and preset == "claude-code"
+
+        mock_is_published.side_effect = _published_only_for_alpine
+
+        ret = main(["claude-code", "start", "--os", "alpine", "--json"])
+
+        assert ret == 0
+        mock_published_path.assert_called_once()
+        # is_preset_published was called with ``os="alpine"`` — locks the
+        # routing in even if a future refactor reorders the kwargs.
+        last_call = mock_is_published.call_args
+        assert "alpine" in last_call.args or last_call.kwargs.get("os") == "alpine"
 
     @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.cli.main._apply_preset_with_progress")
