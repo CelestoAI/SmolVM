@@ -50,7 +50,6 @@ class GuestOS(str, Enum):
     """Supported guest operating systems for auto-configured VMs."""
 
     ALPINE = "alpine"
-    DEBIAN = "debian"
     UBUNTU = "ubuntu"
 
 

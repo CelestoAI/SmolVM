@@ -138,9 +138,10 @@ class TestLookup:
             pytest.skip("default manifest is empty in this release")
         first_key = next(iter(MANIFEST))
         assert lookup(*first_key) is MANIFEST[first_key]
-        # And one that's guaranteed not to:
+        # An invented preset name is guaranteed to be missing — using a real
+        # preset like "hermes" risks silently passing once it ships rows.
         with pytest.raises(ImageError, match="No published image"):
-            lookup("hermes", "arm64", "firecracker")  # type: ignore[arg-type]
+            lookup("definitely-not-a-real-preset", "arm64", "firecracker")  # type: ignore[arg-type]
 
 
 class TestIsPresetPublished:

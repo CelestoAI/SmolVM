@@ -51,11 +51,16 @@ RUN apt-get update -qq \
         /usr/share/help \
         /usr/share/X11 \
     && find /usr -depth -name __pycache__ -type d -exec rm -rf {} + \
-    && find /usr -name '*.pyc' -delete
+    && find /usr -name '*.pyc' -delete \
+    && touch /var/log/lastlog
 
 # ── uv (fast Python package manager) ───────────────────────────
 # Installed system-wide so all presets pick it up without modifying PATH.
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+# --no-modify-path stops the installer from appending
+# `. "$HOME/.local/bin/env"` to ~/.bashrc + ~/.profile — those would
+# dangle once we delete /root/.local below and surface as an error on
+# every shell login.
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh -s -- --no-modify-path \
     && cp /root/.local/bin/uv /usr/local/bin/uv \
     && cp /root/.local/bin/uvx /usr/local/bin/uvx \
     && rm -rf /root/.local /root/.cache

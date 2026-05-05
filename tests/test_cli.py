@@ -669,40 +669,6 @@ class TestCliCreate:
 
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
-    def test_create_with_debian_os(
-        self,
-        mock_vm_cls: MagicMock,
-        mock_build_auto_config: MagicMock,
-        capsys: pytest.CaptureFixture,
-    ) -> None:
-        """`smolvm create --os debian` should thread the OS into auto-config."""
-        config = MagicMock(vm_id="project-spacex")
-        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
-
-        vm = MagicMock()
-        vm.vm_id = "project-spacex"
-        vm.info.config.backend = "qemu"
-        vm.info.network = MagicMock(spec=NetworkConfig)
-        vm.info.network.guest_ip = "172.16.0.2"
-        vm.info.network.ssh_host_port = 2200
-        mock_vm_cls.return_value = vm
-
-        ret = main(["create", "--name", "project-spacex", "--os", "debian", "--json"])
-
-        assert ret == 0
-        mock_build_auto_config.assert_called_once_with(
-            vm_name="project-spacex",
-            os="debian",
-            backend=None,
-            memory=None,
-            disk_size_mib=4096,
-            ssh_key_path=None,
-        )
-        payload = json.loads(capsys.readouterr().out)
-        assert payload["data"]["vm"]["os"] == "debian"
-
-    @patch("smolvm.facade._build_auto_config")
-    @patch("smolvm.facade.SmolVM")
     def test_create_alpine_does_not_get_disk_size_default(
         self,
         mock_vm_cls: MagicMock,
@@ -2416,6 +2382,7 @@ class TestCliStart:
         assert "claude" in tokens
         assert "claude-code" in tokens
 
+    @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.cli.main._apply_preset_with_progress")
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
@@ -2424,9 +2391,15 @@ class TestCliStart:
         mock_vm_cls: MagicMock,
         mock_build_auto_config: MagicMock,
         mock_apply: MagicMock,
+        _mock_is_published: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm codex start` boots ubuntu/qemu with preset defaults and applies the preset."""
+        """`smolvm codex start` boots ubuntu/qemu with preset defaults and applies the preset.
+
+        Forces the install-at-boot path (is_preset_published=False) since
+        codex now has a published image and would otherwise take the fast
+        path. The published-path coverage is exercised in separate tests.
+        """
         from smolvm.types import GuestOS
 
         config = MagicMock(vm_id="sbx-codex")
@@ -2469,6 +2442,7 @@ class TestCliStart:
         assert "OPENAI_API_KEY" in out
         assert "smolvm ssh sbx-codex" in out
 
+    @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.presets.apply_preset")
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
@@ -2477,6 +2451,7 @@ class TestCliStart:
         mock_vm_cls: MagicMock,
         mock_build_auto_config: MagicMock,
         mock_apply_fn: MagicMock,
+        _mock_is_published: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
         """`smolvm codex start --json` should emit the start envelope."""
@@ -2502,6 +2477,7 @@ class TestCliStart:
         assert payload["data"]["preset"]["injected_env_keys"] == ["OPENAI_API_KEY"]
         assert payload["data"]["next"]["ssh_command"] == "smolvm ssh sbx-1"
 
+    @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.cli.main._apply_preset_with_progress")
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
@@ -2596,6 +2572,7 @@ class TestCliStart:
         mock_vm_cls: MagicMock,
         mock_build_auto_config: MagicMock,
         mock_apply: MagicMock,
+        _mock_is_published: MagicMock,
     ) -> None:
         """User --memory should override the preset default."""
         config = MagicMock(vm_id="sbx")
@@ -2615,15 +2592,23 @@ class TestCliStart:
         assert kwargs["memory"] == 4096
         assert kwargs["disk_size_mib"] == 16384
 
+    @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
     def test_start_rejects_non_qemu_backend(
         self,
         mock_vm_cls: MagicMock,
         mock_build_auto_config: MagicMock,
+        _mock_is_published: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """Built-in presets target ubuntu, which only boots on qemu."""
+        """Install-at-boot path rejects non-qemu backends.
+
+        Forces is_preset_published=False so the install-at-boot fallback
+        runs (codex now has firecracker/qemu/libkrun published images,
+        which would otherwise take the fast path on Linux). The rejection
+        only fires when neither path is available.
+        """
         ret = main(["codex", "start", "--backend", "firecracker"])
 
         assert ret == 2
@@ -2633,6 +2618,7 @@ class TestCliStart:
         mock_build_auto_config.assert_not_called()
         mock_vm_cls.assert_not_called()
 
+    @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.cli.main.subprocess.run")
     @patch("smolvm.cli.main._apply_preset_with_progress")
     @patch("smolvm.facade._build_auto_config")
@@ -2643,6 +2629,7 @@ class TestCliStart:
         mock_build_auto_config: MagicMock,
         mock_apply: MagicMock,
         mock_subprocess_run: MagicMock,
+        _mock_is_published: MagicMock,
     ) -> None:
         """`--attach` should ssh into the box and exec the launch command."""
         config = MagicMock(vm_id="sbx")
@@ -2682,6 +2669,7 @@ class TestCliStart:
         )
         assert "[ -r " in remote, "env file source must be guarded with a file-existence check"
 
+    @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.cli.main.subprocess.run")
     @patch("smolvm.cli.main._apply_preset_with_progress")
     @patch("smolvm.facade._build_auto_config")
@@ -2692,6 +2680,7 @@ class TestCliStart:
         mock_build_auto_config: MagicMock,
         mock_apply: MagicMock,
         mock_subprocess_run: MagicMock,
+        _mock_is_published: MagicMock,
     ) -> None:
         """`--no-attach` should skip both the prompt and the ssh launch."""
         config = MagicMock(vm_id="sbx")
@@ -2708,6 +2697,7 @@ class TestCliStart:
         assert ret == 0
         mock_subprocess_run.assert_not_called()
 
+    @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.cli.main.subprocess.run")
     @patch("smolvm.cli.main.sys.stdin")
     @patch("builtins.input", return_value="y")
@@ -2722,6 +2712,7 @@ class TestCliStart:
         mock_input: MagicMock,
         mock_stdin: MagicMock,
         mock_subprocess_run: MagicMock,
+        _mock_is_published: MagicMock,
     ) -> None:
         """Default behavior on a TTY: prompt; ``y`` answer attaches."""
         mock_stdin.isatty.return_value = True
@@ -2746,6 +2737,7 @@ class TestCliStart:
         mock_input.assert_called_once()
         mock_subprocess_run.assert_called_once()
 
+    @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.cli.main.subprocess.run")
     @patch("smolvm.cli.main.sys.stdin")
     @patch("builtins.input", return_value="n")
@@ -2760,6 +2752,7 @@ class TestCliStart:
         mock_input: MagicMock,
         mock_stdin: MagicMock,
         mock_subprocess_run: MagicMock,
+        _mock_is_published: MagicMock,
     ) -> None:
         """A ``n`` answer should skip the ssh launch."""
         mock_stdin.isatty.return_value = True
@@ -2779,6 +2772,7 @@ class TestCliStart:
         mock_input.assert_called_once()
         mock_subprocess_run.assert_not_called()
 
+    @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.cli.main.subprocess.run")
     @patch("smolvm.presets.apply_preset")
     @patch("smolvm.facade._build_auto_config")
@@ -2789,6 +2783,7 @@ class TestCliStart:
         mock_build_auto_config: MagicMock,
         mock_apply_fn: MagicMock,
         mock_subprocess_run: MagicMock,
+        _mock_is_published: MagicMock,
     ) -> None:
         """JSON mode should never prompt or attach, even when a launch command exists."""
         config = MagicMock(vm_id="sbx")

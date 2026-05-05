@@ -216,16 +216,19 @@ def _manifest_row(preset: Preset, arch: Arch, vmm: Vmm, rootfs_sha256: str) -> P
     )
 
 
-# Resync openclaw rootfs SHAs to the latest Build Published Images upload
-# at IMAGES_RELEASE_TAG. The previous values went stale when CI re-ran
-# with --clobber and the new bytes had different SHAs.
-#
-# codex/claude-code/hermes/pi rows are NOT added here even though their
-# rootfs artifacts are published — adding them flips is_preset_published()
-# to True and the CLI's published-path dispatch needs boot_args wired up
-# per (preset, vmm). Only openclaw has that today. Tracked separately.
+# Rootfs SHAs from the Build Published Images run for IMAGES_RELEASE_TAG.
+# Captured by sha256sum'ing each ``<preset>-<arch>-rootfs.ext4.zst`` asset
+# on the release page. Update together when artifacts are rebuilt.
 _OPENCLAW_AMD64_ROOTFS_SHA = "33dcae2a9ea9ce29ffc0ccdf6103aaf7c0a93dd28b9be6322e1306d6f9c53a77"
 _OPENCLAW_ARM64_ROOTFS_SHA = "8655dd10c77a16e57abaf83d4868653fedaba63688a959931872ac79a7f8091e"
+_CODEX_AMD64_ROOTFS_SHA = "5577b6c00a0bdb3eccfe9f226f991389ac1f744193185550e5dd5fc9f1d0d757"
+_CODEX_ARM64_ROOTFS_SHA = "557f94b422f24a59f03408580eb5c687a4229e77f8f20ed9e4bc82b9b14c880b"
+_CLAUDE_CODE_AMD64_ROOTFS_SHA = "e10af2cd958481ce39c7aa7b39d3e43fc98dba8f7071457f71752bb00752627e"
+_CLAUDE_CODE_ARM64_ROOTFS_SHA = "044095c154304077713291af53a57825cdc9f3fc7505dddb57af9cf92af39c71"
+_HERMES_AMD64_ROOTFS_SHA = "cc8658943885f11c86b0616cf7b3351e8672608fa36e29de157767ac1a3a06f4"
+_HERMES_ARM64_ROOTFS_SHA = "fa965ae736f92af2ec32dbd8bbb747ee3702e3c265be0753a6d49f0f4439fcba"
+_PI_AMD64_ROOTFS_SHA = "a5b4833971d14e3f9623a816d2d724368b68537529bfb2e10ea02e74ee0d22be"
+_PI_ARM64_ROOTFS_SHA = "6d3aaa5379e70243b583f7c75e428aa84f0b5140483507d4e48855ea6da52e95"
 
 
 def _preset_rows(
@@ -244,8 +247,10 @@ def _preset_rows(
 
 MANIFEST: dict[tuple[Preset, Arch, Vmm], PublishedImage] = {
     **_preset_rows("openclaw", _OPENCLAW_AMD64_ROOTFS_SHA, _OPENCLAW_ARM64_ROOTFS_SHA),
-    # codex, claude-code, hermes, pi: rootfs artifacts exist on the release
-    # page but rows are gated on the runtime boot_args wiring landing first.
+    **_preset_rows("codex", _CODEX_AMD64_ROOTFS_SHA, _CODEX_ARM64_ROOTFS_SHA),
+    **_preset_rows("claude-code", _CLAUDE_CODE_AMD64_ROOTFS_SHA, _CLAUDE_CODE_ARM64_ROOTFS_SHA),
+    **_preset_rows("hermes", _HERMES_AMD64_ROOTFS_SHA, _HERMES_ARM64_ROOTFS_SHA),
+    **_preset_rows("pi", _PI_AMD64_ROOTFS_SHA, _PI_ARM64_ROOTFS_SHA),
 }
 
 

@@ -128,9 +128,15 @@ case "$PRESET" in
     ;;
 esac
 
+# Bake the SmolVM PID 1 init script. CLI boot args (init=/init +
+# smolvm.authorized_key_b64=<base64>) are read by this script to install
+# the launching user's pubkey into /root/.ssh/authorized_keys at boot.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+install -m 0755 "$SCRIPT_DIR/preset-init.sh" "$MNT/init"
+
 # Restore (or remove) /etc/resolv.conf so the runner's DNS doesn't leak
-# into the published rootfs. Guest cloud-init / systemd-resolved generates
-# a fresh resolv.conf at boot, so removing it on the empty case is safe.
+# into the published rootfs. The init script writes 8.8.8.8 / 8.8.4.4 at
+# boot, so removing it on the empty case is safe.
 if [ -n "$RESOLV_BACKUP" ]; then
   cp -a "$RESOLV_BACKUP" "$MNT/etc/resolv.conf"
   rm -f "$RESOLV_BACKUP"
