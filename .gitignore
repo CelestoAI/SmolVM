@@ -213,3 +213,7 @@ ui/package-lock.json
 ui/node_modules/.package-lock.json
 artifacts/
 play.ipynb
+
+# Claude Code agent local state — session locks, settings, scheduled-task
+# bookkeeping. None of this is meant to be committed.
+.claude/
