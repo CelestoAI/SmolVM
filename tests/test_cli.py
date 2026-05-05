@@ -2505,6 +2505,92 @@ class TestCliStart:
     @patch("smolvm.cli.main._apply_preset_with_progress")
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
+    def test_start_with_alpine_os(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        mock_apply: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm claude-code start --os alpine` should boot alpine and skip
+        the published-image fast-path (which is OS-fixed today)."""
+        from smolvm.types import GuestOS
+
+        config = MagicMock(vm_id="sbx-claude")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+        vm = self._make_vm_mock("sbx-claude")
+        mock_vm_cls.return_value = vm
+        mock_apply.return_value = {
+            "preset": "claude-code",
+            "copied_configs": [],
+            "injected_env_keys": [],
+        }
+
+        # Patch the published-image entry-point so a stale openclaw row in
+        # the manifest can't lure this run into the fast path.
+        with patch("smolvm.cli.main._run_start_with_published_image") as mock_published:
+            mock_published.return_value = 0
+            ret = main(
+                [
+                    "claude-code",
+                    "start",
+                    "--name",
+                    "sbx-claude",
+                    "--os",
+                    "alpine",
+                    "--json",
+                ]
+            )
+
+        assert ret == 0
+        mock_published.assert_not_called()
+        kwargs = mock_build_auto_config.call_args.kwargs
+        assert kwargs["os"] is GuestOS.ALPINE
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["data"]["vm"]["os"] == "alpine"
+
+    @patch("smolvm.cli.main._apply_preset_with_progress")
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_default_os_is_ubuntu(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        mock_apply: MagicMock,
+    ) -> None:
+        """Omitting --os keeps the historical Ubuntu default for presets."""
+        from smolvm.types import GuestOS
+
+        config = MagicMock(vm_id="sbx-claude")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+        vm = self._make_vm_mock("sbx-claude")
+        mock_vm_cls.return_value = vm
+        mock_apply.return_value = {
+            "preset": "claude-code",
+            "copied_configs": [],
+            "injected_env_keys": [],
+        }
+
+        ret = main(["claude-code", "start", "--name", "sbx-claude"])
+
+        assert ret == 0
+        kwargs = mock_build_auto_config.call_args.kwargs
+        assert kwargs["os"] is GuestOS.UBUNTU
+
+    def test_start_invalid_os_choice(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Argparse should reject unsupported --os values for preset start."""
+        with pytest.raises(SystemExit) as exc_info:
+            main(["codex", "start", "--os", "fedora"])
+
+        assert exc_info.value.code == 2
+        assert "invalid choice" in capsys.readouterr().err
+
+    @patch("smolvm.cli.main._apply_preset_with_progress")
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
     def test_start_claude_code_overrides_memory(
         self,
         mock_vm_cls: MagicMock,

@@ -414,6 +414,12 @@ def _add_preset_parsers(
             help="Virtualization backend (default: qemu, required by ubuntu).",
         )
         start_p.add_argument(
+            "--os",
+            choices=[guest_os.value for guest_os in GuestOS],
+            default=None,
+            help="Operating system image (default: ubuntu).",
+        )
+        start_p.add_argument(
             "--mount",
             action="append",
             default=None,
@@ -2040,22 +2046,29 @@ def _run_start(args: argparse.Namespace) -> int:
 
     preset = get_preset(args.preset_name)
 
+    # The user-facing default is ubuntu when --os is omitted; an explicit
+    # --os opts the run into install-at-boot since the published-image
+    # manifest only ships one OS per preset today (#264 tracks adding an
+    # OS dimension to the manifest).
+    requested_os = GuestOS(args.os) if args.os is not None else GuestOS.UBUNTU
+
     # Published-image fast path: use a pre-built image from GitHub Releases
     # if one exists for this (preset, arch, vmm) tuple. Falls through to
     # install-at-boot when no manifest entry exists (e.g. presets without
-    # CI-built rootfs).
-    try:
-        arch = _host_arch_for_published()
-        vmm = _vmm_for_host()
-    except RuntimeError:
-        pass
-    else:
-        requested_backend = args.backend or "auto"
-        published_backend = _VMM_TO_BACKEND[vmm]
-        if requested_backend in {"auto", published_backend} and is_preset_published(
-            preset.name, arch, vmm
-        ):
-            return _run_start_with_published_image(args, preset)
+    # CI-built rootfs) or the user pinned a specific --os.
+    if args.os is None:
+        try:
+            arch = _host_arch_for_published()
+            vmm = _vmm_for_host()
+        except RuntimeError:
+            pass
+        else:
+            requested_backend = args.backend or "auto"
+            published_backend = _VMM_TO_BACKEND[vmm]
+            if requested_backend in {"auto", published_backend} and is_preset_published(
+                preset.name, arch, vmm
+            ):
+                return _run_start_with_published_image(args, preset)
 
     backend = args.backend or "qemu"
     if backend != "qemu":
@@ -2083,7 +2096,7 @@ def _run_start(args: argparse.Namespace) -> int:
                 build_fn=lambda on_download: _build_auto_config(
                     vm_name=args.name,
                     name_prefix=preset.name,
-                    os=GuestOS.UBUNTU,
+                    os=requested_os,
                     backend=backend,
                     memory=memory_mib,
                     disk_size_mib=disk_size_mib,
@@ -2104,7 +2117,7 @@ def _run_start(args: argparse.Namespace) -> int:
             config, ssh_key_path = _build_auto_config(
                 vm_name=args.name,
                 name_prefix=preset.name,
-                os=GuestOS.UBUNTU,
+                os=requested_os,
                 backend=backend,
                 memory=memory_mib,
                 disk_size_mib=disk_size_mib,
@@ -2134,7 +2147,7 @@ def _run_start(args: argparse.Namespace) -> int:
                     if isinstance(vm.info.status, VMState)
                     else VMState.RUNNING.value
                 ),
-                "os": GuestOS.UBUNTU.value,
+                "os": requested_os.value,
                 "backend": vm.info.config.backend or "auto",
                 "ip_address": network.guest_ip if network else None,
                 "ssh_port": network.ssh_host_port if network else None,
