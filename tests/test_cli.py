@@ -2416,6 +2416,7 @@ class TestCliStart:
         assert "claude" in tokens
         assert "claude-code" in tokens
 
+    @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.cli.main._apply_preset_with_progress")
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
@@ -2424,9 +2425,15 @@ class TestCliStart:
         mock_vm_cls: MagicMock,
         mock_build_auto_config: MagicMock,
         mock_apply: MagicMock,
+        _mock_is_published: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm codex start` boots ubuntu/qemu with preset defaults and applies the preset."""
+        """`smolvm codex start` boots ubuntu/qemu with preset defaults and applies the preset.
+
+        Forces the install-at-boot path (is_preset_published=False) since
+        codex now has a published image and would otherwise take the fast
+        path. The published-path coverage is exercised in separate tests.
+        """
         from smolvm.types import GuestOS
 
         config = MagicMock(vm_id="sbx-codex")
@@ -2469,6 +2476,7 @@ class TestCliStart:
         assert "OPENAI_API_KEY" in out
         assert "smolvm ssh sbx-codex" in out
 
+    @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.presets.apply_preset")
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
@@ -2477,6 +2485,7 @@ class TestCliStart:
         mock_vm_cls: MagicMock,
         mock_build_auto_config: MagicMock,
         mock_apply_fn: MagicMock,
+        _mock_is_published: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
         """`smolvm codex start --json` should emit the start envelope."""
@@ -2502,6 +2511,7 @@ class TestCliStart:
         assert payload["data"]["preset"]["injected_env_keys"] == ["OPENAI_API_KEY"]
         assert payload["data"]["next"]["ssh_command"] == "smolvm ssh sbx-1"
 
+    @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.cli.main._apply_preset_with_progress")
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
@@ -2510,6 +2520,7 @@ class TestCliStart:
         mock_vm_cls: MagicMock,
         mock_build_auto_config: MagicMock,
         mock_apply: MagicMock,
+        _mock_is_published: MagicMock,
     ) -> None:
         """User --memory should override the preset default."""
         config = MagicMock(vm_id="sbx")
