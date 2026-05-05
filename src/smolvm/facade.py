@@ -2019,6 +2019,23 @@ class SmolVM:
         """Best-effort repair for Ubuntu cloud images missing 9p modules."""
         assert self._ssh is not None  # noqa: S101 — caller guarantees SSH ready
 
+        # Fast path: built-in filesystems show up in /proc/filesystems
+        # regardless of /lib/modules/$(uname -r). Our universal microvm
+        # kernel has 9p and overlay =y (no modules) and intentionally
+        # ships without /lib/modules, so the modprobe-based probe below
+        # would fail with "module not found" and trigger the Ubuntu
+        # apt-install fallback — which is itself irrelevant for a
+        # built-in kernel. Check the kernel's actual capability list
+        # first; only fall through to modprobe if the filesystem isn't
+        # already registered.
+        fs_check = self._ssh.run("cat /proc/filesystems", timeout=15)
+        if fs_check.exit_code == 0:
+            fs_lines = fs_check.stdout
+            has_9p = "\t9p\n" in fs_lines
+            has_overlay = "\toverlay\n" in fs_lines
+            if has_9p and (not need_overlay or has_overlay):
+                return
+
         overlay_probe = " && modprobe overlay 2>/dev/null" if need_overlay else ""
         probe_script = (
             f"modprobe 9p 2>/dev/null && modprobe 9pnet_virtio 2>/dev/null{overlay_probe}"

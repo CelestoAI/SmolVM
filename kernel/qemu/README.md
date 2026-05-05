@@ -1,16 +1,21 @@
-# SmolVM Universal microvm Kernel
+# SmolVM microvm Kernel
 
-This directory holds the recipe for the **only** Linux kernel SmolVM
-ships. One vmlinux per arch boots all three runtimes — Firecracker,
-QEMU, and (future) libkrun — across both Linux and macOS hosts. The
-filename is still `vmlinux-<arch>-qemu.bin` for compat with the existing
-publish pipeline; renaming to `vmlinux-<arch>.bin` is a future cleanup.
+This directory holds the recipe for the **only** Linux kernels SmolVM
+ships. One Linux source build per arch produces TWO artifacts that
+together cover every runtime SmolVM supports:
+
+- `vmlinux-<arch>.elf`  — the uncompressed ELF, for **Firecracker** and **libkrun**.
+- `vmlinux-<arch>.image` — the boot wrapper (`bzImage` on x86, `Image` on arm64), for **QEMU**.
+
+Both formats come from the same source build with the same Kconfig and
+boot identically; the difference is just the container the runtime
+expects.
 
 ## Why this exists
 
 Before 0.0.14a0 SmolVM fetched kernels from two external CDNs:
 
-- **Firecracker's CI S3 bucket** (`s3.amazonaws.com/spec.ccfc.min/.../vmlinux-5.10.198`) — for Firecracker on Linux. Tuned for Firecracker's virtio-MMIO transport.
+- **Firecracker's CI S3 bucket** (`s3.amazonaws.com/spec.ccfc.min/.../vmlinux-5.10.198`) — for Firecracker on Linux. Pinned to Linux 5.10.
 - **Ubuntu cloud-images** (`cloud-images.ubuntu.com/.../vmlinuz-generic`) — paired with a matching initrd for the QEMU+Ubuntu auto-config path.
 
 Two kernels meant two CVE-watch lists, two test surfaces, and two CDN
@@ -19,11 +24,71 @@ Both upstream kernels are also generic-purpose with hundreds of drivers
 we don't need (Bluetooth, USB, sound, gpio, …) — extra attack surface
 for a sandbox that just needs virtio + ext4 + sshd.
 
-The kernel built here closes that gap: a single in-house artifact tuned
-for microvm use, with both `CONFIG_VIRTIO_MMIO=y` (Firecracker) and
-`CONFIG_VIRTIO_PCI=y` (QEMU/libkrun) enabled, plus `CONFIG_ISO9660_FS=y`
-for the cloud-init NoCloud seed disk so we don't need an initrd to boot
-the Ubuntu cloud rootfs.
+The kernel built here closes that gap: a single in-house source build,
+microvm-tuned, on Linux 6.12.x LTS.
+
+## Runtime ↔ format compatibility
+
+What each runtime accepts as `-kernel` / `--kernel-image-path`:
+
+| Runtime           | ELF (`.elf`) | Image / bzImage (`.image`) | Why we ship which |
+|---                |---           |---                          |---|
+| **Firecracker**   | ✅ required  | ❌ rejects with `Invalid Elf magic number` | Firecracker only loads ELF. |
+| **QEMU on x86 q35** | ✅ accepts | ✅ accepts                  | We ship `.image` (bzImage) for parity with the aarch64 path. |
+| **QEMU on aarch64 virt** | ❌ silent hang at boot | ✅ required | Empirically QEMU's aarch64 ELF loader fails to bring up the kernel; only the Linux ARM64 boot-protocol Image works. |
+| **libkrun**       | ✅ required (Firecracker-API-compatible) | ❌ same as Firecracker | Same loader as Firecracker. |
+
+Bottom line: ship both formats per arch. The runtime-side mapping lives
+in [`_kernel_format_for_vmm`](../../src/smolvm/images/published.py).
+
+## What features each runtime actually exercises
+
+Driver / Kconfig matrix — what's *required* (not just nice-to-have) for
+the runtimes SmolVM uses today:
+
+| Feature group          | Kconfig (relevant)              | Firecracker | QEMU virt aarch64 | QEMU q35 amd64 | libkrun |
+|---                     |---                              |---          |---                |---             |---|
+| **Virtio transport**   | `CONFIG_VIRTIO_MMIO`            | required    | not used          | not used       | required |
+|                        | `CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES` | required (devices passed via cmdline) | – | – | required |
+|                        | `CONFIG_VIRTIO_PCI`             | not used    | required          | required       | not used |
+|                        | `CONFIG_VIRTIO_PCI_LEGACY`      | not used    | nice-to-have      | nice-to-have   | required (libkrun uses legacy) |
+| **Console**            | `CONFIG_SERIAL_8250` + `_CONSOLE` | required (ttyS0 on both archs) | – | required (ttyS0) | required |
+|                        | `CONFIG_SERIAL_AMBA_PL011` + `_CONSOLE` | – | required (ttyAMA0) | – | – |
+| **PCI host bridge**    | `CONFIG_PCI`                    | – (off via `pci=off`) | required | required | – |
+|                        | `CONFIG_PCI_HOST_GENERIC`       | – | required (arm64 virt) | – (x86 has built-in PCI host) | – |
+|                        | `CONFIG_PCI_MSI`                | – | required (virtio-PCI uses MSI-X) | required | – |
+| **Block devices**      | `CONFIG_VIRTIO_BLK`             | required    | required          | required       | required |
+| **Network**            | `CONFIG_VIRTIO_NET`             | required    | required          | required       | required |
+| **Vsock (host↔guest)** | `CONFIG_VSOCKETS`, `CONFIG_VIRTIO_VSOCKETS` | – | – | – | required (libkrun init protocol) |
+| **Filesystems** (no-initrd boot of guest rootfs) | `CONFIG_EXT4_FS` | required (rootfs) | required | required | required |
+|                        | `CONFIG_ISO9660_FS`             | – | required (cloud-init NoCloud seed disk on `/dev/vdb`) | required | – |
+| **Workspace mounts**   | `CONFIG_NET_9P`, `CONFIG_NET_9P_VIRTIO`, `CONFIG_9P_FS` | – | required (`smolvm <preset> start --mount …`) | required | – |
+|                        | `CONFIG_OVERLAY_FS`             | – | required (read-only mount = 9p+overlay) | required | – |
+| **No modules**         | `# CONFIG_MODULES is not set`   | required (no initrd to load modules from) | required | required | required |
+
+"required" / "not used" describe what the runtime actually *needs* — we
+enable everything in the union so one build covers all four columns.
+That's what the fragments in this directory encode.
+
+## What's NOT enabled (and why)
+
+- `CONFIG_RANDOM_TRUST_CPU`, `CONFIG_RANDOM_TRUST_BOOTLOADER` — removed
+  as Kconfig symbols in the Linux 6.x random.c rewrite. They're now
+  cmdline params (`random.trust_cpu=on`, default ON) — we get the
+  fast-sshd-hostkey-gen behavior for free.
+- `CONFIG_VIRTIO_FS` (virtiofs) — SmolVM's workspace mounts use
+  virtio-9p instead. Adding virtiofs is a future enhancement; not
+  load-bearing today.
+- KVM / Hypervisor.framework paravirt symbols (`CONFIG_KVM_GUEST`,
+  `CONFIG_PARAVIRT`) — `KVM_GUEST` is x86-only (arm64 doesn't have the
+  symbol); the perf wins are minor and the upstream defconfig already
+  enables what's needed.
+- Kernel modules — see "no modules" row above. The kernel ships without
+  `/lib/modules/$(uname -r)`, so userspace `modprobe` will fail with
+  "module not found" even for built-in drivers. The SmolVM facade's
+  workspace-mount probe treats `/proc/filesystems` as the source of
+  truth for what's registered (see the fast-path in
+  `_ensure_9p_workspace_support`).
 
 ## What's pinned
 

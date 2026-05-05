@@ -873,7 +873,12 @@ class TestFacadeWorkspaceGuards:
         vm._ssh_user = "root"
         vm._info = MagicMock(config=config)
         vm._ssh = MagicMock()
+        # /proc/filesystems doesn't list 9p (the modular Ubuntu kernel needs
+        # apt-install to fix), then modprobe probe fails, then apt-install
+        # succeeds, then mount succeeds.
+        proc_fs_no_9p = "nodev\tsysfs\nnodev\tproc\n\text4\n"
         vm._ssh.run.side_effect = [
+            CommandResult(exit_code=0, stdout=proc_fs_no_9p, stderr=""),
             CommandResult(exit_code=1, stdout="", stderr="modprobe: FATAL: Module 9p"),
             CommandResult(exit_code=0, stdout="", stderr=""),
             CommandResult(exit_code=0, stdout="", stderr=""),
@@ -881,8 +886,8 @@ class TestFacadeWorkspaceGuards:
 
         vm._mount_workspaces()
 
-        install_script = vm._ssh.run.call_args_list[1].args[0]
-        mount_script = vm._ssh.run.call_args_list[2].args[0]
+        install_script = vm._ssh.run.call_args_list[2].args[0]
+        mount_script = vm._ssh.run.call_args_list[3].args[0]
         assert "DPkg::Lock::Timeout=120" in install_script
         assert "Acquire::Retries=3" in install_script
         assert "fuser $APT_LOCKS" in install_script
@@ -915,7 +920,9 @@ class TestFacadeWorkspaceGuards:
         vm._ssh_user = "root"
         vm._info = MagicMock(config=config)
         vm._ssh = MagicMock()
+        proc_fs_no_9p = "nodev\tsysfs\nnodev\tproc\n\text4\n"
         vm._ssh.run.side_effect = [
+            CommandResult(exit_code=0, stdout=proc_fs_no_9p, stderr=""),
             CommandResult(exit_code=1, stdout="", stderr="modprobe: FATAL: Module 9p"),
             CommandResult(exit_code=42, stdout="", stderr="not ubuntu"),
         ]
@@ -923,7 +930,7 @@ class TestFacadeWorkspaceGuards:
         with pytest.raises(SmolVMError, match="missing 9p or overlay"):
             vm._mount_workspaces()
 
-        assert vm._ssh.run.call_count == 2
+        assert vm._ssh.run.call_count == 3
 
     def test_mount_workspaces_writable_uses_rw_without_overlay(
         self,
@@ -949,15 +956,68 @@ class TestFacadeWorkspaceGuards:
         vm._ssh_user = "root"
         vm._info = MagicMock(config=config)
         vm._ssh = MagicMock()
+        # /proc/filesystems lacks 9p so we fall through to the modprobe probe
+        # (kept passing here, no overlay needed); then the mount runs.
+        proc_fs_no_9p = "nodev\tsysfs\nnodev\tproc\n\text4\n"
         vm._ssh.run.side_effect = [
-            CommandResult(exit_code=0, stdout="", stderr=""),  # probe (no overlay)
+            CommandResult(exit_code=0, stdout=proc_fs_no_9p, stderr=""),  # /proc/filesystems
+            CommandResult(exit_code=0, stdout="", stderr=""),  # modprobe probe (no overlay)
             CommandResult(exit_code=0, stdout="", stderr=""),  # mount
         ]
 
         vm._mount_workspaces()
 
-        probe_script = vm._ssh.run.call_args_list[0].args[0]
-        mount_script = vm._ssh.run.call_args_list[1].args[0]
+        probe_script = vm._ssh.run.call_args_list[1].args[0]
+        mount_script = vm._ssh.run.call_args_list[2].args[0]
         assert "modprobe overlay" not in probe_script
         assert "version=9p2000.L,rw" in mount_script
         assert "mount -t overlay" not in mount_script
+
+    def test_mount_workspaces_skips_probe_when_filesystems_register_builtin(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Built-in 9p+overlay (SmolVM kernel) skips modprobe + apt-install.
+
+        The SmolVM-built universal kernel has all filesystems compiled =y
+        and ships no /lib/modules, so modprobe always fails ("module not
+        found"). /proc/filesystems is the source of truth for what's actually
+        registered — short-circuit there before the modprobe probe.
+        """
+        ws_dir = tmp_path / "project"
+        ws_dir.mkdir()
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+        config = VMConfig(
+            vm_id="vm-builtin",
+            kernel_path=kernel,
+            rootfs_path=rootfs,
+            backend="qemu",
+            workspace_mounts=[WorkspaceMount(host_path=ws_dir)],
+        )
+
+        vm = object.__new__(SmolVM)
+        vm._vm_id = "vm-builtin"
+        vm._ssh_user = "root"
+        vm._info = MagicMock(config=config)
+        vm._ssh = MagicMock()
+        # Both 9p and overlay are registered as built-in. modprobe must
+        # NOT be called.
+        proc_fs = (
+            "nodev\tsysfs\nnodev\tproc\n\text4\nnodev\toverlay\nnodev\t9p\n"
+        )
+        vm._ssh.run.side_effect = [
+            CommandResult(exit_code=0, stdout=proc_fs, stderr=""),
+            CommandResult(exit_code=0, stdout="", stderr=""),  # mount
+        ]
+
+        vm._mount_workspaces()
+
+        # Two calls only: /proc/filesystems probe + mount. No modprobe.
+        assert vm._ssh.run.call_count == 2
+        called_scripts = [c.args[0] for c in vm._ssh.run.call_args_list]
+        assert "cat /proc/filesystems" in called_scripts[0]
+        assert "modprobe" not in called_scripts[0]
+        assert "mount -t 9p" in called_scripts[1]
