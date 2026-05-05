@@ -2486,6 +2486,7 @@ class TestCliStart:
         mock_vm_cls: MagicMock,
         mock_build_auto_config: MagicMock,
         mock_apply: MagicMock,
+        _mock_is_published: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
         """`smolvm claude-code start --os alpine` should boot alpine and skip
@@ -2525,6 +2526,7 @@ class TestCliStart:
         payload = json.loads(capsys.readouterr().out)
         assert payload["data"]["vm"]["os"] == "alpine"
 
+    @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.cli.main._apply_preset_with_progress")
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
@@ -2533,6 +2535,7 @@ class TestCliStart:
         mock_vm_cls: MagicMock,
         mock_build_auto_config: MagicMock,
         mock_apply: MagicMock,
+        _mock_is_published: MagicMock,
     ) -> None:
         """Omitting --os keeps the historical Ubuntu default for presets."""
         from smolvm.types import GuestOS
@@ -2564,6 +2567,7 @@ class TestCliStart:
         assert exc_info.value.code == 2
         assert "invalid choice" in capsys.readouterr().err
 
+    @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.cli.main._apply_preset_with_progress")
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
