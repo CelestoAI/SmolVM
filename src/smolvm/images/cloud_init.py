@@ -47,7 +47,13 @@ write_files:
     content: |
       PermitRootLogin yes
       PasswordAuthentication no
+  - path: /etc/update-motd.d/00-smolvm
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      printf '\\n  SmolVM Sandbox — powered by Celesto AI\\n  https://celesto.ai\\n\\n'
 runcmd:
+  - rm -f /etc/update-motd.d/10-help-text /etc/update-motd.d/60-unminimize
   - >
     systemctl restart ssh || systemctl restart sshd ||
     service ssh restart || service sshd restart || true

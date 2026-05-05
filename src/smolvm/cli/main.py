@@ -507,6 +507,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_cleanup_args(cleanup)
 
+    prune = subparsers.add_parser(
+        "prune",
+        help="Remove stale image caches from older SmolVM versions.",
+    )
+    prune.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be removed without deleting anything.",
+    )
+    prune.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output.",
+    )
+    prune.add_argument(
+        "--cache-dir",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+
     doctor = subparsers.add_parser(
         "doctor",
         help="Run host diagnostics for the selected backend.",
@@ -2088,6 +2108,7 @@ def _run_start(args: argparse.Namespace) -> int:
     )
 
     vm: SmolVM | None = None
+    success = False
     try:
         if not args.json:
             console = console_stdout()
@@ -2168,6 +2189,7 @@ def _run_start(args: argparse.Namespace) -> int:
         else:
             _render_start_result(data)
 
+        success = True
         if not args.json and preset.launch_command:
             return _maybe_attach_and_launch(vm, preset, attach=getattr(args, "attach", None))
         return 0
@@ -2175,6 +2197,11 @@ def _run_start(args: argparse.Namespace) -> int:
         return _emit_cli_error("start", 1, exc, json_output=args.json)
     finally:
         if vm is not None:
+            if not success:
+                with suppress(Exception):
+                    vm.stop()
+                with suppress(Exception):
+                    vm.delete()
             vm.close()
 
 
@@ -3184,6 +3211,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             dry_run=args.dry_run,
             json_output=args.json,
         )
+
+    if args.command == "prune":
+        from smolvm.cli.prune import run_prune
+
+        return run_prune(args)
 
     if args.command == "setup":
         return _run_setup(parser, args)
