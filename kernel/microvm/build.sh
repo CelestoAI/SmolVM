@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the SmolVM QEMU/libkrun-tuned Linux kernel from upstream source.
 #
-# Inputs (alongside this script in kernel/qemu/):
+# Inputs (alongside this script in kernel/microvm/):
 #   linux.version    Pinned tarball version (e.g. "6.12.10")
 #   linux.sha256     SHA-256 line for `sha256sum -c`
 #   config.fragment  Our deltas merged onto x86_64_defconfig (x86) or

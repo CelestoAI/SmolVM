@@ -30,7 +30,7 @@ on:
         type: string
         default: ""
   workflow_run:
-    workflows: ["Build QEMU Kernel", "Build Published Images"]
+    workflows: ["Build microvm Kernel", "Build Published Images"]
     types:
       - completed
     branches:

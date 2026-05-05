@@ -15,7 +15,7 @@
 """Internal kernel boot-profile definitions for SmolVM images.
 
 After 0.0.14a0 SmolVM ships a single universal microvm kernel
-([build-qemu-kernel.yml](.github/workflows/build-qemu-kernel.yml)) that boots
+([build-microvm-kernel.yml](.github/workflows/build-microvm-kernel.yml)) that boots
 under Firecracker (virtio-MMIO) AND QEMU/libkrun (virtio-PCI). The previous
 external sources (Firecracker-CI on S3, Ubuntu cloud-images vmlinuz) are
 retired. Boot profiles still distinguish *boot modes* (direct kernel vs

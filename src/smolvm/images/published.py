@@ -72,7 +72,7 @@ class PublishedImage(BaseModel):
 class BaseKernel(BaseModel):
     """Per-arch SmolVM-built microvm kernels — two formats from one build.
 
-    The ``kernel/qemu/build.sh`` recipe produces both an ELF and a boot-wrapper
+    The ``kernel/microvm/build.sh`` recipe produces both an ELF and a boot-wrapper
     artifact in a single make invocation. We ship both because:
 
     - Firecracker requires the ELF (``elf_url``) — its kernel loader rejects
@@ -140,7 +140,7 @@ def _release_kernel_url(arch: Arch, fmt: KernelFormat, version: str) -> str:
     """URL for a preset-independent kernel artifact.
 
     Asset naming: ``vmlinux-<arch>.{elf|image}``. Same Linux source build
-    produces both formats (see ``kernel/qemu/build.sh``); the runtime picks
+    produces both formats (see ``kernel/microvm/build.sh``); the runtime picks
     by backend (Firecracker→elf, QEMU→image).
     """
     return (
@@ -162,13 +162,9 @@ _MANIFEST_VERSION = "0.0.14a0"
 # these entries via ``url_for(format)`` / ``sha256_for(format)``, so adding
 # a future preset can't drift kernel SHAs across rows.
 #
-# SHAs come from the build-qemu-kernel.yml CI run that publishes
+# SHAs come from the build-microvm-kernel.yml CI run that publishes
 # ``vmlinux-<arch>.{elf,image}`` to release tag ``images-v<_MANIFEST_VERSION>``;
 # they're also visible in that workflow's step summary.
-#
-# Placeholder zeros are filled in by the next CI run after build.sh changes
-# the artifact split. Until then, downloads will fail SHA verification —
-# which is the right failure mode (we don't want to ship stale SHAs).
 BASE_KERNELS: dict[Arch, BaseKernel] = {
     "amd64": BaseKernel(
         arch="amd64",

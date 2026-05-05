@@ -104,7 +104,7 @@ That's what the fragments in this directory encode.
 ## Building locally
 
 ```sh
-cd kernel/qemu
+cd kernel/microvm
 bash build.sh
 # Produces vmlinux-<host_arch>-qemu.bin in the current directory.
 ```
@@ -142,7 +142,7 @@ docker run --rm --platform=linux/arm64 \
         build-essential bc bison flex libssl-dev libelf-dev \
         xz-utils curl ca-certificates kmod cpio python3 >/dev/null && \
         cp -r /src/kernel /tmp/kernel && \
-        cd /tmp/kernel/qemu && bash build.sh'
+        cd /tmp/kernel/microvm && bash build.sh'
 
 # Full: produces a real vmlinux in /tmp/out (~5–8 min on M-series).
 mkdir -p /tmp/out && docker run --rm --platform=linux/arm64 \
