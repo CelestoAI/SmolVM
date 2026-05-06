@@ -414,6 +414,12 @@ def _add_preset_parsers(
             help="Virtualization backend (default: qemu, required by ubuntu).",
         )
         start_p.add_argument(
+            "--os",
+            choices=[guest_os.value for guest_os in GuestOS],
+            default=None,
+            help="Operating system image (default: ubuntu).",
+        )
+        start_p.add_argument(
             "--mount",
             action="append",
             default=None,
@@ -1863,17 +1869,6 @@ _VMM_TO_BACKEND: dict[Vmm, str] = {
     "libkrun": "qemu",
 }
 
-# Preset → base OS string used in the start-result envelope.
-# openclaw bakes from node:22.12.0-bookworm-slim (Debian 12);
-# codex/claude-code/hermes/pi layer on Ubuntu 24.04 via build-preset.sh.
-_PRESET_OS_LABEL: dict[str, str] = {
-    "openclaw": "debian-bookworm",
-    "codex": "ubuntu-24.04",
-    "claude-code": "ubuntu-24.04",
-    "hermes": "ubuntu-24.04",
-    "pi": "ubuntu-24.04",
-}
-
 
 def _boot_args_for(preset_name: str, vmm: Vmm, arch: Arch) -> str:
     """Resolve boot args for the published-image path.
@@ -1965,16 +1960,18 @@ def _run_start_with_published_image(args: argparse.Namespace, preset: object) ->
             json_output=args.json,
         )
 
+    requested_os = GuestOS(args.os) if args.os is not None else GuestOS.UBUNTU
+
     try:
         arch = _host_arch_for_published()
         private_key, public_key_path = ensure_ssh_key()
         public_key_value = public_key_path.read_text().strip()
 
-        # Raises ImageError with a clear message if the (preset, arch, vmm)
-        # tuple has no manifest entry — covers the gap where a host platform
-        # is supported in principle but no published kernel exists for it
-        # yet.
-        local_image = ensure_published_image(_preset.name, arch, vmm)
+        # Raises ImageError with a clear message if the (preset, arch, vmm,
+        # os) tuple has no manifest entry — covers the gap where a host
+        # platform is supported in principle but no published kernel exists
+        # for it yet.
+        local_image = ensure_published_image(_preset.name, arch, vmm, requested_os.value)
 
         backend = _VMM_TO_BACKEND[vmm]
 
@@ -2009,7 +2006,9 @@ def _run_start_with_published_image(args: argparse.Namespace, preset: object) ->
                         if isinstance(vm.info.status, VMState)
                         else VMState.RUNNING.value
                     ),
-                    "os": _PRESET_OS_LABEL.get(_preset.name, "unknown"),
+                    # Mirrors the install-at-boot path so JSON callers see the
+                    # same vocabulary regardless of which path served the boot.
+                    "os": requested_os.value,
                     "backend": backend,
                     "ip_address": network.guest_ip if network else None,
                     "ssh_port": network.ssh_host_port if network else None,
@@ -2059,10 +2058,14 @@ def _run_start(args: argparse.Namespace) -> int:
 
     preset = get_preset(args.preset_name)
 
+    # The user-facing default is ubuntu when --os is omitted.
+    requested_os = GuestOS(args.os) if args.os is not None else GuestOS.UBUNTU
+
     # Published-image fast path: use a pre-built image from GitHub Releases
-    # if one exists for this (preset, arch, vmm) tuple. Falls through to
-    # install-at-boot when no manifest entry exists (e.g. presets without
-    # CI-built rootfs).
+    # if one exists for this (preset, arch, vmm, os) tuple. Falls through to
+    # install-at-boot when no matching manifest entry exists — e.g. when
+    # the user asks for ``--os alpine`` for a preset whose Alpine variant
+    # hasn't been published yet.
     try:
         arch = _host_arch_for_published()
         vmm = _vmm_for_host()
@@ -2072,7 +2075,7 @@ def _run_start(args: argparse.Namespace) -> int:
         requested_backend = args.backend or "auto"
         published_backend = _VMM_TO_BACKEND[vmm]
         if requested_backend in {"auto", published_backend} and is_preset_published(
-            preset.name, arch, vmm
+            preset.name, arch, vmm, requested_os.value
         ):
             return _run_start_with_published_image(args, preset)
 
@@ -2102,7 +2105,7 @@ def _run_start(args: argparse.Namespace) -> int:
                 build_fn=lambda on_download: _build_auto_config(
                     vm_name=args.name,
                     name_prefix=preset.name,
-                    os=GuestOS.UBUNTU,
+                    os=requested_os,
                     backend=backend,
                     memory=memory_mib,
                     disk_size_mib=disk_size_mib,
@@ -2123,7 +2126,7 @@ def _run_start(args: argparse.Namespace) -> int:
             config, ssh_key_path = _build_auto_config(
                 vm_name=args.name,
                 name_prefix=preset.name,
-                os=GuestOS.UBUNTU,
+                os=requested_os,
                 backend=backend,
                 memory=memory_mib,
                 disk_size_mib=disk_size_mib,
@@ -2153,7 +2156,7 @@ def _run_start(args: argparse.Namespace) -> int:
                     if isinstance(vm.info.status, VMState)
                     else VMState.RUNNING.value
                 ),
-                "os": GuestOS.UBUNTU.value,
+                "os": requested_os.value,
                 "backend": vm.info.config.backend or "auto",
                 "ip_address": network.guest_ip if network else None,
                 "ssh_port": network.ssh_host_port if network else None,

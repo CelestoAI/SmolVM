@@ -222,11 +222,25 @@ class TestVMInit:
         assert created_config.ssh_public_key == pubkey_value
 
 
+    @patch("smolvm.utils.ensure_ssh_key")
     def test_autoconfigure_ubuntu_rejects_undersized_disk(
         self,
+        mock_ensure_ssh_key: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """Ubuntu should reject --disk-size below the default."""
+        """Ubuntu should reject --disk-size below the default.
+
+        ``ensure_ssh_key`` is mocked because the validation we're checking
+        runs after key resolution today; without the mock the test fails
+        early on hosts where ssh-keygen isn't on PATH (CI sandboxes,
+        minimal containers) and never reaches the disk-size check.
+        """
+        priv = tmp_path / "id_ed25519"
+        pub = tmp_path / "id_ed25519.pub"
+        priv.touch()
+        pub.write_text("ssh-ed25519 AAAAExampleKey test@host\n")
+        mock_ensure_ssh_key.return_value = (priv, pub)
+
         with pytest.raises(ValueError, match="disk_size_mib >= 2048"):
             _build_auto_config(os="ubuntu", backend="qemu", disk_size_mib=512)
 

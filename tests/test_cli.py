@@ -2481,6 +2481,124 @@ class TestCliStart:
     @patch("smolvm.cli.main._apply_preset_with_progress")
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
+    def test_start_alpine_falls_through_to_install_at_boot(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        mock_apply: MagicMock,
+        _mock_is_published: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """When no Alpine row is published yet, ``--os alpine`` must thread
+        the OS through ``_build_auto_config`` (install-at-boot path) and
+        echo the flag value back in the JSON envelope."""
+        from smolvm.types import GuestOS
+
+        config = MagicMock(vm_id="sbx-claude")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+        vm = self._make_vm_mock("sbx-claude")
+        mock_vm_cls.return_value = vm
+        mock_apply.return_value = {
+            "preset": "claude-code",
+            "copied_configs": [],
+            "injected_env_keys": [],
+        }
+
+        ret = main(
+            [
+                "claude-code",
+                "start",
+                "--name",
+                "sbx-claude",
+                "--os",
+                "alpine",
+                "--json",
+            ]
+        )
+
+        assert ret == 0
+        kwargs = mock_build_auto_config.call_args.kwargs
+        assert kwargs["os"] is GuestOS.ALPINE
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["data"]["vm"]["os"] == "alpine"
+
+    @patch("smolvm.cli.main._run_start_with_published_image", return_value=0)
+    @patch("smolvm.images.published.is_preset_published")
+    def test_start_alpine_uses_published_fast_path_when_available(
+        self,
+        mock_is_published: MagicMock,
+        mock_published_path: MagicMock,
+    ) -> None:
+        """When an Alpine row IS published, ``--os alpine`` must route
+        through the fast path with ``os="alpine"`` — same routing logic as
+        Ubuntu, just keyed on the user's flag.
+
+        Returning True only for the alpine query verifies the OS argument
+        is actually flowing into ``is_preset_published`` (not just lost
+        somewhere upstream).
+        """
+
+        def _published_only_for_alpine(
+            preset: str, arch: object, vmm: object, os: str, *, manifest: object = None
+        ) -> bool:
+            return os == "alpine" and preset == "claude-code"
+
+        mock_is_published.side_effect = _published_only_for_alpine
+
+        ret = main(["claude-code", "start", "--os", "alpine", "--json"])
+
+        assert ret == 0
+        mock_published_path.assert_called_once()
+        # is_preset_published was called with ``os="alpine"`` — locks the
+        # routing in even if a future refactor reorders the kwargs.
+        last_call = mock_is_published.call_args
+        assert "alpine" in last_call.args or last_call.kwargs.get("os") == "alpine"
+
+    @patch("smolvm.images.published.is_preset_published", return_value=False)
+    @patch("smolvm.cli.main._apply_preset_with_progress")
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_default_os_is_ubuntu(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        mock_apply: MagicMock,
+        _mock_is_published: MagicMock,
+    ) -> None:
+        """Omitting --os keeps the historical Ubuntu default for presets."""
+        from smolvm.types import GuestOS
+
+        config = MagicMock(vm_id="sbx-claude")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+        vm = self._make_vm_mock("sbx-claude")
+        mock_vm_cls.return_value = vm
+        mock_apply.return_value = {
+            "preset": "claude-code",
+            "copied_configs": [],
+            "injected_env_keys": [],
+        }
+
+        ret = main(["claude-code", "start", "--name", "sbx-claude"])
+
+        assert ret == 0
+        kwargs = mock_build_auto_config.call_args.kwargs
+        assert kwargs["os"] is GuestOS.UBUNTU
+
+    def test_start_invalid_os_choice(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Argparse should reject unsupported --os values for preset start."""
+        with pytest.raises(SystemExit) as exc_info:
+            main(["codex", "start", "--os", "fedora"])
+
+        assert exc_info.value.code == 2
+        assert "invalid choice" in capsys.readouterr().err
+
+    @patch("smolvm.images.published.is_preset_published", return_value=False)
+    @patch("smolvm.cli.main._apply_preset_with_progress")
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
     def test_start_claude_code_overrides_memory(
         self,
         mock_vm_cls: MagicMock,
@@ -2761,15 +2879,30 @@ class TestPublishedImageLaunchPath:
         called_args = mock_published_path.call_args[0]
         assert called_args[1].name == "openclaw"
 
+    @patch("smolvm.utils.ensure_ssh_key")
     @patch("smolvm.cli.main.platform.system", return_value="Linux")
     @patch("smolvm.images.published.ensure_published_image")
     def test_published_path_surfaces_missing_manifest_error(
         self,
         mock_ensure: MagicMock,
         _mock_system: MagicMock,
+        mock_ensure_ssh_key: MagicMock,
+        tmp_path: Path,
     ) -> None:
-        """An empty manifest entry should produce a clean CLI error, not a crash."""
+        """An empty manifest entry should produce a clean CLI error, not a crash.
+
+        ``ensure_ssh_key`` is mocked because the published-image launch
+        path resolves keys before the manifest lookup runs; on hosts
+        without ssh-keygen on PATH the test would fail there instead of
+        reaching the ImageError it's meant to verify.
+        """
         from smolvm.exceptions import ImageError
+
+        priv = tmp_path / "id_ed25519"
+        pub = tmp_path / "id_ed25519.pub"
+        priv.touch()
+        pub.write_text("ssh-ed25519 AAAAExampleKey test@host\n")
+        mock_ensure_ssh_key.return_value = (priv, pub)
 
         mock_ensure.side_effect = ImageError(
             "No published image for preset 'openclaw' on arch 'amd64' (available: (none))."
@@ -2923,7 +3056,7 @@ class TestPublishedImageLaunchPath:
             mock_apply.assert_not_called()
 
         assert ret == 0
-        mock_ensure_image.assert_called_once_with("openclaw", expected_arch, expected_vmm)
+        mock_ensure_image.assert_called_once_with("openclaw", expected_arch, expected_vmm, "ubuntu")
 
         # Verify VMConfig was built with the right wiring.
         config_arg = mock_vm_cls.call_args[0][0]

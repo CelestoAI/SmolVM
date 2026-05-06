@@ -29,9 +29,9 @@ from smolvm.images.published import (
     MANIFEST,
     Arch,
     BaseKernel,
+    ManifestKey,
     Preset,
     PublishedImage,
-    Vmm,
     _decompress_zstd,
     cache_name,
     ensure_base_kernel,
@@ -54,6 +54,7 @@ def sample_entry() -> PublishedImage:
         preset="codex",
         arch="amd64",
         vmm="firecracker",
+        os="ubuntu",
         kernel_url="https://example.com/codex-amd64-vmlinux.bin",
         kernel_sha256=hashlib.sha256(b"fake-kernel").hexdigest(),
         rootfs_url="https://example.com/codex-amd64-rootfs.ext4",
@@ -64,8 +65,10 @@ def sample_entry() -> PublishedImage:
 @pytest.fixture
 def sample_manifest(
     sample_entry: PublishedImage,
-) -> dict[tuple[Preset, Arch, Vmm], PublishedImage]:
-    return {(sample_entry.preset, sample_entry.arch, sample_entry.vmm): sample_entry}
+) -> dict[ManifestKey, PublishedImage]:
+    return {
+        (sample_entry.preset, sample_entry.arch, sample_entry.vmm, sample_entry.os): sample_entry
+    }
 
 
 class TestNaming:
@@ -96,25 +99,47 @@ class TestNaming:
         qe = cache_name("openclaw", "amd64", "qemu", version="0.0.13")
         assert fc != qe
 
+    def test_cache_name_ubuntu_omits_os_suffix(self) -> None:
+        """Ubuntu cache names stay backward-compatible (no -ubuntu segment)
+        so an existing on-disk cache from before the OS dimension landed
+        is still picked up without forcing a re-download."""
+        assert (
+            cache_name("codex", "amd64", "firecracker", version="0.0.13", os="ubuntu")
+            == "codex-v0.0.13-amd64-firecracker"
+        )
+
+    def test_cache_name_alpine_appends_os_suffix(self) -> None:
+        """Alpine cache namespace is distinct from Ubuntu so users running
+        both flavours don't share rootfs files."""
+        assert (
+            cache_name("codex", "amd64", "firecracker", version="0.0.13", os="alpine")
+            == "codex-v0.0.13-amd64-firecracker-alpine"
+        )
+
+    def test_cache_name_distinguishes_os_flavors(self) -> None:
+        ubu = cache_name("codex", "amd64", "firecracker", version="0.0.13", os="ubuntu")
+        alp = cache_name("codex", "amd64", "firecracker", version="0.0.13", os="alpine")
+        assert ubu != alp
+
 
 class TestLookup:
     def test_returns_matching_entry(
         self,
         sample_entry: PublishedImage,
-        sample_manifest: dict[tuple[Preset, Arch, Vmm], PublishedImage],
+        sample_manifest: dict[ManifestKey, PublishedImage],
     ) -> None:
         assert lookup("codex", "amd64", "firecracker", manifest=sample_manifest) is sample_entry
 
     def test_missing_pair_raises_image_error(
         self,
-        sample_manifest: dict[tuple[Preset, Arch, Vmm], PublishedImage],
+        sample_manifest: dict[ManifestKey, PublishedImage],
     ) -> None:
         with pytest.raises(ImageError, match="No published image for preset 'codex'"):
             lookup("codex", "arm64", "firecracker", manifest=sample_manifest)
 
     def test_error_lists_available_tuples(
         self,
-        sample_manifest: dict[tuple[Preset, Arch, Vmm], PublishedImage],
+        sample_manifest: dict[ManifestKey, PublishedImage],
     ) -> None:
         with pytest.raises(ImageError, match="codex/amd64/firecracker"):
             lookup("openclaw", "amd64", "firecracker", manifest=sample_manifest)
@@ -125,7 +150,7 @@ class TestLookup:
 
     def test_error_mentions_vmm_dimension(
         self,
-        sample_manifest: dict[tuple[Preset, Arch, Vmm], PublishedImage],
+        sample_manifest: dict[ManifestKey, PublishedImage],
     ) -> None:
         """Looking up a vmm that doesn't exist names it explicitly."""
         with pytest.raises(ImageError, match=r"vmm 'qemu'"):
@@ -143,29 +168,47 @@ class TestLookup:
         with pytest.raises(ImageError, match="No published image"):
             lookup("definitely-not-a-real-preset", "arm64", "firecracker")  # type: ignore[arg-type]
 
+    def test_default_os_is_ubuntu(
+        self,
+        sample_entry: PublishedImage,
+        sample_manifest: dict[ManifestKey, PublishedImage],
+    ) -> None:
+        """Calling lookup without specifying os defaults to ubuntu."""
+        # sample_entry has os="ubuntu", so the no-os call must hit it.
+        assert lookup("codex", "amd64", "firecracker", manifest=sample_manifest) is sample_entry
+
+    def test_alpine_lookup_misses_when_only_ubuntu_published(
+        self,
+        sample_manifest: dict[ManifestKey, PublishedImage],
+    ) -> None:
+        """Asking for alpine when only ubuntu is in the manifest must
+        raise — falls through to install-at-boot at the CLI layer."""
+        with pytest.raises(ImageError, match=r"os 'alpine'"):
+            lookup("codex", "amd64", "firecracker", "alpine", manifest=sample_manifest)
+
 
 class TestIsPresetPublished:
     def test_true_for_registered_entry(
         self,
-        sample_manifest: dict[tuple[Preset, Arch, Vmm], PublishedImage],
+        sample_manifest: dict[ManifestKey, PublishedImage],
     ) -> None:
         assert is_preset_published("codex", "amd64", "firecracker", manifest=sample_manifest)
 
     def test_false_for_missing_arch(
         self,
-        sample_manifest: dict[tuple[Preset, Arch, Vmm], PublishedImage],
+        sample_manifest: dict[ManifestKey, PublishedImage],
     ) -> None:
         assert not is_preset_published("codex", "arm64", "firecracker", manifest=sample_manifest)
 
     def test_false_for_missing_vmm(
         self,
-        sample_manifest: dict[tuple[Preset, Arch, Vmm], PublishedImage],
+        sample_manifest: dict[ManifestKey, PublishedImage],
     ) -> None:
         assert not is_preset_published("codex", "amd64", "qemu", manifest=sample_manifest)
 
     def test_false_for_unknown_preset(
         self,
-        sample_manifest: dict[tuple[Preset, Arch, Vmm], PublishedImage],
+        sample_manifest: dict[ManifestKey, PublishedImage],
     ) -> None:
         # Accepts arbitrary preset strings so the CLI doesn't need to coerce
         # against the Preset literal before dispatching.
@@ -175,7 +218,7 @@ class TestIsPresetPublished:
 
     def test_accepts_arbitrary_preset_string(
         self,
-        sample_manifest: dict[tuple[Preset, Arch, Vmm], PublishedImage],
+        sample_manifest: dict[ManifestKey, PublishedImage],
     ) -> None:
         # Presets that aren't in the Preset literal must just return False, not
         # raise — the CLI passes user-typed preset names straight through.
@@ -191,9 +234,9 @@ class TestIsPresetPublished:
         # must report True, and a guaranteed-missing tuple must report False.
         if not MANIFEST:
             pytest.skip("default manifest is empty in this release")
-        preset, arch, vmm = next(iter(MANIFEST))
-        assert is_preset_published(preset, arch, vmm)
-        assert not is_preset_published("definitely-not-a-real-preset", arch, vmm)
+        preset, arch, vmm, os = next(iter(MANIFEST))
+        assert is_preset_published(preset, arch, vmm, os)
+        assert not is_preset_published("definitely-not-a-real-preset", arch, vmm, os)
 
 
 class TestToImageSource:
@@ -213,12 +256,40 @@ class TestToImageSource:
             version="0.0.13",
         )
 
+    def test_name_uses_cache_name_for_alpine_entry(self) -> None:
+        """Alpine entries must round-trip through cache_name with os='alpine'
+        so the on-disk cache namespace matches what to_image_source produces."""
+        entry = PublishedImage(
+            preset="codex",
+            arch="amd64",
+            vmm="firecracker",
+            os="alpine",
+            kernel_url="https://example.com/codex-amd64-vmlinux.bin",
+            kernel_sha256=hashlib.sha256(b"fake-kernel").hexdigest(),
+            rootfs_url="https://example.com/codex-amd64-alpine-rootfs.ext4",
+            rootfs_sha256=hashlib.sha256(b"fake-rootfs").hexdigest(),
+        )
+        source = to_image_source(entry, version="0.0.13")
+        assert source.name == cache_name(
+            entry.preset,
+            entry.arch,
+            entry.vmm,
+            version="0.0.13",
+            os="alpine",
+        )
+        # And the alpine and ubuntu cache names must differ for the same
+        # (preset, arch, vmm) — otherwise running both flavours would
+        # silently share rootfs files on disk.
+        assert source.name != cache_name(
+            entry.preset, entry.arch, entry.vmm, version="0.0.13", os="ubuntu"
+        )
+
 
 class TestEnsurePublishedImage:
     def test_returns_cached_without_download(
         self,
         tmp_path: Path,
-        sample_manifest: dict[tuple[Preset, Arch, Vmm], PublishedImage],
+        sample_manifest: dict[ManifestKey, PublishedImage],
     ) -> None:
         version = "0.0.13"
         image_dir = tmp_path / cache_name("codex", "amd64", "firecracker", version=version)
@@ -246,7 +317,7 @@ class TestEnsurePublishedImage:
         self,
         mock_get: MagicMock,
         tmp_path: Path,
-        sample_manifest: dict[tuple[Preset, Arch, Vmm], PublishedImage],
+        sample_manifest: dict[ManifestKey, PublishedImage],
     ) -> None:
         version = "0.0.13"
         bodies = [b"fake-kernel", b"fake-rootfs"]
@@ -279,7 +350,7 @@ class TestEnsurePublishedImage:
     def test_unknown_tuple_raises_before_touching_filesystem(
         self,
         tmp_path: Path,
-        sample_manifest: dict[tuple[Preset, Arch, Vmm], PublishedImage],
+        sample_manifest: dict[ManifestKey, PublishedImage],
     ) -> None:
         with pytest.raises(ImageError, match="No published image"):
             ensure_published_image(
@@ -312,12 +383,13 @@ class TestEnsurePublishedImage:
             (image_dir / "rootfs.ext4").write_bytes(b"shared-rootfs")
 
         # Build a manifest with both vmm rows pointing at distinct kernel URLs.
-        manifest: dict[tuple[Preset, Arch, Vmm], PublishedImage] = {}
+        manifest: dict[ManifestKey, PublishedImage] = {}
         for vmm in ("firecracker", "qemu"):
-            manifest[("codex", "amd64", vmm)] = PublishedImage(  # type: ignore[index]
+            manifest[("codex", "amd64", vmm, "ubuntu")] = PublishedImage(  # type: ignore[index]
                 preset="codex",
                 arch="amd64",
                 vmm=vmm,  # type: ignore[arg-type]
+                os="ubuntu",
                 kernel_url=f"https://example.com/codex-{vmm}-kernel",
                 kernel_sha256=hashlib.sha256(f"kernel-{vmm}".encode()).hexdigest(),
                 rootfs_url="https://example.com/codex-rootfs.ext4",
@@ -375,6 +447,7 @@ class TestZstdDecompression:
             preset="codex",
             arch="amd64",
             vmm="firecracker",
+            os="ubuntu",
             kernel_url="https://example.com/codex-amd64-vmlinux.bin",
             kernel_sha256=hashlib.sha256(kernel_bytes).hexdigest(),
             rootfs_url="https://example.com/codex-amd64-rootfs.ext4.zst",
@@ -390,7 +463,7 @@ class TestZstdDecompression:
         tmp_path: Path,
     ) -> None:
         entry, kernel_bytes, rootfs_zst, rootfs_plain = compressed_entry
-        manifest = {(entry.preset, entry.arch, entry.vmm): entry}
+        manifest = {(entry.preset, entry.arch, entry.vmm, entry.os): entry}
         bodies = [kernel_bytes, rootfs_zst]
         call = {"i": 0}
 
@@ -429,7 +502,7 @@ class TestZstdDecompression:
     ) -> None:
         """Second call must not re-download AND not re-decompress."""
         entry, kernel_bytes, rootfs_zst, rootfs_plain = compressed_entry
-        manifest = {(entry.preset, entry.arch, entry.vmm): entry}
+        manifest = {(entry.preset, entry.arch, entry.vmm, entry.os): entry}
 
         # Pre-populate the cache: compressed file + decompressed sibling +
         # the SHA sidecar that keys the decompressed file to the .zst's
@@ -469,7 +542,7 @@ class TestZstdDecompression:
         against: the openclaw rootfs uid bake regression hid behind a
         cached decompressed .ext4 even after the .zst was re-fetched."""
         entry, kernel_bytes, rootfs_zst, rootfs_plain = compressed_entry
-        manifest = {(entry.preset, entry.arch, entry.vmm): entry}
+        manifest = {(entry.preset, entry.arch, entry.vmm, entry.os): entry}
 
         image_dir = tmp_path / cache_name(entry.preset, entry.arch, entry.vmm, "0.0.13")
         image_dir.mkdir(parents=True)
@@ -498,7 +571,7 @@ class TestZstdDecompression:
         self,
         mock_get: MagicMock,
         sample_entry: PublishedImage,
-        sample_manifest: dict[tuple[Preset, Arch, Vmm], PublishedImage],
+        sample_manifest: dict[ManifestKey, PublishedImage],
         tmp_path: Path,
     ) -> None:
         """A non-.zst rootfs URL must not invoke the decompressor."""
@@ -586,13 +659,12 @@ class TestBaseKernels:
         """
         from smolvm.images.published import _kernel_format_for_vmm
 
-        for (_preset, arch, vmm), row in MANIFEST.items():
+        for key, row in MANIFEST.items():
+            _preset, arch, vmm, _os = key
             base = BASE_KERNELS[arch]
             fmt = _kernel_format_for_vmm(vmm)
-            assert row.kernel_url == base.url_for(fmt), f"{(_preset, arch, vmm)} kernel_url drift"
-            assert row.kernel_sha256 == base.sha256_for(fmt), (
-                f"{(_preset, arch, vmm)} kernel_sha256 drift"
-            )
+            assert row.kernel_url == base.url_for(fmt), f"{key} kernel_url drift"
+            assert row.kernel_sha256 == base.sha256_for(fmt), f"{key} kernel_sha256 drift"
 
     def test_ensure_base_kernel_unknown_arch_raises(self, tmp_path: Path) -> None:
         with pytest.raises(ImageError, match="No base kernel registered"):
@@ -646,8 +718,8 @@ class TestBundledManifest:
     """Sanity checks for the entries hand-populated in MANIFEST."""
 
     def test_openclaw_amd64_firecracker_entry_shape(self) -> None:
-        entry = MANIFEST.get(("openclaw", "amd64", "firecracker"))
-        assert entry is not None, "openclaw/amd64/firecracker must be in the bundled manifest"
+        entry = MANIFEST.get(("openclaw", "amd64", "firecracker", "ubuntu"))
+        assert entry is not None, "openclaw/amd64/firecracker/ubuntu must be in MANIFEST"
         assert len(entry.rootfs_sha256) == 64  # SHA-256 hex
         assert len(entry.kernel_sha256) == 64
         assert entry.rootfs_url.endswith("openclaw-amd64-rootfs.ext4.zst")
@@ -656,7 +728,7 @@ class TestBundledManifest:
         assert "images-v" in entry.rootfs_url
 
     def test_openclaw_arm64_firecracker_entry_shape(self) -> None:
-        entry = MANIFEST.get(("openclaw", "arm64", "firecracker"))
+        entry = MANIFEST.get(("openclaw", "arm64", "firecracker", "ubuntu"))
         assert entry is not None
         assert len(entry.rootfs_sha256) == 64
         assert entry.rootfs_url.endswith("openclaw-arm64-rootfs.ext4.zst")
@@ -664,15 +736,15 @@ class TestBundledManifest:
 
     def test_openclaw_qemu_rows_use_image_format(self) -> None:
         """QEMU rows must use the Image-format kernel — see _kernel_format_for_vmm."""
-        amd_qemu = MANIFEST[("openclaw", "amd64", "qemu")]
-        arm_qemu = MANIFEST[("openclaw", "arm64", "qemu")]
+        amd_qemu = MANIFEST[("openclaw", "amd64", "qemu", "ubuntu")]
+        arm_qemu = MANIFEST[("openclaw", "arm64", "qemu", "ubuntu")]
         assert amd_qemu.kernel_url.endswith("vmlinux-amd64.image")
         assert arm_qemu.kernel_url.endswith("vmlinux-arm64.image")
 
     def test_arches_have_distinct_rootfs_shas(self) -> None:
         """Sanity: copy-paste error would give both arches the same rootfs SHA."""
-        amd = MANIFEST[("openclaw", "amd64", "firecracker")]
-        arm = MANIFEST[("openclaw", "arm64", "firecracker")]
+        amd = MANIFEST[("openclaw", "amd64", "firecracker", "ubuntu")]
+        arm = MANIFEST[("openclaw", "arm64", "firecracker", "ubuntu")]
         assert amd.rootfs_sha256 != arm.rootfs_sha256
         assert amd.rootfs_url != arm.rootfs_url
 
@@ -688,18 +760,19 @@ class TestBundledManifest:
             )
 
     def test_entry_field_matches_manifest_key(self) -> None:
-        """The fields on each row must match the (preset, arch, vmm) tuple it lives under."""
-        for (preset, arch, vmm), entry in MANIFEST.items():
-            key = (preset, arch, vmm)
+        """The fields on each row must match the (preset, arch, vmm, os) tuple it lives under."""
+        for key, entry in MANIFEST.items():
+            preset, arch, vmm, os = key
             assert entry.preset == preset, f"row at {key} has preset={entry.preset!r}"
             assert entry.arch == arch, f"row at {key} has arch={entry.arch!r}"
             assert entry.vmm == vmm, f"row at {key} has vmm={entry.vmm!r}"
+            assert entry.os == os, f"row at {key} has os={entry.os!r}"
 
     def test_rootfs_sha_is_consistent_across_vmm_variants(self) -> None:
-        """For any (preset, arch), all vmm rows must share the same rootfs SHA.
+        """For any (preset, arch, os), all vmm rows must share the same rootfs SHA.
 
         Rationale: the rootfs is filesystem-format only — VMM-agnostic. Different
-        vmm rows for the same (preset, arch) point at the SAME rootfs file. If
+        vmm rows for the same (preset, arch, os) point at the SAME rootfs file. If
         someone updates only the firecracker row's SHA after a rootfs rebuild
         and forgets the qemu row, downloads silently 404 (or worse, mismatch).
         This test catches that.
@@ -709,21 +782,24 @@ class TestBundledManifest:
         VMM), this assertion needs revisiting along with the "shared rootfs"
         design assumption.
         """
-        by_preset_arch: dict[tuple[Preset, Arch], list[PublishedImage]] = defaultdict(list)
-        for (preset, arch, _vmm), entry in MANIFEST.items():
-            by_preset_arch[(preset, arch)].append(entry)
+        from smolvm.images.published import Os
 
-        for (preset, arch), entries in by_preset_arch.items():
+        by_preset_arch_os: dict[tuple[Preset, Arch, Os], list[PublishedImage]] = defaultdict(list)
+        for key, entry in MANIFEST.items():
+            preset, arch, _vmm, os = key
+            by_preset_arch_os[(preset, arch, os)].append(entry)
+
+        for (preset, arch, os), entries in by_preset_arch_os.items():
             if len(entries) < 2:
                 continue  # nothing to compare
             shas = {e.rootfs_sha256 for e in entries}
             urls = {e.rootfs_url for e in entries}
             assert len(shas) == 1, (
-                f"{preset}/{arch}: rootfs SHAs differ across vmm rows: {sorted(shas)}. "
+                f"{preset}/{arch}/{os}: rootfs SHAs differ across vmm rows: {sorted(shas)}. "
                 f"Likely one row was updated after a rootfs rebuild and another wasn't."
             )
             assert len(urls) == 1, (
-                f"{preset}/{arch}: rootfs URLs differ across vmm rows: {sorted(urls)}."
+                f"{preset}/{arch}/{os}: rootfs URLs differ across vmm rows: {sorted(urls)}."
             )
 
 

@@ -37,7 +37,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from smolvm import __version__
 from smolvm.exceptions import ImageError
@@ -48,11 +48,20 @@ Preset = Literal["codex", "claude-code", "openclaw", "hermes", "pi"]
 # ``libkrun`` is reserved here for a future spike — manifest accepts the type
 # but the CLI never resolves a host to it until libkrun support is wired.
 Vmm = Literal["firecracker", "qemu", "libkrun"]
+# Guest OS the rootfs was built from. Ubuntu 24.04 is the historical default;
+# Alpine 3.20 is the smaller-footprint opt-in (~half the size, faster boot)
+# rolled out on a per-preset basis — see issue #264.
+Os = Literal["ubuntu", "alpine"]
 # Kernel binary format. Firecracker requires "elf" (uncompressed ELF
 # vmlinux); QEMU on aarch64 virt only boots "image" (the Linux ARM64 boot
 # protocol — bzImage on x86, Image on arm64). Same kernel source build
 # produces both as a side effect, so we ship both per arch.
 KernelFormat = Literal["elf", "image"]
+
+# Manifest key: ``(preset, arch, vmm, os)``. The OS dimension was added in
+# the Alpine rollout — same kernel boots both flavours, only the rootfs
+# differs, so no extra kernel artifacts ship per OS.
+ManifestKey = tuple[Preset, Arch, Vmm, Os]
 
 
 class PublishedImage(BaseModel):
@@ -61,12 +70,16 @@ class PublishedImage(BaseModel):
     preset: Preset
     arch: Arch
     vmm: Vmm
+    os: Os
     kernel_url: str
     kernel_sha256: str
     rootfs_url: str
     rootfs_sha256: str
 
-    model_config = {"frozen": True}
+    # ``extra="forbid"`` rejects unknown fields at construction so a typo
+    # in a manifest row (e.g. ``kernel_shaa256=...``) fails loudly instead
+    # of being silently ignored and shipping an unverified image.
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
 
 class BaseKernel(BaseModel):
@@ -93,7 +106,7 @@ class BaseKernel(BaseModel):
     image_url: str
     image_sha256: str
 
-    model_config = {"frozen": True}
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     def url_for(self, fmt: KernelFormat) -> str:
         return self.elf_url if fmt == "elf" else self.image_url
@@ -124,28 +137,41 @@ class BaseKernel(BaseModel):
 IMAGES_RELEASE_TAG = "images-v0.0.14a0"
 
 
-def cache_name(preset: Preset, arch: Arch, vmm: Vmm, version: str = __version__) -> str:
+def cache_name(
+    preset: Preset, arch: Arch, vmm: Vmm, version: str = __version__, *, os: Os = "ubuntu"
+) -> str:
     """Cache directory name under ``~/.smolvm/images/``.
 
     Keyed on the **CLI** version (not the images tag) so a CLI upgrade
     invalidates local caches even when the images tag hasn't moved —
     avoids serving a stale ``.ext4`` decompressed from the prior CLI's
     decompression sidecar.
+
+    OS suffix is omitted for Ubuntu so existing on-disk caches from before
+    the OS dimension was added stay valid; Alpine adds an explicit suffix.
+    ``os`` is keyword-only so existing positional callers (with ``version``
+    as the 4th argument) keep working.
     """
-    return f"{preset}-v{version}-{arch}-{vmm}"
+    base = f"{preset}-v{version}-{arch}-{vmm}"
+    return base if os == "ubuntu" else f"{base}-{os}"
 
 
-def _release_asset_url(preset: Preset, arch: Arch, suffix: str) -> str:
+def _release_asset_url(preset: Preset, arch: Arch, suffix: str, os: Os = "ubuntu") -> str:
     """Construct the post-publish GH Releases asset URL for one artifact.
 
     Once the draft at :data:`IMAGES_RELEASE_TAG` is published, GH Releases
     serves assets at this canonical URL (drafts use a temporary
     ``untagged-*`` slug — these URLs only resolve after publish).
+
+    Naming asymmetry: Ubuntu assets keep the ``{preset}-{arch}-{suffix}``
+    shape they had before the OS dimension landed, so the existing release
+    artifacts stay reachable. Alpine assets carry an explicit ``-alpine-``
+    segment. ``scripts/ci/build-preset.sh`` mirrors this on the upload side.
     """
-    return (
-        f"https://github.com/CelestoAI/SmolVM/releases/download/"
-        f"{IMAGES_RELEASE_TAG}/{preset}-{arch}-{suffix}"
+    slug = (
+        f"{preset}-{arch}-{suffix}" if os == "ubuntu" else f"{preset}-{arch}-{os}-{suffix}"
     )
+    return f"https://github.com/CelestoAI/SmolVM/releases/download/{IMAGES_RELEASE_TAG}/{slug}"
 
 
 def _release_kernel_url(arch: Arch, fmt: KernelFormat) -> str:
@@ -202,16 +228,19 @@ def _kernel_format_for_vmm(vmm: Vmm) -> KernelFormat:
 # BASE_KERNELS entry's format-for-vmm so a single CI run is the source of
 # truth for every kernel SHA. Rootfs SHAs come from build-published-images.yml
 # CI for the matching tag.
-def _manifest_row(preset: Preset, arch: Arch, vmm: Vmm, rootfs_sha256: str) -> PublishedImage:
+def _manifest_row(
+    preset: Preset, arch: Arch, vmm: Vmm, os: Os, rootfs_sha256: str
+) -> PublishedImage:
     base = BASE_KERNELS[arch]
     fmt = _kernel_format_for_vmm(vmm)
     return PublishedImage(
         preset=preset,
         arch=arch,
         vmm=vmm,
+        os=os,
         kernel_url=base.url_for(fmt),
         kernel_sha256=base.sha256_for(fmt),
-        rootfs_url=_release_asset_url(preset, arch, "rootfs.ext4.zst"),
+        rootfs_url=_release_asset_url(preset, arch, "rootfs.ext4.zst", os=os),
         rootfs_sha256=rootfs_sha256,
     )
 
@@ -232,25 +261,42 @@ _PI_ARM64_ROOTFS_SHA = "6d3aaa5379e70243b583f7c75e428aa84f0b5140483507d4e48855ea
 
 
 def _preset_rows(
-    preset: Preset, amd64_sha: str, arm64_sha: str
-) -> dict[tuple[Preset, Arch, Vmm], PublishedImage]:
-    """Generate all (preset, arch, vmm) manifest rows for a single preset."""
+    preset: Preset, amd64_sha: str, arm64_sha: str, *, os: Os = "ubuntu"
+) -> dict[ManifestKey, PublishedImage]:
+    """Generate all (preset, arch, vmm) manifest rows for a single preset.
+
+    Each call produces 6 rows (2 archs × 3 vmms) for one OS flavour.
+    Adding an Alpine variant for a preset means a second call with
+    ``os="alpine"`` and the matching SHAs from CI.
+    """
     vmms: tuple[Vmm, ...] = ("firecracker", "qemu", "libkrun")
     archs: tuple[Arch, ...] = ("amd64", "arm64")
     shas: dict[Arch, str] = {"amd64": amd64_sha, "arm64": arm64_sha}
-    rows: dict[tuple[Preset, Arch, Vmm], PublishedImage] = {}
+    rows: dict[ManifestKey, PublishedImage] = {}
     for arch in archs:
         for vmm in vmms:
-            rows[(preset, arch, vmm)] = _manifest_row(preset, arch, vmm, shas[arch])
+            rows[(preset, arch, vmm, os)] = _manifest_row(preset, arch, vmm, os, shas[arch])
     return rows
 
 
-MANIFEST: dict[tuple[Preset, Arch, Vmm], PublishedImage] = {
+# Alpine rootfs SHAs are populated after the first successful run of
+# ``build-published-images.yml`` against this :data:`IMAGES_RELEASE_TAG`.
+# Until then the Alpine ``_preset_rows`` calls below stay commented so the
+# manifest doesn't reference URLs whose SHA we can't verify. Phase 1 of
+# #264 covers codex/claude-code/pi only — hermes is excluded in CI for
+# musllinux compatibility reasons; openclaw uses a separate builder.
+
+MANIFEST: dict[ManifestKey, PublishedImage] = {
+    # Ubuntu rows — historical default, no naming change in URL.
     **_preset_rows("openclaw", _OPENCLAW_AMD64_ROOTFS_SHA, _OPENCLAW_ARM64_ROOTFS_SHA),
     **_preset_rows("codex", _CODEX_AMD64_ROOTFS_SHA, _CODEX_ARM64_ROOTFS_SHA),
     **_preset_rows("claude-code", _CLAUDE_CODE_AMD64_ROOTFS_SHA, _CLAUDE_CODE_ARM64_ROOTFS_SHA),
     **_preset_rows("hermes", _HERMES_AMD64_ROOTFS_SHA, _HERMES_ARM64_ROOTFS_SHA),
     **_preset_rows("pi", _PI_AMD64_ROOTFS_SHA, _PI_ARM64_ROOTFS_SHA),
+    # Alpine rows — add once CI publishes ``<preset>-<arch>-alpine-rootfs.ext4.zst``
+    # under :data:`IMAGES_RELEASE_TAG` and we have SHAs to pin against.
+    # Until then, ``smolvm <preset> start --os alpine`` falls through to
+    # install-at-boot via the local Docker builder.
 }
 
 
@@ -258,17 +304,18 @@ def lookup(
     preset: Preset,
     arch: Arch,
     vmm: Vmm,
+    os: Os = "ubuntu",
     *,
-    manifest: dict[tuple[Preset, Arch, Vmm], PublishedImage] | None = None,
+    manifest: dict[ManifestKey, PublishedImage] | None = None,
 ) -> PublishedImage:
     """Look up a manifest entry, raising :class:`ImageError` if missing."""
     catalog = MANIFEST if manifest is None else manifest
-    entry = catalog.get((preset, arch, vmm))
+    entry = catalog.get((preset, arch, vmm, os))
     if entry is None:
-        available = ", ".join(sorted(f"{p}/{a}/{v}" for (p, a, v) in catalog)) or "(none)"
+        available = ", ".join(sorted(f"{p}/{a}/{v}/{o}" for (p, a, v, o) in catalog)) or "(none)"
         raise ImageError(
             f"No published image for preset '{preset}' on arch '{arch}' under "
-            f"vmm '{vmm}' (available: {available})."
+            f"vmm '{vmm}' with os '{os}' (available: {available})."
         )
     return entry
 
@@ -277,10 +324,11 @@ def is_preset_published(
     preset: str,
     arch: Arch,
     vmm: Vmm,
+    os: Os = "ubuntu",
     *,
-    manifest: dict[tuple[Preset, Arch, Vmm], PublishedImage] | None = None,
+    manifest: dict[ManifestKey, PublishedImage] | None = None,
 ) -> bool:
-    """Return whether a published image is registered for ``(preset, arch, vmm)``.
+    """Return whether a published image is registered for ``(preset, arch, vmm, os)``.
 
     Used by the CLI dispatch to decide whether to take the fast published-image
     path or fall back to install-at-boot. Accepts an arbitrary preset string so
@@ -288,7 +336,7 @@ def is_preset_published(
     don't appear in the manifest just return ``False``.
     """
     catalog = MANIFEST if manifest is None else manifest
-    return (preset, arch, vmm) in catalog  # type: ignore[comparison-overlap]
+    return (preset, arch, vmm, os) in catalog  # type: ignore[comparison-overlap]
 
 
 def to_image_source(entry: PublishedImage, version: str = __version__) -> ImageSource:
@@ -301,7 +349,7 @@ def to_image_source(entry: PublishedImage, version: str = __version__) -> ImageS
     """
     rootfs_filename = "rootfs.ext4.zst" if entry.rootfs_url.endswith(".zst") else "rootfs.ext4"
     return ImageSource(
-        name=cache_name(entry.preset, entry.arch, entry.vmm, version),
+        name=cache_name(entry.preset, entry.arch, entry.vmm, version, os=entry.os),
         kernel_url=entry.kernel_url,
         kernel_sha256=entry.kernel_sha256,
         rootfs_url=entry.rootfs_url,
@@ -327,9 +375,10 @@ def ensure_published_image(
     preset: Preset,
     arch: Arch,
     vmm: Vmm,
+    os: Os = "ubuntu",
     *,
     cache_dir: Path | None = None,
-    manifest: dict[tuple[Preset, Arch, Vmm], PublishedImage] | None = None,
+    manifest: dict[ManifestKey, PublishedImage] | None = None,
     version: str = __version__,
 ) -> LocalImage:
     """Download (if needed) and return paths to a published preset image.
@@ -340,6 +389,8 @@ def ensure_published_image(
         vmm: Hypervisor variant the image was built for (``"firecracker"``,
             ``"qemu"``, or ``"libkrun"``). Caller must pre-resolve this from
             host platform — this module is policy-free.
+        os: Guest operating system flavour the rootfs was built from
+            (``"ubuntu"`` or ``"alpine"``). Defaults to ``"ubuntu"``.
         cache_dir: Override the default cache directory (mainly for tests).
         manifest: Override the bundled manifest (mainly for tests).
         version: Override the CLI version used to compute the cache name.
@@ -352,10 +403,10 @@ def ensure_published_image(
         produced lazily.
 
     Raises:
-        ImageError: If no manifest entry exists for the (preset, arch, vmm)
-            tuple, or if download / SHA-256 verification fails.
+        ImageError: If no manifest entry exists for the (preset, arch, vmm,
+            os) tuple, or if download / SHA-256 verification fails.
     """
-    entry = lookup(preset, arch, vmm, manifest=manifest)
+    entry = lookup(preset, arch, vmm, os, manifest=manifest)
     source = to_image_source(entry, version=version)
     manager = ImageManager(cache_dir=cache_dir, registry={source.name: source})
     local = manager.ensure_image(source.name)
