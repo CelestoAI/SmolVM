@@ -309,6 +309,7 @@ class VMConfig(BaseModel):
             ``smolvm.authorized_key_b64=<base64>`` and read by ``/init``. Use
             this for published pre-built images that don't bake keys at build
             time, so each VM gets the launching user's key without rebuilding.
+        enable_telemetry: Whether to enable telemetry for this VM.
     """
 
     vm_id: Annotated[
@@ -337,6 +338,7 @@ class VMConfig(BaseModel):
     internet_settings: InternetSettings | None = None
     workspace_mounts: list[WorkspaceMount] = []
     ssh_public_key: str | None = None
+    enable_telemetry: bool = False
 
     @field_validator("vm_id", mode="before")
     @classmethod

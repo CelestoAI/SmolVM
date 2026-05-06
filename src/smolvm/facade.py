@@ -76,6 +76,7 @@ from smolvm.types import (
     WorkspaceMount,
 )
 from smolvm.vm import SmolVMManager
+from smolvm.telemetry import TelemetryManager
 
 logger = logging.getLogger(__name__)
 
@@ -737,6 +738,15 @@ class SmolVM:
                 "make writable. Alternatively, set "
                 "WorkspaceMount(writable=True) on config.workspace_mounts."
             )
+        
+        # Initialize telemetry if enabled
+        self._telemetry: TelemetryManager | None = None
+        if config is not None and config.enable_telemetry:
+            telemetry_dir = (data_dir or Path.home() / ".smolvm") / "telemetry"
+            self._telemetry = TelemetryManager(
+                vm_id=config.vm_id,
+                telemetry_path=telemetry_dir / f"{config.vm_id}.json",
+            )
 
         self._ssh_user = ssh_user
         self._ssh_key_path = ssh_key_path
@@ -904,6 +914,10 @@ class SmolVM:
         """
         notify = on_progress or (lambda _msg: None)
 
+        # Record boot start for telemetry
+        if self._telemetry:
+            self._telemetry.record_boot_start()
+
         if self._info.status == VMState.RUNNING:
             logger.info("VM %s already running; start() is a no-op", self._vm_id)
             return self
@@ -925,7 +939,15 @@ class SmolVM:
                     "the rootfs at build time.",
                     {"vm_id": self._vm_id},
                 )
-            self.wait_for_ssh(timeout=boot_timeout, on_progress=on_progress)
+            try:
+                self.wait_for_ssh(timeout=boot_timeout, on_progress=on_progress)
+                if self._telemetry:
+                    self._telemetry.record_boot_ready()
+            except OperationTimeoutError as e:
+                if self._telemetry:
+                    self._telemetry.record_boot_failure(f"SSH timeout: {str(e)}")
+                raise
+
             if self._ssh is None:
                 self._ssh = SSHClient(
                     host=self._info.network.guest_ip,
@@ -1012,6 +1034,10 @@ class SmolVM:
 
     def delete(self) -> None:
         """Delete the VM and release all resources."""
+        # Clear telemetry data
+        if self._telemetry:
+            self._telemetry.clear()
+        
         self._cleanup_local_forwards()
         self._sdk.delete(self._vm_id)
         self._reset_runtime_state()
@@ -1083,8 +1109,21 @@ class SmolVM:
                 "Cannot run command: SSH client is not initialized",
                 {"vm_id": self._vm_id},
             )
-
-        return self._ssh.run(command, timeout=timeout, shell=shell)
+        start_time = time.time()
+        result = self._ssh.run(command, timeout=timeout, shell=shell)
+        
+        # Record command execution for telemetry
+        if self._telemetry:
+            duration_ms = int((time.time() - start_time) * 1000)
+            self._telemetry.record_command_execution(
+                command=command,
+                exit_code=result.exit_code,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                duration_ms=duration_ms,
+            )
+        
+        return result
 
     def set_env_vars(self, env_vars: dict[str, str], *, merge: bool = True) -> list[str]:
         """Set environment variables on a running VM.
@@ -1548,6 +1587,9 @@ class SmolVM:
 
     def close(self) -> None:
         """Release underlying SDK resources for this facade instance."""
+        if self._telemetry:
+            # Optional: could add telemetry.close() if needed in future
+            pass
         self._sdk.close()
 
     # ------------------------------------------------------------------
