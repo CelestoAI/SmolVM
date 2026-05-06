@@ -46,6 +46,22 @@ CONFIG_PACKET=y                 # why: AF_PACKET for some userspace tools
 CONFIG_VSOCKETS=y               # why: AF_VSOCK socket family
 CONFIG_VIRTIO_VSOCKETS=y        # why: virtio transport for vsock
 
+# ── Workspace mounts (--mount / --writable-mounts) ───────────────────
+# `smolvm create --mount <host-dir>` shares a host directory into the
+# guest using virtio-9p (a paravirt filesystem that speaks the 9P2000.L
+# protocol over a virtio transport). For read-only host shares the guest
+# stacks overlayfs on top so writes inside the VM stay in a tmpfs upper
+# layer and never leak back to the host.
+#
+# All four must be `=y` because CONFIG_MODULES is not set below — the
+# guest cannot modprobe these in later. Without these, the post-boot
+# `_ensure_9p_workspace_support` probe in facade.py raises
+# "guest is missing 9p or overlay kernel support".
+CONFIG_NET_9P=y                 # why: 9P protocol stack
+CONFIG_NET_9P_VIRTIO=y          # why: 9P over virtio transport (host share)
+CONFIG_9P_FS=y                  # why: VFS layer that mounts a 9P share
+CONFIG_OVERLAY_FS=y             # why: writable scratch over a read-only share
+
 # Note: RANDOM_TRUST_CPU / RANDOM_TRUST_BOOTLOADER are no longer Kconfig
 # symbols (removed during the random.c rewrite). Both are now defaulted
 # ON; override at runtime via the cmdline (random.trust_cpu=off, etc.).
