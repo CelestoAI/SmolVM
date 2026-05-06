@@ -35,6 +35,30 @@ def _ok_subprocess_run(
     return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
 
+def test_base_init_script_uses_cmdline_netmask_and_gateway_dns() -> None:
+    script = ImageBuilder()._default_init_script()
+
+    assert "netmask_to_prefix()" in script
+    assert 'NETMASK=$(echo "$IP_FIELDS" | cut -d: -f4)' in script
+    assert 'PREFIX=$(netmask_to_prefix "$NETMASK") || PREFIX=24' in script
+    assert 'ip addr add "${GUEST_IP}/${PREFIX}" dev eth0' in script
+    assert 'if [ -n "$GATEWAY" ]; then' in script
+    assert 'echo "nameserver ${GATEWAY}" > /etc/resolv.conf' in script
+    assert 'ip addr add "${GUEST_IP}/24"' not in script
+
+
+def test_preset_init_script_uses_cmdline_netmask_and_gateway_dns() -> None:
+    script = Path("scripts/ci/preset-init.sh").read_text()
+
+    assert "netmask_to_prefix()" in script
+    assert 'NETMASK=$(echo "$IP_FIELDS" | cut -d: -f4)' in script
+    assert 'PREFIX=$(netmask_to_prefix "$NETMASK") || PREFIX=24' in script
+    assert 'ip addr add "${GUEST_IP}/${PREFIX}" dev eth0' in script
+    assert 'if [ -n "$GATEWAY" ]; then' in script
+    assert 'echo "nameserver ${GATEWAY}" > /etc/resolv.conf' in script
+    assert 'ip addr add "${GUEST_IP}/24"' not in script
+
+
 class TestDockerDiagnostics:
     """Tests for Docker availability diagnostics."""
 

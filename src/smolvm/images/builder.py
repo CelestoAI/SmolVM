@@ -1183,23 +1183,61 @@ log_ts "root-ready"
 log_ts "net-config-start"
 # Configure from kernel command line ip= parameter
 # Format: ip=<guest_ip>::<gateway>:<netmask>::eth0:off
+netmask_to_prefix() {{
+    IFS=.
+    set -- $1
+    IFS=' '
+
+    [ $# -eq 4 ] || return 1
+
+    PREFIX=0
+    ZERO_SEEN=0
+    for OCTET in "$@"; do
+        case "$OCTET" in
+            255) [ "$ZERO_SEEN" -eq 0 ] || return 1; PREFIX=$((PREFIX + 8)) ;;
+            254) [ "$ZERO_SEEN" -eq 0 ] || return 1; PREFIX=$((PREFIX + 7)); ZERO_SEEN=1 ;;
+            252) [ "$ZERO_SEEN" -eq 0 ] || return 1; PREFIX=$((PREFIX + 6)); ZERO_SEEN=1 ;;
+            248) [ "$ZERO_SEEN" -eq 0 ] || return 1; PREFIX=$((PREFIX + 5)); ZERO_SEEN=1 ;;
+            240) [ "$ZERO_SEEN" -eq 0 ] || return 1; PREFIX=$((PREFIX + 4)); ZERO_SEEN=1 ;;
+            224) [ "$ZERO_SEEN" -eq 0 ] || return 1; PREFIX=$((PREFIX + 3)); ZERO_SEEN=1 ;;
+            192) [ "$ZERO_SEEN" -eq 0 ] || return 1; PREFIX=$((PREFIX + 2)); ZERO_SEEN=1 ;;
+            128) [ "$ZERO_SEEN" -eq 0 ] || return 1; PREFIX=$((PREFIX + 1)); ZERO_SEEN=1 ;;
+            0) ZERO_SEEN=1 ;;
+            *) return 1 ;;
+        esac
+    done
+
+    echo "$PREFIX"
+}}
+
 IP_CONFIG=$(cat /proc/cmdline | tr ' ' '\n' | grep '^ip=' | head -1)
 if [ -n "$IP_CONFIG" ]; then
-    GUEST_IP=$(echo "$IP_CONFIG" | cut -d= -f2 | cut -d: -f1)
-    GATEWAY=$(echo "$IP_CONFIG" | cut -d= -f2 | cut -d: -f3)
+    IP_FIELDS=$(echo "$IP_CONFIG" | cut -d= -f2-)
+    GUEST_IP=$(echo "$IP_FIELDS" | cut -d: -f1)
+    GATEWAY=$(echo "$IP_FIELDS" | cut -d: -f3)
+    NETMASK=$(echo "$IP_FIELDS" | cut -d: -f4)
 else
     GUEST_IP="172.16.0.2"
     GATEWAY="172.16.0.1"
+    NETMASK="255.255.255.0"
 fi
+
+PREFIX=$(netmask_to_prefix "$NETMASK") || PREFIX=24
 
 ip link set lo up
 ip link set eth0 up
-ip addr add "${{GUEST_IP}}/24" dev eth0 2>/dev/null || true
+ip addr add "${{GUEST_IP}}/${{PREFIX}}" dev eth0 2>/dev/null || true
 ip route add default via "${{GATEWAY}}" dev eth0 2>/dev/null || true
 
 # DNS
-echo "nameserver 8.8.8.8" > /etc/resolv.conf
-echo "nameserver 8.8.4.4" >> /etc/resolv.conf
+if [ -n "$GATEWAY" ]; then
+    echo "nameserver ${{GATEWAY}}" > /etc/resolv.conf
+    echo "nameserver 8.8.8.8" >> /etc/resolv.conf
+    echo "nameserver 8.8.4.4" >> /etc/resolv.conf
+else
+    echo "nameserver 8.8.8.8" > /etc/resolv.conf
+    echo "nameserver 8.8.4.4" >> /etc/resolv.conf
+fi
 
 hostname {custom_hostname}
 log_ts "net-ready"
