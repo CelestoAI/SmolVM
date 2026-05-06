@@ -130,11 +130,12 @@ class BaseKernel(BaseModel):
 #      step summaries into ``BASE_KERNELS`` and ``MANIFEST``.
 #   3. Promote the draft release on GitHub.
 #
-# CI still passes ``--clobber`` to ``gh release upload`` for
-# operational ergonomics, so SHA drift is technically possible. A
-# follow-up smoke test should fetch each ``rootfs_url`` / ``kernel_url``
-# and verify the live bytes match the recorded SHA.
-IMAGES_RELEASE_TAG = "images-v0.0.14a0"
+# CI no longer passes ``--clobber`` by default (see ``ci`` PR #280) — a
+# bump that forgets to land its SHA-resync commit will fail loud at the
+# upload step instead of silently swapping bytes under the existing
+# pins. Re-bakes against the same tag must opt in via the
+# ``force_overwrite`` workflow_dispatch input.
+IMAGES_RELEASE_TAG = "images-v0.0.14"
 
 
 def cache_name(
