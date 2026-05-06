@@ -97,6 +97,8 @@ ip route add default via "${GATEWAY}" dev eth0 2>/dev/null || true
 
 if [ -n "$GATEWAY" ]; then
     echo "nameserver ${GATEWAY}" > /etc/resolv.conf
+    echo "nameserver 8.8.8.8" >> /etc/resolv.conf
+    echo "nameserver 8.8.4.4" >> /etc/resolv.conf
 else
     echo "nameserver 8.8.8.8" > /etc/resolv.conf
     echo "nameserver 8.8.4.4" >> /etc/resolv.conf
