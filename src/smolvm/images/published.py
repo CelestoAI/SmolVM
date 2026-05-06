@@ -201,16 +201,16 @@ BASE_KERNELS: dict[Arch, BaseKernel] = {
     "amd64": BaseKernel(
         arch="amd64",
         elf_url=_release_kernel_url("amd64", "elf"),
-        elf_sha256="7be5c70c5fd5b12771aad71f6eddf8bf82006c3886c28be2e2f04be0812cd56b",
+        elf_sha256="18f11160fcf0dd329207faea7ed9af4f6fe0bdc7307c1e132dd3db7f02914a18",
         image_url=_release_kernel_url("amd64", "image"),
-        image_sha256="d77c0b8c9fa6bbf163c04aee2067b374ff5a952b10040ed407dbc659a2af2552",
+        image_sha256="ceac26ef7218ee907a0f0108fa4f30f95da3c8ab1c87056a85760f8d15fac801",
     ),
     "arm64": BaseKernel(
         arch="arm64",
         elf_url=_release_kernel_url("arm64", "elf"),
-        elf_sha256="77795663bf9b0fe229d2a8e77bc454cf56cbe2ba94130320ec235fc31a73d92b",
+        elf_sha256="b8b319c5253bcf9930cc0c3e75df76298a4a741441d83b8c3ad0a87b2c7ad2ba",
         image_url=_release_kernel_url("arm64", "image"),
-        image_sha256="ddc7344a2e1298bcdc467dd900236456c08159734ac43cae9b104ded506e3839",
+        image_sha256="0a4d0f69f07070c344b0301de541b50e3bde6c5d39a134869b8f57cf8add389c",
     ),
 }
 
