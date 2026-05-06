@@ -27,32 +27,21 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-from typing import Any
+
+from agents import ModelSettings, Runner
+from agents.run import RunConfig
+from agents.sandbox import Manifest, SandboxAgent, SandboxRunConfig
+from agents.sandbox.entries import File
+from celesto.integrations.openai_agents import SmolVMSandboxClient, SmolVMSandboxClientOptions
 
 DEFAULT_MODEL = "gpt-5.5"
-INSTALL_HINT = "pip install celesto openai-agents"
 
 
-def _require_dependency(import_path: str, install_hint: str = INSTALL_HINT) -> Any:
-    """Import an optional dependency and show the install command if it is missing."""
-    module_name, _, attr_name = import_path.partition(":")
-    try:
-        module = __import__(module_name, fromlist=[attr_name] if attr_name else [])
-    except ImportError as exc:
-        raise RuntimeError(
-            f"This example needs an extra package. Run `{install_hint}` and try again."
-        ) from exc
-    return getattr(module, attr_name) if attr_name else module
-
-
-def _build_manifest() -> Any:
+def _build_manifest() -> Manifest:
     """Create the files the agent will see inside the sandbox."""
-    manifest_cls = _require_dependency("agents.sandbox:Manifest")
-    file_cls = _require_dependency("agents.sandbox.entries:File")
-
-    return manifest_cls(
+    return Manifest(
         entries={
-            "customer_brief.md": file_cls(
+            "customer_brief.md": File(
                 content=(
                     b"# Northwind Health renewal\n\n"
                     b"- Segment: Mid-market healthcare analytics provider.\n"
@@ -60,7 +49,7 @@ def _build_manifest() -> Any:
                     b"- Target outcome: close the renewal this month.\n"
                 )
             ),
-            "implementation_risks.md": file_cls(
+            "implementation_risks.md": File(
                 content=(
                     b"# Delivery risks\n\n"
                     b"- Security questionnaire is not complete.\n"
@@ -68,7 +57,7 @@ def _build_manifest() -> Any:
                     b"- The customer asked for a clear owner for onboarding.\n"
                 )
             ),
-            "task.md": file_cls(
+            "task.md": File(
                 content=(
                     b"# Task\n\n"
                     b"Review the workspace and write `output/renewal_summary.md`.\n"
@@ -81,29 +70,17 @@ def _build_manifest() -> Any:
 
 async def main() -> None:
     """Run one OpenAI agent task in a SmolVM sandbox."""
-    runner_cls = _require_dependency("agents:Runner")
-    model_settings_cls = _require_dependency("agents:ModelSettings")
-    run_config_cls = _require_dependency("agents.run:RunConfig")
-    sandbox_agent_cls = _require_dependency("agents.sandbox:SandboxAgent")
-    sandbox_run_config_cls = _require_dependency("agents.sandbox:SandboxRunConfig")
-    smolvm_sandbox_client_cls = _require_dependency(
-        "celesto.integrations.openai_agents:SmolVMSandboxClient"
-    )
-    smolvm_sandbox_client_options_cls = _require_dependency(
-        "celesto.integrations.openai_agents:SmolVMSandboxClientOptions"
-    )
-
     manifest = _build_manifest()
-    client = smolvm_sandbox_client_cls()
+    client = SmolVMSandboxClient()
     session = await client.create(
         manifest=manifest,
-        options=smolvm_sandbox_client_options_cls(
+        options=SmolVMSandboxClientOptions(
             os="ubuntu",
             memory=1024,
         ),
     )
 
-    agent = sandbox_agent_cls(
+    agent = SandboxAgent(
         name="SmolVM Renewal Analyst",
         model=os.environ.get("OPENAI_AGENTS_MODEL", DEFAULT_MODEL),
         instructions=(
@@ -113,7 +90,7 @@ async def main() -> None:
             "Keep the final response short and mention that file path."
         ),
         default_manifest=manifest,
-        model_settings=model_settings_cls(tool_choice="required"),
+        model_settings=ModelSettings(tool_choice="required"),
     )
 
     try:
@@ -122,11 +99,11 @@ async def main() -> None:
             print("\n== Initial sandbox files ==")
             print(await session.ls("."))
 
-            result = await runner_cls.run(
+            result = await Runner.run(
                 agent,
                 "Summarize the renewal blockers and recommend the next two actions.",
-                run_config=run_config_cls(
-                    sandbox=sandbox_run_config_cls(session=session),
+                run_config=RunConfig(
+                    sandbox=SandboxRunConfig(session=session),
                     workflow_name="SmolVM SandboxAgent tutorial",
                 ),
             )
