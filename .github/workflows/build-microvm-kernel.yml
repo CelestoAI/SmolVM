@@ -26,6 +26,16 @@ on:
           published.py.
         type: string
         default: ""
+      force_overwrite:
+        description: >-
+          DANGEROUS. Replace any assets with the same name that already
+          live at this tag. Default false: the upload step fails loud on
+          a collision so an accidental re-run cannot silently swap
+          published bytes the shipped CLI's BASE_KERNELS SHAs depend on.
+          Tick this only for an intentional re-bake of the same tag
+          (e.g. a flaky CI run that needs a redo).
+        type: boolean
+        default: false
   push:
     paths:
       - "kernel/microvm/**"
@@ -137,6 +147,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.release.outputs.tag }}
           ARCH: ${{ matrix.arch }}
+          FORCE_OVERWRITE: ${{ inputs.force_overwrite }}
         run: |
           # Idempotent draft create. Race between matrix cells handled the
           # same way as build-published-images.yml.
@@ -148,12 +159,20 @@ jobs:
               --notes "Auto-generated draft release for SmolVM published images. Verify SHA-256 sums and content before publishing." \
               || echo "Draft already exists (race with another matrix cell), continuing."
           fi
-          # --clobber overwrites prior artifacts. NOTE: allows silent SHA
-          # drift relative to BASE_KERNELS — drift detection via live SHA
-          # smoke test is a separate workflow.
+          # Default (no --clobber): `gh release upload` returns non-zero
+          # on a same-name collision. Forces the dev to bump
+          # IMAGES_RELEASE_TAG (or pass a fresh `release_tag` input)
+          # rather than silently swapping published bytes that the
+          # shipped CLI's BASE_KERNELS SHAs depend on.
+          # `force_overwrite=true` (workflow_dispatch only — push events
+          # cannot set it) opts back in for intentional re-bakes.
+          upload_args=()
+          if [ "${FORCE_OVERWRITE:-false}" = "true" ]; then
+            upload_args+=(--clobber)
+          fi
           gh release upload "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --clobber \
+            "${upload_args[@]}" \
             "kernel-out/vmlinux-${ARCH}.elf" \
             "kernel-out/vmlinux-${ARCH}.image" \
             "kernel-out/vmlinux-${ARCH}.config"

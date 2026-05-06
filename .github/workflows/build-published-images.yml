@@ -36,6 +36,16 @@ on:
           Leave empty to use IMAGES_RELEASE_TAG from published.py.
         type: string
         default: ""
+      force_overwrite:
+        description: >-
+          DANGEROUS. Replace any assets with the same name that already
+          live at this tag. Default false: the upload step fails loud on
+          a collision so an accidental re-run cannot silently swap
+          published bytes the shipped CLI's MANIFEST SHAs depend on.
+          Tick this only for an intentional re-bake of the same tag
+          (e.g. a flaky CI run that needs a redo).
+        type: boolean
+        default: false
 
 permissions:
   contents: write  # required to create/upload to GitHub Releases
@@ -224,6 +234,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.release.outputs.tag }}
           NAME: ${{ steps.build.outputs.name }}
+          FORCE_OVERWRITE: ${{ inputs.force_overwrite }}
         run: |
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$TAG" \
@@ -234,14 +245,19 @@ jobs:
               || echo "Draft already exists (race with another matrix cell), continuing."
           fi
 
-          # --clobber overwrites any prior asset with the same name, so
-          # re-runs of the workflow for the same tag replace existing
-          # artifacts. NOTE: this allows silent SHA drift relative to the
-          # manifest. Catching that requires a smoke test that verifies
-          # live bytes against recorded SHAs — tracked separately.
+          # Default (no --clobber): `gh release upload` returns non-zero
+          # on a same-name collision. Forces the dev to bump
+          # IMAGES_RELEASE_TAG (or pass a fresh `release_tag` input)
+          # rather than silently swapping published bytes that the
+          # shipped CLI's MANIFEST SHAs depend on.
+          # `force_overwrite=true` opts back in for intentional re-bakes.
+          upload_args=()
+          if [ "${FORCE_OVERWRITE:-false}" = "true" ]; then
+            upload_args+=(--clobber)
+          fi
           gh release upload "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --clobber \
+            "${upload_args[@]}" \
             "${NAME}-rootfs.ext4.zst"
 
       - name: Step summary
@@ -409,6 +425,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.release.outputs.tag }}
           NAME: ${{ steps.build.outputs.name }}
+          FORCE_OVERWRITE: ${{ inputs.force_overwrite }}
         run: |
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$TAG" \
@@ -419,14 +436,19 @@ jobs:
               || echo "Draft already exists (race with another matrix cell), continuing."
           fi
 
-          # --clobber overwrites any prior asset with the same name, so
-          # re-runs of the workflow for the same tag replace existing
-          # artifacts. NOTE: this allows silent SHA drift relative to the
-          # manifest. Catching that requires a smoke test that verifies
-          # live bytes against recorded SHAs — tracked separately.
+          # Default (no --clobber): `gh release upload` returns non-zero
+          # on a same-name collision. Forces the dev to bump
+          # IMAGES_RELEASE_TAG (or pass a fresh `release_tag` input)
+          # rather than silently swapping published bytes that the
+          # shipped CLI's MANIFEST SHAs depend on.
+          # `force_overwrite=true` opts back in for intentional re-bakes.
+          upload_args=()
+          if [ "${FORCE_OVERWRITE:-false}" = "true" ]; then
+            upload_args+=(--clobber)
+          fi
           gh release upload "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --clobber \
+            "${upload_args[@]}" \
             "${NAME}-rootfs.ext4.zst"
 
       - name: Step summary
