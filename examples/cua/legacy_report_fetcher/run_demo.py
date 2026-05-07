@@ -170,6 +170,40 @@ def run_pipeline(vm: SmolVM, report_date: str) -> str:
     )
 
 
+def guest_download_dir(session_id: str) -> str:
+    """Return the browser download folder inside the sandbox."""
+    return f"/opt/smolvm-browser/downloads/{session_id}"
+
+
+def configure_browser_downloads(browser: Any, download_dir: str) -> None:
+    """Tell Chromium to save clicked downloads into the sandbox download folder."""
+    cdp = browser.new_browser_cdp_session()
+    cdp.send(
+        "Browser.setDownloadBehavior",
+        {
+            "behavior": "allow",
+            "downloadPath": download_dir,
+            "eventsEnabled": True,
+        },
+    )
+
+
+def list_downloads(vm: SmolVM, session_id: str) -> str:
+    """List current browser downloads for debugging and validation."""
+    return vm_exec(
+        vm,
+        "python3",
+        "-c",
+        (
+            "from pathlib import Path; "
+            f"p=Path({guest_download_dir(session_id)!r}); "
+            "print('download_dir:', p); "
+            "print('files:', ', '.join(sorted(x.name for x in p.glob('*'))) or '<empty>')"
+        ),
+        timeout=20,
+    )
+
+
 def normalize_key(key: str) -> str:
     """Translate computer-use key names to Playwright key names."""
     normalized = key.strip()
@@ -522,6 +556,10 @@ def main() -> int:
 
         log("Connecting to Chromium over CDP")
         browser = session.connect_playwright()
+        download_dir = guest_download_dir(session.session_id)
+        vm_exec(vm, "mkdir", "-p", download_dir, timeout=20)
+        configure_browser_downloads(browser, download_dir)
+        log(f"Browser downloads will be saved in {download_dir}")
         context = browser.contexts[0] if browser.contexts else browser.new_context()
         page = context.pages[0] if context.pages else context.new_page()
         log(f"Opening portal at {PORTAL_URL}")
@@ -539,6 +577,7 @@ def main() -> int:
         if "done" not in agent_result.final_answer.lower():
             raise RuntimeError(f"Agent did not confirm completion: {agent_result.final_answer}")
 
+        log(list_downloads(vm, session.session_id).strip())
         session.screenshot(screenshots_dir / "02-after-downloads.png", full_page=False)
         finalize_output = run_with_heartbeat(
             "Finalizing downloaded reports inside the sandbox",

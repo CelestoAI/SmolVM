@@ -47,12 +47,16 @@ def wait_for_downloads(downloads_dir: Path, filenames: list[str], timeout: float
         time.sleep(0.5)
 
     missing = [name for name in filenames if not (downloads_dir / name).exists()]
+    existing = ", ".join(sorted(path.name for path in downloads_dir.glob("*"))) or "<empty>"
     if missing:
         raise RuntimeError(
             "Missing expected report download(s): "
             + ", ".join(str(downloads_dir / name) for name in missing)
+            + f". Found in {downloads_dir}: {existing}"
         )
-    raise RuntimeError("Report downloads did not finish before the timeout.")
+    raise RuntimeError(
+        f"Report downloads did not finish before the timeout. Found in {downloads_dir}: {existing}"
+    )
 
 
 def finalize_downloads(
