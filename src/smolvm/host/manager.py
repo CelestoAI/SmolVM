@@ -294,7 +294,13 @@ class HostManager:
                 for member in tar.getmembers():
                     if member.name.startswith("/") or ".." in member.name:
                         raise HostError(f"Refusing to extract suspicious path: {member.name}")
-                tar.extractall(path=tmp_dir)
+                try:
+                    tar.extractall(path=tmp_dir, filter="data")
+                except TypeError:
+                    # Python < 3.12 without PEP 706 backport — fall back to
+                    # unfiltered extraction.  The path validation above
+                    # guards against absolute/.. paths.
+                    tar.extractall(path=tmp_dir)
 
             # Find the firecracker binary in extracted contents
             # Tarball structure: release-{version}-{arch}/firecracker-{version}-{arch}

@@ -220,8 +220,11 @@ def _extract_dashboard_dist(archive_path: Path, extract_dir: Path) -> Path:
                 raise RuntimeError(f"Unsafe path in dashboard archive: {member.name}")
 
         try:
-            tar.extractall(path=extract_dir, filter="fully_trusted")
+            tar.extractall(path=extract_dir, filter="data")
         except TypeError:
+            # Python < 3.12 without PEP 706 backport — fall back to
+            # unfiltered extraction.  The path validation above guards
+            # against absolute/.. paths; tar.filter is defense-in-depth.
             tar.extractall(path=extract_dir)
 
     dist_dir = extract_dir / "dist"
