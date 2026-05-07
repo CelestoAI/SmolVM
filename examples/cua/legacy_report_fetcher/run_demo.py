@@ -142,6 +142,27 @@ def start_legacy_app(vm: SmolVM) -> None:
     log(output.strip())
 
 
+def expected_download_filenames(report_date: str) -> list[str]:
+    """Return the report filenames the demo expects Chromium to create."""
+    return [f"orders_{report_date}.csv", f"inventory_{report_date}.csv"]
+
+
+def downloads_ready(vm: SmolVM, session_id: str, report_date: str) -> bool:
+    """Return True when both expected downloads exist in the sandbox."""
+    download_dir = guest_download_dir(session_id)
+    expected = expected_download_filenames(report_date)
+    script = (
+        "from pathlib import Path; "
+        f"p=Path({download_dir!r}); "
+        f"expected={expected!r}; "
+        "missing=[name for name in expected if not (p/name).exists()]; "
+        "partial=list(p.glob('*.crdownload')); "
+        "raise SystemExit(1 if missing or partial else 0)"
+    )
+    result = vm.run(shlex.join(["python3", "-c", script]), timeout=20)
+    return result.ok
+
+
 def finalize_downloads(vm: SmolVM, session_id: str, report_date: str) -> str:
     """Finalize report files using the sandbox shell."""
     return vm_exec(
@@ -397,6 +418,10 @@ Download exactly these two reports for {report_date}:
 - Orders CSV
 - Inventory CSV
 
+Important: clicking Generate reports is not enough. After the reports are ready,
+you must click the visible "Download Orders CSV" link and the visible
+"Download Inventory CSV" link.
+
 Do not download Settlements PDF or any other file.
 Stay on http://127.0.0.1:8000 or localhost only.
 After both CSV files have downloaded, respond only with: done
@@ -410,6 +435,7 @@ def run_computer_use_agent(
     report_date: str,
     model: str,
     max_steps: int,
+    verify_downloads: Callable[[], bool] | None = None,
 ) -> AgentResult:
     """Run OpenAI computer-use against the existing CDP-connected browser page."""
     from openai import OpenAI
@@ -426,6 +452,7 @@ def run_computer_use_agent(
     )
     log(f"submitted task to model={model}")
 
+    validation_retries = 0
     for step_number in range(1, max_steps + 1):
         computer_call = first_computer_call(response)
         if computer_call is None:
@@ -433,7 +460,29 @@ def run_computer_use_agent(
             if not final_answer:
                 raise RuntimeError("The model stopped without returning a final answer.")
             log(f"agent final answer: {final_answer}")
-            return AgentResult(final_answer=final_answer, steps=step_number - 1)
+            if verify_downloads is None or verify_downloads():
+                return AgentResult(final_answer=final_answer, steps=step_number - 1)
+            if validation_retries >= 2:
+                return AgentResult(final_answer=final_answer, steps=step_number - 1)
+
+            validation_retries += 1
+            log(
+                "Agent said it was done, but the sandbox download folder is still missing "
+                "one or both CSV files; asking it to continue."
+            )
+            response = client.responses.create(
+                model=model,
+                tools=[{"type": "computer"}],
+                previous_response_id=response.id,
+                input=(
+                    "The sandbox download folder is still missing one or both CSV files. "
+                    "You probably generated the reports but did not click the actual "
+                    "download links. Continue using the browser. Click Generate reports if "
+                    "needed, then click both visible links: Download Orders CSV and "
+                    "Download Inventory CSV. Do not answer done until you have clicked both."
+                ),
+            )
+            continue
 
         check_safety(computer_call)
         actions = list(getattr(computer_call, "actions", []) or [])
@@ -573,6 +622,7 @@ def main() -> int:
             report_date=args.report_date,
             model=args.model,
             max_steps=args.max_steps,
+            verify_downloads=lambda: downloads_ready(vm, session.session_id, args.report_date),
         )
         if "done" not in agent_result.final_answer.lower():
             raise RuntimeError(f"Agent did not confirm completion: {agent_result.final_answer}")
