@@ -9,6 +9,7 @@ import shlex
 import socket
 import uuid
 import webbrowser
+from collections.abc import Callable
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -16,7 +17,7 @@ from typing import Any
 
 from smolvm.exceptions import BrowserSessionNotFoundError, SmolVMError
 from smolvm.facade import SmolVM
-from smolvm.runtime.backends import BACKEND_QEMU, resolve_backend
+from smolvm.runtime.backends import BACKEND_AUTO, BACKEND_QEMU, resolve_backend
 from smolvm.runtime.boot_profiles import (
     KernelBootProfile,
     get_boot_profile_spec,
@@ -117,11 +118,17 @@ def _build_browser_vm_config(
     from smolvm.images.builder import ImageBuilder
     from smolvm.utils import ensure_ssh_key
 
-    resolved_backend = resolve_backend(browser_config.backend)
+    requested_backend = (
+        BACKEND_QEMU
+        if browser_config.backend == BACKEND_AUTO and browser_config.workspace_mounts
+        else browser_config.backend
+    )
+    resolved_backend = resolve_backend(requested_backend)
     private_key, public_key = ensure_ssh_key()
     resolved_ssh_key_path = ssh_key_path or str(private_key)
 
     builder = ImageBuilder()
+    kernel_url = builder.qemu_kernel_url_for_host() if resolved_backend == BACKEND_QEMU else None
     # TODO: Make the browser runtime pluggable so BrowserSessionConfig.browser
     # can select alternative engines (for example Lightpanda) without changing
     # the surrounding session lifecycle or backend abstractions.
@@ -139,6 +146,7 @@ def _build_browser_vm_config(
         name=image_name,
         rootfs_size_mb=browser_config.disk_size_mib,
         kernel_profile=_BROWSER_KERNEL_PROFILE,
+        kernel_url=kernel_url,
     )
 
     config = VMConfig(
@@ -152,6 +160,7 @@ def _build_browser_vm_config(
         retain_disk_on_delete=browser_config.profile_mode == "persistent",
         env_vars=browser_config.env_vars,
         port_forwards=port_forwards,
+        workspace_mounts=browser_config.workspace_mounts,
         ssh_public_key=public_key.read_text().strip(),
     )
     return config, resolved_ssh_key_path
@@ -281,6 +290,13 @@ class BrowserSession:
         return self._info.vm_id
 
     @property
+    def vm(self) -> SmolVM:
+        """Underlying SmolVM instance for shell commands and file transfer."""
+        if self._vm is None:
+            raise SmolVMError("Browser session VM is unavailable.")
+        return self._vm
+
+    @property
     def info(self) -> BrowserSessionInfo:
         """Current browser session info."""
         return self._info
@@ -320,7 +336,12 @@ class BrowserSession:
         self._info = self._state.get_browser_session(self._info.session_id)
         return self
 
-    def start(self, boot_timeout: float = _DEFAULT_BROWSER_BOOT_TIMEOUT) -> BrowserSession:
+    def start(
+        self,
+        boot_timeout: float = _DEFAULT_BROWSER_BOOT_TIMEOUT,
+        *,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> BrowserSession:
         """Start the browser session and expose its CDP/live endpoints."""
         if self._session_config.network_policy_id is not None:
             raise SmolVMError(
@@ -340,8 +361,8 @@ class BrowserSession:
 
         try:
             if self._vm.status in {VMState.CREATED, VMState.STOPPED}:
-                self._vm.start(boot_timeout=boot_timeout)
-            self._vm.wait_for_ssh(timeout=boot_timeout)
+                self._vm.start(boot_timeout=boot_timeout, on_progress=on_progress)
+            self._vm.wait_for_ssh(timeout=boot_timeout, on_progress=on_progress)
 
             debug_ready = self._wait_for_guest_port(_BROWSER_DEBUG_PORT, timeout=1.0)
             live_ready = (
