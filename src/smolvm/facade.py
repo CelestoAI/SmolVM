@@ -1236,7 +1236,8 @@ class SmolVM:
             parent.mkdir(parents=True, exist_ok=True)
         elif not parent.exists():
             raise SmolVMError(
-                f"Local destination directory does not exist: {parent}.",
+                f"Local destination directory does not exist: {parent}. "
+                f"Create it, or omit --no-create-dirs to create it automatically.",
                 {"vm_id": self._vm_id, "local_path": str(destination)},
             )
 
