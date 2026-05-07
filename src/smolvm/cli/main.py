@@ -242,6 +242,14 @@ class FileUploadPayload(TypedDict):
     guest_path: str
 
 
+class FileDownloadPayload(TypedDict):
+    """JSON payload for ``smolvm file download``."""
+
+    vm_id: str
+    guest_path: str
+    local_path: str
+
+
 class BrowserRow(TypedDict):
     """Machine-readable data for a listed browser session."""
 
@@ -912,7 +920,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     file_parser = subparsers.add_parser(
         "file",
-        help="Copy files into a sandbox.",
+        help="Copy files into or out of a sandbox.",
     )
     file_sub = file_parser.add_subparsers(dest="file_action")
 
@@ -938,6 +946,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit machine-readable JSON output.",
     )
     _add_ssh_auth_args(file_upload)
+
+    file_download = file_sub.add_parser(
+        "download",
+        help="Download one file from a running sandbox.",
+    )
+    file_download.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
+    file_download.add_argument(
+        "guest_path",
+        metavar="guest-path",
+        help="File path in the sandbox.",
+    )
+    file_download.add_argument(
+        "local_path",
+        metavar="local-path",
+        help="Destination path on this machine.",
+    )
+    file_download.add_argument(
+        "--no-create-dirs",
+        action="store_true",
+        help="Do not create the destination directory on this machine.",
+    )
+    file_download.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output.",
+    )
+    _add_ssh_auth_args(file_download)
 
     browser_parser = subparsers.add_parser(
         "browser",
@@ -2785,12 +2820,27 @@ def _render_file_upload(data: FileUploadPayload) -> None:
     )
 
 
+def _render_file_download(data: FileDownloadPayload) -> None:
+    """Render a human-facing file download result."""
+    console = console_stdout()
+    console.print(
+        Panel.fit(
+            (
+                f"Downloaded '{data['guest_path']}' from '{data['vm_id']}' "
+                f"to '{data['local_path']}'."
+            ),
+            title="File Downloaded",
+            border_style="green",
+        )
+    )
+
+
 def _run_file(args: argparse.Namespace) -> int:
     """Handle ``smolvm file`` commands."""
     from smolvm.facade import SmolVM
 
     if args.file_action is None:
-        render_error("Usage: smolvm file {upload} ...")
+        render_error("Usage: smolvm file {upload,download} ...")
         return 2
 
     json_output = args.json
@@ -2809,18 +2859,35 @@ def _run_file(args: argparse.Namespace) -> int:
                 args.guest_path,
                 make_dirs=not args.no_create_dirs,
             )
-            data: FileUploadPayload = {
+            upload_data: FileUploadPayload = {
                 "vm_id": args.vm_id,
                 "local_path": str(Path(args.local_path).expanduser()),
                 "guest_path": guest_path,
             }
             if json_output:
-                emit_json(command_name, 0, data=data)
+                emit_json(command_name, 0, data=upload_data)
             else:
-                _render_file_upload(data)
+                _render_file_upload(upload_data)
             return 0
 
-        render_error("Usage: smolvm file {upload} ...")
+        if args.file_action == "download":
+            local_path = vm.download_file(
+                args.guest_path,
+                args.local_path,
+                make_dirs=not args.no_create_dirs,
+            )
+            download_data: FileDownloadPayload = {
+                "vm_id": args.vm_id,
+                "guest_path": args.guest_path,
+                "local_path": local_path,
+            }
+            if json_output:
+                emit_json(command_name, 0, data=download_data)
+            else:
+                _render_file_download(download_data)
+            return 0
+
+        render_error("Usage: smolvm file {upload,download} ...")
         return 2
     except Exception as exc:
         return _emit_cli_error(command_name, 1, exc, json_output=json_output)

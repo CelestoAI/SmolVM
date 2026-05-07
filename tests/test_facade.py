@@ -2111,3 +2111,141 @@ class TestVMFileUpload:
             vm.upload_file(source, "/root/forbidden/note.txt")
 
         ssh.put_file.assert_not_called()
+
+
+class TestVMFileDownload:
+    """Tests for facade-level guest file download."""
+
+    @staticmethod
+    def _running_vm(sample_config: VMConfig, mock_sdk_cls: MagicMock) -> SmolVM:
+        config = sample_config.model_copy(update={"ssh_capable": True})
+        running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
+        running_info.config = config
+        running_info.network.guest_ip = "172.16.0.2"
+        running_info.network.ssh_host_port = None
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = running_info
+        mock_sdk.get.return_value = running_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        return SmolVM(config)
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_download_file_creates_parent_and_gets_file(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        ssh = MagicMock()
+        vm = self._running_vm(sample_config, mock_sdk_cls)
+        vm._ssh = ssh
+        vm._ssh_ready = True
+
+        target_dir = tmp_path / "out"
+        target = target_dir / "note.txt"
+
+        local_path = vm.download_file("/tmp/smolvm/note.txt", target)
+
+        assert local_path == str(target)
+        assert target_dir.is_dir()
+        ssh.get_file.assert_called_once_with("/tmp/smolvm/note.txt", target)
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_download_file_appends_name_for_local_directory_via_slash(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        ssh = MagicMock()
+        vm = self._running_vm(sample_config, mock_sdk_cls)
+        vm._ssh = ssh
+        vm._ssh_ready = True
+
+        local_path = vm.download_file("/tmp/note.txt", str(tmp_path) + "/")
+
+        expected = tmp_path / "note.txt"
+        assert local_path == str(expected)
+        ssh.get_file.assert_called_once_with("/tmp/note.txt", expected)
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_download_file_appends_name_when_local_path_is_existing_dir(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        ssh = MagicMock()
+        vm = self._running_vm(sample_config, mock_sdk_cls)
+        vm._ssh = ssh
+        vm._ssh_ready = True
+
+        local_path = vm.download_file("/tmp/note.txt", tmp_path)
+
+        expected = tmp_path / "note.txt"
+        assert local_path == str(expected)
+        ssh.get_file.assert_called_once_with("/tmp/note.txt", expected)
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_download_file_skips_mkdir_when_make_dirs_false(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        ssh = MagicMock()
+        vm = self._running_vm(sample_config, mock_sdk_cls)
+        vm._ssh = ssh
+        vm._ssh_ready = True
+
+        target = tmp_path / "note.txt"
+
+        local_path = vm.download_file("/tmp/note.txt", target, make_dirs=False)
+
+        assert local_path == str(target)
+        ssh.get_file.assert_called_once_with("/tmp/note.txt", target)
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_download_file_raises_when_local_parent_missing_and_no_create_dirs(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        ssh = MagicMock()
+        vm = self._running_vm(sample_config, mock_sdk_cls)
+        vm._ssh = ssh
+        vm._ssh_ready = True
+
+        missing_target = tmp_path / "missing" / "note.txt"
+
+        with pytest.raises(SmolVMError, match="Local destination directory does not exist"):
+            vm.download_file("/tmp/note.txt", missing_target, make_dirs=False)
+
+        ssh.get_file.assert_not_called()
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_download_file_rejects_relative_guest_path(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        vm = self._running_vm(sample_config, mock_sdk_cls)
+
+        with pytest.raises(ValueError, match="must be absolute"):
+            vm.download_file("note.txt", tmp_path / "out.txt")
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_download_file_rejects_empty_guest_path(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        vm = self._running_vm(sample_config, mock_sdk_cls)
+
+        with pytest.raises(ValueError, match="cannot be empty"):
+            vm.download_file("", tmp_path / "out.txt")

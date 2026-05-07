@@ -453,6 +453,102 @@ class TestCliFile:
         assert ret != 0
         vm.close.assert_called_once()
 
+    def test_file_download_success(
+        self,
+        mock_vm_cls: MagicMock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm file download` should copy a guest file to the host."""
+        destination = tmp_path / "note.txt"
+        vm = MagicMock()
+        vm.download_file.return_value = str(destination)
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(["file", "download", "vm001", "/tmp/note.txt", str(destination)])
+
+        assert ret == 0
+        mock_vm_cls.from_id.assert_called_once_with(
+            "vm001",
+            ssh_user="root",
+            ssh_key_path=None,
+        )
+        vm.download_file.assert_called_once_with(
+            "/tmp/note.txt",
+            str(destination),
+            make_dirs=True,
+        )
+        vm.close.assert_called_once()
+        assert "Downloaded" in capsys.readouterr().out
+
+    def test_file_download_json(
+        self,
+        mock_vm_cls: MagicMock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm file download --json` should emit the resolved local path."""
+        destination = tmp_path / "note.txt"
+        vm = MagicMock()
+        vm.download_file.return_value = str(destination)
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(
+            ["file", "download", "vm001", "/tmp/note.txt", str(tmp_path) + "/", "--json"]
+        )
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["command"] == "file.download"
+        assert payload["ok"] is True
+        assert payload["data"]["vm_id"] == "vm001"
+        assert payload["data"]["guest_path"] == "/tmp/note.txt"
+        assert payload["data"]["local_path"] == str(destination)
+
+    def test_file_download_can_skip_directory_creation(
+        self,
+        mock_vm_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """`--no-create-dirs` should pass make_dirs=False."""
+        destination = tmp_path / "note.txt"
+        vm = MagicMock()
+        vm.download_file.return_value = str(destination)
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(
+            [
+                "file",
+                "download",
+                "vm001",
+                "/tmp/note.txt",
+                str(destination),
+                "--no-create-dirs",
+            ]
+        )
+
+        assert ret == 0
+        vm.download_file.assert_called_once_with(
+            "/tmp/note.txt",
+            str(destination),
+            make_dirs=False,
+        )
+
+    def test_file_download_closes_vm_on_failure(
+        self,
+        mock_vm_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """If `download_file` raises, the CLI must still close the VM and return nonzero."""
+        vm = MagicMock()
+        vm.download_file.side_effect = RuntimeError("boom")
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(["file", "download", "vm001", "/tmp/note.txt", str(tmp_path / "out.txt")])
+
+        assert ret != 0
+        vm.close.assert_called_once()
+
 
 class TestCliCreate:
     """Tests for `smolvm create`."""
