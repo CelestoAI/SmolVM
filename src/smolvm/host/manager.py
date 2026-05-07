@@ -25,7 +25,7 @@ import stat
 import tarfile
 import tempfile
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import requests
 from pydantic import BaseModel
@@ -292,15 +292,15 @@ class HostManager:
             with tarfile.open(tarball_path, "r:gz") as tar:
                 # Security: validate member paths to prevent path traversal
                 for member in tar.getmembers():
-                    if member.name.startswith("/") or ".." in member.name:
+                    if member.name.startswith("/") or ".." in PurePosixPath(member.name).parts:
                         raise HostError(f"Refusing to extract suspicious path: {member.name}")
-                try:
+                if hasattr(tarfile, "data_filter"):
                     tar.extractall(path=tmp_dir, filter="data")
-                except TypeError:
+                else:
                     # Python < 3.12 without PEP 706 backport — fall back to
                     # unfiltered extraction.  The path validation above
                     # guards against absolute/.. paths.
-                    tar.extractall(path=tmp_dir)
+                    tar.extractall(path=tmp_dir)  # noqa: S202
 
             # Find the firecracker binary in extracted contents
             # Tarball structure: release-{version}-{arch}/firecracker-{version}-{arch}

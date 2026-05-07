@@ -219,13 +219,13 @@ def _extract_dashboard_dist(archive_path: Path, extract_dir: Path) -> Path:
             if member_path.is_absolute() or ".." in member_path.parts:
                 raise RuntimeError(f"Unsafe path in dashboard archive: {member.name}")
 
-        try:
+        if hasattr(tarfile, "data_filter"):
             tar.extractall(path=extract_dir, filter="data")
-        except TypeError:
+        else:
             # Python < 3.12 without PEP 706 backport — fall back to
             # unfiltered extraction.  The path validation above guards
             # against absolute/.. paths; tar.filter is defense-in-depth.
-            tar.extractall(path=extract_dir)
+            tar.extractall(path=extract_dir)  # noqa: S202
 
     dist_dir = extract_dir / "dist"
     if dist_dir.is_dir() and (dist_dir / "index.html").is_file():
