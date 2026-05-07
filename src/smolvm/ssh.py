@@ -124,7 +124,7 @@ class SSHClient:
         # generated at boot and not yet in a managed known_hosts file.
         # TODO: pin host keys via RejectPolicy + known_hosts once the VM
         # creation pipeline exports the generated host key to the host.
-        client.set_missing_host_key_policy(paramiko.WarningPolicy())
+        client.set_missing_host_key_policy(paramiko.WarningPolicy())  # noqa: S507
 
         connect_kwargs: dict[str, object] = {
             "hostname": self.host,
