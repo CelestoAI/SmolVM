@@ -179,7 +179,13 @@ def wait_until_downloads_ready(
         if downloads_ready(vm, session_id, report_date):
             return
         time.sleep(0.5)
-    raise RuntimeError(list_downloads(vm, session_id).strip())
+    raise RuntimeError(
+        f"Timed out waiting for report downloads for session {session_id}. "
+        f"Rerun: uv run --with openai --with playwright "
+        f"examples/cua/legacy_report_fetcher/run_demo.py --mode live "
+        f"--report-date {report_date}\n"
+        f"{list_downloads(vm, session_id).strip()}"
+    )
 
 
 def ensure_report_downloads(
@@ -202,7 +208,7 @@ def ensure_report_downloads(
     page.click("#generate")
     page.wait_for_selector("#orders-link", timeout=5000)
     page.click("#orders-link")
-    page.wait_for_timeout(500)
+    page.wait_for_selector("#inventory-link", timeout=5000)
     page.click("#inventory-link")
     try:
         wait_until_downloads_ready(vm, session_id, report_date, timeout=8.0)
@@ -627,7 +633,7 @@ def run_computer_use_agent(
 
 
 def require_host_dependencies() -> None:
-    """Fail before booting a sandbox if host-side demo packages are missing."""
+    """Fail before booting a sandbox if demo Python packages are missing."""
     missing: list[str] = []
     for module_name, package_name in (
         ("openai", "openai"),
@@ -637,11 +643,21 @@ def require_host_dependencies() -> None:
             missing.append(package_name)
 
     if missing:
-        packages = " ".join(missing)
+        package_flags = " ".join(f"--with {package_name}" for package_name in missing)
         raise RuntimeError(
-            "Install the demo's host-side Python dependencies before starting SmolVM: "
-            f"uv run --with {packages} examples/cua/legacy_report_fetcher/run_demo.py --mode live"
+            "Install the demo dependencies on your computer, then rerun: "
+            f"uv run {package_flags} examples/cua/legacy_report_fetcher/run_demo.py --mode live"
         )
+
+
+def parse_report_date(value: str) -> str:
+    """Validate a report date before it becomes part of file paths."""
+    if ".." in value or "/" in value or "\\" in value or os.sep in value:
+        raise argparse.ArgumentTypeError("Report date must be YYYY-MM-DD.")
+    try:
+        return date.fromisoformat(value).isoformat()
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("Report date must be YYYY-MM-DD.") from exc
 
 
 def parse_args() -> argparse.Namespace:
@@ -660,6 +676,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--report-date",
+        type=parse_report_date,
         default=(date.today() - timedelta(days=1)).isoformat(),
         help="Report date to download. Defaults to yesterday.",
     )
@@ -736,10 +753,8 @@ def main() -> int:
             max_steps=args.max_steps,
             verify_downloads=lambda: downloads_ready(vm, session.session_id, args.report_date),
         )
-        if "done" not in agent_result.final_answer.lower():
-            raise RuntimeError(f"Agent did not confirm completion: {agent_result.final_answer}")
-
         ensure_report_downloads(page, vm, session.session_id, args.report_date)
+        log(f"Agent final answer after file verification: {agent_result.final_answer}")
         session.screenshot(screenshots_dir / "02-after-downloads.png", full_page=False)
         inbox = run_with_heartbeat(
             "Listing sandbox downloads and copying reports to the host",

@@ -51,6 +51,14 @@ def _default_report_date() -> str:
     return (date.today() - timedelta(days=1)).isoformat()
 
 
+def _safe_report_date(value: str) -> str:
+    """Return a safe ISO report date for filenames and headers."""
+    try:
+        return date.fromisoformat(value).isoformat()
+    except ValueError:
+        return _default_report_date()
+
+
 def _csv_bytes(rows: list[dict[str, str]], report_date: str) -> bytes:
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=["report_date", *rows[0].keys()])
@@ -253,7 +261,7 @@ class PortalHandler(BaseHTTPRequestHandler):
         )
 
     def _send_download(self, report_name: str, query: dict[str, list[str]]) -> None:
-        report_date = query.get("date", [_default_report_date()])[0]
+        report_date = _safe_report_date(query.get("date", [_default_report_date()])[0])
         if report_name == "orders":
             rows = ORDERS_ROWS
         elif report_name == "inventory":

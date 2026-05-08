@@ -16,12 +16,16 @@
 
 from __future__ import annotations
 
+import argparse
 import csv
 import importlib.util
 import json
 import sqlite3
+import sys
 from pathlib import Path
 from types import ModuleType
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEMO_ROOT = REPO_ROOT / "examples" / "cua" / "legacy_report_fetcher"
@@ -32,6 +36,7 @@ def _load_module(name: str, path: Path) -> ModuleType:
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -41,6 +46,39 @@ def _write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, str]]) ->
         writer = csv.DictWriter(file, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def test_parse_report_date_accepts_iso_date() -> None:
+    """The CLI should normalize valid report dates."""
+    run_demo = _load_module("legacy_run_demo", DEMO_ROOT / "run_demo.py")
+
+    assert run_demo.parse_report_date("2026-05-07") == "2026-05-07"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2026/05/07",
+        "2026-05-07/../../tmp",
+        "../../tmp/pwn",
+        "2026-05-07\\tmp",
+        "not-a-date",
+    ],
+)
+def test_parse_report_date_rejects_unsafe_values(value: str) -> None:
+    """The CLI should reject values that could escape the artifact directory."""
+    run_demo = _load_module("legacy_run_demo", DEMO_ROOT / "run_demo.py")
+
+    with pytest.raises(argparse.ArgumentTypeError, match="YYYY-MM-DD"):
+        run_demo.parse_report_date(value)
+
+
+def test_portal_download_date_is_safe_for_headers() -> None:
+    """The portal should not place raw query strings into download headers."""
+    portal = _load_module("legacy_portal", DEMO_ROOT / "portal" / "server.py")
+
+    assert portal._safe_report_date("2026-05-07") == "2026-05-07"
+    assert portal._safe_report_date("2026-05-07\r\nBad: header") == portal._default_report_date()
 
 
 def test_finalize_downloads_writes_manifest_and_pipeline_imports(tmp_path: Path) -> None:
