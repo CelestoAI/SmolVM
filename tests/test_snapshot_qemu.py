@@ -21,6 +21,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from smolvm.exceptions import SmolVMError, VMNotFoundError
+from smolvm.runtime.qemu import QemuRuntimeAdapter
 from smolvm.types import SnapshotArtifacts, SnapshotInfo, VMConfig, VMState
 from smolvm.vm import SmolVMManager
 
@@ -81,6 +82,36 @@ def _mock_qmp_client() -> MagicMock:
     client.__enter__.return_value = client
     client.__exit__.return_value = False
     return client
+
+
+def test_wait_for_runtime_retries_when_qmp_greeting_times_out(tmp_path: Path) -> None:
+    """QEMU may create the QMP socket before its greeting is readable."""
+    context = MagicMock()
+    adapter = QemuRuntimeAdapter(context)
+    process = MagicMock()
+    process.poll.return_value = None
+    control_socket_path = tmp_path / "qmp-vm001.sock"
+    attempts = 0
+
+    class _ReadyClient:
+        def __enter__(self) -> "_ReadyClient":
+            return self
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+    def _client_side_effect(_path: Path, timeout: float = 5.0) -> _ReadyClient:
+        nonlocal attempts
+        del timeout
+        attempts += 1
+        if attempts == 1:
+            raise TimeoutError("timed out")
+        return _ReadyClient()
+
+    with patch.object(adapter, "_client", side_effect=_client_side_effect):
+        adapter._wait_for_runtime(process, control_socket_path, timeout=1.0)
+
+    assert attempts == 2
 
 
 def test_pause_and_resume_qemu_vm(

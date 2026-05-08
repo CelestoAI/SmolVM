@@ -480,6 +480,7 @@ class BrowserSessionConfig(BaseModel):
     allow_downloads: bool = True
     network_policy_id: str | None = None
     env_vars: dict[str, str] = {}
+    workspace_mounts: list[WorkspaceMount] = []
     mem_size_mib: Annotated[int, Field(ge=512, le=16384)] = 2048
     disk_size_mib: Annotated[int, Field(ge=2048, le=16384)] = 4096
 
@@ -531,6 +532,17 @@ class BrowserSessionConfig(BaseModel):
 
         if self.network_policy_id is not None and not self.network_policy_id.strip():
             raise ValueError("network_policy_id cannot be empty")
+
+        seen_tags: set[str] = set()
+        seen_guest_paths: set[str] = set()
+        for index, mount in enumerate(self.workspace_mounts):
+            tag = mount.resolved_tag(index)
+            if tag in seen_tags:
+                raise ValueError(f"Duplicate workspace mount tag: {tag}")
+            if mount.guest_path in seen_guest_paths:
+                raise ValueError(f"Duplicate workspace guest_path: {mount.guest_path}")
+            seen_tags.add(tag)
+            seen_guest_paths.add(mount.guest_path)
 
         return self
 

@@ -34,6 +34,7 @@ from smolvm.types import (
     VMConfig,
     VMInfo,
     VMState,
+    WorkspaceMount,
 )
 
 
@@ -446,6 +447,29 @@ class TestBrowserSessionConfig:
         """Video recording is only valid for live-mode sessions."""
         with pytest.raises(ValidationError, match="record_video requires mode='live'"):
             BrowserSessionConfig(record_video=True)
+
+    def test_workspace_mounts_are_supported(self, tmp_path: Path) -> None:
+        """Browser sessions should accept host mounts for demo app code and artifacts."""
+        mount = WorkspaceMount(host_path=tmp_path, guest_path="/workspace/demo", writable=True)
+
+        config = BrowserSessionConfig(workspace_mounts=[mount])
+
+        assert config.workspace_mounts == [mount]
+
+    def test_workspace_mount_guest_paths_must_be_unique(self, tmp_path: Path) -> None:
+        """Browser sessions should reject ambiguous mount targets."""
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        first.mkdir()
+        second.mkdir()
+
+        with pytest.raises(ValidationError, match="Duplicate workspace guest_path"):
+            BrowserSessionConfig(
+                workspace_mounts=[
+                    WorkspaceMount(host_path=first, guest_path="/workspace/demo"),
+                    WorkspaceMount(host_path=second, guest_path="/workspace/demo"),
+                ]
+            )
 
     def test_session_state_values(self) -> None:
         """All browser session lifecycle states should exist."""

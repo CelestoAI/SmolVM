@@ -117,7 +117,14 @@ class SSHClient:
             SmolVMError: If connection fails.
         """
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        # Warn on unknown host keys instead of silently accepting them.
+        # AutoAddPolicy accepts any key, making connections vulnerable to MITM
+        # attacks.  WarningPolicy logs the unknown key and still connects — a
+        # safe middle ground for SmolVM's ephemeral VMs whose host keys are
+        # generated at boot and not yet in a managed known_hosts file.
+        # TODO: pin host keys via RejectPolicy + known_hosts once the VM
+        # creation pipeline exports the generated host key to the host.
+        client.set_missing_host_key_policy(paramiko.WarningPolicy())  # noqa: S507
 
         connect_kwargs: dict[str, object] = {
             "hostname": self.host,

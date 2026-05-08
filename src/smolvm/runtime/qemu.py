@@ -250,7 +250,7 @@ class QemuRuntimeAdapter(RuntimeAdapter):
             try:
                 with self._client(control_socket_path, timeout=0.2):
                     return
-            except SmolVMError:
+            except (OSError, SmolVMError):
                 time.sleep(0.05)
 
         raise SmolVMError(
