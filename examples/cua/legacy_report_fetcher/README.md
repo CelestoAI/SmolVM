@@ -9,8 +9,8 @@ The whole workflow runs inside a SmolVM browser sandbox. The demo folder is moun
 - A browser agent can use a legacy web app when there is no API.
 - SmolVM gives that agent an isolated computer with a live browser view.
 - The agent uses the browser for clicks and downloads.
-- The sandbox shell handles files, hashes, manifests, and pipeline handoff.
-- A writable mount makes output appear on the host for live calls and recordings.
+- The sandbox shell can list and recover downloaded files when the model stops early.
+- The harness copies report files from the sandbox to the host before running the pipeline.
 
 ## Run it
 
@@ -58,12 +58,12 @@ password: demo-password
 ## Architecture
 
 ```txt
-Host folder mounted writable into sandbox
+Host folder mounted into sandbox
 └── /workspace/legacy_report_fetcher
     ├── portal/      # fake Acme Legacy Reports Portal
     ├── ops/         # sandbox-side operational scripts
     ├── pipeline/    # existing-pipeline stand-in
-    └── artifacts/   # output visible on the host
+    └── artifacts/   # host-side handoff output
 ```
 
 The browser opens the portal at:

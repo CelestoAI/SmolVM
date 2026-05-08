@@ -20,9 +20,12 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import importlib.util
+import json
 import os
 import shlex
+import subprocess
 import sys
 import threading
 import time
@@ -201,35 +204,103 @@ def ensure_report_downloads(
     page.click("#orders-link")
     page.wait_for_timeout(500)
     page.click("#inventory-link")
+    try:
+        wait_until_downloads_ready(vm, session_id, report_date, timeout=8.0)
+        return
+    except RuntimeError:
+        log(
+            "CDP clicks still did not create files in the sandbox download folder; "
+            "using the sandbox shell to fetch the generated CSV files."
+        )
+
+    download_reports_with_vm_shell(vm, session_id, report_date)
     wait_until_downloads_ready(vm, session_id, report_date)
 
 
-def finalize_downloads(vm: SmolVM, session_id: str, report_date: str) -> str:
-    """Finalize report files using the sandbox shell."""
-    return vm_exec(
-        vm,
-        "python3",
-        f"{GUEST_ROOT}/ops/finalize_downloads.py",
-        "--root",
-        GUEST_ROOT,
-        "--session-id",
-        session_id,
-        "--report-date",
-        report_date,
-        timeout=60,
+def download_reports_with_vm_shell(vm: SmolVM, session_id: str, report_date: str) -> None:
+    """Fetch report files from the local portal using the sandbox shell."""
+    download_dir = guest_download_dir(session_id)
+    script = "\n".join(
+        [
+            "from pathlib import Path",
+            "from urllib.parse import urlencode",
+            "from urllib.request import Request, urlopen",
+            f"download_dir = Path({download_dir!r})",
+            "download_dir.mkdir(parents=True, exist_ok=True)",
+            f"report_date = {report_date!r}",
+            "base_url = 'http://127.0.0.1:8000/download/'",
+            "for name in ('orders', 'inventory'):",
+            "    query = urlencode({'date': report_date})",
+            "    url = base_url + name + '?' + query",
+            "    request = Request(url, headers={'Cookie': 'acme_session=demo'})",
+            "    with urlopen(request, timeout=10) as response:",
+            "        data = response.read()",
+            "    target = download_dir / f'{name}_{report_date}.csv'",
+            "    target.write_bytes(data)",
+            "    print(target)",
+        ]
     )
+    vm_exec(vm, "python3", "-c", script, timeout=30)
 
 
-def run_pipeline(vm: SmolVM, report_date: str) -> str:
-    """Run the existing-pipeline stand-in inside the sandbox."""
-    inbox = f"{GUEST_ROOT}/artifacts/inbox/acme/{report_date}"
-    return vm_exec(
-        vm,
-        "python3",
-        f"{GUEST_ROOT}/pipeline/import_reports.py",
-        inbox,
-        timeout=120,
+def copy_file_from_vm(vm: SmolVM, guest_path: str, host_path: Path) -> Path:
+    """Copy one file from the sandbox to the host."""
+    log(f"Copying {guest_path} to {host_path}")
+    return Path(vm.download_file(guest_path, host_path))
+
+
+def sha256_file(path: Path) -> str:
+    """Return a SHA-256 digest for a local file."""
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def copy_reports_to_host(vm: SmolVM, session_id: str, report_date: str) -> Path:
+    """List sandbox downloads, then copy reports to the host handoff folder."""
+    log(list_downloads(vm, session_id).strip())
+    inbox = DEMO_DIR / "artifacts" / "inbox" / "acme" / report_date
+    inbox.mkdir(parents=True, exist_ok=True)
+
+    files: list[dict[str, str | int]] = []
+    for filename in expected_download_filenames(report_date):
+        guest_path = f"{guest_download_dir(session_id)}/{filename}"
+        local_path = copy_file_from_vm(vm, guest_path, inbox / filename)
+        files.append(
+            {
+                "name": filename,
+                "path": str(local_path),
+                "size_bytes": local_path.stat().st_size,
+                "sha256": sha256_file(local_path),
+                "status": "downloaded",
+            }
+        )
+
+    manifest = {
+        "source": "acme_legacy_reports",
+        "run_date": date.today().isoformat(),
+        "report_date": report_date,
+        "status": "success",
+        "files": files,
+    }
+    manifest_path = inbox / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return inbox
+
+
+def run_pipeline(inbox: Path) -> str:
+    """Run the existing-pipeline stand-in on the host handoff folder."""
+    result = subprocess.run(
+        [sys.executable, str(DEMO_DIR / "pipeline" / "import_reports.py"), str(inbox)],
+        capture_output=True,
+        text=True,
+        check=False,
     )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout)
+    return result.stdout
 
 
 def guest_download_dir(session_id: str) -> str:
@@ -669,23 +740,22 @@ def main() -> int:
             raise RuntimeError(f"Agent did not confirm completion: {agent_result.final_answer}")
 
         ensure_report_downloads(page, vm, session.session_id, args.report_date)
-        log(list_downloads(vm, session.session_id).strip())
         session.screenshot(screenshots_dir / "02-after-downloads.png", full_page=False)
-        finalize_output = run_with_heartbeat(
-            "Finalizing downloaded reports inside the sandbox",
-            lambda: finalize_downloads(vm, session.session_id, args.report_date),
+        inbox = run_with_heartbeat(
+            "Listing sandbox downloads and copying reports to the host",
+            lambda: copy_reports_to_host(vm, session.session_id, args.report_date),
             interval_seconds=5.0,
         )
-        print(finalize_output.strip())
+        print(f"Copied reports and wrote manifest: {inbox / 'manifest.json'}")
         print("\nPipeline output:")
         pipeline_output = run_with_heartbeat(
-            "Running the existing-pipeline import inside the sandbox",
-            lambda: run_pipeline(vm, args.report_date),
+            "Running the existing-pipeline import on the host handoff folder",
+            lambda: run_pipeline(inbox),
             interval_seconds=5.0,
         )
         print(pipeline_output.strip())
         print("\nLocal handoff folder:")
-        print(DEMO_DIR / "artifacts" / "inbox" / "acme" / args.report_date)
+        print(inbox)
     finally:
         if session is not None:
             run_with_heartbeat(
