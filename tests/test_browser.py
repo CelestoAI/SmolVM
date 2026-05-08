@@ -29,6 +29,7 @@ from smolvm.types import (
     PortForwardConfig,
     VMConfig,
     VMState,
+    WorkspaceMount,
 )
 
 
@@ -78,9 +79,7 @@ def test_build_browser_vm_config_uses_persistent_disk_reuse(
     mock_ensure_ssh_key.return_value = (private_key, public_key)
     mock_builder = MagicMock()
     mock_builder.build_browser_rootfs.return_value = (kernel, rootfs)
-    mock_builder.qemu_kernel_url_for_host.side_effect = AssertionError(
-        "browser QEMU path should not use the desktop kernel helper"
-    )
+    mock_builder.qemu_kernel_url_for_host.return_value = "https://example.invalid/kernel.image"
     mock_builder_cls.return_value = mock_builder
 
     browser_config = BrowserSessionConfig(
@@ -107,8 +106,61 @@ def test_build_browser_vm_config_uses_persistent_disk_reuse(
         mock_builder.build_browser_rootfs.call_args.kwargs["kernel_profile"]
         == KernelBootProfile.MICROVM_DIRECT
     )
-    assert "kernel_url" not in mock_builder.build_browser_rootfs.call_args.kwargs
+    assert (
+        mock_builder.build_browser_rootfs.call_args.kwargs["kernel_url"]
+        == "https://example.invalid/kernel.image"
+    )
+    mock_builder.qemu_kernel_url_for_host.assert_called_once_with()
     mock_allocate_host_port.assert_called_once()
+
+
+@patch("smolvm.utils.ensure_ssh_key")
+@patch("smolvm.images.builder.ImageBuilder")
+def test_build_browser_vm_config_passes_workspace_mounts_and_selects_qemu(
+    mock_builder_cls: MagicMock,
+    mock_ensure_ssh_key: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """Browser sessions with host mounts should run on QEMU and pass mounts through."""
+    kernel = tmp_path / "kernel"
+    rootfs = tmp_path / "rootfs.ext4"
+    private_key = tmp_path / "id_ed25519"
+    public_key = tmp_path / "id_ed25519.pub"
+    mounted = tmp_path / "demo"
+    kernel.touch()
+    rootfs.touch()
+    private_key.touch()
+    mounted.mkdir()
+    public_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMock user@test\n")
+
+    mock_ensure_ssh_key.return_value = (private_key, public_key)
+    mock_builder = MagicMock()
+    mock_builder.build_browser_rootfs.return_value = (kernel, rootfs)
+    mock_builder.qemu_kernel_url_for_host.return_value = "https://example.invalid/kernel.image"
+    mock_builder_cls.return_value = mock_builder
+
+    mount = WorkspaceMount(
+        host_path=mounted,
+        guest_path="/workspace/legacy_report_fetcher",
+        writable=True,
+    )
+    browser_config = BrowserSessionConfig(
+        session_id="browser-mounted",
+        backend="auto",
+        workspace_mounts=[mount],
+    )
+
+    vm_config, _ = _build_browser_vm_config(
+        session_id="browser-mounted",
+        browser_config=browser_config,
+    )
+
+    assert vm_config.backend == "qemu"
+    assert vm_config.workspace_mounts == [mount]
+    assert (
+        mock_builder.build_browser_rootfs.call_args.kwargs["kernel_url"]
+        == "https://example.invalid/kernel.image"
+    )
 
 
 @patch("smolvm.utils.ensure_ssh_key")
@@ -133,6 +185,7 @@ def test_build_browser_vm_config_allocates_qemu_live_port_forwards(
     mock_ensure_ssh_key.return_value = (private_key, public_key)
     mock_builder = MagicMock()
     mock_builder.build_browser_rootfs.return_value = (kernel, rootfs)
+    mock_builder.qemu_kernel_url_for_host.return_value = "https://example.invalid/kernel.image"
     mock_builder_cls.return_value = mock_builder
 
     browser_config = BrowserSessionConfig(
@@ -234,6 +287,7 @@ def test_browser_session_start_persists_ready_state(
     assert session.status == BrowserSessionState.READY
     assert session.cdp_url == "http://127.0.0.1:39222"
     assert session.live_url == "http://127.0.0.1:36080/vnc.html?autoconnect=1&resize=scale"
+    assert session.vm is vm
     persisted = session.refresh().info
     assert persisted.status == BrowserSessionState.READY
     assert persisted.debug_port == 39222

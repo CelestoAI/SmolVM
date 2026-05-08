@@ -1222,6 +1222,68 @@ class SmolVM:
         ssh.put_file(source, destination)
         return destination
 
+    def download_file(
+        self,
+        guest_path: str,
+        local_path: str | Path,
+        *,
+        make_dirs: bool = True,
+    ) -> str:
+        """Download one file from a running VM to the host machine.
+
+        Overwrites the destination if it already exists.
+
+        Args:
+            guest_path: Absolute POSIX path of the file inside the guest.
+            local_path: Destination path on the host machine. If it ends
+                with ``/`` or names an existing directory, the guest
+                filename is appended.
+            make_dirs: Create the destination parent directory on the
+                host if it is missing.
+
+        Returns:
+            The resolved local destination path.
+
+        Raises:
+            ValueError: If *guest_path* is empty or not an absolute
+                POSIX path.
+            SmolVMError: If the VM is not running, the local parent
+                directory is missing while *make_dirs* is False, or the
+                file transfer fails.
+        """
+        if not guest_path:
+            raise ValueError("Source path in the sandbox cannot be empty.")
+        if not guest_path.startswith("/"):
+            raise ValueError(
+                f"Source path in the sandbox must be absolute "
+                f"(start with '/'): {guest_path!r}."
+            )
+
+        raw_local = str(local_path)
+        destination = Path(local_path).expanduser()
+        treat_as_dir = raw_local.endswith("/") or destination.is_dir()
+        if treat_as_dir:
+            guest_name = guest_path.rstrip("/").rsplit("/", 1)[-1]
+            if not guest_name:
+                raise ValueError(
+                    f"Cannot derive a filename from the sandbox path: {guest_path!r}."
+                )
+            destination = destination / guest_name
+
+        parent = destination.parent
+        if make_dirs:
+            parent.mkdir(parents=True, exist_ok=True)
+        elif not parent.exists():
+            raise SmolVMError(
+                f"Local destination directory does not exist: {parent}. "
+                f"Create it, or omit --no-create-dirs to create it automatically.",
+                {"vm_id": self._vm_id, "local_path": str(destination)},
+            )
+
+        ssh = self._ensure_ssh_for_file_transfer()
+        ssh.get_file(guest_path, destination)
+        return str(destination)
+
     def wait_for_ssh(
         self,
         timeout: float = 60.0,
