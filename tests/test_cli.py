@@ -1064,6 +1064,22 @@ class TestCliVmStart:
         assert payload["data"]["vm"]["name"] == "vm001"
         assert payload["data"]["vm"]["status"] == "running"
 
+    @patch("smolvm.facade.SmolVM")
+    def test_start_forwards_boot_timeout(
+        self,
+        mock_vm_cls: MagicMock,
+    ) -> None:
+        """`smolvm start --boot-timeout` should forward the value to the facade."""
+        vm = MagicMock()
+        vm.vm_id = "vm001"
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(["start", "vm001", "--boot-timeout", "75"])
+
+        assert ret == 0
+        vm.start.assert_called_once_with(boot_timeout=75.0)
+        vm.close.assert_called_once()
+
 
 class TestCliSnapshot:
     """Tests for `smolvm snapshot` subcommands."""

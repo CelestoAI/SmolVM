@@ -837,12 +837,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Start a stopped sandbox.",
     )
     start_parser.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
-    start_parser.add_argument(
-        "--boot-timeout",
-        type=_positive_float,
-        default=30.0,
-        help="Seconds to wait for the sandbox to boot (default: 30).",
-    )
+    _add_boot_timeout_arg(start_parser)
     start_parser.add_argument(
         "--json",
         action="store_true",
