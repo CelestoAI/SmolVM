@@ -163,6 +163,47 @@ def downloads_ready(vm: SmolVM, session_id: str, report_date: str) -> bool:
     return result.ok
 
 
+def wait_until_downloads_ready(
+    vm: SmolVM,
+    session_id: str,
+    report_date: str,
+    *,
+    timeout: float = 20.0,
+) -> None:
+    """Wait until both report files exist in the sandbox download folder."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if downloads_ready(vm, session_id, report_date):
+            return
+        time.sleep(0.5)
+    raise RuntimeError(list_downloads(vm, session_id).strip())
+
+
+def ensure_report_downloads(
+    page: Any,
+    vm: SmolVM,
+    session_id: str,
+    report_date: str,
+) -> None:
+    """Verify downloads, then recover with direct CDP clicks if the agent stopped early."""
+    if downloads_ready(vm, session_id, report_date):
+        return
+
+    log(
+        "Agent stopped before the CSV files appeared in the sandbox; "
+        "using CDP to click the report download links."
+    )
+    page.goto(f"{PORTAL_URL}/reports", wait_until="domcontentloaded")
+    with suppress(Exception):
+        page.fill("#report-date", report_date)
+    page.click("#generate")
+    page.wait_for_selector("#orders-link", timeout=5000)
+    page.click("#orders-link")
+    page.wait_for_timeout(500)
+    page.click("#inventory-link")
+    wait_until_downloads_ready(vm, session_id, report_date)
+
+
 def finalize_downloads(vm: SmolVM, session_id: str, report_date: str) -> str:
     """Finalize report files using the sandbox shell."""
     return vm_exec(
@@ -627,6 +668,7 @@ def main() -> int:
         if "done" not in agent_result.final_answer.lower():
             raise RuntimeError(f"Agent did not confirm completion: {agent_result.final_answer}")
 
+        ensure_report_downloads(page, vm, session.session_id, args.report_date)
         log(list_downloads(vm, session.session_id).strip())
         session.screenshot(screenshots_dir / "02-after-downloads.png", full_page=False)
         finalize_output = run_with_heartbeat(
