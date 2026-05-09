@@ -38,6 +38,19 @@ CONFIG_NET=y                    # why: required for virtio-net + sshd
 CONFIG_INET=y                   # why: TCP/IP for SSH
 CONFIG_PACKET=y                 # why: AF_PACKET for some userspace tools
 
+# ── Container networking inside the guest ───────────────────────────
+# Podman/Netavark on Ubuntu defaults to iptables-nft. Without nf_tables,
+# `iptables --version` prints "Protocol not supported" instead of a version,
+# and Netavark reports the misleading error "invalid version number". Netavark's
+# default bridge rules use MASQUERADE, conntrack, and `-m comment`, so keep the
+# nftables pieces for those rules built in (we ship no loadable modules).
+CONFIG_NF_TABLES=y
+CONFIG_NF_TABLES_INET=y
+CONFIG_NFT_CT=y
+CONFIG_NFT_MASQ=y
+CONFIG_NFT_COMPAT=y
+CONFIG_NETFILTER_XT_MATCH_COMMENT=y
+
 # ── vsock (host↔guest control channel) ──────────────────────────────
 # Both libkrun and Firecracker enable these; libkrun uses vsock for its
 # init protocol, and we'll need it once the libkrun spike lands. Cheap
