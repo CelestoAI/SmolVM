@@ -38,6 +38,7 @@ def test_microvm_kernel_enables_podman_netavark_networking() -> None:
         "CONFIG_NF_TABLES",
         "CONFIG_NF_TABLES_INET",
         "CONFIG_NFT_CT",
+        "CONFIG_NFT_NAT",
         "CONFIG_NFT_MASQ",
         "CONFIG_NFT_COMPAT",
         "CONFIG_NETFILTER_XT_MATCH_COMMENT",
