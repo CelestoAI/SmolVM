@@ -44,12 +44,12 @@ CONFIG_PACKET=y                 # why: AF_PACKET for some userspace tools
 # and Netavark reports the misleading error "invalid version number". Netavark's
 # default bridge rules use MASQUERADE, conntrack, and `-m comment`, so keep the
 # nftables pieces for those rules built in (we ship no loadable modules).
-CONFIG_NF_TABLES=y
-CONFIG_NF_TABLES_INET=y
-CONFIG_NFT_CT=y
-CONFIG_NFT_MASQ=y
-CONFIG_NFT_COMPAT=y
-CONFIG_NETFILTER_XT_MATCH_COMMENT=y
+CONFIG_NF_TABLES=y              # why: iptables-nft backend used by Ubuntu podman/netavark
+CONFIG_NF_TABLES_INET=y         # why: mixed IPv4/IPv6 nft table support for iptables-nft
+CONFIG_NFT_CT=y                 # why: netavark emits conntrack state rules
+CONFIG_NFT_MASQ=y               # why: netavark emits MASQUERADE rules for bridge egress NAT
+CONFIG_NFT_COMPAT=y             # why: allows xtables matches such as `-m comment` via nft
+CONFIG_NETFILTER_XT_MATCH_COMMENT=y  # why: netavark marks its chains with `-m comment`
 
 # ── vsock (host↔guest control channel) ──────────────────────────────
 # Both libkrun and Firecracker enable these; libkrun uses vsock for its
