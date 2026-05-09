@@ -1000,6 +1000,27 @@ class TestCliPauseResume:
         assert "paused" in out
 
     @patch("smolvm.facade.SmolVM")
+    def test_resume_success(
+        self,
+        mock_vm_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm resume` should make a sandbox running and report the result."""
+        vm = MagicMock()
+        vm.vm_id = "vm001"
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(["resume", "vm001"])
+
+        assert ret == 0
+        mock_vm_cls.from_id.assert_called_once_with("vm001")
+        vm.start.assert_called_once_with(boot_timeout=30.0)
+        vm.close.assert_called_once()
+        out = capsys.readouterr().out
+        assert "Resumed VM 'vm001'." in out
+        assert "running" in out
+
+    @patch("smolvm.facade.SmolVM")
     def test_resume_json(
         self,
         mock_vm_cls: MagicMock,
@@ -1018,63 +1039,19 @@ class TestCliPauseResume:
         assert payload["ok"] is True
         assert payload["data"]["vm"]["name"] == "vm001"
         assert payload["data"]["vm"]["status"] == "running"
-
-
-class TestCliVmStart:
-    """Tests for `smolvm start`."""
-
-    @patch("smolvm.facade.SmolVM")
-    def test_start_success(
-        self,
-        mock_vm_cls: MagicMock,
-        capsys: pytest.CaptureFixture,
-    ) -> None:
-        """`smolvm start` should start a stopped VM and report the result."""
-        vm = MagicMock()
-        vm.vm_id = "vm001"
-        mock_vm_cls.from_id.return_value = vm
-
-        ret = main(["start", "vm001"])
-
-        assert ret == 0
-        mock_vm_cls.from_id.assert_called_once_with("vm001")
         vm.start.assert_called_once_with(boot_timeout=30.0)
-        vm.close.assert_called_once()
-        out = capsys.readouterr().out
-        assert "Started VM 'vm001'." in out
-        assert "running" in out
 
     @patch("smolvm.facade.SmolVM")
-    def test_start_json(
+    def test_resume_forwards_boot_timeout(
         self,
         mock_vm_cls: MagicMock,
-        capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm start --json` should emit the shared envelope."""
+        """`smolvm resume --boot-timeout` should forward the value to the facade."""
         vm = MagicMock()
         vm.vm_id = "vm001"
         mock_vm_cls.from_id.return_value = vm
 
-        ret = main(["start", "vm001", "--json"])
-
-        assert ret == 0
-        payload = json.loads(capsys.readouterr().out)
-        assert payload["command"] == "start"
-        assert payload["ok"] is True
-        assert payload["data"]["vm"]["name"] == "vm001"
-        assert payload["data"]["vm"]["status"] == "running"
-
-    @patch("smolvm.facade.SmolVM")
-    def test_start_forwards_boot_timeout(
-        self,
-        mock_vm_cls: MagicMock,
-    ) -> None:
-        """`smolvm start --boot-timeout` should forward the value to the facade."""
-        vm = MagicMock()
-        vm.vm_id = "vm001"
-        mock_vm_cls.from_id.return_value = vm
-
-        ret = main(["start", "vm001", "--boot-timeout", "75"])
+        ret = main(["resume", "vm001", "--boot-timeout", "75"])
 
         assert ret == 0
         vm.start.assert_called_once_with(boot_timeout=75.0)
