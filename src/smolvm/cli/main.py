@@ -832,6 +832,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit machine-readable JSON output.",
     )
 
+    start_parser = subparsers.add_parser(
+        "start",
+        help="Start a stopped sandbox.",
+    )
+    start_parser.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
+    _add_boot_timeout_arg(start_parser)
+    start_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output.",
+    )
+
     snapshot_parser = subparsers.add_parser(
         "snapshot",
         help="Save and restore sandbox state.",
@@ -2545,6 +2557,33 @@ def _run_resume(args: argparse.Namespace) -> int:
             vm.close()
 
 
+def _run_vm_start(args: argparse.Namespace) -> int:
+    """Handle ``smolvm start``."""
+    from smolvm.facade import SmolVM
+
+    vm: SmolVM | None = None
+    try:
+        vm = SmolVM.from_id(args.vm_id)
+        vm.start(boot_timeout=args.boot_timeout)
+
+        data = _vm_lifecycle_payload(vm.vm_id, VMState.RUNNING)
+        if args.json:
+            emit_json("start", 0, data=data)
+        else:
+            _render_vm_lifecycle_result(
+                data,
+                message=f"Started VM '{vm.vm_id}'.",
+                title="VM Started",
+                border_style="green",
+            )
+        return 0
+    except Exception as exc:
+        return _emit_cli_error("start", 1, exc, json_output=args.json)
+    finally:
+        if vm is not None:
+            vm.close()
+
+
 def _run_snapshot(args: argparse.Namespace) -> int:
     """Handle ``smolvm snapshot`` commands."""
     from smolvm.facade import SmolVM
@@ -3299,6 +3338,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "resume":
         return _run_resume(args)
+
+    if args.command == "start":
+        return _run_vm_start(args)
 
     if args.command == "snapshot":
         return _run_snapshot(args)
