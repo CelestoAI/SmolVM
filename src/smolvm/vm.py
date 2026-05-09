@@ -1582,10 +1582,7 @@ class SmolVMManager:
         """
         qemu_bin = self._find_qemu_binary()
         if qemu_bin is None:
-            raise SmolVMError(
-                "QEMU backend selected but no qemu-system binary was found. "
-                f"{_qemu_install_hint()}"
-            )
+            raise SmolVMError(f"qemu-system binary is missing; {_qemu_install_hint()}")
 
         if vm_info.network is None or vm_info.network.ssh_host_port is None:
             raise SmolVMError("QEMU backend requires a reserved ssh_host_port in VM network config")
