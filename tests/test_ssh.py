@@ -111,6 +111,29 @@ def _mock_exec_result(exit_code: int, stdout: str, stderr: str) -> tuple[None, M
     return (None, stdout_ch, stderr_ch)
 
 
+class TestSSHClientWarningPolicy:
+    """Tests that _connect uses WarningPolicy (not AutoAddPolicy)."""
+
+    @patch("smolvm.ssh.paramiko.SSHClient")
+    def test_connect_uses_warning_policy(self, mock_ssh_client_cls: MagicMock) -> None:
+        """Verify set_missing_host_key_policy is called with WarningPolicy."""
+        import paramiko
+
+        mock_client = MagicMock()
+        mock_ssh_client_cls.return_value = mock_client
+
+        client = SSHClient("172.16.0.2")
+        client._connect()
+
+        mock_client.set_missing_host_key_policy.assert_called_once()
+        policy_arg = mock_client.set_missing_host_key_policy.call_args[0][0]
+        assert isinstance(policy_arg, paramiko.WarningPolicy), (
+            f"Expected WarningPolicy, got {type(policy_arg).__name__}. "
+            "AutoAddPolicy silently accepts any key; WarningPolicy logs the "
+            "unknown key, which is safer for ephemeral VMs."
+        )
+
+
 class TestSSHClientRun:
     """Tests for SSH command execution."""
 
