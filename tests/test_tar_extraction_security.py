@@ -34,13 +34,44 @@ def _make_tarball_with_member(arcname: str) -> bytes:
         tar.addfile(info, io.BytesIO(data))
     return buf.getvalue()
 
-
 def _mock_response(tarball_bytes: bytes) -> MagicMock:
     mock_response = MagicMock()
     mock_response.raise_for_status = MagicMock()
     mock_response.iter_content = lambda chunk_size: iter([tarball_bytes])
     return mock_response
 
+def _make_spying_tar_open(
+    original_open, extractall_calls: list[dict]
+):
+    """Return a ``tarfile.open`` replacement that records *extractall* kwargs.
+
+    Using a factory keeps the spy class in one place so every test shares the
+    same implementation.
+    """
+
+    class _SpyingTarFile:
+        """Wraps a real TarFile to record extractall calls."""
+
+        def __init__(self, real_tar: tarfile.TarFile) -> None:
+            self._tar = real_tar
+
+        def getmembers(self):
+            return self._tar.getmembers()
+
+        def extractall(self, **kwargs):
+            extractall_calls.append(kwargs)
+            return self._tar.extractall(**kwargs)  # noqa: S202
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return self._tar.__exit__(*args)
+
+    def _spying_open(*args, **kwargs):
+        return _SpyingTarFile(original_open(*args, **kwargs))
+
+    return _spying_open
 
 class TestHostManagerTarExtraction:
     """Verify path-traversal guards in HostManager._download_and_extract."""
@@ -161,32 +192,8 @@ class TestHostManagerTarExtraction:
         dest.parent.mkdir(parents=True, exist_ok=True)
         hm = HostManager()
 
-        # Patch tarfile.open to spy on the TarFile object
-        original_open = tarfile.open
-
         extractall_calls: list[dict] = []
-
-        class SpyingTarFile:
-            """Wraps a real TarFile to record extractall calls."""
-
-            def __init__(self, real_tar: tarfile.TarFile) -> None:
-                self._tar = real_tar
-
-            def getmembers(self):
-                return self._tar.getmembers()
-
-            def extractall(self, **kwargs):
-                extractall_calls.append(kwargs)
-                return self._tar.extractall(**kwargs)
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return self._tar.__exit__(*args)
-
-        def spying_open(*args, **kwargs):
-            return SpyingTarFile(original_open(*args, **kwargs))
+        spying_open = _make_spying_tar_open(tarfile.open, extractall_calls)
 
         with mock_get, patch("smolvm.host.manager.tarfile.open", side_effect=spying_open):
             hm._download_and_extract(
@@ -199,7 +206,6 @@ class TestHostManagerTarExtraction:
             assert extractall_calls[0].get("filter") == "data"
         else:
             assert "filter" not in extractall_calls[0]
-
 
 class TestDashboardExtractDist:
     """Verify path-traversal guards in _extract_dashboard_dist."""
@@ -261,28 +267,8 @@ class TestDashboardExtractDist:
         with tarfile.open(archive, "w:gz") as tar:
             tar.add(content, arcname=".")
 
-        original_open = tarfile.open
         extractall_calls: list[dict] = []
-
-        class SpyingTarFile:
-            def __init__(self, real_tar: tarfile.TarFile) -> None:
-                self._tar = real_tar
-
-            def getmembers(self):
-                return self._tar.getmembers()
-
-            def extractall(self, **kwargs):
-                extractall_calls.append(kwargs)
-                return self._tar.extractall(**kwargs)
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return self._tar.__exit__(*args)
-
-        def spying_open(*args, **kwargs):
-            return SpyingTarFile(original_open(*args, **kwargs))
+        spying_open = _make_spying_tar_open(tarfile.open, extractall_calls)
 
         with patch("smolvm.dashboard.server.tarfile.open", side_effect=spying_open):
             result = _extract_dashboard_dist(archive, tmp_path / "extract")
