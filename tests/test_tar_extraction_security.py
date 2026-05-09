@@ -15,6 +15,7 @@
 """Tests for tar extraction security (PR #290 follow-up)."""
 
 import io
+import sys
 import tarfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -22,6 +23,36 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from smolvm.exceptions import HostError
+
+
+# ---------------------------------------------------------------------------
+# The dashboard server module has heavy top-level imports (fastapi, uvicorn,
+# websockets …) that live in the optional ``dashboard`` extra.  The CI test
+# matrix only installs the ``dev`` extra, so those packages are absent.
+# ``_extract_dashboard_dist`` is a pure-stdlib helper (tarfile / pathlib)
+# that does not need any of them.  We inject lightweight stubs into
+# ``sys.modules`` so the module can be imported without pulling in the real
+# packages.
+# ---------------------------------------------------------------------------
+_DASHBOARD_STUB_MODULES: list[str] = [
+    "fastapi",
+    "fastapi.middleware",
+    "fastapi.middleware.cors",
+    "fastapi.responses",
+    "fastapi.staticfiles",
+    "uvicorn",
+    "websockets",
+    "smolvm.dashboard.commands",
+    "smolvm.dashboard.connection_manager",
+    "smolvm.dashboard.poller",
+]
+
+
+def _ensure_dashboard_importable() -> None:  # pragma: no cover
+    """Insert stubs for optional dashboard dependencies if missing."""
+    for mod_name in _DASHBOARD_STUB_MODULES:
+        if mod_name not in sys.modules:
+            sys.modules[mod_name] = MagicMock()
 
 
 def _make_tarball_with_member(arcname: str) -> bytes:
@@ -209,6 +240,10 @@ class TestHostManagerTarExtraction:
 
 class TestDashboardExtractDist:
     """Verify path-traversal guards in _extract_dashboard_dist."""
+
+    @pytest.fixture(autouse=True)
+    def _stub_optional_deps(self) -> None:
+        _ensure_dashboard_importable()
 
     def test_rejects_dotdot_in_member(self, tmp_path: Path) -> None:
         """Member names containing '..' path parts must be rejected."""
