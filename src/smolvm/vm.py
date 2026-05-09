@@ -68,6 +68,63 @@ DEFAULT_SOCKET_DIR = Path("/tmp")
 
 # Backend-specific defaults
 QEMU_GUEST_IP = "10.0.2.15"
+
+
+def _linux_os_release_ids(os_release_path: Path = Path("/etc/os-release")) -> set[str]:
+    """Return Linux distribution IDs from /etc/os-release."""
+    ids: set[str] = set()
+    try:
+        lines = os_release_path.read_text().splitlines()
+    except OSError:
+        return ids
+
+    for line in lines:
+        key, sep, value = line.partition("=")
+        if sep != "=" or key not in {"ID", "ID_LIKE"}:
+            continue
+        value = value.strip().strip('"').strip("'")
+        ids.update(part.strip().lower() for part in value.split() if part.strip())
+    return ids
+
+
+def _qemu_system_package_for_host() -> str:
+    """Return the distro package that provides the host-arch qemu-system binary."""
+    arch = platform.machine().lower()
+    if arch in {"arm64", "aarch64"}:
+        return "qemu-system-arm"
+    return "qemu-system-x86"
+
+
+def _qemu_install_hint() -> str:
+    """Return a host-specific QEMU installation hint."""
+    system = platform.system()
+    if system == "Darwin":
+        return "Install QEMU with 'brew install qemu'."
+    if system == "Linux":
+        ids = _linux_os_release_ids()
+        qemu_system_pkg = _qemu_system_package_for_host()
+        if ids & {"debian", "ubuntu"}:
+            return (
+                "Install QEMU with 'sudo apt-get update && sudo apt-get install -y "
+                f"{qemu_system_pkg} qemu-utils'."
+            )
+        if ids & {"fedora", "rhel", "centos"}:
+            return f"Install QEMU with 'sudo dnf install -y {qemu_system_pkg} qemu-img'."
+        if ids & {"arch"}:
+            return f"Install QEMU with 'sudo pacman -S --needed {qemu_system_pkg} qemu-img'."
+        if ids & {"alpine"}:
+            qemu_system_bin_pkg = "qemu-system-aarch64"
+            if qemu_system_pkg == "qemu-system-x86":
+                qemu_system_bin_pkg = "qemu-system-x86_64"
+            return f"Install QEMU with 'sudo apk add {qemu_system_bin_pkg} qemu-img'."
+        return (
+            "Install QEMU with your Linux package manager, then make sure "
+            "qemu-system-x86_64 or qemu-system-aarch64 is on PATH."
+        )
+    return (
+        "Install QEMU for this operating system, then make sure qemu-system-x86_64 "
+        "or qemu-system-aarch64 is on PATH."
+    )
 QEMU_GATEWAY_IP = "10.0.2.2"
 QEMU_NETMASK = "255.255.255.0"
 QEMU_SLIRP_DNS = "10.0.2.3"
@@ -696,10 +753,7 @@ class SmolVMManager:
 
         qemu_bin = self._find_qemu_binary()
         if qemu_bin is None:
-            errors.append(
-                "QEMU not found. Install one of: qemu-system-aarch64, qemu-system-x86_64 "
-                "(macOS/Homebrew: brew install qemu)."
-            )
+            errors.append(f"QEMU not found. {_qemu_install_hint()}")
         elif platform.system() == "Darwin":
             try:
                 result = subprocess.run(
@@ -1530,7 +1584,7 @@ class SmolVMManager:
         if qemu_bin is None:
             raise SmolVMError(
                 "QEMU backend selected but no qemu-system binary was found. "
-                "Install with: brew install qemu"
+                f"{_qemu_install_hint()}"
             )
 
         if vm_info.network is None or vm_info.network.ssh_host_port is None:

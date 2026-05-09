@@ -17,8 +17,54 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from smolvm.types import PortForwardConfig, VMConfig
+import pytest
+
+from smolvm.exceptions import SmolVMError
+from smolvm.types import NetworkConfig, PortForwardConfig, VMConfig, VMInfo, VMState
 from smolvm.vm import SmolVMManager
+
+
+def _qemu_vm_info(tmp_path: Path) -> VMInfo:
+    """Return a minimal QEMU VMInfo for launch-command tests."""
+    kernel = tmp_path / "vmlinux"
+    rootfs = tmp_path / "rootfs.ext4"
+    kernel.touch()
+    rootfs.touch()
+    return VMInfo(
+        vm_id="vm-qemu",
+        status=VMState.CREATED,
+        config=VMConfig(
+            vm_id="vm-qemu",
+            kernel_path=kernel,
+            rootfs_path=rootfs,
+            backend="qemu",
+            boot_args="console=ttyS0 reboot=k panic=1 init=/init",
+        ),
+        network=NetworkConfig(
+            guest_ip="10.0.2.15",
+            tap_device="qemu-user",
+            guest_mac="52:54:00:12:34:56",
+            ssh_host_port=2200,
+        ),
+    )
+
+
+def test_start_qemu_missing_binary_uses_linux_install_hint(tmp_path: Path) -> None:
+    """Linux users should get a Linux package-manager hint, not Homebrew."""
+    sdk = SmolVMManager(data_dir=tmp_path / "data", socket_dir=tmp_path / "sockets", backend="qemu")
+
+    with (
+        patch.object(SmolVMManager, "_find_qemu_binary", return_value=None),
+        patch("smolvm.vm.platform.system", return_value="Linux"),
+        patch("smolvm.vm.platform.machine", return_value="x86_64"),
+        patch("smolvm.vm._linux_os_release_ids", return_value={"ubuntu", "debian"}),
+        pytest.raises(SmolVMError) as exc_info,
+    ):
+        sdk._start_qemu(_qemu_vm_info(tmp_path), tmp_path / "vm-qemu.log")
+
+    message = str(exc_info.value)
+    assert "sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-utils" in message
+    assert "brew install qemu" not in message
 
 
 @patch("smolvm.vm.subprocess.Popen")
