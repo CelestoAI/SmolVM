@@ -28,12 +28,13 @@ on:
         default: ""
       force_overwrite:
         description: >-
-          DANGEROUS. Replace any assets with the same name that already
-          live at this tag. Default false: the upload step fails loud on
-          a collision so an accidental re-run cannot silently swap
-          published bytes the shipped CLI's BASE_KERNELS SHAs depend on.
-          Tick this only for an intentional re-bake of the same tag
-          (e.g. a flaky CI run that needs a redo).
+          Replace any assets that already live at this tag. Default
+          false: the upload step skips assets that already exist (the
+          build still runs and verifies the current fragment compiles)
+          so an accidental re-run cannot silently swap published bytes
+          the shipped CLI's BASE_KERNELS SHAs depend on. Tick this only
+          for an intentional re-bake of the same tag (e.g. a flaky CI
+          run that needs a redo).
         type: boolean
         default: false
   push:
@@ -159,23 +160,31 @@ jobs:
               --notes "Auto-generated draft release for SmolVM published images. Verify SHA-256 sums and content before publishing." \
               || echo "Draft already exists (race with another matrix cell), continuing."
           fi
-          # Default (no --clobber): `gh release upload` returns non-zero
-          # on a same-name collision. Forces the dev to bump
-          # IMAGES_RELEASE_TAG (or pass a fresh `release_tag` input)
-          # rather than silently swapping published bytes that the
-          # shipped CLI's BASE_KERNELS SHAs depend on.
+          # Skip-if-exists. The bumping protocol at
+          # published.py::IMAGES_RELEASE_TAG couples a tag to one
+          # specific set of kernel bytes — same tag = same bytes — so a
+          # collision here means we re-ran the workflow against a tag
+          # that's already published. Skipping (rather than erroring) is
+          # the right call: the build still runs, so the current
+          # fragment is verified to compile, but published bytes the
+          # shipped CLI's BASE_KERNELS SHAs depend on are never swapped.
           # `force_overwrite=true` (workflow_dispatch only — push events
-          # cannot set it) opts back in for intentional re-bakes.
-          upload_args=()
-          if [ "${FORCE_OVERWRITE:-false}" = "true" ]; then
-            upload_args+=(--clobber)
-          fi
-          gh release upload "$TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            "${upload_args[@]}" \
+          # cannot set it) opts into clobbering for an intentional
+          # re-bake of the same tag.
+          existing="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null || true)"
+          for f in \
             "kernel-out/vmlinux-${ARCH}.elf" \
             "kernel-out/vmlinux-${ARCH}.image" \
-            "kernel-out/vmlinux-${ARCH}.config"
+            "kernel-out/vmlinux-${ARCH}.config"; do
+            name="$(basename "$f")"
+            if [ "${FORCE_OVERWRITE:-false}" = "true" ]; then
+              gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "$f"
+            elif printf '%s\n' "$existing" | grep -Fxq "$name"; then
+              echo "Skipping $name: already uploaded to $TAG."
+            else
+              gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" "$f"
+            fi
+          done
 
       - name: Step summary
         env:
@@ -190,7 +199,7 @@ jobs:
           {
             echo "## microvm kernel build: \`${ARCH}\`"
             echo ""
-            echo "Uploaded to draft release [\`${TAG}\`](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG})."
+            echo "Target release: [\`${TAG}\`](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}). Existing assets are skipped (see upload step log)."
             echo ""
             echo "| Artifact | Size | SHA-256 |"
             echo "| --- | --- | --- |"
