@@ -43,4 +43,5 @@ def test_microvm_kernel_enables_podman_netavark_networking() -> None:
         "CONFIG_NFT_COMPAT",
         "CONFIG_NETFILTER_XT_MATCH_COMMENT",
     }
-    assert required <= symbols
+    missing = required - symbols
+    assert required <= symbols, f"missing symbols: {missing}"
