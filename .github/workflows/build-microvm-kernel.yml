@@ -143,12 +143,55 @@ jobs:
             echo "image_size=${image_size}"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Read pinned BASE_KERNELS SHAs
+        id: pinned
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          # Extract the elf_sha256 / image_sha256 strings pinned in
+          # BASE_KERNELS for this arch. Used by the upload step's drift
+          # check: if upload skips because the asset already exists at
+          # the tag but the bytes we just built no longer match the pin,
+          # the source-on-main has diverged from the published bytes and
+          # IMAGES_RELEASE_TAG needs a bump. Empty output (e.g. brand-new
+          # arch with no pin yet) silently skips the drift check.
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import ast, os
+          arch = os.environ["ARCH"]
+          src = open("src/smolvm/images/published.py").read()
+          tree = ast.parse(src)
+          for node in ast.walk(tree):
+              if (
+                  isinstance(node, ast.AnnAssign)
+                  and isinstance(node.target, ast.Name)
+                  and node.target.id == "BASE_KERNELS"
+                  and isinstance(node.value, ast.Dict)
+              ):
+                  for k, v in zip(node.value.keys, node.value.values):
+                      if (
+                          isinstance(k, ast.Constant)
+                          and k.value == arch
+                          and isinstance(v, ast.Call)
+                      ):
+                          for kw in v.keywords:
+                              if kw.arg in ("elf_sha256", "image_sha256") and isinstance(
+                                  kw.value, ast.Constant
+                              ):
+                                  short = "elf" if kw.arg == "elf_sha256" else "image"
+                                  print(f"{short}_sha={kw.value.value}")
+                  break
+          PY
+
       - name: Upload to GitHub Releases (draft)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.release.outputs.tag }}
           ARCH: ${{ matrix.arch }}
           FORCE_OVERWRITE: ${{ inputs.force_overwrite }}
+          ELF_SHA: ${{ steps.sha.outputs.elf_sha }}
+          IMAGE_SHA: ${{ steps.sha.outputs.image_sha }}
+          PINNED_ELF_SHA: ${{ steps.pinned.outputs.elf_sha }}
+          PINNED_IMAGE_SHA: ${{ steps.pinned.outputs.image_sha }}
         run: |
           # Idempotent draft create. Race between matrix cells handled the
           # same way as build-published-images.yml.
@@ -171,7 +214,16 @@ jobs:
           # `force_overwrite=true` (workflow_dispatch only — push events
           # cannot set it) opts into clobbering for an intentional
           # re-bake of the same tag.
+          #
+          # Drift canary: when an asset is skipped, compare the
+          # locally-built SHA against the BASE_KERNELS pin. If they
+          # differ, source on main builds different bytes than the CLI
+          # claims are published — emit a workflow warning so this
+          # doesn't go unnoticed across PRs. The .config artifact has no
+          # pin (it's a debugging aid, not a runtime input), so it's
+          # skipped silently.
           existing="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null || true)"
+          drift_detected=0
           for f in \
             "kernel-out/vmlinux-${ARCH}.elf" \
             "kernel-out/vmlinux-${ARCH}.image" \
@@ -179,12 +231,25 @@ jobs:
             name="$(basename "$f")"
             if [ "${FORCE_OVERWRITE:-false}" = "true" ]; then
               gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "$f"
-            elif printf '%s\n' "$existing" | grep -Fxq "$name"; then
-              echo "Skipping $name: already uploaded to $TAG."
-            else
+              continue
+            fi
+            if ! printf '%s\n' "$existing" | grep -Fxq "$name"; then
               gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" "$f"
+              continue
+            fi
+            echo "Skipping $name: already uploaded to $TAG."
+            case "$name" in
+              *.elf)   local_sha="$ELF_SHA";   pinned_sha="$PINNED_ELF_SHA" ;;
+              *.image) local_sha="$IMAGE_SHA"; pinned_sha="$PINNED_IMAGE_SHA" ;;
+              *)       continue ;;
+            esac
+            if [ -n "$pinned_sha" ] && [ "$local_sha" != "$pinned_sha" ]; then
+              echo "::warning title=Kernel SHA drift::${name}: source on this branch builds ${local_sha} but BASE_KERNELS pins ${pinned_sha} at ${TAG}. Bump IMAGES_RELEASE_TAG in src/smolvm/images/published.py to publish the new bytes."
+              drift_detected=1
             fi
           done
+          echo "drift_detected=${drift_detected}" >> "$GITHUB_OUTPUT"
+        id: upload
 
       - name: Step summary
         env:
@@ -195,6 +260,7 @@ jobs:
           IMAGE_SHA: ${{ steps.sha.outputs.image_sha }}
           IMAGE_SIZE: ${{ steps.sha.outputs.image_size }}
           CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+          DRIFT_DETECTED: ${{ steps.upload.outputs.drift_detected }}
         run: |
           {
             echo "## microvm kernel build: \`${ARCH}\`"
@@ -207,4 +273,9 @@ jobs:
             echo "| \`vmlinux-${ARCH}.image\` (QEMU) | $(numfmt --to=iec-i --suffix=B ${IMAGE_SIZE}) | \`${IMAGE_SHA}\` |"
             echo ""
             echo "Linux version: \`$(cat kernel/microvm/linux.version)\` · Cache hit: \`${CACHE_HIT}\`"
+            if [ "${DRIFT_DETECTED:-0}" = "1" ]; then
+              echo ""
+              echo "> [!WARNING]"
+              echo "> Source on this branch builds different kernel bytes than \`BASE_KERNELS\` pins for \`${TAG}\`. Bump \`IMAGES_RELEASE_TAG\` in [\`src/smolvm/images/published.py\`](../blob/main/src/smolvm/images/published.py) to publish the new bytes."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
