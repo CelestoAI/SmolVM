@@ -35,6 +35,8 @@ def test_microvm_kernel_enables_podman_netavark_networking() -> None:
     symbols = _enabled_symbols(COMMON_FRAGMENT)
 
     required = {
+        "CONFIG_NETFILTER_ADVANCED",
+        "CONFIG_NETFILTER_XTABLES",
         "CONFIG_NF_TABLES",
         "CONFIG_NF_TABLES_INET",
         "CONFIG_NFT_CT",
