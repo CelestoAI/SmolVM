@@ -160,13 +160,24 @@ jobs:
           arch = os.environ["ARCH"]
           src = open("src/smolvm/images/published.py").read()
           tree = ast.parse(src)
+
+
+          def _is_base_kernels(node):
+              # Match both `BASE_KERNELS: dict[...] = {...}` (AnnAssign) and
+              # the un-annotated `BASE_KERNELS = {...}` (Assign) variants —
+              # an annotation drop must not silently kill the drift canary.
+              if isinstance(node, ast.AnnAssign):
+                  return isinstance(node.target, ast.Name) and node.target.id == "BASE_KERNELS"
+              if isinstance(node, ast.Assign):
+                  return any(
+                      isinstance(t, ast.Name) and t.id == "BASE_KERNELS"
+                      for t in node.targets
+                  )
+              return False
+
+
           for node in ast.walk(tree):
-              if (
-                  isinstance(node, ast.AnnAssign)
-                  and isinstance(node.target, ast.Name)
-                  and node.target.id == "BASE_KERNELS"
-                  and isinstance(node.value, ast.Dict)
-              ):
+              if _is_base_kernels(node) and isinstance(node.value, ast.Dict):
                   for k, v in zip(node.value.keys, node.value.values):
                       if (
                           isinstance(k, ast.Constant)
@@ -261,11 +272,18 @@ jobs:
           IMAGE_SIZE: ${{ steps.sha.outputs.image_size }}
           CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
           DRIFT_DETECTED: ${{ steps.upload.outputs.drift_detected }}
+          FORCE_OVERWRITE: ${{ inputs.force_overwrite }}
         run: |
+          if [ "${FORCE_OVERWRITE:-false}" = "true" ]; then
+            existing_assets_note="Existing assets were overwritten (see upload step log)."
+          else
+            existing_assets_note="Existing assets were skipped (see upload step log)."
+          fi
+          published_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/main/src/smolvm/images/published.py"
           {
             echo "## microvm kernel build: \`${ARCH}\`"
             echo ""
-            echo "Target release: [\`${TAG}\`](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}). Existing assets are skipped (see upload step log)."
+            echo "Target release: [\`${TAG}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}). ${existing_assets_note}"
             echo ""
             echo "| Artifact | Size | SHA-256 |"
             echo "| --- | --- | --- |"
@@ -276,6 +294,6 @@ jobs:
             if [ "${DRIFT_DETECTED:-0}" = "1" ]; then
               echo ""
               echo "> [!WARNING]"
-              echo "> Source on this branch builds different kernel bytes than \`BASE_KERNELS\` pins for \`${TAG}\`. Bump \`IMAGES_RELEASE_TAG\` in [\`src/smolvm/images/published.py\`](../blob/main/src/smolvm/images/published.py) to publish the new bytes."
+              echo "> Source on this branch builds different kernel bytes than \`BASE_KERNELS\` pins for \`${TAG}\`. Bump \`IMAGES_RELEASE_TAG\` in [\`src/smolvm/images/published.py\`](${published_url}) to publish the new bytes."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
