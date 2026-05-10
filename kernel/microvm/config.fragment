@@ -44,6 +44,8 @@ CONFIG_PACKET=y                 # why: AF_PACKET for some userspace tools
 # and Netavark reports the misleading error "invalid version number". Netavark's
 # default bridge rules use MASQUERADE, conntrack, and `-m comment`, so keep the
 # nftables pieces for those rules built in (we ship no loadable modules).
+CONFIG_NETFILTER_ADVANCED=y     # why: gates the xt match symbols below; off by default in x86_64_defconfig
+CONFIG_NETFILTER_XTABLES=y      # why: parent of XT_MATCH_COMMENT; x86_64_defconfig has it =m, dropped when MODULES is off
 CONFIG_NF_TABLES=y              # why: iptables-nft backend used by Ubuntu podman/netavark
 CONFIG_NF_TABLES_INET=y         # why: mixed IPv4/IPv6 nft table support for iptables-nft
 CONFIG_NFT_CT=y                 # why: netavark emits conntrack state rules
