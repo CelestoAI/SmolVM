@@ -382,9 +382,8 @@ class VMConfig(BaseModel):
             # boot manager; there is no direct-kernel path. The firmware-mode
             # invariants above then also pin backend='qemu' and kernel_path=None.
             raise ValueError(
-                "guest_os='windows' requires boot_mode='firmware' "
-                "(Windows boots via OVMF firmware reading the qcow2's UEFI "
-                "boot manager — no direct-kernel path)"
+                f"VM {self.vm_id!r}: guest_os='windows' requires "
+                "boot_mode='firmware' (Windows has no direct-kernel boot path)."
             )
         return self
 

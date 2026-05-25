@@ -1,9 +1,14 @@
 # Running Windows 11 as a Guest under QEMU/KVM
 
-Research notes informing SmolVM's Windows-guest backend. Sources are linked
-inline; the consensus recommendations here come from cross-referencing QEMU
-upstream, libvirt, Red Hat, Proxmox, Arch, Microsoft, TianoCore (EDK II) and
-the virtio-win project.
+Boot a Windows 11 desktop inside SmolVM that behaves like a real Windows
+PC. Useful when you need to run Windows-only software, test something
+against Windows, or hand an agent a Windows desktop without touching your
+own machine.
+
+This page explains every QEMU flag the Windows path needs and why,
+distilled from QEMU upstream, libvirt, Red Hat, Proxmox, Arch, Microsoft,
+TianoCore (EDK II), and the virtio-win project. Sources are linked
+inline; full citations live in the footnotes at the bottom.
 
 ## The picture in one paragraph
 
@@ -228,7 +233,7 @@ For Windows + the NetKVM virtio-net driver, the backend is transparent:
 NetKVM sees a virtio-net PCI device and doesn't care whether SLIRP,
 tap+bridge, macvtap, or vhost is behind it.[^netkvm]
 
-```
+```bash
 -netdev user,id=net0,hostfwd=tcp::2222-:22
 -device virtio-net-pci,netdev=net0,mac=52:54:00:...
 ```
@@ -275,7 +280,7 @@ If the QEMU host has no graphical session (server, SSH-only access), the
 `-display vnc=127.0.0.1:0` variant of the reference command line is the
 right pick — and the user connects from their laptop via an SSH tunnel:
 
-```
+```bash
 # On the laptop, forward both the VNC display and the guest-SSH port:
 ssh -L 5900:127.0.0.1:5900 -L 2222:127.0.0.1:2222 <user>@<qemu-host>
 
@@ -303,7 +308,7 @@ is on virtio-scsi and Windows has no inbox driver for it. Click **Load
 Driver → Browse**, then navigate to the **virtio-win CD** (labeled something
 like `virtio-win-0.1.285`) and pick:
 
-```
+```cmd
 vioscsi → w11 → amd64
 ```
 

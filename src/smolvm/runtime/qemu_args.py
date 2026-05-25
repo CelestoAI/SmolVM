@@ -41,6 +41,11 @@ from smolvm.types import VMInfo
 # QEMU's compiled-in default ever changes upstream.
 QEMU_SLIRP_DNS = "10.0.2.3"
 
+# Number of AHCI/SATA ports the q35 ICH9 chipset exposes. ISO extras with
+# cdrom_bus="ide" occupy ide.0..ide.5 in order; any beyond port 5 fall back
+# to virtio-blk-pci so the QEMU command line stays valid.
+_Q35_AHCI_PORTS = 6
+
 
 # Candidate UEFI firmware locations for aarch64 QEMU firmware-boot.
 # Searched in order; the first existing file wins. macOS Homebrew ships
@@ -358,15 +363,22 @@ def build_qemu_argv(
         cmd.extend(["-device", f"virtio-net-pci,netdev=net0,mac={guest_mac}"])
 
         # Extra drives. Each AHCI port holds exactly one drive on q35, so
-        # ISO entries with cdrom_bus="ide" are round-robined across
-        # ide.0..ide.5. Non-ISO extras (or Linux's None cdrom_bus) keep
-        # the legacy virtio-blk-pci wiring.
+        # ISO entries with cdrom_bus="ide" are placed on ide.0..ide.5 in
+        # order. Once those 6 ports are exhausted, additional ISOs fall
+        # back to virtio-blk-pci so the QEMU command line stays valid
+        # (Windows still sees them as block devices). Non-ISO extras and
+        # Linux (None cdrom_bus) keep the legacy virtio-blk-pci wiring.
         ide_port_index = 0
         for drive_id, drive_path in zip(
             extra_drive_ids, vm_info.config.extra_drives, strict=True
         ):
             is_iso = drive_path.suffix.lower() == ".iso"
-            if is_iso and platform_spec.cdrom_bus == "ide":
+            use_ide = (
+                is_iso
+                and platform_spec.cdrom_bus == "ide"
+                and ide_port_index < _Q35_AHCI_PORTS
+            )
+            if use_ide:
                 cmd.extend(
                     [
                         "-device",

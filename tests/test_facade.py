@@ -654,12 +654,12 @@ class TestVMLocalImageParam:
         """Local image with os='alpine' isn't supported in this release."""
         disk = tmp_path / "rootfs.ext4"
         disk.touch()
-        with pytest.raises(ValueError, match="only supported for os='windows'"):
+        with pytest.raises(ValueError, match="only support os='windows'"):
             SmolVM(image=str(disk), os="alpine")
 
     def test_local_image_missing_file_raises(self, tmp_path: Path) -> None:
         """A path that doesn't exist surfaces a plain-English error."""
-        with pytest.raises(ValueError, match="Local image not found"):
+        with pytest.raises(ValueError, match="does not exist"):
             SmolVM(os="windows", image=str(tmp_path / "does-not-exist.qcow2"))
 
     @patch("smolvm.facade.SmolVMManager")

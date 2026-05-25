@@ -2468,5 +2468,29 @@ class SmolVMManager:
                         managed_disk.unlink()
                         logger.info("Removed isolated disk for VM %s: %s", vm_id, managed_disk)
 
+            # Per-VM firmware state (OVMF NVRAM + swtpm). Mirrors the sync
+            # _cleanup_resources path so async_delete() doesn't leave
+            # Windows-guest firmware behind.
+            firmware_state = self.data_dir / "firmware" / vm_id
+            if firmware_state.exists():
+                retain = (
+                    vm_info is not None
+                    and vm_info.config.retain_disk_on_delete
+                )
+                if retain:
+                    logger.info(
+                        "Retaining per-VM firmware state for VM %s at %s",
+                        vm_id,
+                        firmware_state,
+                    )
+                else:
+                    with suppress(Exception):
+                        shutil.rmtree(firmware_state)
+                        logger.info(
+                            "Removed per-VM firmware state for VM %s: %s",
+                            vm_id,
+                            firmware_state,
+                        )
+
         except Exception as e:
             logger.warning("Error during async cleanup for %s: %s", vm_id, e)

@@ -239,11 +239,10 @@ def _find_x86_64_ovmf() -> FirmwareSpec | None:
 def _x86_64_ovmf_install_hint() -> str:
     """Return a plain-English install hint when no x86_64 OVMF is found."""
     return (
-        "x86_64 Windows guests need the OVMF Secure Boot firmware. "
-        "On Debian/Ubuntu run 'sudo apt-get install -y ovmf'. "
-        "On Fedora/RHEL run 'sudo dnf install -y edk2-ovmf'. "
-        "On Arch run 'sudo pacman -S --needed edk2-ovmf'. "
-        "On macOS, OVMF ships with QEMU — 'brew reinstall qemu' if it's missing."
+        "Install OVMF Secure Boot firmware to boot Windows guests "
+        "(Debian/Ubuntu: `sudo apt-get install -y ovmf`; Fedora/RHEL: "
+        "`sudo dnf install -y edk2-ovmf`; Arch: `sudo pacman -S --needed "
+        "edk2-ovmf`; macOS: `brew reinstall qemu`)."
     )
 
 

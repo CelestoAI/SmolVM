@@ -356,16 +356,14 @@ def _build_local_image_config(
     """
     if os_input is None:
         raise ValueError(
-            "Local images need an explicit os= parameter (e.g. "
-            'os="windows"). The file alone doesn\'t tell us which '
-            "operating system is inside."
+            'Local images need os= (e.g. SmolVM(os="windows", image="..."))'
+            " so SmolVM knows which operating system is inside the file."
         )
     guest_os = _normalize_guest_os(os_input)
     if guest_os is not GuestOS.WINDOWS:
         raise ValueError(
-            f"Local images are only supported for os='windows' in this "
-            f"release (got os={guest_os.value!r}). Linux guests use "
-            "auto-config or S3-published images."
+            f"Local images currently only support os='windows' (got "
+            f"os={guest_os.value!r}); use auto-config or an S3 image for Linux."
         )
 
     parsed = urlparse(image)
@@ -373,7 +371,7 @@ def _build_local_image_config(
     local_path = Path(raw_path).expanduser().resolve()
     if not local_path.is_file():
         raise ValueError(
-            f"Local image not found at {local_path}. Pass image= as an "
+            f"Local image {local_path} does not exist; pass image= as an "
             "absolute path or file:// URI to an existing qcow2 file."
         )
 
@@ -384,8 +382,8 @@ def _build_local_image_config(
             raise ValueError(str(exc)) from exc
         if resolved_backend != BACKEND_QEMU:
             raise ValueError(
-                f"Windows guests only run on the QEMU backend (got "
-                f"backend={backend!r})."
+                f"Windows guests only run on the QEMU backend; drop "
+                f'backend={backend!r} or pass backend="qemu".'
             )
 
     if ssh_key_path is None:
@@ -765,18 +763,16 @@ class SmolVM:
         # their own OS info in the manifest, so os= would conflict.
         if image is not None and os is not None and not _is_local_image(image):
             raise ValueError(
-                "image and os are mutually exclusive for S3 images — the "
-                "image manifest already defines the operating system. (For "
-                "local images, os= is required since the file alone doesn't "
-                "self-identify.)"
+                "image and os are mutually exclusive for S3 images (the "
+                "manifest already names the OS); drop one of them."
             )
 
         if (config is not None or vm_id is not None) and (
             memory is not None or disk_size is not None or os is not None
         ):
             raise ValueError(
-                "memory, disk_size, and os can only be set when both "
-                "config and vm_id are omitted (auto-config mode)."
+                "memory, disk_size, and os only apply in auto-config mode; "
+                "drop them or drop config=/vm_id=."
             )
 
         # Phase 1 Windows guest scope locks. Each is intentionally narrow
@@ -785,20 +781,19 @@ class SmolVM:
         if os is not None and _normalize_guest_os(os) is GuestOS.WINDOWS:
             if image is None:
                 raise ValueError(
-                    "Windows guests need a pre-installed disk image. Pass "
-                    'image="/path/to/win11.qcow2".\n'
-                    "See docs/deep-dive/windows-guest-qemu.md for how to "
-                    "build one."
+                    "Windows guests need a pre-installed disk image; pass "
+                    'image="/path/to/win11.qcow2" (see '
+                    "docs/deep-dive/windows-guest-qemu.md to build one)."
                 )
             if mounts:
                 raise ValueError(
                     "Workspace mounts (mounts=) are not yet supported for "
-                    "Windows guests in this release."
+                    "Windows guests in this release; drop the mounts= arg."
                 )
             if internet_settings is not None:
                 raise ValueError(
                     "Egress controls (internet_settings=) are not yet "
-                    "supported for Windows guests in this release."
+                    "supported for Windows guests; drop the internet_settings= arg."
                 )
 
         # Workspace mounts currently require the QEMU backend (virtio-9p).
