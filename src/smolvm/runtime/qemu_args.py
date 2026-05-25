@@ -362,7 +362,9 @@ def build_qemu_argv(
         # ide.0..ide.5. Non-ISO extras (or Linux's None cdrom_bus) keep
         # the legacy virtio-blk-pci wiring.
         ide_port_index = 0
-        for drive_id, drive_path in zip(extra_drive_ids, vm_info.config.extra_drives):
+        for drive_id, drive_path in zip(
+            extra_drive_ids, vm_info.config.extra_drives, strict=True
+        ):
             is_iso = drive_path.suffix.lower() == ".iso"
             if is_iso and platform_spec.cdrom_bus == "ide":
                 cmd.extend(

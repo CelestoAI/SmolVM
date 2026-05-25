@@ -193,3 +193,208 @@ def test_missing_ssh_host_port_raises(tmp_path: Path) -> None:
             platform_spec=_LINUX_SPEC,
             host_system="Linux",
         )
+
+
+# ───────────────────────── Windows guest tests ──────────────────────────
+
+
+def _windows_vm_info(tmp_path: Path, *, vm_id: str = "vm-win") -> VMInfo:
+    """A minimal Windows VMInfo wired for the QEMU backend."""
+    rootfs = tmp_path / "win11.qcow2"
+    rootfs.touch()
+    return VMInfo(
+        vm_id=vm_id,
+        status=VMState.CREATED,
+        config=VMConfig(
+            vm_id=vm_id,
+            kernel_path=None,
+            rootfs_path=rootfs,
+            backend="qemu",
+            guest_os=GuestOS.WINDOWS,
+            boot_mode="firmware",
+        ),
+        network=NetworkConfig(
+            guest_ip="10.0.2.15",
+            tap_device="qemu-user",
+            guest_mac="52:54:00:5d:00:01",
+            ssh_host_port=2201,
+        ),
+    )
+
+
+def _fake_windows_spec() -> object:
+    """Build a Windows GuestPlatformSpec with mocked OVMF discovery."""
+    fake = FirmwareSpec(
+        code_path=Path("/usr/share/OVMF/OVMF_CODE_4M.secboot.fd"),
+        vars_template_path=Path("/usr/share/OVMF/OVMF_VARS_4M.ms.fd"),
+    )
+    with patch(
+        "smolvm.runtime.guest_platforms._find_x86_64_ovmf",
+        return_value=fake,
+    ):
+        return _build_windows_spec(host_system="Linux", arch="x86_64")
+
+
+def test_build_windows_spec_raises_on_macos_host() -> None:
+    """Windows guests are Linux-host-only in this release."""
+    with pytest.raises(NotImplementedError, match="Linux hosts"):
+        _build_windows_spec(host_system="Darwin", arch="x86_64")
+
+
+def test_build_windows_spec_raises_on_arm_host() -> None:
+    """Windows-on-ARM is out of Phase 1 scope."""
+    with pytest.raises(NotImplementedError, match="aarch64|arm"):
+        _build_windows_spec(host_system="Linux", arch="aarch64")
+
+
+def test_build_windows_spec_raises_when_no_ovmf_found() -> None:
+    """Missing OVMF Secure Boot firmware raises a plain-English install hint."""
+    with patch(
+        "smolvm.runtime.guest_platforms._find_x86_64_ovmf",
+        return_value=None,
+    ), pytest.raises(ValueError, match="OVMF Secure Boot firmware"):
+        _build_windows_spec(host_system="Linux", arch="x86_64")
+
+
+def test_build_windows_spec_populates_expected_fields() -> None:
+    """The Windows spec carries every override the QEMU builder needs."""
+    spec = _fake_windows_spec()
+    assert spec.guest_os is GuestOS.WINDOWS
+    assert spec.name == "windows"
+    assert spec.forced_boot_mode == "firmware"
+    assert spec.skip_kernel_cmdline_injection is True
+    assert spec.skip_workspace_mounts is True
+    assert "smm=on" in spec.machine_extra_opts
+    assert "vmport=off" in spec.machine_extra_opts
+    assert "kernel-irqchip=on" in spec.machine_extra_opts
+    assert "hv_relaxed" in spec.cpu_extra_flags
+    assert "hv_vapic" in spec.cpu_extra_flags
+    assert "hv_spinlocks=0x1fff" in spec.cpu_extra_flags
+    assert spec.root_disk_controller == "virtio-scsi-pci"
+    assert spec.root_disk_device == "scsi-hd"
+    assert spec.cdrom_bus == "ide"
+    assert spec.firmware is not None
+    assert spec.requires_swtpm is True
+    assert spec.swtpm_device_model == "tpm-crb"
+    # Trailing -device entries: USB controller, then tablet binding to it.
+    assert spec.extra_devices == (
+        "qemu-xhci,id=xhci",
+        "usb-tablet,bus=xhci.0",
+    )
+
+
+def test_windows_argv_skips_kernel_and_emits_firmware_pflash(tmp_path: Path) -> None:
+    """No direct-kernel artefacts; OVMF split-pflash drives appear."""
+    spec = _fake_windows_spec()
+    vm_info = _windows_vm_info(tmp_path)
+    cmd = build_qemu_argv(
+        vm_info,
+        qemu_bin=Path("/usr/bin/qemu-system-x86_64"),
+        boot_args="",
+        platform_spec=spec,
+        firmware_vars_path=Path("/state/vm-win/OVMF_VARS.fd"),
+        swtpm_socket=Path("/state/vm-win/swtpm-sock"),
+        host_system="Linux",
+    )
+
+    # Windows is firmware-only — no direct-kernel artefacts.
+    assert "-kernel" not in cmd
+    assert "-append" not in cmd
+    assert "-initrd" not in cmd
+
+    # Both pflash drives (code = readonly, vars = writable).
+    drive_args = [cmd[i + 1] for i, tok in enumerate(cmd) if tok == "-drive"]
+    pflash_drives = [d for d in drive_args if "if=pflash" in d]
+    assert len(pflash_drives) == 2
+    code_drive, vars_drive = pflash_drives
+    assert "readonly=on" in code_drive
+    assert "OVMF_CODE_4M.secboot.fd" in code_drive
+    assert "readonly=on" not in vars_drive
+    assert "/state/vm-win/OVMF_VARS.fd" in vars_drive
+
+
+def test_windows_argv_emits_smm_machine_and_hyperv_cpu(tmp_path: Path) -> None:
+    """The machine sub-options and CPU flags Windows needs."""
+    spec = _fake_windows_spec()
+    cmd = build_qemu_argv(
+        _windows_vm_info(tmp_path),
+        qemu_bin=Path("/usr/bin/qemu-system-x86_64"),
+        boot_args="",
+        platform_spec=spec,
+        firmware_vars_path=Path("/state/OVMF_VARS.fd"),
+        swtpm_socket=Path("/state/swtpm-sock"),
+        host_system="Linux",
+    )
+
+    machine_arg = cmd[cmd.index("-machine") + 1]
+    for option in ("q35", "accel=kvm", "smm=on", "vmport=off", "kernel-irqchip=on"):
+        assert option in machine_arg, f"missing {option!r} in machine arg: {machine_arg!r}"
+
+    cpu_arg = cmd[cmd.index("-cpu") + 1]
+    for flag in ("host", "hv_relaxed", "hv_vapic", "hv_spinlocks=0x1fff"):
+        assert flag in cpu_arg, f"missing {flag!r} in cpu arg: {cpu_arg!r}"
+
+    global_args = [cmd[i + 1] for i, tok in enumerate(cmd) if tok == "-global"]
+    assert any("cfi.pflash01" in g for g in global_args)
+    assert any("ICH9-LPC.disable_s3=1" in g for g in global_args)
+
+
+def test_windows_argv_emits_virtio_scsi_root_and_tpm(tmp_path: Path) -> None:
+    """Root disk on virtio-scsi (with scsi-hd) and tpm-crb device."""
+    spec = _fake_windows_spec()
+    cmd = build_qemu_argv(
+        _windows_vm_info(tmp_path),
+        qemu_bin=Path("/usr/bin/qemu-system-x86_64"),
+        boot_args="",
+        platform_spec=spec,
+        firmware_vars_path=Path("/state/OVMF_VARS.fd"),
+        swtpm_socket=Path("/state/swtpm-sock"),
+        host_system="Linux",
+    )
+
+    device_args = [cmd[i + 1] for i, tok in enumerate(cmd) if tok == "-device"]
+    assert "virtio-scsi-pci,id=scsi0" in device_args
+    assert "scsi-hd,bus=scsi0.0,drive=rootdisk0-drive" in device_args
+    # NO legacy virtio-blk-pci attachment for the root disk.
+    assert not any(
+        d.startswith("virtio-blk-pci,drive=rootdisk0") for d in device_args
+    )
+    # USB topology: controller first, then tablet binding to it.
+    assert device_args.index("qemu-xhci,id=xhci") < device_args.index(
+        "usb-tablet,bus=xhci.0"
+    )
+    # TPM CRB device.
+    assert "tpm-crb,tpmdev=tpm0" in device_args
+    # And the chardev + tpmdev tokens.
+    assert "-tpmdev" in cmd
+    assert "-chardev" in cmd
+
+
+def test_windows_argv_missing_firmware_vars_path_raises(tmp_path: Path) -> None:
+    """Caller must provide a per-VM OVMF_VARS path when spec has firmware."""
+    spec = _fake_windows_spec()
+    with pytest.raises(SmolVMError, match="OVMF_VARS"):
+        build_qemu_argv(
+            _windows_vm_info(tmp_path),
+            qemu_bin=Path("/usr/bin/qemu-system-x86_64"),
+            boot_args="",
+            platform_spec=spec,
+            firmware_vars_path=None,
+            swtpm_socket=Path("/state/swtpm-sock"),
+            host_system="Linux",
+        )
+
+
+def test_windows_argv_missing_swtpm_socket_raises(tmp_path: Path) -> None:
+    """Caller must provide an swtpm socket when the spec requires TPM."""
+    spec = _fake_windows_spec()
+    with pytest.raises(SmolVMError, match="swtpm"):
+        build_qemu_argv(
+            _windows_vm_info(tmp_path),
+            qemu_bin=Path("/usr/bin/qemu-system-x86_64"),
+            boot_args="",
+            platform_spec=spec,
+            firmware_vars_path=Path("/state/OVMF_VARS.fd"),
+            swtpm_socket=None,
+            host_system="Linux",
+        )

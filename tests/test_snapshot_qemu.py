@@ -22,7 +22,15 @@ import pytest
 
 from smolvm.exceptions import SmolVMError, VMNotFoundError
 from smolvm.runtime.qemu import QemuRuntimeAdapter
-from smolvm.types import SnapshotArtifacts, SnapshotInfo, VMConfig, VMState
+from smolvm.types import (
+    GuestOS,
+    NetworkConfig,
+    SnapshotArtifacts,
+    SnapshotInfo,
+    VMConfig,
+    VMInfo,
+    VMState,
+)
 from smolvm.vm import SmolVMManager
 
 
@@ -374,3 +382,33 @@ def test_delete_qemu_snapshot_rejects_active_restored_vm(
 
     with pytest.raises(SmolVMError, match="active"):
         qemu_smol_vm.delete_snapshot("snap-001")
+
+
+def test_snapshot_rejected_for_windows_guests(
+    qemu_smol_vm: SmolVMManager, tmp_path: Path
+) -> None:
+    """Windows snapshot/restore is locked out in Phase 1 with a clear message."""
+    rootfs = tmp_path / "win11.qcow2"
+    rootfs.touch()
+    config = VMConfig(
+        vm_id="vm-win-snap",
+        kernel_path=None,
+        rootfs_path=rootfs,
+        backend="qemu",
+        guest_os=GuestOS.WINDOWS,
+        boot_mode="firmware",
+        disk_mode="shared",
+    )
+    vm_info = VMInfo(
+        vm_id="vm-win-snap",
+        status=VMState.RUNNING,
+        config=config,
+        network=NetworkConfig(
+            guest_ip="10.0.2.15",
+            tap_device="qemu-user",
+            guest_mac="52:54:00:5d:00:01",
+            ssh_host_port=2202,
+        ),
+    )
+    with pytest.raises(SmolVMError, match="Windows guests"):
+        qemu_smol_vm._ensure_snapshot_supported(vm_info)

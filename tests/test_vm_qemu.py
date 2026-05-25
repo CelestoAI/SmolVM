@@ -188,6 +188,104 @@ def test_create_qemu_uses_managed_qcow2_disk(tmp_path: Path) -> None:
     assert expected_disk.read_text() == "managed-qcow2"
 
 
+def test_materialize_firmware_noop_for_linux_guests(tmp_path: Path) -> None:
+    """Linux guests don't need per-VM OVMF NVRAM — _materialize_firmware is a no-op."""
+    kernel = tmp_path / "vmlinux"
+    rootfs = tmp_path / "rootfs.ext4"
+    kernel.touch()
+    rootfs.touch()
+    config = VMConfig(
+        vm_id="vm-linux",
+        kernel_path=kernel,
+        rootfs_path=rootfs,
+        backend="qemu",
+    )
+
+    sdk = SmolVMManager(
+        data_dir=tmp_path / "data",
+        socket_dir=tmp_path / "sockets",
+        backend="qemu",
+    )
+    sdk._materialize_firmware(config)
+    # No firmware dir should be created for Linux VMs.
+    assert not (sdk.data_dir / "firmware" / "vm-linux").exists()
+
+
+def test_materialize_firmware_copies_ovmf_template_for_windows(tmp_path: Path) -> None:
+    """Windows guests get a per-VM OVMF_VARS.fd copied from the system template."""
+    from smolvm.runtime.guest_platforms import FirmwareSpec
+    from smolvm.types import GuestOS
+
+    rootfs = tmp_path / "win11.qcow2"
+    rootfs.touch()
+
+    # Fake the system OVMF template — both files have to exist for our copy.
+    template = tmp_path / "OVMF_VARS_4M.ms.fd"
+    template.write_bytes(b"fake-ovmf-vars-template")
+    code = tmp_path / "OVMF_CODE_4M.secboot.fd"
+    code.touch()
+    fake_spec_firmware = FirmwareSpec(code_path=code, vars_template_path=template)
+
+    config = VMConfig(
+        vm_id="vm-win",
+        kernel_path=None,
+        rootfs_path=rootfs,
+        backend="qemu",
+        guest_os=GuestOS.WINDOWS,
+        boot_mode="firmware",
+        disk_mode="shared",  # don't try to overlay a Windows qcow2
+    )
+
+    sdk = SmolVMManager(
+        data_dir=tmp_path / "data",
+        socket_dir=tmp_path / "sockets",
+        backend="qemu",
+    )
+    with patch(
+        "smolvm.runtime.guest_platforms._find_x86_64_ovmf",
+        return_value=fake_spec_firmware,
+    ), patch("smolvm.vm.platform.system", return_value="Linux"), patch(
+        "smolvm.vm.platform.machine", return_value="x86_64"
+    ):
+        sdk._materialize_firmware(config)
+
+    target = sdk.data_dir / "firmware" / "vm-win" / "OVMF_VARS.fd"
+    assert target.exists()
+    assert target.read_bytes() == b"fake-ovmf-vars-template"
+    # NVRAM is locked down (owner-only) by-default.
+    assert (target.stat().st_mode & 0o777) == 0o600
+
+
+def test_materialize_firmware_raises_with_install_hint_when_no_ovmf(tmp_path: Path) -> None:
+    """Missing OVMF gives a plain-English install hint at create time."""
+    from smolvm.types import GuestOS
+
+    rootfs = tmp_path / "win11.qcow2"
+    rootfs.touch()
+    config = VMConfig(
+        vm_id="vm-win-no-ovmf",
+        kernel_path=None,
+        rootfs_path=rootfs,
+        backend="qemu",
+        guest_os=GuestOS.WINDOWS,
+        boot_mode="firmware",
+        disk_mode="shared",
+    )
+
+    sdk = SmolVMManager(
+        data_dir=tmp_path / "data",
+        socket_dir=tmp_path / "sockets",
+        backend="qemu",
+    )
+    with patch(
+        "smolvm.runtime.guest_platforms._find_x86_64_ovmf",
+        return_value=None,
+    ), patch("smolvm.vm.platform.system", return_value="Linux"), patch(
+        "smolvm.vm.platform.machine", return_value="x86_64"
+    ), pytest.raises(SmolVMError, match="OVMF"):
+        sdk._materialize_firmware(config)
+
+
 def test_delete_qemu_retains_isolated_disk_when_enabled(tmp_path: Path) -> None:
     """retain_disk_on_delete should preserve managed qcow2 disks for QEMU VMs."""
     kernel = tmp_path / "vmlinux"

@@ -658,6 +658,16 @@ class SmolVMManager:
 
     def _ensure_snapshot_supported(self, vm_info: VMInfo) -> None:
         """Validate whether snapshot operations are supported for a VM."""
+        if vm_info.config.guest_os is GuestOS.WINDOWS:
+            # Snapshotting a Windows VM faithfully needs the qcow2, the OVMF
+            # NVRAM, AND the swtpm state captured atomically; that's a
+            # standalone design problem (multi-artifact snapshot atomicity)
+            # and not in Phase 1 scope.
+            raise SmolVMError(
+                "Snapshot and restore are not supported for Windows guests "
+                "in this release.",
+                {"vm_id": vm_info.vm_id},
+            )
         if vm_info.config.disk_mode != "isolated":
             raise SmolVMError("Snapshotting currently supports only isolated-disk VMs")
         if vm_info.config.extra_drives:
@@ -2014,6 +2024,31 @@ class SmolVMManager:
                     with suppress(Exception):
                         managed_disk.unlink()
                         logger.info("Removed isolated disk for VM %s: %s", vm_id, managed_disk)
+
+            # Per-VM firmware state (OVMF NVRAM + swtpm). Coupled to the
+            # disk lifecycle — kept iff retain_disk_on_delete is set so
+            # Secure Boot enrollment persists for a later VM with the
+            # same ID.
+            firmware_state = self.data_dir / "firmware" / vm_id
+            if firmware_state.exists():
+                retain = (
+                    vm_info is not None
+                    and vm_info.config.retain_disk_on_delete
+                )
+                if retain:
+                    logger.info(
+                        "Retaining per-VM firmware state for VM %s at %s",
+                        vm_id,
+                        firmware_state,
+                    )
+                else:
+                    with suppress(Exception):
+                        shutil.rmtree(firmware_state)
+                        logger.info(
+                            "Removed per-VM firmware state for VM %s: %s",
+                            vm_id,
+                            firmware_state,
+                        )
 
         except Exception as e:
             logger.warning("Error during cleanup for %s: %s", vm_id, e)

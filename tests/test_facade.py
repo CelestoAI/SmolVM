@@ -26,7 +26,7 @@ from smolvm.exceptions import (
 )
 from smolvm.facade import SmolVM, _build_auto_config
 from smolvm.images.cloud_init import seed_cache_key
-from smolvm.types import VMConfig, VMState
+from smolvm.types import GuestOS, VMConfig, VMState
 
 
 @pytest.fixture
@@ -600,6 +600,148 @@ class TestVMImageParam:
             memory=1024,
             ssh_key_path=None,
         )
+
+
+class TestVMLocalImageParam:
+    """Tests for local-image (Windows POC) routing via the image= parameter."""
+
+    def test_is_local_image_truth_table(self) -> None:
+        """Detection should treat host paths and file:// URIs as local."""
+        from smolvm.facade import _is_local_image
+
+        # Locals
+        assert _is_local_image("/abs/path/to/disk.qcow2")
+        assert _is_local_image("~/win11-vm/disk.qcow2")
+        assert _is_local_image("relative/path/disk.qcow2")
+        assert _is_local_image("file:///abs/path/to/disk.qcow2")
+
+        # Remotes
+        assert not _is_local_image("s3://bucket/images/alpine/")
+        assert not _is_local_image("https://example.com/disk.qcow2")
+        assert not _is_local_image("http://example.com/disk.qcow2")
+
+    def test_windows_without_image_raises_plain_english(self) -> None:
+        """`os='windows'` with no image= must surface a plain-English error."""
+        with pytest.raises(ValueError, match="Windows guests need a pre-installed disk image"):
+            SmolVM(os="windows")
+
+    def test_windows_with_mounts_rejected(self, tmp_path: Path) -> None:
+        """Workspace mounts on Windows guests are Phase 2 scope."""
+        disk = tmp_path / "win11.qcow2"
+        disk.touch()
+        with pytest.raises(ValueError, match="mounts.* not yet supported for Windows"):
+            SmolVM(os="windows", image=str(disk), mounts=["/host/path"])
+
+    def test_windows_with_internet_settings_rejected(self, tmp_path: Path) -> None:
+        """Egress allowlist on Windows guests is Phase 2 scope."""
+        disk = tmp_path / "win11.qcow2"
+        disk.touch()
+        with pytest.raises(
+            ValueError, match="internet_settings.* not yet supported for Windows"
+        ):
+            SmolVM(
+                os="windows",
+                image=str(disk),
+                internet_settings={"allowed_domains": ["https://api.openai.com"]},
+            )
+
+    def test_s3_image_with_os_still_rejected(self) -> None:
+        """The image+os ban is preserved for S3 images (only relaxed for locals)."""
+        with pytest.raises(ValueError, match="mutually exclusive for S3 images"):
+            SmolVM(image="s3://bucket/images/alpine/", os="alpine")
+
+    def test_local_image_with_non_windows_os_rejected(self, tmp_path: Path) -> None:
+        """Local image with os='alpine' isn't supported in this release."""
+        disk = tmp_path / "rootfs.ext4"
+        disk.touch()
+        with pytest.raises(ValueError, match="only supported for os='windows'"):
+            SmolVM(image=str(disk), os="alpine")
+
+    def test_local_image_missing_file_raises(self, tmp_path: Path) -> None:
+        """A path that doesn't exist surfaces a plain-English error."""
+        with pytest.raises(ValueError, match="Local image not found"):
+            SmolVM(os="windows", image=str(tmp_path / "does-not-exist.qcow2"))
+
+    @patch("smolvm.facade.SmolVMManager")
+    @patch("smolvm.facade._build_local_image_config")
+    def test_local_windows_image_routes_to_local_builder(
+        self,
+        mock_build_local: MagicMock,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Local image + os='windows' goes through _build_local_image_config."""
+        disk = tmp_path / "win11.qcow2"
+        disk.touch()
+
+        # Build a Windows VMConfig the dispatcher will then hand to the SDK.
+        config = VMConfig(
+            vm_id="vm-win",
+            rootfs_path=disk,
+            kernel_path=None,
+            backend="qemu",
+            guest_os=GuestOS.WINDOWS,
+            boot_mode="firmware",
+            disk_mode="shared",
+        )
+        mock_build_local.return_value = (config, str(tmp_path / "key"))
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm-win", status=VMState.CREATED)
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = SmolVM(os="windows", image=str(disk))
+
+        mock_build_local.assert_called_once()
+        call_kwargs = mock_build_local.call_args.kwargs
+        assert call_kwargs["image"] == str(disk)
+        assert call_kwargs["os_input"] == "windows"
+        assert vm.vm_id == "vm-win"
+
+    def test_build_local_image_config_produces_windows_vmconfig(
+        self, tmp_path: Path
+    ) -> None:
+        """_build_local_image_config returns a properly-shaped Windows VMConfig."""
+        from smolvm.facade import _build_local_image_config
+
+        disk = tmp_path / "win11.qcow2"
+        disk.write_bytes(b"fake qcow2")
+        key = tmp_path / "id_rsa"
+        key.touch()
+
+        config, ssh_key = _build_local_image_config(
+            image=str(disk),
+            os_input="windows",
+            backend=None,
+            memory=None,
+            ssh_key_path=str(key),
+        )
+
+        assert config.guest_os is GuestOS.WINDOWS
+        assert config.boot_mode == "firmware"
+        assert config.kernel_path is None
+        assert config.backend == "qemu"
+        assert config.disk_mode == "shared"
+        assert config.rootfs_path == disk
+        assert config.memory == 4096  # Windows default
+        assert ssh_key == str(key)
+
+    def test_build_local_image_config_rejects_non_qemu_backend(
+        self, tmp_path: Path
+    ) -> None:
+        """Firecracker + Windows = clear error before VMConfig validation."""
+        from smolvm.facade import _build_local_image_config
+
+        disk = tmp_path / "win11.qcow2"
+        disk.touch()
+        with pytest.raises(ValueError, match="only run on the QEMU backend"):
+            _build_local_image_config(
+                image=str(disk),
+                os_input="windows",
+                backend="firecracker",
+                memory=None,
+                ssh_key_path=None,
+            )
 
 
 class TestVMLifecycle:
