@@ -717,20 +717,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--name",
         help="Name for the sandbox (default: auto-generated).",
     )
-    image_group = create_parser.add_mutually_exclusive_group()
-    image_group.add_argument(
+    # --os and --image are not in an argparse mutex group: Windows guests
+    # need BOTH (--os windows + --image /path/to/win11.qcow2). The facade
+    # rejects illegal combos (e.g. --os alpine + S3 image) at runtime with
+    # a clearer message than argparse can produce.
+    create_parser.add_argument(
         "--os",
         choices=[guest_os.value for guest_os in GuestOS],
         default=None,
-        help="Operating system image (default: auto-detected based on backend).",
+        help=(
+            "Operating system image (default: auto-detected based on backend). "
+            "--os windows requires --image with a local Windows qcow2 path."
+        ),
     )
-    image_group.add_argument(
+    create_parser.add_argument(
         "--image",
         default=None,
         help=(
-            "Image URI (e.g. s3://bucket/path/to/image/). "
-            "Configure S3-compatible stores via SMOLVM_S3_ENDPOINT_URL, "
-            "SMOLVM_S3_ACCESS_KEY_ID, SMOLVM_S3_SECRET_ACCESS_KEY env vars."
+            "Image URI: S3 URI (e.g. s3://bucket/path/to/image/) or a local "
+            "filesystem path / file:// URI to a pre-built qcow2 (used with "
+            "--os windows). Configure S3-compatible stores via "
+            "SMOLVM_S3_ENDPOINT_URL, SMOLVM_S3_ACCESS_KEY_ID, "
+            "SMOLVM_S3_SECRET_ACCESS_KEY env vars."
         ),
     )
     create_parser.add_argument(
@@ -1700,8 +1708,10 @@ def _run_create(args: argparse.Namespace) -> int:
     from smolvm.facade import (
         SmolVM,
         _build_auto_config,
+        _build_local_image_config,
         _build_s3_image_config,
         _default_guest_os_for_backend,
+        _is_local_image,
     )
     from smolvm.runtime.backends import resolve_backend
 
@@ -1714,9 +1724,33 @@ def _run_create(args: argparse.Namespace) -> int:
         if args.mounts and args.backend in (None, "auto"):
             args.backend = "qemu"
 
+        # Windows guests only boot on QEMU (firmware boot + swtpm). Auto-pick
+        # QEMU when the user did not pin a backend; reject explicit
+        # non-QEMU choices upfront with a one-sentence error.
+        if args.os == "windows":
+            if args.backend in (None, "auto"):
+                args.backend = "qemu"
+            elif args.backend != "qemu":
+                raise ValueError(
+                    f"--os windows requires --backend qemu (got --backend "
+                    f"{args.backend!r}); drop --backend or pass --backend qemu."
+                )
+
         resolved_backend = resolve_backend(args.backend)
         image_uri: str | None = getattr(args, "image", None)
         use_s3_image = image_uri is not None
+        use_local_image = use_s3_image and _is_local_image(image_uri)
+
+        # S3 images carry their own OS in the manifest, so --os would
+        # conflict. Local images need --os to disambiguate, so the pair
+        # is allowed there. (The argparse mutex used to enforce this
+        # blanket; with local images now supported we have to gate by
+        # image kind explicitly.)
+        if use_s3_image and not use_local_image and args.os is not None:
+            raise ValueError(
+                "--image (S3) and --os are mutually exclusive; the S3 image "
+                "manifest already names the OS — drop --os."
+            )
 
         resolved_guest_os = (
             GuestOS(args.os)
@@ -1742,7 +1776,45 @@ def _run_create(args: argparse.Namespace) -> int:
         ):
             args.disk_size_mib = 4096
 
-        if use_s3_image:
+        if use_local_image:
+            # Local image path (Windows POC). The build is a file existence
+            # check — fast, no download — but we still funnel through the
+            # same builder/progress shape so the JSON/non-JSON branches
+            # stay parallel to the S3 path.
+            if not args.json:
+                console = console_stdout()
+                vm = _build_and_boot_with_progress(
+                    console=console,
+                    build_fn=lambda on_download: _build_local_image_config(  # noqa: ARG005
+                        image=image_uri,
+                        os_input=args.os,
+                        backend=args.backend,
+                        memory=args.memory_mib,
+                        ssh_key_path=None,
+                        vm_name=args.name,
+                    ),
+                    boot_timeout=args.boot_timeout,
+                    mounts=args.mounts,
+                    writable_mounts=args.writable_mounts,
+                )
+            else:
+                config, ssh_key_path = _build_local_image_config(
+                    image=image_uri,
+                    os_input=args.os,
+                    backend=args.backend,
+                    memory=args.memory_mib,
+                    ssh_key_path=None,
+                    vm_name=args.name,
+                )
+                vm = SmolVM(
+                    config,
+                    ssh_key_path=ssh_key_path,
+                    mounts=args.mounts,
+                    writable_mounts=args.writable_mounts,
+                )
+                vm.start(boot_timeout=args.boot_timeout)
+                vm.wait_for_ssh(timeout=args.boot_timeout)
+        elif use_s3_image:
             # S3 image path
             if not args.json:
                 console = console_stdout()

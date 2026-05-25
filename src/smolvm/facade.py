@@ -525,6 +525,15 @@ def _build_auto_config(
 
     resolved_backend = resolve_backend(backend)
     resolved_os = _normalize_guest_os(os or _default_guest_os_for_backend(resolved_backend))
+    if resolved_os is GuestOS.WINDOWS:
+        # Auto-config builds a Linux SSH-ready VM from a built or downloaded
+        # base image; Windows has no equivalent path because we don't ship a
+        # base qcow2. The user must supply their own pre-installed image.
+        raise ValueError(
+            "Windows guests need a pre-installed disk image; pass "
+            'image="/path/to/win11.qcow2" (see '
+            "docs/deep-dive/windows-guest-qemu.md to build one)."
+        )
     resolved_ssh_key_path, public_key_path = _resolve_auto_config_public_key(ssh_key_path)
     public_key_value = public_key_path.read_text().strip()
 

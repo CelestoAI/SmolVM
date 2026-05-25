@@ -864,16 +864,27 @@ class TestCliCreateImage:
         assert args.image == "s3://bucket/images/test/"
         assert args.os is None
 
-    def test_image_and_os_mutually_exclusive(
+    def test_image_and_os_parsed_together(self) -> None:
+        """--image and --os now both parse (Windows guests need both); the
+        facade rejects illegal combos at runtime with a clearer message."""
+        parser = build_parser()
+        args = parser.parse_args(
+            ["create", "--image", "s3://bucket/img/", "--os", "alpine"]
+        )
+        assert args.image == "s3://bucket/img/"
+        assert args.os == "alpine"
+
+    def test_s3_image_with_os_still_rejected_at_runtime(
         self,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Argparse should reject --image and --os together."""
-        with pytest.raises(SystemExit) as exc_info:
-            main(["create", "--image", "s3://bucket/img/", "--os", "alpine"])
-
-        assert exc_info.value.code == 2
-        assert "not allowed" in capsys.readouterr().err
+        """S3 image + --os surfaces a one-sentence CLI error."""
+        ret = main(
+            ["create", "--image", "s3://bucket/img/", "--os", "alpine"]
+        )
+        assert ret == 1
+        err = capsys.readouterr().err
+        assert "--image (S3) and --os are mutually exclusive" in err
 
     def test_image_with_name_and_memory(self) -> None:
         """--image should work alongside --name, --memory, and --disk-size."""
@@ -914,6 +925,128 @@ class TestCliCreateImage:
         assert ret == 1
         err = capsys.readouterr().err
         assert "--disk-size is incompatible with --image" in err
+
+
+class TestCliCreateWindows:
+    """Tests for `smolvm create --os windows` routing."""
+
+    def test_windows_backend_explicit_firecracker_rejected(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """`smolvm create --os windows --backend firecracker` fails cleanly."""
+        ret = main(
+            [
+                "create",
+                "--os",
+                "windows",
+                "--image",
+                "/tmp/win11.qcow2",
+                "--backend",
+                "firecracker",
+            ]
+        )
+        assert ret == 1
+        err = capsys.readouterr().err
+        assert "--os windows requires --backend qemu" in err
+        assert "firecracker" in err
+
+    def test_windows_backend_explicit_libkrun_rejected(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """libkrun + Windows also fails with the same shape of error."""
+        ret = main(
+            [
+                "create",
+                "--os",
+                "windows",
+                "--image",
+                "/tmp/win11.qcow2",
+                "--backend",
+                "libkrun",
+            ]
+        )
+        assert ret == 1
+        err = capsys.readouterr().err
+        assert "--os windows requires --backend qemu" in err
+
+    def test_windows_without_image_surfaces_plain_english_error(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """`smolvm create --os windows` (no --image) fires the facade error."""
+        ret = main(["create", "--os", "windows"])
+        assert ret == 1
+        err = capsys.readouterr().err
+        assert "Windows guests need a pre-installed disk image" in err
+
+    @patch("smolvm.facade._build_local_image_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_windows_auto_selects_qemu_backend_and_routes_local_image(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_local: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """`--os windows --image PATH` auto-picks qemu and uses the local builder."""
+        disk = tmp_path / "win11.qcow2"
+        disk.touch()
+
+        config = MagicMock(vm_id="win-vm-1")
+        mock_build_local.return_value = (config, None)
+
+        vm = MagicMock()
+        vm.vm_id = "win-vm-1"
+        vm.info.config.backend = "qemu"
+        vm.info.network = MagicMock(spec=NetworkConfig)
+        vm.info.network.guest_ip = "10.0.2.15"
+        vm.info.network.ssh_host_port = 2222
+        mock_vm_cls.return_value = vm
+
+        ret = main(
+            [
+                "create",
+                "--name",
+                "win-vm-1",
+                "--os",
+                "windows",
+                "--image",
+                str(disk),
+                "--json",
+            ]
+        )
+        assert ret == 0
+        # The facade builder was called with the Windows-flavoured kwargs and
+        # the auto-picked qemu backend.
+        mock_build_local.assert_called_once_with(
+            image=str(disk),
+            os_input="windows",
+            backend="qemu",
+            memory=None,
+            ssh_key_path=None,
+            vm_name="win-vm-1",
+        )
+
+    def test_windows_with_explicit_backend_qemu_is_accepted(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """`--os windows --backend qemu` parses without error (no auto-pick conflict)."""
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "create",
+                "--os",
+                "windows",
+                "--image",
+                str(tmp_path / "win11.qcow2"),
+                "--backend",
+                "qemu",
+            ]
+        )
+        assert args.os == "windows"
+        assert args.backend == "qemu"
 
 
 class TestCliStop:
