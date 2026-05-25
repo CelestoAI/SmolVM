@@ -75,6 +75,11 @@ class RuntimeContext:
 
     data_dir: Path
     socket_dir: Path
+    firmware_dir: Path
+    """Per-VM firmware state root. Each VM gets a subdirectory
+    ``firmware_dir/{vm_id}/`` containing its OVMF NVRAM (``OVMF_VARS.fd``)
+    and swtpm state (``swtpm/``). Empty for VMs that don't use UEFI
+    firmware boot. Created by the manager during ``create()``."""
     log_files: dict[str, TextIO]
     process_handles: dict[int, subprocess.Popen[bytes]]
     resolve_boot_args: Callable[[VMInfo], str]

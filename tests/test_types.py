@@ -356,6 +356,53 @@ class TestVMConfig:
                 disk_mode="snapshot",
             )
 
+    def test_windows_guest_requires_firmware_boot(self, tmp_path: Path) -> None:
+        """Windows guests must boot via OVMF firmware — no direct-kernel path."""
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "win11.qcow2"
+        kernel.touch()
+        rootfs.touch()
+
+        with pytest.raises(ValidationError, match="windows.*requires boot_mode='firmware'"):
+            VMConfig(
+                vm_id="vm-win",
+                kernel_path=kernel,
+                rootfs_path=rootfs,
+                backend="qemu",
+                guest_os=GuestOS.WINDOWS,
+                boot_mode="direct_kernel",
+            )
+
+    def test_windows_guest_with_firmware_boot_is_accepted(self, tmp_path: Path) -> None:
+        """Windows + firmware + qemu + no kernel = a valid config."""
+        rootfs = tmp_path / "win11.qcow2"
+        rootfs.touch()
+
+        config = VMConfig(
+            vm_id="vm-win",
+            kernel_path=None,
+            rootfs_path=rootfs,
+            backend="qemu",
+            guest_os=GuestOS.WINDOWS,
+            boot_mode="firmware",
+        )
+        assert config.guest_os is GuestOS.WINDOWS
+        assert config.boot_mode == "firmware"
+
+    def test_linux_default_guest_os_is_alpine(self, tmp_path: Path) -> None:
+        """Existing Linux callers that don't set guest_os get ALPINE by default."""
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.touch()
+
+        config = VMConfig(
+            vm_id="vm-linux",
+            kernel_path=kernel,
+            rootfs_path=rootfs,
+        )
+        assert config.guest_os is GuestOS.ALPINE
+
 
 class TestVMState:
     """Tests for VMState enum."""

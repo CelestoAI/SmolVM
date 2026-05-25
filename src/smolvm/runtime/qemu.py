@@ -18,7 +18,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import platform
 import shutil
+import signal
 import subprocess
 import time
 from contextlib import suppress
@@ -36,12 +39,149 @@ from smolvm.runtime.base import (
     SnapshotCreateResult,
     SnapshotRestoreRequest,
 )
-from smolvm.types import SnapshotArtifacts, VMInfo, VMState
+from smolvm.runtime.guest_platforms import GuestPlatformSpec, get_guest_platform
+from smolvm.types import GuestOS, SnapshotArtifacts, VMInfo, VMState
 from smolvm.utils import which
 
 logger = logging.getLogger(__name__)
 
 QEMU_ROOT_NODE_NAME = "rootdisk0"
+
+
+class _SwtpmSidecar:
+    """Per-VM swtpm (software TPM 2.0) process.
+
+    Owned by :class:`QemuRuntimeAdapter`. Linux-host only — swtpm is a
+    Linux-native daemon. The adapter spawns this before QEMU and tears
+    it down after, passing the data-channel socket into the QEMU command
+    line as ``-chardev socket,id=chrtpm,path=...``.
+
+    Statelessness: the sidecar carries no in-memory bookkeeping. Each
+    ``start`` / ``stop`` call rederives paths from ``vm_id`` and the
+    runtime context, so the adapter can construct a new sidecar instance
+    for a different lifecycle phase without coordination.
+    """
+
+    def __init__(
+        self,
+        *,
+        vm_id: str,
+        firmware_dir: Path,
+        context: RuntimeContext,
+    ) -> None:
+        self._vm_id = vm_id
+        self._state_dir = firmware_dir / vm_id / "swtpm"
+        self._socket_path = self._state_dir / "swtpm-sock"
+        self._pidfile = self._state_dir / "swtpm.pid"
+        self._context = context
+
+    @property
+    def socket_path(self) -> Path:
+        """Path to the swtpm data-channel Unix socket QEMU connects to."""
+        return self._socket_path
+
+    @property
+    def pidfile_path(self) -> Path:
+        """Path to swtpm's pidfile (used by the adapter for liveness checks)."""
+        return self._pidfile
+
+    def start(self, *, timeout: float = 5.0) -> int:
+        """Spawn ``swtpm socket --tpm2 --daemon ...`` and return its pid.
+
+        Raises:
+            SmolVMError: When ``swtpm`` isn't on PATH, when the swtpm
+                process exits non-zero, when the data socket never
+                appears within *timeout* seconds, or when the pidfile
+                isn't written.
+        """
+        # Clean any stale state from a previous run.
+        with suppress(FileNotFoundError):
+            self._socket_path.unlink()
+        with suppress(FileNotFoundError):
+            self._pidfile.unlink()
+        self._state_dir.mkdir(parents=True, exist_ok=True)
+
+        swtpm_bin = which("swtpm")
+        if swtpm_bin is None:
+            raise SmolVMError(
+                "Windows guests need the swtpm software TPM emulator. "
+                "Install it with 'sudo apt-get install -y swtpm swtpm-tools' "
+                "on Debian/Ubuntu, 'sudo dnf install -y swtpm swtpm-tools' "
+                "on Fedora/RHEL, or 'sudo pacman -S --needed swtpm' on Arch."
+            )
+
+        try:
+            subprocess.run(
+                [
+                    str(swtpm_bin),
+                    "socket",
+                    "--tpmstate",
+                    f"dir={self._state_dir}",
+                    "--ctrl",
+                    f"type=unixio,path={self._socket_path}",
+                    "--tpm2",
+                    "--daemon",
+                    "--pid",
+                    f"file={self._pidfile}",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise SmolVMError(
+                "Failed to start swtpm sidecar for Windows guest",
+                {
+                    "vm_id": self._vm_id,
+                    "stderr": (exc.stderr or "").strip(),
+                },
+            ) from exc
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self._socket_path.exists():
+                break
+            time.sleep(0.05)
+        if not self._socket_path.exists():
+            raise SmolVMError(
+                "swtpm spawned but its control socket never appeared",
+                {"socket_path": str(self._socket_path), "timeout": timeout},
+            )
+        if not self._pidfile.exists():
+            raise SmolVMError(
+                "swtpm spawned but no pidfile was written",
+                {"pidfile": str(self._pidfile)},
+            )
+        return int(self._pidfile.read_text().strip())
+
+    def stop(self) -> None:
+        """Stop the swtpm daemon and remove the socket + pidfile.
+
+        Best-effort: missing files are ignored; a process that's already
+        gone is fine. The adapter calls this after stopping QEMU and on
+        QEMU startup failure.
+        """
+        if self._pidfile.exists():
+            try:
+                pid = int(self._pidfile.read_text().strip())
+            except ValueError:
+                pid = -1
+            if pid > 0 and self._context.is_process_running(pid):
+                with suppress(ProcessLookupError, OSError):
+                    os.kill(pid, signal.SIGTERM)
+                deadline = time.time() + 5.0
+                while (
+                    time.time() < deadline
+                    and self._context.is_process_running(pid)
+                ):
+                    time.sleep(0.05)
+                if self._context.is_process_running(pid):
+                    with suppress(ProcessLookupError, OSError):
+                        os.kill(pid, signal.SIGKILL)
+        with suppress(FileNotFoundError):
+            self._pidfile.unlink()
+        with suppress(FileNotFoundError):
+            self._socket_path.unlink()
 
 
 class QemuRuntimeAdapter(RuntimeAdapter):
@@ -53,10 +193,22 @@ class QemuRuntimeAdapter(RuntimeAdapter):
         self._context = context
 
     def start(self, vm_info: VMInfo, *, log_path: Path, boot_timeout: float) -> RuntimeLaunch:
-        """Start QEMU with a persistent QMP socket."""
+        """Start QEMU (and a swtpm sidecar if the guest OS needs one)."""
+        platform_spec = self._resolve_platform_spec(vm_info)
+
         control_socket_path = self._control_socket_path(vm_info.vm_id)
         if control_socket_path.exists():
             self._context.unlink_socket(control_socket_path)
+
+        firmware_vars_path = self._firmware_vars_path(vm_info, platform_spec)
+        swtpm_sidecar: _SwtpmSidecar | None = None
+        if platform_spec.requires_swtpm:
+            swtpm_sidecar = _SwtpmSidecar(
+                vm_id=vm_info.vm_id,
+                firmware_dir=self._context.firmware_dir,
+                context=self._context,
+            )
+            swtpm_sidecar.start()
 
         process: Any | None = None
         try:
@@ -66,6 +218,8 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                 control_socket_path=control_socket_path,
                 start_paused=False,
                 root_node_name=QEMU_ROOT_NODE_NAME,
+                firmware_vars_path=firmware_vars_path,
+                swtpm_socket=(swtpm_sidecar.socket_path if swtpm_sidecar else None),
             )
             self._wait_for_runtime(process, control_socket_path, boot_timeout)
             return RuntimeLaunch(
@@ -80,15 +234,15 @@ class QemuRuntimeAdapter(RuntimeAdapter):
             if control_socket_path.exists():
                 with suppress(Exception):
                     self._context.unlink_socket(control_socket_path)
+            if swtpm_sidecar is not None:
+                with suppress(Exception):
+                    swtpm_sidecar.stop()
             raise
 
     def stop(self, vm_info: VMInfo, *, timeout: float) -> None:
-        """Stop a QEMU VM process."""
+        """Stop a QEMU VM process and any swtpm sidecar it owns."""
         if vm_info.pid and self._context.is_process_running(vm_info.pid):
             try:
-                import os
-                import signal
-
                 os.kill(vm_info.pid, signal.SIGTERM)
                 self._context.wait_for_process(vm_info.pid, timeout)
             except (OSError, SmolVMError):
@@ -105,8 +259,51 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                 {"pid": vm_info.pid},
             )
 
+        # Tear down the swtpm sidecar after QEMU is gone. We rederive
+        # whether one ran from vm_info.config.guest_os so the stop path
+        # has no in-memory dependency on what start() captured.
+        if vm_info.config.guest_os is GuestOS.WINDOWS:
+            sidecar = _SwtpmSidecar(
+                vm_id=vm_info.vm_id,
+                firmware_dir=self._context.firmware_dir,
+                context=self._context,
+            )
+            with suppress(Exception):
+                sidecar.stop()
+
         if vm_info.control_socket_path and vm_info.control_socket_path.exists():
             self._context.unlink_socket(vm_info.control_socket_path)
+
+    @staticmethod
+    def _resolve_platform_spec(vm_info: VMInfo) -> GuestPlatformSpec:
+        """Resolve the guest platform spec for *vm_info*.
+
+        Surfaces the macOS-host + Windows-guest rejection (and any other
+        host-incompatibility raised by the spec factory) as a ``SmolVMError``
+        with the VM ID in context, so the runtime adapter's error path
+        is consistent with the rest of the SmolVM SDK.
+        """
+        try:
+            return get_guest_platform(
+                vm_info.config.guest_os,
+                host_system=platform.system(),
+                arch=platform.machine(),
+            )
+        except (NotImplementedError, ValueError) as exc:
+            raise SmolVMError(
+                str(exc),
+                {"vm_id": vm_info.vm_id, "guest_os": vm_info.config.guest_os.value},
+            ) from exc
+
+    def _firmware_vars_path(
+        self,
+        vm_info: VMInfo,
+        platform_spec: GuestPlatformSpec,
+    ) -> Path | None:
+        """Resolve the per-VM OVMF VARS path, when the guest needs one."""
+        if platform_spec.firmware is None:
+            return None
+        return self._context.firmware_dir / vm_info.vm_id / "OVMF_VARS.fd"
 
     def pause(self, vm_info: VMInfo) -> None:
         """Pause a running QEMU VM."""

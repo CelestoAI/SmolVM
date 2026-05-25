@@ -53,10 +53,12 @@ from smolvm.runtime.backends import (
 )
 from smolvm.runtime.base import RuntimeContext, SnapshotCreateRequest, SnapshotRestoreRequest
 from smolvm.runtime.firecracker import FirecrackerRuntimeAdapter
+from smolvm.runtime.guest_platforms import get_guest_platform
 from smolvm.runtime.libkrun import LibkrunRuntimeAdapter
 from smolvm.runtime.qemu import QEMU_ROOT_NODE_NAME, QemuRuntimeAdapter
+from smolvm.runtime.qemu_args import build_qemu_argv
 from smolvm.storage import StateManagerProtocol, create_state_manager, ip_to_pool_index
-from smolvm.types import NetworkConfig, SnapshotInfo, VMConfig, VMInfo, VMState
+from smolvm.types import GuestOS, NetworkConfig, SnapshotInfo, VMConfig, VMInfo, VMState
 from smolvm.utils import RUNTIME_PRIVILEGE_SETUP_HINT, which
 
 logger = logging.getLogger(__name__)
@@ -127,30 +129,7 @@ def _qemu_install_hint() -> str:
     )
 QEMU_GATEWAY_IP = "10.0.2.2"
 QEMU_NETMASK = "255.255.255.0"
-QEMU_SLIRP_DNS = "10.0.2.3"
 SNAPSHOT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$|^[a-z0-9]$")
-
-# Candidate UEFI firmware locations for aarch64 QEMU firmware-boot.
-# Searched in order; the first existing file wins. macOS Homebrew ships
-# edk2-aarch64-code.fd under the qemu data dir; Debian/Ubuntu split it into
-# a separate qemu-efi-aarch64 package; RHEL uses AAVMF.
-_AARCH64_EDK2_FIRMWARE_CANDIDATES: tuple[str, ...] = (
-    "/opt/homebrew/share/qemu/edk2-aarch64-code.fd",
-    "/usr/local/share/qemu/edk2-aarch64-code.fd",
-    "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd",
-    "/usr/share/AAVMF/AAVMF_CODE.fd",
-    "/usr/share/edk2/aarch64/QEMU_EFI.fd",
-    "/usr/share/edk2-armvirt/aarch64/QEMU_EFI.fd",
-)
-
-
-def _find_aarch64_uefi_firmware() -> Path | None:
-    """Return the first existing aarch64 UEFI firmware file, or ``None``."""
-    for candidate in _AARCH64_EDK2_FIRMWARE_CANDIDATES:
-        path = Path(candidate)
-        if path.is_file():
-            return path
-    return None
 
 
 def _get_sudo_user_info() -> pwd.struct_passwd | None:
@@ -380,9 +359,12 @@ class SmolVMManager:
 
     def _runtime_context(self) -> RuntimeContext:
         """Build a shared adapter context from manager-owned helpers."""
+        firmware_dir = self.data_dir / "firmware"
+        firmware_dir.mkdir(parents=True, exist_ok=True)
         return RuntimeContext(
             data_dir=self.data_dir,
             socket_dir=self.socket_dir,
+            firmware_dir=firmware_dir,
             log_files=self._log_files,
             process_handles=self._process_handles,
             resolve_boot_args=self._resolve_boot_args,
@@ -575,6 +557,63 @@ class SmolVMManager:
             )
 
         return config.model_copy(update={"rootfs_path": instance_rootfs})
+
+    def _materialize_firmware(self, config: VMConfig) -> None:
+        """Create the per-VM OVMF NVRAM file for UEFI-firmware guests.
+
+        For Windows guests (the only Phase 1 firmware-required platform),
+        copies the system-wide ``OVMF_VARS.fd`` template to
+        ``data_dir/firmware/{vm_id}/OVMF_VARS.fd``. Subsequent VM starts
+        read and write the per-VM file directly — Secure Boot enrollment
+        and UEFI boot order persist across reboots.
+
+        No-op for Linux guests (no UEFI NVRAM needed). Idempotent: if
+        the per-VM file already exists, it is preserved as-is so prior
+        Secure Boot state isn't clobbered.
+        """
+        if config.guest_os is not GuestOS.WINDOWS:
+            return
+
+        # Resolving the spec also surfaces the macOS-host rejection and
+        # the missing-OVMF install hint at create time, rather than at
+        # start time when the user has already paid the cost of
+        # materializing the rootfs.
+        try:
+            spec = get_guest_platform(
+                config.guest_os,
+                host_system=platform.system(),
+                arch=platform.machine(),
+            )
+        except (NotImplementedError, ValueError) as exc:
+            raise SmolVMError(str(exc), {"vm_id": config.vm_id}) from exc
+
+        if spec.firmware is None:
+            return  # belt-and-braces; Windows spec always sets this
+
+        vm_firmware_dir = self.data_dir / "firmware" / config.vm_id
+        vm_firmware_dir.mkdir(parents=True, exist_ok=True)
+        target = vm_firmware_dir / "OVMF_VARS.fd"
+
+        if target.exists():
+            logger.info(
+                "Reusing per-VM OVMF NVRAM for VM %s at %s",
+                config.vm_id,
+                target,
+            )
+            return
+
+        template = spec.firmware.vars_template_path
+        logger.info(
+            "Materializing per-VM OVMF NVRAM for VM %s: %s -> %s",
+            config.vm_id,
+            template,
+            target,
+        )
+        shutil.copy2(template, target)
+        # NVRAM holds the UEFI variable store including any Secure Boot
+        # enrollment changes the guest makes. Lock down by-default to
+        # the SmolVM data-dir owner only.
+        target.chmod(0o600)
 
     def _managed_disk_for_vm(self, vm_info: VMInfo | None) -> Path | None:
         """Return the managed isolated disk path for a VM if applicable."""
@@ -872,6 +911,7 @@ class SmolVMManager:
             )
 
         effective_config = self._materialize_rootfs(effective_config)
+        self._materialize_firmware(effective_config)
 
         logger.info(
             "Creating VM: %s (backend=%s, disk_mode=%s)",
@@ -1564,8 +1604,15 @@ class SmolVMManager:
         control_socket_path: Path | None = None,
         start_paused: bool = False,
         root_node_name: str = QEMU_ROOT_NODE_NAME,
+        firmware_vars_path: Path | None = None,
+        swtpm_socket: Path | None = None,
     ) -> subprocess.Popen[bytes]:
         """Start a QEMU process for the qemu backend.
+
+        Thin shim: resolves the QEMU binary, the per-guest platform spec,
+        and pre-computes boot args, then delegates argv assembly to
+        :func:`smolvm.runtime.qemu_args.build_qemu_argv`. Spawning and
+        process-tracking stay here.
 
         Args:
             vm_info: VM info with persisted configuration/network.
@@ -1573,6 +1620,11 @@ class SmolVMManager:
             control_socket_path: Optional QMP control socket path.
             start_paused: Whether to start QEMU paused.
             root_node_name: QEMU block graph node name for the primary disk.
+            firmware_vars_path: Per-VM OVMF NVRAM path; required for
+                Windows guests. Passed in by the runtime adapter.
+            swtpm_socket: Per-VM swtpm data-channel socket path; required
+                for Windows guests. Spawned by the runtime adapter
+                before invoking this shim.
 
         Returns:
             The started QEMU process.
@@ -1584,169 +1636,24 @@ class SmolVMManager:
         if qemu_bin is None:
             raise SmolVMError(f"qemu-system binary is missing; {_qemu_install_hint()}")
 
-        if vm_info.network is None or vm_info.network.ssh_host_port is None:
-            raise SmolVMError("QEMU backend requires a reserved ssh_host_port in VM network config")
-
-        ssh_port = vm_info.network.ssh_host_port
-        guest_mac = vm_info.network.guest_mac.lower()
         boot_args = self._resolve_boot_args(vm_info)
-
-        qemu_name = qemu_bin.name
-        system = platform.system()
-
-        disk_format = "qcow2" if vm_info.config.rootfs_path.suffix == ".qcow2" else "raw"
-        root_drive_id = f"{root_node_name}-drive"
-        drive_arg = (
-            f"file={vm_info.config.rootfs_path},if=none,format={disk_format},"
-            f"id={root_drive_id},node-name={root_node_name}"
+        platform_spec = get_guest_platform(
+            vm_info.config.guest_os,
+            host_system=platform.system(),
+            arch=platform.machine(),
         )
-        hostfwd_rules = [f"hostfwd=tcp:127.0.0.1:{ssh_port}-:22"]
-        for forward in vm_info.config.port_forwards:
-            hostfwd_rules.append(
-                f"hostfwd=tcp:{forward.host_address}:{forward.host_port}-:{forward.guest_port}"
-            )
-        netdev_arg = f"user,id=net0,dns={QEMU_SLIRP_DNS},{','.join(hostfwd_rules)}"
 
-        cmd = [
-            str(qemu_bin),
-            "-smp",
-            str(vm_info.config.vcpu_count),
-            "-m",
-            str(vm_info.config.memory),
-        ]
-        # Boot mode: direct-kernel passes -kernel/-append (optionally -initrd);
-        # firmware mode lets QEMU boot the rootfs disk via default firmware
-        # (OVMF on aarch64, SeaBIOS on x86_64) — the guest kernel lives inside
-        # the rootfs image.
-        if vm_info.config.boot_mode == "direct_kernel":
-            cmd.extend(
-                [
-                    "-kernel",
-                    str(vm_info.config.kernel_path),
-                    "-append",
-                    boot_args,
-                ]
-            )
-        cmd.extend(
-            [
-                "-drive",
-                drive_arg,
-                "-netdev",
-                netdev_arg,
-                "-nographic",
-                "-no-reboot",
-            ]
+        cmd = build_qemu_argv(
+            vm_info,
+            qemu_bin=qemu_bin,
+            boot_args=boot_args,
+            platform_spec=platform_spec,
+            control_socket_path=control_socket_path,
+            firmware_vars_path=firmware_vars_path,
+            swtpm_socket=swtpm_socket,
+            start_paused=start_paused,
+            root_node_name=root_node_name,
         )
-        if vm_info.config.boot_mode == "direct_kernel" and vm_info.config.initrd_path is not None:
-            cmd.extend(["-initrd", str(vm_info.config.initrd_path)])
-
-        extra_drive_ids: list[str] = []
-        for index, drive_path in enumerate(vm_info.config.extra_drives):
-            drive_id = f"extra{index}-drive"
-            node_name = f"extra{index}"
-            extra_drive_ids.append(drive_id)
-            drive_suffix = drive_path.suffix.lower()
-            drive_format = "qcow2" if drive_suffix == ".qcow2" else "raw"
-            readonly = ["readonly=on"] if drive_suffix == ".iso" else []
-            extra_drive_arg = ",".join(
-                [
-                    f"file={drive_path}",
-                    "if=none",
-                    f"format={drive_format}",
-                    *readonly,
-                    f"id={drive_id}",
-                    f"node-name={node_name}",
-                ]
-            )
-            cmd.extend(["-drive", extra_drive_arg])
-
-        # ── virtio-9p workspace mounts ──────────────────────────────
-        workspace_fsdev_ids: list[tuple[str, str]] = []
-        for index, ws in enumerate(vm_info.config.workspace_mounts):
-            tag = ws.resolved_tag(index)
-            fsdev_id = f"fsdev-{tag}"
-            workspace_fsdev_ids.append((fsdev_id, tag))
-            fsdev_opts = f"local,id={fsdev_id},path={ws.host_path},security_model=mapped-xattr"
-            if not ws.writable:
-                fsdev_opts += ",readonly=on"
-            cmd.extend(["-fsdev", fsdev_opts])
-
-        if control_socket_path is not None:
-            cmd.extend(
-                [
-                    "-qmp",
-                    f"unix:{control_socket_path},server=on,wait=off",
-                ]
-            )
-        if start_paused:
-            cmd.append("-S")
-
-        if "aarch64" in qemu_name:
-            # Pick a hardware accelerator. Without one, QEMU falls back to
-            # TCG (software emulation), which is 10-50x slower and routinely
-            # blows past the 30s wait_for_ssh budget on cloud-init boots.
-            # macOS → Hypervisor.framework; Linux → KVM (if /dev/kvm is
-            # missing the user couldn't run firecracker either, so requiring
-            # KVM here is consistent).
-            if system == "Darwin":
-                machine, cpu = "virt,accel=hvf", "host"
-            else:
-                machine, cpu = "virt,accel=kvm", "host"
-            cmd.extend(["-machine", machine, "-cpu", cpu])
-            if vm_info.config.boot_mode == "firmware":
-                firmware_path = _find_aarch64_uefi_firmware()
-                if firmware_path is None:
-                    raise SmolVMError(
-                        "aarch64 firmware-boot requires UEFI firmware (edk2/AAVMF) "
-                        "but none was found. Searched: "
-                        f"{', '.join(_AARCH64_EDK2_FIRMWARE_CANDIDATES)}. "
-                        "On macOS run 'brew reinstall qemu'; on Debian/Ubuntu "
-                        "install 'qemu-efi-aarch64'."
-                    )
-                cmd.extend(["-bios", str(firmware_path)])
-            # virtio-MMIO device ordering note: on `-machine virt`, kernel
-            # enumeration of virtio-mmio slots is the REVERSE of the order
-            # the `-device` flags appear on the command line. To make sure
-            # the rootdisk lands at /dev/vda (and not /dev/vdb behind the
-            # cloud-init seed), the rootdisk-block device must be the LAST
-            # virtio-blk-device added. Workspace fsdevs and the NIC must
-            # come before it too.
-            for drive_id in extra_drive_ids:
-                cmd.extend(["-device", f"virtio-blk-device,drive={drive_id}"])
-            for fsdev_id, tag in workspace_fsdev_ids:
-                cmd.extend(["-device", f"virtio-9p-device,fsdev={fsdev_id},mount_tag={tag}"])
-            cmd.extend(
-                [
-                    "-device",
-                    f"virtio-net-device,netdev=net0,mac={guest_mac}",
-                    "-device",
-                    f"virtio-blk-device,drive={root_drive_id}",
-                ]
-            )
-        else:
-            # See accel comment on the aarch64 branch above. Without
-            # accel=kvm on Linux, QEMU runs TCG and Ubuntu cloud-init blows
-            # past wait_for_ssh in seconds vs minutes.
-            if system == "Darwin":
-                machine, cpu = "q35,accel=hvf", "host"
-            else:
-                machine, cpu = "q35,accel=kvm", "host"
-            cmd.extend(
-                [
-                    "-machine",
-                    machine,
-                    "-cpu",
-                    cpu,
-                    "-device",
-                    f"virtio-blk-pci,drive={root_drive_id}",
-                    "-device",
-                    f"virtio-net-pci,netdev=net0,mac={guest_mac}",
-                ]
-            )
-            for drive_id in extra_drive_ids:
-                cmd.extend(["-device", f"virtio-blk-pci,drive={drive_id}"])
-            for fsdev_id, tag in workspace_fsdev_ids:
-                cmd.extend(["-device", f"virtio-9p-pci,fsdev={fsdev_id},mount_tag={tag}"])
 
         logger.debug("Starting QEMU: %s", " ".join(cmd))
 
@@ -2129,6 +2036,8 @@ class SmolVMManager:
             effective_config = effective_config.model_copy(update={"backend": backend})
 
         effective_config = await self._async_materialize_rootfs(effective_config)
+        # Firmware materialization is a small file copy — synchronous is fine.
+        self._materialize_firmware(effective_config)
 
         logger.info(
             "Creating VM (async): %s (backend=%s, disk_mode=%s)",

@@ -217,3 +217,7 @@ play.ipynb
 # Claude Code agent local state — session locks, settings, scheduled-task
 # bookkeeping. None of this is meant to be committed.
 .claude/
+
+# Working notes / scratch markdown that should not ship with the repo.
+notes/
+*.iso

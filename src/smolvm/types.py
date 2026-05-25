@@ -51,6 +51,7 @@ class GuestOS(str, Enum):
 
     ALPINE = "alpine"
     UBUNTU = "ubuntu"
+    WINDOWS = "windows"
 
 
 def _generate_vm_id() -> str:
@@ -320,6 +321,7 @@ class VMConfig(BaseModel):
     ]
     vcpu_count: Annotated[int, Field(ge=1, le=32)] = 2
     memory: Annotated[int, Field(ge=128, le=16384)] = 512
+    guest_os: GuestOS = GuestOS.ALPINE
     boot_mode: Literal["direct_kernel", "firmware"] = "direct_kernel"
     kernel_path: Path | None = None
     initrd_path: Path | None = None
@@ -375,6 +377,15 @@ class VMConfig(BaseModel):
         else:  # direct_kernel
             if self.kernel_path is None:
                 raise ValueError("boot_mode='direct_kernel' requires kernel_path to be set")
+        if self.guest_os is GuestOS.WINDOWS and self.boot_mode != "firmware":
+            # Windows always boots via OVMF firmware reading the qcow2's UEFI
+            # boot manager; there is no direct-kernel path. The firmware-mode
+            # invariants above then also pin backend='qemu' and kernel_path=None.
+            raise ValueError(
+                "guest_os='windows' requires boot_mode='firmware' "
+                "(Windows boots via OVMF firmware reading the qcow2's UEFI "
+                "boot manager — no direct-kernel path)"
+            )
         return self
 
     @field_validator("initrd_path")

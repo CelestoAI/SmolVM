@@ -16,6 +16,7 @@ def _make_context() -> RuntimeContext:
     return RuntimeContext(
         data_dir=Path("/tmp/data"),
         socket_dir=Path("/tmp"),
+        firmware_dir=Path("/tmp/data/firmware"),
         log_files={},
         process_handles={},
         resolve_boot_args=lambda vm_info: vm_info.config.boot_args,
