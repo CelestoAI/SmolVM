@@ -876,6 +876,28 @@ class TestWindowsGuestPathHelpers:
 
         assert _windows_guest_parent_dir(path) == expected
 
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [
+            # SFTP-style leading slash is stripped; forward slashes normalized.
+            ("/C:/Users/foo", "C:\\Users\\foo"),
+            ("/c:/users/bar", "c:\\users\\bar"),
+            # Bare drive-letter forward-slash form normalizes too.
+            ("C:/Users/foo", "C:\\Users\\foo"),
+            # Native Windows path is unchanged.
+            ("C:\\Users\\foo", "C:\\Users\\foo"),
+            # Mixed separators normalize to all-backslash.
+            ("C:\\Users/foo\\bar", "C:\\Users\\foo\\bar"),
+        ],
+    )
+    def test_windows_path_for_powershell(self, path: str, expected: str) -> None:
+        """The PowerShell-bound form must never start with ``/`` (PSH chokes)."""
+        from smolvm.facade import _windows_path_for_powershell
+
+        assert _windows_path_for_powershell(path) == expected
+        # And every form is safe to embed as a PowerShell -Path argument.
+        assert not _windows_path_for_powershell(path).startswith("/")
+
 
 class TestVMUploadDownloadWindows:
     """Tests for Windows-guest upload/download path acceptance + mkdir."""

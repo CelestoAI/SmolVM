@@ -14,13 +14,12 @@
 
 """Tests for SmolVM SSH module."""
 
+import base64
 import logging
 import socket
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-import base64
 
 from smolvm.exceptions import OperationTimeoutError, SmolVMError
 from smolvm.ssh import SSHClient, _pwsh_encoded_command
@@ -307,11 +306,27 @@ class TestSSHClientShellKind:
         )
         assert base64.b64decode(encoded).decode("utf-16-le") == tricky
 
-    def test_cmd_wrap(self) -> None:
-        """cmd.exe wrap uses ``/c`` with double-quoted command."""
+    def test_cmd_wrap_uses_slash_s_and_doubled_quotes(self) -> None:
+        """cmd.exe wrap uses ``/s /c "..."`` with embedded ``"`` doubled."""
         client = SSHClient("10.0.2.15", shell_kind="cmd")
-        wrapped = client._wrap_login_shell_command("dir C:\\Users")
-        assert wrapped == 'cmd.exe /c "dir C:\\Users"'
+        # No embedded quotes — clean wrap.
+        assert (
+            client._wrap_login_shell_command("dir C:\\Users")
+            == 'cmd.exe /s /c "dir C:\\Users"'
+        )
+        # Embedded quotes get doubled (cmd's in-quote escape).
+        assert (
+            client._wrap_login_shell_command('echo "hi"')
+            == 'cmd.exe /s /c "echo ""hi"""'
+        )
+
+    def test_cmd_wrap_metacharacters_safe_inside_quotes(self) -> None:
+        """Shell metacharacters survive because they're inside the outer quotes."""
+        client = SSHClient("10.0.2.15", shell_kind="cmd")
+        tricky = "echo hi & echo bye | findstr hi"
+        wrapped = client._wrap_login_shell_command(tricky)
+        # The whole command is inside the outer "..." — & and | are literal.
+        assert wrapped == f'cmd.exe /s /c "{tricky}"'
 
     def test_raw_shell_mode_bypasses_wrap_regardless_of_kind(self) -> None:
         """``shell="raw"`` is the explicit escape hatch for any kind."""

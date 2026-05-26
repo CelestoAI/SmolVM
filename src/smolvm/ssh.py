@@ -87,6 +87,21 @@ def _pwsh_encoded_command(command: str) -> str:
     return f"powershell.exe -NoProfile -EncodedCommand {encoded}"
 
 
+def _cmd_wrap(command: str) -> str:
+    """Wrap *command* for ``cmd.exe /s /c "..."``.
+
+    ``/s`` makes cmd's quote-handling deterministic: with ``cmd /s /c
+    "<...>"``, the *outer* double quotes are stripped and everything
+    between them is passed through to the command processor. We escape
+    embedded ``"`` by doubling them (cmd's in-quote escape). Shell
+    metacharacters (``& | < > ^ ( )``) need no extra escaping because
+    they are not interpreted inside double-quoted strings.
+
+    Reference: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmd
+    """
+    return f'cmd.exe /s /c "{command.replace(chr(34), chr(34) * 2)}"'
+
+
 class SSHClient:
     """Execute commands on a microVM guest via SSH.
 
@@ -264,12 +279,13 @@ class SSHClient:
         ``powershell`` form base64-encodes the command via
         ``-EncodedCommand`` so it survives cmd.exe + PowerShell quoting
         (Windows OpenSSH routes through cmd.exe by default); ``cmd``
-        uses ``cmd.exe /c`` (caller is responsible for cmd.exe quoting).
+        uses ``cmd.exe /s /c "<doubled-quoted>"`` so embedded ``"`` and
+        shell metacharacters are safe.
         """
         if self.shell_kind == "powershell":
             return _pwsh_encoded_command(command)
         if self.shell_kind == "cmd":
-            return f'cmd.exe /c "{command}"'
+            return _cmd_wrap(command)
         # POSIX sh — legacy default, unchanged.
         quoted_command = shlex.quote(command)
         return f'SHELL_BIN="${{SHELL:-/bin/sh}}"; exec "$SHELL_BIN" -lc {quoted_command}'

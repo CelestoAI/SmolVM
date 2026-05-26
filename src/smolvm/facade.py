@@ -337,6 +337,27 @@ def _windows_guest_parent_dir(path: str) -> str:
     return parent
 
 
+def _windows_path_for_powershell(path: str) -> str:
+    """Convert any accepted Windows path form into one PowerShell will parse.
+
+    Paramiko/SFTP accepts the leading-slash SFTP form (``/C:/Users/foo``),
+    the bare drive-letter forward-slash form (``C:/Users/foo``), and the
+    Windows-native backslash form (``C:\\Users\\foo``) interchangeably.
+    PowerShell's path parser, however, treats a leading ``/`` as a
+    drive-relative path from the current PSDrive root and chokes on
+    ``/C:/...``. This helper strips the leading slash (if any) and
+    normalises separators to backslashes so the result is always a
+    native Windows path PowerShell can consume.
+
+    Input shapes handled:
+      - ``/C:/Users/foo`` -> ``C:\\Users\\foo``
+      - ``C:/Users/foo``  -> ``C:\\Users\\foo``
+      - ``C:\\Users\\foo`` -> ``C:\\Users\\foo`` (unchanged)
+    """
+    stripped = path.lstrip("/")
+    return stripped.replace("/", "\\")
+
+
 def _build_auto_config_image_name(
     guest_os: GuestOS,
     *,
@@ -769,8 +790,12 @@ class SmolVM:
             ``~/.smolvm/keys/id_ed25519`` when needed.
         ssh_password: Optional SSH password (paramiko password auth).
             Used when the guest has password-only SSH (e.g. a Windows
-            POC qcow2). Ignored when *ssh_key_path* is also set —
-            paramiko prefers key auth.
+            POC qcow2). **Takes precedence over** *ssh_key_path*: when
+            ``ssh_password`` is set, ``ssh_key_path`` is ignored and
+            password auth is used. (paramiko silently prefers
+            ``key_filename`` over ``password`` if both are passed —
+            SmolVM clears the key path internally so the password is
+            actually tried.)
         internet_settings: Network access controls. Accepts an
             :class:`~smolvm.types.InternetSettings` instance or a dict
             (e.g. ``{"allowed_domains": ["https://example.com/"]}``).
@@ -1398,9 +1423,13 @@ class SmolVM:
                 if parent:
                     # PowerShell's New-Item -Force creates intermediate
                     # directories and succeeds silently if the path already
-                    # exists. Single-quoted Path lets PowerShell treat the
-                    # backslashes literally — no escape gymnastics.
-                    safe_parent = parent.replace("'", "''")
+                    # exists. Normalise to a native Windows path because
+                    # PowerShell's path parser rejects SFTP-style leading
+                    # slashes (``/C:/foo`` -> ``C:\\foo``). Single-quoted
+                    # Path lets PowerShell treat the backslashes literally
+                    # — no escape gymnastics.
+                    ps_parent = _windows_path_for_powershell(parent)
+                    safe_parent = ps_parent.replace("'", "''")
                     cmd = (
                         f"New-Item -ItemType Directory -Force -Path "
                         f"'{safe_parent}' | Out-Null"
@@ -2018,13 +2047,18 @@ class SmolVM:
                 ssh_timeout = min(remaining, timeout / len(attempts))
                 while time.monotonic() - start_time < ssh_timeout:
                     try:
+                        # Use the factory so Windows guests get powershell
+                        # shell_kind and ssh_password is honored — direct
+                        # SSHClient construction here was a silent regression
+                        # against the sync wait_for_ssh path. Tight
+                        # connect_timeout (2s) keeps the polling loop
+                        # iterating quickly within the per-endpoint budget.
                         ssh = await asyncio.to_thread(
-                            SSHClient,
+                            self._new_ssh_client,
                             host=host,
                             port=port,
-                            user=self._ssh_user,
                             key_path=key_path,
-                            connect_timeout=2.0,
+                            connect_timeout=2,
                         )
                         self._ssh = ssh
                         self._ssh_ready = True
@@ -2308,6 +2342,7 @@ modprobe 9pnet_virtio""".strip()
         host: str,
         port: int = 22,
         key_path: str | None = None,
+        connect_timeout: int = 10,
     ) -> SSHClient:
         """Construct an SSHClient with this VM's auth + shell flavor.
 
@@ -2321,6 +2356,10 @@ modprobe 9pnet_virtio""".strip()
         ``key_filename`` over ``password`` and would silently ignore the
         password if both were passed, which leaves Windows POC users
         wondering why their password never gets tried.
+
+        ``connect_timeout`` defaults to 10s for one-shot operations; the
+        async wait_for_ssh polling loop passes a tighter value so each
+        in-loop retry fails fast.
         """
         if self._ssh_password is not None:
             effective_key_path: str | None = None
@@ -2332,6 +2371,7 @@ modprobe 9pnet_virtio""".strip()
             port=port,
             key_path=effective_key_path,
             password=self._ssh_password,
+            connect_timeout=connect_timeout,
             shell_kind=self._guest_shell_kind(),
         )
 
