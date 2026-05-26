@@ -359,20 +359,28 @@ class WindowsImageBuilder:
     def _validate_inputs(self) -> None:
         if not self.windows_iso.is_file():
             raise ValueError(
-                f"Windows ISO not found at {self.windows_iso}. Download from "
-                "https://www.microsoft.com/software-download/windows11."
+                f"Windows ISO not found at {self.windows_iso}. "
+                "Download Windows 11 from "
+                "https://www.microsoft.com/software-download/windows11, then save "
+                f"it to that path, e.g.:\n"
+                f"  curl -L -o {self.windows_iso} "
+                "'<paste the direct ISO URL from the Microsoft page here>'"
             )
         if not self.virtio_win_iso.is_file():
             raise ValueError(
-                f"virtio-win ISO not found at {self.virtio_win_iso}. Download from "
+                f"virtio-win ISO not found at {self.virtio_win_iso}. Fetch it with:\n"
+                f"  curl -L -o {self.virtio_win_iso} "
                 "https://fedorapeople.org/groups/virt/virtio-win/"
-                "direct-downloads/stable-virtio/virtio-win.iso."
+                "direct-downloads/stable-virtio/virtio-win.iso"
             )
         if self.output_qcow2.exists() and self.output_qcow2.stat().st_size > 0:
             raise ValueError(
                 f"Output path {self.output_qcow2} already exists and is non-empty; "
-                "remove it or choose a different --output path to avoid clobbering "
-                "a previously-built image."
+                "refusing to clobber a previously-built image. Either remove it:\n"
+                f"  rm -f {self.output_qcow2}\n"
+                "or move it aside:\n"
+                f"  mv {self.output_qcow2} {self.output_qcow2}.bak\n"
+                "or pass a different --output path."
             )
 
     def _poll_for_ready_marker(self, vm) -> None:  # noqa: ANN001 — circular SmolVM type

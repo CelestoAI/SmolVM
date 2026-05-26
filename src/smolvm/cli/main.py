@@ -309,6 +309,14 @@ def _positive_float(value: str) -> float:
     return parsed
 
 
+def _positive_int(value: str) -> int:
+    """argparse type enforcing a strictly positive integer."""
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be > 0")
+    return parsed
+
+
 class _LinuxOnlyOption(argparse.Action):
     """Reject setup flags that are only valid on Linux when used on macOS."""
 
@@ -1062,7 +1070,7 @@ def build_parser() -> argparse.ArgumentParser:
     windows_build.add_argument(
         "--disk-size",
         dest="disk_size_mib",
-        type=int,
+        type=_positive_int,
         default=64 * 1024,
         metavar="MIB",
         help="Virtual size of the built qcow2 in MiB (default: 65536 = 64 GiB).",
@@ -1070,7 +1078,7 @@ def build_parser() -> argparse.ArgumentParser:
     windows_build.add_argument(
         "--build-timeout",
         dest="build_timeout_s",
-        type=float,
+        type=_positive_float,
         default=45 * 60,
         metavar="SECONDS",
         help="Upper bound on the install duration (default: 2700 = 45 min).",
@@ -3319,7 +3327,7 @@ def _run_windows_build_image(args: argparse.Namespace) -> int:
                 f"  [bold]smolvm create --os windows --image {output}[/bold]\n"
                 f"or in Python:\n"
                 f"  [bold]SmolVM(os=\"windows\", image=\"{output}\", "
-                f'ssh_user="{args.username}", ssh_password="{args.password}")[/bold]',
+                f'ssh_user="{args.username}", ssh_password="<hidden>")[/bold]',
                 title="Windows image ready",
                 border_style="green",
             )

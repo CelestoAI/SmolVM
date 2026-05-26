@@ -1083,6 +1083,158 @@ class TestVMWindowsEnvVarsAccepted:
         assert vm._info.config.env_vars == {"FOO": "bar"}
 
 
+class TestVMWindowsEnvDispatch:
+    """Phase 3b: env_vars methods on a Windows VM dispatch to env_windows."""
+
+    @staticmethod
+    def _make_running_windows_vm(
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+        *,
+        env_vars: dict[str, str] | None = None,
+    ) -> SmolVM:
+        disk = tmp_path / "win11.qcow2"
+        disk.touch()
+        running_info = MagicMock(vm_id="vm-win", status=VMState.RUNNING)
+        running_info.config = VMConfig(
+            vm_id="vm-win",
+            rootfs_path=disk,
+            kernel_path=None,
+            backend="qemu",
+            guest_os=GuestOS.WINDOWS,
+            boot_mode="firmware",
+            disk_mode="shared",
+            ssh_capable=True,
+            env_vars=env_vars or {},
+        )
+        running_info.network = MagicMock()
+        running_info.network.guest_ip = "172.16.0.2"
+        running_info.network.ssh_host_port = None
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = running_info
+        mock_sdk.get.return_value = running_info
+        mock_sdk.start.return_value = running_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = SmolVM(running_info.config, ssh_user="celesto", ssh_password="celesto")
+        vm._ssh = MagicMock()
+        vm._ssh_ready = True
+        return vm
+
+    @patch("smolvm.facade.inject_env_vars")
+    @patch("smolvm.facade.inject_env_vars_windows")
+    @patch("smolvm.facade.SmolVMManager")
+    def test_set_env_vars_dispatches_to_windows_injector(
+        self,
+        mock_sdk_cls: MagicMock,
+        mock_inject_win: MagicMock,
+        mock_inject_linux: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """vm.set_env_vars on a Windows VM calls inject_env_vars_windows only."""
+        vm = self._make_running_windows_vm(mock_sdk_cls, tmp_path)
+        mock_inject_win.return_value = ["FOO"]
+
+        result = vm.set_env_vars({"FOO": "bar"})
+
+        assert result == ["FOO"]
+        mock_inject_win.assert_called_once_with(vm._ssh, {"FOO": "bar"}, merge=True)
+        mock_inject_linux.assert_not_called()
+
+    @patch("smolvm.facade.remove_env_vars")
+    @patch("smolvm.facade.remove_env_vars_windows")
+    @patch("smolvm.facade.SmolVMManager")
+    def test_unset_env_vars_dispatches_to_windows_remover(
+        self,
+        mock_sdk_cls: MagicMock,
+        mock_remove_win: MagicMock,
+        mock_remove_linux: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """vm.unset_env_vars on a Windows VM calls remove_env_vars_windows only."""
+        vm = self._make_running_windows_vm(mock_sdk_cls, tmp_path)
+        mock_remove_win.return_value = {"FOO": "bar"}
+
+        result = vm.unset_env_vars(["FOO"])
+
+        assert result == {"FOO": "bar"}
+        mock_remove_win.assert_called_once_with(vm._ssh, ["FOO"])
+        mock_remove_linux.assert_not_called()
+
+    @patch("smolvm.facade.read_env_vars")
+    @patch("smolvm.facade.read_env_vars_windows")
+    @patch("smolvm.facade.SmolVMManager")
+    def test_list_env_vars_dispatches_to_windows_reader(
+        self,
+        mock_sdk_cls: MagicMock,
+        mock_read_win: MagicMock,
+        mock_read_linux: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """vm.list_env_vars on a Windows VM calls read_env_vars_windows only."""
+        vm = self._make_running_windows_vm(mock_sdk_cls, tmp_path)
+        mock_read_win.return_value = {"FOO": "bar"}
+
+        result = vm.list_env_vars()
+
+        assert result == {"FOO": "bar"}
+        mock_read_win.assert_called_once_with(vm._ssh)
+        mock_read_linux.assert_not_called()
+
+    @patch("smolvm.facade.inject_env_vars")
+    @patch("smolvm.facade.inject_env_vars_windows")
+    @patch("smolvm.facade.SSHClient")
+    @patch("smolvm.facade.SmolVMManager")
+    def test_start_on_windows_vm_uses_windows_injector(
+        self,
+        mock_sdk_cls: MagicMock,
+        mock_ssh_cls: MagicMock,
+        mock_inject_win: MagicMock,
+        mock_inject_linux: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """vm.start() on a Windows VM with env_vars uses the Windows injector."""
+        disk = tmp_path / "win11.qcow2"
+        disk.touch()
+        config = VMConfig(
+            vm_id="vm-win",
+            rootfs_path=disk,
+            kernel_path=None,
+            backend="qemu",
+            guest_os=GuestOS.WINDOWS,
+            boot_mode="firmware",
+            disk_mode="shared",
+            ssh_capable=True,
+            env_vars={"FOO": "bar"},
+        )
+        created_info = MagicMock(vm_id="vm-win", status=VMState.CREATED)
+        created_info.config = config
+        created_info.network.guest_ip = "172.16.0.2"
+        created_info.network.ssh_host_port = None
+
+        running_info = MagicMock(vm_id="vm-win", status=VMState.RUNNING)
+        running_info.config = config
+        running_info.network.guest_ip = "172.16.0.2"
+        running_info.network.ssh_host_port = None
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = created_info
+        mock_sdk.start.return_value = running_info
+        mock_sdk.get.return_value = running_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        mock_ssh = MagicMock()
+        mock_ssh_cls.return_value = mock_ssh
+        mock_inject_win.return_value = ["FOO"]
+
+        vm = SmolVM(config, ssh_user="celesto", ssh_password="celesto")
+        vm.start()
+
+        mock_inject_win.assert_called_once_with(mock_ssh, {"FOO": "bar"})
+        mock_inject_linux.assert_not_called()
+
+
 class TestVMLifecycle:
     """Tests for VM lifecycle operations."""
 

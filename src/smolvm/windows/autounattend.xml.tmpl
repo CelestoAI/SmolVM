@@ -248,34 +248,27 @@
       <FirstLogonCommands>
         <SynchronousCommand wcm:action="add">
           <Order>1</Order>
-          <CommandLine>powershell -NoProfile -ExecutionPolicy Bypass -Command "Set-ExecutionPolicy Bypass -Scope LocalMachine -Force"</CommandLine>
-          <Description>Set PowerShell execution policy to Bypass (machine-wide)</Description>
-          <RequiresUserInput>false</RequiresUserInput>
-        </SynchronousCommand>
-
-        <SynchronousCommand wcm:action="add">
-          <Order>2</Order>
           <CommandLine>powershell -NoProfile -ExecutionPolicy Bypass -Command "foreach ($d in 'D','E','F','G','H') { $p = $d + ':\virtio-win-guest-tools.exe'; if (Test-Path $p) { Start-Process -FilePath $p -ArgumentList '/install','/quiet','/norestart' -Wait; break } }"</CommandLine>
           <Description>Install virtio-win-guest-tools silently from the virtio-win CD</Description>
           <RequiresUserInput>false</RequiresUserInput>
         </SynchronousCommand>
 
         <SynchronousCommand wcm:action="add">
-          <Order>3</Order>
-          <CommandLine>powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://github.com/PowerShell/Win32-OpenSSH/releases/latest/download/OpenSSH-Win64.zip' -OutFile $env:TEMP\OpenSSH.zip; Expand-Archive -Path $env:TEMP\OpenSSH.zip -DestinationPath 'C:\Program Files' -Force"</CommandLine>
-          <Description>Download and unpack OpenSSH-Win64 from GitHub</Description>
+          <Order>2</Order>
+          <CommandLine>powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $url='https://github.com/PowerShell/Win32-OpenSSH/releases/download/v9.5.0.0p1-Beta/OpenSSH-Win64.zip'; $zip=$env:TEMP+'\OpenSSH.zip'; $expected='BD48FE985D400402C278C485DB20E6A82BC4C7F7D8E0EF5A81128F523096530C'; Invoke-WebRequest -Uri $url -OutFile $zip; $actual=(Get-FileHash -Path $zip -Algorithm SHA256).Hash; if ($actual -ne $expected) { Write-Error ('OpenSSH zip SHA256 mismatch: expected '+$expected+' got '+$actual); exit 1 }; Expand-Archive -Path $zip -DestinationPath 'C:\Program Files' -Force"</CommandLine>
+          <Description>Download OpenSSH-Win64 v9.5.0.0p1-Beta, verify SHA256, unpack</Description>
           <RequiresUserInput>false</RequiresUserInput>
         </SynchronousCommand>
 
         <SynchronousCommand wcm:action="add">
-          <Order>4</Order>
+          <Order>3</Order>
           <CommandLine>powershell -NoProfile -ExecutionPolicy Bypass -Command "&amp; 'C:\Program Files\OpenSSH-Win64\install-sshd.ps1'; Set-Service sshd -StartupType Automatic; Start-Service sshd; New-NetFirewallRule -Name sshd -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -ErrorAction SilentlyContinue"</CommandLine>
           <Description>Register sshd service, start it, open TCP/22 firewall rule</Description>
           <RequiresUserInput>false</RequiresUserInput>
         </SynchronousCommand>
 
         <SynchronousCommand wcm:action="add">
-          <Order>5</Order>
+          <Order>4</Order>
           <CommandLine>powershell -NoProfile -ExecutionPolicy Bypass -Command "Set-Content -Path C:\smolvm-ready.txt -Value (\"smolvm-win11 unattended install complete: \" + (Get-Date -Format 'o'))"</CommandLine>
           <Description>Write C:\smolvm-ready.txt marker for host-side completion probe</Description>
           <RequiresUserInput>false</RequiresUserInput>

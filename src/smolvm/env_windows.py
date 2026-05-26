@@ -36,6 +36,7 @@ will see the new vars on the second call.
 
 from __future__ import annotations
 
+import json
 import logging
 
 from smolvm.env import validate_env_key
@@ -49,6 +50,23 @@ logger = logging.getLogger(__name__)
 # tracks, so a Windows user inspecting their environment can see who set
 # which vars.
 _MANAGED_KEYS_SENTINEL = "SMOLVM_ENV_MANAGED_KEYS"
+
+
+def _validate_windows_env_key(key: str) -> None:
+    """Validate *key* with the shared rules + Windows-specific reserved-name check.
+
+    The sentinel ``SMOLVM_ENV_MANAGED_KEYS`` is how SmolVM tracks which
+    env vars it has set — letting a caller use that name as a regular
+    env var would corrupt the bookkeeping and SmolVM would no longer
+    know which vars it owns. Reserve it loudly here.
+    """
+    validate_env_key(key)
+    if key == _MANAGED_KEYS_SENTINEL:
+        raise ValueError(
+            f"{_MANAGED_KEYS_SENTINEL!r} is reserved for SmolVM's internal "
+            "bookkeeping of managed Windows env vars and cannot be set or "
+            "removed via the public API. Choose a different variable name."
+        )
 
 
 def _ps_single_quote(value: str) -> str:
@@ -153,7 +171,7 @@ def inject_env_vars(
         return []
 
     for key in env_vars:
-        validate_env_key(key)
+        _validate_windows_env_key(key)
 
     existing_keys = _read_managed_keys(ssh)
     if merge:
@@ -187,40 +205,61 @@ def read_env_vars(ssh: SSHClient) -> dict[str, str]:
     ``SMOLVM_ENV_MANAGED_KEYS`` sentinel) — not the user's entire
     HKCU\\Environment. Mirrors the Linux side's "only what we manage"
     semantic.
+
+    Values may contain newlines, tabs, quotes, or any other character —
+    we round-trip them through a PowerShell hashtable serialized with
+    ``ConvertTo-Json``, then ``json.loads`` host-side. The line-split
+    approach previously used here truncated multi-line values at the
+    first ``\\n``.
     """
     managed = _read_managed_keys(ssh)
     if not managed:
         return {}
 
-    # Emit "name=value" lines for each managed key. PowerShell here-string
-    # would be cleaner but adds quoting complexity through cmd.exe; line
-    # output is simpler. Empty/missing values are skipped.
-    parts = []
+    # Build a PowerShell hashtable of managed_key -> value, then emit
+    # it as a single JSON blob. -Compress keeps the payload to one line
+    # which sidesteps any cmd.exe line-buffering edge cases, and -Depth 5
+    # is plenty for the flat string->string mapping we produce.
+    lines = ["$h = @{}"]
     for k in managed:
-        parts.append(
-            f"$v = [Environment]::GetEnvironmentVariable("
-            f"'{_ps_single_quote(k)}', 'User'); "
-            f"if ($null -ne $v) {{ "
-            f"Write-Output ('{_ps_single_quote(k)}=' + $v) }}"
+        quoted = _ps_single_quote(k)
+        lines.append(
+            f"$v = [Environment]::GetEnvironmentVariable('{quoted}', 'User'); "
+            f"if ($null -ne $v) {{ $h['{quoted}'] = $v }}"
         )
-    out = _run_ps(ssh, "\n".join(parts))
+    lines.append("$h | ConvertTo-Json -Compress -Depth 5")
+    out = _run_ps(ssh, "\n".join(lines))
 
-    env_vars: dict[str, str] = {}
-    for line in out.splitlines():
-        # PowerShell line-ending is \r\n; Write-Output already trimmed by
-        # paramiko's text decode. Strip just-in-case.
-        line = line.rstrip("\r\n")
-        if "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        env_vars[key] = value
-    return env_vars
+    payload = out.strip()
+    if not payload:
+        return {}
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise SmolVMError(
+            "Failed to parse JSON env-var payload from Windows guest",
+            {"payload": payload[:500], "error": str(exc)},
+        ) from exc
+
+    # ConvertTo-Json on a single-entry hashtable still emits an object,
+    # not a scalar — so we always expect a dict. Defensive: if PowerShell
+    # somehow emits a non-object (older versions can collapse), coerce.
+    if not isinstance(parsed, dict):
+        return {}
+    # Coerce every value to str — PowerShell may emit ints/bools if a
+    # value happens to be numeric-looking, but our contract is str->str.
+    return {str(k): str(v) for k, v in parsed.items()}
 
 
 def remove_env_vars(ssh: SSHClient, keys: list[str]) -> dict[str, str]:
     """Remove the named env vars from the Windows guest (scoped to managed)."""
     if not keys:
         return {}
+
+    # Validate up front so the sentinel can never be cleared via the
+    # public API (which would orphan the keys it tracks).
+    for key in keys:
+        _validate_windows_env_key(key)
 
     current = read_env_vars(ssh)
     removed: dict[str, str] = {k: current[k] for k in keys if k in current}

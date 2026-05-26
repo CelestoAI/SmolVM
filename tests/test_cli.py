@@ -1144,13 +1144,17 @@ class TestCliWindowsBuildImage:
             ]
         )
         assert ret == 0
-        # Builder was constructed with the user's args.
+        # Builder was constructed with the user's args, then build() ran.
         kwargs = mock_builder_cls.call_args.kwargs
         assert kwargs["windows_iso"] == win
         assert kwargs["virtio_win_iso"] == virtio
-        # Default credentials surface in the success panel.
+        mock_builder.build.assert_called_once()
+        # Success panel renders with its title.
         out_text = capsys.readouterr().out
-        assert "Windows image ready" in out_text or "smolvm" in out_text
+        assert "Windows image ready" in out_text
+        # Password is never leaked in the success panel.
+        assert "ssh_password=\"<hidden>\"" in out_text
+        assert "ssh_password=\"smolvm\"" not in out_text
 
     @patch("smolvm.windows.WindowsImageBuilder")
     def test_build_image_json_mode_emits_envelope(
@@ -1185,6 +1189,7 @@ class TestCliWindowsBuildImage:
             ]
         )
         assert ret == 0
+        mock_builder.build.assert_called_once()
         out_text = capsys.readouterr().out
         assert '"ok": true' in out_text
         assert '"command": "windows build-image"' in out_text

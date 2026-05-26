@@ -147,15 +147,39 @@ def test_read_empty_when_no_sentinel() -> None:
     assert read_env_vars(ssh) == {}
 
 
-def test_read_parses_name_equals_value_lines() -> None:
+def test_read_parses_json_payload() -> None:
     ssh = MagicMock()
     ssh.run.side_effect = [
         _ok("FOO,BAZ\n"),  # sentinel
-        _ok("FOO=bar\r\nBAZ=qu=ux\r\n"),  # value lookup — second value contains '='
+        # Value lookup returns ConvertTo-Json -Compress output. A value
+        # containing '=' must round-trip intact — the old line-split parser
+        # used to be the contract here, the JSON parser handles it natively.
+        _ok('{"FOO":"bar","BAZ":"qu=ux"}\r\n'),
     ]
     out = read_env_vars(ssh)
-    # split("=", 1) so values containing "=" survive.
     assert out == {"FOO": "bar", "BAZ": "qu=ux"}
+
+
+def test_read_preserves_multiline_values() -> None:
+    """Multi-line env-var values must survive the round trip (was truncated)."""
+    ssh = MagicMock()
+    multiline = "line1\nline2\nline3"
+    ssh.run.side_effect = [
+        _ok("CERT\n"),
+        _ok('{"CERT":"line1\\nline2\\nline3"}\r\n'),
+    ]
+    out = read_env_vars(ssh)
+    assert out == {"CERT": multiline}
+
+
+def test_read_raises_on_malformed_json() -> None:
+    ssh = MagicMock()
+    ssh.run.side_effect = [
+        _ok("FOO\n"),
+        _ok("not-json-at-all"),
+    ]
+    with pytest.raises(SmolVMError, match="Failed to parse JSON env-var payload"):
+        read_env_vars(ssh)
 
 
 # ───────────────────────── remove_env_vars ───────────────────────────────
@@ -171,11 +195,11 @@ def test_remove_only_clears_keys_actually_managed() -> None:
     ssh = MagicMock()
     # read_env_vars sequence (sentinel + value lookup).
     ssh.run.side_effect = [
-        _ok("FOO,BAZ\n"),       # initial sentinel read in read_env_vars
-        _ok("FOO=bar\nBAZ=q\n"),  # value lookup
-        _ok(""),                 # clear PS run
-        _ok("FOO,BAZ\n"),       # post-clear sentinel read
-        _ok(""),                 # sentinel rewrite
+        _ok("FOO,BAZ\n"),                  # initial sentinel read in read_env_vars
+        _ok('{"FOO":"bar","BAZ":"q"}\n'),  # value lookup (JSON)
+        _ok(""),                           # clear PS run
+        _ok("FOO,BAZ\n"),                  # post-clear sentinel read
+        _ok(""),                           # sentinel rewrite
     ]
     removed = remove_env_vars(ssh, ["FOO", "MISSING"])
     # Only FOO was actually managed — MISSING is silently ignored.
@@ -184,3 +208,22 @@ def test_remove_only_clears_keys_actually_managed() -> None:
     clear_cmd = ssh.run.call_args_list[2].args[0]
     assert "'FOO', $null, 'User'" in clear_cmd
     assert "MISSING" not in clear_cmd
+
+
+# ───────────────────── reserved sentinel guard ────────────────────────────
+
+
+def test_inject_rejects_reserved_sentinel_name() -> None:
+    """Setting SMOLVM_ENV_MANAGED_KEYS via the public API must be rejected."""
+    ssh = MagicMock()
+    with pytest.raises(ValueError, match="reserved"):
+        inject_env_vars(ssh, {_MANAGED_KEYS_SENTINEL: "anything"})
+    ssh.run.assert_not_called()
+
+
+def test_remove_rejects_reserved_sentinel_name() -> None:
+    """Removing SMOLVM_ENV_MANAGED_KEYS via the public API must be rejected."""
+    ssh = MagicMock()
+    with pytest.raises(ValueError, match="reserved"):
+        remove_env_vars(ssh, [_MANAGED_KEYS_SENTINEL])
+    ssh.run.assert_not_called()
