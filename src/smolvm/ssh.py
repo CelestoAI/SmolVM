@@ -20,6 +20,7 @@ to guest VMs.  A single TCP connection is established on first use (or during
 eliminating the ~170ms overhead of forking a new ``ssh`` process per call.
 """
 
+import base64
 import logging
 import shlex
 import socket
@@ -61,6 +62,29 @@ logger = logging.getLogger(__name__)
 logging.getLogger("paramiko.transport").setLevel(logging.CRITICAL)
 
 ShellMode = Literal["login", "raw"]
+ShellKind = Literal["sh", "powershell", "cmd"]
+"""Guest-side login-shell wrap. ``sh`` is the POSIX default
+(``$SHELL -lc <quoted>``); ``powershell`` wraps for Windows OpenSSH using
+``powershell.exe -NoProfile -EncodedCommand``; ``cmd`` uses ``cmd.exe /c``.
+The ``shell="raw"`` mode on :meth:`SSHClient.run` bypasses the wrap
+entirely for any kind."""
+
+
+def _pwsh_encoded_command(command: str) -> str:
+    """Return a ``powershell.exe -NoProfile -EncodedCommand <b64>`` wrap.
+
+    The ``-EncodedCommand`` option takes a base64-encoded UTF-16LE
+    PowerShell script and sidesteps both ``cmd.exe`` and ``powershell.exe``
+    quoting entirely — the command bytes survive intact regardless of what
+    Windows OpenSSH does with the SSH exec request (it forwards through
+    cmd.exe by default, which would otherwise mangle backtick-escaped
+    quotes). This is the documented Microsoft recipe for "pass arbitrary
+    PowerShell over a wire transport."
+
+    See: https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_powershell_exe
+    """
+    encoded = base64.b64encode(command.encode("utf-16-le")).decode("ascii")
+    return f"powershell.exe -NoProfile -EncodedCommand {encoded}"
 
 
 class SSHClient:
@@ -76,6 +100,12 @@ class SSHClient:
         key_path: Optional path to an SSH private key file.
         password: Optional password for authentication.
         connect_timeout: Seconds to wait for the TCP connection.
+        shell_kind: Login-shell flavor for the guest. ``sh`` (default) wraps
+            with ``$SHELL -lc``; ``powershell`` wraps with
+            ``powershell.exe -NoProfile -Command`` (Windows guests);
+            ``cmd`` wraps with ``cmd.exe /c``. Only consulted when
+            :meth:`run` is called with ``shell="login"`` (the default);
+            ``shell="raw"`` bypasses the wrap entirely.
     """
 
     def __init__(
@@ -86,6 +116,7 @@ class SSHClient:
         key_path: str | None = None,
         password: str | None = None,
         connect_timeout: int = 10,
+        shell_kind: ShellKind = "sh",
     ) -> None:
         if not host:
             raise ValueError("host cannot be empty")
@@ -102,6 +133,7 @@ class SSHClient:
         self.key_path = key_path
         self.password = password
         self.connect_timeout = connect_timeout
+        self.shell_kind: ShellKind = shell_kind
 
         self._client: paramiko.SSHClient | None = None
 
@@ -224,9 +256,21 @@ class SSHClient:
 
     # ── Command execution ───────────────────────────────────────
 
-    @staticmethod
-    def _wrap_login_shell_command(command: str) -> str:
-        """Wrap a command so it runs inside a login shell."""
+    def _wrap_login_shell_command(self, command: str) -> str:
+        """Wrap a command so it runs inside the guest's login shell.
+
+        Dispatches on :attr:`shell_kind`. The POSIX ``sh`` form preserves
+        the legacy ``$SHELL -lc <quoted>`` shape byte-for-byte; the
+        ``powershell`` form base64-encodes the command via
+        ``-EncodedCommand`` so it survives cmd.exe + PowerShell quoting
+        (Windows OpenSSH routes through cmd.exe by default); ``cmd``
+        uses ``cmd.exe /c`` (caller is responsible for cmd.exe quoting).
+        """
+        if self.shell_kind == "powershell":
+            return _pwsh_encoded_command(command)
+        if self.shell_kind == "cmd":
+            return f'cmd.exe /c "{command}"'
+        # POSIX sh — legacy default, unchanged.
         quoted_command = shlex.quote(command)
         return f'SHELL_BIN="${{SHELL:-/bin/sh}}"; exec "$SHELL_BIN" -lc {quoted_command}'
 

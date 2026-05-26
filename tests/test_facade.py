@@ -744,6 +744,299 @@ class TestVMLocalImageParam:
             )
 
 
+class TestVMSSHClientHelper:
+    """Tests for SmolVM._new_ssh_client (single source of SSH-client truth)."""
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_helper_uses_sh_shell_kind_for_linux_guests(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """Linux guests (default) get shell_kind='sh' — byte-identical legacy."""
+        info = MagicMock()
+        info.vm_id = sample_config.vm_id
+        info.config = sample_config  # default guest_os=ALPINE
+        info.network = MagicMock()
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = info
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = SmolVM(sample_config, ssh_user="root", ssh_key_path="/k")
+        # key_path is per-call (the SSH wait loop tries different keys),
+        # NOT pulled from self._ssh_key_path inside the helper.
+        client = vm._new_ssh_client(host="10.0.2.15", key_path="/k")
+
+        assert client.shell_kind == "sh"
+        assert client.user == "root"
+        assert client.key_path == "/k"
+        assert client.password is None
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_helper_uses_powershell_for_windows_guests(
+        self,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Windows guests get shell_kind='powershell' automatically."""
+        disk = tmp_path / "win11.qcow2"
+        disk.touch()
+
+        info = MagicMock()
+        info.vm_id = "vm-win"
+        # Use a real VMConfig so guest_os is the real enum.
+        info.config = VMConfig(
+            vm_id="vm-win",
+            rootfs_path=disk,
+            kernel_path=None,
+            backend="qemu",
+            guest_os=GuestOS.WINDOWS,
+            boot_mode="firmware",
+            disk_mode="shared",
+        )
+        info.network = MagicMock()
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = info
+        mock_sdk_cls.return_value = mock_sdk
+
+        # Construct via the same local-image path that real Windows users hit.
+        vm = SmolVM(
+            os="windows",
+            image=str(disk),
+            ssh_user="celesto",
+            ssh_password="celesto",
+        )
+        client = vm._new_ssh_client(host="127.0.0.1", port=2222)
+
+        assert client.shell_kind == "powershell"
+        assert client.user == "celesto"
+        assert client.password == "celesto"
+        assert client.port == 2222
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_ssh_password_threads_to_client(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """ssh_password= kwarg surfaces on every SSHClient the facade builds."""
+        info = MagicMock()
+        info.vm_id = sample_config.vm_id
+        info.config = sample_config
+        info.network = MagicMock()
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = info
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = SmolVM(sample_config, ssh_password="secret-pw")
+        client = vm._new_ssh_client(host="10.0.2.15")
+        assert client.password == "secret-pw"
+
+
+class TestWindowsGuestPathHelpers:
+    """Tests for the Windows-path helpers used by upload_file/download_file."""
+
+    @pytest.mark.parametrize(
+        ("path", "is_windows"),
+        [
+            ("/etc/foo", False),
+            ("/", False),
+            ("/usr/local/bin/x", False),
+            ("C:\\Users\\foo", True),
+            ("c:\\users\\foo", True),
+            ("D:\\data", True),
+            ("C:/Users/foo", True),
+            ("/C:/Users/foo", True),
+            ("/c:/users/foo", True),
+            # Not Windows: no drive letter, no trailing separator.
+            ("C:foo", False),  # missing separator
+            ("CC:\\foo", False),  # not a single drive letter
+            ("relative/path", False),
+            ("", False),
+        ],
+    )
+    def test_is_windows_guest_path_truth_table(self, path: str, is_windows: bool) -> None:
+        from smolvm.facade import _is_windows_guest_path
+
+        assert _is_windows_guest_path(path) is is_windows
+
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [
+            ("C:\\Users\\foo\\file.txt", "C:\\Users\\foo"),
+            ("C:/Users/foo/file.txt", "C:/Users/foo"),
+            ("/C:/Users/foo/file.txt", "/C:/Users/foo"),
+            ("C:\\foo", "C:\\"),
+            # Mixed separators stay as-is in the parent.
+            ("C:\\Users/foo\\file", "C:\\Users/foo"),
+        ],
+    )
+    def test_windows_guest_parent_dir(self, path: str, expected: str) -> None:
+        from smolvm.facade import _windows_guest_parent_dir
+
+        assert _windows_guest_parent_dir(path) == expected
+
+
+class TestVMUploadDownloadWindows:
+    """Tests for Windows-guest upload/download path acceptance + mkdir."""
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_upload_accepts_windows_path_and_uses_powershell_mkdir(
+        self,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """C:\\... paths land via SFTP after a PowerShell New-Item parent."""
+        disk = tmp_path / "win11.qcow2"
+        disk.touch()
+        source = tmp_path / "hello.ps1"
+        source.write_text("Write-Host hi")
+
+        running_info = MagicMock(vm_id="vm-win", status=VMState.RUNNING)
+        running_info.config = VMConfig(
+            vm_id="vm-win",
+            rootfs_path=disk,
+            kernel_path=None,
+            backend="qemu",
+            guest_os=GuestOS.WINDOWS,
+            boot_mode="firmware",
+            disk_mode="shared",
+            ssh_capable=True,
+        )
+        running_info.network.guest_ip = "127.0.0.1"
+        running_info.network.ssh_host_port = 2222
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = running_info
+        mock_sdk.get.return_value = running_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        ssh = MagicMock()
+        ssh.run.return_value = MagicMock(exit_code=0, stderr="")
+
+        vm = SmolVM(
+            os="windows",
+            image=str(disk),
+            ssh_user="celesto",
+            ssh_password="celesto",
+        )
+        vm._ssh = ssh
+        vm._ssh_ready = True
+
+        guest_path = vm.upload_file(source, "C:\\Users\\celesto\\hello.ps1")
+        assert guest_path == "C:\\Users\\celesto\\hello.ps1"
+
+        ssh.run.assert_called_once_with(
+            "New-Item -ItemType Directory -Force -Path "
+            "'C:\\Users\\celesto' | Out-Null",
+            timeout=30,
+            shell="login",  # SSHClient wraps with powershell.exe -NoProfile -Command
+        )
+        ssh.put_file.assert_called_once_with(source, "C:\\Users\\celesto\\hello.ps1")
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_upload_rejects_relative_path_on_windows_too(
+        self,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Relative paths are still rejected on Windows guests."""
+        disk = tmp_path / "win11.qcow2"
+        disk.touch()
+        source = tmp_path / "hello.ps1"
+        source.write_text("x")
+
+        running_info = MagicMock(vm_id="vm-win", status=VMState.RUNNING)
+        running_info.config = VMConfig(
+            vm_id="vm-win",
+            rootfs_path=disk,
+            kernel_path=None,
+            backend="qemu",
+            guest_os=GuestOS.WINDOWS,
+            boot_mode="firmware",
+            disk_mode="shared",
+            ssh_capable=True,
+        )
+        running_info.network = MagicMock()
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = running_info
+        mock_sdk.get.return_value = running_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = SmolVM(
+            os="windows",
+            image=str(disk),
+            ssh_user="celesto",
+            ssh_password="celesto",
+        )
+        with pytest.raises(ValueError, match="absolute"):
+            vm.upload_file(source, "relative/path.txt")
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_download_accepts_windows_path(
+        self,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Windows guest_path on download_file passes the path validator."""
+        disk = tmp_path / "win11.qcow2"
+        disk.touch()
+        local_target = tmp_path / "out.txt"
+
+        running_info = MagicMock(vm_id="vm-win", status=VMState.RUNNING)
+        running_info.config = VMConfig(
+            vm_id="vm-win",
+            rootfs_path=disk,
+            kernel_path=None,
+            backend="qemu",
+            guest_os=GuestOS.WINDOWS,
+            boot_mode="firmware",
+            disk_mode="shared",
+            ssh_capable=True,
+        )
+        running_info.network = MagicMock()
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = running_info
+        mock_sdk.get.return_value = running_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        ssh = MagicMock()
+
+        vm = SmolVM(
+            os="windows",
+            image=str(disk),
+            ssh_user="celesto",
+            ssh_password="celesto",
+        )
+        vm._ssh = ssh
+        vm._ssh_ready = True
+
+        result = vm.download_file("C:\\Users\\celesto\\hello.txt", local_target)
+        assert result == str(local_target)
+        ssh.get_file.assert_called_once_with("C:\\Users\\celesto\\hello.txt", local_target)
+
+
+class TestVMWindowsEnvVarsRejection:
+    """Phase 2 explicit rejection of env_vars= on Windows VMConfigs."""
+
+    def test_env_vars_on_windows_vmconfig_rejected_at_init(self, tmp_path: Path) -> None:
+        """SmolVM(config=...) with Windows+env_vars fails fast with plain English."""
+        disk = tmp_path / "win11.qcow2"
+        disk.touch()
+        config = VMConfig(
+            vm_id="vm-win",
+            rootfs_path=disk,
+            kernel_path=None,
+            backend="qemu",
+            guest_os=GuestOS.WINDOWS,
+            boot_mode="firmware",
+            disk_mode="shared",
+            env_vars={"FOO": "bar"},
+        )
+        with pytest.raises(ValueError, match="env_vars.*not yet supported for Windows"):
+            SmolVM(config)
+
+
 class TestVMLifecycle:
     """Tests for VM lifecycle operations."""
 

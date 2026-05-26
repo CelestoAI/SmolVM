@@ -65,7 +65,7 @@ from smolvm.runtime.boot_profiles import (
     normalize_arch,
     to_published_arch,
 )
-from smolvm.ssh import SSHClient
+from smolvm.ssh import ShellKind, SSHClient
 from smolvm.types import (
     CommandResult,
     GuestOS,
@@ -300,6 +300,43 @@ def _guest_parent_dir(path: str) -> str:
     return parent or "/"
 
 
+def _is_windows_guest_path(path: str) -> bool:
+    """Return True if *path* looks like a Windows-style guest path.
+
+    Accepts the three forms OpenSSH-Win32 SFTP normalizes:
+    ``C:\\...`` (Windows-native), ``C:/...`` (forward-slash mix), and
+    ``/C:/...`` (SFTP/cygwin-style POSIX prefix). POSIX paths (``/foo``)
+    are still POSIX — only paths with a drive-letter colon qualify.
+    """
+    if len(path) >= 3 and path[1] == ":" and path[2] in ("\\", "/") and path[0].isalpha():
+        return True
+    # /C:/... — leading slash + drive letter, e.g. "/C:/Users/foo".
+    return (
+        len(path) >= 4
+        and path[0] == "/"
+        and path[2] == ":"
+        and path[3] in ("\\", "/")
+        and path[1].isalpha()
+    )
+
+
+def _windows_guest_parent_dir(path: str) -> str:
+    """Return the parent directory of a Windows-style guest path.
+
+    Uses :mod:`ntpath` so we handle ``\\``, ``/``, and mixed separators
+    the same way Windows itself does.
+    """
+    import ntpath
+
+    normalized = path.rstrip("\\/")
+    if not normalized:
+        return ""
+    parent = ntpath.dirname(normalized)
+    # ntpath.dirname("C:\\foo") -> "C:\\", but ntpath.dirname("C:foo") -> "C:".
+    # Either form is fine to pass to PowerShell's New-Item -Path.
+    return parent
+
+
 def _build_auto_config_image_name(
     guest_os: GuestOS,
     *,
@@ -408,7 +445,12 @@ def _build_local_image_config(
         backend=BACKEND_QEMU,
         boot_mode="firmware",
         boot_args="",  # ignored in firmware mode
-        ssh_capable=False,  # Phase 1: SSH-into-Windows is Phase 2
+        # Phase 2: the contract for the Windows path is that the user's
+        # qcow2 has OpenSSH server set up. Declaring ssh_capable=True
+        # lets vm.run() / vm.upload_file() / wait_for_ssh() work; if
+        # the user's image doesn't actually have sshd, those calls fail
+        # at connect-time with a clear paramiko auth/connection error.
+        ssh_capable=True,
         disk_mode="shared",  # Phase 1: no overlay cloning for Windows qcow2s
     )
     logger.info(
@@ -719,10 +761,16 @@ class SmolVM:
         os: Guest OS for auto-config mode (``"alpine"`` or ``"ubuntu"``).
         memory: Guest memory in MiB for auto-config mode (``SmolVM()`` only).
         disk_size: Root filesystem size in MiB for auto-config mode (``SmolVM()`` only).
-        ssh_user: SSH user for :meth:`run` (default ``root``).
+        ssh_user: SSH user for :meth:`run` (default ``root``; pass the
+            Windows local-admin username for Windows guests, e.g.
+            ``"Administrator"`` or whatever you baked into the qcow2).
         ssh_key_path: Optional SSH private key path. If omitted,
             SmolVM first tries default SSH auth, then falls back to
             ``~/.smolvm/keys/id_ed25519`` when needed.
+        ssh_password: Optional SSH password (paramiko password auth).
+            Used when the guest has password-only SSH (e.g. a Windows
+            POC qcow2). Ignored when *ssh_key_path* is also set —
+            paramiko prefers key auth.
         internet_settings: Network access controls. Accepts an
             :class:`~smolvm.types.InternetSettings` instance or a dict
             (e.g. ``{"allowed_domains": ["https://example.com/"]}``).
@@ -757,6 +805,7 @@ class SmolVM:
         disk_size: int | None = None,
         ssh_user: str = "root",
         ssh_key_path: str | None = None,
+        ssh_password: str | None = None,
         internet_settings: InternetSettings | dict[str, Any] | None = None,
         mounts: list[str] | None = None,
         writable_mounts: bool = False,
@@ -887,8 +936,24 @@ class SmolVM:
                 "WorkspaceMount(writable=True) on config.workspace_mounts."
             )
 
+        # Phase 2: Windows guests can't take env_vars yet (Linux POSIX
+        # /etc/profile.d injection doesn't apply). Phase 3 will add
+        # setx-based injection. Reject upfront with a clear sentence so
+        # the failure happens before we spin up swtpm + QEMU.
+        if (
+            config is not None
+            and config.guest_os is GuestOS.WINDOWS
+            and config.env_vars
+        ):
+            raise ValueError(
+                "Environment variable injection (env_vars=) is not yet "
+                "supported for Windows guests; drop env_vars from your "
+                "VMConfig (Phase 3 will add setx-based injection)."
+            )
+
         self._ssh_user = ssh_user
         self._ssh_key_path = ssh_key_path
+        self._ssh_password = ssh_password
         self._default_ssh_key_path: str | None = None
 
         sdk_kwargs: dict[str, Any] = {}
@@ -930,6 +995,7 @@ class SmolVM:
         backend: str | None = None,
         ssh_user: str = "root",
         ssh_key_path: str | None = None,
+        ssh_password: str | None = None,
     ) -> SmolVM:
         """Reconnect to an existing VM by ID.
 
@@ -942,6 +1008,8 @@ class SmolVM:
             ssh_key_path: Optional SSH private key path. If omitted,
                 SmolVM first tries default SSH auth, then falls back to
                 ``~/.smolvm/keys/id_ed25519`` when needed.
+            ssh_password: Optional SSH password (for Windows guests with
+                password-auth qcow2s).
 
         Returns:
             A :class:`SmolVM` instance bound to the existing VM.
@@ -956,6 +1024,7 @@ class SmolVM:
             backend=backend,
             ssh_user=ssh_user,
             ssh_key_path=ssh_key_path,
+            ssh_password=ssh_password,
         )
 
     @classmethod
@@ -1076,9 +1145,8 @@ class SmolVM:
                 )
             self.wait_for_ssh(timeout=boot_timeout, on_progress=on_progress)
             if self._ssh is None:
-                self._ssh = SSHClient(
+                self._ssh = self._new_ssh_client(
                     host=self._info.network.guest_ip,
-                    user=self._ssh_user,
                     key_path=self._ssh_key_path,
                 )
                 self._ssh_ready = True
@@ -1101,9 +1169,8 @@ class SmolVM:
             if not self._ssh_ready:
                 self.wait_for_ssh(timeout=boot_timeout, on_progress=on_progress)
             if self._ssh is None:
-                self._ssh = SSHClient(
+                self._ssh = self._new_ssh_client(
                     host=self._info.network.guest_ip,
-                    user=self._ssh_user,
                     key_path=self._ssh_key_path,
                 )
                 self._ssh_ready = True
@@ -1308,27 +1375,57 @@ class SmolVM:
             )
         if not guest_path:
             raise ValueError("Destination path in the sandbox cannot be empty.")
-        if not guest_path.startswith("/"):
+        is_windows_path = _is_windows_guest_path(guest_path)
+        if not guest_path.startswith("/") and not is_windows_path:
             raise ValueError(
                 f"Destination path in the sandbox must be absolute "
-                f"(start with '/'): {guest_path!r}."
+                f"(start with '/', or a Windows drive-letter path like "
+                f"'C:\\\\Users\\\\foo'): {guest_path!r}."
             )
 
         destination = guest_path
-        if destination.endswith("/"):
-            destination = f"{destination}{source.name}"
+        # Strip a trailing slash/backslash and append the local filename when
+        # the destination names a directory. Path style (POSIX vs Windows)
+        # determines which separator to add back.
+        if destination.endswith("/") or destination.endswith("\\"):
+            sep = "\\" if destination.endswith("\\") else "/"
+            destination = f"{destination.rstrip(chr(92) + '/')}{sep}{source.name}"
 
         ssh = self._ensure_ssh_for_file_transfer()
         if make_dirs:
-            parent = _guest_parent_dir(destination)
-            if parent:
-                result = ssh.run(f"mkdir -p -- {shlex.quote(parent)}", timeout=30, shell="raw")
-                if result.exit_code != 0:
-                    stderr = result.stderr.strip()
-                    raise SmolVMError(
-                        f"Could not create directory {parent!r} in the sandbox: {stderr}",
-                        {"vm_id": self._vm_id, "guest_path": destination},
+            if is_windows_path:
+                parent = _windows_guest_parent_dir(destination)
+                if parent:
+                    # PowerShell's New-Item -Force creates intermediate
+                    # directories and succeeds silently if the path already
+                    # exists. Single-quoted Path lets PowerShell treat the
+                    # backslashes literally — no escape gymnastics.
+                    safe_parent = parent.replace("'", "''")
+                    cmd = (
+                        f"New-Item -ItemType Directory -Force -Path "
+                        f"'{safe_parent}' | Out-Null"
                     )
+                    result = ssh.run(cmd, timeout=30, shell="login")
+                    if result.exit_code != 0:
+                        stderr = result.stderr.strip()
+                        raise SmolVMError(
+                            f"Could not create directory {parent!r} in the sandbox: {stderr}",
+                            {"vm_id": self._vm_id, "guest_path": destination},
+                        )
+            else:
+                parent = _guest_parent_dir(destination)
+                if parent:
+                    result = ssh.run(
+                        f"mkdir -p -- {shlex.quote(parent)}",
+                        timeout=30,
+                        shell="raw",
+                    )
+                    if result.exit_code != 0:
+                        stderr = result.stderr.strip()
+                        raise SmolVMError(
+                            f"Could not create directory {parent!r} in the sandbox: {stderr}",
+                            {"vm_id": self._vm_id, "guest_path": destination},
+                        )
         ssh.put_file(source, destination)
         return destination
 
@@ -1363,17 +1460,19 @@ class SmolVM:
         """
         if not guest_path:
             raise ValueError("Source path in the sandbox cannot be empty.")
-        if not guest_path.startswith("/"):
+        if not guest_path.startswith("/") and not _is_windows_guest_path(guest_path):
             raise ValueError(
                 f"Source path in the sandbox must be absolute "
-                f"(start with '/'): {guest_path!r}."
+                f"(start with '/', or a Windows drive-letter path like "
+                f"'C:\\\\Users\\\\foo'): {guest_path!r}."
             )
 
         raw_local = str(local_path)
         destination = Path(local_path).expanduser()
         treat_as_dir = raw_local.endswith("/") or destination.is_dir()
         if treat_as_dir:
-            guest_name = guest_path.rstrip("/").rsplit("/", 1)[-1]
+            # Strip trailing separator (either kind) then take the basename.
+            guest_name = guest_path.rstrip("/\\").rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
             if not guest_name:
                 raise ValueError(
                     f"Cannot derive a filename from the sandbox path: {guest_path!r}."
@@ -1790,9 +1889,8 @@ class SmolVM:
                 )
             await self.async_wait_for_ssh(timeout=boot_timeout)
             if self._ssh is None:
-                self._ssh = SSHClient(
+                self._ssh = self._new_ssh_client(
                     host=self._info.network.guest_ip,
-                    user=self._ssh_user,
                     key_path=self._ssh_key_path,
                 )
                 self._ssh_ready = True
@@ -1808,9 +1906,8 @@ class SmolVM:
             if not self._ssh_ready:
                 await self.async_wait_for_ssh(timeout=boot_timeout)
             if self._ssh is None:
-                self._ssh = SSHClient(
+                self._ssh = self._new_ssh_client(
                     host=self._info.network.guest_ip,
-                    user=self._ssh_user,
                     key_path=self._ssh_key_path,
                 )
                 self._ssh_ready = True
@@ -2195,6 +2292,49 @@ modprobe 9pnet_virtio""".strip()
         if hasattr(self, "_probed_endpoint"):
             self._probed_endpoint = None
 
+    def _guest_shell_kind(self) -> ShellKind:
+        """Pick the SSHClient login-shell flavor for this guest OS.
+
+        Windows guests get ``powershell``; everything else gets the POSIX
+        ``sh`` wrap (byte-identical to the pre-Phase-2 behavior).
+        """
+        if self._info.config.guest_os is GuestOS.WINDOWS:
+            return "powershell"
+        return "sh"
+
+    def _new_ssh_client(
+        self,
+        *,
+        host: str,
+        port: int = 22,
+        key_path: str | None = None,
+    ) -> SSHClient:
+        """Construct an SSHClient with this VM's auth + shell flavor.
+
+        Single source of truth for SSH-client construction so password
+        auth, key auth, and shell-kind dispatch stay consistent across
+        the five call sites (sync/async start, env injection, workspace
+        mounts, candidate probing).
+
+        When ``self._ssh_password`` is set, it takes precedence over any
+        per-call ``key_path``: paramiko's ``connect()`` prefers
+        ``key_filename`` over ``password`` and would silently ignore the
+        password if both were passed, which leaves Windows POC users
+        wondering why their password never gets tried.
+        """
+        if self._ssh_password is not None:
+            effective_key_path: str | None = None
+        else:
+            effective_key_path = key_path
+        return SSHClient(
+            host=host,
+            user=self._ssh_user,
+            port=port,
+            key_path=effective_key_path,
+            password=self._ssh_password,
+            shell_kind=self._guest_shell_kind(),
+        )
+
     def _ensure_ssh_for_file_transfer(self) -> SSHClient:
         """Return a ready SSH client for file transfer operations."""
         return self._ensure_ssh_for_operation(action="transfer files")
@@ -2329,9 +2469,8 @@ modprobe 9pnet_virtio""".strip()
                 or client.port != port
                 or client.key_path != key_path
             ):
-                client = SSHClient(
+                client = self._new_ssh_client(
                     host=host,
-                    user=self._ssh_user,
                     port=port,
                     key_path=key_path,
                 )

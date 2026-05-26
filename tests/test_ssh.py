@@ -20,8 +20,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import base64
+
 from smolvm.exceptions import OperationTimeoutError, SmolVMError
-from smolvm.ssh import SSHClient
+from smolvm.ssh import SSHClient, _pwsh_encoded_command
 from smolvm.types import CommandResult
 
 
@@ -261,3 +263,92 @@ class TestSSHClientWaitForSSH:
         client = SSHClient("172.16.0.2")
         with pytest.raises(ValueError, match="timeout must be"):
             client.wait_for_ssh(timeout=0)
+
+
+class TestSSHClientShellKind:
+    """Tests for the per-guest-OS login-shell wrapping."""
+
+    def test_default_shell_kind_is_sh(self) -> None:
+        """Constructing without shell_kind keeps the POSIX default."""
+        client = SSHClient("172.16.0.2")
+        assert client.shell_kind == "sh"
+
+    def test_sh_wrap_is_byte_identical_to_legacy(self) -> None:
+        """The POSIX wrap shape must not drift — locks zero-regression."""
+        client = SSHClient("172.16.0.2", shell_kind="sh")
+        wrapped = client._wrap_login_shell_command("echo hello world")
+        assert wrapped == (
+            'SHELL_BIN="${SHELL:-/bin/sh}"; exec "$SHELL_BIN" -lc '
+            "'echo hello world'"
+        )
+
+    def test_powershell_wrap_uses_encoded_command(self) -> None:
+        """PowerShell wrap base64-encodes the command via -EncodedCommand.
+
+        Round-trip the b64 back to UTF-16LE bytes and verify the original
+        command bytes survived intact. -EncodedCommand sidesteps cmd.exe
+        and PowerShell quoting both — critical because Windows OpenSSH
+        routes commands through cmd.exe by default.
+        """
+        client = SSHClient("10.0.2.15", shell_kind="powershell")
+        wrapped = client._wrap_login_shell_command("echo hi")
+        prefix = "powershell.exe -NoProfile -EncodedCommand "
+        assert wrapped.startswith(prefix)
+        encoded = wrapped[len(prefix) :]
+        assert base64.b64decode(encoded).decode("utf-16-le") == "echo hi"
+
+    def test_powershell_wrap_survives_quotes_and_backticks(self) -> None:
+        """The encoded form trivially preserves quotes, backticks, $, etc."""
+        client = SSHClient("10.0.2.15", shell_kind="powershell")
+        tricky = 'Write-Output "hi `now $env:USERNAME"'
+        wrapped = client._wrap_login_shell_command(tricky)
+        encoded = wrapped.removeprefix(
+            "powershell.exe -NoProfile -EncodedCommand "
+        )
+        assert base64.b64decode(encoded).decode("utf-16-le") == tricky
+
+    def test_cmd_wrap(self) -> None:
+        """cmd.exe wrap uses ``/c`` with double-quoted command."""
+        client = SSHClient("10.0.2.15", shell_kind="cmd")
+        wrapped = client._wrap_login_shell_command("dir C:\\Users")
+        assert wrapped == 'cmd.exe /c "dir C:\\Users"'
+
+    def test_raw_shell_mode_bypasses_wrap_regardless_of_kind(self) -> None:
+        """``shell="raw"`` is the explicit escape hatch for any kind."""
+        client = SSHClient("10.0.2.15", shell_kind="powershell")
+        prepared = client._prepare_remote_command("echo raw", shell="raw")
+        assert prepared == "echo raw"
+
+
+class TestPwshEncodedCommand:
+    """Direct tests for the PowerShell -EncodedCommand wrapper."""
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "echo hi",
+            'Write-Output "hi"',
+            'with `backtick',
+            "$env:USERNAME",
+            "line1\nline2",
+            'New-Item -ItemType Directory -Force -Path "C:\\Users\\foo"',
+            # Unicode survives UTF-16LE round-trip.
+            "echo héllo 🐍",
+        ],
+    )
+    def test_round_trip(self, raw: str) -> None:
+        """Decoded base64 matches the original command byte-for-byte."""
+        wrapped = _pwsh_encoded_command(raw)
+        prefix = "powershell.exe -NoProfile -EncodedCommand "
+        assert wrapped.startswith(prefix)
+        encoded = wrapped[len(prefix) :]
+        assert base64.b64decode(encoded).decode("utf-16-le") == raw
+
+    def test_no_shell_metacharacters_in_wrapped_form(self) -> None:
+        """The wrapped form is plain ASCII (no quotes, $, backticks)."""
+        wrapped = _pwsh_encoded_command('echo "hi" `now $env:X')
+        # Base64 alphabet is [A-Za-z0-9+/=]. No quotes, no $, no backticks.
+        encoded = wrapped.removeprefix(
+            "powershell.exe -NoProfile -EncodedCommand "
+        )
+        assert all(c not in encoded for c in '"`$')
