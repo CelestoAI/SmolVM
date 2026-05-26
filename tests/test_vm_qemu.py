@@ -286,6 +286,116 @@ def test_materialize_firmware_raises_with_install_hint_when_no_ovmf(tmp_path: Pa
         sdk._materialize_firmware(config)
 
 
+def test_windows_local_image_uses_per_vm_overlay_disk(tmp_path: Path) -> None:
+    """Windows VMs get a per-VM overlay, baseline qcow2 stays untouched."""
+    from smolvm.runtime.guest_platforms import FirmwareSpec
+    from smolvm.types import GuestOS
+
+    baseline = tmp_path / "win11-baseline.qcow2"
+    baseline.write_bytes(b"baseline-bytes")
+    baseline_mtime = baseline.stat().st_mtime_ns
+
+    code = tmp_path / "OVMF_CODE.fd"
+    code.touch()
+    template = tmp_path / "OVMF_VARS.fd"
+    template.write_bytes(b"vars-template")
+    fake_firmware = FirmwareSpec(code_path=code, vars_template_path=template)
+
+    config = VMConfig(
+        vm_id="vm-win-iso",
+        kernel_path=None,
+        rootfs_path=baseline,
+        backend="qemu",
+        guest_os=GuestOS.WINDOWS,
+        boot_mode="firmware",
+        disk_mode="isolated",  # Phase 3a: new default for Windows local-image
+    )
+
+    sdk = SmolVMManager(
+        data_dir=tmp_path / "data",
+        socket_dir=tmp_path / "sockets",
+        backend="qemu",
+    )
+    with (
+        patch(
+            "smolvm.runtime.guest_platforms._find_x86_64_ovmf",
+            return_value=fake_firmware,
+        ),
+        patch("smolvm.vm.platform.system", return_value="Linux"),
+        patch("smolvm.vm.platform.machine", return_value="x86_64"),
+        patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_overlay,
+    ):
+        mock_overlay.side_effect = lambda source, target: target.write_text("overlay-bytes")
+        vm_info = sdk.create(config)
+
+    expected_overlay = sdk.data_dir / "disks" / "vm-win-iso.qcow2"
+    # The VM now points at its own overlay, NOT the user's baseline.
+    assert vm_info.config.rootfs_path == expected_overlay
+    assert expected_overlay.read_text() == "overlay-bytes"
+    # The user's baseline file is byte-identical AND mtime-identical —
+    # nothing wrote to it, so two SmolVMs in parallel can share it safely.
+    assert baseline.read_bytes() == b"baseline-bytes"
+    assert baseline.stat().st_mtime_ns == baseline_mtime
+    # The overlay was created with the baseline as the backing file.
+    source_arg, target_arg = mock_overlay.call_args.args
+    assert source_arg == baseline
+    assert target_arg == expected_overlay
+
+
+def test_two_windows_vms_from_same_baseline_get_distinct_overlays(
+    tmp_path: Path,
+) -> None:
+    """Concurrent Windows sandboxes from the same image use separate overlays."""
+    from smolvm.runtime.guest_platforms import FirmwareSpec
+    from smolvm.types import GuestOS
+
+    baseline = tmp_path / "win11-baseline.qcow2"
+    baseline.write_bytes(b"baseline-bytes")
+
+    code = tmp_path / "OVMF_CODE.fd"
+    code.touch()
+    template = tmp_path / "OVMF_VARS.fd"
+    template.write_bytes(b"vars-template")
+    fake_firmware = FirmwareSpec(code_path=code, vars_template_path=template)
+
+    def _windows_config(vm_id: str) -> VMConfig:
+        return VMConfig(
+            vm_id=vm_id,
+            kernel_path=None,
+            rootfs_path=baseline,
+            backend="qemu",
+            guest_os=GuestOS.WINDOWS,
+            boot_mode="firmware",
+            disk_mode="isolated",
+        )
+
+    sdk = SmolVMManager(
+        data_dir=tmp_path / "data",
+        socket_dir=tmp_path / "sockets",
+        backend="qemu",
+    )
+    with (
+        patch(
+            "smolvm.runtime.guest_platforms._find_x86_64_ovmf",
+            return_value=fake_firmware,
+        ),
+        patch("smolvm.vm.platform.system", return_value="Linux"),
+        patch("smolvm.vm.platform.machine", return_value="x86_64"),
+        patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_overlay,
+    ):
+        mock_overlay.side_effect = lambda source, target: target.write_text(target.name)
+        vm_alpha = sdk.create(_windows_config("vm-win-alpha"))
+        vm_beta = sdk.create(_windows_config("vm-win-beta"))
+
+    # Distinct per-VM overlays.
+    assert vm_alpha.config.rootfs_path != vm_beta.config.rootfs_path
+    assert vm_alpha.config.rootfs_path.name == "vm-win-alpha.qcow2"
+    assert vm_beta.config.rootfs_path.name == "vm-win-beta.qcow2"
+    # Both overlays share the same backing file (the user's baseline).
+    backing_paths = [call.args[0] for call in mock_overlay.call_args_list]
+    assert backing_paths == [baseline, baseline]
+
+
 def test_delete_qemu_retains_isolated_disk_when_enabled(tmp_path: Path) -> None:
     """retain_disk_on_delete should preserve managed qcow2 disks for QEMU VMs."""
     kernel = tmp_path / "vmlinux"

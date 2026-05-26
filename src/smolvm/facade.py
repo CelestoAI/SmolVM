@@ -407,10 +407,14 @@ def _build_local_image_config(
     supported on this path; Linux users still go through auto-config
     or S3.
 
-    The qcow2 is used **shared** (no per-VM overlay clone), so concurrent
-    ``SmolVM(image=...)`` calls against the same baseline corrupt each
-    other. Document loudly when surfacing this path. Phase 2 introduces
-    qcow2 overlay cloning for Windows base images.
+    Each sandbox gets a thin per-VM qcow2 overlay stacked on top of the
+    user's baseline (``disk_mode="isolated"``), so concurrent
+    ``SmolVM(image=...)`` calls don't collide on the write lock and the
+    baseline itself stays read-only and uncorrupted. The overlay lives
+    under ``data_dir/disks/{vm_id}.qcow2`` and is created near-instantly
+    via ``qemu-img create -b``. Power users who need writes to land in
+    the baseline (e.g., a one-off image-baking workflow) can construct
+    a ``VMConfig`` directly with ``disk_mode="shared"``.
     """
     if os_input is None:
         raise ValueError(
@@ -472,7 +476,12 @@ def _build_local_image_config(
         # the user's image doesn't actually have sshd, those calls fail
         # at connect-time with a clear paramiko auth/connection error.
         ssh_capable=True,
-        disk_mode="shared",  # Phase 1: no overlay cloning for Windows qcow2s
+        # Per-VM qcow2 overlay on top of the user's baseline. The same
+        # _materialize_rootfs path Linux Alpine/Ubuntu use; the baseline
+        # stays read-only so multiple Windows sandboxes can run in
+        # parallel from the same image without colliding on the write
+        # lock, and a crashed sandbox doesn't dirty the original.
+        disk_mode="isolated",
     )
     logger.info(
         "Configured Windows VM from local image: %s (image=%s)",

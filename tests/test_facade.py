@@ -721,7 +721,10 @@ class TestVMLocalImageParam:
         assert config.boot_mode == "firmware"
         assert config.kernel_path is None
         assert config.backend == "qemu"
-        assert config.disk_mode == "shared"
+        # Phase 3a: Windows now uses isolated (per-VM qcow2 overlay) so
+        # concurrent SmolVM(image=SAME) calls don't collide on the disk
+        # write lock and the baseline stays untouched.
+        assert config.disk_mode == "isolated"
         assert config.rootfs_path == disk
         assert config.memory == 4096  # Windows default
         assert ssh_key == str(key)
