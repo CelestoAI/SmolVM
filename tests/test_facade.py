@@ -1041,14 +1041,27 @@ class TestVMUploadDownloadWindows:
         ssh.get_file.assert_called_once_with("C:\\Users\\celesto\\hello.txt", local_target)
 
 
-class TestVMWindowsEnvVarsRejection:
-    """Phase 2 explicit rejection of env_vars= on Windows VMConfigs."""
+class TestVMWindowsEnvVarsAccepted:
+    """Phase 3b: env_vars on Windows VMConfigs is now accepted.
 
-    def test_env_vars_on_windows_vmconfig_rejected_at_init(self, tmp_path: Path) -> None:
-        """SmolVM(config=...) with Windows+env_vars fails fast with plain English."""
+    Replaces the Phase-2 ``TestVMWindowsEnvVarsRejection`` — the
+    setx/HKCU-based injection lives in :mod:`smolvm.env_windows` and
+    SmolVM.__init__ no longer rejects upfront.
+    """
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_env_vars_on_windows_vmconfig_accepted_at_init(
+        self,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """SmolVM(config=...) with Windows+env_vars constructs without raising."""
         disk = tmp_path / "win11.qcow2"
         disk.touch()
-        config = VMConfig(
+
+        info = MagicMock()
+        info.vm_id = "vm-win"
+        info.config = VMConfig(
             vm_id="vm-win",
             rootfs_path=disk,
             kernel_path=None,
@@ -1058,8 +1071,16 @@ class TestVMWindowsEnvVarsRejection:
             disk_mode="shared",
             env_vars={"FOO": "bar"},
         )
-        with pytest.raises(ValueError, match="env_vars.*not yet supported for Windows"):
-            SmolVM(config)
+        info.network = MagicMock()
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = info
+        mock_sdk_cls.return_value = mock_sdk
+
+        vm = SmolVM(info.config)
+        # Construction succeeds; the actual injection runs inside
+        # SmolVM.start() against a real SSH client (covered in tests
+        # against the env_windows module directly).
+        assert vm._info.config.env_vars == {"FOO": "bar"}
 
 
 class TestVMLifecycle:

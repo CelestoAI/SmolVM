@@ -1049,6 +1049,148 @@ class TestCliCreateWindows:
         assert args.backend == "qemu"
 
 
+class TestCliWindowsBuildImage:
+    """Tests for `smolvm windows build-image`."""
+
+    def test_help_is_listed(self) -> None:
+        """`smolvm windows --help` advertises the build-image verb."""
+        parser = build_parser()
+        # Argparse raises SystemExit(0) on --help.
+        with pytest.raises(SystemExit):
+            parser.parse_args(["windows", "--help"])
+
+    def test_build_image_flag_parsing(self, tmp_path: Path) -> None:
+        parser = build_parser()
+        win = tmp_path / "Win11.iso"
+        virtio = tmp_path / "virtio-win.iso"
+        out = tmp_path / "win11.qcow2"
+        args = parser.parse_args(
+            [
+                "windows",
+                "build-image",
+                "--iso",
+                str(win),
+                "--virtio-win-iso",
+                str(virtio),
+                "--output",
+                str(out),
+                "--username",
+                "ops",
+                "--password",
+                "Hunter2!",
+                "--hostname",
+                "ci-win",
+                "--edition",
+                "Windows 11 Enterprise",
+                "--disk-size",
+                "32768",
+                "--build-timeout",
+                "1200",
+            ]
+        )
+        assert args.command == "windows"
+        assert args.windows_action == "build-image"
+        assert args.windows_iso == str(win)
+        assert args.virtio_win_iso == str(virtio)
+        assert args.output_qcow2 == str(out)
+        assert args.username == "ops"
+        assert args.password == "Hunter2!"
+        assert args.hostname == "ci-win"
+        assert args.edition == "Windows 11 Enterprise"
+        assert args.disk_size_mib == 32768
+        assert args.build_timeout_s == 1200
+
+    def test_build_image_requires_iso_and_virtio_and_output(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Missing required args → argparse exits with code 2."""
+        with pytest.raises(SystemExit) as exc_info:
+            main(["windows", "build-image", "--iso", "/tmp/win.iso"])
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "--virtio-win-iso" in err or "--output" in err
+
+    @patch("smolvm.windows.WindowsImageBuilder")
+    def test_build_image_invokes_builder_and_renders_success_panel(
+        self,
+        mock_builder_cls: MagicMock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        win = tmp_path / "Win11.iso"
+        virtio = tmp_path / "virtio-win.iso"
+        out = tmp_path / "out.qcow2"
+        win.touch()
+        virtio.touch()
+        # The builder writes the qcow2; simulate by touching it post-build.
+        out_built = MagicMock()
+        out_built.stat.return_value = MagicMock(st_size=12345)
+        out_built.__str__ = lambda self: str(out)  # noqa: ARG005
+        mock_builder = MagicMock()
+        mock_builder.build.return_value = out_built
+        mock_builder_cls.return_value = mock_builder
+
+        ret = main(
+            [
+                "windows",
+                "build-image",
+                "--iso",
+                str(win),
+                "--virtio-win-iso",
+                str(virtio),
+                "--output",
+                str(out),
+            ]
+        )
+        assert ret == 0
+        # Builder was constructed with the user's args.
+        kwargs = mock_builder_cls.call_args.kwargs
+        assert kwargs["windows_iso"] == win
+        assert kwargs["virtio_win_iso"] == virtio
+        # Default credentials surface in the success panel.
+        out_text = capsys.readouterr().out
+        assert "Windows image ready" in out_text or "smolvm" in out_text
+
+    @patch("smolvm.windows.WindowsImageBuilder")
+    def test_build_image_json_mode_emits_envelope(
+        self,
+        mock_builder_cls: MagicMock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        win = tmp_path / "Win11.iso"
+        virtio = tmp_path / "virtio-win.iso"
+        out = tmp_path / "out.qcow2"
+        win.touch()
+        virtio.touch()
+        out_built = MagicMock()
+        out_built.stat.return_value = MagicMock(st_size=999)
+        out_built.__str__ = lambda self: str(out)  # noqa: ARG005
+        mock_builder = MagicMock()
+        mock_builder.build.return_value = out_built
+        mock_builder_cls.return_value = mock_builder
+
+        ret = main(
+            [
+                "windows",
+                "build-image",
+                "--iso",
+                str(win),
+                "--virtio-win-iso",
+                str(virtio),
+                "--output",
+                str(out),
+                "--json",
+            ]
+        )
+        assert ret == 0
+        out_text = capsys.readouterr().out
+        assert '"ok": true' in out_text
+        assert '"command": "windows build-image"' in out_text
+        assert '"output_qcow2"' in out_text
+
+
 class TestCliStop:
     """Tests for `smolvm stop`."""
 

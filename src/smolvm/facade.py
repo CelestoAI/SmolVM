@@ -46,6 +46,15 @@ from urllib.parse import urlparse
 
 from smolvm._naming import generate_sandbox_name
 from smolvm.env import inject_env_vars, read_env_vars, remove_env_vars
+from smolvm.env_windows import (
+    inject_env_vars as inject_env_vars_windows,
+)
+from smolvm.env_windows import (
+    read_env_vars as read_env_vars_windows,
+)
+from smolvm.env_windows import (
+    remove_env_vars as remove_env_vars_windows,
+)
 from smolvm.exceptions import (
     CommandExecutionUnavailableError,
     OperationTimeoutError,
@@ -970,21 +979,6 @@ class SmolVM:
                 "WorkspaceMount(writable=True) on config.workspace_mounts."
             )
 
-        # Phase 2: Windows guests can't take env_vars yet (Linux POSIX
-        # /etc/profile.d injection doesn't apply). Phase 3 will add
-        # setx-based injection. Reject upfront with a clear sentence so
-        # the failure happens before we spin up swtpm + QEMU.
-        if (
-            config is not None
-            and config.guest_os is GuestOS.WINDOWS
-            and config.env_vars
-        ):
-            raise ValueError(
-                "Environment variable injection (env_vars=) is not yet "
-                "supported for Windows guests; drop env_vars from your "
-                "VMConfig (Phase 3 will add setx-based injection)."
-            )
-
         self._ssh_user = ssh_user
         self._ssh_key_path = ssh_key_path
         self._ssh_password = ssh_password
@@ -1184,7 +1178,10 @@ class SmolVM:
                     key_path=self._ssh_key_path,
                 )
                 self._ssh_ready = True
-            injected = inject_env_vars(self._ssh, env_vars)
+            injector = (
+                inject_env_vars_windows if self._is_windows_guest() else inject_env_vars
+            )
+            injected = injector(self._ssh, env_vars)
             logger.info(
                 "VM %s: injected %d env var(s): %s",
                 self._vm_id,
@@ -1336,11 +1333,27 @@ class SmolVM:
 
         return self._ssh.run(command, timeout=timeout, shell=shell)
 
+    def _is_windows_guest(self) -> bool:
+        """Return True when the running guest is Windows.
+
+        Single source of truth for the per-OS env-management dispatch
+        (set/unset/list_env_vars) and for ``start()``'s post-boot
+        env injection. Linux guests get the POSIX
+        ``/etc/profile.d/smolvm_env.sh`` path; Windows guests get the
+        ``HKCU\\Environment`` registry path via
+        :mod:`smolvm.env_windows`.
+        """
+        return self._info.config.guest_os is GuestOS.WINDOWS
+
     def set_env_vars(self, env_vars: dict[str, str], *, merge: bool = True) -> list[str]:
         """Set environment variables on a running VM.
 
-        Variables are persisted in ``/etc/profile.d/smolvm_env.sh`` and
-        affect new SSH sessions/login shells.
+        On Linux guests the variables are persisted in
+        ``/etc/profile.d/smolvm_env.sh`` and affect new login shells.
+        On Windows guests they go into ``HKCU\\Environment`` via
+        ``[Environment]::SetEnvironmentVariable`` and are visible to
+        every fresh process spawned afterwards (subsequent ``vm.run()``
+        calls open new SSH sessions, so they see the new values).
 
         Args:
             env_vars: Key/value pairs to set.
@@ -1353,6 +1366,8 @@ class SmolVM:
             return []
 
         ssh = self._ensure_ssh_for_env()
+        if self._is_windows_guest():
+            return inject_env_vars_windows(ssh, env_vars, merge=merge)
         return inject_env_vars(ssh, env_vars, merge=merge)
 
     def unset_env_vars(self, keys: list[str]) -> dict[str, str]:
@@ -1368,11 +1383,15 @@ class SmolVM:
             return {}
 
         ssh = self._ensure_ssh_for_env()
+        if self._is_windows_guest():
+            return remove_env_vars_windows(ssh, keys)
         return remove_env_vars(ssh, keys)
 
     def list_env_vars(self) -> dict[str, str]:
         """Return SmolVM-managed environment variables for a running VM."""
         ssh = self._ensure_ssh_for_env()
+        if self._is_windows_guest():
+            return read_env_vars_windows(ssh)
         return read_env_vars(ssh)
 
     def upload_file(
@@ -1932,7 +1951,10 @@ class SmolVM:
                     key_path=self._ssh_key_path,
                 )
                 self._ssh_ready = True
-            await asyncio.to_thread(inject_env_vars, self._ssh, env_vars)
+            injector = (
+                inject_env_vars_windows if self._is_windows_guest() else inject_env_vars
+            )
+            await asyncio.to_thread(injector, self._ssh, env_vars)
 
         # Mount workspace directories after boot if configured.
         if self._info.config.workspace_mounts:

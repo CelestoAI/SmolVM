@@ -994,6 +994,93 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_ssh_auth_args(file_download)
 
+    # ── windows: image-building helpers ────────────────────────────
+    windows_parser = subparsers.add_parser(
+        "windows",
+        help="Windows-guest helpers (image building, etc.).",
+    )
+    windows_sub = windows_parser.add_subparsers(dest="windows_action")
+
+    windows_build = windows_sub.add_parser(
+        "build-image",
+        help=(
+            "Build a reusable Windows qcow2 from a Windows ISO via "
+            "unattended install (no clicks required)."
+        ),
+    )
+    windows_build.add_argument(
+        "--iso",
+        dest="windows_iso",
+        required=True,
+        metavar="PATH",
+        help="Path to the Windows ISO (e.g. ./Win11.iso).",
+    )
+    windows_build.add_argument(
+        "--virtio-win-iso",
+        dest="virtio_win_iso",
+        required=True,
+        metavar="PATH",
+        help=(
+            "Path to the virtio-win driver ISO. Download from "
+            "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/"
+            "stable-virtio/virtio-win.iso (one-time, ~750 MiB)."
+        ),
+    )
+    windows_build.add_argument(
+        "--output",
+        dest="output_qcow2",
+        required=True,
+        metavar="PATH",
+        help="Where to write the built qcow2 (e.g. ~/.smolvm/images/win11.qcow2).",
+    )
+    windows_build.add_argument(
+        "--username",
+        default="smolvm",
+        help="Local admin account name to create (default: smolvm).",
+    )
+    windows_build.add_argument(
+        "--password",
+        default="smolvm",
+        help=(
+            "Local admin account password (default: smolvm — OVERRIDE for "
+            "any image you'll re-use beyond throwaway POC work)."
+        ),
+    )
+    windows_build.add_argument(
+        "--hostname",
+        default="smolvm-win",
+        help="Windows computer name baked into the install (default: smolvm-win).",
+    )
+    windows_build.add_argument(
+        "--edition",
+        default="Windows 11 Pro",
+        help=(
+            "Edition to install, as it appears in install.wim "
+            "(default: 'Windows 11 Pro'; 'Windows 11 Home' also valid)."
+        ),
+    )
+    windows_build.add_argument(
+        "--disk-size",
+        dest="disk_size_mib",
+        type=int,
+        default=64 * 1024,
+        metavar="MIB",
+        help="Virtual size of the built qcow2 in MiB (default: 65536 = 64 GiB).",
+    )
+    windows_build.add_argument(
+        "--build-timeout",
+        dest="build_timeout_s",
+        type=float,
+        default=45 * 60,
+        metavar="SECONDS",
+        help="Upper bound on the install duration (default: 2700 = 45 min).",
+    )
+    windows_build.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output.",
+    )
+
     browser_parser = subparsers.add_parser(
         "browser",
         help="Manage disposable browser sessions.",
@@ -3177,6 +3264,69 @@ def _render_browser_list(rows: list[BrowserRow]) -> None:
     console.print(f"Total: {len(rows)} session(s).")
 
 
+def _run_windows(args: argparse.Namespace) -> int:
+    """Handle ``smolvm windows`` commands."""
+    action = getattr(args, "windows_action", None)
+    if action == "build-image":
+        return _run_windows_build_image(args)
+    # No verb supplied — print the windows subparser help.
+    print(
+        "smolvm windows: choose a subcommand "
+        "(e.g. `smolvm windows build-image --help`).",
+        file=sys.stderr,
+    )
+    return 2
+
+
+def _run_windows_build_image(args: argparse.Namespace) -> int:
+    """Handle ``smolvm windows build-image``."""
+    from smolvm.windows import WindowsImageBuilder
+
+    try:
+        builder = WindowsImageBuilder(
+            windows_iso=Path(args.windows_iso),
+            virtio_win_iso=Path(args.virtio_win_iso),
+            output_qcow2=Path(args.output_qcow2),
+            username=args.username,
+            password=args.password,
+            hostname=args.hostname,
+            edition=args.edition,
+            disk_size_mib=args.disk_size_mib,
+            build_timeout_s=args.build_timeout_s,
+        )
+        output = builder.build()
+    except Exception as exc:  # noqa: BLE001
+        return _emit_cli_error("windows build-image", 1, exc, json_output=args.json)
+
+    if args.json:
+        emit_json(
+            "windows build-image",
+            0,
+            data={
+                "output_qcow2": str(output),
+                "size_bytes": output.stat().st_size,
+                "username": args.username,
+                "hostname": args.hostname,
+                "edition": args.edition,
+            },
+        )
+    else:
+        console = console_stdout()
+        console.print(
+            Panel.fit(
+                f"Built Windows image: [bold]{output}[/bold]\n\n"
+                f"Boot it with:\n"
+                f"  [bold]smolvm create --os windows --image {output}[/bold]\n"
+                f"or in Python:\n"
+                f"  [bold]SmolVM(os=\"windows\", image=\"{output}\", "
+                f'ssh_user="{args.username}", ssh_password="{args.password}")[/bold]',
+                title="Windows image ready",
+                border_style="green",
+            )
+        )
+    return 0
+
+
 def _run_browser(args: argparse.Namespace) -> int:
     """Handle ``smolvm browser`` commands."""
     from smolvm.browser import BrowserSession
@@ -3422,6 +3572,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "file":
         return _run_file(args)
+
+    if args.command == "windows":
+        return _run_windows(args)
 
     if args.command == "doctor":
         return run_doctor(

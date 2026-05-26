@@ -415,25 +415,62 @@ cp ~/win11-vm/disk-baseline.qcow2 ~/win11-vm/disk.qcow2
 For SmolVM's eventual model this is the *base image* — every sandbox is
 either a clone of (or a qcow2 overlay on top of) this baseline.
 
-### 8. Automation — `autounattend.xml`
+### 8. Automation — `smolvm windows build-image`
 
-The entire walkthrough above is interactive. Windows Setup supports a
-standard answer file (`autounattend.xml`) that drives the installer
-unattended end-to-end: region/keyboard, viostor driver pre-load, partition
-table, local-account creation, OOBE skip, plus `FirstLogonCommands` to
-install OpenSSH and virtio-win-guest-tools. Microsoft documents the schema
-at [learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/](https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/).
+The interactive walkthrough above is for first-time users and
+debugging. The everyday path is fully automated via the SmolVM CLI:
 
-The mechanics: build a tiny FAT-formatted ISO containing just
-`autounattend.xml` at the root (`genisoimage -V autounattend -o
-autounattend.iso autounattend.xml`), attach it as a third CD-ROM, boot the
-Windows installer normally. Windows Setup auto-detects the answer file on
-any attached removable media — no flag to QEMU required.
+```bash
+smolvm windows build-image \
+  --iso ./Win11.iso \
+  --virtio-win-iso ./virtio-win.iso \
+  --output ~/.smolvm/images/win11.qcow2
+```
 
-This is **not** yet implemented for this repo. Punch-list item for the
-SmolVM `windows` preset: ship a parameterized `autounattend.xml.j2` so a
-fresh Windows base image can be built from `Win11.iso + virtio-win.iso`
-with no human input.
+That single command spawns QEMU with all the right ISOs attached,
+waits ~15–30 minutes while Windows Setup runs unattended, and leaves
+behind a ready-to-use qcow2 with a local admin account (default
+`smolvm`/`smolvm` — override with `--username` / `--password`),
+OpenSSH installed, the virtio-win drivers in place, and a
+`C:\smolvm-ready.txt` marker the builder polled to know it was done.
+After that:
+
+```python
+SmolVM(os="windows", image="~/.smolvm/images/win11.qcow2",
+       ssh_user="smolvm", ssh_password="smolvm")
+```
+
+Under the hood the builder uses Microsoft's standard answer-file
+mechanism: a parameterized `autounattend.xml.tmpl` (in
+`src/smolvm/windows/`) is rendered with the chosen credentials and
+wrapped into a tiny FAT-formatted ISO labeled `AUTOUNATTEND` via
+`xorrisofs`. Windows Setup auto-discovers any attached removable
+media holding `autounattend.xml` and skips every prompt the file
+specifies. Microsoft documents the schema at
+[learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/](https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/).
+
+The answer file drives all four Setup passes:
+
+- **windowsPE**: region/keyboard (`en-US`), accept EULA, preload
+  `viostor` + `vioscsi` + `NetKVM` driver paths from the virtio-win CD
+  so Setup can see the virtio-scsi disk and virtio NIC, wipe disk 0 and
+  lay down ESP + MSR + Windows partitions, pick the edition by name
+  (default `Windows 11 Pro`).
+- **specialize**: computer name, UTC timezone, suppress the OOBE
+  privacy experience.
+- **oobeSystem**: hide every OOBE pane, create the local admin account,
+  enable one-shot auto-logon so `FirstLogonCommands` actually fires.
+- **FirstLogonCommands**: install `virtio-win-guest-tools.exe` silently
+  (probes drive letters D:/E:/F:/G:/H: since the virtio-win CD letter
+  varies), download and install OpenSSH-Win64 from the GitHub release
+  (more reliable than the Windows Update OpenSSH capability), register
+  + start sshd, open TCP/22 in the firewall, write the ready marker.
+
+The builder polls the marker file via SSH every 30 s — SSH may be
+intermittently unavailable across the install's multiple reboots
+(Setup → Specialize → OOBE → first login), so transient SSH failures
+are absorbed and the loop keeps trying until the marker appears or
+the build timeout (default 45 min) expires.
 
 ## Implications for SmolVM (phase 1 scope)
 
