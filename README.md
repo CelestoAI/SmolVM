@@ -67,7 +67,7 @@ Each microVM boots in milliseconds, runs any code or software you throw at it, p
 <p><a href="#coding-agents">Read more →</a></p>
 </td>
 <td width="50%" valign="top">
-<p><img src="https://api.iconify.design/simple-icons/windows.svg?color=%236e7681" width="24" height="24" align="absmiddle" alt=""> <strong>Windows sandbox</strong></p>
+<p><img src="docs/assets/icons/windows.svg" width="24" height="24" align="absmiddle" alt=""> <strong>Windows sandbox</strong></p>
 <p>Boot a Windows 11 guest and drive it from Python — PowerShell, file upload, env vars. Linux host only for now.</p>
 <p><a href="#windows-sandbox">Read more →</a></p>
 </td>
