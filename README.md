@@ -26,48 +26,48 @@ Each microVM boots in milliseconds, runs any code or software you throw at it, p
 <table>
 <tr>
 <td width="50%" valign="top">
-<h3><img src="https://api.iconify.design/lucide/zap.svg?color=%236e7681" width="20" height="20" align="absmiddle" alt=""> Sub-second boot</h3>
+<p><img src="https://api.iconify.design/lucide/zap.svg?color=%236e7681" width="24" height="24" align="absmiddle" alt=""> <strong>Sub-second boot</strong></p>
 <p>Your agent has a running VM before the API call returns (~500&nbsp;ms). No waiting for provisioning or image pulls.</p>
 <p><a href="#performance">Read more →</a></p>
 </td>
 <td width="50%" valign="top">
-<h3><img src="https://api.iconify.design/lucide/shield.svg?color=%236e7681" width="20" height="20" align="absmiddle" alt=""> Hardware isolation</h3>
+<p><img src="https://api.iconify.design/lucide/shield.svg?color=%236e7681" width="24" height="24" align="absmiddle" alt=""> <strong>Hardware isolation</strong></p>
 <p>Each sandbox runs in its own virtual machine with hardware-level separation. Untrusted code can't escape or access your host.</p>
 <p><a href="#security">Read more →</a></p>
 </td>
 </tr>
 <tr>
 <td width="50%" valign="top">
-<h3><img src="https://api.iconify.design/lucide/network.svg?color=%236e7681" width="20" height="20" align="absmiddle" alt=""> Network controls</h3>
+<p><img src="https://api.iconify.design/lucide/network.svg?color=%236e7681" width="24" height="24" align="absmiddle" alt=""> <strong>Network controls</strong></p>
 <p>Lock down egress to specific domains so agents can't call home or exfiltrate data.</p>
-<p><a href="#network-controls-1">Read more →</a></p>
+<p><a href="#network-controls">Read more →</a></p>
 </td>
 <td width="50%" valign="top">
-<h3><img src="https://api.iconify.design/lucide/monitor.svg?color=%236e7681" width="20" height="20" align="absmiddle" alt=""> Browser sandbox</h3>
+<p><img src="https://api.iconify.design/lucide/monitor.svg?color=%236e7681" width="24" height="24" align="absmiddle" alt=""> <strong>Browser sandbox</strong></p>
 <p>Give agents a full browser inside the sandbox. Navigate, click, fill forms, and watch it live in your own browser.</p>
-<p><a href="#browser-sandbox-1">Read more →</a></p>
+<p><a href="#browser-sandbox">Read more →</a></p>
 </td>
 </tr>
 <tr>
 <td width="50%" valign="top">
-<h3><img src="https://api.iconify.design/lucide/folder.svg?color=%236e7681" width="20" height="20" align="absmiddle" alt=""> File sharing</h3>
+<p><img src="https://api.iconify.design/lucide/folder.svg?color=%236e7681" width="24" height="24" align="absmiddle" alt=""> <strong>File sharing</strong></p>
 <p>Share local directories with the sandbox, read-only or writable. Agents work on your real codebase without copying files around.</p>
 <p><a href="#mount-host-directories">Read more →</a></p>
 </td>
 <td width="50%" valign="top">
-<h3><img src="https://api.iconify.design/lucide/camera.svg?color=%236e7681" width="20" height="20" align="absmiddle" alt=""> Snapshots</h3>
+<p><img src="https://api.iconify.design/lucide/camera.svg?color=%236e7681" width="24" height="24" align="absmiddle" alt=""> <strong>Snapshots</strong></p>
 <p>Pause a sandbox and resume it later with everything intact — memory, disk, and running processes.</p>
 <p><a href="https://docs.celesto.ai/smolvm/features/snapshots">Read more →</a></p>
 </td>
 </tr>
 <tr>
 <td width="50%" valign="top">
-<h3><img src="https://api.iconify.design/lucide/bot.svg?color=%236e7681" width="20" height="20" align="absmiddle" alt=""> Coding agents</h3>
+<p><img src="https://api.iconify.design/lucide/bot.svg?color=%236e7681" width="24" height="24" align="absmiddle" alt=""> <strong>Coding agents</strong></p>
 <p>One command to launch a sandbox with Claude Code, Codex, or Pi pre-installed and git credentials forwarded.</p>
-<p><a href="#coding-agents-1">Read more →</a></p>
+<p><a href="#coding-agents">Read more →</a></p>
 </td>
 <td width="50%" valign="top">
-<h3><img src="https://api.iconify.design/lucide/app-window-mac.svg?color=%236e7681" width="20" height="20" align="absmiddle" alt=""> OpenClaw</h3>
+<p><img src="https://api.iconify.design/lucide/app-window-mac.svg?color=%236e7681" width="24" height="24" align="absmiddle" alt=""> <strong>OpenClaw</strong></p>
 <p>Run GUI Linux apps — IDEs, browsers, design tools — inside an isolated sandbox you can stream to your screen.</p>
 <p><a href="examples/openclaw.py">See the example →</a></p>
 </td>
