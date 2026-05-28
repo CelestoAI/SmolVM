@@ -194,7 +194,7 @@ class TestCleanup:
         sdk.reconcile.return_value = []
         sdk.list_vms.return_value = [_make_vm("vm-abc123"), _make_vm("vm-def456")]
 
-        ret = run_cleanup()
+        ret = run_cleanup(force=True)
 
         assert ret == 0
         assert sdk.delete.call_count == 2
@@ -217,7 +217,7 @@ class TestCleanup:
 
         sdk.delete.side_effect = _delete
 
-        ret = run_cleanup()
+        ret = run_cleanup(force=True)
 
         assert ret == 1
         out = capsys.readouterr().out
@@ -238,7 +238,7 @@ class TestCleanup:
         sdk.reconcile.return_value = ["vm-stale"]
         sdk.list_vms.return_value = [_make_vm("vm-stale"), _make_vm("vm-other")]
 
-        ret = run_cleanup(json_output=True)
+        ret = run_cleanup(json_output=True, force=True)
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
@@ -249,10 +249,99 @@ class TestCleanup:
         assert payload["data"]["reconciled_stale_ids"] == ["vm-stale"]
         assert payload["data"]["summary"]["failed_count"] == 0
 
+    @patch("smolvm.cli.cleanup.os.geteuid", return_value=0)
+    def test_run_cleanup_json_requires_force(
+        self,
+        _: MagicMock,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """JSON mode without --force should refuse to delete."""
+        sdk = mock_sdk_cls
+        sdk.reconcile.return_value = []
+        sdk.list_vms.return_value = [_make_vm("vm-abc123")]
+
+        ret = run_cleanup(json_output=True)
+
+        assert ret == 1
+        sdk.delete.assert_not_called()
+
+    @patch("smolvm.cli.cleanup.os.geteuid", return_value=0)
+    @patch("smolvm.cli.cleanup.sys.stdin")
+    def test_run_cleanup_non_tty_requires_force(
+        self,
+        mock_stdin: MagicMock,
+        _: MagicMock,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Non-TTY callers must pass --force; we won't silently delete."""
+        mock_stdin.isatty.return_value = False
+        sdk = mock_sdk_cls
+        sdk.reconcile.return_value = []
+        sdk.list_vms.return_value = [_make_vm("vm-abc123")]
+
+        ret = run_cleanup()
+
+        assert ret == 1
+        sdk.delete.assert_not_called()
+
+    @patch("smolvm.cli.cleanup.os.geteuid", return_value=0)
+    @patch("smolvm.cli.cleanup.sys.stdin")
+    @patch("smolvm.cli.cleanup.input", create=True)
+    def test_run_cleanup_prompt_yes(
+        self,
+        mock_input: MagicMock,
+        mock_stdin: MagicMock,
+        _: MagicMock,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """TTY prompt with 'y' proceeds with deletion."""
+        mock_stdin.isatty.return_value = True
+        mock_input.return_value = "y"
+        sdk = mock_sdk_cls
+        sdk.reconcile.return_value = []
+        sdk.list_vms.return_value = [_make_vm("vm-abc123")]
+
+        ret = run_cleanup()
+
+        assert ret == 0
+        sdk.delete.assert_called_once_with("vm-abc123")
+
+    @patch("smolvm.cli.cleanup.os.geteuid", return_value=0)
+    @patch("smolvm.cli.cleanup.sys.stdin")
+    @patch("smolvm.cli.cleanup.input", create=True)
+    def test_run_cleanup_prompt_no(
+        self,
+        mock_input: MagicMock,
+        mock_stdin: MagicMock,
+        _: MagicMock,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """TTY prompt with empty/'n' aborts."""
+        mock_stdin.isatty.return_value = True
+        mock_input.return_value = ""
+        sdk = mock_sdk_cls
+        sdk.reconcile.return_value = []
+        sdk.list_vms.return_value = [_make_vm("vm-abc123")]
+
+        ret = run_cleanup()
+
+        assert ret == 0
+        sdk.delete.assert_not_called()
+        assert "Aborted" in capsys.readouterr().out
+
     def test_cleanup_parser_includes_json(self) -> None:
         """The standalone cleanup parser should expose `--json`."""
         args = build_parser().parse_args(["--json"])
         assert args.json is True
+
+    def test_cleanup_parser_includes_force(self) -> None:
+        """The standalone cleanup parser should expose `--force`."""
+        args = build_parser().parse_args(["--force"])
+        assert args.force is True
 
     @patch("smolvm.cli.main.run_cleanup", return_value=0)
     def test_cli_cleanup_forwards_json(self, mock_run_cleanup: MagicMock) -> None:
@@ -263,6 +352,7 @@ class TestCleanup:
         mock_run_cleanup.assert_called_once_with(
             dry_run=False,
             json_output=True,
+            force=False,
         )
 
     @patch("smolvm.cli.cleanup.run_cleanup", return_value=0)
@@ -274,4 +364,5 @@ class TestCleanup:
         mock_run_cleanup.assert_called_once_with(
             dry_run=False,
             json_output=True,
+            force=False,
         )

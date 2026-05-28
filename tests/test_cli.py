@@ -2205,6 +2205,9 @@ class TestCliList:
         with patch("smolvm.vm.SmolVMManager") as m:
             m.return_value.__enter__.return_value = m.return_value
             m.return_value.__exit__.side_effect = lambda *args: m.return_value.close()
+            # `_run_list` now calls `sdk.refresh_status(vm)` on every row.
+            # Default to a pass-through so the mock VMInfo objects survive.
+            m.return_value.refresh_status.side_effect = lambda vm: vm
             yield m
 
     def test_list_empty(
@@ -2273,7 +2276,7 @@ class TestCliList:
         capsys: pytest.CaptureFixture,
     ) -> None:
         """`smolvm list` should show '-' for a missing PID."""
-        vms = [_make_vm_info("vm-abc123", VMState.CREATED, "", None, None)]
+        vms = [_make_vm_info("vm-abc123", VMState.RUNNING, "", None, None)]
         vms[0].network = None
         mock_sdk_cls.return_value.list_vms.return_value = vms
 
@@ -2282,7 +2285,7 @@ class TestCliList:
         assert ret == 0
         out = capsys.readouterr().out
         assert "vm-abc123" in out
-        assert "created" in out
+        assert "running" in out
         mock_sdk_cls.return_value.list_vms.assert_called_once_with(status=VMState.RUNNING)
         assert "PID" in out
         assert "-" in out

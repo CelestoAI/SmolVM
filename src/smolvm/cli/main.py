@@ -1471,6 +1471,12 @@ def _run_list(*, include_all: bool, status_filter: str | None, json_output: bool
             effective_status = status_filter or (None if include_all else VMState.RUNNING.value)
             state = VMState(effective_status) if effective_status else None
             vms = sdk.list_vms(status=state)
+            # Cheap per-row liveness check: a VM marked RUNNING/PAUSED whose
+            # QEMU process is gone gets demoted to ERROR right here, so the
+            # rendered table reflects reality instead of a stale DB row.
+            vms = [sdk.refresh_status(vm) for vm in vms]
+            if state is not None:
+                vms = [vm for vm in vms if vm.status == state]
             rows = _vm_rows(vms)
             data: ListPayload = {
                 "filters": {
@@ -3102,6 +3108,25 @@ def _run_file(args: argparse.Namespace) -> int:
             vm.close()
 
 
+def _hint_if_vm_crashed(vm: object) -> None:
+    """Print a clearer error if a non-zero ssh exit was caused by a dead VM.
+
+    ssh's own "Connection refused" is unhelpful when the real cause is that
+    the underlying QEMU process is gone but the DB still says ``running``.
+    Surface the recovery command without changing the ssh exit code.
+    """
+    from smolvm.facade import SmolVM
+    from smolvm.vm import _crashed_message
+
+    _vm: SmolVM = vm  # type: ignore[assignment]
+    try:
+        refreshed = _vm._sdk.refresh_status(_vm._info)
+    except Exception:
+        return
+    if refreshed.status == VMState.ERROR:
+        render_error(_crashed_message(_vm.vm_id))
+
+
 def _run_ssh(args: argparse.Namespace) -> int:
     """Handle ``smolvm ssh``."""
     from smolvm.facade import SmolVM
@@ -3133,8 +3158,12 @@ def _run_ssh(args: argparse.Namespace) -> int:
         else:
             # VM is already running — connect directly without probing.
             completed = subprocess.run(vm._ssh_direct_command(), check=False)
+            if completed.returncode != 0:
+                _hint_if_vm_crashed(vm)
             return completed.returncode
         completed = subprocess.run(vm._ssh_attach_command(), check=False)
+        if completed.returncode != 0:
+            _hint_if_vm_crashed(vm)
         return completed.returncode
     except FileNotFoundError:
         return _emit_cli_error(
@@ -3534,6 +3563,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_cleanup(
             dry_run=args.dry_run,
             json_output=args.json,
+            force=args.force,
         )
 
     if args.command == "prune":

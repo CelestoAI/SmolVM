@@ -97,6 +97,12 @@ def add_cleanup_args(parser: argparse.ArgumentParser) -> None:
         help="Show what would be cleaned up without actually deleting.",
     )
     parser.add_argument(
+        "--force",
+        "-f",
+        action="store_true",
+        help="Skip the confirmation prompt and delete all VMs.",
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Emit machine-readable JSON output.",
@@ -290,10 +296,57 @@ def run_delete(
 # ---------------------------------------------------------------------------
 
 
+def _confirm_cleanup(
+    target_ids: list[str],
+    *,
+    force: bool,
+    json_output: bool,
+) -> int | None:
+    """Confirm the destructive cleanup with the user.
+
+    Returns ``None`` to proceed, or an exit code to return from
+    ``run_cleanup``. A clean user abort at the prompt returns ``0``;
+    refusing to run unattended (``--json`` without ``--force``, or no TTY)
+    returns ``1``.
+    """
+    if force:
+        return None
+
+    if json_output:
+        render_error(
+            "Refusing to delete VMs without --force in --json mode. Pass --force to confirm."
+        )
+        return 1
+
+    if not sys.stdin.isatty():
+        render_error(
+            "Refusing to delete VMs without a confirmation prompt. Pass --force to confirm."
+        )
+        return 1
+
+    console = console_stdout()
+    console.print(
+        f"This will permanently delete [bold]{len(target_ids)}[/bold] VM(s): "
+        f"{', '.join(target_ids)}"
+    )
+    console.print("[yellow]This action cannot be undone.[/yellow]")
+    try:
+        console.print("Continue? \\[y/N] ", end="")
+        answer = input("").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        console.print("\nAborted.")
+        return 0
+    if answer not in {"y", "yes"}:
+        console.print("Aborted.")
+        return 0
+    return None
+
+
 def run_cleanup(
     *,
     dry_run: bool = False,
     json_output: bool = False,
+    force: bool = False,
 ) -> int:
     """Delete all VMs."""
     warn_not_root = sys.platform == "linux" and os.geteuid() != 0
@@ -306,6 +359,10 @@ def run_cleanup(
 
             deleted: list[str] = []
             failed: list[DeleteFailure] = []
+            if not dry_run and target_ids:
+                abort_code = _confirm_cleanup(target_ids, force=force, json_output=json_output)
+                if abort_code is not None:
+                    return abort_code
             if not dry_run:
                 deleted, failed = _delete_vms_concurrent(sdk, target_ids)
 
@@ -354,4 +411,5 @@ def main(argv: Sequence[str] | None = None) -> int:
     return run_cleanup(
         dry_run=args.dry_run,
         json_output=args.json,
+        force=args.force,
     )

@@ -866,6 +866,120 @@ class TestProcessLifecycle:
         assert process.pid not in smol_vm._process_handles
 
 
+def _info(config: VMConfig, status: VMState, pid: int | None = None) -> VMInfo:
+    """Build a VMInfo with a real VMConfig (pydantic strict-validates)."""
+    return VMInfo(vm_id=config.vm_id, status=status, config=config, pid=pid)
+
+
+class TestRefreshStatus:
+    """Tests for the cheap per-row liveness check used by ``smolvm list``."""
+
+    def test_running_with_live_pid_unchanged(
+        self, smol_vm: SmolVMManager, sample_config: VMConfig
+    ) -> None:
+        vm_info = _info(sample_config, VMState.RUNNING, pid=12345)
+        with patch.object(smol_vm, "_is_process_running", return_value=True):
+            result = smol_vm.refresh_status(vm_info)
+        assert result is vm_info
+
+    def test_running_with_dead_pid_demoted_to_error(
+        self, smol_vm: SmolVMManager, sample_config: VMConfig
+    ) -> None:
+        vm_info = _info(sample_config, VMState.RUNNING, pid=99999)
+        updated = _info(sample_config, VMState.ERROR, pid=None)
+        with (
+            patch.object(smol_vm, "_is_process_running", return_value=False),
+            patch.object(smol_vm.state, "update_vm", return_value=updated) as mock_update,
+        ):
+            result = smol_vm.refresh_status(vm_info)
+        assert result.status == VMState.ERROR
+        mock_update.assert_called_once_with(
+            sample_config.vm_id, status=VMState.ERROR, clear_pid=True
+        )
+
+    def test_paused_with_dead_pid_demoted_to_error(
+        self, smol_vm: SmolVMManager, sample_config: VMConfig
+    ) -> None:
+        vm_info = _info(sample_config, VMState.PAUSED, pid=99999)
+        updated = _info(sample_config, VMState.ERROR, pid=None)
+        with (
+            patch.object(smol_vm, "_is_process_running", return_value=False),
+            patch.object(smol_vm.state, "update_vm", return_value=updated),
+        ):
+            result = smol_vm.refresh_status(vm_info)
+        assert result.status == VMState.ERROR
+
+    def test_stopped_not_touched(self, smol_vm: SmolVMManager, sample_config: VMConfig) -> None:
+        vm_info = _info(sample_config, VMState.STOPPED, pid=None)
+        with (
+            patch.object(smol_vm, "_is_process_running") as mock_check,
+            patch.object(smol_vm.state, "update_vm") as mock_update,
+        ):
+            result = smol_vm.refresh_status(vm_info)
+        assert result is vm_info
+        mock_check.assert_not_called()
+        mock_update.assert_not_called()
+
+    def test_running_without_pid_not_touched(
+        self, smol_vm: SmolVMManager, sample_config: VMConfig
+    ) -> None:
+        vm_info = _info(sample_config, VMState.RUNNING, pid=None)
+        with (
+            patch.object(smol_vm, "_is_process_running") as mock_check,
+            patch.object(smol_vm.state, "update_vm") as mock_update,
+        ):
+            result = smol_vm.refresh_status(vm_info)
+        assert result is vm_info
+        mock_check.assert_not_called()
+        mock_update.assert_not_called()
+
+
+class TestCrashedVMDetection:
+    """Tests that pause/resume surface a useful error when the VM has crashed."""
+
+    def test_resume_reports_crash_when_status_stale_running(
+        self, smol_vm: SmolVMManager, sample_config: VMConfig
+    ) -> None:
+        """DB says RUNNING but PID is dead: resume should raise 'crashed', not 'Cannot resume'."""
+        vm_info = _info(sample_config, VMState.RUNNING, pid=99999)
+        crashed = _info(sample_config, VMState.ERROR, pid=None)
+        with (
+            patch.object(smol_vm.state, "get_vm", return_value=vm_info),
+            patch.object(smol_vm, "_is_process_running", return_value=False),
+            patch.object(smol_vm.state, "update_vm", return_value=crashed),
+            pytest.raises(SmolVMError, match="is not running"),
+        ):
+            smol_vm.resume(sample_config.vm_id)
+
+    def test_resume_original_error_when_status_genuinely_wrong(
+        self, smol_vm: SmolVMManager, sample_config: VMConfig
+    ) -> None:
+        """DB says STOPPED: resume should raise the original 'Cannot resume' error."""
+        vm_info = _info(sample_config, VMState.STOPPED, pid=None)
+        with (
+            patch.object(smol_vm.state, "get_vm", return_value=vm_info),
+            pytest.raises(SmolVMError, match="Cannot resume VM in state 'stopped'"),
+        ):
+            smol_vm.resume(sample_config.vm_id)
+
+    def test_pause_reports_crash_when_runtime_pause_fails_with_dead_pid(
+        self, smol_vm: SmolVMManager, sample_config: VMConfig
+    ) -> None:
+        """pause's QMP call fails: if PID is dead, surface a crash message."""
+        vm_info = _info(sample_config, VMState.RUNNING, pid=99999)
+        crashed = _info(sample_config, VMState.ERROR, pid=None)
+        mock_adapter = MagicMock()
+        mock_adapter.pause.side_effect = SmolVMError("Timed out waiting for QMP socket")
+        with (
+            patch.object(smol_vm.state, "get_vm", return_value=vm_info),
+            patch.object(smol_vm, "_runtime_adapter_for_vm", return_value=mock_adapter),
+            patch.object(smol_vm, "_is_process_running", return_value=False),
+            patch.object(smol_vm.state, "update_vm", return_value=crashed),
+            pytest.raises(SmolVMError, match="is not running"),
+        ):
+            smol_vm.pause(sample_config.vm_id)
+
+
 class TestResolveBootArgs:
     """Tests for boot-args resolution, including SSH-key cmdline injection.
 

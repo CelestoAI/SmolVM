@@ -211,6 +211,14 @@ def resolve_data_dir(data_dir: Path | None = None) -> Path:
     )
 
 
+def _crashed_message(vm_id: str) -> str:
+    """User-facing message for a VM whose process is gone."""
+    return (
+        f"VM '{vm_id}' is not running — its process has exited. "
+        f"Run 'smolvm delete {vm_id}' to clear it."
+    )
+
+
 class SmolVMManager:
     """Low-level manager class for orchestrating sandbox VMs.
 
@@ -1146,12 +1154,13 @@ class SmolVMManager:
         vm_info = self.state.get_vm(vm_id)
 
         if vm_info.status != VMState.RUNNING:
-            raise SmolVMError(
-                f"Cannot pause VM in state '{vm_info.status.value}'",
-                {"vm_id": vm_id, "current_status": vm_info.status.value},
-            )
+            self._raise_crashed_or_state_error(vm_info, action="pause")
 
-        self._runtime_adapter_for_vm(vm_info).pause(vm_info)
+        try:
+            self._runtime_adapter_for_vm(vm_info).pause(vm_info)
+        except Exception:
+            self._raise_if_crashed(vm_info)
+            raise
         return self.state.update_vm(vm_id, status=VMState.PAUSED)
 
     def resume(self, vm_id: str) -> VMInfo:
@@ -1162,13 +1171,45 @@ class SmolVMManager:
         vm_info = self.state.get_vm(vm_id)
 
         if vm_info.status != VMState.PAUSED:
-            raise SmolVMError(
-                f"Cannot resume VM in state '{vm_info.status.value}'",
-                {"vm_id": vm_id, "current_status": vm_info.status.value},
-            )
+            self._raise_crashed_or_state_error(vm_info, action="resume")
 
-        self._runtime_adapter_for_vm(vm_info).resume(vm_info)
+        try:
+            self._runtime_adapter_for_vm(vm_info).resume(vm_info)
+        except Exception:
+            self._raise_if_crashed(vm_info)
+            raise
         return self.state.update_vm(vm_id, status=VMState.RUNNING)
+
+    def _raise_crashed_or_state_error(self, vm_info: VMInfo, *, action: str) -> None:
+        """Raise the state error, replacing it with a 'crashed' message if stale.
+
+        A VM whose DB row says RUNNING/PAUSED but whose process is gone shows
+        up here as a state-guard failure (e.g. resume rejecting a "running"
+        VM). Translate that into an actionable crash message instead of the
+        misleading "Cannot resume VM in state 'running'".
+        """
+        refreshed = self.refresh_status(vm_info)
+        if refreshed.status == VMState.ERROR and vm_info.status in (
+            VMState.RUNNING,
+            VMState.PAUSED,
+        ):
+            raise SmolVMError(
+                _crashed_message(vm_info.vm_id),
+                {"vm_id": vm_info.vm_id, "current_status": refreshed.status.value},
+            )
+        raise SmolVMError(
+            f"Cannot {action} VM in state '{vm_info.status.value}'",
+            {"vm_id": vm_info.vm_id, "current_status": vm_info.status.value},
+        )
+
+    def _raise_if_crashed(self, vm_info: VMInfo) -> None:
+        """Re-raise as a crash error if the VM's process is gone, otherwise no-op."""
+        refreshed = self.refresh_status(vm_info)
+        if refreshed.status == VMState.ERROR:
+            raise SmolVMError(
+                _crashed_message(vm_info.vm_id),
+                {"vm_id": vm_info.vm_id, "current_status": refreshed.status.value},
+            ) from None
 
     def create_snapshot(
         self,
@@ -1538,6 +1579,24 @@ class SmolVMManager:
     def list_snapshots(self, vm_id: str | None = None) -> list[SnapshotInfo]:
         """List snapshots, optionally filtered by source VM ID."""
         return self.state.list_snapshots(vm_id=vm_id)
+
+    def refresh_status(self, vm_info: VMInfo) -> VMInfo:
+        """Detect a dead VM process and demote the DB row to ERROR.
+
+        Cheap per-row liveness check (one ``os.kill(pid, 0)`` syscall) for
+        callers that already have a ``VMInfo`` in hand and don't want the
+        full reconcile sweep. Returns ``vm_info`` unchanged if the VM is
+        not in a status that should track a process, or if the process is
+        still alive.
+        """
+        if vm_info.status not in (VMState.RUNNING, VMState.PAUSED):
+            return vm_info
+        if vm_info.pid is None:
+            return vm_info
+        if self._is_process_running(vm_info.pid):
+            return vm_info
+        logger.warning("VM %s pid %d is gone; marking ERROR.", vm_info.vm_id, vm_info.pid)
+        return self.state.update_vm(vm_info.vm_id, status=VMState.ERROR, clear_pid=True)
 
     def reconcile(self) -> list[str]:
         """Reconcile state with actual system state.
