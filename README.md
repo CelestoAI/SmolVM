@@ -67,9 +67,9 @@ Each microVM boots in milliseconds, runs any code or software you throw at it, p
 <p><a href="#coding-agents">Read more →</a></p>
 </td>
 <td width="50%" valign="top">
-<p><img src="https://api.iconify.design/lucide/app-window-mac.svg?color=%236e7681" width="24" height="24" align="absmiddle" alt=""> <strong>OpenClaw</strong></p>
-<p>Run GUI Linux apps — IDEs, browsers, design tools — inside an isolated sandbox you can stream to your screen.</p>
-<p><a href="examples/openclaw.py">See the example →</a></p>
+<p><img src="https://cdn.simpleicons.org/windows/6e7681" width="24" height="24" align="absmiddle" alt=""> <strong>Windows sandbox</strong></p>
+<p>Boot a Windows 11 guest and drive it from Python — PowerShell, file upload, env vars. Linux host only for now.</p>
+<p><a href="#windows-sandbox">Read more →</a></p>
 </td>
 </tr>
 </table>
@@ -141,6 +141,34 @@ Open a shell inside a running sandbox:
 ```bash
 smolvm ssh my-sandbox
 ```
+
+## Windows sandbox
+
+SmolVM can boot a Windows 11 guest as well as Linux. Hand it a Windows image and you get the same Python and CLI you use for Linux — run PowerShell, upload files, set environment variables, and run many sandboxes in parallel from one baseline image.
+
+```python
+from smolvm import SmolVM
+
+with SmolVM(
+    os="windows",
+    image="~/.smolvm/images/win11.qcow2",
+    ssh_user="smolvm",
+    ssh_password="smolvm",
+) as vm:
+    vm.wait_for_ssh()
+    print(vm.run("Write-Output 'hello from windows'").stdout)
+```
+
+Build your own image from a Windows ISO:
+
+```bash
+smolvm windows build-image --iso ./Win11.iso \
+    --virtio-win-iso ./virtio-win.iso \
+    --output ~/.smolvm/images/win11.qcow2
+```
+
+Windows guests need a Linux host with KVM. Host mounts, network controls, and snapshots are Linux-only today. See the full [Windows guide](https://docs.celesto.ai/smolvm/guides/windows-guests) for details.
+
 
 ## Coding agents
 
