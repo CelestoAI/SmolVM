@@ -57,6 +57,7 @@ Each microVM boots in milliseconds, runs any code or software you throw at it, p
 <td width="50%" valign="top">
 <h3><img src="https://api.iconify.design/lucide/camera.svg?color=%23808080" width="20" height="20" align="absmiddle" alt=""> Snapshots</h3>
 <p>Pause a sandbox and resume it later with everything intact — memory, disk, and running processes.</p>
+<p><a href="https://docs.celesto.ai/smolvm/features/snapshots">Read more →</a></p>
 </td>
 </tr>
 <tr>
