@@ -313,8 +313,17 @@ def _confirm_cleanup(
         return None
 
     if json_output:
-        render_error(
-            "Refusing to delete VMs without --force in --json mode. Pass --force to confirm."
+        emit_json(
+            "cleanup",
+            1,
+            data=None,
+            error={
+                "message": (
+                    "Refusing to delete VMs without --force in --json mode. "
+                    "Pass --force to confirm."
+                ),
+                "type": "refused",
+            },
         )
         return 1
 

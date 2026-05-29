@@ -214,8 +214,8 @@ def resolve_data_dir(data_dir: Path | None = None) -> Path:
 def _crashed_message(vm_id: str) -> str:
     """User-facing message for a VM whose process is gone."""
     return (
-        f"VM '{vm_id}' is not running — its process has exited. "
-        f"Run 'smolvm delete {vm_id}' to clear it."
+        f"VM '{vm_id}' is not running — its process has exited; "
+        f"run 'smolvm delete {vm_id}' to clear it."
     )
 
 
@@ -1197,8 +1197,16 @@ class SmolVMManager:
                 _crashed_message(vm_info.vm_id),
                 {"vm_id": vm_info.vm_id, "current_status": refreshed.status.value},
             )
+        # State-appropriate recovery: STOPPED/CREATED → start, ERROR → delete.
+        # PAUSED/RUNNING (already in a compatible state) needs no recovery —
+        # the status string itself is the explanation.
+        recovery = ""
+        if vm_info.status == VMState.ERROR:
+            recovery = f"; run 'smolvm delete {vm_info.vm_id}' to clear it"
+        elif vm_info.status in (VMState.STOPPED, VMState.CREATED):
+            recovery = f"; run 'smolvm start {vm_info.vm_id}' to start it"
         raise SmolVMError(
-            f"Cannot {action} VM in state '{vm_info.status.value}'",
+            f"Cannot {action} VM in state '{vm_info.status.value}'{recovery}.",
             {"vm_id": vm_info.vm_id, "current_status": vm_info.status.value},
         )
 

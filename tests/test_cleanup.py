@@ -256,7 +256,7 @@ class TestCleanup:
         mock_sdk_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """JSON mode without --force should refuse to delete."""
+        """JSON mode without --force should refuse to delete and emit a JSON envelope."""
         sdk = mock_sdk_cls
         sdk.reconcile.return_value = []
         sdk.list_vms.return_value = [_make_vm("vm-abc123")]
@@ -265,6 +265,12 @@ class TestCleanup:
 
         assert ret == 1
         sdk.delete.assert_not_called()
+        payload = json.loads(capsys.readouterr().out)
+        assert isinstance(payload, dict)
+        assert payload["ok"] is False
+        assert payload["command"] == "cleanup"
+        assert payload["exit_code"] == 1
+        assert "force" in payload["error"]["message"].lower()
 
     @patch("smolvm.cli.cleanup.os.geteuid", return_value=0)
     @patch("smolvm.cli.cleanup.sys.stdin")
