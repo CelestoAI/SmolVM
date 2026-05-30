@@ -1,22 +1,28 @@
 # Boot-smoke the SmolVM-built universal kernel against published rootfs
 # images BEFORE we commit a new manifest version. Catches the class of
 # bug where a Kconfig delta (or a kernel bump) silently breaks boot for
-# one of (Ubuntu cloud rootfs, openclaw rootfs) — which is otherwise
-# only discovered by the first user trying `smolvm create`.
+# one of the published images — otherwise only discovered by the first
+# user trying `smolvm create`.
 #
-# Each cell:
-#   - Downloads the published kernel + rootfs from the draft release
-#     `images-v<pyproject-version>` (no SHA pinning — we want to test
-#     whatever CI just produced, not what's pinned in the manifest).
-#   - Boots qemu-system-<arch> -accel kvm with the kernel, the rootfs
-#     as virtio-blk, a cloud-init NoCloud seed (for the Ubuntu cell),
-#     port-forwards SSH to the host.
-#   - Polls for sshd readiness for up to ~90 s. Failure → red x.
+# Each cell tests a *real* published SmolVM image (openclaw and the bare
+# ubuntu base), exactly how the runtime boots them:
+#   - Downloads the published kernel + ``<rootfs>-<arch>-rootfs.ext4.zst``
+#     from the release and decompresses it (no SHA pinning — we test what
+#     CI just produced, not what's pinned in the manifest).
+#   - Boots qemu-system-<arch> with the kernel + rootfs as virtio-blk,
+#     using the production boot args: ``init=/init`` (every SmolVM image
+#     boots /init, not systemd) and ``root=/dev/vda`` (single ext4). The
+#     SSH key is injected on the kernel cmdline via
+#     ``smolvm.authorized_key_b64`` — the same mechanism /init uses in
+#     production. ``ip=`` matches the user-net subnet so the host port
+#     forward reaches the guest.
+#   - Waits for sshd, then logs in and asserts the vsock guest agent is
+#     baked in and running.
 #
-# nested-virt note: KVM is available on GH-hosted ubuntu-latest /
-# ubuntu-24.04-arm runners as of 2023. macOS HVF cannot be exercised
-# in CI (no nested-virt on hosted macOS runners) — that path is
-# validated by developers locally + first-user opt-in.
+# accel note: GH-hosted x86 runners expose /dev/kvm; the arm64 runners do
+# not always. We use KVM when /dev/kvm is present and fall back to TCG
+# (software emulation) otherwise, with a longer readiness budget. macOS
+# HVF can't be exercised in CI (no nested virt on hosted macOS runners).
 
 name: Smoke Published Images
 
@@ -69,8 +75,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
               qemu-system-x86 qemu-system-arm qemu-utils \
-              cloud-image-utils zstd \
-              netcat-openbsd
+              zstd openssh-client
           # KVM access — GH runners ship /dev/kvm but the runner user isn't
           # always in the kvm group. Add it; sudo on the qemu invocation also
           # works as a fallback.
@@ -101,86 +106,73 @@ jobs:
               --pattern "vmlinux-${ARCH}.image" \
               -D smoke
 
-      - name: Download rootfs (openclaw)
-        if: matrix.rootfs == 'openclaw'
+      - name: Download rootfs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.release.outputs.tag }}
           ARCH: ${{ matrix.arch }}
+          ROOTFS: ${{ matrix.rootfs }}
         run: |
+          # Both cells are published SmolVM raw-ext4 images (openclaw and the
+          # bare ubuntu base) — same download + decompress path.
           gh release download "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
-              --pattern "openclaw-${ARCH}-rootfs.ext4.zst" \
+              --pattern "${ROOTFS}-${ARCH}-rootfs.ext4.zst" \
               -D smoke
-          zstd -d "smoke/openclaw-${ARCH}-rootfs.ext4.zst" -o smoke/rootfs.raw
-          rm "smoke/openclaw-${ARCH}-rootfs.ext4.zst"
+          zstd -d "smoke/${ROOTFS}-${ARCH}-rootfs.ext4.zst" -o smoke/rootfs.raw
+          rm "smoke/${ROOTFS}-${ARCH}-rootfs.ext4.zst"
 
-      - name: Download rootfs (ubuntu)
-        if: matrix.rootfs == 'ubuntu'
-        env:
-          ARCH: ${{ matrix.arch }}
+      - name: Generate SSH key
         run: |
-          # ubuntu cloud-images for noble; same one the auto-config flow uses
-          if [ "$ARCH" = "amd64" ]; then
-            url="https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img"
-          else
-            url="https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img"
-          fi
-          curl -fL -o smoke/rootfs.raw "$url"
-
-      - name: Build cloud-init seed
-        run: |
+          # Injected into the guest on the kernel cmdline (base64 of the pubkey
+          # line) — the same smolvm.authorized_key_b64 mechanism /init uses.
           ssh-keygen -t ed25519 -N "" -f smoke/id_ed25519 -C smoke
-          cat > smoke/user-data <<EOF
-          #cloud-config
-          users:
-            - name: root
-              ssh_authorized_keys:
-                - $(cat smoke/id_ed25519.pub)
-          ssh_pwauth: false
-          chpasswd:
-            expire: false
-          EOF
-          echo "instance-id: smoke; local-hostname: smoke" > smoke/meta-data
-          cloud-localds smoke/seed.iso smoke/user-data smoke/meta-data
+          echo "AUTHKEY_B64=$(base64 -w0 smoke/id_ed25519.pub)" >> "$GITHUB_ENV"
 
-      - name: Boot the VM and wait for SSH
+      - name: Boot the VM, wait for SSH, assert guest agent
         env:
           ARCH: ${{ matrix.arch }}
           ROOTFS: ${{ matrix.rootfs }}
         run: |
           set -euo pipefail
+          # KVM when the runner exposes it, else TCG software emulation with a
+          # larger readiness budget (arm64 GH runners don't always ship /dev/kvm).
+          if [ -e /dev/kvm ]; then
+            ACCEL=kvm; CPU="-cpu host"; BUDGET=120
+          else
+            ACCEL=tcg; CPU="-cpu max"; BUDGET=420
+            echo "/dev/kvm unavailable — falling back to TCG (slower); budget=${BUDGET}s"
+          fi
           if [ "$ARCH" = "amd64" ]; then
             QEMU=qemu-system-x86_64
-            MACHINE="-machine pc-q35-4.2,accel=kvm -cpu host"
+            MACHINE="-machine pc-q35-4.2,accel=${ACCEL}"
             CONSOLE=ttyS0
           else
             QEMU=qemu-system-aarch64
-            MACHINE="-machine virt,accel=kvm -cpu host"
+            MACHINE="-machine virt,accel=${ACCEL}"
             CONSOLE=ttyAMA0
           fi
-          # Same root= the production code uses for each rootfs flavor.
-          if [ "$ROOTFS" = "openclaw" ]; then
-            ROOT_ARG="root=/dev/vda"
-          else
-            ROOT_ARG="root=/dev/vda1"
-          fi
+          # Production boot recipe for every SmolVM image: init=/init (not
+          # systemd), single-ext4 root=/dev/vda, the SSH key on the cmdline, and
+          # an ip= matching QEMU user-net (10.0.2.0/24) so the host port forward
+          # reaches the guest's static IP.
+          GUEST_IP=10.0.2.15
+          APPEND="console=${CONSOLE} reboot=k panic=1 root=/dev/vda rw init=/init"
+          APPEND="${APPEND} ip=${GUEST_IP}::10.0.2.2:255.255.255.0::eth0:off"
+          APPEND="${APPEND} smolvm.authorized_key_b64=${AUTHKEY_B64}"
           sudo $QEMU \
-              $MACHINE -smp 2 -m 2048 \
+              $MACHINE $CPU -smp 2 -m 2048 \
               -kernel smoke/vmlinux-${ARCH}.image \
               -drive file=smoke/rootfs.raw,if=none,id=root,format=raw \
               -device virtio-blk-pci,drive=root \
-              -drive file=smoke/seed.iso,if=none,id=seed,format=raw,readonly=on \
-              -device virtio-blk-pci,drive=seed \
-              -netdev user,id=net0,hostfwd=tcp::2223-:22 \
+              -netdev user,id=net0,hostfwd=tcp:127.0.0.1:2223-${GUEST_IP}:22 \
               -device virtio-net-pci,netdev=net0 \
-              -append "console=${CONSOLE} reboot=k panic=1 ${ROOT_ARG} rw" \
+              -append "${APPEND}" \
               -nographic -no-reboot \
               > smoke/boot.log 2>&1 &
           QPID=$!
-          # Poll for sshd
           ok=0
-          for i in $(seq 1 120); do
+          for i in $(seq 1 "$BUDGET"); do
             sleep 1
             if ssh-keyscan -T 2 -p 2223 127.0.0.1 2>/dev/null | grep -q "ssh-"; then
               echo "sshd ready after ${i}s"
@@ -188,13 +180,29 @@ jobs:
               break
             fi
           done
-          sudo kill $QPID 2>/dev/null || true
+          agent_ok=0
+          if [ "$ok" -eq 1 ]; then
+            # Boot proved kernel + rootfs + /init; now confirm the vsock guest
+            # agent is baked in and running — the thing published images ship.
+            if ssh -p 2223 -i smoke/id_ed25519 \
+                   -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+                   -o ConnectTimeout=10 root@127.0.0.1 \
+                   'test -x /usr/local/bin/smolvm-guest-agent && pgrep -f smolvm-guest-agent >/dev/null'; then
+              echo "guest agent present and running"
+              agent_ok=1
+            fi
+          fi
+          sudo kill "$QPID" 2>/dev/null || true
           sleep 2
-          sudo kill -9 $QPID 2>/dev/null || true
+          sudo kill -9 "$QPID" 2>/dev/null || true
           echo "--- last 80 lines of boot log ---"
           tail -80 smoke/boot.log
           if [ "$ok" -ne 1 ]; then
-            echo "::error::sshd did not become ready within 120s on ${ARCH}/${ROOTFS}"
+            echo "::error::sshd did not become ready within ${BUDGET}s on ${ARCH}/${ROOTFS}"
+            exit 1
+          fi
+          if [ "$agent_ok" -ne 1 ]; then
+            echo "::error::guest agent missing or not running on ${ARCH}/${ROOTFS}"
             exit 1
           fi
 
