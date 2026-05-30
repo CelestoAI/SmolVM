@@ -640,19 +640,25 @@ def _build_auto_config(
         # raw-ext4 rootfs + ELF kernel and boot it direct-kernel, exactly like
         # the alpine/published path below. The SSH key rides the kernel cmdline
         # (parsed by the image's /init), not a cloud-init seed.
-        from smolvm.exceptions import ImageError
-        from smolvm.images.published import Vmm, ensure_published_image
+        from smolvm.images.published import (
+            Vmm,
+            ensure_published_image,
+            is_preset_published,
+        )
 
         vmm: Vmm = "libkrun" if resolved_backend == BACKEND_LIBKRUN else "firecracker"
-        try:
-            local_image = ensure_published_image(
-                "ubuntu", to_published_arch(platform.machine()), vmm, "ubuntu"
-            )
-        except ImageError as exc:
+        arch = to_published_arch(platform.machine())
+        if not is_preset_published("ubuntu", arch, vmm, "ubuntu"):
+            # Manifest has no bare-Ubuntu row for this host yet — steer the user
+            # to the qemu path. A *published* image that then fails to download
+            # or verify raises ImageError from ensure_published_image below,
+            # which we deliberately let surface unchanged.
+            sandbox_name = vm_name or "<name>"
             raise SmolVMError(
-                "No bare-Ubuntu image is published for this backend yet; run "
-                "`--os ubuntu` with backend='qemu', or use `--os alpine`."
-            ) from exc
+                "No bare-Ubuntu image is published for this backend yet; "
+                f"run: smolvm create --name {sandbox_name} --os ubuntu --backend qemu"
+            )
+        local_image = ensure_published_image("ubuntu", arch, vmm, "ubuntu")
 
         kernel_profile = KernelBootProfile.MICROVM_DIRECT
         boot_args = get_boot_profile_spec(kernel_profile).base_boot_args_for_backend(

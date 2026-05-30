@@ -244,10 +244,12 @@ class TestVMInit:
             _build_auto_config(os="ubuntu", backend="qemu", disk_size_mib=512)
 
     @patch("smolvm.images.published.ensure_published_image")
+    @patch("smolvm.images.published.is_preset_published", return_value=True)
     @patch("smolvm.utils.ensure_ssh_key")
     def test_autoconfigure_ubuntu_firecracker_uses_published_rootfs(
         self,
         mock_ensure_ssh_key: MagicMock,
+        _mock_is_published: MagicMock,
         mock_ensure_published: MagicMock,
         tmp_path: Path,
     ) -> None:
@@ -285,16 +287,19 @@ class TestVMInit:
         assert not config.extra_drives
 
     @patch("smolvm.images.published.ensure_published_image")
+    @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.utils.ensure_ssh_key")
     def test_autoconfigure_ubuntu_firecracker_unpublished_is_clear(
         self,
         mock_ensure_ssh_key: MagicMock,
+        _mock_is_published: MagicMock,
         mock_ensure_published: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """Before the bare-Ubuntu image is pinned, the path fails with a clear,
-        actionable message rather than a raw lookup error."""
-        from smolvm.exceptions import ImageError, SmolVMError
+        """When no bare-Ubuntu row is published, fail with a single-line recovery
+        command that names the sandbox — without invoking the downloader, so
+        genuine download/integrity errors stay a separate signal."""
+        from smolvm.exceptions import SmolVMError
 
         priv = tmp_path / "id_ed25519"
         pub = tmp_path / "id_ed25519.pub"
@@ -302,8 +307,35 @@ class TestVMInit:
         pub.write_text("ssh-ed25519 AAAAExampleKey test@host\n")
         mock_ensure_ssh_key.return_value = (priv, pub)
 
-        mock_ensure_published.side_effect = ImageError("no manifest entry")
-        with pytest.raises(SmolVMError, match="No bare-Ubuntu image is published"):
+        with pytest.raises(
+            SmolVMError,
+            match="smolvm create --name myvm --os ubuntu --backend qemu",
+        ):
+            _build_auto_config(os="ubuntu", backend="firecracker", vm_name="myvm")
+        mock_ensure_published.assert_not_called()
+
+    @patch("smolvm.images.published.ensure_published_image")
+    @patch("smolvm.images.published.is_preset_published", return_value=True)
+    @patch("smolvm.utils.ensure_ssh_key")
+    def test_autoconfigure_ubuntu_firecracker_download_error_propagates(
+        self,
+        mock_ensure_ssh_key: MagicMock,
+        _mock_is_published: MagicMock,
+        mock_ensure_published: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """A published-but-broken image (download / SHA-256 failure) surfaces as
+        the original ImageError, not the friendly 'not published' message."""
+        from smolvm.exceptions import ImageError
+
+        priv = tmp_path / "id_ed25519"
+        pub = tmp_path / "id_ed25519.pub"
+        priv.touch()
+        pub.write_text("ssh-ed25519 AAAAExampleKey test@host\n")
+        mock_ensure_ssh_key.return_value = (priv, pub)
+
+        mock_ensure_published.side_effect = ImageError("rootfs SHA-256 mismatch")
+        with pytest.raises(ImageError, match="SHA-256 mismatch"):
             _build_auto_config(os="ubuntu", backend="firecracker")
 
     def test_firmware_boot_vmconfig_rejects_non_qemu_backend(
@@ -691,14 +723,14 @@ class TestVMLocalImageParam:
         """Workspace mounts on Windows guests are Phase 2 scope."""
         disk = tmp_path / "win11.qcow2"
         disk.touch()
-        with pytest.raises(ValueError, match="mounts.* not yet supported for Windows"):
+        with pytest.raises(ValueError, match=r"mounts.* not yet supported for Windows"):
             SmolVM(os="windows", image=str(disk), mounts=["/host/path"])
 
     def test_windows_with_internet_settings_rejected(self, tmp_path: Path) -> None:
         """Egress allowlist on Windows guests is Phase 2 scope."""
         disk = tmp_path / "win11.qcow2"
         disk.touch()
-        with pytest.raises(ValueError, match="internet_settings.* not yet supported for Windows"):
+        with pytest.raises(ValueError, match=r"internet_settings.* not yet supported for Windows"):
             SmolVM(
                 os="windows",
                 image=str(disk),
