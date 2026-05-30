@@ -2182,7 +2182,10 @@ def _run_start_with_published_image(args: argparse.Namespace, preset: object) ->
         return _emit_cli_error(
             "start",
             2,
-            ValueError(f"Preset {_preset.name!r} has no boot_args configured for vmm {vmm!r}."),
+            ValueError(
+                f"Preset {_preset.name!r} isn't available as a prebuilt image "
+                "for this platform yet."
+            ),
             json_output=args.json,
         )
 

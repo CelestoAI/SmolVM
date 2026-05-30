@@ -120,10 +120,8 @@ def resolve_comm_channel(
             )
         if not host_vsock_supported:
             raise SmolVMError(
-                "This host can't provide a vsock device: it needs Linux with the "
-                "vhost_vsock module loaded (run 'sudo modprobe vhost_vsock'). "
-                "Use the SSH channel (comm_channel='ssh') instead — for example "
-                "on macOS, where QEMU has no vsock support."
+                "This host can't provide vsock (needs Linux with vhost_vsock loaded "
+                "via 'sudo modprobe vhost_vsock'); use comm_channel='ssh' instead."
             )
         # Explicit request: use vsock, never silently downgrade to SSH.
         return ChannelResolution(kind="vsock", allow_fallback=False)

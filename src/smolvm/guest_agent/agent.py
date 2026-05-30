@@ -194,6 +194,12 @@ def handle_run(conn: Any, req: dict[str, Any]) -> None:
                     open_streams -= 1
                     continue
                 send_frame(conn, key.data, chunk)
+    except Exception:
+        # Peer dropped (or a read/send failed) mid-stream: kill and reap the
+        # child so it isn't left running and unreaped in the guest, then let
+        # handle_connection swallow the (connection) error as usual.
+        _kill_process_group(proc)
+        raise
     finally:
         sel.close()
 

@@ -505,8 +505,8 @@ class PostgresStateManager:
     def reserve_vsock_cid(self, vm_id: str, guest_cid: int | None = None) -> int:
         if not vm_id:
             raise ValueError("vm_id cannot be empty")
-        if guest_cid is not None and guest_cid < VSOCK_CID_START:
-            raise ValueError(f"guest_cid must be >= {VSOCK_CID_START}")
+        if guest_cid is not None and not (VSOCK_CID_START <= guest_cid <= VSOCK_CID_END):
+            raise ValueError(f"guest_cid must be between {VSOCK_CID_START} and {VSOCK_CID_END}")
 
         now = now_iso()
 

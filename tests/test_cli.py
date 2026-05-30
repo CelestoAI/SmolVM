@@ -157,6 +157,26 @@ class TestCliEnv:
         vm.close.assert_called_once()
         assert "Set 1 env var(s)" in capsys.readouterr().out
 
+    @pytest.mark.parametrize("channel", ["ssh", "vsock"])
+    def test_env_set_passes_comm_channel(
+        self,
+        mock_vm_cls: MagicMock,
+        channel: str,
+    ) -> None:
+        """`--comm-channel` is forwarded to SmolVM.from_id."""
+        vm = self._setup_vm(mock_vm_cls)
+        vm.set_env_vars.return_value = ["FOO"]
+
+        ret = main(["env", "set", "vm001", "FOO=bar", "--comm-channel", channel])
+
+        assert ret == 0
+        mock_vm_cls.from_id.assert_called_once_with(
+            "vm001",
+            ssh_user="root",
+            ssh_key_path=None,
+            comm_channel=channel,
+        )
+
     def test_env_set_multiple(
         self,
         mock_vm_cls: MagicMock,
@@ -395,6 +415,30 @@ class TestCliFile:
         vm.close.assert_called_once()
         assert "Uploaded" in capsys.readouterr().out
 
+    @pytest.mark.parametrize("channel", ["ssh", "vsock"])
+    def test_file_upload_passes_comm_channel(
+        self,
+        mock_vm_cls: MagicMock,
+        tmp_path: Path,
+        channel: str,
+    ) -> None:
+        """`--comm-channel` is forwarded to SmolVM.from_id."""
+        source = tmp_path / "note.txt"
+        source.write_text("hello")
+        vm = MagicMock()
+        vm.upload_file.return_value = "/tmp/note.txt"
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(["file", "upload", "vm001", str(source), "/tmp/", "--comm-channel", channel])
+
+        assert ret == 0
+        mock_vm_cls.from_id.assert_called_once_with(
+            "vm001",
+            ssh_user="root",
+            ssh_key_path=None,
+            comm_channel=channel,
+        )
+
     def test_file_upload_json(
         self,
         mock_vm_cls: MagicMock,
@@ -497,9 +541,7 @@ class TestCliFile:
         vm.download_file.return_value = str(destination)
         mock_vm_cls.from_id.return_value = vm
 
-        ret = main(
-            ["file", "download", "vm001", "/tmp/note.txt", str(tmp_path) + "/", "--json"]
-        )
+        ret = main(["file", "download", "vm001", "/tmp/note.txt", str(tmp_path) + "/", "--json"])
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
@@ -872,9 +914,7 @@ class TestCliCreateImage:
         """--image and --os now both parse (Windows guests need both); the
         facade rejects illegal combos at runtime with a clearer message."""
         parser = build_parser()
-        args = parser.parse_args(
-            ["create", "--image", "s3://bucket/img/", "--os", "alpine"]
-        )
+        args = parser.parse_args(["create", "--image", "s3://bucket/img/", "--os", "alpine"])
         assert args.image == "s3://bucket/img/"
         assert args.os == "alpine"
 
@@ -883,9 +923,7 @@ class TestCliCreateImage:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """S3 image + --os surfaces a one-sentence CLI error."""
-        ret = main(
-            ["create", "--image", "s3://bucket/img/", "--os", "alpine"]
-        )
+        ret = main(["create", "--image", "s3://bucket/img/", "--os", "alpine"])
         assert ret == 1
         err = capsys.readouterr().err
         assert "--image (S3) and --os are mutually exclusive" in err
@@ -1157,8 +1195,8 @@ class TestCliWindowsBuildImage:
         out_text = capsys.readouterr().out
         assert "Windows image ready" in out_text
         # Password is never leaked in the success panel.
-        assert "ssh_password=\"<hidden>\"" in out_text
-        assert "ssh_password=\"smolvm\"" not in out_text
+        assert 'ssh_password="<hidden>"' in out_text
+        assert 'ssh_password="smolvm"' not in out_text
 
     @patch("smolvm.windows.WindowsImageBuilder")
     def test_build_image_json_mode_emits_envelope(
@@ -3431,7 +3469,7 @@ class TestPublishedImageLaunchPath:
         envelope = json.loads(capsys.readouterr().out)
         assert ret == 2
         assert envelope["exit_code"] == 2
-        assert "no boot_args" in envelope["error"]["message"]
+        assert "isn't available as a prebuilt image" in envelope["error"]["message"]
 
     @pytest.mark.parametrize(
         "system,machine,expected_arch,expected_vmm,expected_backend",

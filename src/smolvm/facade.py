@@ -2043,6 +2043,21 @@ class SmolVM:
         if self._ssh_ready:
             return self
 
+        # Honor the resolved control channel: try vsock before SSH so an
+        # explicit comm_channel="vsock" never silently downgrades on the async
+        # path (mirrors the sync _wait_for_ssh dispatch).
+        resolution = self._resolve_channel()
+        if resolution.kind == "vsock":
+            probe = timeout
+            if resolution.allow_fallback:
+                probe = min(timeout, _VSOCK_AUTO_PROBE_TIMEOUT)
+            if await asyncio.to_thread(self._try_vsock_ready, probe):
+                return self
+            if not resolution.allow_fallback:
+                raise OperationTimeoutError(
+                    "wait_for_ready: the guest vsock agent did not respond", timeout
+                )
+
         network = self._info.network
         if network is None:
             raise SmolVMError("VM has no network", {"vm_id": self._vm_id})
