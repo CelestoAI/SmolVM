@@ -123,6 +123,9 @@ class SSHClient:
             ``shell="raw"`` bypasses the wrap entirely.
     """
 
+    #: Transport tag for the :class:`~smolvm.comm.base.CommChannel` interface.
+    kind: str = "ssh"
+
     def __init__(
         self,
         host: str,
@@ -455,3 +458,11 @@ class SSHClient:
             f"wait_for_ssh({self.host}:{self.port}): last error: {last_error}",
             timeout,
         )
+
+    def wait_ready(self, timeout: float = 60.0, interval: float = 0.1) -> None:
+        """Block until the guest is reachable (:class:`CommChannel` alias).
+
+        Delegates to :meth:`wait_for_ssh`; for the SSH transport "ready"
+        means sshd is answering. See :class:`smolvm.comm.base.CommChannel`.
+        """
+        self.wait_for_ssh(timeout=timeout, interval=interval)

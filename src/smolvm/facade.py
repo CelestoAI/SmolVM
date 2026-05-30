@@ -45,6 +45,9 @@ from typing import Any, Literal
 from urllib.parse import urlparse
 
 from smolvm._naming import generate_sandbox_name
+from smolvm.comm import VsockChannel
+from smolvm.comm.base import CommChannelKind
+from smolvm.comm.select import ChannelResolution, resolve_comm_channel
 from smolvm.env import inject_env_vars, read_env_vars, remove_env_vars
 from smolvm.env_windows import (
     inject_env_vars as inject_env_vars_windows,
@@ -90,6 +93,11 @@ from smolvm.vm import SmolVMManager
 logger = logging.getLogger(__name__)
 
 _DEFAULT_RUN_READY_TIMEOUT = 30.0
+
+# When auto-selecting the channel, how long to wait for the vsock agent before
+# falling back to SSH. Kept short: the agent comes up early in boot, so if it
+# hasn't answered by now the image probably lacks it and SSH is the real path.
+_VSOCK_AUTO_PROBE_TIMEOUT = 8.0
 _LOCAL_FORWARD_PROBE_TIMEOUT = 2.0
 _LOCAL_FORWARD_PROBE_INTERVAL = 0.2
 _LOCAL_TUNNEL_START_TIMEOUT = 10.0
@@ -849,12 +857,16 @@ class SmolVM:
         ssh_user: str = "root",
         ssh_key_path: str | None = None,
         ssh_password: str | None = None,
+        comm_channel: CommChannelKind | None = None,
         internet_settings: InternetSettings | dict[str, Any] | None = None,
         mounts: list[str] | None = None,
         writable_mounts: bool = False,
     ) -> None:
         if config is not None and vm_id is not None:
             raise ValueError("Provide either config or vm_id, not both.")
+
+        if comm_channel is not None and comm_channel not in ("ssh", "vsock"):
+            raise ValueError(f"comm_channel must be 'ssh' or 'vsock', got {comm_channel!r}")
 
         if image is not None and (config is not None or vm_id is not None):
             raise ValueError("image cannot be combined with config or vm_id.")
@@ -982,6 +994,7 @@ class SmolVM:
         self._ssh_user = ssh_user
         self._ssh_key_path = ssh_key_path
         self._ssh_password = ssh_password
+        self._comm_channel_request: CommChannelKind | None = comm_channel
         self._default_ssh_key_path: str | None = None
 
         sdk_kwargs: dict[str, Any] = {}
@@ -991,6 +1004,12 @@ class SmolVM:
             sdk_kwargs["socket_dir"] = socket_dir
         if backend is not None:
             sdk_kwargs["backend"] = backend
+
+        # Record the channel preference on the config so create() can reserve a
+        # vsock CID and wire the device before boot. Covers both an explicit
+        # config and one built from image=.
+        if config is not None and comm_channel is not None:
+            config = config.model_copy(update={"comm_channel": comm_channel})
 
         if config is not None:
             self._sdk = SmolVMManager(**sdk_kwargs)
@@ -1024,6 +1043,7 @@ class SmolVM:
         ssh_user: str = "root",
         ssh_key_path: str | None = None,
         ssh_password: str | None = None,
+        comm_channel: CommChannelKind | None = None,
     ) -> SmolVM:
         """Reconnect to an existing VM by ID.
 
@@ -1053,6 +1073,7 @@ class SmolVM:
             ssh_user=ssh_user,
             ssh_key_path=ssh_key_path,
             ssh_password=ssh_password,
+            comm_channel=comm_channel,
         )
 
     @classmethod
@@ -1178,9 +1199,7 @@ class SmolVM:
                     key_path=self._ssh_key_path,
                 )
                 self._ssh_ready = True
-            injector = (
-                inject_env_vars_windows if self._is_windows_guest() else inject_env_vars
-            )
+            injector = inject_env_vars_windows if self._is_windows_guest() else inject_env_vars
             injected = injector(self._ssh, env_vars)
             logger.info(
                 "VM %s: injected %d env var(s): %s",
@@ -1458,10 +1477,7 @@ class SmolVM:
                     # — no escape gymnastics.
                     ps_parent = _windows_path_for_powershell(parent)
                     safe_parent = ps_parent.replace("'", "''")
-                    cmd = (
-                        f"New-Item -ItemType Directory -Force -Path "
-                        f"'{safe_parent}' | Out-Null"
-                    )
+                    cmd = f"New-Item -ItemType Directory -Force -Path '{safe_parent}' | Out-Null"
                     result = ssh.run(cmd, timeout=30, shell="login")
                     if result.exit_code != 0:
                         stderr = result.stderr.strip()
@@ -1531,9 +1547,7 @@ class SmolVM:
             # Strip trailing separator (either kind) then take the basename.
             guest_name = guest_path.rstrip("/\\").rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
             if not guest_name:
-                raise ValueError(
-                    f"Cannot derive a filename from the sandbox path: {guest_path!r}."
-                )
+                raise ValueError(f"Cannot derive a filename from the sandbox path: {guest_path!r}.")
             destination = destination / guest_name
 
         parent = destination.parent
@@ -1951,9 +1965,7 @@ class SmolVM:
                     key_path=self._ssh_key_path,
                 )
                 self._ssh_ready = True
-            injector = (
-                inject_env_vars_windows if self._is_windows_guest() else inject_env_vars
-            )
+            injector = inject_env_vars_windows if self._is_windows_guest() else inject_env_vars
             await asyncio.to_thread(injector, self._ssh, env_vars)
 
         # Mount workspace directories after boot if configured.
@@ -2009,13 +2021,16 @@ class SmolVM:
                 {"vm_id": self._vm_id},
             )
         if not self.can_run_commands():
-            raise CommandExecutionUnavailableError(self._vm_id, {"vm_id": self._vm_id})
+            raise CommandExecutionUnavailableError(
+                vm_id=self._vm_id,
+                reason="VM config does not advertise a command-capable boot path.",
+                remediation=self._command_exec_remediation(),
+            )
 
-        self._ensure_ssh()
-        assert self._ssh is not None
-        return await asyncio.to_thread(
-            self._ssh.run, command, timeout=timeout, login_shell=(shell == "login")
-        )
+        # Resolve and connect the channel (vsock or SSH) off the event loop,
+        # then run the command. Both transports are synchronous.
+        channel = await asyncio.to_thread(self._ensure_ssh_for_operation, action="run a command")
+        return await asyncio.to_thread(channel.run, command, timeout=timeout, shell=shell)
 
     async def async_wait_for_ssh(self, timeout: float = 60.0) -> SmolVM:
         """Async version of :meth:`wait_for_ssh`.
@@ -2564,11 +2579,68 @@ modprobe 9pnet_virtio""".strip()
 
         return False
 
+    def _resolve_channel(self) -> ChannelResolution:
+        """Resolve which control channel this VM should use."""
+        config = self._info.config
+        return resolve_comm_channel(
+            requested=self._comm_channel_request,
+            config_channel=getattr(config, "comm_channel", None),
+            backend=getattr(config, "backend", None),
+            guest_os=getattr(config, "guest_os", None),
+        )
+
+    def _try_vsock_ready(self, timeout: float) -> bool:
+        """Probe the guest vsock agent; on success cache the channel.
+
+        Returns True if the agent answered within *timeout*. Requires a
+        reserved CID (``config.vsock``) — without one (e.g. a VM created
+        before vsock was enabled) vsock can't be used.
+        """
+        self._refresh_info()
+        vsock = getattr(self._info.config, "vsock", None)
+        if vsock is None:
+            return False
+        channel = VsockChannel.from_cid(vsock.guest_cid)
+        try:
+            channel.wait_ready(timeout=timeout)
+        except (OperationTimeoutError, SmolVMError, OSError):
+            return False
+        self._ssh = channel  # type: ignore[assignment]  # CommChannel duck-types
+        self._ssh_ready = True
+        return True
+
     def _wait_for_ssh(self, timeout: float) -> None:
+        """Wait until the resolved control channel is ready.
+
+        Named ``_wait_for_ssh`` for back-compat; it now dispatches to vsock
+        when that's the resolved channel, falling back to SSH only when the
+        selection was automatic (never for an explicit ``comm_channel='vsock'``).
+        """
+        resolution = self._resolve_channel()
+        if resolution.kind == "vsock":
+            deadline = time.monotonic() + timeout
+            probe = timeout
+            if resolution.allow_fallback:
+                probe = min(timeout, _VSOCK_AUTO_PROBE_TIMEOUT)
+            if self._try_vsock_ready(probe):
+                return
+            if not resolution.allow_fallback:
+                raise OperationTimeoutError(
+                    "wait_for_ready: the guest vsock agent did not respond", timeout
+                )
+            logger.info("VM %s: vsock agent not reachable, falling back to SSH", self._vm_id)
+            self._wait_for_ssh_over_network(max(1.0, deadline - time.monotonic()))
+            return
+        self._wait_for_ssh_over_network(timeout)
+
+    def _wait_for_ssh_over_network(self, timeout: float) -> None:
         """Wait for SSH across available network endpoints."""
         endpoints = self._ssh_endpoints()
 
         # Prefer the already selected client first, then try remaining candidates.
+        # self._ssh is only ever an SSHClient here: _try_vsock_ready assigns the
+        # vsock channel solely on success, after which _wait_for_ssh returns
+        # before reaching this network path.
         ordered_endpoints = endpoints
         if self._ssh is not None:
             current = (self._ssh.host, self._ssh.port)

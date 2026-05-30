@@ -34,8 +34,8 @@ from smolvm.exceptions import SmolVMError
 from smolvm.presets._git import GIT_HOST_CONFIGS, register_workspace_safe_directories
 
 if TYPE_CHECKING:
+    from smolvm.comm.base import CommChannel
     from smolvm.presets._types import Preset
-    from smolvm.ssh import SSHClient
 
 
 logger = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ def collect_host_env(preset: Preset) -> dict[str, str]:
 
 
 def apply_preset(
-    ssh: SSHClient,
+    ssh: CommChannel,
     preset: Preset,
     *,
     on_progress: Callable[[str], None] | None = None,
@@ -157,7 +157,7 @@ def apply_preset(
 
 
 def _run_install_phase(
-    ssh: SSHClient,
+    ssh: CommChannel,
     preset: Preset,
     script: str,
     install_timeout: int,
@@ -184,7 +184,7 @@ def _run_install_phase(
 
 
 def _copy_to_guest(
-    ssh: SSHClient, local: Path, guest_path: str, *, file_mode: int | None = None
+    ssh: CommChannel, local: Path, guest_path: str, *, file_mode: int | None = None
 ) -> None:
     """Copy a host file or directory tree to *guest_path* inside the VM.
 
@@ -204,7 +204,7 @@ def _copy_to_guest(
 
 
 def _copy_file(
-    ssh: SSHClient, local: Path, guest_path: str, *, file_mode: int | None = None
+    ssh: CommChannel, local: Path, guest_path: str, *, file_mode: int | None = None
 ) -> None:
     """Upload a single host file to *guest_path* via SFTP, mkdir parent first.
 
@@ -233,7 +233,7 @@ def _copy_file(
             )
 
 
-def _copy_dir(ssh: SSHClient, local: Path, guest_path: str) -> None:
+def _copy_dir(ssh: CommChannel, local: Path, guest_path: str) -> None:
     """Tar a host directory tree and untar it into *guest_path* on the guest.
 
     Strips ownership (uid/gid/uname/gname) on every TarInfo so the guest
@@ -331,7 +331,7 @@ def _extract_keychain_secret(service: str, *, account: str | None = None) -> str
     return value
 
 
-def _write_secret_to_guest(ssh: SSHClient, content: str, guest_path: str, file_mode: int) -> None:
+def _write_secret_to_guest(ssh: CommChannel, content: str, guest_path: str, file_mode: int) -> None:
     """Stage *content* in a 0o600 host tempfile, SFTP it, then chmod on the guest."""
     parent = _posix_dirname(guest_path)
     if parent:

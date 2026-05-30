@@ -40,6 +40,8 @@ from smolvm.storage._base import (
     IP_POOL_START,
     SSH_PORT_END,
     SSH_PORT_START,
+    VSOCK_CID_END,
+    VSOCK_CID_START,
     browser_session_info_from_row,
     now_iso,
     pool_index_to_ip,
@@ -62,6 +64,7 @@ logger = logging.getLogger(__name__)
 # Advisory lock keys (arbitrary constants, must be unique per lock type)
 _ADVISORY_LOCK_IP = 1
 _ADVISORY_LOCK_SSH = 2
+_ADVISORY_LOCK_VSOCK = 3
 
 
 def _require_psycopg() -> None:
@@ -140,6 +143,15 @@ class PostgresStateManager:
                 CREATE INDEX IF NOT EXISTS idx_ssh_forwards_host_port
                     ON ssh_forwards(host_port);
 
+                CREATE TABLE IF NOT EXISTS vsock_cids (
+                    vm_id TEXT PRIMARY KEY,
+                    guest_cid BIGINT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (vm_id) REFERENCES vms(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_vsock_cids_vm_id ON vsock_cids(vm_id);
+
                 CREATE TABLE IF NOT EXISTS browser_sessions (
                     session_id TEXT PRIMARY KEY,
                     vm_id TEXT NOT NULL UNIQUE,
@@ -190,9 +202,7 @@ class PostgresStateManager:
         now = now_iso()
 
         with self._pool.connection() as conn:
-            row = conn.execute(
-                "SELECT id FROM vms WHERE id = %s", (config.vm_id,)
-            ).fetchone()
+            row = conn.execute("SELECT id FROM vms WHERE id = %s", (config.vm_id,)).fetchone()
             if row:
                 raise VMAlreadyExistsError(config.vm_id)
 
@@ -235,6 +245,7 @@ class PostgresStateManager:
         vm_id: str,
         *,
         status: VMState | None = None,
+        config: VMConfig | None = None,
         network: NetworkConfig | None = None,
         pid: int | None = None,
         control_socket_path: Path | None = None,
@@ -247,9 +258,7 @@ class PostgresStateManager:
         now = now_iso()
 
         with self._pool.connection() as conn:
-            existing = conn.execute(
-                "SELECT id FROM vms WHERE id = %s", (vm_id,)
-            ).fetchone()
+            existing = conn.execute("SELECT id FROM vms WHERE id = %s", (vm_id,)).fetchone()
             if not existing:
                 raise VMNotFoundError(vm_id)
 
@@ -259,6 +268,9 @@ class PostgresStateManager:
             if status is not None:
                 updates.append("status = %s")
                 params.append(status.value)
+            if config is not None:
+                updates.append("config = %s")
+                params.append(config.model_dump_json())
             if network is not None:
                 updates.append("network = %s")
                 params.append(network.model_dump_json())
@@ -285,9 +297,7 @@ class PostgresStateManager:
             raise ValueError("vm_id cannot be empty")
 
         with self._pool.connection() as conn:
-            existing = conn.execute(
-                "SELECT id FROM vms WHERE id = %s", (vm_id,)
-            ).fetchone()
+            existing = conn.execute("SELECT id FROM vms WHERE id = %s", (vm_id,)).fetchone()
             if not existing:
                 raise VMNotFoundError(vm_id)
             conn.execute("DELETE FROM vms WHERE id = %s", (vm_id,))
@@ -489,6 +499,74 @@ class PostgresStateManager:
             logger.info("Released SSH host port for VM: %s", vm_id)
 
     # ------------------------------------------------------------------
+    # vsock CID allocation (advisory lock)
+    # ------------------------------------------------------------------
+
+    def reserve_vsock_cid(self, vm_id: str, guest_cid: int | None = None) -> int:
+        if not vm_id:
+            raise ValueError("vm_id cannot be empty")
+        if guest_cid is not None and guest_cid < VSOCK_CID_START:
+            raise ValueError(f"guest_cid must be >= {VSOCK_CID_START}")
+
+        now = now_iso()
+
+        with self._pool.connection() as conn:
+            conn.execute("SELECT pg_advisory_xact_lock(%s)", (_ADVISORY_LOCK_VSOCK,))
+
+            existing = conn.execute(
+                "SELECT guest_cid FROM vsock_cids WHERE vm_id = %s", (vm_id,)
+            ).fetchone()
+            if existing:
+                existing_cid = int(existing["guest_cid"])
+                if guest_cid is not None and existing_cid != guest_cid:
+                    raise NetworkError(
+                        f"VM {vm_id} already has vsock CID {existing_cid}, "
+                        f"cannot reserve {guest_cid}"
+                    )
+                return existing_cid
+
+            allocated = conn.execute("SELECT guest_cid FROM vsock_cids").fetchall()
+            allocated_set = {int(row["guest_cid"]) for row in allocated}
+
+            candidate_cids = (
+                [guest_cid] if guest_cid is not None else range(VSOCK_CID_START, VSOCK_CID_END + 1)
+            )
+            for candidate_cid in candidate_cids:
+                if candidate_cid in allocated_set:
+                    continue
+                conn.execute(
+                    "INSERT INTO vsock_cids (vm_id, guest_cid, created_at) VALUES (%s, %s, %s)",
+                    (vm_id, candidate_cid, now),
+                )
+                logger.info("Reserved vsock CID %d for VM %s", candidate_cid, vm_id)
+                return candidate_cid
+
+        if guest_cid is not None:
+            raise NetworkError(f"Requested vsock CID {guest_cid} is not available")
+        raise NetworkError("No vsock CIDs available in pool")
+
+    def get_vsock_cid(self, vm_id: str) -> int | None:
+        if not vm_id:
+            raise ValueError("vm_id cannot be empty")
+
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT guest_cid FROM vsock_cids WHERE vm_id = %s", (vm_id,)
+            ).fetchone()
+
+        if row:
+            return int(row["guest_cid"])
+        return None
+
+    def release_vsock_cid(self, vm_id: str) -> None:
+        if not vm_id:
+            raise ValueError("vm_id cannot be empty")
+
+        with self._pool.connection() as conn:
+            conn.execute("DELETE FROM vsock_cids WHERE vm_id = %s", (vm_id,))
+            logger.info("Released vsock CID for VM: %s", vm_id)
+
+    # ------------------------------------------------------------------
     # Snapshots
     # ------------------------------------------------------------------
 
@@ -580,9 +658,7 @@ class PostgresStateManager:
             raise ValueError("snapshot_id cannot be empty")
 
         with self._pool.connection() as conn:
-            result = conn.execute(
-                "DELETE FROM snapshots WHERE snapshot_id = %s", (snapshot_id,)
-            )
+            result = conn.execute("DELETE FROM snapshots WHERE snapshot_id = %s", (snapshot_id,))
             if result.rowcount == 0:
                 raise SnapshotNotFoundError(snapshot_id)
 
@@ -749,9 +825,7 @@ class PostgresStateManager:
                     (status.value,),
                 ).fetchall()
             else:
-                rows = conn.execute(
-                    "SELECT * FROM browser_sessions ORDER BY created_at"
-                ).fetchall()
+                rows = conn.execute("SELECT * FROM browser_sessions ORDER BY created_at").fetchall()
 
         return [browser_session_info_from_row(row) for row in rows]
 

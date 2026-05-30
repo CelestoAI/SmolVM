@@ -28,8 +28,8 @@ import logging
 import re
 import shlex
 
+from smolvm.comm.base import CommChannel
 from smolvm.exceptions import SmolVMError
-from smolvm.ssh import SSHClient
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +83,7 @@ def build_env_script(env_vars: dict[str, str]) -> str:
 
 
 def inject_env_vars(
-    ssh: SSHClient,
+    ssh: CommChannel,
     env_vars: dict[str, str],
     *,
     merge: bool = True,
@@ -133,7 +133,7 @@ def inject_env_vars(
     return keys
 
 
-def _atomic_write(ssh: SSHClient, content: str) -> "CommandResult":  # noqa: F821
+def _atomic_write(ssh: CommChannel, content: str) -> "CommandResult":  # noqa: F821
     """Write *content* to the env file atomically inside the guest.
 
     Uses **base64 transport** to avoid any shell-interpretation of the
@@ -155,7 +155,7 @@ def _atomic_write(ssh: SSHClient, content: str) -> "CommandResult":  # noqa: F82
     return ssh.run(cmd, timeout=10)
 
 
-def read_env_vars(ssh: SSHClient) -> dict[str, str]:
+def read_env_vars(ssh: CommChannel) -> dict[str, str]:
     """Read current SmolVM-managed environment variables from the guest.
 
     Parses ``/etc/profile.d/smolvm_env.sh`` for ``export KEY=VALUE``
@@ -201,7 +201,7 @@ def read_env_vars(ssh: SSHClient) -> dict[str, str]:
     return env_vars
 
 
-def remove_env_vars(ssh: SSHClient, keys: list[str]) -> dict[str, str]:
+def remove_env_vars(ssh: CommChannel, keys: list[str]) -> dict[str, str]:
     """Remove environment variables from the guest.
 
     Reads the current file, removes the specified keys, and rewrites

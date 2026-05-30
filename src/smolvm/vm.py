@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any, TextIO
 from uuid import uuid4
 
+from smolvm.comm.select import resolve_comm_channel
 from smolvm.exceptions import (
     SmolVMError,
     SnapshotAlreadyExistsError,
@@ -58,7 +59,15 @@ from smolvm.runtime.libkrun import LibkrunRuntimeAdapter
 from smolvm.runtime.qemu import QEMU_ROOT_NODE_NAME, QemuRuntimeAdapter
 from smolvm.runtime.qemu_args import build_qemu_argv
 from smolvm.storage import StateManagerProtocol, create_state_manager, ip_to_pool_index
-from smolvm.types import GuestOS, NetworkConfig, SnapshotInfo, VMConfig, VMInfo, VMState
+from smolvm.types import (
+    GuestOS,
+    NetworkConfig,
+    SnapshotInfo,
+    VMConfig,
+    VMInfo,
+    VMState,
+    VsockConfig,
+)
 from smolvm.utils import RUNTIME_PRIVILEGE_SETUP_HINT, which
 
 logger = logging.getLogger(__name__)
@@ -127,6 +136,8 @@ def _qemu_install_hint() -> str:
         "Install QEMU for this operating system, then make sure qemu-system-x86_64 "
         "or qemu-system-aarch64 is on PATH."
     )
+
+
 QEMU_GATEWAY_IP = "10.0.2.2"
 QEMU_NETMASK = "255.255.255.0"
 SNAPSHOT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$|^[a-z0-9]$")
@@ -672,8 +683,7 @@ class SmolVMManager:
             # standalone design problem (multi-artifact snapshot atomicity)
             # and not in Phase 1 scope.
             raise SmolVMError(
-                "Snapshot and restore are not supported for Windows guests "
-                "in this release.",
+                "Snapshot and restore are not supported for Windows guests in this release.",
                 {"vm_id": vm_info.vm_id},
             )
         if vm_info.config.disk_mode != "isolated":
@@ -894,6 +904,29 @@ class SmolVMManager:
 
         return errors
 
+    def _maybe_enable_vsock(self, config: VMConfig, backend: str, vm_info: VMInfo) -> VMInfo:
+        """Reserve a vsock CID and persist ``config.vsock`` when the VM should
+        use the vsock control channel.
+
+        No-op unless the resolved channel is vsock (QEMU on a Linux host with
+        ``/dev/vhost-vsock``). The CID is reserved after the VM row exists (the
+        ``vsock_cids`` foreign key requires it) and written back to the config
+        so ``build_qemu_argv`` wires the ``vhost-vsock`` device at boot.
+        Returns the possibly-updated :class:`VMInfo`.
+        """
+        resolution = resolve_comm_channel(
+            requested=None,
+            config_channel=config.comm_channel,
+            backend=backend,
+            guest_os=config.guest_os,
+        )
+        if resolution.kind != "vsock":
+            return vm_info
+        cid = self.state.reserve_vsock_cid(config.vm_id)
+        updated = config.model_copy(update={"vsock": VsockConfig(guest_cid=cid)})
+        logger.info("VM %s will use vsock control channel (CID %d)", config.vm_id, cid)
+        return self.state.update_vm(config.vm_id, config=updated)
+
     def create(self, config: VMConfig) -> VMInfo:
         """Create a new microVM.
 
@@ -965,6 +998,7 @@ class SmolVMManager:
                     ssh_host_port=ssh_host_port,
                 )
                 vm_info = self.state.update_vm(effective_config.vm_id, network=network_config)
+                vm_info = self._maybe_enable_vsock(effective_config, backend, vm_info)
                 logger.info(
                     "VM created: %s (backend=%s, ssh localhost:%d)",
                     effective_config.vm_id,
@@ -2098,10 +2132,7 @@ class SmolVMManager:
             # same ID.
             firmware_state = self.data_dir / "firmware" / vm_id
             if firmware_state.exists():
-                retain = (
-                    vm_info is not None
-                    and vm_info.config.retain_disk_on_delete
-                )
+                retain = vm_info is not None and vm_info.config.retain_disk_on_delete
                 if retain:
                     logger.info(
                         "Retaining per-VM firmware state for VM %s at %s",
@@ -2174,6 +2205,7 @@ class SmolVMManager:
                     ssh_host_port=ssh_host_port,
                 )
                 vm_info = self.state.update_vm(effective_config.vm_id, network=network_config)
+                vm_info = self._maybe_enable_vsock(effective_config, backend, vm_info)
                 return vm_info
 
             # Firecracker networking (async)
@@ -2540,10 +2572,7 @@ class SmolVMManager:
             # Windows-guest firmware behind.
             firmware_state = self.data_dir / "firmware" / vm_id
             if firmware_state.exists():
-                retain = (
-                    vm_info is not None
-                    and vm_info.config.retain_disk_on_delete
-                )
+                retain = vm_info is not None and vm_info.config.retain_disk_on_delete
                 if retain:
                     logger.info(
                         "Retaining per-VM firmware state for VM %s at %s",

@@ -304,6 +304,10 @@ class VMConfig(BaseModel):
         env_vars: Environment variables to inject into the guest
             after boot via SSH. Keys must be valid shell identifiers.
         port_forwards: Optional host TCP forwards configured at VM launch.
+        comm_channel: Host↔guest control transport (``"ssh"`` or ``"vsock"``).
+            ``None`` means auto-select at runtime (vsock when the guest agent
+            answers on a supported backend, else SSH). See
+            :func:`smolvm.comm.select.resolve_comm_channel`.
         ssh_public_key: Optional OpenSSH public key (one-line ``authorized_keys``
             format) to install in the guest's ``/root/.ssh/authorized_keys`` at
             first boot. Passed via the kernel command line as
@@ -336,6 +340,7 @@ class VMConfig(BaseModel):
     network_rate_limit_mbps: Annotated[int, Field(ge=1)] | None = None
     port_forwards: list[PortForwardConfig] = []
     vsock: VsockConfig | None = None
+    comm_channel: Literal["ssh", "vsock"] | None = None
     internet_settings: InternetSettings | None = None
     workspace_mounts: list[WorkspaceMount] = []
     ssh_public_key: str | None = None

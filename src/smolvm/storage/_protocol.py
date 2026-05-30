@@ -62,6 +62,7 @@ class StateManagerProtocol(Protocol):
         vm_id: str,
         *,
         status: VMState | None = None,
+        config: VMConfig | None = None,
         network: NetworkConfig | None = None,
         pid: int | None = None,
         control_socket_path: Path | None = None,
@@ -116,6 +117,19 @@ class StateManagerProtocol(Protocol):
         pass
 
     # ------------------------------------------------------------------
+    # vsock CID allocation
+    # ------------------------------------------------------------------
+
+    def reserve_vsock_cid(self, vm_id: str, guest_cid: int | None = None) -> int:
+        pass
+
+    def get_vsock_cid(self, vm_id: str) -> int | None:
+        pass
+
+    def release_vsock_cid(self, vm_id: str) -> None:
+        pass
+
+    # ------------------------------------------------------------------
     # Snapshots
     # ------------------------------------------------------------------
 
@@ -128,9 +142,7 @@ class StateManagerProtocol(Protocol):
     def list_snapshots(self, vm_id: str | None = None) -> list[SnapshotInfo]:
         pass
 
-    def mark_snapshot_restored(
-        self, snapshot_id: str, restored_vm_id: str
-    ) -> SnapshotInfo:
+    def mark_snapshot_restored(self, snapshot_id: str, restored_vm_id: str) -> SnapshotInfo:
         pass
 
     def delete_snapshot(self, snapshot_id: str) -> None:

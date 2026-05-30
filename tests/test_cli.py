@@ -151,6 +151,7 @@ class TestCliEnv:
             "vm001",
             ssh_user="root",
             ssh_key_path=None,
+            comm_channel=None,
         )
         vm.set_env_vars.assert_called_once_with({"FOO": "bar"})
         vm.close.assert_called_once()
@@ -324,6 +325,7 @@ class TestCliEnv:
             "vm001",
             ssh_user="custom-user",
             ssh_key_path="/custom/key",
+            comm_channel=None,
         )
 
     def test_vm_lookup_failure_prints_error(
@@ -383,6 +385,7 @@ class TestCliFile:
             "vm001",
             ssh_user="root",
             ssh_key_path=None,
+            comm_channel=None,
         )
         vm.upload_file.assert_called_once_with(
             str(source),
@@ -472,6 +475,7 @@ class TestCliFile:
             "vm001",
             ssh_user="root",
             ssh_key_path=None,
+            comm_channel=None,
         )
         vm.download_file.assert_called_once_with(
             "/tmp/note.txt",

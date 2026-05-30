@@ -356,6 +356,19 @@ def _add_ssh_auth_args(command_parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_comm_channel_arg(command_parser: argparse.ArgumentParser) -> None:
+    """Add the host↔guest control-channel selector to a command parser."""
+    command_parser.add_argument(
+        "--comm-channel",
+        choices=["ssh", "vsock"],
+        default=None,
+        help=(
+            "Host-to-guest control channel for this command (default: auto — "
+            "vsock when the guest agent answers on a QEMU/Linux host, else SSH)."
+        ),
+    )
+
+
 def _add_boot_timeout_arg(command_parser: argparse.ArgumentParser) -> None:
     """Add a shared boot/SSH readiness timeout flag."""
     command_parser.add_argument(
@@ -974,6 +987,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit machine-readable JSON output.",
     )
     _add_ssh_auth_args(file_upload)
+    _add_comm_channel_arg(file_upload)
 
     file_download = file_sub.add_parser(
         "download",
@@ -1001,6 +1015,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit machine-readable JSON output.",
     )
     _add_ssh_auth_args(file_download)
+    _add_comm_channel_arg(file_download)
 
     # ── windows: image-building helpers ────────────────────────────
     windows_parser = subparsers.add_parser(
@@ -1255,6 +1270,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit machine-readable JSON output.",
     )
     _add_ssh_auth_args(env_set)
+    _add_comm_channel_arg(env_set)
 
     env_unset = env_sub.add_parser(
         "unset",
@@ -1273,6 +1289,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit machine-readable JSON output.",
     )
     _add_ssh_auth_args(env_unset)
+    _add_comm_channel_arg(env_unset)
 
     env_list = env_sub.add_parser(
         "list",
@@ -1290,6 +1307,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit machine-readable JSON output.",
     )
     _add_ssh_auth_args(env_list)
+    _add_comm_channel_arg(env_list)
 
     return parser
 
@@ -1870,11 +1888,7 @@ def _run_create(args: argparse.Namespace) -> int:
 
         # CLI default: roomier disk for ubuntu so package installs
         # and apt cache don't fill the rootfs on a basic `smolvm create`.
-        if (
-            not use_s3_image
-            and args.disk_size_mib is None
-            and resolved_guest_os is GuestOS.UBUNTU
-        ):
+        if not use_s3_image and args.disk_size_mib is None and resolved_guest_os is GuestOS.UBUNTU:
             args.disk_size_mib = 4096
 
         if use_local_image:
@@ -2123,10 +2137,7 @@ def _vmm_for_host() -> Vmm:
         return "firecracker"
     if system == "Darwin":
         return "qemu"
-    raise RuntimeError(
-        f"Unsupported host OS for published images: {system!r}."
-    )
-
+    raise RuntimeError(f"Unsupported host OS for published images: {system!r}.")
 
 
 def _host_arch_for_published() -> Arch:
@@ -2136,9 +2147,7 @@ def _host_arch_for_published() -> Arch:
         return "arm64"
     if machine in {"x86_64", "amd64"}:
         return "amd64"
-    raise RuntimeError(
-        f"Unsupported host architecture for published images: {machine!r}."
-    )
+    raise RuntimeError(f"Unsupported host architecture for published images: {machine!r}.")
 
 
 def _run_start_with_published_image(args: argparse.Namespace, preset: object) -> int:
@@ -2173,10 +2182,7 @@ def _run_start_with_published_image(args: argparse.Namespace, preset: object) ->
         return _emit_cli_error(
             "start",
             2,
-            ValueError(
-                f"Preset {_preset.name!r} has no boot_args configured for "
-                f"vmm {vmm!r}."
-            ),
+            ValueError(f"Preset {_preset.name!r} has no boot_args configured for vmm {vmm!r}."),
             json_output=args.json,
         )
 
@@ -2933,6 +2939,7 @@ def _run_env(args: argparse.Namespace) -> int:
             args.vm_id,
             ssh_user=args.ssh_user,
             ssh_key_path=args.ssh_key,
+            comm_channel=args.comm_channel,
         )
 
         if args.env_action == "set":
@@ -3063,6 +3070,7 @@ def _run_file(args: argparse.Namespace) -> int:
             args.vm_id,
             ssh_user=args.ssh_user,
             ssh_key_path=args.ssh_key,
+            comm_channel=args.comm_channel,
         )
 
         if args.file_action == "upload":
@@ -3308,8 +3316,7 @@ def _run_windows(args: argparse.Namespace) -> int:
         return _run_windows_build_image(args)
     # No verb supplied — print the windows subparser help.
     print(
-        "smolvm windows: choose a subcommand "
-        "(e.g. `smolvm windows build-image --help`).",
+        "smolvm windows: choose a subcommand (e.g. `smolvm windows build-image --help`).",
         file=sys.stderr,
     )
     return 2
@@ -3355,7 +3362,7 @@ def _run_windows_build_image(args: argparse.Namespace) -> int:
                 f"Boot it with:\n"
                 f"  [bold]smolvm create --os windows --image {output}[/bold]\n"
                 f"or in Python:\n"
-                f"  [bold]SmolVM(os=\"windows\", image=\"{output}\", "
+                f'  [bold]SmolVM(os="windows", image="{output}", '
                 f'ssh_user="{args.username}", ssh_password="<hidden>")[/bold]',
                 title="Windows image ready",
                 border_style="green",

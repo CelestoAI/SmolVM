@@ -45,6 +45,12 @@ IP_POOL_END = 65534  # 172.16.255.254
 SSH_PORT_START = 2200
 SSH_PORT_END = 67499
 
+# vsock guest-CID pool. CIDs 0/1/2 are reserved (hypervisor/local/host), so
+# allocation starts at 3. The upper bound is well within the 32-bit CID space
+# and gives ample headroom for concurrent VMs.
+VSOCK_CID_START = 3
+VSOCK_CID_END = 1_000_000
+
 
 def pool_index_to_ip(index: int) -> str:
     """Convert a pool index to an IP in the ``172.16.0.0/16`` range."""

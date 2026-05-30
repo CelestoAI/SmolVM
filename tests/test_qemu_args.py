@@ -28,7 +28,7 @@ from smolvm.runtime.guest_platforms import (
     _build_windows_spec,
 )
 from smolvm.runtime.qemu_args import build_qemu_argv
-from smolvm.types import GuestOS, NetworkConfig, VMConfig, VMInfo, VMState
+from smolvm.types import GuestOS, NetworkConfig, VMConfig, VMInfo, VMState, VsockConfig
 
 
 def _qemu_vm_info(tmp_path: Path, *, vm_id: str = "vm-test") -> VMInfo:
@@ -97,6 +97,61 @@ def test_linux_x86_64_kvm_argv_byte_identical(tmp_path: Path) -> None:
     ]
 
 
+def _with_vsock(vm_info: VMInfo, guest_cid: int = 42) -> VMInfo:
+    config = vm_info.config.model_copy(update={"vsock": VsockConfig(guest_cid=guest_cid)})
+    return vm_info.model_copy(update={"config": config})
+
+
+def test_vsock_device_emitted_on_linux_x86(tmp_path: Path) -> None:
+    vm_info = _with_vsock(_qemu_vm_info(tmp_path))
+    cmd = build_qemu_argv(
+        vm_info,
+        qemu_bin=Path("/usr/bin/qemu-system-x86_64"),
+        boot_args=vm_info.config.boot_args,
+        platform_spec=_LINUX_SPEC,
+        host_system="Linux",
+    )
+    assert "-device" in cmd
+    assert "vhost-vsock-pci,guest-cid=42" in cmd
+
+
+def test_vsock_device_uses_mmio_variant_on_aarch64(tmp_path: Path) -> None:
+    vm_info = _with_vsock(_qemu_vm_info(tmp_path))
+    cmd = build_qemu_argv(
+        vm_info,
+        qemu_bin=Path("/usr/bin/qemu-system-aarch64"),
+        boot_args=vm_info.config.boot_args,
+        platform_spec=_LINUX_SPEC,
+        host_system="Linux",
+    )
+    assert "vhost-vsock-device,guest-cid=42" in cmd
+    assert "vhost-vsock-pci,guest-cid=42" not in cmd
+
+
+def test_vsock_device_omitted_on_darwin(tmp_path: Path) -> None:
+    vm_info = _with_vsock(_qemu_vm_info(tmp_path))
+    cmd = build_qemu_argv(
+        vm_info,
+        qemu_bin=Path("/usr/bin/qemu-system-x86_64"),
+        boot_args=vm_info.config.boot_args,
+        platform_spec=_LINUX_SPEC,
+        host_system="Darwin",
+    )
+    assert not any("vhost-vsock" in arg for arg in cmd)
+
+
+def test_no_vsock_device_when_config_has_none(tmp_path: Path) -> None:
+    vm_info = _qemu_vm_info(tmp_path)
+    cmd = build_qemu_argv(
+        vm_info,
+        qemu_bin=Path("/usr/bin/qemu-system-x86_64"),
+        boot_args=vm_info.config.boot_args,
+        platform_spec=_LINUX_SPEC,
+        host_system="Linux",
+    )
+    assert not any("vhost-vsock" in arg for arg in cmd)
+
+
 def test_linux_x86_64_darwin_uses_hvf(tmp_path: Path) -> None:
     """Darwin host swaps accel=kvm for accel=hvf; nothing else changes."""
     vm_info = _qemu_vm_info(tmp_path)
@@ -126,11 +181,7 @@ def test_linux_aarch64_kvm_orders_rootdisk_last(tmp_path: Path) -> None:
     )
 
     # Both -device pairs in order: NIC then root disk (root disk must be last).
-    device_pairs = [
-        (cmd[i + 1])
-        for i, tok in enumerate(cmd)
-        if tok == "-device"
-    ]
+    device_pairs = [(cmd[i + 1]) for i, tok in enumerate(cmd) if tok == "-device"]
     assert device_pairs == [
         "virtio-net-device,netdev=net0,mac=52:54:00:12:34:56",
         "virtio-blk-device,drive=rootdisk0-drive",
@@ -163,10 +214,13 @@ def test_firmware_mode_aarch64_needs_uefi_firmware(tmp_path: Path) -> None:
         ),
     )
 
-    with patch(
-        "smolvm.runtime.qemu_args._find_aarch64_uefi_firmware",
-        return_value=None,
-    ), pytest.raises(SmolVMError, match="aarch64 firmware-boot requires UEFI firmware"):
+    with (
+        patch(
+            "smolvm.runtime.qemu_args._find_aarch64_uefi_firmware",
+            return_value=None,
+        ),
+        pytest.raises(SmolVMError, match="aarch64 firmware-boot requires UEFI firmware"),
+    ):
         build_qemu_argv(
             vm_info,
             qemu_bin=Path("/usr/bin/qemu-system-aarch64"),
@@ -181,9 +235,7 @@ def test_missing_ssh_host_port_raises(tmp_path: Path) -> None:
     vm_info = _qemu_vm_info(tmp_path)
     # Pydantic frozen model — swap the network for one without the port.
     vm_info = vm_info.model_copy(
-        update={
-            "network": vm_info.network.model_copy(update={"ssh_host_port": None})
-        }
+        update={"network": vm_info.network.model_copy(update={"ssh_host_port": None})}
     )
     with pytest.raises(SmolVMError, match="ssh_host_port"):
         build_qemu_argv(
@@ -249,10 +301,13 @@ def test_build_windows_spec_raises_on_arm_host() -> None:
 
 def test_build_windows_spec_raises_when_no_ovmf_found() -> None:
     """Missing OVMF Secure Boot firmware raises a plain-English install hint."""
-    with patch(
-        "smolvm.runtime.guest_platforms._find_x86_64_ovmf",
-        return_value=None,
-    ), pytest.raises(ValueError, match="OVMF Secure Boot firmware"):
+    with (
+        patch(
+            "smolvm.runtime.guest_platforms._find_x86_64_ovmf",
+            return_value=None,
+        ),
+        pytest.raises(ValueError, match="OVMF Secure Boot firmware"),
+    ):
         _build_windows_spec(host_system="Linux", arch="x86_64")
 
 
@@ -356,13 +411,9 @@ def test_windows_argv_emits_virtio_scsi_root_and_tpm(tmp_path: Path) -> None:
     assert "virtio-scsi-pci,id=scsi0" in device_args
     assert "scsi-hd,bus=scsi0.0,drive=rootdisk0-drive" in device_args
     # NO legacy virtio-blk-pci attachment for the root disk.
-    assert not any(
-        d.startswith("virtio-blk-pci,drive=rootdisk0") for d in device_args
-    )
+    assert not any(d.startswith("virtio-blk-pci,drive=rootdisk0") for d in device_args)
     # USB topology: controller first, then tablet binding to it.
-    assert device_args.index("qemu-xhci,id=xhci") < device_args.index(
-        "usb-tablet,bus=xhci.0"
-    )
+    assert device_args.index("qemu-xhci,id=xhci") < device_args.index("usb-tablet,bus=xhci.0")
     # TPM CRB device.
     assert "tpm-crb,tpmdev=tpm0" in device_args
     # And the chardev + tpmdev tokens.

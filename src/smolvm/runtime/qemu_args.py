@@ -326,8 +326,7 @@ def build_qemu_argv(
         if platform_spec.requires_swtpm:
             if swtpm_socket is None:
                 raise SmolVMError(
-                    "Guest platform requires swtpm but no socket path was "
-                    "provided.",
+                    "Guest platform requires swtpm but no socket path was provided.",
                     {"guest_os": platform_spec.guest_os.value},
                 )
             cmd.extend(
@@ -353,10 +352,7 @@ def build_qemu_argv(
                     "-device",
                     f"{platform_spec.root_disk_controller},id=scsi0",
                     "-device",
-                    (
-                        f"{platform_spec.root_disk_device},"
-                        f"bus=scsi0.0,drive={root_drive_id}"
-                    ),
+                    (f"{platform_spec.root_disk_device},bus=scsi0.0,drive={root_drive_id}"),
                 ]
             )
 
@@ -369,14 +365,10 @@ def build_qemu_argv(
         # (Windows still sees them as block devices). Non-ISO extras and
         # Linux (None cdrom_bus) keep the legacy virtio-blk-pci wiring.
         ide_port_index = 0
-        for drive_id, drive_path in zip(
-            extra_drive_ids, vm_info.config.extra_drives, strict=True
-        ):
+        for drive_id, drive_path in zip(extra_drive_ids, vm_info.config.extra_drives, strict=True):
             is_iso = drive_path.suffix.lower() == ".iso"
             use_ide = (
-                is_iso
-                and platform_spec.cdrom_bus == "ide"
-                and ide_port_index < _Q35_AHCI_PORTS
+                is_iso and platform_spec.cdrom_bus == "ide" and ide_port_index < _Q35_AHCI_PORTS
             )
             if use_ide:
                 cmd.extend(
@@ -397,5 +389,14 @@ def build_qemu_argv(
         # controllers always come before consumers.
         for device_arg in platform_spec.extra_devices:
             cmd.extend(["-device", device_arg])
+
+    # vsock control-plane device. The guest agent listens on this CID and the
+    # host VsockChannel connects to it. Native vhost-vsock needs the host's
+    # /dev/vhost-vsock, which only exists on Linux — macOS/HVF has no
+    # equivalent, so we emit nothing there and the host stays on SSH. The
+    # device variant differs by machine type (PCI for q35, MMIO for virt).
+    if vm_info.config.vsock is not None and system == "Linux":
+        vsock_device = "vhost-vsock-device" if "aarch64" in qemu_name else "vhost-vsock-pci"
+        cmd.extend(["-device", f"{vsock_device},guest-cid={vm_info.config.vsock.guest_cid}"])
 
     return cmd

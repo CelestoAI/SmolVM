@@ -51,6 +51,19 @@ OPENCLAW_BOOT_ARGS = "reboot=k panic=1 pci=off init=/init 8250.nr_uarts=0"
 
 LOOPFS_HELPER_PATH = Path("/usr/local/libexec/smolvm-loopfs-helper")
 
+# The SmolVM guest agent (vsock control plane). It is baked into every image
+# built here and launched by /init. ``_GUEST_AGENT_SOURCE_PATH`` points at the
+# checked-in agent module; it ships into the build context as
+# ``_GUEST_AGENT_BUILD_FILE`` and lands in the guest at ``_GUEST_AGENT_GUEST_PATH``.
+_GUEST_AGENT_SOURCE_PATH = Path(__file__).resolve().parents[1] / "guest_agent" / "agent.py"
+_GUEST_AGENT_BUILD_FILE = "smolvm-guest-agent"
+_GUEST_AGENT_GUEST_PATH = "/usr/local/bin/smolvm-guest-agent"
+
+
+def _guest_agent_source() -> str:
+    """Return the guest agent source baked into every built image."""
+    return _GUEST_AGENT_SOURCE_PATH.read_text()
+
 
 class ImageBuilder:
     """Builds custom VM images with SSH pre-configured.
@@ -202,12 +215,14 @@ FROM alpine:3.19
 
 ARG SSH_PASSWORD
 
-# Install SSH and networking utilities
+# Install SSH and networking utilities. python3 powers the SmolVM guest
+# agent (vsock control plane); the agent is stdlib-only, so no pip deps.
 RUN apk add --no-cache \\
     openssh \\
     iproute2 \\
     curl \\
-    bash
+    bash \\
+    python3
 
 # Configure SSH. Host keys are generated at first boot in /init, not here,
 # so each VM gets a unique SSH identity — required for safely sharing images.
@@ -424,6 +439,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     curl \\
     bash \\
     ca-certificates \\
+    python3 \\
     && rm -rf /var/lib/apt/lists/*
 
 # Host keys generated at first boot in /init so each VM has unique identity.
@@ -1242,6 +1258,20 @@ fi
 hostname {custom_hostname}
 log_ts "net-ready"
 
+# ── Guest agent (vsock control plane) ───────────────────────
+# Started before sshd and independent of networking, so the host can
+# drive the guest over vsock the moment the kernel is up. Skipped
+# silently if the image has no python3 or the agent wasn't baked in —
+# the host falls back to SSH in that case.
+log_ts "guest-agent-start"
+if command -v python3 >/dev/null 2>&1 && [ -f /usr/local/bin/smolvm-guest-agent ]; then
+    python3 /usr/local/bin/smolvm-guest-agent >/var/log/smolvm-agent.log 2>&1 &
+    echo "SmolVM init: guest agent started (PID=$!)"
+else
+    echo "SmolVM init: guest agent not started (python3 or agent missing)"
+fi
+log_ts "guest-agent-started"
+
 # ── SSH ──────────────────────────────────────────────────────
 log_ts "ssh-hostkey-check-start"
 if ! ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1; then
@@ -1417,6 +1447,9 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
             **fingerprint_data,
             "_dockerfile_sha256": hashlib.sha256(dockerfile_content.encode()).hexdigest(),
             "_init_script_sha256": hashlib.sha256(init_script.encode()).hexdigest(),
+            # The guest agent is injected into every image by _do_build, so an
+            # edit to it must invalidate all cached images.
+            "_guest_agent_sha256": hashlib.sha256(_guest_agent_source().encode()).hexdigest(),
         }
 
     def _check_fingerprint(self, image_dir: Path, data: dict[str, typing.Any]) -> bool:
@@ -1614,12 +1647,27 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
         """Execute the Docker build and image conversion."""
         docker_tag = f"smolvm-{name}"
 
+        # Bake the guest agent into every image. Centralized here so all five
+        # build_* recipes inherit it without each repeating the COPY; /init
+        # launches it (guarded on python3), and the host reaches it over vsock.
+        # Appended after the recipe's own COPY lines — order is irrelevant for
+        # an independent file drop. Its content hash is in the fingerprint via
+        # _fingerprint_with_content, so edits still trigger a rebuild even
+        # though this COPY text is constant.
+        dockerfile_content = (
+            dockerfile_content
+            + "\n# SmolVM guest agent (vsock control plane)\n"
+            + f"COPY {_GUEST_AGENT_BUILD_FILE} {_GUEST_AGENT_GUEST_PATH}\n"
+            + f"RUN chmod +x {_GUEST_AGENT_GUEST_PATH}\n"
+        )
+
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
 
             # Write Dockerfile and init script
             (tmp_path / "Dockerfile").write_text(dockerfile_content)
             (tmp_path / "init").write_text(init_script)
+            (tmp_path / _GUEST_AGENT_BUILD_FILE).write_text(_guest_agent_source())
             if extra_files:
                 for filename, content in extra_files.items():
                     (tmp_path / filename).write_text(content)

@@ -41,6 +41,8 @@ from smolvm.storage._base import (
     IP_POOL_START,
     SSH_PORT_END,
     SSH_PORT_START,
+    VSOCK_CID_END,
+    VSOCK_CID_START,
     browser_session_info_from_row,
     now_iso,
     pool_index_to_ip,
@@ -134,6 +136,15 @@ class SQLiteStateManager:
                 CREATE INDEX IF NOT EXISTS idx_ssh_forwards_vm_id ON ssh_forwards(vm_id);
                 CREATE INDEX IF NOT EXISTS idx_ssh_forwards_host_port
                     ON ssh_forwards(host_port);
+
+                CREATE TABLE IF NOT EXISTS vsock_cids (
+                    vm_id TEXT PRIMARY KEY,
+                    guest_cid INTEGER NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (vm_id) REFERENCES vms(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_vsock_cids_vm_id ON vsock_cids(vm_id);
 
                 CREATE TABLE IF NOT EXISTS browser_sessions (
                     session_id TEXT PRIMARY KEY,
@@ -235,6 +246,7 @@ class SQLiteStateManager:
         vm_id: str,
         *,
         status: VMState | None = None,
+        config: VMConfig | None = None,
         network: NetworkConfig | None = None,
         pid: int | None = None,
         control_socket_path: Path | None = None,
@@ -257,6 +269,9 @@ class SQLiteStateManager:
             if status is not None:
                 updates.append("status = ?")
                 params.append(status.value)
+            if config is not None:
+                updates.append("config = ?")
+                params.append(config.model_dump_json())
             if network is not None:
                 updates.append("network = ?")
                 params.append(network.model_dump_json())
@@ -335,9 +350,7 @@ class SQLiteStateManager:
         now = now_iso()
 
         with self._get_connection(exclusive=True) as conn:
-            existing = conn.execute(
-                "SELECT ip FROM ip_leases WHERE vm_id = ?", (vm_id,)
-            ).fetchone()
+            existing = conn.execute("SELECT ip FROM ip_leases WHERE vm_id = ?", (vm_id,)).fetchone()
             if existing:
                 existing_ip = str(existing["ip"])
                 if requested_ip and existing_ip != requested_ip:
@@ -482,6 +495,79 @@ class SQLiteStateManager:
                 logger.info("Released SSH host port for VM: %s", vm_id)
 
     # ------------------------------------------------------------------
+    # vsock CID allocation
+    # ------------------------------------------------------------------
+
+    def reserve_vsock_cid(self, vm_id: str, guest_cid: int | None = None) -> int:
+        """Reserve a unique guest vsock CID for *vm_id* (idempotent).
+
+        Mirrors :meth:`reserve_ssh_port`: returns the existing CID if the VM
+        already has one, otherwise allocates the lowest free CID in the pool
+        (or *guest_cid* if explicitly requested, e.g. on snapshot restore).
+        """
+        if not vm_id:
+            raise ValueError("vm_id cannot be empty")
+        if guest_cid is not None and guest_cid < VSOCK_CID_START:
+            raise ValueError(f"guest_cid must be >= {VSOCK_CID_START}")
+
+        now = now_iso()
+
+        with self._get_connection(exclusive=True) as conn:
+            existing = conn.execute(
+                "SELECT guest_cid FROM vsock_cids WHERE vm_id = ?", (vm_id,)
+            ).fetchone()
+            if existing:
+                existing_cid = int(existing["guest_cid"])
+                if guest_cid is not None and existing_cid != guest_cid:
+                    raise NetworkError(
+                        f"VM {vm_id} already has vsock CID {existing_cid}, "
+                        f"cannot reserve {guest_cid}"
+                    )
+                return existing_cid
+
+            allocated = conn.execute("SELECT guest_cid FROM vsock_cids").fetchall()
+            allocated_set = {int(row["guest_cid"]) for row in allocated}
+
+            candidate_cids = (
+                [guest_cid] if guest_cid is not None else range(VSOCK_CID_START, VSOCK_CID_END + 1)
+            )
+            for candidate_cid in candidate_cids:
+                if candidate_cid in allocated_set:
+                    continue
+                conn.execute(
+                    "INSERT INTO vsock_cids (vm_id, guest_cid, created_at) VALUES (?, ?, ?)",
+                    (vm_id, candidate_cid, now),
+                )
+                logger.info("Reserved vsock CID %d for VM %s", candidate_cid, vm_id)
+                return candidate_cid
+
+        if guest_cid is not None:
+            raise NetworkError(f"Requested vsock CID {guest_cid} is not available")
+        raise NetworkError("No vsock CIDs available in pool")
+
+    def get_vsock_cid(self, vm_id: str) -> int | None:
+        if not vm_id:
+            raise ValueError("vm_id cannot be empty")
+
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT guest_cid FROM vsock_cids WHERE vm_id = ?", (vm_id,)
+            ).fetchone()
+
+        if row:
+            return int(row["guest_cid"])
+        return None
+
+    def release_vsock_cid(self, vm_id: str) -> None:
+        if not vm_id:
+            raise ValueError("vm_id cannot be empty")
+
+        with self._get_connection(exclusive=True) as conn:
+            result = conn.execute("DELETE FROM vsock_cids WHERE vm_id = ?", (vm_id,))
+            if result.rowcount > 0:
+                logger.info("Released vsock CID for VM: %s", vm_id)
+
+    # ------------------------------------------------------------------
     # Snapshots
     # ------------------------------------------------------------------
 
@@ -573,9 +659,7 @@ class SQLiteStateManager:
             raise ValueError("snapshot_id cannot be empty")
 
         with self._get_connection(exclusive=True) as conn:
-            result = conn.execute(
-                "DELETE FROM snapshots WHERE snapshot_id = ?", (snapshot_id,)
-            )
+            result = conn.execute("DELETE FROM snapshots WHERE snapshot_id = ?", (snapshot_id,))
             if result.rowcount == 0:
                 raise SnapshotNotFoundError(snapshot_id)
 
@@ -742,9 +826,7 @@ class SQLiteStateManager:
                     (status.value,),
                 ).fetchall()
             else:
-                rows = conn.execute(
-                    "SELECT * FROM browser_sessions ORDER BY created_at"
-                ).fetchall()
+                rows = conn.execute("SELECT * FROM browser_sessions ORDER BY created_at").fetchall()
 
         return [browser_session_info_from_row(row) for row in rows]
 
