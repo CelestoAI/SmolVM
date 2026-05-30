@@ -44,7 +44,7 @@ from smolvm.exceptions import ImageError
 from smolvm.images.manager import ImageManager, ImageSource, LocalImage
 
 Arch = Literal["amd64", "arm64"]
-Preset = Literal["codex", "claude-code", "openclaw", "hermes", "pi"]
+Preset = Literal["codex", "claude-code", "openclaw", "hermes", "pi", "ubuntu"]
 # ``libkrun`` is reserved here for a future spike — manifest accepts the type
 # but the CLI never resolves a host to it until libkrun support is wired.
 Vmm = Literal["firecracker", "qemu", "libkrun"]
@@ -169,9 +169,7 @@ def _release_asset_url(preset: Preset, arch: Arch, suffix: str, os: Os = "ubuntu
     artifacts stay reachable. Alpine assets carry an explicit ``-alpine-``
     segment. ``scripts/ci/build-preset.sh`` mirrors this on the upload side.
     """
-    slug = (
-        f"{preset}-{arch}-{suffix}" if os == "ubuntu" else f"{preset}-{arch}-{os}-{suffix}"
-    )
+    slug = f"{preset}-{arch}-{suffix}" if os == "ubuntu" else f"{preset}-{arch}-{os}-{suffix}"
     return f"https://github.com/CelestoAI/SmolVM/releases/download/{IMAGES_RELEASE_TAG}/{slug}"
 
 
@@ -259,6 +257,12 @@ _HERMES_AMD64_ROOTFS_SHA = "cc8658943885f11c86b0616cf7b3351e8672608fa36e29de1577
 _HERMES_ARM64_ROOTFS_SHA = "fa965ae736f92af2ec32dbd8bbb747ee3702e3c265be0753a6d49f0f4439fcba"
 _PI_AMD64_ROOTFS_SHA = "a5b4833971d14e3f9623a816d2d724368b68537529bfb2e10ea02e74ee0d22be"
 _PI_ARM64_ROOTFS_SHA = "6d3aaa5379e70243b583f7c75e428aa84f0b5140483507d4e48855ea6da52e95"
+# Bare Ubuntu base image (no preset install). Fill these in — and uncomment the
+# ``_preset_rows("ubuntu", ...)`` call below — from the first Build Published
+# Images run that bakes the guest agent and publishes
+# ``ubuntu-<arch>-rootfs.ext4.zst`` under the (bumped) IMAGES_RELEASE_TAG.
+# _UBUNTU_AMD64_ROOTFS_SHA = "..."
+# _UBUNTU_ARM64_ROOTFS_SHA = "..."
 
 
 def _preset_rows(
@@ -294,6 +298,12 @@ MANIFEST: dict[ManifestKey, PublishedImage] = {
     **_preset_rows("claude-code", _CLAUDE_CODE_AMD64_ROOTFS_SHA, _CLAUDE_CODE_ARM64_ROOTFS_SHA),
     **_preset_rows("hermes", _HERMES_AMD64_ROOTFS_SHA, _HERMES_ARM64_ROOTFS_SHA),
     **_preset_rows("pi", _PI_AMD64_ROOTFS_SHA, _PI_ARM64_ROOTFS_SHA),
+    # Bare Ubuntu base image (raw-ext4, agent baked in) — enable once CI
+    # publishes ``ubuntu-<arch>-rootfs.ext4.zst`` and we have SHAs to pin.
+    # Powers ``create --os ubuntu`` on firecracker/libkrun (the qemu path
+    # keeps its qcow2 cloud image). Until pinned, that path raises a clear
+    # "not yet published" error.
+    # **_preset_rows("ubuntu", _UBUNTU_AMD64_ROOTFS_SHA, _UBUNTU_ARM64_ROOTFS_SHA),
     # Alpine rows — add once CI publishes ``<preset>-<arch>-alpine-rootfs.ext4.zst``
     # under :data:`IMAGES_RELEASE_TAG` and we have SHAs to pin against.
     # Until then, ``smolvm <preset> start --os alpine`` falls through to
@@ -469,9 +479,7 @@ def ensure_base_kernel(
     entry = catalog.get(arch)
     if entry is None:
         available = ", ".join(sorted(catalog)) or "(none)"
-        raise ImageError(
-            f"No base kernel registered for arch '{arch}' (available: {available})."
-        )
+        raise ImageError(f"No base kernel registered for arch '{arch}' (available: {available}).")
     manager = ImageManager(cache_dir=cache_dir)
     # Cache filename keeps the format suffix so the elf and image artifacts
     # don't collide for the same (version, arch). Same dir is fine — both

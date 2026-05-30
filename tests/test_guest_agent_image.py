@@ -23,6 +23,25 @@ import pytest
 from smolvm.images import builder as builder_mod
 from smolvm.images.builder import ImageBuilder
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_ci_preset_init_launches_guest_agent_before_sshd() -> None:
+    """The CI publish pipeline's /init must launch the agent before sshd,
+    mirroring the Python builder. These two init paths have to stay in sync —
+    PR #310 baked the agent only into the Python builder, which is why
+    published images shipped without it until this fix."""
+    script = (_REPO_ROOT / "scripts" / "ci" / "preset-init.sh").read_text()
+    assert "python3 /usr/local/bin/smolvm-guest-agent" in script
+    assert script.index("smolvm-guest-agent") < script.index("/usr/sbin/sshd")
+
+
+def test_ci_build_preset_bakes_guest_agent() -> None:
+    """build-preset.sh must copy the guest agent into every published rootfs."""
+    script = (_REPO_ROOT / "scripts" / "ci" / "build-preset.sh").read_text()
+    assert "src/smolvm/guest_agent/agent.py" in script
+    assert "/usr/local/bin/smolvm-guest-agent" in script
+
 
 def test_guest_agent_source_is_the_real_agent() -> None:
     source = builder_mod._guest_agent_source()

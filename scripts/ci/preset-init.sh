@@ -127,6 +127,16 @@ if [ -n "$AUTHKEY_B64" ]; then
     fi
 fi
 
+# ── Guest agent (vsock control plane) ────────────────────────
+# Started before sshd and independent of networking, so the host can drive
+# the guest over vsock the moment the kernel is up. Skipped silently if
+# python3 or the agent is missing (the host falls back to SSH in that case).
+# Mirrors _base_init_script() in src/smolvm/images/builder.py.
+if command -v python3 >/dev/null 2>&1 && [ -f /usr/local/bin/smolvm-guest-agent ]; then
+    python3 /usr/local/bin/smolvm-guest-agent >/var/log/smolvm-agent.log 2>&1 &
+    echo "SmolVM init: guest agent started (PID=$!)"
+fi
+
 /usr/sbin/sshd -e &
 
 echo "SmolVM init complete: IP=${GUEST_IP}, SSH listening on port 22"

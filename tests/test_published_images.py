@@ -33,6 +33,7 @@ from smolvm.images.published import (
     Preset,
     PublishedImage,
     _decompress_zstd,
+    _preset_rows,
     cache_name,
     ensure_base_kernel,
     ensure_published_image,
@@ -40,6 +41,23 @@ from smolvm.images.published import (
     lookup,
     to_image_source,
 )
+
+
+def test_ubuntu_rows_share_one_rootfs_across_vmms() -> None:
+    """The bare-Ubuntu image is one rootfs shared by firecracker/qemu/libkrun;
+    only the kernel format differs. Guards the shared-rootfs invariant the
+    `create --os ubuntu` firecracker path relies on."""
+    rows = _preset_rows("ubuntu", "a" * 64, "b" * 64)
+    fc = rows[("ubuntu", "amd64", "firecracker", "ubuntu")]
+    qemu = rows[("ubuntu", "amd64", "qemu", "ubuntu")]
+
+    # Same rootfs bytes + URL for both VMMs.
+    assert fc.rootfs_url == qemu.rootfs_url
+    assert fc.rootfs_sha256 == qemu.rootfs_sha256 == "a" * 64
+    assert fc.rootfs_url.endswith("ubuntu-amd64-rootfs.ext4.zst")
+    # Different kernel format: firecracker=elf, qemu=image.
+    assert fc.kernel_url.endswith(".elf")
+    assert qemu.kernel_url.endswith(".image")
 
 
 @pytest.fixture

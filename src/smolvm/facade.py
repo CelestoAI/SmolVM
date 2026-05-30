@@ -635,7 +635,47 @@ def _build_auto_config(
         raise ValueError("disk_size_mib must be >= 64")
 
     if resolved_os is GuestOS.UBUNTU and resolved_backend != BACKEND_QEMU:
-        raise ValueError("ubuntu auto-config currently requires backend='qemu'")
+        # Firecracker / libkrun can't boot the Ubuntu cloud qcow2 (no qcow2
+        # support, no firmware/bootloader). Pull the published bare-Ubuntu
+        # raw-ext4 rootfs + ELF kernel and boot it direct-kernel, exactly like
+        # the alpine/published path below. The SSH key rides the kernel cmdline
+        # (parsed by the image's /init), not a cloud-init seed.
+        from smolvm.exceptions import ImageError
+        from smolvm.images.published import Vmm, ensure_published_image
+
+        vmm: Vmm = "libkrun" if resolved_backend == BACKEND_LIBKRUN else "firecracker"
+        try:
+            local_image = ensure_published_image(
+                "ubuntu", to_published_arch(platform.machine()), vmm, "ubuntu"
+            )
+        except ImageError as exc:
+            raise SmolVMError(
+                "No bare-Ubuntu image is published for this backend yet; run "
+                "`--os ubuntu` with backend='qemu', or use `--os alpine`."
+            ) from exc
+
+        kernel_profile = KernelBootProfile.MICROVM_DIRECT
+        boot_args = get_boot_profile_spec(kernel_profile).base_boot_args_for_backend(
+            resolved_backend,
+            platform.machine(),
+        )
+        resolved_vm_name = _resolve_vm_name(vm_name, prefix=name_prefix)
+        config = VMConfig(
+            vm_id=resolved_vm_name,
+            vcpu_count=1,
+            memory=resolved_memory,
+            kernel_path=local_image.kernel_path,
+            rootfs_path=local_image.rootfs_path,
+            boot_args=boot_args,
+            backend=resolved_backend,
+            ssh_public_key=public_key_value,
+        )
+        logger.info(
+            "Auto-configured VM: %s (os=ubuntu, backend=%s, source=published-bare-ubuntu)",
+            resolved_vm_name,
+            resolved_backend,
+        )
+        return config, resolved_ssh_key_path
 
     if resolved_os is GuestOS.UBUNTU:
         if resolved_disk_size_mib < default_disk_size_mib:

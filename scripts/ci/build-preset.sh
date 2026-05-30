@@ -19,7 +19,9 @@
 #
 # NOTE: openclaw uses its own builder (build_openclaw_rootfs) which bakes
 # in a custom init script, sidecars, and systemctl proxy. It's not layered
-# through this script. This script handles: codex, claude-code, hermes, pi.
+# through this script. This script handles: codex, claude-code, hermes, pi,
+# and the bare "ubuntu" image (no preset install — just the finalized base
+# rootfs, used for `create --os ubuntu` on firecracker).
 #
 # Runs in CI on a matching-arch runner. Requires: chroot, mount (loop).
 set -euo pipefail
@@ -164,6 +166,14 @@ case "$PRESET" in
     '
     ;;
 
+  ubuntu)
+    # Bare Ubuntu image: nothing to install on top of the base rootfs. The
+    # shared finalize below (install /init + bake the guest agent) is all it
+    # needs. Gives firecracker a raw-ext4 Ubuntu so `create --os ubuntu`
+    # works download-only (no qcow2, which firecracker can't read).
+    echo "==> Bare ubuntu image — no preset install."
+    ;;
+
   *)
     echo "Unknown preset: $PRESET"
     exit 1
@@ -175,6 +185,14 @@ esac
 # the launching user's pubkey into /root/.ssh/authorized_keys at boot.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 install -m 0755 "$SCRIPT_DIR/preset-init.sh" "$MNT/init"
+
+# Bake the SmolVM guest agent (vsock control plane) into every published
+# image. preset-init.sh launches it before sshd (guarded on python3), so the
+# host can drive the guest over vsock. Mirrors the Python ImageBuilder, which
+# bakes the same file via the _GUEST_AGENT_* constants in
+# src/smolvm/images/builder.py — keep the guest path in sync with that.
+install -D -m 0755 "$SCRIPT_DIR/../../src/smolvm/guest_agent/agent.py" \
+  "$MNT/usr/local/bin/smolvm-guest-agent"
 
 # Restore (or remove) /etc/resolv.conf so the runner's DNS doesn't leak
 # into the published rootfs. The init script writes 8.8.8.8 / 8.8.4.4 at

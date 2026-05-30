@@ -288,15 +288,20 @@ jobs:
       fail-fast: false
       matrix:
         arch: [amd64, arm64]
-        preset: [codex, claude-code, hermes, pi]
+        # "ubuntu" is the bare base image (no preset install) — gives
+        # firecracker a raw-ext4 Ubuntu for `create --os ubuntu`.
+        preset: [codex, claude-code, hermes, pi, ubuntu]
         os: [ubuntu, alpine]
         # Phase 1 of the Alpine rollout (#264) excludes hermes — its
         # ``[all]`` extras pull manylinux2014 wheels that don't have
         # musllinux variants, so the install would fall back to slow
         # source builds with sometimes-broken results. Re-enable when
-        # we have a curated minimal extras set.
+        # we have a curated minimal extras set. The bare "ubuntu" image is
+        # Ubuntu-only — there's no bare-Alpine published image yet.
         exclude:
           - preset: hermes
+            os: alpine
+          - preset: ubuntu
             os: alpine
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     timeout-minutes: 20
