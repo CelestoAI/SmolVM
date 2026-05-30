@@ -135,7 +135,7 @@ class BaseKernel(BaseModel):
 # upload step instead of silently swapping bytes under the existing
 # pins. Re-bakes against the same tag must opt in via the
 # ``force_overwrite`` workflow_dispatch input.
-IMAGES_RELEASE_TAG = "images-v0.0.14"
+IMAGES_RELEASE_TAG = "images-v0.0.16"
 
 
 def cache_name(
@@ -199,16 +199,16 @@ BASE_KERNELS: dict[Arch, BaseKernel] = {
     "amd64": BaseKernel(
         arch="amd64",
         elf_url=_release_kernel_url("amd64", "elf"),
-        elf_sha256="18f11160fcf0dd329207faea7ed9af4f6fe0bdc7307c1e132dd3db7f02914a18",
+        elf_sha256="57db0d8ae115aeb6d5d2ca599aceae3251c57b62dc62c1c9fe0bd8ecb24ee553",
         image_url=_release_kernel_url("amd64", "image"),
-        image_sha256="ceac26ef7218ee907a0f0108fa4f30f95da3c8ab1c87056a85760f8d15fac801",
+        image_sha256="cd9e911f4e07a116b500331237a55d6c877d645b1a7eaf7a279be04a7f801437",
     ),
     "arm64": BaseKernel(
         arch="arm64",
         elf_url=_release_kernel_url("arm64", "elf"),
-        elf_sha256="b8b319c5253bcf9930cc0c3e75df76298a4a741441d83b8c3ad0a87b2c7ad2ba",
+        elf_sha256="537058a71feb49b2e27742e1908038a92e98efc3cb7161fa477611c351c0208c",
         image_url=_release_kernel_url("arm64", "image"),
-        image_sha256="0a4d0f69f07070c344b0301de541b50e3bde6c5d39a134869b8f57cf8add389c",
+        image_sha256="f20ae22346d9fe2f68749456b156c91eb21c21859562cd62592dd8d04a4b80bf",
     ),
 }
 
@@ -247,22 +247,19 @@ def _manifest_row(
 # Rootfs SHAs from the Build Published Images run for IMAGES_RELEASE_TAG.
 # Captured by sha256sum'ing each ``<preset>-<arch>-rootfs.ext4.zst`` asset
 # on the release page. Update together when artifacts are rebuilt.
-_OPENCLAW_AMD64_ROOTFS_SHA = "33dcae2a9ea9ce29ffc0ccdf6103aaf7c0a93dd28b9be6322e1306d6f9c53a77"
-_OPENCLAW_ARM64_ROOTFS_SHA = "8655dd10c77a16e57abaf83d4868653fedaba63688a959931872ac79a7f8091e"
-_CODEX_AMD64_ROOTFS_SHA = "5577b6c00a0bdb3eccfe9f226f991389ac1f744193185550e5dd5fc9f1d0d757"
-_CODEX_ARM64_ROOTFS_SHA = "557f94b422f24a59f03408580eb5c687a4229e77f8f20ed9e4bc82b9b14c880b"
-_CLAUDE_CODE_AMD64_ROOTFS_SHA = "e10af2cd958481ce39c7aa7b39d3e43fc98dba8f7071457f71752bb00752627e"
-_CLAUDE_CODE_ARM64_ROOTFS_SHA = "044095c154304077713291af53a57825cdc9f3fc7505dddb57af9cf92af39c71"
-_HERMES_AMD64_ROOTFS_SHA = "cc8658943885f11c86b0616cf7b3351e8672608fa36e29de157767ac1a3a06f4"
-_HERMES_ARM64_ROOTFS_SHA = "fa965ae736f92af2ec32dbd8bbb747ee3702e3c265be0753a6d49f0f4439fcba"
-_PI_AMD64_ROOTFS_SHA = "a5b4833971d14e3f9623a816d2d724368b68537529bfb2e10ea02e74ee0d22be"
-_PI_ARM64_ROOTFS_SHA = "6d3aaa5379e70243b583f7c75e428aa84f0b5140483507d4e48855ea6da52e95"
-# Bare Ubuntu base image (no preset install). Fill these in — and uncomment the
-# ``_preset_rows("ubuntu", ...)`` call below — from the first Build Published
-# Images run that bakes the guest agent and publishes
-# ``ubuntu-<arch>-rootfs.ext4.zst`` under the (bumped) IMAGES_RELEASE_TAG.
-# _UBUNTU_AMD64_ROOTFS_SHA = "..."
-# _UBUNTU_ARM64_ROOTFS_SHA = "..."
+_OPENCLAW_AMD64_ROOTFS_SHA = "4524d4c1f8c1c3bfeea521ae0af595fcb1df6d24eea4f9087f5656682049b927"
+_OPENCLAW_ARM64_ROOTFS_SHA = "c3ae4380733263390c0c7630353c2a1cf417a71c3a866705bff48cb3b0c87b38"
+_CODEX_AMD64_ROOTFS_SHA = "dbd1b02a96989dba161d49d34f2eb6b78ffdc612622b2932c2715cc7ff12c7dd"
+_CODEX_ARM64_ROOTFS_SHA = "8b0cff275c837bb1c7a8959f23b90c53ff3b09d8eb18650372c720ab03dd5903"
+_CLAUDE_CODE_AMD64_ROOTFS_SHA = "261d283e6025b76ae26ad73a4870b43cb0f5b206c58e2641a33b9b17095b329e"
+_CLAUDE_CODE_ARM64_ROOTFS_SHA = "c54c3b5ec866eff1a9360f1f55414847a029f179777d2bbd52e7b3e801affcfb"
+_HERMES_AMD64_ROOTFS_SHA = "4dd7b27139bf359f452c447518aac9c9dea712c8122e93636df4c7594c1b13be"
+_HERMES_ARM64_ROOTFS_SHA = "fb0174fa22248b2abc50cb4cf0537087bcfb51f78c17fe4b57d2f7c96c076d4c"
+_PI_AMD64_ROOTFS_SHA = "e45dd13c08c4b0a19e2663e8dcf88be2a8958ec4e1afebc9d181402547d02750"
+_PI_ARM64_ROOTFS_SHA = "2162ce84a78dd9d4cd153e81f43b154f5ebb9caaa497a9d20014aafcdf65fd69"
+# Bare Ubuntu base image (no preset install) — raw-ext4, agent baked in.
+_UBUNTU_AMD64_ROOTFS_SHA = "090ff2345bc36bebcc37352e293fe9a847ed7a1dc306f0e9bae3b2119a939626"
+_UBUNTU_ARM64_ROOTFS_SHA = "ef8f7792cd85355384fc07e21b6f899a91c8cabc37d160a4b51c52286b9d2e28"
 
 
 def _preset_rows(
@@ -298,12 +295,10 @@ MANIFEST: dict[ManifestKey, PublishedImage] = {
     **_preset_rows("claude-code", _CLAUDE_CODE_AMD64_ROOTFS_SHA, _CLAUDE_CODE_ARM64_ROOTFS_SHA),
     **_preset_rows("hermes", _HERMES_AMD64_ROOTFS_SHA, _HERMES_ARM64_ROOTFS_SHA),
     **_preset_rows("pi", _PI_AMD64_ROOTFS_SHA, _PI_ARM64_ROOTFS_SHA),
-    # Bare Ubuntu base image (raw-ext4, agent baked in) — enable once CI
-    # publishes ``ubuntu-<arch>-rootfs.ext4.zst`` and we have SHAs to pin.
-    # Powers ``create --os ubuntu`` on firecracker/libkrun (the qemu path
-    # keeps its qcow2 cloud image). Until pinned, that path raises a clear
-    # "not yet published" error.
-    # **_preset_rows("ubuntu", _UBUNTU_AMD64_ROOTFS_SHA, _UBUNTU_ARM64_ROOTFS_SHA),
+    # Bare Ubuntu base image (raw-ext4, agent baked in) — powers
+    # ``create --os ubuntu`` on firecracker/libkrun (the qemu path keeps its
+    # qcow2 cloud image). Same rootfs shared across vmms; only the kernel differs.
+    **_preset_rows("ubuntu", _UBUNTU_AMD64_ROOTFS_SHA, _UBUNTU_ARM64_ROOTFS_SHA),
     # Alpine rows — add once CI publishes ``<preset>-<arch>-alpine-rootfs.ext4.zst``
     # under :data:`IMAGES_RELEASE_TAG` and we have SHAs to pin against.
     # Until then, ``smolvm <preset> start --os alpine`` falls through to
