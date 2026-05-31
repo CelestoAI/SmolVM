@@ -59,6 +59,12 @@ def copy_with_reflink(source_path: Path, target_path: Path) -> None:
         check=False,
     )
     if result.returncode != 0:
+        logger.debug(
+            "cp --reflink failed for %s -> %s; falling back to a regular copy: %s",
+            source_path,
+            target_path,
+            (result.stderr or "").strip(),
+        )
         shutil.copy2(source_path, target_path)
 
 

@@ -1323,10 +1323,17 @@ class SmolVM:
                 changed since the base image to save space.
             resume_source: Keep this VM running after the snapshot is taken.
         """
+        try:
+            resolved_snapshot_type = SnapshotType(snapshot_type)
+        except ValueError as exc:
+            allowed = ", ".join(repr(t.value) for t in SnapshotType)
+            raise ValueError(
+                f"snapshot_type must be one of {allowed}; got {snapshot_type!r}"
+            ) from exc
         snapshot_info = self._sdk.create_snapshot(
             self._vm_id,
             snapshot_id=snapshot_id,
-            snapshot_type=SnapshotType(snapshot_type),
+            snapshot_type=resolved_snapshot_type,
             resume_source=resume_source,
         )
         self._refresh_info()

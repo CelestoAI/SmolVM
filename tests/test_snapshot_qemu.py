@@ -435,22 +435,24 @@ def test_create_qemu_diff_snapshot_records_type(
     qemu_config: VMConfig,
     tmp_path: Path,
 ) -> None:
-    """A diff QEMU snapshot records its type and still captures the disk.
-
-    The diff path keeps the thin qcow2 overlay (only changed clusters) when the
-    managed disk has a backing chain. In this unit harness the managed disk is a
-    plain stand-in file with no backing file, so the diff copy falls back to a
-    self-contained copy — which is the documented behavior.
-    """
+    """A diff QEMU snapshot records its type and takes the overlay copy path."""
     _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
 
-    with patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls:
+    with (
+        patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls,
+        patch.object(
+            QemuRuntimeAdapter,
+            "_copy_disk_overlay",
+            side_effect=lambda source, dest: dest.write_text(Path(source).read_text()),
+        ) as mock_overlay,
+    ):
         mock_client = _mock_qmp_client()
         mock_client_cls.return_value = mock_client
         snapshot = qemu_smol_vm.create_snapshot(
             "vm001", snapshot_id="snap-diff", snapshot_type=SnapshotType.DIFF
         )
 
+    mock_overlay.assert_called_once()
     persisted = qemu_smol_vm.state.get_snapshot("snap-diff")
     assert snapshot.snapshot_type is SnapshotType.DIFF
     assert persisted.snapshot_type is SnapshotType.DIFF

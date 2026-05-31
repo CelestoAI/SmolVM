@@ -93,7 +93,11 @@ def snapshot_info_from_row(row: Any) -> SnapshotInfo:
         raw_snapshot_type = row["snapshot_type"]
     except (KeyError, IndexError):
         raw_snapshot_type = None
-    snapshot_type = SnapshotType(raw_snapshot_type) if raw_snapshot_type else SnapshotType.FULL
+    try:
+        snapshot_type = SnapshotType(raw_snapshot_type) if raw_snapshot_type else SnapshotType.FULL
+    except ValueError:
+        # Unknown value persisted by a newer/other writer — treat as full.
+        snapshot_type = SnapshotType.FULL
     return SnapshotInfo(
         snapshot_id=row["snapshot_id"],
         vm_id=row["vm_id"],

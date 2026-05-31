@@ -545,6 +545,37 @@ class QemuRuntimeAdapter(RuntimeAdapter):
         return Path(backing) if backing else None
 
     @staticmethod
+    def _qcow2_disk_format(disk: Path) -> str | None:
+        """Return the image format qemu-img reports for *disk*, or ``None``.
+
+        Used to pass an accurate ``-F`` (backing format) to ``qemu-img rebase``
+        instead of guessing from the file extension. Returns ``None`` — letting
+        the caller fall back to the extension heuristic — when qemu-img is
+        unavailable, errors, or omits the field.
+        """
+        qemu_img = which("qemu-img")
+        if qemu_img is None:
+            return None
+        info = subprocess.run(
+            [str(qemu_img), "info", "--output=json", str(disk)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if info.returncode != 0:
+            logger.warning(
+                "qemu-img info failed for backing file %s; guessing its format "
+                "from the extension instead: %s",
+                disk,
+                info.stderr.strip(),
+            )
+            return None
+        try:
+            return json.loads(info.stdout).get("format")
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
     def _copy_disk_overlay(source: Path, dest: Path) -> None:
         """Copy a qcow2 overlay for a diff snapshot, keeping its backing chain.
 
@@ -573,6 +604,9 @@ class QemuRuntimeAdapter(RuntimeAdapter):
         qemu_img = which("qemu-img")
         if qemu_img is None:
             return
+        backing_fmt = QemuRuntimeAdapter._qcow2_disk_format(backing) or (
+            "qcow2" if backing.suffix == ".qcow2" else "raw"
+        )
         rebase = subprocess.run(
             [
                 str(qemu_img),
@@ -581,7 +615,7 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                 "-b",
                 str(backing.resolve()),
                 "-F",
-                "qcow2" if backing.suffix == ".qcow2" else "raw",
+                backing_fmt,
                 str(dest),
             ],
             capture_output=True,
