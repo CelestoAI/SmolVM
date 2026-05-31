@@ -34,7 +34,8 @@ from smolvm.runtime.base import (
     SnapshotCreateResult,
     SnapshotRestoreRequest,
 )
-from smolvm.types import SnapshotArtifacts, VMInfo, VMState
+from smolvm.types import SnapshotArtifacts, SnapshotType, VMInfo, VMState
+from smolvm.utils import copy_with_reflink
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,9 @@ class FirecrackerRuntimeAdapter(RuntimeAdapter):
             process = self._context.start_firecracker(control_socket_path, log_path)
             client = FirecrackerClient(control_socket_path)
             client.wait_for_socket(timeout=boot_timeout)
-            client.set_boot_source(vm_info.config.kernel_path, self._context.resolve_boot_args(vm_info))
+            client.set_boot_source(
+                vm_info.config.kernel_path, self._context.resolve_boot_args(vm_info)
+            )
             client.set_machine_config(vm_info.config.vcpu_count, vm_info.config.memory)
             client.add_drive(
                 "rootfs",
@@ -163,7 +166,14 @@ class FirecrackerRuntimeAdapter(RuntimeAdapter):
             client.close()
 
     def create_snapshot(self, request: SnapshotCreateRequest) -> SnapshotCreateResult:
-        """Create a Firecracker full snapshot and copy the managed disk."""
+        """Create a Firecracker snapshot and copy the managed disk.
+
+        The Firecracker VM state and guest memory are always captured in full
+        so the snapshot restores on its own. ``snapshot_type=DIFF`` only
+        changes how the disk is copied: a copy-on-write reflink clone that
+        shares unchanged blocks with the source on CoW filesystems, instead of
+        a full byte-for-byte copy.
+        """
         vm_info = request.vm_info
         client = self._require_client(vm_info)
         try:
@@ -175,7 +185,10 @@ class FirecrackerRuntimeAdapter(RuntimeAdapter):
                 client.pause_vm()
 
             client.create_snapshot(state_path, memory_path, snapshot_type="Full")
-            shutil.copy2(request.managed_disk_path, disk_path)
+            if request.snapshot_type == SnapshotType.DIFF:
+                copy_with_reflink(request.managed_disk_path, disk_path)
+            else:
+                shutil.copy2(request.managed_disk_path, disk_path)
             return SnapshotCreateResult(
                 artifacts=SnapshotArtifacts(
                     state_path=state_path,

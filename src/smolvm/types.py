@@ -54,6 +54,19 @@ class GuestOS(str, Enum):
     WINDOWS = "windows"
 
 
+class SnapshotType(str, Enum):
+    """How much of a VM's disk a snapshot stores.
+
+    ``FULL`` (the default) writes a complete, self-contained copy of the
+    disk, so the snapshot can be restored on its own. ``DIFF`` stores only
+    the data that changed since the shared base image, which is much smaller
+    but means the snapshot depends on that base image still being present.
+    """
+
+    FULL = "full"
+    DIFF = "diff"
+
+
 def _generate_vm_id() -> str:
     """Generate a VM identifier compatible with VMConfig validation."""
     return generate_sandbox_name()
@@ -653,6 +666,7 @@ class SnapshotInfo(BaseModel):
     vm_config: VMConfig
     network_config: NetworkConfig
     created_at: datetime
+    snapshot_type: SnapshotType = SnapshotType.FULL
     restored: bool = False
     restored_vm_id: str | None = None
 

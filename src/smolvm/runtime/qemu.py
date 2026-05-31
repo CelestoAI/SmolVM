@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import platform
@@ -40,7 +41,7 @@ from smolvm.runtime.base import (
     SnapshotRestoreRequest,
 )
 from smolvm.runtime.guest_platforms import GuestPlatformSpec, get_guest_platform
-from smolvm.types import GuestOS, SnapshotArtifacts, VMInfo, VMState
+from smolvm.types import GuestOS, SnapshotArtifacts, SnapshotType, VMInfo, VMState
 from smolvm.utils import which
 
 logger = logging.getLogger(__name__)
@@ -170,10 +171,7 @@ class _SwtpmSidecar:
                 with suppress(ProcessLookupError, OSError):
                     os.kill(pid, signal.SIGTERM)
                 deadline = time.time() + 5.0
-                while (
-                    time.time() < deadline
-                    and self._context.is_process_running(pid)
-                ):
+                while time.time() < deadline and self._context.is_process_running(pid):
                     time.sleep(0.05)
                 if self._context.is_process_running(pid):
                     with suppress(ProcessLookupError, OSError):
@@ -335,7 +333,10 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                 snapshot_saved = True
 
                 disk_path = request.snapshot_root / "disk.qcow2"
-                self._copy_disk_standalone(request.managed_disk_path, disk_path)
+                if request.snapshot_type == SnapshotType.DIFF:
+                    self._copy_disk_overlay(request.managed_disk_path, disk_path)
+                else:
+                    self._copy_disk_standalone(request.managed_disk_path, disk_path)
 
                 delete_job_id = f"snapshot-delete-{request.snapshot_id}"
                 client.snapshot_delete(delete_job_id, request.snapshot_id, [QEMU_ROOT_NODE_NAME])
@@ -375,6 +376,16 @@ class QemuRuntimeAdapter(RuntimeAdapter):
 
         request.managed_disk_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(snapshot.artifacts.disk_path, request.managed_disk_path)
+
+        if snapshot.snapshot_type == SnapshotType.DIFF:
+            backing = self._qcow2_backing_file(request.managed_disk_path)
+            if backing is not None and not backing.exists():
+                raise SmolVMError(
+                    "This space-saving snapshot needs its original base image, "
+                    f"which is missing: '{backing}'. Restore that file, or take a "
+                    "full snapshot next time with '--snapshot-type full'.",
+                    {"snapshot_id": snapshot.snapshot_id, "backing_file": str(backing)},
+                )
 
         control_socket_path = self._control_socket_path(snapshot.vm_id)
         if control_socket_path.exists():
@@ -476,9 +487,7 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                 text=True,
                 check=False,
             )
-            has_backing = (
-                info_result.returncode == 0 and "backing-filename" in info_result.stdout
-            )
+            has_backing = info_result.returncode == 0 and "backing-filename" in info_result.stdout
 
             if has_backing:
                 logger.info(
@@ -509,6 +518,81 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                 )
 
         shutil.copy2(source, dest)
+
+    @staticmethod
+    def _qcow2_backing_file(disk: Path) -> Path | None:
+        """Return the absolute backing-file path of a qcow2 disk, if any.
+
+        Returns ``None`` when the disk has no backing file or when its layout
+        cannot be read (e.g. ``qemu-img`` is unavailable).
+        """
+        qemu_img = which("qemu-img")
+        if qemu_img is None:
+            return None
+        info = subprocess.run(
+            [str(qemu_img), "info", "--output=json", str(disk)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if info.returncode != 0:
+            return None
+        try:
+            data = json.loads(info.stdout)
+        except (ValueError, TypeError):
+            return None
+        backing = data.get("full-backing-filename") or data.get("backing-filename")
+        return Path(backing) if backing else None
+
+    @staticmethod
+    def _copy_disk_overlay(source: Path, dest: Path) -> None:
+        """Copy a qcow2 overlay for a diff snapshot, keeping its backing chain.
+
+        Unlike :meth:`_copy_disk_standalone`, this preserves the thin overlay's
+        link to the shared base image, so the snapshot stores only the clusters
+        that changed since the base — much smaller, at the cost of depending on
+        the base image still being present at restore time. The copy keeps any
+        QEMU internal VM-state snapshot the overlay carries.
+
+        When the source has no backing file there is nothing to diff against,
+        so this falls back to a self-contained copy.
+        """
+        backing = QemuRuntimeAdapter._qcow2_backing_file(source)
+        if backing is None:
+            logger.info(
+                "qcow2 has no backing file; writing a full snapshot instead of diff: %s",
+                source,
+            )
+            QemuRuntimeAdapter._copy_disk_standalone(source, dest)
+            return
+
+        shutil.copy2(source, dest)
+
+        # Re-point the copied overlay at the base by absolute path so it
+        # resolves from the snapshot directory regardless of the cwd.
+        qemu_img = which("qemu-img")
+        if qemu_img is None:
+            return
+        rebase = subprocess.run(
+            [
+                str(qemu_img),
+                "rebase",
+                "-u",
+                "-b",
+                str(backing.resolve()),
+                "-F",
+                "qcow2" if backing.suffix == ".qcow2" else "raw",
+                str(dest),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if rebase.returncode != 0:
+            logger.warning(
+                "qemu-img rebase failed for diff snapshot; backing path left as-is: %s",
+                rebase.stderr.strip(),
+            )
 
     def _client(self, control_socket_path: Path | None, timeout: float = 5.0) -> QMPClient:
         """Connect a QMP client for a runtime control socket."""

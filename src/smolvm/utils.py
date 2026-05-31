@@ -26,10 +26,7 @@ from smolvm.exceptions import SmolVMError
 
 logger = logging.getLogger(__name__)
 
-RUNTIME_PRIVILEGE_SETUP_HINT = (
-    "Configure non-interactive runtime privileges once:\n"
-    "  smolvm setup"
-)
+RUNTIME_PRIVILEGE_SETUP_HINT = "Configure non-interactive runtime privileges once:\n  smolvm setup"
 
 
 def _is_sudo_non_interactive_error(stderr: str) -> bool:
@@ -43,6 +40,26 @@ def _is_sudo_non_interactive_error(stderr: str) -> bool:
         "may not run sudo",
     )
     return any(pattern in text for pattern in patterns)
+
+
+def copy_with_reflink(source_path: Path, target_path: Path) -> None:
+    """Copy a file using a copy-on-write reflink when the filesystem allows it.
+
+    On CoW filesystems (btrfs, XFS with reflinks, ZFS, APFS) the new file
+    shares its blocks with the source, so the copy is near-instant and costs
+    almost no extra space regardless of file size. Later writes to either file
+    allocate fresh blocks, so the copy stays an independent, point-in-time
+    image. On filesystems or platforms without reflink support (for example,
+    macOS ``cp`` has no ``--reflink`` flag) this falls back to a regular copy.
+    """
+    result = subprocess.run(
+        ["cp", "--reflink=auto", str(source_path), str(target_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        shutil.copy2(source_path, target_path)
 
 
 def run_command(
@@ -168,9 +185,7 @@ async def async_run_command(
                 f"{RUNTIME_PRIVILEGE_SETUP_HINT}\n"
                 f"sudo stderr: {stderr_str.strip()}"
             )
-        raise SmolVMError(
-            f"Command failed: {' '.join(full_cmd)}\nstderr: {stderr_str}"
-        )
+        raise SmolVMError(f"Command failed: {' '.join(full_cmd)}\nstderr: {stderr_str}")
 
     return subprocess.CompletedProcess(
         args=full_cmd,

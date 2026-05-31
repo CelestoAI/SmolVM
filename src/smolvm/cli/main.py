@@ -48,7 +48,7 @@ from smolvm.cli.cleanup import add_cleanup_args, add_delete_args, run_cleanup, r
 from smolvm.cli.output import console_stdout, emit_json, render_empty, render_error, status_style
 from smolvm.cli.version_check import maybe_print_update_notice
 from smolvm.host.doctor import run_doctor
-from smolvm.types import BrowserSessionState, GuestOS, VMState
+from smolvm.types import BrowserSessionState, GuestOS, SnapshotType, VMState
 
 if TYPE_CHECKING:
     from smolvm.images.published import Arch, Vmm
@@ -193,6 +193,7 @@ class SnapshotRow(TypedDict):
     snapshot_id: str
     vm_id: str
     backend: str
+    snapshot_type: str
     restored: bool
     restored_vm_id: str | None
     created_at: str
@@ -888,6 +889,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--snapshot-id",
         default=None,
         help="Custom snapshot name (default: auto-generated).",
+    )
+    snapshot_create.add_argument(
+        "--snapshot-type",
+        choices=[t.value for t in SnapshotType],
+        default=SnapshotType.FULL.value,
+        help=(
+            "How much disk to store. 'full' (default) is a self-contained copy "
+            "that always restores on its own. 'diff' stores only what changed "
+            "since the base image to save space, but needs that base image to "
+            "stay present."
+        ),
     )
     snapshot_create.add_argument(
         "--resume-source",
@@ -2582,6 +2594,7 @@ def _snapshot_row(snapshot: SnapshotInfo) -> SnapshotRow:
         "snapshot_id": snapshot.snapshot_id,
         "vm_id": snapshot.vm_id,
         "backend": snapshot.backend,
+        "snapshot_type": snapshot.snapshot_type.value,
         "restored": snapshot.restored,
         "restored_vm_id": snapshot.restored_vm_id,
         "created_at": snapshot.created_at.isoformat(),
@@ -2603,6 +2616,7 @@ def _render_snapshot_list(rows: list[SnapshotRow]) -> None:
     table.add_column("Snapshot")
     table.add_column("VM")
     table.add_column("Backend")
+    table.add_column("Type")
     table.add_column("Restored")
     table.add_column("Restored VM")
     for row in rows:
@@ -2610,6 +2624,7 @@ def _render_snapshot_list(rows: list[SnapshotRow]) -> None:
             row["snapshot_id"],
             row["vm_id"],
             row["backend"],
+            row["snapshot_type"],
             "yes" if row["restored"] else "no",
             row["restored_vm_id"] or "-",
         )
@@ -2784,6 +2799,7 @@ def _run_snapshot(args: argparse.Namespace) -> int:
             vm = SmolVM.from_id(args.vm_id)
             snapshot = vm.snapshot(
                 snapshot_id=args.snapshot_id,
+                snapshot_type=args.snapshot_type,
                 resume_source=args.resume_source,
             )
             row = _snapshot_row(snapshot)

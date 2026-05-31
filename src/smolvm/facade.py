@@ -83,6 +83,7 @@ from smolvm.types import (
     GuestOS,
     InternetSettings,
     SnapshotInfo,
+    SnapshotType,
     VMConfig,
     VMInfo,
     VMState,
@@ -1310,12 +1311,22 @@ class SmolVM:
         self,
         snapshot_id: str | None = None,
         *,
+        snapshot_type: SnapshotType | str = SnapshotType.FULL,
         resume_source: bool = False,
     ) -> SnapshotInfo:
-        """Create a snapshot for the VM."""
+        """Create a snapshot for the VM.
+
+        Args:
+            snapshot_id: Optional custom snapshot name.
+            snapshot_type: ``"full"`` (default) for a self-contained copy that
+                always restores on its own, or ``"diff"`` to store only what
+                changed since the base image to save space.
+            resume_source: Keep this VM running after the snapshot is taken.
+        """
         snapshot_info = self._sdk.create_snapshot(
             self._vm_id,
             snapshot_id=snapshot_id,
+            snapshot_type=SnapshotType(snapshot_type),
             resume_source=resume_source,
         )
         self._refresh_info()

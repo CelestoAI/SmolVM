@@ -72,6 +72,15 @@ Firecracker attaches them as `data_drive`, `data_drive_1`, etc. QEMU uses additi
 | **Memory file** | `mem.bin` | included in QEMU snapshot |
 | **Disk file** | `disk.ext4` | `disk.qcow2` |
 
+### Snapshot types: full vs diff
+
+When you create a snapshot you can choose how much of the disk to store with `--snapshot-type` (CLI) or `snapshot_type=` (SDK):
+
+- **`full`** (default): a complete, self-contained copy of the disk. It restores on its own even if the original base image is gone — the safest, most portable choice, and the right default for everyday use.
+- **`diff`**: stores only what changed since the shared base image, so it takes far less space. On QEMU the snapshot keeps the thin qcow2 overlay; on Firecracker the disk is cloned with a copy-on-write reflink on filesystems that support it (btrfs, XFS, ZFS, APFS), falling back to a full copy elsewhere. The trade-off: a diff snapshot needs its base image to still be present to restore. Best for production systems that take many snapshots and keep their base images in place.
+
+On Firecracker the VM state and memory files are always captured in full; `diff` only changes how the disk is stored.
+
 ---
 
 ## Built-in Images

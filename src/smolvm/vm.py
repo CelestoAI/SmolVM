@@ -63,6 +63,7 @@ from smolvm.types import (
     GuestOS,
     NetworkConfig,
     SnapshotInfo,
+    SnapshotType,
     VMConfig,
     VMInfo,
     VMState,
@@ -1258,9 +1259,16 @@ class SmolVMManager:
         vm_id: str,
         snapshot_id: str | None = None,
         *,
+        snapshot_type: SnapshotType = SnapshotType.FULL,
         resume_source: bool = False,
     ) -> SnapshotInfo:
-        """Create a full snapshot for a paused or running VM."""
+        """Create a snapshot for a paused or running VM.
+
+        ``snapshot_type`` controls how the disk is stored. ``FULL`` (the
+        default) writes a self-contained copy that always restores on its own.
+        ``DIFF`` stores only what changed since the shared base image, which is
+        much smaller but depends on that base image still being present.
+        """
         if not vm_id:
             raise ValueError("vm_id cannot be empty")
 
@@ -1300,6 +1308,7 @@ class SmolVMManager:
                     managed_disk_path=managed_disk_path,
                     resume_source=resume_source,
                     original_status=original_status,
+                    snapshot_type=snapshot_type,
                 )
             )
 
@@ -1311,6 +1320,7 @@ class SmolVMManager:
                 vm_config=vm_info.config,
                 network_config=vm_info.network,
                 created_at=datetime.now(timezone.utc),
+                snapshot_type=snapshot_type,
             )
             self.state.create_snapshot(snapshot_info)
             snapshot_persisted = True

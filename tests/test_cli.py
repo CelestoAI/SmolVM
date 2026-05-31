@@ -28,7 +28,13 @@ from smolvm.cli.main import (
     build_parser,
     main,
 )
-from smolvm.types import BrowserSessionState, NetworkConfig, VMState, WorkspaceMount
+from smolvm.types import (
+    BrowserSessionState,
+    NetworkConfig,
+    SnapshotType,
+    VMState,
+    WorkspaceMount,
+)
 
 
 def _make_vm_info(
@@ -89,6 +95,7 @@ def _make_snapshot_info(
     snapshot.snapshot_id = snapshot_id
     snapshot.vm_id = vm_id
     snapshot.backend = backend
+    snapshot.snapshot_type = SnapshotType.FULL
     snapshot.restored = restored
     snapshot.restored_vm_id = restored_vm_id
     snapshot.created_at = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
@@ -1421,7 +1428,9 @@ class TestCliSnapshot:
 
         assert ret == 0
         mock_vm_cls.from_id.assert_called_once_with("vm001")
-        vm.snapshot.assert_called_once_with(snapshot_id="snap-001", resume_source=False)
+        vm.snapshot.assert_called_once_with(
+            snapshot_id="snap-001", snapshot_type="full", resume_source=False
+        )
         vm.close.assert_called_once()
         out = capsys.readouterr().out
         assert "Created snapshot 'snap-001'" in out

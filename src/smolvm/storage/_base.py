@@ -26,6 +26,7 @@ from smolvm.types import (
     NetworkConfig,
     SnapshotArtifacts,
     SnapshotInfo,
+    SnapshotType,
     VMConfig,
 )
 
@@ -86,6 +87,13 @@ def snapshot_info_from_row(row: Any) -> SnapshotInfo:
             memory_path=Path(row["mem_file_path"]) if row["mem_file_path"] else None,
             disk_path=Path(row["disk_path"]),
         )
+    # ``snapshot_type`` is a newer column; rows predating it (or fakes built in
+    # tests) may not carry it, so default to a full snapshot.
+    try:
+        raw_snapshot_type = row["snapshot_type"]
+    except (KeyError, IndexError):
+        raw_snapshot_type = None
+    snapshot_type = SnapshotType(raw_snapshot_type) if raw_snapshot_type else SnapshotType.FULL
     return SnapshotInfo(
         snapshot_id=row["snapshot_id"],
         vm_id=row["vm_id"],
@@ -94,6 +102,7 @@ def snapshot_info_from_row(row: Any) -> SnapshotInfo:
         vm_config=vm_config_from_json(row["vm_config"]),
         network_config=NetworkConfig.model_validate_json(row["network_config"]),
         created_at=datetime.fromisoformat(row["created_at"]),
+        snapshot_type=snapshot_type,
         restored=bool(row["restored"]),
         restored_vm_id=row["restored_vm_id"],
     )

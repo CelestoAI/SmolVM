@@ -177,6 +177,7 @@ class SQLiteStateManager:
                     vm_config TEXT NOT NULL,
                     network_config TEXT NOT NULL,
                     created_at TEXT NOT NULL,
+                    snapshot_type TEXT,
                     restored INTEGER DEFAULT 0,
                     restored_vm_id TEXT
                 );
@@ -191,6 +192,8 @@ class SQLiteStateManager:
                 conn.execute("ALTER TABLE snapshots ADD COLUMN backend TEXT")
             if "artifacts" not in snapshot_columns:
                 conn.execute("ALTER TABLE snapshots ADD COLUMN artifacts TEXT")
+            if "snapshot_type" not in snapshot_columns:
+                conn.execute("ALTER TABLE snapshots ADD COLUMN snapshot_type TEXT")
 
     # ------------------------------------------------------------------
     # VM operations
@@ -588,9 +591,9 @@ class SQLiteStateManager:
                 INSERT INTO snapshots (
                     snapshot_id, vm_id, snapshot_path, mem_file_path, disk_path,
                     backend, artifacts, vm_config, network_config,
-                    created_at, restored, restored_vm_id
+                    created_at, snapshot_type, restored, restored_vm_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     info.snapshot_id,
@@ -603,6 +606,7 @@ class SQLiteStateManager:
                     info.vm_config.model_dump_json(),
                     info.network_config.model_dump_json(),
                     info.created_at.isoformat(),
+                    info.snapshot_type.value,
                     int(info.restored),
                     info.restored_vm_id,
                 ),

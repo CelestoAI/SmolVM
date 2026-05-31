@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TextIO
 
-from smolvm.types import SnapshotArtifacts, SnapshotInfo, VMInfo, VMState
+from smolvm.types import SnapshotArtifacts, SnapshotInfo, SnapshotType, VMInfo, VMState
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -48,6 +48,7 @@ class SnapshotCreateRequest:
     managed_disk_path: Path
     resume_source: bool
     original_status: VMState
+    snapshot_type: SnapshotType = SnapshotType.FULL
 
 
 @dataclass(slots=True, frozen=True)

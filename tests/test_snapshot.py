@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from smolvm.exceptions import SmolVMError, SnapshotNotFoundError, VMNotFoundError
-from smolvm.types import SnapshotArtifacts, SnapshotInfo, VMConfig, VMState
+from smolvm.types import SnapshotArtifacts, SnapshotInfo, SnapshotType, VMConfig, VMState
 from smolvm.vm import SmolVMManager
 
 
@@ -469,3 +469,55 @@ def test_delete_snapshot_rejects_unsafe_snapshot_id(
     """Snapshot deletion should reject IDs that could escape the snapshot directory."""
     with pytest.raises(ValueError, match="snapshot_id"):
         smol_vm.delete_snapshot(snapshot_id)
+
+
+def _stub_fc_snapshot(snapshot_path: Path, mem_path: Path, snapshot_type: str = "Full") -> None:
+    snapshot_path.write_text("vmstate")
+    mem_path.write_text("memory")
+
+
+def test_create_snapshot_defaults_to_full_type(
+    smol_vm: SmolVMManager,
+    sample_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """Snapshots are full by default so they restore on their own."""
+    _running_vm(smol_vm, sample_config, tmp_path)
+    (smol_vm.data_dir / "disks" / "vm001.ext4").write_text("managed-disk")
+
+    with patch("smolvm.runtime.firecracker.FirecrackerClient") as mock_client_cls:
+        mock_client = MagicMock()
+        mock_client.create_snapshot.side_effect = _stub_fc_snapshot
+        mock_client_cls.return_value = mock_client
+        snapshot = smol_vm.create_snapshot("vm001", snapshot_id="snap-full")
+
+    assert snapshot.snapshot_type is SnapshotType.FULL
+    assert smol_vm.state.get_snapshot("snap-full").snapshot_type is SnapshotType.FULL
+
+
+def test_create_diff_snapshot_records_type_and_copies_disk(
+    smol_vm: SmolVMManager,
+    sample_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """A diff snapshot persists its type and still captures the disk contents.
+
+    Firecracker VM state and memory are always full; ``diff`` only changes how
+    the disk is copied (a copy-on-write reflink clone, which falls back to a
+    regular copy on filesystems without reflink support).
+    """
+    _running_vm(smol_vm, sample_config, tmp_path)
+    (smol_vm.data_dir / "disks" / "vm001.ext4").write_text("managed-disk")
+
+    with patch("smolvm.runtime.firecracker.FirecrackerClient") as mock_client_cls:
+        mock_client = MagicMock()
+        mock_client.create_snapshot.side_effect = _stub_fc_snapshot
+        mock_client_cls.return_value = mock_client
+        snapshot = smol_vm.create_snapshot(
+            "vm001", snapshot_id="snap-diff", snapshot_type=SnapshotType.DIFF
+        )
+
+    persisted = smol_vm.state.get_snapshot("snap-diff")
+    assert snapshot.snapshot_type is SnapshotType.DIFF
+    assert persisted.snapshot_type is SnapshotType.DIFF
+    assert persisted.artifacts.disk_path.read_text() == "managed-disk"

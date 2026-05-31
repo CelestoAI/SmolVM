@@ -183,11 +183,14 @@ class PostgresStateManager:
                     vm_config TEXT NOT NULL,
                     network_config TEXT NOT NULL,
                     created_at TEXT NOT NULL,
+                    snapshot_type TEXT,
                     restored BOOLEAN DEFAULT FALSE,
                     restored_vm_id TEXT
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_snapshots_vm_id ON snapshots(vm_id);
+
+                ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS snapshot_type TEXT;
                 """
             )
 
@@ -587,9 +590,9 @@ class PostgresStateManager:
                 INSERT INTO snapshots (
                     snapshot_id, vm_id, snapshot_path, mem_file_path, disk_path,
                     backend, artifacts, vm_config, network_config,
-                    created_at, restored, restored_vm_id
+                    created_at, snapshot_type, restored, restored_vm_id
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     info.snapshot_id,
@@ -602,6 +605,7 @@ class PostgresStateManager:
                     info.vm_config.model_dump_json(),
                     info.network_config.model_dump_json(),
                     info.created_at.isoformat(),
+                    info.snapshot_type.value,
                     info.restored,
                     info.restored_vm_id,
                 ),
