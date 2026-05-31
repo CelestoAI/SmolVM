@@ -59,6 +59,24 @@ def test_preset_init_script_uses_cmdline_netmask_and_gateway_dns() -> None:
     assert 'ip addr add "${GUEST_IP}/24"' not in script
 
 
+def test_base_init_script_keeps_tmp_on_root_disk() -> None:
+    script = ImageBuilder()._default_init_script()
+
+    assert "mount -t tmpfs tmpfs /run" in script
+    assert "mount -t tmpfs tmpfs /tmp" not in script
+    assert "mkdir -p /run/sshd /var/log /tmp" in script
+    assert "chmod 1777 /tmp" in script
+
+
+def test_preset_init_script_keeps_tmp_on_root_disk() -> None:
+    script = Path("scripts/ci/preset-init.sh").read_text()
+
+    assert "mount -t tmpfs tmpfs /run" in script
+    assert "mount -t tmpfs tmpfs /tmp" not in script
+    assert "mkdir -p /run/sshd /var/log /tmp" in script
+    assert "chmod 1777 /tmp" in script
+
+
 class TestDockerDiagnostics:
     """Tests for Docker availability diagnostics."""
 

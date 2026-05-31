@@ -1164,7 +1164,9 @@ mount -t devtmpfs dev /dev 2>/dev/null  # may already be mounted
 mkdir -p /dev/pts
 mount -t devpts devpts /dev/pts
 mount -t tmpfs tmpfs /run
-mount -t tmpfs tmpfs /tmp
+# Keep /tmp on the root disk, not tmpfs. Package managers use /tmp for
+# temporary writes, and a memory-sized tmpfs can fill up even when the disk
+# still has plenty of space.
 
 log_ts "mounts-ready"
 
@@ -1175,7 +1177,8 @@ echo 0 > /proc/sys/kernel/ctrl-alt-del
 mount -o remount,rw /
 
 # Create required directories
-mkdir -p /run/sshd /var/log
+mkdir -p /run/sshd /var/log /tmp
+chmod 1777 /tmp
 
 log_ts "root-ready"
 
