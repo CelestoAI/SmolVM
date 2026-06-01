@@ -347,6 +347,7 @@ class VMConfig(BaseModel):
     boot_args: str = "console=ttyS0 reboot=k panic=1 pci=off"
     ssh_capable: bool = False
     backend: str | None = None
+    qemu_network: Literal["slirp", "tap"] = "slirp"
     disk_mode: Literal["isolated", "shared"] = "isolated"
     retain_disk_on_delete: bool = False
     env_vars: dict[str, str] = {}

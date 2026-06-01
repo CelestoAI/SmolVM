@@ -928,6 +928,24 @@ class SmolVMManager:
         logger.info("VM %s will use vsock control channel (CID %d)", config.vm_id, cid)
         return self.state.update_vm(config.vm_id, config=updated)
 
+    @staticmethod
+    def _uses_host_tap_networking(config: VMConfig, backend: str) -> bool:
+        """Whether a VM is wired to a host TAP device (vs userspace slirp).
+
+        Firecracker always uses a host TAP. QEMU uses one only when the
+        config opts in via ``qemu_network='tap'`` — the default stays slirp
+        so the macOS/dev path is unchanged. libkrun never uses a host TAP.
+        TAP-mode VMs get a real routable IP and fall under the shared
+        nftables NAT/isolation rules (egress masquerade, cross-sandbox drop,
+        IMDS block); slirp VMs rely on QEMU userspace NAT + host port
+        forwards instead.
+        """
+        if backend == BACKEND_FIRECRACKER:
+            return True
+        if backend == BACKEND_QEMU:
+            return config.qemu_network == "tap"
+        return False
+
     def create(self, config: VMConfig) -> VMInfo:
         """Create a new microVM.
 
@@ -978,7 +996,7 @@ class SmolVMManager:
         try:
             ssh_host_port = self.state.reserve_ssh_port(effective_config.vm_id)
 
-            if backend in {BACKEND_QEMU, BACKEND_LIBKRUN}:
+            if not self._uses_host_tap_networking(effective_config, backend):
                 if (
                     effective_config.internet_settings is not None
                     and not effective_config.internet_settings.is_allow_all_domains
@@ -1057,6 +1075,13 @@ class SmolVMManager:
 
             # Update VM with network info
             vm_info = self.state.update_vm(effective_config.vm_id, network=network_config)
+
+            # QEMU-on-TAP still uses the vsock control channel (unique per-host
+            # CID reserved from state). Firecracker manages its own vsock via
+            # the VsockConfig passed directly in the VM config, so this is a
+            # no-op there.
+            if backend == BACKEND_QEMU:
+                vm_info = self._maybe_enable_vsock(effective_config, backend, vm_info)
 
             logger.info(
                 "VM created: %s (IP: %s, TAP: %s)",
@@ -2082,7 +2107,17 @@ class SmolVMManager:
             else:
                 ssh_host_port = self.state.get_ssh_port(vm_id)
 
-            if backend == BACKEND_FIRECRACKER and ssh_host_port is not None and guest_ip:
+            # Firecracker and QEMU-on-TAP both provision host TAP/NAT/ssh-forward
+            # resources; slirp-mode QEMU and libkrun do not. When vm_info is gone
+            # (early-failure cleanup), an IP lease is the tell that a TAP existed.
+            if vm_info is not None:
+                uses_tap = self._uses_host_tap_networking(vm_info.config, backend)
+            else:
+                uses_tap = backend == BACKEND_FIRECRACKER or (
+                    backend == BACKEND_QEMU and lease is not None
+                )
+
+            if uses_tap and ssh_host_port is not None and guest_ip:
                 with suppress(Exception):
                     self.network.cleanup_ssh_port_forward(
                         vm_id=vm_id,
@@ -2099,8 +2134,8 @@ class SmolVMManager:
             if lease:
                 _, tap_device = lease
 
-                if backend == BACKEND_FIRECRACKER:
-                    # Cleanup Linux TAP/NAT only for Firecracker backend.
+                if uses_tap:
+                    # Tear down host TAP/NAT for backends that provisioned it.
                     with suppress(Exception):
                         self.network.remove_egress_rules(tap_device)
                     self.network.cleanup_nat_rules(tap_device)
@@ -2194,7 +2229,7 @@ class SmolVMManager:
         try:
             ssh_host_port = self.state.reserve_ssh_port(effective_config.vm_id)
 
-            if backend in {BACKEND_QEMU, BACKEND_LIBKRUN}:
+            if not self._uses_host_tap_networking(effective_config, backend):
                 if (
                     effective_config.internet_settings is not None
                     and not effective_config.internet_settings.is_allow_all_domains
@@ -2255,6 +2290,12 @@ class SmolVMManager:
                 ssh_host_port=ssh_host_port,
             )
             vm_info = self.state.update_vm(effective_config.vm_id, network=network_config)
+
+            # QEMU-on-TAP still uses the vsock control channel (see the sync
+            # create path for the rationale). No-op for Firecracker.
+            if backend == BACKEND_QEMU:
+                vm_info = self._maybe_enable_vsock(effective_config, backend, vm_info)
+
             return vm_info
 
         except Exception as e:
@@ -2532,7 +2573,15 @@ class SmolVMManager:
             else:
                 ssh_host_port = self.state.get_ssh_port(vm_id)
 
-            if backend == BACKEND_FIRECRACKER and ssh_host_port is not None and guest_ip:
+            # See the sync cleanup path for the TAP-vs-slirp rationale.
+            if vm_info is not None:
+                uses_tap = self._uses_host_tap_networking(vm_info.config, backend)
+            else:
+                uses_tap = backend == BACKEND_FIRECRACKER or (
+                    backend == BACKEND_QEMU and lease is not None
+                )
+
+            if uses_tap and ssh_host_port is not None and guest_ip:
                 with suppress(Exception):
                     await self.network.async_cleanup_ssh_port_forward(
                         vm_id=vm_id,
@@ -2546,7 +2595,7 @@ class SmolVMManager:
             if lease:
                 _, tap_device = lease
 
-                if backend == BACKEND_FIRECRACKER:
+                if uses_tap:
                     with suppress(Exception):
                         await self.network.async_remove_egress_rules(tap_device)
                     await self.network.async_cleanup_nat_rules(tap_device)

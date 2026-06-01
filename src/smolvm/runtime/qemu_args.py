@@ -116,13 +116,25 @@ def build_qemu_argv(
         ``subprocess.Popen``.
 
     Raises:
-        SmolVMError: When the VM has no reserved SSH host port; when
-            firmware boot is requested on aarch64 and no OVMF binary is
-            found on the host; or when the platform spec requires
-            firmware/swtpm and the caller didn't provide a per-VM path.
+        SmolVMError: When the VM has no network config; when slirp mode has
+            no reserved SSH host port; when firmware boot is requested on
+            aarch64 and no OVMF binary is found on the host; or when the
+            platform spec requires firmware/swtpm and the caller didn't
+            provide a per-VM path.
     """
-    if vm_info.network is None or vm_info.network.ssh_host_port is None:
-        raise SmolVMError("QEMU backend requires a reserved ssh_host_port in VM network config")
+    # Networking mode. ``slirp`` (default) is userspace NAT with host port
+    # forwards — the macOS/dev path. ``tap`` attaches the VM to a host TAP
+    # device managed by NetworkManager, giving the guest a real routable IP
+    # and bringing it under the same nftables NAT/isolation rules as the
+    # Firecracker backend (egress masquerade, cross-sandbox drop, IMDS block).
+    tap_mode = vm_info.config.qemu_network == "tap"
+
+    if vm_info.network is None:
+        raise SmolVMError("QEMU backend requires a VM network config")
+    if not tap_mode and vm_info.network.ssh_host_port is None:
+        raise SmolVMError(
+            "QEMU slirp networking requires a reserved ssh_host_port in VM network config"
+        )
 
     # Defensive sanity check: if the platform spec forces a specific boot
     # mode, the VMConfig must already match. The authoritative invariant
@@ -142,7 +154,6 @@ def build_qemu_argv(
             },
         )
 
-    ssh_port = vm_info.network.ssh_host_port
     guest_mac = vm_info.network.guest_mac.lower()
 
     qemu_name = qemu_bin.name
@@ -154,12 +165,19 @@ def build_qemu_argv(
         f"file={vm_info.config.rootfs_path},if=none,format={disk_format},"
         f"id={root_drive_id},node-name={root_node_name}"
     )
-    hostfwd_rules = [f"hostfwd=tcp:127.0.0.1:{ssh_port}-:22"]
-    for forward in vm_info.config.port_forwards:
-        hostfwd_rules.append(
-            f"hostfwd=tcp:{forward.host_address}:{forward.host_port}-:{forward.guest_port}"
+    if tap_mode:
+        # Attach to the pre-created host TAP. script=no/downscript=no: the host
+        # side (link up, IP, routes, NAT) is owned by NetworkManager, not QEMU.
+        netdev_arg = (
+            f"tap,id=net0,ifname={vm_info.network.tap_device},script=no,downscript=no"
         )
-    netdev_arg = f"user,id=net0,dns={QEMU_SLIRP_DNS},{','.join(hostfwd_rules)}"
+    else:
+        hostfwd_rules = [f"hostfwd=tcp:127.0.0.1:{vm_info.network.ssh_host_port}-:22"]
+        for forward in vm_info.config.port_forwards:
+            hostfwd_rules.append(
+                f"hostfwd=tcp:{forward.host_address}:{forward.host_port}-:{forward.guest_port}"
+            )
+        netdev_arg = f"user,id=net0,dns={QEMU_SLIRP_DNS},{','.join(hostfwd_rules)}"
 
     cmd: list[str] = [
         str(qemu_bin),

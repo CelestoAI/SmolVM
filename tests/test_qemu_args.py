@@ -449,3 +449,64 @@ def test_windows_argv_missing_swtpm_socket_raises(tmp_path: Path) -> None:
             swtpm_socket=None,
             host_system="Linux",
         )
+
+
+def _tap_vm_info(tmp_path: Path, *, ssh_host_port: int | None = None) -> VMInfo:
+    """A Linux QEMU VMInfo wired for host-TAP networking."""
+    base = _qemu_vm_info(tmp_path)
+    config = base.config.model_copy(update={"qemu_network": "tap"})
+    network = base.network.model_copy(
+        update={
+            "tap_device": "tap5",
+            "guest_ip": "172.16.0.5",
+            "ssh_host_port": ssh_host_port,
+        }
+    )
+    return base.model_copy(update={"config": config, "network": network})
+
+
+def test_build_qemu_argv_tap_mode_emits_tap_netdev(tmp_path: Path) -> None:
+    """qemu_network='tap' attaches the host TAP and drops slirp/hostfwd."""
+    vm = _tap_vm_info(tmp_path, ssh_host_port=2200)
+    cmd = build_qemu_argv(
+        vm,
+        qemu_bin=Path("/usr/bin/qemu-system-x86_64"),
+        boot_args="console=ttyS0 root=/dev/vda rw init=/init",
+        platform_spec=_LINUX_SPEC,
+        host_system="Linux",
+    )
+    joined = " ".join(cmd)
+    assert "tap,id=net0,ifname=tap5,script=no,downscript=no" in joined
+    assert "virtio-net-pci,netdev=net0,mac=52:54:00:12:34:56" in joined
+    # No userspace slirp NAT and no host port forwarding in tap mode.
+    assert "user,id=net0" not in joined
+    assert "hostfwd=" not in joined
+
+
+def test_build_qemu_argv_tap_mode_allows_no_ssh_host_port(tmp_path: Path) -> None:
+    """TAP mode does not require a reserved ssh_host_port (vsock control plane)."""
+    vm = _tap_vm_info(tmp_path, ssh_host_port=None)
+    # Must not raise despite ssh_host_port being None.
+    cmd = build_qemu_argv(
+        vm,
+        qemu_bin=Path("/usr/bin/qemu-system-x86_64"),
+        boot_args="console=ttyS0 root=/dev/vda rw init=/init",
+        platform_spec=_LINUX_SPEC,
+        host_system="Linux",
+    )
+    assert "tap,id=net0,ifname=tap5,script=no,downscript=no" in " ".join(cmd)
+
+
+def test_build_qemu_argv_slirp_still_requires_ssh_host_port(tmp_path: Path) -> None:
+    """Default (slirp) mode keeps requiring a reserved ssh_host_port."""
+    base = _qemu_vm_info(tmp_path)
+    network = base.network.model_copy(update={"ssh_host_port": None})
+    vm = base.model_copy(update={"network": network})
+    with pytest.raises(SmolVMError, match="ssh_host_port"):
+        build_qemu_argv(
+            vm,
+            qemu_bin=Path("/usr/bin/qemu-system-x86_64"),
+            boot_args="console=ttyS0 root=/dev/vda rw",
+            platform_spec=_LINUX_SPEC,
+            host_system="Linux",
+        )
