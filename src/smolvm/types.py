@@ -309,6 +309,10 @@ class VMConfig(BaseModel):
         ssh_capable: Whether this boot path is expected to start guest SSH
             without relying on ``init=/init``.
         backend: Optional runtime backend override ("firecracker", "qemu", or "libkrun").
+        qemu_network: QEMU backend networking mode — ``"slirp"`` (default,
+            userspace NAT + host port forwards) or ``"tap"`` (host TAP device
+            under the shared nftables NAT/isolation rules). Ignored by non-QEMU
+            backends.
         disk_mode: Disk lifecycle mode:
             - ``"isolated"`` (default): clone rootfs per VM for sandbox isolation.
             - ``"shared"``: boot directly from ``rootfs_path``.

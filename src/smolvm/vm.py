@@ -2109,13 +2109,13 @@ class SmolVMManager:
 
             # Firecracker and QEMU-on-TAP both provision host TAP/NAT/ssh-forward
             # resources; slirp-mode QEMU and libkrun do not. When vm_info is gone
-            # (early-failure cleanup), an IP lease is the tell that a TAP existed.
+            # (early-failure cleanup) the IP lease is the definitive tell that a
+            # TAP existed — `backend` is the manager default and may not match
+            # the VM's real backend, so we can't rely on it here.
             if vm_info is not None:
                 uses_tap = self._uses_host_tap_networking(vm_info.config, backend)
             else:
-                uses_tap = backend == BACKEND_FIRECRACKER or (
-                    backend == BACKEND_QEMU and lease is not None
-                )
+                uses_tap = lease is not None
 
             if uses_tap and ssh_host_port is not None and guest_ip:
                 with suppress(Exception):
@@ -2573,13 +2573,12 @@ class SmolVMManager:
             else:
                 ssh_host_port = self.state.get_ssh_port(vm_id)
 
-            # See the sync cleanup path for the TAP-vs-slirp rationale.
+            # See the sync cleanup path for the TAP-vs-slirp rationale. When
+            # vm_info is gone the IP lease is the definitive tell a TAP existed.
             if vm_info is not None:
                 uses_tap = self._uses_host_tap_networking(vm_info.config, backend)
             else:
-                uses_tap = backend == BACKEND_FIRECRACKER or (
-                    backend == BACKEND_QEMU and lease is not None
-                )
+                uses_tap = lease is not None
 
             if uses_tap and ssh_host_port is not None and guest_ip:
                 with suppress(Exception):
