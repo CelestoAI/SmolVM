@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -35,9 +36,31 @@ from smolvm.runtime.backends import BACKEND_FIRECRACKER, BACKEND_LIBKRUN, BACKEN
 if TYPE_CHECKING:
     from smolvm.images.published import Arch as PublishedArch
 
-_MICROVM_DIRECT_FIRECRACKER_BOOT_ARGS = (
-    "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/init"
-)
+# Latency-safe kernel cmdline trims for minimal headless virtio/KVM guests.
+# - tsc=reliable      : trust the host TSC clocksource, skip calibration checks.
+# - no_timer_check    : skip the legacy "is the timer IRQ arriving" probe.
+# Both are safe on any KVM virtio guest and shave kernel-init time. `quiet` is
+# added separately (it suppresses console printk, which is useful to keep when
+# debugging a stuck boot — see _quiet_flag). `acpi=off` is deliberately NOT
+# defaulted: it saves ~70ms but isn't universally safe (clean shutdown / IRQ
+# routing), so it stays opt-in per image.
+_SAFE_TRIM_FLAGS = "tsc=reliable no_timer_check"
+
+
+def _quiet_flag() -> str:
+    """Return ``" quiet"`` unless verbose boot was requested.
+
+    Set ``SMOLVM_VERBOSE_BOOT=1`` to keep full kernel console output when
+    debugging a boot that hangs or panics; the default suppresses it to cut
+    time spent formatting printk over the serial line.
+    """
+    verbose = os.environ.get("SMOLVM_VERBOSE_BOOT", "").strip().lower()
+    if verbose in {"1", "true", "yes", "on"}:
+        return ""
+    return " quiet"
+
+
+_MICROVM_DIRECT_FIRECRACKER_BASE = "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw"
 
 
 class KernelBootProfile(str, Enum):
@@ -63,10 +86,12 @@ class BootProfileSpec:
             )
 
         if self.profile is KernelBootProfile.MICROVM_DIRECT:
+            trims = f"{_SAFE_TRIM_FLAGS}{_quiet_flag()}"
             if backend in {BACKEND_QEMU, BACKEND_LIBKRUN}:
                 console = "ttyAMA0" if normalized_arch == "aarch64" else "ttyS0"
-                return f"console={console} reboot=k panic=1 init=/init"
-            return _MICROVM_DIRECT_FIRECRACKER_BOOT_ARGS
+                return f"console={console} reboot=k panic=1 {trims} init=/init"
+            # Firecracker: keep pci=off + root=/dev/vda, append the same trims.
+            return f"{_MICROVM_DIRECT_FIRECRACKER_BASE} {trims} init=/init"
 
         console = "ttyAMA0" if normalized_arch == "aarch64" else "ttyS0"
         return f"console={console} reboot=k panic=1"
