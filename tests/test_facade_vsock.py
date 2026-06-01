@@ -89,6 +89,43 @@ def test_explicit_vsock_does_not_fall_back_to_ssh(
     assert vm._ssh_ready is False
 
 
+def test_auto_vsock_falls_back_to_ssh_within_probe_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An agent-less image (vsock never answers) must fall back to SSH and only
+    spend up to _VSOCK_AUTO_PROBE_TIMEOUT probing, not the full call timeout."""
+    import smolvm.facade as facade
+
+    monkeypatch.setattr("smolvm.comm.select.host_supports_vsock", lambda: True)
+
+    seen = {}
+
+    def _fail(self, timeout=60.0, interval=0.1):
+        seen["probe_timeout"] = timeout
+        raise OperationTimeoutError("vsock", timeout)
+
+    monkeypatch.setattr(VsockChannel, "wait_ready", _fail)
+
+    ssh_called = {}
+
+    def _ssh_ok(self, timeout):
+        ssh_called["timeout"] = timeout
+        self._ssh_ready = True
+
+    monkeypatch.setattr(SmolVM, "_wait_for_ssh_over_network", _ssh_ok)
+
+    # auto channel (comm_channel=None, request=None) → vsock with fallback
+    vm = _vsock_vm(tmp_path, comm_channel=None, request=None)
+    vm._wait_for_ssh(timeout=30)
+
+    # vsock probe was capped at the (short) auto budget, not the 30s call timeout
+    assert seen["probe_timeout"] == facade._VSOCK_AUTO_PROBE_TIMEOUT
+    assert facade._VSOCK_AUTO_PROBE_TIMEOUT <= 3.0  # guardrail stays short
+    # and we then fell back to SSH
+    assert ssh_called  # SSH path was taken
+    assert vm._ssh_ready is True
+
+
 def test_resolve_channel_reads_config_and_request(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

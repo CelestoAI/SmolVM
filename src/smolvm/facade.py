@@ -96,9 +96,13 @@ logger = logging.getLogger(__name__)
 _DEFAULT_RUN_READY_TIMEOUT = 30.0
 
 # When auto-selecting the channel, how long to wait for the vsock agent before
-# falling back to SSH. Kept short: the agent comes up early in boot, so if it
-# hasn't answered by now the image probably lacks it and SSH is the real path.
-_VSOCK_AUTO_PROBE_TIMEOUT = 8.0
+# falling back to SSH. Kept short: the agent binds its vsock port early in boot
+# (before sshd, ~0.9s guest uptime on Alpine), so if it hasn't answered by now
+# the image almost certainly can't run it (e.g. no python3) and SSH is the real
+# path. This is a guardrail — an agent-less image now costs ~2.5s of wasted
+# probe instead of 8s. (Images SmolVM builds ship the agent + python3, so they
+# answer well inside this window and never hit the fallback.)
+_VSOCK_AUTO_PROBE_TIMEOUT = 2.5
 _LOCAL_FORWARD_PROBE_TIMEOUT = 2.0
 _LOCAL_FORWARD_PROBE_INTERVAL = 0.2
 _LOCAL_TUNNEL_START_TIMEOUT = 10.0
