@@ -320,11 +320,15 @@ RUN chmod +x /init
         dockerfile_content = """
 FROM alpine:3.19
 
+# python3 powers the SmolVM guest agent (vsock control plane); the agent is
+# stdlib-only, so no pip deps. Without it /init silently skips the agent and the
+# host falls back to SSH after an 8s vsock probe (see _VSOCK_AUTO_PROBE_TIMEOUT).
 RUN apk add --no-cache \
     openssh \
     iproute2 \
     curl \
-    bash
+    bash \
+    python3
 
 # Host keys generated at first boot in /init so each VM has unique identity.
 # 'rm -f' purges keys planted by the openssh install postinst.
