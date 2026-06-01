@@ -61,6 +61,13 @@ logger = logging.getLogger(__name__)
 #     logging.getLogger("paramiko.transport").setLevel(logging.WARNING)
 logging.getLogger("paramiko.transport").setLevel(logging.CRITICAL)
 
+# Poll backoff for wait_for_ssh: start tight (20ms) so we notice sshd within
+# tens of ms of it coming up early in boot, grow ×1.5 per miss, and let the
+# caller's ``interval`` cap it. The previous fixed 200ms cadence cost up to
+# ~280ms of slack on a VM that booted fast.
+_WAIT_BACKOFF_START = 0.02
+_WAIT_BACKOFF_FACTOR = 1.5
+
 ShellMode = Literal["login", "raw"]
 ShellKind = Literal["sh", "powershell", "cmd"]
 """Guest-side login-shell wrap. ``sh`` is the POSIX default
@@ -399,9 +406,16 @@ class SSHClient:
         2. **Paramiko connect** — full SSH handshake + auth.  The resulting
            connection is kept open for subsequent :meth:`run` calls.
 
+        Both phases poll with exponential backoff (starting at
+        :data:`_WAIT_BACKOFF_START`, growing ×1.5, capped at *interval*) so we
+        catch sshd within tens of ms of it coming up early in boot — the common
+        case — while a genuinely slow guest relaxes back to the *interval*
+        cadence and is no worse off than a fixed poll.
+
         Args:
             timeout: Maximum seconds to wait.
-            interval: Seconds between TCP probe attempts.
+            interval: Upper bound (seconds) on the poll backoff. Defaults to
+                0.1s, matching the previous fixed cadence.
 
         Raises:
             OperationTimeoutError: If SSH does not become available
@@ -420,6 +434,7 @@ class SSHClient:
         )
 
         # Phase 1: Fast TCP probe — detect when sshd port is open.
+        backoff = _WAIT_BACKOFF_START
         while time.monotonic() < deadline:
             if self._tcp_port_open(timeout=min(0.5, deadline - time.monotonic())):
                 logger.debug("TCP port %d is open on %s", self.port, self.host)
@@ -431,10 +446,15 @@ class SSHClient:
                     f"wait_for_ssh({self.host}:{self.port}): port never opened",
                     timeout,
                 )
-            time.sleep(min(interval, remaining))
+            time.sleep(min(backoff, remaining))
+            backoff = min(backoff * _WAIT_BACKOFF_FACTOR, interval)
 
-        # Phase 2: Establish persistent paramiko connection.
+        # Phase 2: Establish persistent paramiko connection. The TCP port is
+        # already open, but sshd may still be mid-startup (and on QEMU user-mode
+        # NAT the forwarder accepts the connection before sshd is up), so retry
+        # the full handshake with the same tight-then-relaxing backoff.
         last_error: str = ""
+        backoff = _WAIT_BACKOFF_START
         while time.monotonic() < deadline:
             try:
                 self._client = self._connect()
@@ -452,7 +472,8 @@ class SSHClient:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            time.sleep(min(0.2, remaining))
+            time.sleep(min(backoff, remaining))
+            backoff = min(backoff * _WAIT_BACKOFF_FACTOR, max(interval, 0.2))
 
         raise OperationTimeoutError(
             f"wait_for_ssh({self.host}:{self.port}): last error: {last_error}",

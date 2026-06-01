@@ -263,6 +263,39 @@ class TestSSHClientWaitForSSH:
         with pytest.raises(ValueError, match="timeout must be"):
             client.wait_for_ssh(timeout=0)
 
+    @patch.object(SSHClient, "_tcp_port_open", return_value=True)
+    def test_connect_loop_uses_tight_backoff_first(
+        self, _mock_port: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Phase 2 must poll tightly at first (not the old fixed 200ms).
+
+        The port is open but the first paramiko connect fails (sshd mid-startup);
+        the second succeeds. The sleep between them must be the tight backoff
+        start, so a fast-booting guest is noticed within tens of ms rather than
+        waiting a fixed 200ms.
+        """
+        from smolvm.ssh import _WAIT_BACKOFF_START
+
+        sleeps: list[float] = []
+        monkeypatch.setattr("smolvm.ssh.time.sleep", lambda s: sleeps.append(s))
+
+        calls = {"n": 0}
+
+        def _connect_then_succeed(self):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise SmolVMError("sshd not ready yet")
+            return MagicMock()
+
+        monkeypatch.setattr(SSHClient, "_connect", _connect_then_succeed)
+
+        client = SSHClient("172.16.0.2")
+        client.wait_for_ssh(timeout=5)
+
+        assert calls["n"] == 2  # retried once then connected
+        assert sleeps, "expected at least one backoff sleep between retries"
+        assert sleeps[0] == _WAIT_BACKOFF_START  # tight first poll, not 0.2s
+
 
 class TestSSHClientShellKind:
     """Tests for the per-guest-OS login-shell wrapping."""
