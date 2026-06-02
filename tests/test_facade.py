@@ -1026,7 +1026,6 @@ class TestVMUploadDownloadWindows:
 
         ssh = MagicMock()
         ssh.run.return_value = MagicMock(exit_code=0, stderr="")
-        ssh.put_file.side_effect = lambda _src, dst: dst
 
         vm = SmolVM(
             os="windows",
@@ -2646,7 +2645,6 @@ class TestVMFileUpload:
 
         ssh = MagicMock()
         ssh.run.return_value = MagicMock(exit_code=0, stderr="")
-        ssh.put_file.side_effect = lambda _src, dst: dst
 
         vm = SmolVM(config)
         vm._ssh = ssh
@@ -2685,7 +2683,6 @@ class TestVMFileUpload:
 
         ssh = MagicMock()
         ssh.run.return_value = MagicMock(exit_code=0, stderr="")
-        ssh.put_file.side_effect = lambda _src, dst: dst
 
         vm = SmolVM(config)
         vm._ssh = ssh
@@ -2718,7 +2715,6 @@ class TestVMFileUpload:
         mock_sdk_cls.return_value = mock_sdk
 
         ssh = MagicMock()
-        ssh.put_file.side_effect = lambda _src, dst: dst
 
         vm = SmolVM(config)
         vm._ssh = ssh
@@ -2788,7 +2784,6 @@ class TestVMFileUpload:
 
         ssh = MagicMock()
         ssh.run.return_value = MagicMock(exit_code=0, stderr="")
-        ssh.put_file.side_effect = lambda _src, dst: dst
 
         vm = SmolVM(config)
         vm._ssh = ssh

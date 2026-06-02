@@ -392,9 +392,9 @@ class TestPutFileDirectoryDestination:
         sftp.stat.return_value = MagicMock(st_mode=stat.S_IFDIR | 0o755)
 
         client = self._client_with_sftp(sftp)
-        written = client.put_file(source, "/root")
+        client.put_file(source, "/root")
 
-        assert written == "/root/ecotag.md"
+        # The file lands inside the directory: the source name is appended.
         sftp.put.assert_called_once_with(str(source), "/root/ecotag.md")
 
     def test_keeps_path_when_destination_is_a_file(self, tmp_path) -> None:
@@ -408,9 +408,9 @@ class TestPutFileDirectoryDestination:
         sftp.stat.return_value = MagicMock(st_mode=stat.S_IFREG | 0o644)
 
         client = self._client_with_sftp(sftp)
-        written = client.put_file(source, "/root/notes.md")
+        client.put_file(source, "/root/notes.md")
 
-        assert written == "/root/notes.md"
+        # Existing regular file — path is left untouched, overwritten in place.
         sftp.put.assert_called_once_with(str(source), "/root/notes.md")
 
     def test_keeps_path_when_destination_does_not_exist(self, tmp_path) -> None:
@@ -428,7 +428,7 @@ class TestPutFileDirectoryDestination:
         sftp.stat.side_effect = OSError(errno.ENOENT, "No such file")
 
         client = self._client_with_sftp(sftp)
-        written = client.put_file(source, "/tmp/new.md")
+        client.put_file(source, "/tmp/new.md")
 
-        assert written == "/tmp/new.md"
+        # Fresh destination — stat raises ENOENT, path is used as-is.
         sftp.put.assert_called_once_with(str(source), "/tmp/new.md")

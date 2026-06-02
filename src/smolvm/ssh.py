@@ -255,12 +255,11 @@ class SSHClient:
 
         return destination
 
-    def put_file(self, local_path: str | Path, remote_path: str) -> str:
+    def put_file(self, local_path: str | Path, remote_path: str) -> None:
         """Upload a file into the guest VM using SFTP.
 
-        Returns the guest path the file was actually written to. This differs
-        from *remote_path* when the destination is an existing directory: the
-        source filename is appended so the file lands inside it.
+        When *remote_path* is an existing directory, the source filename is
+        appended so the file lands inside it (matching ``cp file dir/``).
         """
         if not remote_path:
             raise ValueError("remote_path cannot be empty")
@@ -286,7 +285,6 @@ class SSHClient:
                 if attrs.st_mode is not None and stat.S_ISDIR(attrs.st_mode):
                     remote_path = remote_path.rstrip("/") + "/" + source.name
             sftp.put(str(source), remote_path)
-            return remote_path
         except Exception as e:
             raise SmolVMError(f"Failed to upload file to guest '{remote_path}': {e}") from e
         finally:
