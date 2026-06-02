@@ -250,6 +250,34 @@ class TestFileTransfer:
         assert (dest / "escape").read_bytes() == payload
         assert not (tmp_path / "escape").exists()
 
+    @pytest.mark.parametrize("name", [".", ".."])
+    def test_put_file_into_directory_rejects_dot_names(self, tmp_path, name) -> None:
+        # "." and ".." survive basename() and would join back to a directory,
+        # failing later with a cryptic Errno 21. They're rejected up front with
+        # the same clear message as a missing name.
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        payload = b"data"
+        host, guest = socket.socketpair()
+        with host:
+            thread = _serve_once(guest)
+            protocol.send_json(
+                host,
+                {
+                    "op": "put_file",
+                    "path": str(dest),
+                    "name": name,
+                    "mode": None,
+                    "size": len(payload),
+                },
+            )
+            # Bytes must still be drained so the stream stays framed.
+            protocol.send_frame(host, protocol.FRAME_DATA, payload)
+            resp = protocol.recv_json(host)
+            thread.join(timeout=5)
+        assert resp["ok"] is False
+        assert "directory" in resp["error"]
+
     def test_put_file_into_directory_without_name_errors(self, tmp_path) -> None:
         # A directory destination with no usable filename fails with a clear
         # message instead of a cryptic "Is a directory" errno later.

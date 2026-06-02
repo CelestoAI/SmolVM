@@ -234,7 +234,10 @@ def handle_put_file(conn: Any, req: dict[str, Any]) -> None:
         # this sanitization from its server, but our raw agent must do it.
         if os.path.isdir(target):
             base = os.path.basename(name) if name else ""
-            if not base:
+            # basename() collapses "../escape" to a contained name, but "." and
+            # ".." survive it and would join back to a directory — failing later
+            # with a cryptic Errno 21. Reject them up front like a missing name.
+            if not base or base in (os.curdir, os.pardir):
                 error = f"destination is a directory and no filename was provided: {path}"
             else:
                 target = os.path.join(target, base)
