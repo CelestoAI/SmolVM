@@ -50,57 +50,61 @@ def profile(backend: str) -> dict:
     vm = SmolVM(config=config, ssh_key_path=key)
     r["create"] = time.perf_counter() - t0
 
-    t0 = time.perf_counter()
-    vm.start()
-    r["launch"] = time.perf_counter() - t0
-
-    # Use the SDK's own endpoint resolution (QEMU = forwarded 127.0.0.1:port,
-    # Firecracker = TAP guest_ip:22).
-    host, port = vm._ssh_endpoints()[0]
-    r["endpoint"] = f"{host}:{port}"
-
-    # Phase A: spin on TCP connect until sshd is listening.
-    t0 = time.perf_counter()
-    deadline = t0 + 30
-    while time.perf_counter() < deadline:
-        if tcp_open(host, port):
-            break
-        time.sleep(0.02)
-    r["tcp_open"] = time.perf_counter() - t0
-
-    # Phase B: paramiko handshake + auth on the open port.
-    t0 = time.perf_counter()
-    client = SSHClient(host=host, port=port, user="root", key_path=key)
-    client.wait_for_ssh(timeout=30)
-    r["ssh_auth"] = time.perf_counter() - t0
-
-    # Phase C: run the command over the established connection.
-    t0 = time.perf_counter()
-    client.run(CMD)
-    r["cmd"] = time.perf_counter() - t0
-
-    # Kernel log: last "[ TIMESTAMP ]" printk = seconds of in-kernel time.
-    log_path = resolve_data_dir() / f"{name}.log"
-    kernel_last = None
-    n_lines = 0
-    if log_path.exists():
-        text = log_path.read_text(errors="replace")
-        n_lines = text.count("\n")
-        stamps = re.findall(r"\[\s*(\d+\.\d+)\]", text)
-        if stamps:
-            kernel_last = float(stamps[-1])
-    r["kernel_last_printk_s"] = kernel_last
-    r["log_lines"] = n_lines
-
+    client = None
     try:
-        client.close()
-    except Exception:
-        pass
-    try:
-        vm.stop()
-        vm.delete()
-    except Exception:
-        pass
+        t0 = time.perf_counter()
+        vm.start()
+        r["launch"] = time.perf_counter() - t0
+
+        # Use the SDK's own endpoint resolution (QEMU = forwarded 127.0.0.1:port,
+        # Firecracker = TAP guest_ip:22).
+        host, port = vm._ssh_endpoints()[0]
+        r["endpoint"] = f"{host}:{port}"
+
+        # Phase A: spin on TCP connect until sshd is listening.
+        t0 = time.perf_counter()
+        deadline = t0 + 30
+        while time.perf_counter() < deadline:
+            if tcp_open(host, port):
+                break
+            time.sleep(0.02)
+        r["tcp_open"] = time.perf_counter() - t0
+
+        # Phase B: paramiko handshake + auth on the open port.
+        t0 = time.perf_counter()
+        client = SSHClient(host=host, port=port, user="root", key_path=key)
+        client.wait_for_ssh(timeout=30)
+        r["ssh_auth"] = time.perf_counter() - t0
+
+        # Phase C: run the command over the established connection.
+        t0 = time.perf_counter()
+        client.run(CMD)
+        r["cmd"] = time.perf_counter() - t0
+
+        # Kernel log: last "[ TIMESTAMP ]" printk = seconds of in-kernel time.
+        log_path = resolve_data_dir() / f"{name}.log"
+        kernel_last = None
+        n_lines = 0
+        if log_path.exists():
+            text = log_path.read_text(errors="replace")
+            n_lines = text.count("\n")
+            stamps = re.findall(r"\[\s*(\d+\.\d+)\]", text)
+            if stamps:
+                kernel_last = float(stamps[-1])
+        r["kernel_last_printk_s"] = kernel_last
+        r["log_lines"] = n_lines
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception as e:
+                print(f"  cleanup: client.close failed: {e}", flush=True)
+        if vm is not None:
+            try:
+                vm.stop()
+                vm.delete()
+            except Exception as e:
+                print(f"  cleanup: vm stop/delete failed: {e}", flush=True)
     return r
 
 

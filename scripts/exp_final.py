@@ -63,17 +63,25 @@ def bench(label, make_vm) -> dict:
     try: cycle(make_vm)
     except Exception as e: print("  warmup err:", e, flush=True)
     runs = []
+    errors = []
     for i in range(N):
         try:
             r = cycle(make_vm); runs.append(r)
             print(f"  {i+1}/{N} create={r['create']*1000:.0f} launch={r['launch']*1000:.0f} "
                   f"first={r['first']*1000:.0f} warm={r['warm']*1000:.1f}", flush=True)
         except Exception as e:
+            errors.append(str(e))
             print(f"  {i+1}/{N} ERROR {e}", flush=True)
+    if not runs:
+        print(f"  [{label}] all {N} runs failed", flush=True)
+        return {"label": label, "n": 0, "errors": errors,
+                "create": None, "launch": None, "first": None,
+                "warm": None, "total": None}
     def m(k): return st.mean(x[k] for x in runs) * 1000
     total = m("create") + m("launch") + m("first")
     return {"label": label, "create": m("create"), "launch": m("launch"),
-            "first": m("first"), "warm": m("warm"), "total": total, "n": len(runs)}
+            "first": m("first"), "warm": m("warm"), "total": total,
+            "n": len(runs), "errors": errors}
 
 
 def main():
@@ -81,7 +89,12 @@ def main():
     print("Building python3 Alpine image for the AFTER cell...", flush=True)
     pk, pr = build_py_alpine()
     ba_default = get_boot_profile_spec(PROF).base_boot_args_for_backend("qemu", ARCH)
-    ba_trim = ba_default + " acpi=off quiet no_timer_check tsc=reliable"
+    # The default profile already carries tsc=reliable/no_timer_check/quiet
+    # (shipped in Q3); only append the delta this experiment tests (acpi=off).
+    _present = set(ba_default.split())
+    ba_trim = ba_default + "".join(
+        f" {flag}" for flag in ("acpi=off",) if flag not in _present
+    )
 
     def mk_default(backend):
         def f():
@@ -105,6 +118,9 @@ def main():
     h = f"{'configuration':<44}{'create':>8}{'launch':>8}{'first':>8}{'TOTAL':>8}{'warm':>7}"
     print(h); print("-" * len(h))
     for r in res:
+        if not r["n"]:
+            print(f"{r['label']:<44}  (all runs failed)")
+            continue
         print(f"{r['label']:<44}{r['create']:>8.0f}{r['launch']:>8.0f}{r['first']:>8.0f}"
               f"{r['total']:>8.0f}{r['warm']:>7.1f}")
     print("DONE", flush=True)

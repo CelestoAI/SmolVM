@@ -202,6 +202,22 @@ class TestImageBuilderLoopFs:
         assert mock_run_command.call_count == 3
 
 
+def _apk_installs_python3(dockerfile: str) -> bool:
+    """Return True if python3 is an actual `apk add` package, not just text.
+
+    Joins backslash-continued lines so a multi-line `apk add ... \\ python3`
+    counts, but a bare comment mentioning python3 does not.
+    """
+    joined = dockerfile.replace("\\\n", " ")
+    for line in joined.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if "apk add" in stripped and "python3" in stripped.split("apk add", 1)[1]:
+            return True
+    return False
+
+
 class TestAgentRuntimeBakedIntoImages:
     """Every SSH-capable recipe must install python3.
 
@@ -230,9 +246,10 @@ class TestAgentRuntimeBakedIntoImages:
             *args: object,
             **kwargs: object,
         ) -> None:
-            assert "python3" in dockerfile_content, (
-                "build_alpine_ssh_key must install python3 so the vsock guest "
-                "agent can run; without it the host pays an 8s vsock probe."
+            assert _apk_installs_python3(dockerfile_content), (
+                "build_alpine_ssh_key must install python3 (in an apk add) so "
+                "the vsock guest agent can run; without it the host pays an 8s "
+                "vsock probe."
             )
             args[2].touch()  # kernel_path
             args[3].touch()  # rootfs_path
@@ -261,7 +278,7 @@ class TestAgentRuntimeBakedIntoImages:
             *args: object,
             **kwargs: object,
         ) -> None:
-            assert "python3" in dockerfile_content
+            assert _apk_installs_python3(dockerfile_content)
             args[2].touch()
             args[3].touch()
 

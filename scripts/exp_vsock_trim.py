@@ -43,9 +43,14 @@ def build_image():
 
 
 DEFAULT_ARGS = get_boot_profile_spec(PROF).base_boot_args_for_backend("qemu", ARCH)
-# Trim device probing: disable ACPI, PCI off already? default has init=/init only.
-# Add quiet + noacpi-style trims that are safe for a headless virtio guest.
-TRIMMED_ARGS = DEFAULT_ARGS + " acpi=off quiet no_timer_check tsc=reliable"
+# The default profile already carries tsc=reliable/no_timer_check/quiet (Q3);
+# append only the flags this experiment adds that aren't already present so we
+# don't duplicate tokens and muddy the measurement.
+_present = set(DEFAULT_ARGS.split())
+TRIMMED_ARGS = DEFAULT_ARGS + "".join(
+    f" {flag}" for flag in ("acpi=off", "quiet", "no_timer_check", "tsc=reliable")
+    if flag not in _present
+)
 
 
 def kernel_last(name: str):

@@ -14,28 +14,39 @@ cell after an untimed warm-up; variance was small. Scripts: `scripts/exp_final.p
 
 ## Before / After
 
-Measured before and after the fixes on branch `perf/boot-latency-fixes`.
+Same machine, same 5-run methodology, out-of-box defaults (`SmolVM(backend=...)`
+with no forced channel). BEFORE measured on `main`, AFTER on
+`perf/boot-latency-fixes`; only the code differs. Image cache busted between
+runs so each builds its own image.
 
 | Configuration | create | launch | first cmd | **TOTAL→interact** | warm cmd |
 |---|---:|---:|---:|---:|---:|
-| **BEFORE** — QEMU default (true out-of-box) | 12 | 53 | 8068 | **8133 ms** | 42 |
-| BEFORE — Firecracker default (SSH) | 135 | 121 | 1223 | **1479 ms** | 43 |
-| **AFTER** — QEMU default (now vsock + trimmed boot) | 11 | 53 | 1276 | **1340 ms** | **1.3** |
-| AFTER — QEMU explicit SSH (Firecracker-style path) | 12 | 53 | 1120 | **1184 ms** | 1.1* |
+| **BEFORE** — QEMU default (true out-of-box) | 12 | 54 | 8068 | **8134 ms** | 42.2 |
+| **AFTER** — QEMU default (now vsock + trimmed boot) | 11 | 53 | 1114 | **1177 ms** | **1.0** |
+| BEFORE — Firecracker default (SSH) | 133 | 122 | 1391 | **1645 ms** | 42.6 |
+| AFTER — Firecracker default (SSH) | 145 | 121 | 1142 | **1408 ms** | 42.7 |
 
-All values milliseconds, mean of 5 runs. *The explicit-SSH cell auto-upgrades
-to vsock for *commands* once connected, hence the ~1ms warm — the 1184 ms is
-the SSH-gated first-command path now benefiting from the tightened poll (Q4).
+All values milliseconds, mean of 5 runs.
+
+On `main`, QEMU "resolves" to vsock but the agent can't run (no python3 in the
+image), so it burns the full 8 s probe then silently falls back to SSH — hence
+`warm=42 ms` despite the channel reading vsock. On the branch, vsock genuinely
+works (`warm=1.0 ms`).
+
+> Firecracker ran on its unprivileged "slower networking path" in both runs (no
+> passwordless sudo), inflating its create/launch equally on both sides — the
+> *delta* is still a fair comparison.
 
 ### Headline
 
-- **The QEMU default went from 8133 ms → 1340 ms — 6.1× faster** (−6.79 s). The
+- **The QEMU default went from 8134 ms → 1177 ms — 6.9× faster** (−6.96 s). The
   default `SmolVM(backend="qemu")` no longer pays the 8-second vsock probe.
-- **Warm commands: 42 ms → ~1.3 ms (~32×)** now that vsock is the working
+- **Warm commands: 42 ms → 1.0 ms (~42×)** now that vsock is the working
   default — this dominates any multi-command (agentic) workload.
-- The SSH path that **Firecracker** still depends on also got faster: the
-  tightened poll (Q4) trims ~210 ms off first-command (measured ~1878 → ~1669 ms
-  in isolation).
+- The SSH path that **Firecracker** still depends on also got faster:
+  **1645 ms → 1408 ms (1.17×)**, ~240 ms off first-command from the tightened
+  poll (Q4) plus the boot trims (Q3). Its warm command stays ~42 ms because it's
+  still on SSH — the gap the (deferred) Firecracker-vsock bridge would close.
 
 ### What changed (4 commits)
 
@@ -79,7 +90,7 @@ answerable at ~0.9 s guest uptime.
 | **vsock instead of SSH** | first cmd −370 ms; warm cmd 42 → 1 ms (~28–40×) | QEMU-only today; needs python3 in the image |
 | **Trim boot cmdline** (`acpi=off quiet …`) | ~230 ms off total (~70 ms real boot + console savings) | `acpi=off` not universally safe; validate per image |
 | **Bake SSH host keys** | guest ready ~100 ms sooner | **0 ms** end-to-end on SSH — host wait loop hides it |
-| (host) tighten SSH poll < 200 ms | up to ~280 ms recoverable on SSH path | not yet changed; code lever, not config |
+| (host) tighten SSH poll < 200 ms | ~240 ms off the SSH-path first command | shipped in Q4; the AFTER numbers include this change |
 
 The two levers that actually moved the AFTER number are **vsock** and
 **boot trimming**. Baking host keys is only worth it once the host-side wait is

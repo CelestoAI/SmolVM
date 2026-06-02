@@ -473,7 +473,7 @@ class SSHClient:
             if remaining <= 0:
                 break
             time.sleep(min(backoff, remaining))
-            backoff = min(backoff * _WAIT_BACKOFF_FACTOR, max(interval, 0.2))
+            backoff = min(backoff * _WAIT_BACKOFF_FACTOR, interval)
 
         raise OperationTimeoutError(
             f"wait_for_ssh({self.host}:{self.port}): last error: {last_error}",

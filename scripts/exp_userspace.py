@@ -118,12 +118,19 @@ def run(label, kernel, rootfs, tag):
     except Exception as e: print("  warmup err:", e, flush=True)
     runs = []
     for i in range(N):
-        r = one(kernel, rootfs, tag)
+        try:
+            r = one(kernel, rootfs, tag)
+        except Exception as e:
+            print(f"  {i+1}/{N} ERROR {e}", flush=True)
+            continue
         runs.append(r)
         kg = f"{r['keygen_ms']:.0f}" if r['keygen_ms'] is not None else "-"
         su = f"{r['sshd_uptime']:.3f}" if r['sshd_uptime'] is not None else "-"
         print(f"  {i+1}/{N} create={r['create']*1000:.0f} launch={r['launch']*1000:.0f} "
               f"first={r['first']*1000:.0f}  keygen={kg}ms sshd_up={su}s", flush=True)
+
+    if not runs:
+        raise RuntimeError(f"{label}: all {N} runs failed; no samples collected")
 
     def m(k): return sum(x[k] for x in runs) / len(runs) * 1000
     total = m("create") + m("launch") + m("first")

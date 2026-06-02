@@ -1,8 +1,16 @@
 # SmolVM boot-latency learnings (QEMU vs Firecracker)
 
-Investigation into "time to create a VM and run a command" for the two Linux
-backends. All numbers measured on one Linux host with KVM, 16 vCPUs, an Alpine
-guest (1 vCPU / 512 MB), running `echo hello`. Scripts live under `scripts/`:
+**Takeaway:** out of the box, Firecracker gets you to your first command faster
+than QEMU — but only because QEMU's default was hitting an 8-second bug (now
+fixed). Once that's removed, both reach a usable sandbox in ~1.2–1.4 seconds,
+and almost all of that time is the guest operating system starting up, not the
+choice of virtual-machine engine. That matters because it tells you where to
+spend effort to make sandboxes start faster: in the guest, not the hypervisor.
+
+## Test setup
+
+Numbers measured on one Linux host with KVM, 16 CPUs, an Alpine Linux guest
+(1 CPU / 512 MB), running `echo hello`. Scripts live under `scripts/`:
 `bench_backends.py`, `profile_boot.py`, `exp_vsock_trim.py`, `exp_userspace.py`.
 
 > **Methodology note.** SmolVM's `.start()` returns as soon as the hypervisor
