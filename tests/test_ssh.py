@@ -103,7 +103,9 @@ class TestSSHClientInit:
             SSHClient("172.16.0.2", port=70000)
 
 
-def _mock_exec_result(exit_code: int, stdout: str, stderr: str) -> tuple[None, MagicMock, MagicMock]:
+def _mock_exec_result(
+    exit_code: int, stdout: str, stderr: str
+) -> tuple[None, MagicMock, MagicMock]:
     stdout_ch = MagicMock()
     stderr_ch = MagicMock()
     stdout_ch.read.return_value = stdout.encode("utf-8")
@@ -277,8 +279,7 @@ class TestSSHClientShellKind:
         client = SSHClient("172.16.0.2", shell_kind="sh")
         wrapped = client._wrap_login_shell_command("echo hello world")
         assert wrapped == (
-            'SHELL_BIN="${SHELL:-/bin/sh}"; exec "$SHELL_BIN" -lc '
-            "'echo hello world'"
+            'SHELL_BIN="${SHELL:-/bin/sh}"; exec "$SHELL_BIN" -lc \'echo hello world\''
         )
 
     def test_powershell_wrap_uses_encoded_command(self) -> None:
@@ -301,24 +302,16 @@ class TestSSHClientShellKind:
         client = SSHClient("10.0.2.15", shell_kind="powershell")
         tricky = 'Write-Output "hi `now $env:USERNAME"'
         wrapped = client._wrap_login_shell_command(tricky)
-        encoded = wrapped.removeprefix(
-            "powershell.exe -NoProfile -EncodedCommand "
-        )
+        encoded = wrapped.removeprefix("powershell.exe -NoProfile -EncodedCommand ")
         assert base64.b64decode(encoded).decode("utf-16-le") == tricky
 
     def test_cmd_wrap_uses_slash_s_and_doubled_quotes(self) -> None:
         """cmd.exe wrap uses ``/s /c "..."`` with embedded ``"`` doubled."""
         client = SSHClient("10.0.2.15", shell_kind="cmd")
         # No embedded quotes — clean wrap.
-        assert (
-            client._wrap_login_shell_command("dir C:\\Users")
-            == 'cmd.exe /s /c "dir C:\\Users"'
-        )
+        assert client._wrap_login_shell_command("dir C:\\Users") == 'cmd.exe /s /c "dir C:\\Users"'
         # Embedded quotes get doubled (cmd's in-quote escape).
-        assert (
-            client._wrap_login_shell_command('echo "hi"')
-            == 'cmd.exe /s /c "echo ""hi"""'
-        )
+        assert client._wrap_login_shell_command('echo "hi"') == 'cmd.exe /s /c "echo ""hi"""'
 
     def test_cmd_wrap_metacharacters_safe_inside_quotes(self) -> None:
         """Shell metacharacters survive because they're inside the outer quotes."""
@@ -343,7 +336,7 @@ class TestPwshEncodedCommand:
         [
             "echo hi",
             'Write-Output "hi"',
-            'with `backtick',
+            "with `backtick",
             "$env:USERNAME",
             "line1\nline2",
             'New-Item -ItemType Directory -Force -Path "C:\\Users\\foo"',
@@ -363,7 +356,72 @@ class TestPwshEncodedCommand:
         """The wrapped form is plain ASCII (no quotes, $, backticks)."""
         wrapped = _pwsh_encoded_command('echo "hi" `now $env:X')
         # Base64 alphabet is [A-Za-z0-9+/=]. No quotes, no $, no backticks.
-        encoded = wrapped.removeprefix(
-            "powershell.exe -NoProfile -EncodedCommand "
-        )
+        encoded = wrapped.removeprefix("powershell.exe -NoProfile -EncodedCommand ")
         assert all(c not in encoded for c in '"`$')
+
+
+class TestPutFileDirectoryDestination:
+    """``put_file`` resolves a directory destination to a file inside it.
+
+    Regression for ``smolvm file upload <vm> ./f /root`` failing with the
+    opaque SFTP ``Failure`` because ``/root`` is a directory: SFTP ``put``
+    cannot overwrite a directory with a regular file. ``put_file`` now stats
+    the destination on the already-open SFTP channel and, when it is a
+    directory, appends the source filename — mirroring ``cp file dir/``.
+    """
+
+    def _client_with_sftp(self, sftp: MagicMock) -> SSHClient:
+        client = SSHClient("172.16.0.2")
+        transport = MagicMock()
+        transport.open_sftp_client.return_value = sftp
+        paramiko_client = MagicMock()
+        paramiko_client.open_sftp.return_value = sftp
+        client._client = paramiko_client
+        client._ensure_connected = MagicMock(return_value=paramiko_client)  # type: ignore[method-assign]
+        return client
+
+    def test_appends_filename_when_destination_is_directory(self, tmp_path) -> None:
+        import stat
+
+        source = tmp_path / "ecotag.md"
+        source.write_text("hello")
+
+        sftp = MagicMock()
+        # /root exists and is a directory.
+        sftp.stat.return_value = MagicMock(st_mode=stat.S_IFDIR | 0o755)
+
+        client = self._client_with_sftp(sftp)
+        written = client.put_file(source, "/root")
+
+        assert written == "/root/ecotag.md"
+        sftp.put.assert_called_once_with(str(source), "/root/ecotag.md")
+
+    def test_keeps_path_when_destination_is_a_file(self, tmp_path) -> None:
+        import stat
+
+        source = tmp_path / "ecotag.md"
+        source.write_text("hello")
+
+        sftp = MagicMock()
+        # An existing regular file at the destination — overwrite it as-is.
+        sftp.stat.return_value = MagicMock(st_mode=stat.S_IFREG | 0o644)
+
+        client = self._client_with_sftp(sftp)
+        written = client.put_file(source, "/root/notes.md")
+
+        assert written == "/root/notes.md"
+        sftp.put.assert_called_once_with(str(source), "/root/notes.md")
+
+    def test_keeps_path_when_destination_does_not_exist(self, tmp_path) -> None:
+        source = tmp_path / "ecotag.md"
+        source.write_text("hello")
+
+        sftp = MagicMock()
+        # Nothing at the destination yet — treat it as the target file path.
+        sftp.stat.side_effect = FileNotFoundError
+
+        client = self._client_with_sftp(sftp)
+        written = client.put_file(source, "/tmp/new.md")
+
+        assert written == "/tmp/new.md"
+        sftp.put.assert_called_once_with(str(source), "/tmp/new.md")

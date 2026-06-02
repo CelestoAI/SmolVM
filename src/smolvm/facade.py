@@ -1563,8 +1563,7 @@ class SmolVM:
                             f"Could not create directory {parent!r} in the sandbox: {stderr}",
                             {"vm_id": self._vm_id, "guest_path": destination},
                         )
-        ssh.put_file(source, destination)
-        return destination
+        return ssh.put_file(source, destination)
 
     def download_file(
         self,
