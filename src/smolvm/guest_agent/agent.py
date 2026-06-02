@@ -236,9 +236,12 @@ def handle_put_file(conn: Any, req: dict[str, Any]) -> None:
             base = os.path.basename(name) if name else ""
             # basename() collapses "../escape" to a contained name, but "." and
             # ".." survive it and would join back to a directory — failing later
-            # with a cryptic Errno 21. Reject them up front like a missing name.
-            if not base or base in (os.curdir, os.pardir):
+            # with a cryptic Errno 21. Reject them up front, distinguishing a
+            # missing name from one that resolves to no real filename.
+            if not base:
                 error = f"destination is a directory and no filename was provided: {path}"
+            elif base in (os.curdir, os.pardir):
+                error = f"destination filename is invalid: {name} (cannot be '.' or '..')"
             else:
                 target = os.path.join(target, base)
         if error is None:

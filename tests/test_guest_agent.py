@@ -276,7 +276,8 @@ class TestFileTransfer:
             resp = protocol.recv_json(host)
             thread.join(timeout=5)
         assert resp["ok"] is False
-        assert "directory" in resp["error"]
+        assert "invalid" in resp["error"]
+        assert name in resp["error"]
 
     def test_put_file_into_directory_without_name_errors(self, tmp_path) -> None:
         # A directory destination with no usable filename fails with a clear
