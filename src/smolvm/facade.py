@@ -45,6 +45,7 @@ from typing import Any, Literal
 from urllib.parse import urlparse
 
 from smolvm._naming import generate_sandbox_name
+from smolvm.callbacks import Callback, CallbackDispatcher, RunContext
 from smolvm.comm import VsockChannel
 from smolvm.comm.base import CommChannelKind
 from smolvm.comm.select import ChannelResolution, resolve_comm_channel
@@ -912,6 +913,7 @@ class SmolVM:
         internet_settings: InternetSettings | dict[str, Any] | None = None,
         mounts: list[str] | None = None,
         writable_mounts: bool = False,
+        callbacks: list[Callback] | None = None,
     ) -> None:
         if config is not None and vm_id is not None:
             raise ValueError("Provide either config or vm_id, not both.")
@@ -1078,6 +1080,7 @@ class SmolVM:
         self._ssh: SSHClient | None = None
         self._ssh_ready = False
         self._local_forwards: dict[tuple[int, int], _LocalForward] = {}
+        self._callbacks = CallbackDispatcher(callbacks)
 
     # ------------------------------------------------------------------
     # Class methods
@@ -1378,6 +1381,8 @@ class SmolVM:
 
         Raises:
             SmolVMError: If the VM is not running or has no network.
+            CommandBlockedError: If an ``on_pre_run`` callback vetoes the
+                command (or any other exception a pre-run callback raises).
         """
         self._refresh_info()
 
@@ -1418,7 +1423,34 @@ class SmolVM:
                 {"vm_id": self._vm_id},
             )
 
-        return self._ssh.run(command, timeout=timeout, shell=shell)
+        ctx = RunContext(
+            vm_id=self._vm_id,
+            command=command,
+            shell=shell,
+            timeout=timeout,
+        )
+        # Pre-run hooks may veto: any exception they raise (e.g.
+        # CommandBlockedError) propagates and the command never runs.
+        self._callbacks.fire("on_pre_run", ctx, propagate=True)
+
+        try:
+            result = self._ssh.run(command, timeout=timeout, shell=shell)
+        except Exception as exc:
+            ctx.error = exc
+            self._callbacks.fire("on_run_error", ctx, propagate=False)
+            raise
+
+        ctx.result = result
+        self._callbacks.fire("on_post_run", ctx, propagate=False)
+        return result
+
+    def add_callback(self, callback: Callback) -> SmolVM:
+        """Register a :class:`~smolvm.callbacks.Callback` on this VM.
+
+        Returns ``self`` so calls can be chained.
+        """
+        self._callbacks.add(callback)
+        return self
 
     def _is_windows_guest(self) -> bool:
         """Return True when the running guest is Windows.

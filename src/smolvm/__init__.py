@@ -21,6 +21,7 @@ sandboxed environment.
 from importlib.metadata import version as _pkg_version
 
 from smolvm.browser import BrowserSession
+from smolvm.callbacks import Callback, CommandBlockedError, RunContext
 from smolvm.exceptions import (
     BrowserSessionAlreadyExistsError,
     BrowserSessionNotFoundError,
@@ -67,6 +68,10 @@ __all__ = [
     "SmolVM",
     "BrowserSession",
     "SmolVMManager",
+    # Callbacks / hooks
+    "Callback",
+    "RunContext",
+    "CommandBlockedError",
     # Image management
     "ImageManager",
     "ImageBuilder",
