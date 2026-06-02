@@ -1,0 +1,105 @@
+# Real-KVM end-to-end smoke of the public SmolVM API.
+#
+# Unlike the unit suite (which mocks the hypervisor) and smoke-published-images
+# (which shells out to raw qemu), this boots an actual QEMU micro-VM *through
+# the SmolVM Python API* and walks its whole lifecycle — start, exec, file
+# upload/download, pause/resume, snapshot/restore, stop/cleanup — over both the
+# SSH and vsock control transports.
+#
+# GH-hosted ubuntu-latest (x86) exposes /dev/kvm, so this runs with hardware
+# acceleration. It's nightly + manual rather than per-PR: booting a real VM is
+# slow and the shared runners are noisy.
+
+name: E2E (real KVM)
+
+on:
+  schedule:
+    # 03:17 UTC nightly (off the top of the hour to dodge cron congestion).
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ hashFiles('Cargo.toml', 'smolvm-core/Cargo.toml') }}
+          restore-keys: rust-${{ runner.os }}-
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+
+      - name: Install QEMU + tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+              qemu-system-x86 qemu-utils openssh-client
+
+      - name: Enable KVM and vsock
+        run: |
+          # The runner user isn't in the kvm group; SmolVM launches QEMU from
+          # its own process and can't sudo the subprocess, so widen /dev/kvm
+          # directly (CI-only). vsock needs the vhost_vsock module loaded so the
+          # vsock-transport variant of the suite isn't skipped.
+          sudo usermod -a -G kvm "$USER" || true
+          sudo chmod 666 /dev/kvm || true
+          sudo modprobe vhost_vsock || echo "vhost_vsock unavailable; vsock tests will skip"
+          ls -l /dev/kvm /dev/vhost-vsock || true
+
+      # uv workspace builds smolvm-core from the local smolvm-core/ directory.
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Assert native extension available
+        run: |
+          uv run python -c "
+          from smolvm_core import is_available
+          assert is_available(), 'Native extension reports not available on Linux'
+          print('smolvm-core: OK')
+          "
+
+      - name: Diagnostics (smolvm doctor)
+        run: uv run smolvm doctor || true
+
+      - name: Run e2e suite
+        run: uv run pytest -m e2e tests/e2e -v
+
+      - name: Dump VM logs on failure
+        if: failure()
+        run: |
+          echo "## e2e failed — recent VM/runtime logs" >> "$GITHUB_STEP_SUMMARY"
+          for d in "$HOME/.smolvm" "$HOME/.local/share/smolvm"; do
+            [ -d "$d" ] || continue
+            echo "### $d" >> "$GITHUB_STEP_SUMMARY"
+            find "$d" -name "*.log" -type f 2>/dev/null | while read -r f; do
+              echo "<details><summary>$f</summary>" >> "$GITHUB_STEP_SUMMARY"
+              echo '```' >> "$GITHUB_STEP_SUMMARY"
+              tail -100 "$f" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+              echo '```' >> "$GITHUB_STEP_SUMMARY"
+              echo "</details>" >> "$GITHUB_STEP_SUMMARY"
+            done
+          done
