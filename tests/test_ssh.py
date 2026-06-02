@@ -15,6 +15,7 @@
 """Tests for SmolVM SSH module."""
 
 import base64
+import errno
 import logging
 import socket
 from unittest.mock import MagicMock, patch
@@ -418,7 +419,13 @@ class TestPutFileDirectoryDestination:
 
         sftp = MagicMock()
         # Nothing at the destination yet — treat it as the target file path.
-        sftp.stat.side_effect = FileNotFoundError
+        # Use paramiko's *real* missing-path exception, not a bare
+        # FileNotFoundError: SFTPClient._convert_status raises
+        # ``IOError(errno.ENOENT, ...)``. Python's errno-based subclassing
+        # promotes that to FileNotFoundError, which is why put_file's
+        # ``except FileNotFoundError`` catches it — this test guards that the
+        # promotion (and thus the fresh-destination fallback) keeps working.
+        sftp.stat.side_effect = OSError(errno.ENOENT, "No such file")
 
         client = self._client_with_sftp(sftp)
         written = client.put_file(source, "/tmp/new.md")
