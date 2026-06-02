@@ -107,6 +107,7 @@ class StateManagerProtocol(Protocol):
         vm_id: str,
         guest_port: int = 22,
         host_port: int | None = None,
+        excluded_host_ports: set[int] | None = None,
     ) -> int:
         pass
 

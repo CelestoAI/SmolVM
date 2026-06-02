@@ -29,6 +29,7 @@ import re
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import time
 from contextlib import suppress
@@ -39,6 +40,7 @@ from uuid import uuid4
 
 from smolvm.comm.select import resolve_comm_channel
 from smolvm.exceptions import (
+    NetworkError,
     SmolVMError,
     SnapshotAlreadyExistsError,
     SnapshotNotFoundError,
@@ -58,7 +60,13 @@ from smolvm.runtime.guest_platforms import get_guest_platform
 from smolvm.runtime.libkrun import LibkrunRuntimeAdapter
 from smolvm.runtime.qemu import QEMU_ROOT_NODE_NAME, QemuRuntimeAdapter
 from smolvm.runtime.qemu_args import build_qemu_argv
-from smolvm.storage import StateManagerProtocol, create_state_manager, ip_to_pool_index
+from smolvm.storage import (
+    SSH_PORT_END,
+    SSH_PORT_START,
+    StateManagerProtocol,
+    create_state_manager,
+    ip_to_pool_index,
+)
 from smolvm.types import (
     GuestOS,
     NetworkConfig,
@@ -946,6 +954,76 @@ class SmolVMManager:
             return config.qemu_network == "tap"
         return False
 
+    @staticmethod
+    def _local_tcp_port_is_available(host: str, port: int) -> bool:
+        """Return whether a local TCP forward target can be bound."""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.bind((host, port))
+        except (OSError, OverflowError):
+            return False
+        return True
+
+    @classmethod
+    def _local_ssh_port_is_available(cls, port: int) -> bool:
+        """Return whether the localhost SSH forward port can be bound."""
+        return cls._local_tcp_port_is_available("127.0.0.1", port)
+
+    def _reserve_available_ssh_port(self, vm_id: str) -> int:
+        """Reserve an SSH host port that is free in state and on localhost."""
+        excluded_ports: set[int] = set()
+        pool_size = SSH_PORT_END - SSH_PORT_START + 1
+
+        while len(excluded_ports) < pool_size:
+            port = self.state.reserve_ssh_port(
+                vm_id,
+                excluded_host_ports=excluded_ports,
+            )
+            if self._local_ssh_port_is_available(port):
+                return port
+
+            self.state.release_ssh_port(vm_id)
+            excluded_ports.add(port)
+            logger.warning(
+                "Skipping SSH host port %d for VM %s because it is already in use",
+                port,
+                vm_id,
+            )
+
+        raise NetworkError(
+            f"No local SSH port is available for sandbox '{vm_id}'. "
+            f"Free a port in {SSH_PORT_START}-{SSH_PORT_END}, then retry."
+        )
+
+    def _check_qemu_slirp_host_forward_ports(self, vm_info: VMInfo) -> None:
+        """Fail before QEMU starts if any slirp host-forward port is busy."""
+        if vm_info.config.qemu_network == "tap" or vm_info.network is None:
+            return
+
+        # This is an early, user-friendly guard. QEMU still owns the final bind,
+        # so a process that grabs the port after this check can still win the race.
+        ssh_port = vm_info.network.ssh_host_port
+        if ssh_port is not None and not self._local_ssh_port_is_available(ssh_port):
+            raise SmolVMError(
+                f"Local SSH port {ssh_port} is already in use. Free that port, or run "
+                f"'smolvm delete {vm_info.vm_id}' to remove the sandbox.",
+                {"vm_id": vm_info.vm_id, "ssh_host_port": ssh_port},
+            )
+
+        for forward in vm_info.config.port_forwards:
+            if self._local_tcp_port_is_available(forward.host_address, forward.host_port):
+                continue
+            raise SmolVMError(
+                f"Local port {forward.host_address}:{forward.host_port} is already in use. "
+                f"Free that port, or run 'smolvm delete {vm_info.vm_id}' to remove the sandbox.",
+                {
+                    "vm_id": vm_info.vm_id,
+                    "host_address": forward.host_address,
+                    "host_port": forward.host_port,
+                    "guest_port": forward.guest_port,
+                },
+            )
+
     def create(self, config: VMConfig) -> VMInfo:
         """Create a new microVM.
 
@@ -994,7 +1072,7 @@ class SmolVMManager:
         vm_info = self.state.create_vm(effective_config)
 
         try:
-            ssh_host_port = self.state.reserve_ssh_port(effective_config.vm_id)
+            ssh_host_port = self._reserve_available_ssh_port(effective_config.vm_id)
 
             if not self._uses_host_tap_networking(effective_config, backend):
                 if (
@@ -1142,6 +1220,8 @@ class SmolVMManager:
         self._check_workspace_mounts(vm_info)
 
         backend = self._backend_for_vm(vm_info)
+        if backend == BACKEND_QEMU:
+            self._check_qemu_slirp_host_forward_ports(vm_info)
         log_path = self.data_dir / f"{vm_id}.log"
         adapter = self._runtime_adapter_for_backend(backend)
         try:
@@ -2227,7 +2307,7 @@ class SmolVMManager:
         self.state.create_vm(effective_config)
 
         try:
-            ssh_host_port = self.state.reserve_ssh_port(effective_config.vm_id)
+            ssh_host_port = self._reserve_available_ssh_port(effective_config.vm_id)
 
             if not self._uses_host_tap_networking(effective_config, backend):
                 if (
@@ -2330,6 +2410,8 @@ class SmolVMManager:
         self._check_workspace_mounts(vm_info)
 
         backend = self._backend_for_vm(vm_info)
+        if backend == BACKEND_QEMU:
+            self._check_qemu_slirp_host_forward_ports(vm_info)
         log_path = self.data_dir / f"{vm_id}.log"
         adapter = self._runtime_adapter_for_backend(backend)
         try:

@@ -25,7 +25,7 @@ from smolvm.exceptions import (
     VMAlreadyExistsError,
     VMNotFoundError,
 )
-from smolvm.storage import StateManager
+from smolvm.storage import SSH_PORT_END, StateManager
 from smolvm.types import (
     BrowserSessionConfig,
     BrowserSessionInfo,
@@ -322,6 +322,10 @@ class TestSSHPortAllocation:
         assert port == 2200
         assert state_manager.get_ssh_port("vm001") == 2200
 
+    def test_ssh_port_pool_ends_at_tcp_max_port(self) -> None:
+        """The SSH port pool must not allocate invalid TCP ports."""
+        assert SSH_PORT_END == 65535
+
     def test_reserve_ssh_port_is_stable(
         self, state_manager: StateManager, sample_config: VMConfig
     ) -> None:
@@ -354,6 +358,19 @@ class TestSSHPortAllocation:
             ports.append(state_manager.reserve_ssh_port(f"vm-ssh-{i}"))
 
         assert ports == [2200, 2201, 2202]
+
+    def test_reserve_ssh_port_skips_excluded_ports(
+        self,
+        state_manager: StateManager,
+        sample_config: VMConfig,
+    ) -> None:
+        """Port reservation can skip ports that are busy outside SmolVM state."""
+        state_manager.create_vm(sample_config)
+
+        port = state_manager.reserve_ssh_port("vm001", excluded_host_ports={2200, 2201})
+
+        assert port == 2202
+        assert state_manager.get_ssh_port("vm001") == 2202
 
     def test_release_ssh_port(self, state_manager: StateManager, sample_config: VMConfig) -> None:
         """Test releasing a reserved SSH host port."""

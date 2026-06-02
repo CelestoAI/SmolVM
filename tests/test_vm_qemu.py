@@ -67,6 +67,84 @@ def test_start_qemu_missing_binary_uses_linux_install_hint(tmp_path: Path) -> No
     assert "brew install qemu" not in message
 
 
+def test_create_qemu_skips_local_ssh_port_that_is_already_in_use(tmp_path: Path) -> None:
+    """QEMU slirp VMs should not reserve a localhost port QEMU cannot bind."""
+    kernel = tmp_path / "vmlinux"
+    rootfs = tmp_path / "rootfs.ext4"
+    kernel.touch()
+    rootfs.touch()
+    config = VMConfig(
+        vm_id="vm-qemu-busy-port",
+        kernel_path=kernel,
+        rootfs_path=rootfs,
+        backend="qemu",
+    )
+    sdk = SmolVMManager(data_dir=tmp_path / "data", socket_dir=tmp_path / "sockets", backend="qemu")
+
+    with (
+        patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_overlay,
+        patch.object(
+            SmolVMManager,
+            "_local_ssh_port_is_available",
+            side_effect=lambda port: port != 2200,
+        ),
+    ):
+        mock_overlay.side_effect = lambda _source, target: target.touch()
+        vm_info = sdk.create(config)
+
+    assert vm_info.network is not None
+    assert vm_info.network.ssh_host_port == 2201
+
+
+def test_local_tcp_port_probe_handles_invalid_ports() -> None:
+    """Invalid TCP ports should be treated as unavailable, not crash the probe."""
+    assert SmolVMManager._local_tcp_port_is_available("127.0.0.1", 65536) is False
+
+
+def test_start_qemu_slirp_reports_busy_ssh_port_before_launch(tmp_path: Path) -> None:
+    """A stopped QEMU slirp VM should fail clearly before QEMU exits early."""
+    vm_info = _qemu_vm_info(tmp_path)
+    sdk = SmolVMManager(data_dir=tmp_path / "data", socket_dir=tmp_path / "sockets", backend="qemu")
+    sdk.state.create_vm(vm_info.config)
+    sdk.state.update_vm(vm_info.vm_id, network=vm_info.network)
+
+    with (
+        patch.object(SmolVMManager, "_local_ssh_port_is_available", return_value=False),
+        patch.object(sdk, "_runtime_adapter_for_backend") as mock_adapter_factory,
+        pytest.raises(SmolVMError, match="Local SSH port 2200 is already in use"),
+    ):
+        sdk.start(vm_info.vm_id)
+
+    mock_adapter_factory.assert_not_called()
+    assert sdk.state.get_vm(vm_info.vm_id).status == VMState.CREATED
+
+
+def test_start_qemu_slirp_reports_busy_custom_forward_before_launch(tmp_path: Path) -> None:
+    """Configured QEMU host forwards should get the same clear preflight error."""
+    vm_info = _qemu_vm_info(tmp_path)
+    config = vm_info.config.model_copy(
+        update={"port_forwards": [PortForwardConfig(host_port=39011, guest_port=9222)]}
+    )
+    vm_info = vm_info.model_copy(update={"config": config})
+    sdk = SmolVMManager(data_dir=tmp_path / "data", socket_dir=tmp_path / "sockets", backend="qemu")
+    sdk.state.create_vm(vm_info.config)
+    sdk.state.update_vm(vm_info.vm_id, network=vm_info.network)
+
+    with (
+        patch.object(
+            SmolVMManager,
+            "_local_tcp_port_is_available",
+            side_effect=lambda _host, port: port != 39011,
+        ),
+        patch.object(sdk, "_runtime_adapter_for_backend") as mock_adapter_factory,
+        pytest.raises(SmolVMError, match="Local port 127.0.0.1:39011 is already in use"),
+    ):
+        sdk.start(vm_info.vm_id)
+
+    mock_adapter_factory.assert_not_called()
+    assert sdk.state.get_vm(vm_info.vm_id).status == VMState.CREATED
+
+
 @patch("smolvm.vm.subprocess.Popen")
 @patch.object(
     SmolVMManager,

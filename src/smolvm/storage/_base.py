@@ -42,9 +42,9 @@ from smolvm.types import (
 IP_POOL_START = 2  # 172.16.0.2
 IP_POOL_END = 65534  # 172.16.255.254
 
-# SSH host-port forwarding pool (65 300 ports — matches IP pool capacity)
+# SSH host-port forwarding pool. Keep the upper bound within the TCP port range.
 SSH_PORT_START = 2200
-SSH_PORT_END = 67499
+SSH_PORT_END = 65535
 
 # vsock guest-CID pool. CIDs 0/1/2 are reserved (hypervisor/local/host), so
 # allocation starts at 3. The upper bound is well within the 32-bit CID space

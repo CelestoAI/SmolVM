@@ -431,6 +431,7 @@ class SQLiteStateManager:
         vm_id: str,
         guest_port: int = 22,
         host_port: int | None = None,
+        excluded_host_ports: set[int] | None = None,
     ) -> int:
         if not vm_id:
             raise ValueError("vm_id cannot be empty")
@@ -454,12 +455,13 @@ class SQLiteStateManager:
 
             allocated = conn.execute("SELECT host_port FROM ssh_forwards").fetchall()
             allocated_set = {int(row["host_port"]) for row in allocated}
+            excluded_set = excluded_host_ports or set()
 
             candidate_ports = (
                 [host_port] if host_port is not None else range(SSH_PORT_START, SSH_PORT_END + 1)
             )
             for candidate_port in candidate_ports:
-                if candidate_port in allocated_set:
+                if candidate_port in allocated_set or candidate_port in excluded_set:
                     continue
                 conn.execute(
                     """
