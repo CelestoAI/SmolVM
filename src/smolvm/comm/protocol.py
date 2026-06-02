@@ -39,8 +39,11 @@ version):
 - ``run``   ``{"cmd": str, "shell": "login"|"raw", "timeout": int|null, "env": {}}``
   → interleaved ``STDOUT``/``STDERR`` frames, terminated by a control frame
   ``{"op": "exit", "exit_code": int}`` or ``{"op": "timeout", "timeout": float}``.
-- ``put_file`` ``{"path": str, "mode": int|null, "size": int}`` followed by
-  exactly ``size`` bytes in ``DATA`` frames → ``{"ok": bool, "error"?: str}``.
+- ``put_file`` ``{"path": str, "name"?: str, "mode": int|null, "size": int}``
+  followed by exactly ``size`` bytes in ``DATA`` frames →
+  ``{"ok": bool, "error"?: str}``. When ``path`` is an existing directory the
+  guest lands the file inside it using ``name`` (the source basename); only
+  the guest can see its own filesystem, so the directory check happens there.
 - ``get_file`` ``{"path": str}`` → ``{"ok": true, "mode": int, "size": int}``
   then ``DATA`` frames terminated by ``EOF`` (or ``{"ok": false, "error": str}``).
 """

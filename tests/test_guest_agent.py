@@ -200,6 +200,74 @@ class TestFileTransfer:
         assert resp["ok"] is False
         assert "error" in resp
 
+    def test_put_file_lands_inside_directory(self, tmp_path) -> None:
+        # Destination is an existing directory: the file should land inside it
+        # under the source basename (`name`), matching `cp file dir/`.
+        payload = b"inside-the-dir"
+        host, guest = socket.socketpair()
+        with host:
+            thread = _serve_once(guest)
+            protocol.send_json(
+                host,
+                {
+                    "op": "put_file",
+                    "path": str(tmp_path),
+                    "name": "report.md",
+                    "mode": None,
+                    "size": len(payload),
+                },
+            )
+            protocol.send_frame(host, protocol.FRAME_DATA, payload)
+            resp = protocol.recv_json(host)
+            thread.join(timeout=5)
+        assert resp["ok"] is True
+        landed = tmp_path / "report.md"
+        assert landed.read_bytes() == payload
+
+    def test_put_file_into_directory_strips_traversal(self, tmp_path) -> None:
+        # A malicious/buggy `name` must not escape the destination directory:
+        # basename() collapses "../escape" to "escape".
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        payload = b"no-escape"
+        host, guest = socket.socketpair()
+        with host:
+            thread = _serve_once(guest)
+            protocol.send_json(
+                host,
+                {
+                    "op": "put_file",
+                    "path": str(dest),
+                    "name": "../escape",
+                    "mode": None,
+                    "size": len(payload),
+                },
+            )
+            protocol.send_frame(host, protocol.FRAME_DATA, payload)
+            resp = protocol.recv_json(host)
+            thread.join(timeout=5)
+        assert resp["ok"] is True
+        assert (dest / "escape").read_bytes() == payload
+        assert not (tmp_path / "escape").exists()
+
+    def test_put_file_into_directory_without_name_errors(self, tmp_path) -> None:
+        # A directory destination with no usable filename fails with a clear
+        # message instead of a cryptic "Is a directory" errno later.
+        payload = b"data"
+        host, guest = socket.socketpair()
+        with host:
+            thread = _serve_once(guest)
+            protocol.send_json(
+                host,
+                {"op": "put_file", "path": str(tmp_path), "mode": None, "size": len(payload)},
+            )
+            # Bytes must still be drained so the stream stays framed.
+            protocol.send_frame(host, protocol.FRAME_DATA, payload)
+            resp = protocol.recv_json(host)
+            thread.join(timeout=5)
+        assert resp["ok"] is False
+        assert "directory" in resp["error"]
+
     def test_get_file_streams_bytes_and_mode(self, tmp_path) -> None:
         source = tmp_path / "blob.bin"
         payload = os.urandom(200_000)  # spans multiple CHUNK_SIZE frames

@@ -214,22 +214,37 @@ def handle_run(conn: Any, req: dict[str, Any]) -> None:
 
 def handle_put_file(conn: Any, req: dict[str, Any]) -> None:
     path = req.get("path")
+    name = req.get("name")
     size = int(req.get("size", 0))
     mode = req.get("mode")
 
     error: str | None = None
+    target: str | None = None
     tmp_path: str | None = None
     handle = None
     if not path:
         error = "missing 'path'"
     else:
         target = os.path.abspath(path)
-        parent = os.path.dirname(target) or "/"
-        try:
-            tmp_fd, tmp_path = tempfile.mkstemp(dir=parent, prefix=".smolvm-put-")
-            handle = os.fdopen(tmp_fd, "wb")
-        except OSError as exc:
-            error = f"cannot create file: {exc}"
+        # If the destination is an existing directory, land the file *inside*
+        # it (matching `cp file dir/`). Only the guest can see its own
+        # filesystem, so this directory check has to happen here rather than
+        # host-side; the host supplies the source basename as `name`.
+        # basename() blocks path traversal (e.g. name="../escape") — SFTP got
+        # this sanitization from its server, but our raw agent must do it.
+        if os.path.isdir(target):
+            base = os.path.basename(name) if name else ""
+            if not base:
+                error = f"destination is a directory and no filename was provided: {path}"
+            else:
+                target = os.path.join(target, base)
+        if error is None:
+            parent = os.path.dirname(target) or "/"
+            try:
+                tmp_fd, tmp_path = tempfile.mkstemp(dir=parent, prefix=".smolvm-put-")
+                handle = os.fdopen(tmp_fd, "wb")
+            except OSError as exc:
+                error = f"cannot create file: {exc}"
 
     # Always drain exactly `size` payload bytes so the stream stays framed even
     # when the write target is unwritable; discard them if we have no file.
@@ -256,7 +271,7 @@ def handle_put_file(conn: Any, req: dict[str, Any]) -> None:
         try:
             if mode is not None:
                 os.chmod(tmp_path, int(mode))
-            os.replace(tmp_path, os.path.abspath(path))
+            os.replace(tmp_path, target)
         except OSError as exc:
             error = str(exc)
 

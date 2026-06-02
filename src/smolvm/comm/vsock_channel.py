@@ -229,6 +229,7 @@ class VsockChannel:
                     "v": protocol.PROTOCOL_VERSION,
                     "op": "put_file",
                     "path": remote_path,
+                    "name": source.name,
                     "mode": mode,
                     "size": len(data),
                 },
