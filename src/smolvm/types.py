@@ -487,7 +487,7 @@ class VMConfig(BaseModel):
             seen_guest_paths.add(mount.guest_path)
         return v
 
-    model_config = {"frozen": True}
+    model_config = {"frozen": True, "extra": "forbid"}
 
 
 class BrowserSessionConfig(BaseModel):
