@@ -21,6 +21,13 @@ on:
     - cron: "17 3 * * *"
   workflow_dispatch:
 
+# A real-KVM run takes a runner slot for ~1.5 min; on stacked PR pushes, cancel
+# the in-flight run so only the newest commit is verified. Keyed per ref so PRs,
+# the nightly cron, and manual dispatches don't cancel each other across refs.
+concurrency:
+  group: e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -100,8 +107,16 @@ jobs:
         if: failure()
         run: |
           echo "## e2e failed — recent VM/runtime logs" >> "$GITHUB_STEP_SUMMARY"
-          for d in "$HOME/.smolvm" "$HOME/.local/share/smolvm"; do
-            [ -d "$d" ] || continue
+          # SmolVM writes per-VM logs to <data_dir>/<vm_id>.log. data_dir resolves
+          # (see resolve_data_dir / _candidate_data_dirs in smolvm/vm.py) to
+          # $SMOLVM_DATA_DIR, else ${XDG_STATE_HOME:-$HOME/.local/state}/smolvm,
+          # else /var/lib/smolvm. (~/.smolvm holds image/key logs — kept too.)
+          for d in \
+              "$SMOLVM_DATA_DIR" \
+              "${XDG_STATE_HOME:-$HOME/.local/state}/smolvm" \
+              "/var/lib/smolvm" \
+              "$HOME/.smolvm"; do
+            [ -n "$d" ] && [ -d "$d" ] || continue
             echo "### $d" >> "$GITHUB_STEP_SUMMARY"
             find "$d" -name "*.log" -type f 2>/dev/null | while read -r f; do
               echo "<details><summary>$f</summary>" >> "$GITHUB_STEP_SUMMARY"
