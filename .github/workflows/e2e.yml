@@ -7,12 +7,15 @@
 # SSH and vsock control transports.
 #
 # GH-hosted ubuntu-latest (x86) exposes /dev/kvm, so this runs with hardware
-# acceleration. It's nightly + manual rather than per-PR: booting a real VM is
-# slow and the shared runners are noisy.
+# acceleration. The whole suite boots in ~1.5 min on a runner, so it gates every
+# PR to main; the nightly cron still runs to catch runner/environment drift on
+# days with no PRs, and it can be launched manually.
 
 name: E2E (real KVM)
 
 on:
+  pull_request:
+    branches: [main]
   schedule:
     # 03:17 UTC nightly (off the top of the hour to dodge cron congestion).
     - cron: "17 3 * * *"
