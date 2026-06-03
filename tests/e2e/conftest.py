@@ -46,7 +46,11 @@ def vm(request: pytest.FixtureRequest):
     transport = request.param
 
     if not kvm_ready():
-        pytest.skip("requires /dev/kvm and a working smolvm-core native extension")
+        pytest.skip(
+            "requires /dev/kvm and a working smolvm-core native extension "
+            "(enable KVM with `sudo modprobe kvm && sudo chmod 666 /dev/kvm`, "
+            "then re-run)"
+        )
     if transport == "vsock" and not host_supports_vsock():
         pytest.skip(
             "vsock requires a Linux host with /dev/vhost-vsock "

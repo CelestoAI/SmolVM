@@ -20,7 +20,7 @@ from pathlib import Path
 
 try:
     from smolvm_core import is_available as _core_available
-except Exception:  # pragma: no cover - native extension missing entirely
+except (ImportError, OSError):  # pragma: no cover - native extension missing entirely
     _core_available = None
 
 # Boot is fast under KVM, but auto-config may build/download the rootfs and
