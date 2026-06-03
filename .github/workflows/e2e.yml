@@ -17,14 +17,6 @@ on:
     # 03:17 UTC nightly (off the top of the hour to dodge cron congestion).
     - cron: "17 3 * * *"
   workflow_dispatch:
-  # TEMPORARY: verify the suite on real KVM in PR #331 before merge.
-  # Remove this `pull_request` block before merging — the suite is meant to be
-  # nightly + manual, not per-PR (booting a real VM is slow on shared runners).
-  pull_request:
-    branches: [main]
-    paths:
-      - "tests/e2e/**"
-      - ".github/workflows/e2e.yml"
 
 permissions:
   contents: read
