@@ -76,6 +76,11 @@ jobs:
           sudo usermod -a -G kvm "$USER" || true
           sudo chmod 666 /dev/kvm || true
           sudo modprobe vhost_vsock || echo "vhost_vsock unavailable; vsock tests will skip"
+          # /dev/vhost-vsock ships as root:kvm mode 660; the `usermod` above
+          # doesn't apply to this already-running job, so widen it directly the
+          # same way as /dev/kvm — otherwise QEMU can't open it and the vsock
+          # VM dies on boot (the device merely *existing* isn't enough).
+          sudo chmod 666 /dev/vhost-vsock || true
           ls -l /dev/kvm /dev/vhost-vsock || true
 
       # uv workspace builds smolvm-core from the local smolvm-core/ directory.
