@@ -1601,34 +1601,33 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
             "set -e; "
             "apk add --no-cache e2fsprogs tar >/dev/null; "
             "mkdir -p /work/rootfs-staging; "
-            "cat > /tmp/rootfs.tar; "
-            "tar -xf /tmp/rootfs.tar -C /work/rootfs-staging; "
+            "tar -xf /work/in/rootfs.tar -C /work/rootfs-staging; "
             f"mke2fs -d /work/rootfs-staging -t ext4 -F /work/out/{rootfs_name} "
             f"{rootfs_size_mb}M >/dev/null"
         )
 
         try:
-            with open(tar_path, "rb") as tar_stdin:
-                proc = subprocess.run(
-                    [
-                        "docker",
-                        "run",
-                        "--rm",
-                        "-i",
-                        "-v",
-                        f"{rootfs_path.parent.resolve()}:/work/out",
-                        "alpine:3.19",
-                        "sh",
-                        "-lc",
-                        shell_cmd,
-                    ],
-                    stdin=tar_stdin,
-                    check=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                )
+            subprocess.run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "-v",
+                    f"{tar_path.resolve()}:/work/in/rootfs.tar:ro",
+                    "-v",
+                    f"{rootfs_path.parent.resolve()}:/work/out",
+                    "alpine:3.19",
+                    "sh",
+                    "-lc",
+                    shell_cmd,
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
         except subprocess.CalledProcessError as e:
-            stderr = (e.stderr.decode(errors="replace") if e.stderr else "").strip()
+            stderr = (e.stderr or "").strip()
             raise ImageError(
                 "Failed to create ext4 image via Docker helper.\n"
                 f"Command: docker run ... tar | mke2fs\n"
