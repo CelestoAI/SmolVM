@@ -64,8 +64,8 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
     exit 1
 fi
 
-# Homebrew is only required when we may install dependencies.
-if [[ "$CHECK_ONLY" != "true" && "$SKIP_DEPS" != "true" ]]; then
+# Homebrew is required whenever we may need to install QEMU or other deps.
+if [[ "$CHECK_ONLY" != "true" ]]; then
     if ! command -v brew >/dev/null 2>&1; then
         echo "❌ Homebrew not found. Install from https://brew.sh and rerun."
         exit 1
