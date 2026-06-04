@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import socket
+import sys
 import threading
 import time
 from pathlib import Path
@@ -197,7 +198,10 @@ def test_qmp_wait_for_job_raises_on_job_error(tmp_path: Path) -> None:
     ]
 
 
-@pytest.mark.skip(reason="Socket binding fails in macOS automated test sandbox")
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="Socket binding fails in macOS automated test sandbox",
+)
 def test_qmp_connect_raises_read_timeout_above_connect_probe_timeout(tmp_path: Path) -> None:
     """After connecting, the socket read timeout must be the generous read_timeout.
 
@@ -222,7 +226,10 @@ def test_qmp_connect_raises_read_timeout_above_connect_probe_timeout(tmp_path: P
         socket_path.unlink()
 
 
-@pytest.mark.skip(reason="Socket binding fails in macOS automated test sandbox")
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="Socket binding fails in macOS automated test sandbox",
+)
 def test_qmp_blockdev_internal_snapshot_round_trips(tmp_path: Path) -> None:
     """Disk-only internal snapshot create/delete issue synchronous QMP commands."""
     socket_path = tmp_path / f"smolvm-qmp-{uuid4().hex}.sock"

@@ -67,8 +67,9 @@ class QMPClient:
         ``timeout`` bounds how long we keep retrying the initial connect while
         QEMU is still bringing the monitor socket up; each probe uses a short
         (≤1s) socket timeout so a not-yet-ready socket fails fast and retries.
-        Once connected, the socket timeout is raised to ``read_timeout`` so that
-        replies to slow commands (e.g. ``snapshot-save`` while QEMU is busy
+        Once QMP greeting/capabilities negotiation succeeds, the socket timeout
+        is raised to ``read_timeout`` so that replies to slow commands (e.g.
+        ``snapshot-save`` while QEMU is busy
         dumping guest RAM, which can take far longer than 1s to even
         acknowledge) are not cut off mid-read with ``TimeoutError``.
         """
@@ -82,9 +83,6 @@ class QMPClient:
                 qmp_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 qmp_socket.settimeout(min(timeout, 1.0))
                 qmp_socket.connect(str(self.socket_path))
-                # Connected: switch from the short connect-probe timeout to a
-                # generous read timeout for command replies.
-                qmp_socket.settimeout(read_timeout)
                 self._socket = qmp_socket
                 self._reader = qmp_socket.makefile("r", encoding="utf-8")
                 self._writer = qmp_socket.makefile("w", encoding="utf-8")
@@ -107,6 +105,10 @@ class QMPClient:
                     {"socket_path": str(self.socket_path), "greeting": greeting},
                 )
             self.execute("qmp_capabilities")
+            assert self._socket is not None
+            # Handshake complete: switch from the short probe timeout to a
+            # generous read timeout for command replies.
+            self._socket.settimeout(read_timeout)
         except Exception:
             self.close()
             raise
