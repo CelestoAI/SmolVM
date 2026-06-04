@@ -1350,7 +1350,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit machine-readable JSON output.",
     )
     _add_ssh_auth_args(port_forward)
-    _add_comm_channel_arg(env_list)
+    _add_comm_channel_arg(port_forward)
 
     return parser
 
