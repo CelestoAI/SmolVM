@@ -64,8 +64,8 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
     exit 1
 fi
 
-# Homebrew is required whenever we may need to install QEMU or other deps.
-if [[ "$CHECK_ONLY" != "true" ]]; then
+# Homebrew is only required when we may install dependencies.
+if [[ "$CHECK_ONLY" != "true" && "$SKIP_DEPS" != "true" ]]; then
     if ! command -v brew >/dev/null 2>&1; then
         echo "❌ Homebrew not found. Install from https://brew.sh and rerun."
         exit 1
@@ -120,6 +120,10 @@ fi
 echo "=== SmolVM macOS setup (qemu backend) ==="
 
 if ! find_qemu; then
+    if ! command -v brew >/dev/null 2>&1; then
+        echo "❌ Homebrew not found. Install from https://brew.sh and rerun."
+        exit 1
+    fi
     echo "Installing qemu via Homebrew..."
     brew install qemu
 fi
