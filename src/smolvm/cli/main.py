@@ -1319,6 +1319,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit machine-readable JSON output.",
     )
     _add_ssh_auth_args(env_list)
+
+    port_parser = subparsers.add_parser(
+        "port",
+        help="Manage port forwarding for a running sandbox.",
+    )
+    port_sub = port_parser.add_subparsers(dest="port_action")
+
+    port_forward = port_sub.add_parser(
+        "forward",
+        help="Forward a guest TCP port to localhost. Runs until Ctrl-C.",
+    )
+    port_forward.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
+    port_forward.add_argument(
+        "guest_port",
+        metavar="guest-port",
+        type=int,
+        help="TCP port inside the sandbox to forward.",
+    )
+    port_forward.add_argument(
+        "--host-port",
+        type=int,
+        default=None,
+        metavar="PORT",
+        help="Localhost port to listen on (default: auto-assigned).",
+    )
+    port_forward.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output.",
+    )
+    _add_ssh_auth_args(port_forward)
     _add_comm_channel_arg(env_list)
 
     return parser
@@ -3205,6 +3236,66 @@ def _run_ssh(args: argparse.Namespace) -> int:
         if vm is not None:
             vm.close()
 
+def _run_port_forward(args: argparse.Namespace) -> int:
+    """Handle ``smolvm port forward``."""
+    import signal
+    from smolvm.facade import SmolVM
+
+    json_output: bool = args.json
+    vm: SmolVM | None = None
+    host_port: int | None = None
+
+    try :
+        vm = SmolVM.from_id(
+            args.vm_id,
+            ssh_user=args.ssh_user,
+            ssh_key_path=args.ssh_key,
+        )
+
+        host_port = vm.expose_local(args.guest_port, args.host_port)
+
+        if json_output:
+            emit_json(
+                "port_forward",
+                0,
+                data={
+                    "sandbox": args.vm_id,
+                    "guest_port": args.guest_port,
+                    "host_port": host_port,
+                    "url": f"http://localhost:{host_port}",
+                },
+            )
+        else:
+            console = console_stdout()
+            console.print(
+                f"Forwarding [bold]localhost:{host_port}[/bold] -> "
+                f"guest:[bold]{args.guest_port}[/bold]"
+            )
+            console.print(f"Open [link]http://localhost:{host_port}[/link]")
+            console.print("Press [bold]Ctrl-C[/bold] to stop.")
+        
+        signal.pause()
+    except KeyboardInterrupt:
+        pass
+    except Exception as exc:
+        return _emit_cli_error("port_forward", 1, exc, json_output=json_output)
+    finally:
+        if vm is not None and host_port is not None:
+            from contextlib import suppress
+            with suppress(Exception):
+                vm.unexpose_local(host_port, args.guest_port)
+        if vm is not None:
+            vm.close()
+    
+    return 0
+
+def _run_port(args: argparse.Namespace) -> int:
+    """Dispatch ``smolvm port <action>``."""
+    if getattr(args, "port_action", None) == "forward":
+        return _run_port_forward(args)
+    from smolvm.cli.main import build_parser
+    build_parser().parse_args(["port", "--help"])
+    return 2
 
 def _render_ui_startup(
     host: str,
@@ -3655,6 +3746,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "env":
         return _run_env(args)
-
+    
+    if args.command == "port":
+        return _run_port(args)
+    
     parser.print_help()
     return 2
