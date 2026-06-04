@@ -19,15 +19,23 @@ from __future__ import annotations
 import json
 import socket
 import sys
+import tempfile
 import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
-from uuid import uuid4
 
 import pytest
 
 from smolvm.exceptions import SmolVMError
 from smolvm.qmp import QMPClient
+
+
+@pytest.fixture
+def qmp_socket_path() -> Iterator[Path]:
+    """Return a short socket path so Linux AF_UNIX path limits do not hide QMP behavior."""
+    with tempfile.TemporaryDirectory(prefix="qmp-") as socket_dir:
+        yield Path(socket_dir) / "q.sock"
 
 
 def _start_qmp_server(
@@ -92,9 +100,9 @@ def _start_qmp_server(
 
 
 @pytest.mark.skip(reason="Socket binding fails in macOS automated test sandbox")
-def test_qmp_handshake_command_execution_and_job_polling(tmp_path: Path) -> None:
+def test_qmp_handshake_command_execution_and_job_polling(qmp_socket_path: Path) -> None:
     """QMPClient should negotiate capabilities, execute commands, and poll jobs."""
-    socket_path = tmp_path / f"smolvm-qmp-{uuid4().hex}.sock"
+    socket_path = qmp_socket_path
     requests: list[dict[str, object]] = []
     responses: dict[str, list[dict[str, object] | list[dict[str, object]]]] = {
         "qmp_capabilities": [{"return": {}}],
@@ -157,9 +165,9 @@ def test_qmp_handshake_command_execution_and_job_polling(tmp_path: Path) -> None
 
 
 @pytest.mark.skip(reason="Socket binding fails in macOS automated test sandbox")
-def test_qmp_wait_for_job_raises_on_job_error(tmp_path: Path) -> None:
+def test_qmp_wait_for_job_raises_on_job_error(qmp_socket_path: Path) -> None:
     """wait_for_job should surface the QMP job error field."""
-    socket_path = tmp_path / f"smolvm-qmp-{uuid4().hex}.sock"
+    socket_path = qmp_socket_path
     requests: list[dict[str, object]] = []
     responses: dict[str, list[dict[str, object] | list[dict[str, object]]]] = {
         "qmp_capabilities": [{"return": {}}],
@@ -202,14 +210,16 @@ def test_qmp_wait_for_job_raises_on_job_error(tmp_path: Path) -> None:
     sys.platform == "darwin",
     reason="Socket binding fails in macOS automated test sandbox",
 )
-def test_qmp_connect_raises_read_timeout_above_connect_probe_timeout(tmp_path: Path) -> None:
+def test_qmp_connect_raises_read_timeout_above_connect_probe_timeout(
+    qmp_socket_path: Path,
+) -> None:
     """After connecting, the socket read timeout must be the generous read_timeout.
 
     Regression guard for the snapshot-save read TimeoutError: the connect probe
     used a ≤1s socket timeout that previously persisted for every command read,
     cutting off replies to slow commands. Once connected we raise it.
     """
-    socket_path = tmp_path / f"smolvm-qmp-{uuid4().hex}.sock"
+    socket_path = qmp_socket_path
     requests: list[dict[str, object]] = []
     responses: dict[str, list[dict[str, object] | list[dict[str, object]]]] = {
         "qmp_capabilities": [{"return": {}}],
@@ -230,9 +240,9 @@ def test_qmp_connect_raises_read_timeout_above_connect_probe_timeout(tmp_path: P
     sys.platform == "darwin",
     reason="Socket binding fails in macOS automated test sandbox",
 )
-def test_qmp_blockdev_internal_snapshot_round_trips(tmp_path: Path) -> None:
+def test_qmp_blockdev_internal_snapshot_round_trips(qmp_socket_path: Path) -> None:
     """Disk-only internal snapshot create/delete issue synchronous QMP commands."""
-    socket_path = tmp_path / f"smolvm-qmp-{uuid4().hex}.sock"
+    socket_path = qmp_socket_path
     requests: list[dict[str, object]] = []
     responses: dict[str, list[dict[str, object] | list[dict[str, object]]]] = {
         "qmp_capabilities": [{"return": {}}],
@@ -260,9 +270,11 @@ def test_qmp_blockdev_internal_snapshot_round_trips(tmp_path: Path) -> None:
 
 
 @pytest.mark.skip(reason="Socket binding fails in macOS automated test sandbox")
-def test_qmp_connect_can_retry_after_capabilities_handshake_failure(tmp_path: Path) -> None:
+def test_qmp_connect_can_retry_after_capabilities_handshake_failure(
+    qmp_socket_path: Path,
+) -> None:
     """Failed capability negotiation should not leave the client half-connected."""
-    socket_path = tmp_path / f"smolvm-qmp-{uuid4().hex}.sock"
+    socket_path = qmp_socket_path
     failed_requests: list[dict[str, object]] = []
     failed_responses: dict[str, list[dict[str, object] | list[dict[str, object]]]] = {
         "qmp_capabilities": [
