@@ -1351,6 +1351,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_ssh_auth_args(port_forward)
     _add_comm_channel_arg(port_forward)
+    _add_comm_channel_arg(env_list)
 
     return parser
 
