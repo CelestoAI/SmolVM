@@ -405,7 +405,7 @@ class TestBrowserImageBuilder:
 
             if cmd[:2] == ["docker", "run"]:
                 volumes = [cmd[i + 1] for i, token in enumerate(cmd) if token == "-v"]
-                out_host = Path(volumes[1].split(":", 1)[0])
+                out_host = Path(volumes[0].split(":", 1)[0])
                 (out_host / "rootfs.ext4").write_bytes(b"ext4")
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
