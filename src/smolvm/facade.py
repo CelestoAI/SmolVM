@@ -2918,6 +2918,7 @@ modprobe 9pnet_virtio""".strip()
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 text=True,
+                start_new_session=True,
             )
         except FileNotFoundError:
             raise SmolVMError(

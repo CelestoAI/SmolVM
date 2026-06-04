@@ -1326,31 +1326,80 @@ def build_parser() -> argparse.ArgumentParser:
     )
     port_sub = port_parser.add_subparsers(dest="port_action")
 
-    port_forward = port_sub.add_parser(
-        "forward",
-        help="Forward a guest TCP port to localhost. Runs until Ctrl-C.",
+    port_expose = port_sub.add_parser(
+        "expose",
+        help="Forward a guest port to localhost.",
     )
-    port_forward.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
-    port_forward.add_argument(
-        "guest_port",
-        metavar="guest-port",
-        type=int,
-        help="TCP port inside the sandbox to forward.",
+    port_expose.add_argument("vm_id", metavar="sandbox", help="Name or ID of the same sandbox.")
+    port_expose.add_argument(
+        "mapping",
+        metavar="[host-port:]sandbox-port",
+        help="Port mapping, e.g. 8080:3000 or just 3000 to auto-select host port.",
     )
-    port_forward.add_argument(
-        "--host-port",
-        type=int,
-        default=None,
-        metavar="PORT",
-        help="Localhost port to listen on (default: auto-assigned).",
-    )
-    port_forward.add_argument(
+    port_expose.add_argument(
         "--json",
         action="store_true",
         help="Emit machine-readable JSON output.",
     )
-    _add_ssh_auth_args(port_forward)
-    _add_comm_channel_arg(port_forward)
+    _add_ssh_auth_args(port_expose)
+    _add_comm_channel_arg(port_expose)
+
+    port_close = port_sub.add_parser(
+        "close",
+        help="Remove a forwarded port.",
+    )
+    port_close.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
+    port_close.add_argument(
+        "mapping",
+        metavar="host-port:sandbox-port",
+        help="Mapping to remove, e.g. 8080:3000.",
+    )
+    port_close.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output.",
+    )
+    _add_ssh_auth_args(port_close)
+    _add_comm_channel_arg(port_close)
+
+    port_list = port_sub.add_parser(
+        "list",
+        help="List active port forwards for a sandbox.",
+    )
+    port_list.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
+    port_list.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output.",
+    )
+    _add_ssh_auth_args(port_list)
+    _add_comm_channel_arg(port_list)
+
+    # port_forward = port_sub.add_parser(
+    #     "forward",
+    #     help="Forward a guest TCP port to localhost. Runs until Ctrl-C.",
+    # )
+    # port_forward.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
+    # port_forward.add_argument(
+    #     "guest_port",
+    #     metavar="guest-port",
+    #     type=int,
+    #     help="TCP port inside the sandbox to forward.",
+    # )
+    # port_forward.add_argument(
+    #     "--host-port",
+    #     type=int,
+    #     default=None,
+    #     metavar="PORT",
+    #     help="Localhost port to listen on (default: auto-assigned).",
+    # )
+    # port_forward.add_argument(
+    #     "--json",
+    #     action="store_true",
+    #     help="Emit machine-readable JSON output.",
+    # )
+    # _add_ssh_auth_args(port_forward)
+    # _add_comm_channel_arg(port_forward)
     _add_comm_channel_arg(env_list)
 
     return parser
@@ -3237,63 +3286,209 @@ def _run_ssh(args: argparse.Namespace) -> int:
         if vm is not None:
             vm.close()
 
-def _run_port_forward(args: argparse.Namespace) -> int:
-    """Handle ``smolvm port forward``."""
-    import signal
+def _parse_port_mapping(mapping: str) -> tuple[int | None, int]:
+    """Parse '[host-port:]sandbox-port' into (host_port_or_None, sandbox_port)."""
+    if ":" in mapping:
+        host_str, guest_str = mapping.split(":", 1)
+        return int(host_str), int(guest_str)
+    return None, int(mapping)
+
+def _port_forwards_path(vm_id: str) -> Path:
+    """Path to the JSON file tracking active port forwards for a VM."""
+    state_dir = Path.home() / ".smolvm" / "forwards"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    return state_dir / f"{vm_id}.json"
+
+def _load_port_forwards(vm_id: str) -> list[dict]:
+    p = _port_forwards_path(vm_id)
+    if not p.exists():
+        return []
+    try:
+        import json
+        return json.loads(p.read_text())
+    except Exception:
+        return []
+    
+def _save_port_forwards(vm_id: str, forwards: list[dict]) -> None:
+    import json
+    _port_forwards_path(vm_id).write_text(json.dumps(forwards, indent=2))
+
+def _run_port_expose(args: argparse.Namespace) -> int:
+    """Handle ``smolvm port expose``."""
     from smolvm.facade import SmolVM
 
     json_output: bool = args.json
     vm: SmolVM | None = None
-    host_port: int | None = None
 
-    try :
+    try:
+        host_port_req, guest_port = _parse_port_mapping(args.mapping)
+    except ValueError:
+        return _emit_cli_error(
+            "port expose",
+            1,
+            ValueError(
+                f"Invalid mapping {args.mapping!r}. Use 'host-port:sandbox-port' or 'sandbox-port'."
+            ),
+            json_output=json_output,
+        )
+    try:
         vm = SmolVM.from_id(
             args.vm_id,
             ssh_user=args.ssh_user,
             ssh_key_path=args.ssh_key,
+            comm_channel=args.comm_channel,
         )
+        host_port = vm.expose_local(guest_port, host_port_req)
 
-        host_port = vm.expose_local(args.guest_port, args.host_port)
+        # Persist forward info so `port close` and `port list` can find it.
+        forward_entry: dict = {"host_port": host_port, "guest_port": guest_port}
+        tracked = vm._local_forwards.get((host_port, guest_port))
+        if tracked is not None and tracked.tunnel_proc is not None:
+            forward_entry["pid"] = tracked.tunnel_proc.pid
+            forward_entry["transport"] = "ssh_tunnel"
+        else:
+            forward_entry["transport"] = "nftables"
+        forwards = _load_port_forwards(args.vm_id)
+        # Remove any stale entry for the same pair before appending.
+        forwards = [
+            f for f in forwards
+            if not (f["host_port"] == host_port and f["guest_port"] == guest_port)
+        ]
+        forwards.append(forward_entry)
+        _save_port_forwards(args.vm_id, forwards)
 
         if json_output:
             emit_json(
-                "port_forward",
+                "port expose",
                 0,
                 data={
                     "sandbox": args.vm_id,
-                    "guest_port": args.guest_port,
+                    "guest_port": guest_port,
                     "host_port": host_port,
+                    "mapping": f"{host_port}:{guest_port}",
                     "url": f"http://localhost:{host_port}",
                 },
             )
         else:
             console = console_stdout()
             console.print(
-                f"Forwarding [bold]localhost:{host_port}[/bold] -> "
-                f"guest:[bold]{args.guest_port}[/bold]"
+                f"Exposed [bold]localhost:{host_port}[/bold] → "
+                f"guest:[bold]{guest_port}[/bold]"
             )
             console.print(f"Open [link]http://localhost:{host_port}[/link]")
-            console.print("Press [bold]Ctrl-C[/bold] to stop.")
-        
-        signal.pause()
-    except KeyboardInterrupt:
-        pass
+            console.print(
+                f"Stop with: [bold]smolvm port close {args.vm_id} {host_port}:{guest_port}[/bold]"
+            )
     except Exception as exc:
-        return _emit_cli_error("port_forward", 1, exc, json_output=json_output)
+        return _emit_cli_error("port expose", 1, exc, json_output=json_output)
     finally:
-        if vm is not None and host_port is not None:
-            from contextlib import suppress
-            with suppress(Exception):
-                vm.unexpose_local(host_port, args.guest_port)
         if vm is not None:
             vm.close()
     
     return 0
+    
+
+def _run_port_close(args: argparse.Namespace) -> int:
+    """Handle ``smolvm port close``."""
+    import signal as _signal
+    from smolvm.facade import SmolVM
+
+    json_output: bool = args.json
+    vm: SmolVM | None = None
+
+    try:
+        host_port, guest_port = _parse_port_mapping(args.mapping)
+        if host_port is None:
+            raise ValueError("Use 'host-port:sandbox-port' format for port close.")
+    except ValueError as exc:
+        return _emit_cli_error("port close", 1, exc, json_output=json_output)
+
+    try:
+        # Kill stored SSH tunnel process if present.
+        forwards = _load_port_forwards(args.vm_id)
+        entry = next(
+            (f for f in forwards if f["host_port"] == host_port and f["guest_port"] == guest_port),
+            None,
+        )
+        if entry and entry.get("transport") == "ssh_tunnel" and entry.get("pid"):
+            try:
+                import os
+                import signal
+                os.kill(entry["pid"], signal.SIGTERM)
+            except (ProcessLookupError, OSError):
+                pass
+
+        # Clean up nftables rules via the facade.
+        vm = SmolVM.from_id(
+            args.vm_id,
+            ssh_user=args.ssh_user,
+            ssh_key_path=args.ssh_key,
+            comm_channel=args.comm_channel,
+        )
+        vm.unexpose_local(host_port, guest_port)
+
+        # Update state file.
+        forwards = [
+            f for f in forwards
+            if not (f["host_port"] == host_port and f["guest_port"] == guest_port)
+        ]
+        _save_port_forwards(args.vm_id, forwards)
+
+        if json_output:
+            emit_json(
+                "port close",
+                0,
+                data={"sandbox": args.vm_id, "host_port": host_port, "guest_port": guest_port},
+            )
+        else:
+            console_stdout().print(
+                f"Closed [bold]localhost:{host_port}[/bold] → guest:[bold]{guest_port}[/bold]"
+            )
+
+    except Exception as exc:
+        return _emit_cli_error("port close", 1, exc, json_output=json_output)
+    finally:
+        if vm is not None:
+            vm.close()
+
+    return 0
+
+def _run_port_list(args: argparse.Namespace) -> int:
+    """Handle ``smolvm port list``."""
+    json_output: bool = args.json
+    forwards = _load_port_forwards(args.vm_id)
+
+    if json_output:
+        emit_json("port list", 0 , data={"sandbox": args.vm_id, "forwards": forwards})
+    else:
+        console = console_stdout()
+        if not forwards:
+            render_empty("Port Forwards", f"No active port forwards for '{args.vm_id}'.")
+        else:
+            from rich.table import Table
+            table = Table(title=f"Port Forwards — {args.vm_id}")
+            table.add_column("Host port", justify="right")
+            table.add_column("Sandbox port", justify="right")
+            table.add_column("Transport")
+            for f in forwards:
+                table.add_row(
+                    str(f["host_port"]),
+                    str(f["guest_port"]),
+                    f.get("transport", "unknown"),
+                )
+            console.print(table)
+
+    return 0
 
 def _run_port(args: argparse.Namespace) -> int:
     """Dispatch ``smolvm port <action>``."""
-    if getattr(args, "port_action", None) == "forward":
-        return _run_port_forward(args)
+    action = getattr(args, "port_action", None)
+    if action == "expose":
+        return _run_port_expose(args)
+    if action == "close":
+        return _run_port_close(args)
+    if action == "list":
+        return _run_port_list(args)
     from smolvm.cli.main import build_parser
     build_parser().parse_args(["port", "--help"])
     return 2
