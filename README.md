@@ -348,6 +348,60 @@ See [scripts/benchmarks/README.md](scripts/benchmarks/README.md) for flags, outp
 See [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
 
 
+## FAQ
+
+### What is SmolVM?
+
+SmolVM is an open-source AI sandbox infrastructure that provides secure, isolated computers for AI agents to browse, run code, and get real work done.
+
+### Key Features
+
+| Feature | Description |
+|---------|-------------|
+| Sub-second boot | ~500ms VM boot time, ready before API returns |
+| Hardware isolation | Each sandbox runs in its own VM with hardware-level separation |
+| Network controls | Lock down egress to specific domains |
+| Browser sandbox | Full browser session agents can see and control |
+| File sharing | Share local directories, read-only or writable |
+| Snapshots | Pause and resume sandbox with everything intact |
+| Coding agents | Claude Code, Codex, or Pi pre-installed with git credentials forwarded |
+| Windows sandbox | Boot Windows 11 guest (Linux host only for now) |
+
+### How to install SmolVM?
+
+```bash
+# One-line install (includes Python, configures machine, verifies setup)
+curl -sSL https://celesto.ai/install.sh | bash
+
+# Or manual install
+pip install smolvm
+smolvm setup
+smolvm doctor
+```
+
+### What are use cases?
+
+- **Run untrusted code safely.** Execute AI-generated code in an isolated sandbox instead of on your machine.
+- **Give agents a browser.** Spin up a full browser session that agents can see and control in real time.
+- **Let agents read your project.** Mount a local directory so agents can explore your codebase inside a sandbox.
+- **Keep state across turns.** Reuse the same sandbox throughout a multi-step workflow.
+
+### Is it free?
+
+Yes, SmolVM is open-source under Apache 2.0 License.
+
+### How to contribute?
+
+Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
+
+### Where to get help?
+
+| Channel | Link |
+|---------|------|
+| Documentation | https://docs.celesto.ai |
+| Community Slack | https://join.slack.com/t/celestoai |
+| GitHub Issues | https://github.com/CelestoAI/SmolVM/issues |
+
 ## License
 
 Apache 2.0 — see [LICENSE](LICENSE) for details.
