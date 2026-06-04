@@ -61,10 +61,19 @@ class SnapshotType(str, Enum):
     disk, so the snapshot can be restored on its own. ``DIFF`` stores only
     the data that changed since the shared base image, which is much smaller
     but means the snapshot depends on that base image still being present.
+
+    ``DISK`` is like ``FULL`` (self-contained) but stores **only the disk** —
+    it does not save the guest's RAM (vmstate). Restoring a ``DISK`` snapshot
+    boots the guest fresh from that disk rather than resuming the exact running
+    state. Because it skips the RAM dump, taking a ``DISK`` snapshot is far
+    faster, never blocks the QEMU monitor, and uses far less disk — the right
+    choice when you only need the filesystem state and restore-as-cold-boot is
+    acceptable (e.g. sandbox suspend/restore across hosts).
     """
 
     FULL = "full"
     DIFF = "diff"
+    DISK = "disk"
 
 
 def _generate_vm_id() -> str:

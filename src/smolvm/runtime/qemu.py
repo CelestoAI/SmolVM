@@ -316,20 +316,27 @@ class QemuRuntimeAdapter(RuntimeAdapter):
     def create_snapshot(self, request: SnapshotCreateRequest) -> SnapshotCreateResult:
         """Create a QEMU snapshot and copy the managed qcow2 disk artifact."""
         vm_info = request.vm_info
+        # DISK snapshots store only the block device — no guest RAM (vmstate) —
+        # so they use the synchronous disk-only internal-snapshot primitive
+        # instead of the heavyweight ``snapshot-save`` job that dumps memory.
+        disk_only = request.snapshot_type == SnapshotType.DISK
         snapshot_saved = False
         with self._client(vm_info.control_socket_path) as client:
             if request.original_status == VMState.RUNNING:
                 client.stop_vm()
 
             try:
-                save_job_id = f"snapshot-save-{request.snapshot_id}"
-                client.snapshot_save(
-                    save_job_id,
-                    request.snapshot_id,
-                    QEMU_ROOT_NODE_NAME,
-                    [QEMU_ROOT_NODE_NAME],
-                )
-                client.wait_for_job(save_job_id)
+                if disk_only:
+                    client.blockdev_snapshot_internal_sync(QEMU_ROOT_NODE_NAME, request.snapshot_id)
+                else:
+                    save_job_id = f"snapshot-save-{request.snapshot_id}"
+                    client.snapshot_save(
+                        save_job_id,
+                        request.snapshot_id,
+                        QEMU_ROOT_NODE_NAME,
+                        [QEMU_ROOT_NODE_NAME],
+                    )
+                    client.wait_for_job(save_job_id)
                 snapshot_saved = True
 
                 disk_path = request.snapshot_root / "disk.qcow2"
@@ -338,9 +345,16 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                 else:
                     self._copy_disk_standalone(request.managed_disk_path, disk_path)
 
-                delete_job_id = f"snapshot-delete-{request.snapshot_id}"
-                client.snapshot_delete(delete_job_id, request.snapshot_id, [QEMU_ROOT_NODE_NAME])
-                client.wait_for_job(delete_job_id)
+                if disk_only:
+                    client.blockdev_snapshot_delete_internal_sync(
+                        QEMU_ROOT_NODE_NAME, request.snapshot_id
+                    )
+                else:
+                    delete_job_id = f"snapshot-delete-{request.snapshot_id}"
+                    client.snapshot_delete(
+                        delete_job_id, request.snapshot_id, [QEMU_ROOT_NODE_NAME]
+                    )
+                    client.wait_for_job(delete_job_id)
 
                 return SnapshotCreateResult(
                     artifacts=SnapshotArtifacts(disk_path=disk_path),
@@ -349,13 +363,18 @@ class QemuRuntimeAdapter(RuntimeAdapter):
             except Exception:
                 if snapshot_saved:
                     with suppress(Exception):
-                        cleanup_job_id = f"snapshot-cleanup-{request.snapshot_id}"
-                        client.snapshot_delete(
-                            cleanup_job_id,
-                            request.snapshot_id,
-                            [QEMU_ROOT_NODE_NAME],
-                        )
-                        client.wait_for_job(cleanup_job_id)
+                        if disk_only:
+                            client.blockdev_snapshot_delete_internal_sync(
+                                QEMU_ROOT_NODE_NAME, request.snapshot_id
+                            )
+                        else:
+                            cleanup_job_id = f"snapshot-cleanup-{request.snapshot_id}"
+                            client.snapshot_delete(
+                                cleanup_job_id,
+                                request.snapshot_id,
+                                [QEMU_ROOT_NODE_NAME],
+                            )
+                            client.wait_for_job(cleanup_job_id)
                 if request.original_status == VMState.RUNNING:
                     with suppress(Exception):
                         client.cont()
@@ -392,6 +411,11 @@ class QemuRuntimeAdapter(RuntimeAdapter):
         if control_socket_path.exists():
             self._context.unlink_socket(control_socket_path)
 
+        # A DISK snapshot carries no guest RAM, so there is nothing to load —
+        # the guest boots fresh from the restored disk rather than resuming the
+        # exact running state. We still start paused so the caller controls when
+        # the cold boot begins (via ``resume_vm``).
+        disk_only = snapshot.snapshot_type == SnapshotType.DISK
         process: Any | None = None
         try:
             process = self._context.start_qemu(
@@ -404,18 +428,21 @@ class QemuRuntimeAdapter(RuntimeAdapter):
             self._wait_for_runtime(process, control_socket_path, request.boot_timeout)
 
             with self._client(control_socket_path) as client:
-                load_job_id = f"snapshot-load-{snapshot.snapshot_id}"
-                client.snapshot_load(
-                    load_job_id,
-                    snapshot.snapshot_id,
-                    QEMU_ROOT_NODE_NAME,
-                    [QEMU_ROOT_NODE_NAME],
-                )
-                client.wait_for_job(load_job_id)
+                if not disk_only:
+                    load_job_id = f"snapshot-load-{snapshot.snapshot_id}"
+                    client.snapshot_load(
+                        load_job_id,
+                        snapshot.snapshot_id,
+                        QEMU_ROOT_NODE_NAME,
+                        [QEMU_ROOT_NODE_NAME],
+                    )
+                    client.wait_for_job(load_job_id)
 
-                delete_job_id = f"snapshot-delete-{snapshot.snapshot_id}"
-                client.snapshot_delete(delete_job_id, snapshot.snapshot_id, [QEMU_ROOT_NODE_NAME])
-                client.wait_for_job(delete_job_id)
+                    delete_job_id = f"snapshot-delete-{snapshot.snapshot_id}"
+                    client.snapshot_delete(
+                        delete_job_id, snapshot.snapshot_id, [QEMU_ROOT_NODE_NAME]
+                    )
+                    client.wait_for_job(delete_job_id)
 
                 if request.resume_vm:
                     client.cont()

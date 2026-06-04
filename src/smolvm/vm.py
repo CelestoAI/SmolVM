@@ -704,11 +704,17 @@ class SmolVMManager:
         if vm_info.network is None:
             raise SmolVMError("VM has no network configuration", {"vm_id": vm_info.vm_id})
 
-    def _warn_low_disk_space_for_snapshot(self, vm_info: VMInfo) -> None:
+    def _warn_low_disk_space_for_snapshot(
+        self, vm_info: VMInfo, snapshot_type: SnapshotType = SnapshotType.FULL
+    ) -> None:
         """Warn when snapshot creation looks likely to exhaust local disk space."""
         rootfs_size = vm_info.config.rootfs_path.stat().st_size
-        mem_size = vm_info.config.memory * 1024 * 1024
-        required_bytes = rootfs_size + (2 * mem_size)
+        # DISK snapshots don't dump guest RAM, so the memory term doesn't apply.
+        if snapshot_type == SnapshotType.DISK:
+            required_bytes = rootfs_size
+        else:
+            mem_size = vm_info.config.memory * 1024 * 1024
+            required_bytes = rootfs_size + (2 * mem_size)
         free_bytes = shutil.disk_usage(self.snapshot_dir).free
         if free_bytes < required_bytes:
             logger.warning(
@@ -1373,6 +1379,9 @@ class SmolVMManager:
         default) writes a self-contained copy that always restores on its own.
         ``DIFF`` stores only what changed since the shared base image, which is
         much smaller but depends on that base image still being present.
+        ``DISK`` is self-contained like ``FULL`` but stores only the disk (no
+        guest RAM), so it is much faster and lighter; restoring it boots the
+        guest fresh from the disk instead of resuming the running state.
         """
         if not vm_id:
             raise ValueError("vm_id cannot be empty")
@@ -1404,7 +1413,7 @@ class SmolVMManager:
 
         try:
             snapshot_root.mkdir(parents=True, exist_ok=False)
-            self._warn_low_disk_space_for_snapshot(vm_info)
+            self._warn_low_disk_space_for_snapshot(vm_info, snapshot_type)
             result = adapter.create_snapshot(
                 SnapshotCreateRequest(
                     vm_info=vm_info,
