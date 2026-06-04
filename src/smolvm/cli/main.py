@@ -3295,19 +3295,31 @@ def _parse_port_mapping(mapping: str) -> tuple[int | None, int]:
 
 def _port_forwards_path(vm_id: str) -> Path:
     """Path to the JSON file tracking active port forwards for a VM."""
-    state_dir = Path.home() / ".smolvm" / "forwards"
+    state_dir = (Path.home() / ".smolvm" / "forwards").resolve()
     state_dir.mkdir(parents=True, exist_ok=True)
-    return state_dir / f"{vm_id}.json"
+    target = (state_dir / f"{vm_id}.json").resolve()
+    if not str(target).startswith(str(state_dir) + "/"):
+        raise ValueError(f"Invalid sandbox name: {vm_id!r}")
+    return target
 
 def _load_port_forwards(vm_id: str) -> list[dict]:
+    import json
     p = _port_forwards_path(vm_id)
     if not p.exists():
         return []
     try:
-        import json
-        return json.loads(p.read_text())
-    except Exception:
-        return []
+        data = json.loads(p.read_text())
+    except Exception as exc:
+        raise RuntimeError(
+            f"Port forward state for '{vm_id}' is unreadable. "
+            f"Remove '{p}' to reset: rm '{p}'"
+        ) from exc
+    if not isinstance(data, list):
+        raise RuntimeError(
+            f"Port forward state for '{vm_id}' is corrupt. "
+            f"Remove '{p}' to reset: rm '{p}'"
+        )
+    return data
     
 def _save_port_forwards(vm_id: str, forwards: list[dict]) -> None:
     import json
@@ -3327,7 +3339,9 @@ def _run_port_expose(args: argparse.Namespace) -> int:
             "port expose",
             1,
             ValueError(
-                f"Invalid mapping {args.mapping!r}. Use 'host-port:sandbox-port' or 'sandbox-port'."
+                f"Invalid mapping {args.mapping!r}. "
+                f"Run 'smolvm port expose {args.vm_id} 8080:3000' to forward host port 8080 to sandbox port 3000, "
+                f"or 'smolvm port expose {args.vm_id} 3000' to auto-select a host port."
             ),
             json_output=json_output,
         )
@@ -3366,7 +3380,6 @@ def _run_port_expose(args: argparse.Namespace) -> int:
                     "guest_port": guest_port,
                     "host_port": host_port,
                     "mapping": f"{host_port}:{guest_port}",
-                    "url": f"http://localhost:{host_port}",
                 },
             )
         else:
@@ -3375,7 +3388,7 @@ def _run_port_expose(args: argparse.Namespace) -> int:
                 f"Exposed [bold]localhost:{host_port}[/bold] → "
                 f"guest:[bold]{guest_port}[/bold]"
             )
-            console.print(f"Open [link]http://localhost:{host_port}[/link]")
+            console.print(f"Connect to [bold]localhost:{host_port}[/bold]")
             console.print(
                 f"Stop with: [bold]smolvm port close {args.vm_id} {host_port}:{guest_port}[/bold]"
             )
@@ -3399,7 +3412,10 @@ def _run_port_close(args: argparse.Namespace) -> int:
     try:
         host_port, guest_port = _parse_port_mapping(args.mapping)
         if host_port is None:
-            raise ValueError("Use 'host-port:sandbox-port' format for port close.")
+            raise ValueError(
+                f"Use 'host-port:sandbox-port' format. "
+                f"Run 'smolvm port list {args.vm_id}' to see active forwards."
+            )
     except ValueError as exc:
         return _emit_cli_error("port close", 1, exc, json_output=json_output)
 
@@ -3411,10 +3427,18 @@ def _run_port_close(args: argparse.Namespace) -> int:
             None,
         )
         if entry and entry.get("transport") == "ssh_tunnel" and entry.get("pid"):
+            import os
+            import signal
+            import subprocess as _sp
+            pid = entry["pid"]
             try:
-                import os
-                import signal
-                os.kill(entry["pid"], signal.SIGTERM)
+                # Verify it's still our SSH tunnel before killing.
+                result = _sp.run(
+                    ["ps", "-p", str(pid), "-o", "comm="],
+                    capture_output=True, text=True,
+                )
+                if "ssh" in result.stdout:
+                    os.kill(pid, signal.SIGTERM)
             except (ProcessLookupError, OSError):
                 pass
 
