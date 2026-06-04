@@ -106,4 +106,9 @@ members = ["smolvm-core"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-v --tb=short"
+# e2e tests boot a real KVM VM; deselect them from the default fast suite.
+# The nightly e2e workflow opts in explicitly with `pytest -m e2e`.
+addopts = "-v --tb=short -m 'not e2e'"
+markers = [
+    "e2e: boots a real KVM VM (QEMU); nightly only, needs /dev/kvm",
+]
