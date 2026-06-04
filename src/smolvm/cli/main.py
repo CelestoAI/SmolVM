@@ -1375,31 +1375,6 @@ def build_parser() -> argparse.ArgumentParser:
     _add_ssh_auth_args(port_list)
     _add_comm_channel_arg(port_list)
 
-    # port_forward = port_sub.add_parser(
-    #     "forward",
-    #     help="Forward a guest TCP port to localhost. Runs until Ctrl-C.",
-    # )
-    # port_forward.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
-    # port_forward.add_argument(
-    #     "guest_port",
-    #     metavar="guest-port",
-    #     type=int,
-    #     help="TCP port inside the sandbox to forward.",
-    # )
-    # port_forward.add_argument(
-    #     "--host-port",
-    #     type=int,
-    #     default=None,
-    #     metavar="PORT",
-    #     help="Localhost port to listen on (default: auto-assigned).",
-    # )
-    # port_forward.add_argument(
-    #     "--json",
-    #     action="store_true",
-    #     help="Emit machine-readable JSON output.",
-    # )
-    # _add_ssh_auth_args(port_forward)
-    # _add_comm_channel_arg(port_forward)
     _add_comm_channel_arg(env_list)
 
     return parser
