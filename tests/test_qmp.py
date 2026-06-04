@@ -198,6 +198,61 @@ def test_qmp_wait_for_job_raises_on_job_error(tmp_path: Path) -> None:
 
 
 @pytest.mark.skip(reason="Socket binding fails in macOS automated test sandbox")
+def test_qmp_connect_raises_read_timeout_above_connect_probe_timeout(tmp_path: Path) -> None:
+    """After connecting, the socket read timeout must be the generous read_timeout.
+
+    Regression guard for the snapshot-save read TimeoutError: the connect probe
+    used a ≤1s socket timeout that previously persisted for every command read,
+    cutting off replies to slow commands. Once connected we raise it.
+    """
+    socket_path = tmp_path / f"smolvm-qmp-{uuid4().hex}.sock"
+    requests: list[dict[str, object]] = []
+    responses: dict[str, list[dict[str, object] | list[dict[str, object]]]] = {
+        "qmp_capabilities": [{"return": {}}],
+    }
+    thread = _start_qmp_server(socket_path, responses, requests)
+
+    with QMPClient(socket_path) as client:
+        client.connect(timeout=5.0, read_timeout=30.0)
+        assert client._socket is not None
+        assert client._socket.gettimeout() == 30.0
+
+    thread.join(timeout=2.0)
+    if socket_path.exists():
+        socket_path.unlink()
+
+
+@pytest.mark.skip(reason="Socket binding fails in macOS automated test sandbox")
+def test_qmp_blockdev_internal_snapshot_round_trips(tmp_path: Path) -> None:
+    """Disk-only internal snapshot create/delete issue synchronous QMP commands."""
+    socket_path = tmp_path / f"smolvm-qmp-{uuid4().hex}.sock"
+    requests: list[dict[str, object]] = []
+    responses: dict[str, list[dict[str, object] | list[dict[str, object]]]] = {
+        "qmp_capabilities": [{"return": {}}],
+        "blockdev-snapshot-internal-sync": [{"return": {}}],
+        "blockdev-snapshot-delete-internal-sync": [{"return": {}}],
+    }
+    thread = _start_qmp_server(socket_path, responses, requests)
+
+    with QMPClient(socket_path) as client:
+        client.connect()
+        client.blockdev_snapshot_internal_sync("rootdisk0", "snap0")
+        client.blockdev_snapshot_delete_internal_sync("rootdisk0", "snap0")
+
+    thread.join(timeout=2.0)
+    if socket_path.exists():
+        socket_path.unlink()
+
+    assert [request["execute"] for request in requests] == [
+        "qmp_capabilities",
+        "blockdev-snapshot-internal-sync",
+        "blockdev-snapshot-delete-internal-sync",
+    ]
+    create_req = requests[1]
+    assert create_req["arguments"] == {"device": "rootdisk0", "name": "snap0"}
+
+
+@pytest.mark.skip(reason="Socket binding fails in macOS automated test sandbox")
 def test_qmp_connect_can_retry_after_capabilities_handshake_failure(tmp_path: Path) -> None:
     """Failed capability negotiation should not leave the client half-connected."""
     socket_path = tmp_path / f"smolvm-qmp-{uuid4().hex}.sock"

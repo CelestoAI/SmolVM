@@ -430,6 +430,84 @@ def test_create_qemu_snapshot_defaults_to_full_type(
     assert qemu_smol_vm.state.get_snapshot("snap-full").snapshot_type is SnapshotType.FULL
 
 
+def test_create_qemu_disk_snapshot_uses_internal_sync_not_vmstate(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """A disk-only snapshot must skip the RAM-dumping snapshot-save job.
+
+    It uses the synchronous block-device internal snapshot instead, and still
+    produces a self-contained disk artifact.
+    """
+    _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
+
+    with patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls:
+        mock_client = _mock_qmp_client()
+        mock_client_cls.return_value = mock_client
+        snapshot = qemu_smol_vm.create_snapshot(
+            "vm001", snapshot_id="snap-disk", snapshot_type=SnapshotType.DISK
+        )
+
+    # No guest RAM dumped: the heavyweight job API is never touched.
+    mock_client.snapshot_save.assert_not_called()
+    mock_client.snapshot_delete.assert_not_called()
+    # Disk-only internal snapshot taken and cleaned up synchronously.
+    mock_client.blockdev_snapshot_internal_sync.assert_called_once()
+    mock_client.blockdev_snapshot_delete_internal_sync.assert_called_once()
+
+    persisted = qemu_smol_vm.state.get_snapshot("snap-disk")
+    assert snapshot.snapshot_type is SnapshotType.DISK
+    assert persisted.snapshot_type is SnapshotType.DISK
+    # Self-contained standalone copy (like FULL), not an overlay.
+    assert persisted.artifacts.disk_path.read_text() == "managed-qcow2"
+    assert qemu_smol_vm.get("vm001").status == VMState.PAUSED
+
+
+def test_restore_qemu_disk_snapshot_boots_fresh_without_loading_vmstate(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+) -> None:
+    """Restoring a disk-only snapshot boots fresh: no snapshot-load of RAM."""
+    _create_qemu_vm(qemu_smol_vm, qemu_config)
+    vm_info = qemu_smol_vm.get("vm001")
+
+    snapshot_dir = qemu_smol_vm.snapshot_dir / "snap-disk"
+    snapshot_dir.mkdir(parents=True)
+    snapshot = SnapshotInfo(
+        snapshot_id="snap-disk",
+        vm_id="vm001",
+        backend="qemu",
+        artifacts=SnapshotArtifacts(disk_path=snapshot_dir / "disk.qcow2"),
+        vm_config=vm_info.config,
+        network_config=vm_info.network,
+        created_at=datetime.now(timezone.utc),
+        snapshot_type=SnapshotType.DISK,
+    )
+    snapshot.artifacts.disk_path.write_text("disk-only-qcow2")
+    qemu_smol_vm.state.create_snapshot(snapshot)
+
+    qemu_smol_vm.delete("vm001")
+    process = MagicMock()
+    process.pid = 98765
+    process.poll.return_value = None
+
+    with (
+        patch.object(qemu_smol_vm, "_start_qemu", return_value=process),
+        patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls,
+    ):
+        mock_client = _mock_qmp_client()
+        mock_client_cls.return_value = mock_client
+        restored = qemu_smol_vm.restore_snapshot("snap-disk", resume_vm=True)
+
+    managed_disk = qemu_smol_vm.data_dir / "disks" / "vm001.qcow2"
+    assert managed_disk.read_text() == "disk-only-qcow2"
+    # Fresh boot: never resumes saved RAM, just continues the cold boot.
+    mock_client.snapshot_load.assert_not_called()
+    mock_client.cont.assert_called_once()
+    assert restored.status == VMState.RUNNING
+
+
 def test_create_qemu_diff_snapshot_records_type(
     qemu_smol_vm: SmolVMManager,
     qemu_config: VMConfig,

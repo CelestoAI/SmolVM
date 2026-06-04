@@ -61,8 +61,17 @@ class QMPClient:
     def __exit__(self, *args: object) -> None:
         self.close()
 
-    def connect(self, timeout: float = 5.0) -> None:
-        """Connect to the QMP socket and negotiate capabilities."""
+    def connect(self, timeout: float = 5.0, read_timeout: float = 30.0) -> None:
+        """Connect to the QMP socket and negotiate capabilities.
+
+        ``timeout`` bounds how long we keep retrying the initial connect while
+        QEMU is still bringing the monitor socket up; each probe uses a short
+        (≤1s) socket timeout so a not-yet-ready socket fails fast and retries.
+        Once connected, the socket timeout is raised to ``read_timeout`` so that
+        replies to slow commands (e.g. ``snapshot-save`` while QEMU is busy
+        dumping guest RAM, which can take far longer than 1s to even
+        acknowledge) are not cut off mid-read with ``TimeoutError``.
+        """
         if self._socket is not None:
             return
 
@@ -73,6 +82,9 @@ class QMPClient:
                 qmp_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 qmp_socket.settimeout(min(timeout, 1.0))
                 qmp_socket.connect(str(self.socket_path))
+                # Connected: switch from the short connect-probe timeout to a
+                # generous read timeout for command replies.
+                qmp_socket.settimeout(read_timeout)
                 self._socket = qmp_socket
                 self._reader = qmp_socket.makefile("r", encoding="utf-8")
                 self._writer = qmp_socket.makefile("w", encoding="utf-8")
@@ -193,6 +205,33 @@ class QMPClient:
             },
         )
 
+    def blockdev_snapshot_internal_sync(self, device: str, name: str) -> None:
+        """Create a **disk-only** internal qcow2 snapshot, synchronously.
+
+        Unlike ``snapshot-save``, this saves only the block device's data (no
+        guest RAM / vmstate), so it is fast, never dumps memory, and does not go
+        through the async job API — it returns once the consistent point is
+        written. ``device`` is the block node-name (or qdev id); ``name`` is the
+        internal snapshot tag.
+        """
+        self.execute(
+            "blockdev-snapshot-internal-sync",
+            {
+                "device": device,
+                "name": name,
+            },
+        )
+
+    def blockdev_snapshot_delete_internal_sync(self, device: str, name: str) -> None:
+        """Delete a disk-only internal qcow2 snapshot, synchronously."""
+        self.execute(
+            "blockdev-snapshot-delete-internal-sync",
+            {
+                "device": device,
+                "name": name,
+            },
+        )
+
     def query_jobs(self) -> list[QMPJob]:
         """Return normalized job status rows."""
         result = self.execute("query-jobs")
@@ -276,5 +315,7 @@ class QMPClient:
 
         line = self._reader.readline()
         if not line:
-            raise SmolVMError("QMP socket closed unexpectedly", {"socket_path": str(self.socket_path)})
+            raise SmolVMError(
+                "QMP socket closed unexpectedly", {"socket_path": str(self.socket_path)}
+            )
         return json.loads(line)

@@ -1326,8 +1326,10 @@ class SmolVM:
         Args:
             snapshot_id: Optional custom snapshot name.
             snapshot_type: ``"full"`` (default) for a self-contained copy that
-                always restores on its own, or ``"diff"`` to store only what
-                changed since the base image to save space.
+                always restores on its own, ``"diff"`` to store only what
+                changed since the base image to save space, or ``"disk"`` for a
+                self-contained disk-only copy that skips the guest RAM dump
+                (much faster/lighter; restores as a fresh boot, not a resume).
             resume_source: Keep this VM running after the snapshot is taken.
         """
         try:
