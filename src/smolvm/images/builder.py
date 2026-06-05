@@ -1292,7 +1292,10 @@ log_ts "guest-agent-started"
 log_ts "clock-sync-start"
 HWCLOCK=""
 for cand in hwclock /usr/sbin/hwclock /sbin/hwclock; do
-    if command -v "$cand" >/dev/null 2>&1; then HWCLOCK="$cand"; break; fi
+    if HWCLOCK_PATH=$(command -v "$cand" 2>/dev/null); then
+        HWCLOCK="$HWCLOCK_PATH"
+        break
+    fi
 done
 if [ -n "$HWCLOCK" ]; then
     (
@@ -1302,10 +1305,11 @@ if [ -n "$HWCLOCK" ]; then
         done
     ) &
     echo "SmolVM init: clock-sync loop started (PID=$!)"
+    log_ts "clock-sync-started"
 else
     echo "SmolVM init: hwclock not found; clock-sync disabled"
+    log_ts "clock-sync-disabled"
 fi
-log_ts "clock-sync-started"
 
 # ── SSH ──────────────────────────────────────────────────────
 log_ts "ssh-hostkey-check-start"

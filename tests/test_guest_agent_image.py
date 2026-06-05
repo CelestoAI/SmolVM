@@ -26,6 +26,13 @@ from smolvm.images.builder import ImageBuilder
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _assert_clock_sync_loop_before_sshd(script: str) -> None:
+    assert 'HWCLOCK_PATH=$(command -v "$cand" 2>/dev/null)' in script
+    assert 'HWCLOCK="$HWCLOCK_PATH"' in script
+    assert '"$HWCLOCK" -s -u' in script
+    assert script.index('"$HWCLOCK" -s -u') < script.index("/usr/sbin/sshd")
+
+
 def test_ci_preset_init_launches_guest_agent_before_sshd() -> None:
     """The CI publish pipeline's /init must launch the agent before sshd,
     mirroring the Python builder. These two init paths have to stay in sync —
@@ -60,18 +67,20 @@ def test_base_init_script_runs_clock_sync_loop() -> None:
     """The PID 1 init must keep the guest clock pinned to the host RTC so it
     recovers from host-sleep drift (issue #330)."""
     script = ImageBuilder()._default_init_script()
-    assert "hwclock" in script
-    assert "-s -u" in script
+    _assert_clock_sync_loop_before_sshd(script)
+    assert script.index('echo "SmolVM init: clock-sync loop started') < script.index(
+        'log_ts "clock-sync-started"'
+    )
+    assert script.index('echo "SmolVM init: hwclock not found') < script.index(
+        'log_ts "clock-sync-disabled"'
+    )
 
 
 def test_ci_preset_init_runs_clock_sync_loop() -> None:
     """The CI publish pipeline's /init must carry the same clock-sync loop as
     the Python builder — the two init paths have to stay in sync."""
     script = (_REPO_ROOT / "scripts" / "ci" / "preset-init.sh").read_text()
-    assert "hwclock" in script
-    assert "-s -u" in script
-    # Started before sshd, like the guest agent.
-    assert script.index("hwclock") < script.index("/usr/sbin/sshd")
+    _assert_clock_sync_loop_before_sshd(script)
 
 
 def test_fingerprint_tracks_guest_agent(tmp_path: Path) -> None:

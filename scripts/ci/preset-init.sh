@@ -150,7 +150,10 @@ fi
 # Mirrors _base_init_script() in src/smolvm/images/builder.py.
 HWCLOCK=""
 for cand in hwclock /usr/sbin/hwclock /sbin/hwclock; do
-    if command -v "$cand" >/dev/null 2>&1; then HWCLOCK="$cand"; break; fi
+    if HWCLOCK_PATH=$(command -v "$cand" 2>/dev/null); then
+        HWCLOCK="$HWCLOCK_PATH"
+        break
+    fi
 done
 if [ -n "$HWCLOCK" ]; then
     (
