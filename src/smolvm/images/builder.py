@@ -1279,6 +1279,34 @@ else
 fi
 log_ts "guest-agent-started"
 
+# ── Clock sync (host-sleep drift) ────────────────────────────
+# The guest tracks time with its own clocksource (the TSC under
+# HVF/QEMU), which stops advancing while the host is asleep — so on
+# wake the system clock lags by the whole sleep duration (issue #330).
+# A sandbox has no NTP daemon and runs no systemd-timesyncd, so we
+# periodically re-read the emulated hardware RTC, which QEMU keeps
+# pinned to host wall-clock time (-rtc clock=host), and step the
+# system clock to match. The loop no-ops on backends with no RTC
+# (e.g. Firecracker). PID 1's PATH may not include /usr/sbin, so we
+# resolve hwclock explicitly.
+log_ts "clock-sync-start"
+HWCLOCK=""
+for cand in hwclock /usr/sbin/hwclock /sbin/hwclock; do
+    if command -v "$cand" >/dev/null 2>&1; then HWCLOCK="$cand"; break; fi
+done
+if [ -n "$HWCLOCK" ]; then
+    (
+        while true; do
+            "$HWCLOCK" -s -u 2>/dev/null || true
+            sleep 30
+        done
+    ) &
+    echo "SmolVM init: clock-sync loop started (PID=$!)"
+else
+    echo "SmolVM init: hwclock not found; clock-sync disabled"
+fi
+log_ts "clock-sync-started"
+
 # ── SSH ──────────────────────────────────────────────────────
 log_ts "ssh-hostkey-check-start"
 if ! ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1; then

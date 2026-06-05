@@ -140,6 +140,28 @@ if command -v python3 >/dev/null 2>&1 && [ -f /usr/local/bin/smolvm-guest-agent 
     echo "SmolVM init: guest agent started (PID=$!)"
 fi
 
+# ── Clock sync (host-sleep drift) ────────────────────────────
+# The guest's clocksource (the TSC under HVF/QEMU) stops advancing
+# while the host is asleep, so on wake the system clock lags by the
+# sleep duration (issue #330). With no NTP daemon in the sandbox, we
+# periodically re-read the emulated hardware RTC — which QEMU keeps
+# pinned to host wall-clock time (-rtc clock=host) — and step the
+# system clock to match. No-ops on backends with no RTC (Firecracker).
+# Mirrors _base_init_script() in src/smolvm/images/builder.py.
+HWCLOCK=""
+for cand in hwclock /usr/sbin/hwclock /sbin/hwclock; do
+    if command -v "$cand" >/dev/null 2>&1; then HWCLOCK="$cand"; break; fi
+done
+if [ -n "$HWCLOCK" ]; then
+    (
+        while true; do
+            "$HWCLOCK" -s -u 2>/dev/null || true
+            sleep 30
+        done
+    ) &
+    echo "SmolVM init: clock-sync loop started (PID=$!)"
+fi
+
 /usr/sbin/sshd -e &
 
 echo "SmolVM init complete: IP=${GUEST_IP}, SSH listening on port 22"

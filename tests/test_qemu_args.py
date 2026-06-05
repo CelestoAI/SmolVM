@@ -86,6 +86,8 @@ def test_linux_x86_64_kvm_argv_byte_identical(tmp_path: Path) -> None:
         "user,id=net0,dns=10.0.2.3,hostfwd=tcp:127.0.0.1:2200-:22",
         "-nographic",
         "-no-reboot",
+        "-rtc",
+        "base=utc,clock=host",
         "-machine",
         "q35,accel=kvm",
         "-cpu",
@@ -188,6 +190,28 @@ def test_linux_aarch64_kvm_orders_rootdisk_last(tmp_path: Path) -> None:
     ]
     machine_arg = cmd[cmd.index("-machine") + 1]
     assert machine_arg == "virt,accel=kvm"
+
+
+@pytest.mark.parametrize(
+    "qemu_bin",
+    [
+        Path("/usr/bin/qemu-system-x86_64"),
+        Path("/opt/homebrew/bin/qemu-system-aarch64"),
+    ],
+)
+def test_linux_pins_rtc_to_host_clock(tmp_path: Path, qemu_bin: Path) -> None:
+    """Linux guests get -rtc base=utc,clock=host so the guest can recover
+    from host-sleep clock drift by re-reading the RTC (issue #330)."""
+    vm_info = _qemu_vm_info(tmp_path)
+    cmd = build_qemu_argv(
+        vm_info,
+        qemu_bin=qemu_bin,
+        boot_args=vm_info.config.boot_args,
+        platform_spec=_LINUX_SPEC,
+        host_system="Linux",
+    )
+    assert "-rtc" in cmd
+    assert cmd[cmd.index("-rtc") + 1] == "base=utc,clock=host"
 
 
 def test_firmware_mode_aarch64_needs_uefi_firmware(tmp_path: Path) -> None:
@@ -419,6 +443,21 @@ def test_windows_argv_emits_virtio_scsi_root_and_tpm(tmp_path: Path) -> None:
     # And the chardev + tpmdev tokens.
     assert "-tpmdev" in cmd
     assert "-chardev" in cmd
+
+
+def test_windows_argv_omits_rtc_override(tmp_path: Path) -> None:
+    """Windows reads the RTC as local time, so the UTC override is skipped —
+    QEMU's localtime default is left in place."""
+    cmd = build_qemu_argv(
+        _windows_vm_info(tmp_path),
+        qemu_bin=Path("/usr/bin/qemu-system-x86_64"),
+        boot_args="",
+        platform_spec=_fake_windows_spec(),
+        firmware_vars_path=Path("/state/OVMF_VARS.fd"),
+        swtpm_socket=Path("/state/swtpm-sock"),
+        host_system="Linux",
+    )
+    assert "-rtc" not in cmd
 
 
 def test_windows_argv_missing_firmware_vars_path_raises(tmp_path: Path) -> None:

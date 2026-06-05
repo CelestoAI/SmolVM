@@ -56,6 +56,24 @@ def test_base_init_script_launches_guest_agent_before_sshd() -> None:
     assert script.index("smolvm-guest-agent") < script.index("/usr/sbin/sshd")
 
 
+def test_base_init_script_runs_clock_sync_loop() -> None:
+    """The PID 1 init must keep the guest clock pinned to the host RTC so it
+    recovers from host-sleep drift (issue #330)."""
+    script = ImageBuilder()._default_init_script()
+    assert "hwclock" in script
+    assert "-s -u" in script
+
+
+def test_ci_preset_init_runs_clock_sync_loop() -> None:
+    """The CI publish pipeline's /init must carry the same clock-sync loop as
+    the Python builder — the two init paths have to stay in sync."""
+    script = (_REPO_ROOT / "scripts" / "ci" / "preset-init.sh").read_text()
+    assert "hwclock" in script
+    assert "-s -u" in script
+    # Started before sshd, like the guest agent.
+    assert script.index("hwclock") < script.index("/usr/sbin/sshd")
+
+
 def test_fingerprint_tracks_guest_agent(tmp_path: Path) -> None:
     builder = ImageBuilder(cache_dir=tmp_path)
     fp = builder._fingerprint_with_content({"x": 1}, "FROM alpine", "init")

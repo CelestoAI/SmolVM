@@ -34,7 +34,7 @@ from pathlib import Path
 from smolvm.exceptions import SmolVMError
 from smolvm.runtime.guest_platforms import GuestPlatformSpec
 from smolvm.runtime.qemu import QEMU_ROOT_NODE_NAME
-from smolvm.types import VMInfo
+from smolvm.types import GuestOS, VMInfo
 
 # DNS server announced to the guest by QEMU's SLIRP stack. The default would
 # also work; we set it explicitly so the guest sees the same address whether
@@ -209,6 +209,15 @@ def build_qemu_argv(
             "-no-reboot",
         ]
     )
+    # Pin the emulated hardware RTC to host wall-clock UTC. clock=host is
+    # already QEMU's default, but we set it explicitly because the guest's
+    # clock-sync loop depends on it: under HVF (macOS) there is no kvm-clock,
+    # so the guest's clocksource freezes while the host sleeps and the system
+    # clock wakes up stale (issue #330). The guest periodically re-reads this
+    # RTC to recover. Windows reads the RTC as local time, so leave its
+    # localtime default untouched.
+    if platform_spec.guest_os is not GuestOS.WINDOWS:
+        cmd.extend(["-rtc", "base=utc,clock=host"])
     if vm_info.config.boot_mode == "direct_kernel" and vm_info.config.initrd_path is not None:
         cmd.extend(["-initrd", str(vm_info.config.initrd_path)])
 
