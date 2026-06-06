@@ -132,6 +132,30 @@ class TestSmolVMCreate:
             smol_vm.get("vm001")
 
     @patch("smolvm.vm.NetworkManager")
+    def test_create_rollback_preserves_preexisting_managed_disk(
+        self,
+        mock_network_class: MagicMock,
+        smol_vm: SmolVMManager,
+        sample_config: VMConfig,
+    ) -> None:
+        """Create rollback must not delete a disk retained from an earlier VM."""
+        retained_disk = smol_vm.data_dir / "disks" / "vm001.ext4"
+        retained_disk.parent.mkdir(parents=True, exist_ok=True)
+        retained_disk.write_text("retained")
+        mock_network = MagicMock()
+        mock_network.host_ip = "172.16.0.1"
+        mock_network.create_tap.side_effect = Exception("Network error")
+        mock_network_class.return_value = mock_network
+        smol_vm.network = mock_network
+
+        with pytest.raises(Exception, match="Network error"):
+            smol_vm.create(sample_config)
+
+        assert retained_disk.read_text() == "retained"
+        with pytest.raises(VMNotFoundError):
+            smol_vm.get("vm001")
+
+    @patch("smolvm.vm.NetworkManager")
     def test_create_libkrun_uses_usernet_networking(
         self,
         mock_network_class: MagicMock,

@@ -1614,7 +1614,10 @@ class SmolVMManager:
         except Exception as e:
             # Rollback on failure
             logger.error("Failed to create VM %s: %s", effective_config.vm_id, e)
-            self._cleanup_resources(effective_config.vm_id)
+            self._cleanup_resources(
+                effective_config.vm_id,
+                preserve_managed_disk=managed_disk_existed,
+            )
             # Delete the VM record that was created
             with suppress(Exception):
                 self.state.delete_vm(effective_config.vm_id)
@@ -2638,11 +2641,13 @@ class SmolVMManager:
         )
         return f"{args} {ip_arg}".strip()
 
-    def _cleanup_resources(self, vm_id: str) -> None:
+    def _cleanup_resources(self, vm_id: str, *, preserve_managed_disk: bool = False) -> None:
         """Clean up resources for a VM.
 
         Args:
             vm_id: The VM identifier.
+            preserve_managed_disk: Keep the managed disk during create rollback
+                when it existed before this create attempt.
         """
         try:
             vm_info = None
@@ -2717,7 +2722,7 @@ class SmolVMManager:
 
             managed_disk = self._managed_disk_for_vm(vm_info)
             if managed_disk and managed_disk.exists():
-                if vm_info.config.retain_disk_on_delete:
+                if preserve_managed_disk or vm_info.config.retain_disk_on_delete:
                     logger.info(
                         "Retaining isolated disk for VM %s at %s",
                         vm_id,
@@ -2919,7 +2924,10 @@ class SmolVMManager:
 
         except Exception as e:
             logger.error("Failed to create VM %s: %s", effective_config.vm_id, e)
-            await self._async_cleanup_resources(effective_config.vm_id)
+            await self._async_cleanup_resources(
+                effective_config.vm_id,
+                preserve_managed_disk=managed_disk_existed,
+            )
             with suppress(Exception):
                 self.state.delete_vm(effective_config.vm_id)
             raise
@@ -3185,7 +3193,12 @@ class SmolVMManager:
         task.add_done_callback(self._background_tasks.discard)
         return process
 
-    async def _async_cleanup_resources(self, vm_id: str) -> None:
+    async def _async_cleanup_resources(
+        self,
+        vm_id: str,
+        *,
+        preserve_managed_disk: bool = False,
+    ) -> None:
         """Async version of :meth:`_cleanup_resources`."""
         try:
             vm_info = None
@@ -3252,7 +3265,7 @@ class SmolVMManager:
 
             managed_disk = self._managed_disk_for_vm(vm_info)
             if managed_disk and managed_disk.exists():
-                if vm_info.config.retain_disk_on_delete:
+                if preserve_managed_disk or vm_info.config.retain_disk_on_delete:
                     logger.info("Retaining isolated disk for VM %s at %s", vm_id, managed_disk)
                 else:
                     managed_sidecars = await asyncio.to_thread(
