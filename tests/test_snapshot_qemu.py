@@ -392,6 +392,39 @@ def test_restore_qemu_snapshot_reserves_persisted_vsock_cid(
     assert qemu_smol_vm.state.get_vsock_cid("vm001") == 42
 
 
+def test_restore_qemu_snapshot_persistence_failure_removes_placeholder(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+) -> None:
+    """If restore cannot create the VM row, the managed placeholder is removed."""
+    snapshot_dir = qemu_smol_vm.snapshot_dir / "snap-persist-fail"
+    snapshot_dir.mkdir(parents=True)
+    snapshot = SnapshotInfo(
+        snapshot_id="snap-persist-fail",
+        vm_id="vm001",
+        backend="qemu",
+        artifacts=SnapshotArtifacts(disk_path=snapshot_dir / "disk.qcow2"),
+        vm_config=qemu_config,
+        network_config=NetworkConfig(
+            guest_ip="10.0.2.15",
+            tap_device="qemu-user",
+            guest_mac="52:54:00:5d:00:04",
+            ssh_host_port=2205,
+        ),
+        created_at=datetime.now(timezone.utc),
+    )
+    snapshot.artifacts.disk_path.write_text("snapshotted-qcow2")
+    qemu_smol_vm.state.create_snapshot(snapshot)
+
+    with (
+        patch.object(qemu_smol_vm.state, "create_vm", side_effect=SmolVMError("persist failed")),
+        pytest.raises(SmolVMError, match="persist failed"),
+    ):
+        qemu_smol_vm.restore_snapshot("snap-persist-fail")
+
+    assert not (qemu_smol_vm.data_dir / "disks" / "vm001.qcow2").exists()
+
+
 def test_restore_qemu_snapshot_rolls_back_new_vm_resources_on_failure(
     qemu_smol_vm: SmolVMManager,
     qemu_config: VMConfig,
@@ -612,6 +645,50 @@ def test_snapshot_rejected_for_windows_guests(qemu_smol_vm: SmolVMManager, tmp_p
     )
     with pytest.raises(SmolVMError, match="Windows guests"):
         qemu_smol_vm._ensure_snapshot_supported(vm_info)
+
+
+@pytest.mark.asyncio
+async def test_async_delete_qemu_vm_removes_restored_backing_sidecars(
+    qemu_smol_vm: SmolVMManager,
+    tmp_path: Path,
+) -> None:
+    """async_delete should mirror sync cleanup for restored backing sidecars."""
+    qemu_img = shutil.which("qemu-img")
+    if qemu_img is None:
+        pytest.skip("qemu-img is not installed")
+
+    kernel = tmp_path / "vmlinux"
+    kernel.touch()
+    managed_disk = qemu_smol_vm.data_dir / "disks" / "vm-async-sidecar.qcow2"
+    sidecar = managed_disk.with_name(f"{managed_disk.name}.restore-test.backing-0.qcow2")
+    subprocess.run([qemu_img, "create", "-f", "qcow2", str(sidecar), "10M"], check=True)
+    subprocess.run(
+        [
+            qemu_img,
+            "create",
+            "-f",
+            "qcow2",
+            "-b",
+            str(sidecar),
+            "-F",
+            "qcow2",
+            str(managed_disk),
+        ],
+        check=True,
+    )
+    config = VMConfig(
+        vm_id="vm-async-sidecar",
+        kernel_path=kernel,
+        rootfs_path=managed_disk,
+        rootfs_format="qcow2",
+        backend="qemu",
+    )
+    qemu_smol_vm.state.create_vm(config)
+
+    await qemu_smol_vm.async_delete("vm-async-sidecar")
+
+    assert not managed_disk.exists()
+    assert not sidecar.exists()
 
 
 def test_delete_qemu_vm_removes_restored_backing_sidecars(

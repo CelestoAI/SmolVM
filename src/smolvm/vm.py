@@ -1949,6 +1949,7 @@ class SmolVMManager:
         created_vm_record = False
         existing_disk_backup_path: Path | None = None
         existing_disk_sidecars: list[Path] = []
+        created_managed_placeholder = False
         launch = None
 
         managed_disk_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1960,6 +1961,8 @@ class SmolVMManager:
             existing_disk_sidecars = self._managed_disk_backing_sidecars(managed_disk_path)
             existing_disk_backup_path = self._restore_backup_disk_path(managed_disk_path)
             os.replace(managed_disk_path, existing_disk_backup_path)
+        else:
+            created_managed_placeholder = True
         managed_disk_path.touch(exist_ok=True)
 
         try:
@@ -2059,6 +2062,9 @@ class SmolVMManager:
             for sidecar in self._managed_disk_sidecars_for_root(restore_disk_path):
                 with suppress(Exception):
                     sidecar.unlink()
+            if created_managed_placeholder and managed_disk_path.exists():
+                with suppress(Exception):
+                    managed_disk_path.unlink()
             if existing_disk_backup_path is not None and existing_disk_backup_path.exists():
                 with suppress(Exception):
                     if managed_disk_path.exists():
@@ -3173,9 +3179,21 @@ class SmolVMManager:
                 if vm_info.config.retain_disk_on_delete:
                     logger.info("Retaining isolated disk for VM %s at %s", vm_id, managed_disk)
                 else:
+                    managed_sidecars = await asyncio.to_thread(
+                        self._managed_disk_backing_sidecars,
+                        managed_disk,
+                    )
                     with suppress(Exception):
                         managed_disk.unlink()
                         logger.info("Removed isolated disk for VM %s: %s", vm_id, managed_disk)
+                    for sidecar in managed_sidecars:
+                        with suppress(Exception):
+                            sidecar.unlink()
+                            logger.info(
+                                "Removed isolated disk sidecar for VM %s: %s",
+                                vm_id,
+                                sidecar,
+                            )
 
             # Per-VM firmware state (OVMF NVRAM + swtpm). Mirrors the sync
             # _cleanup_resources path so async_delete() doesn't leave
