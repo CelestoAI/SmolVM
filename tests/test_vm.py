@@ -327,6 +327,32 @@ class TestSmolVMDiskLifecycle:
         with pytest.raises(VMNotFoundError):
             smol_vm.get("vm001")
 
+    def test_e2fsck_successful_repairs_do_not_fail_growth(
+        self,
+        smol_vm: SmolVMManager,
+        tmp_path: Path,
+    ) -> None:
+        """e2fsck returns 1 when it fixed errors; resize2fs should still run."""
+        disk = tmp_path / "rootfs.ext4"
+        disk.touch()
+        calls: list[list[str]] = []
+
+        def _fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+            del kwargs
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 1 if "e2fsck" in command[0] else 0)
+
+        with (
+            patch("smolvm.vm.which", side_effect=lambda name: Path(name)),
+            patch("smolvm.vm.subprocess.run", side_effect=_fake_run),
+        ):
+            smol_vm._grow_raw_ext4_filesystem(disk, "vm001")
+
+        assert calls == [
+            ["e2fsck", "-fy", str(disk)],
+            ["resize2fs", str(disk)],
+        ]
+
     @patch("smolvm.vm.NetworkManager")
     def test_failed_grow_removes_new_managed_disk(
         self,

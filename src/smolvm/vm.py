@@ -761,13 +761,26 @@ class SmolVMManager:
                 f"e2fsck and resize2fs are needed to grow the disk for sandbox '{vm_id}'; "
                 f"install e2fsprogs, or run '{self._resize_recovery(vm_id)}'."
             )
-        self._run_resize_tool([str(e2fsck), "-fy", str(disk_path)], "e2fsck", vm_id)
+        self._run_resize_tool(
+            [str(e2fsck), "-fy", str(disk_path)],
+            "e2fsck",
+            vm_id,
+            allowed_returncodes={0, 1},
+        )
         self._run_resize_tool([str(resize2fs), str(disk_path)], "resize2fs", vm_id)
 
-    def _run_resize_tool(self, command: list[str], tool_name: str, vm_id: str) -> None:
+    def _run_resize_tool(
+        self,
+        command: list[str],
+        tool_name: str,
+        vm_id: str,
+        *,
+        allowed_returncodes: set[int] | None = None,
+    ) -> None:
         """Run one resize helper and convert failures to SmolVMError."""
         result = subprocess.run(command, capture_output=True, text=True, check=False)
-        if result.returncode != 0:
+        allowed = allowed_returncodes or {0}
+        if result.returncode not in allowed:
             stderr = result.stderr.strip() or result.stdout.strip() or "no output"
             raise SmolVMError(
                 f"{tool_name} failed while resizing the disk for sandbox '{vm_id}'; run "
