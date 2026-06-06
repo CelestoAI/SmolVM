@@ -277,6 +277,26 @@ class TestSmolVMDiskLifecycle:
         assert vm_info.config.rootfs_path == expected_disk
         mock_grow.assert_called_once_with(expected_disk, "vm001")
 
+    def test_create_persistence_failure_does_not_resize_retained_disk(
+        self,
+        smol_vm: SmolVMManager,
+        sample_config: VMConfig,
+    ) -> None:
+        """A reused managed disk is not mutated until the VM row exists."""
+        retained_disk = smol_vm.data_dir / "disks" / "vm001.ext4"
+        retained_disk.parent.mkdir(parents=True, exist_ok=True)
+        retained_disk.write_bytes(b"\0" * (1024 * 1024))
+        config = sample_config.model_copy(update={"disk_size_mib": 3})
+
+        with (
+            patch.object(smol_vm.state, "create_vm", side_effect=SmolVMError("persist failed")),
+            pytest.raises(SmolVMError, match="persist failed"),
+        ):
+            smol_vm.create(config)
+
+        assert retained_disk.exists()
+        assert retained_disk.stat().st_size == 1024 * 1024
+
     @patch("smolvm.vm.NetworkManager")
     def test_create_persistence_failure_removes_new_managed_disk(
         self,

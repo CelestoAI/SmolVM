@@ -138,6 +138,21 @@ def test_full_snapshot_copy_preserves_internal_snapshot_on_backed_overlay(
     assert backing_path.exists()
 
 
+def test_full_snapshot_copy_requires_qemu_img(tmp_path: Path) -> None:
+    """Full snapshots must fail rather than shallow-copy when disk layout is unknown."""
+    source = tmp_path / "disk.qcow2"
+    dest = tmp_path / "snapshot.qcow2"
+    source.touch()
+
+    with (
+        patch("smolvm.runtime.qemu.which", return_value=None),
+        pytest.raises(SmolVMError, match="qemu-img"),
+    ):
+        QemuRuntimeAdapter._copy_disk_standalone(source, dest)
+
+    assert not dest.exists()
+
+
 def test_restored_full_snapshot_disk_survives_snapshot_dir_delete(tmp_path: Path) -> None:
     """Restored full snapshot disks should not depend on the snapshot directory."""
     qemu_img = shutil.which("qemu-img")

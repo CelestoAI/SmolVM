@@ -505,6 +505,33 @@ class QemuRuntimeAdapter(RuntimeAdapter):
         return root.with_name(f"{root.name}.backing-{depth}{backing.suffix or '.img'}")
 
     @staticmethod
+    def _qcow2_backing_file_required(disk: Path) -> Path | None:
+        """Return backing path, raising when qemu-img cannot inspect the disk."""
+        qemu_img = which("qemu-img")
+        if qemu_img is None:
+            raise SmolVMError("qemu-img is needed to create a full QEMU snapshot.")
+        info = subprocess.run(
+            [str(qemu_img), "info", "--output=json", str(disk)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if info.returncode != 0:
+            raise SmolVMError(
+                "qemu-img could not inspect the QEMU disk while creating a full snapshot.",
+                {"disk_path": str(disk), "stderr": info.stderr.strip()},
+            )
+        try:
+            data = json.loads(info.stdout)
+        except (ValueError, TypeError) as exc:
+            raise SmolVMError(
+                "qemu-img returned invalid disk info while creating a full QEMU snapshot.",
+                {"disk_path": str(disk)},
+            ) from exc
+        backing = data.get("full-backing-filename") or data.get("backing-filename")
+        return Path(backing) if backing else None
+
+    @staticmethod
     def _copy_disk_standalone(source: Path, dest: Path, *, _depth: int = 0) -> None:
         """Copy a qcow2 disk with a local backing chain.
 
@@ -515,7 +542,7 @@ class QemuRuntimeAdapter(RuntimeAdapter):
         depend only on files under the managed disk directory, not on the
         snapshot directory.
         """
-        backing = QemuRuntimeAdapter._qcow2_backing_file(source)
+        backing = QemuRuntimeAdapter._qcow2_backing_file_required(source)
         if backing is None:
             shutil.copy2(source, dest)
             return

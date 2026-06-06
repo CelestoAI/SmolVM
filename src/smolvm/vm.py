@@ -1434,10 +1434,9 @@ class SmolVMManager:
             )
             firmware_state = self.data_dir / "firmware" / effective_config.vm_id
             firmware_existed = firmware_state.exists()
+            vm_record_created = False
             try:
                 effective_config = self._materialize_rootfs(effective_config)
-                effective_config = self._resize_materialized_rootfs(effective_config)
-                self._materialize_firmware(effective_config)
 
                 logger.info(
                     "Creating VM: %s (backend=%s, disk_mode=%s)",
@@ -1448,8 +1447,16 @@ class SmolVMManager:
 
                 # Create VM record while still holding the create lock so a
                 # concurrent same-ID create cannot resize the same disk first.
+                # Resize/grow after persistence so a persistence failure cannot
+                # mutate a retained managed disk without a VM row.
                 vm_info = self.state.create_vm(effective_config)
+                vm_record_created = True
+                effective_config = self._resize_materialized_rootfs(effective_config)
+                self._materialize_firmware(effective_config)
             except Exception:
+                if vm_record_created:
+                    with suppress(Exception):
+                        self.state.delete_vm(effective_config.vm_id)
                 self._cleanup_unpersisted_managed_disk(
                     managed_disk_path,
                     existed_before=managed_disk_existed,
@@ -1953,20 +1960,20 @@ class SmolVMManager:
         created_managed_placeholder = False
         launch = None
 
-        managed_disk_path.parent.mkdir(parents=True, exist_ok=True)
-        if restore_disk_path != managed_disk_path:
-            restore_disk_path.parent.mkdir(parents=True, exist_ok=True)
-            if restore_disk_path.exists():
-                restore_disk_path.unlink()
-        if managed_disk_path.exists():
-            existing_disk_sidecars = self._managed_disk_backing_sidecars(managed_disk_path)
-            existing_disk_backup_path = self._restore_backup_disk_path(managed_disk_path)
-            os.replace(managed_disk_path, existing_disk_backup_path)
-        else:
-            created_managed_placeholder = True
-        managed_disk_path.touch(exist_ok=True)
-
         try:
+            managed_disk_path.parent.mkdir(parents=True, exist_ok=True)
+            if restore_disk_path != managed_disk_path:
+                restore_disk_path.parent.mkdir(parents=True, exist_ok=True)
+                if restore_disk_path.exists():
+                    restore_disk_path.unlink()
+            if managed_disk_path.exists():
+                existing_disk_sidecars = self._managed_disk_backing_sidecars(managed_disk_path)
+                existing_disk_backup_path = self._restore_backup_disk_path(managed_disk_path)
+                os.replace(managed_disk_path, existing_disk_backup_path)
+            else:
+                created_managed_placeholder = True
+            managed_disk_path.touch(exist_ok=True)
+
             if existing_vm is None:
                 self.state.create_vm(persisted_vm_config)
                 created_vm_record = True
@@ -2743,14 +2750,9 @@ class SmolVMManager:
             )
             firmware_state = self.data_dir / "firmware" / effective_config.vm_id
             firmware_existed = firmware_state.exists()
+            vm_record_created = False
             try:
                 effective_config = await self._async_materialize_rootfs(effective_config)
-                effective_config = await asyncio.to_thread(
-                    self._resize_materialized_rootfs,
-                    effective_config,
-                )
-                # Firmware materialization is a small file copy — synchronous is fine.
-                self._materialize_firmware(effective_config)
 
                 logger.info(
                     "Creating VM (async): %s (backend=%s, disk_mode=%s)",
@@ -2760,7 +2762,17 @@ class SmolVMManager:
                 )
 
                 self.state.create_vm(effective_config)
+                vm_record_created = True
+                effective_config = await asyncio.to_thread(
+                    self._resize_materialized_rootfs,
+                    effective_config,
+                )
+                # Firmware materialization is a small file copy — synchronous is fine.
+                self._materialize_firmware(effective_config)
             except Exception:
+                if vm_record_created:
+                    with suppress(Exception):
+                        self.state.delete_vm(effective_config.vm_id)
                 self._cleanup_unpersisted_managed_disk(
                     managed_disk_path,
                     existed_before=managed_disk_existed,
