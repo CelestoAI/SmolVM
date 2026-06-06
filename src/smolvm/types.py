@@ -325,6 +325,10 @@ class VMConfig(BaseModel):
         disk_mode: Disk lifecycle mode:
             - ``"isolated"`` (default): clone rootfs per VM for sandbox isolation.
             - ``"shared"``: boot directly from ``rootfs_path``.
+        disk_size_mib: Optional size for the isolated per-VM disk. SmolVM
+            refuses to resize a shared base image.
+        grow_filesystem: Grow the guest filesystem after resizing when SmolVM
+            can safely do so (raw ext4 only in this release).
         retain_disk_on_delete: Keep isolated VM disk after delete, so a later
             create with the same VM ID can reuse prior state.
         env_vars: Environment variables to inject into the guest
@@ -362,6 +366,8 @@ class VMConfig(BaseModel):
     backend: str | None = None
     qemu_network: Literal["slirp", "tap"] = "slirp"
     disk_mode: Literal["isolated", "shared"] = "isolated"
+    disk_size_mib: Annotated[int, Field(ge=1)] | None = None
+    grow_filesystem: bool = False
     retain_disk_on_delete: bool = False
     env_vars: dict[str, str] = {}
     network_rate_limit_mbps: Annotated[int, Field(ge=1)] | None = None

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import os
 import platform
@@ -88,6 +89,7 @@ DEFAULT_SOCKET_DIR = Path("/tmp")
 
 # Backend-specific defaults
 QEMU_GUEST_IP = "10.0.2.15"
+_MIB = 1024 * 1024
 
 
 def _linux_os_release_ids(os_release_path: Path = Path("/etc/os-release")) -> set[str]:
@@ -544,6 +546,166 @@ class SmolVMManager:
             # Fallback: --reflink=auto may not be supported on all platforms
             # (e.g. macOS cp doesn't have this flag).
             shutil.copy2(source_path, target_path)
+
+    @staticmethod
+    def _ceil_mib(size_bytes: int) -> int:
+        """Return bytes rounded up to MiB."""
+        return (size_bytes + _MIB - 1) // _MIB
+
+    @staticmethod
+    def _resize_recovery(vm_id: str) -> str:
+        """Return a cleanup command for disk resize errors."""
+        return f"smolvm delete {vm_id}"
+
+    @staticmethod
+    def _ensure_disk_can_be_resized(config: VMConfig) -> None:
+        """Reject requests that would mutate a shared base image."""
+        if (config.disk_size_mib is not None or config.grow_filesystem) and (
+            config.disk_mode == "shared"
+        ):
+            raise SmolVMError(
+                f"Disk resizing needs an isolated disk for sandbox '{config.vm_id}'; set "
+                f"disk_mode='isolated', or run '{SmolVMManager._resize_recovery(config.vm_id)}'."
+            )
+
+    def _resize_materialized_rootfs(self, config: VMConfig) -> VMConfig:
+        """Resize/grow the materialized per-VM disk before boot."""
+        self._ensure_disk_can_be_resized(config)
+        if config.disk_size_mib is None and not config.grow_filesystem:
+            return config
+
+        if config.rootfs_path.suffix == ".qcow2":
+            if config.grow_filesystem:
+                raise SmolVMError(
+                    f"Filesystem growth for qcow2 disks is not supported for sandbox "
+                    f"'{config.vm_id}'; omit grow_filesystem, or run "
+                    f"'{self._resize_recovery(config.vm_id)}'."
+                )
+            if config.disk_size_mib is not None:
+                self._resize_qcow2_disk(config.rootfs_path, config.disk_size_mib, config.vm_id)
+            return config
+
+        self._resize_raw_ext4_disk(
+            config.rootfs_path,
+            target_mib=config.disk_size_mib,
+            grow_filesystem=config.grow_filesystem,
+            vm_id=config.vm_id,
+        )
+        return config
+
+    def _resize_raw_ext4_disk(
+        self,
+        disk_path: Path,
+        *,
+        target_mib: int | None,
+        grow_filesystem: bool,
+        vm_id: str,
+    ) -> None:
+        """Resize a raw ext4 disk file and optionally grow its filesystem."""
+        current_bytes = disk_path.stat().st_size
+        if target_mib is not None:
+            target_bytes = target_mib * _MIB
+            if target_bytes < current_bytes:
+                current_mib = self._ceil_mib(current_bytes)
+                raise SmolVMError(
+                    f"Requested disk size is smaller than the current disk for sandbox "
+                    f"'{vm_id}'; choose at least {current_mib} MiB, or run "
+                    f"'{self._resize_recovery(vm_id)}'."
+                )
+            if target_bytes > current_bytes:
+                logger.info(
+                    "Resizing raw ext4 disk for VM %s: %d -> %d MiB",
+                    vm_id,
+                    self._ceil_mib(current_bytes),
+                    target_mib,
+                )
+                with disk_path.open("r+b") as disk_file:
+                    disk_file.truncate(target_bytes)
+
+        if grow_filesystem:
+            self._grow_raw_ext4_filesystem(disk_path, vm_id)
+
+    def _grow_raw_ext4_filesystem(self, disk_path: Path, vm_id: str) -> None:
+        """Run e2fsck + resize2fs on a raw ext4 disk file."""
+        e2fsck = which("e2fsck")
+        resize2fs = which("resize2fs")
+        if e2fsck is None or resize2fs is None:
+            raise SmolVMError(
+                f"e2fsck and resize2fs are needed to grow the disk for sandbox '{vm_id}'; "
+                f"install e2fsprogs, or run '{self._resize_recovery(vm_id)}'."
+            )
+        self._run_resize_tool([str(e2fsck), "-fy", str(disk_path)], "e2fsck", vm_id)
+        self._run_resize_tool([str(resize2fs), str(disk_path)], "resize2fs", vm_id)
+
+    def _run_resize_tool(self, command: list[str], tool_name: str, vm_id: str) -> None:
+        """Run one resize helper and convert failures to SmolVMError."""
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            stderr = result.stderr.strip() or result.stdout.strip() or "no output"
+            raise SmolVMError(
+                f"{tool_name} failed while resizing the disk for sandbox '{vm_id}'; run "
+                f"'{self._resize_recovery(vm_id)}'.",
+                {"stderr": stderr, "returncode": result.returncode},
+            )
+
+    def _qcow2_virtual_size_mib(self, disk_path: Path, vm_id: str) -> int:
+        """Return qemu-img's virtual size for a qcow2/raw-backed overlay."""
+        qemu_img = self._find_qemu_img_binary()
+        if qemu_img is None:
+            raise SmolVMError(
+                f"qemu-img is needed to resize the disk for sandbox '{vm_id}'; "
+                f"{_qemu_install_hint()}"
+            )
+        result = subprocess.run(
+            [str(qemu_img), "info", "--output=json", str(disk_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise SmolVMError(
+                f"qemu-img could not inspect the disk for sandbox '{vm_id}'; run "
+                f"'{self._resize_recovery(vm_id)}'.",
+                {"stderr": result.stderr.strip()},
+            )
+        try:
+            info = json.loads(result.stdout)
+            return self._ceil_mib(int(info["virtual-size"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SmolVMError(
+                f"qemu-img returned invalid disk info for sandbox '{vm_id}'; run "
+                f"'{self._resize_recovery(vm_id)}'."
+            ) from exc
+
+    def _resize_qcow2_disk(self, disk_path: Path, target_mib: int, vm_id: str) -> None:
+        """Resize a qcow2 disk's virtual size."""
+        qemu_img = self._find_qemu_img_binary()
+        if qemu_img is None:
+            raise SmolVMError(
+                f"qemu-img is needed to resize the disk for sandbox '{vm_id}'; "
+                f"{_qemu_install_hint()}"
+            )
+        current_mib = self._qcow2_virtual_size_mib(disk_path, vm_id)
+        if target_mib < current_mib:
+            raise SmolVMError(
+                f"Requested disk size is smaller than the current disk for sandbox "
+                f"'{vm_id}'; choose at least {current_mib} MiB, or run "
+                f"'{self._resize_recovery(vm_id)}'."
+            )
+        if target_mib == current_mib:
+            return
+        result = subprocess.run(
+            [str(qemu_img), "resize", str(disk_path), f"{target_mib}M"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise SmolVMError(
+                f"qemu-img failed while resizing the disk for sandbox '{vm_id}'; run "
+                f"'{self._resize_recovery(vm_id)}'.",
+                {"stderr": result.stderr.strip()},
+            )
 
     def _materialize_rootfs(self, config: VMConfig) -> VMConfig:
         """Materialize the effective rootfs path for a VM create request.
@@ -1065,6 +1227,7 @@ class SmolVMManager:
             )
 
         effective_config = self._materialize_rootfs(effective_config)
+        effective_config = self._resize_materialized_rootfs(effective_config)
         self._materialize_firmware(effective_config)
 
         logger.info(
@@ -2303,6 +2466,10 @@ class SmolVMManager:
             effective_config = effective_config.model_copy(update={"backend": backend})
 
         effective_config = await self._async_materialize_rootfs(effective_config)
+        effective_config = await asyncio.to_thread(
+            self._resize_materialized_rootfs,
+            effective_config,
+        )
         # Firmware materialization is a small file copy — synchronous is fine.
         self._materialize_firmware(effective_config)
 

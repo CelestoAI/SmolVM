@@ -219,6 +219,120 @@ class TestSmolVMDiskLifecycle:
         assert not (smol_vm.data_dir / "disks" / "vm001.ext4").exists()
 
     @patch("smolvm.vm.NetworkManager")
+    def test_create_resizes_and_grows_raw_isolated_disk(
+        self,
+        mock_network_class: MagicMock,
+        smol_vm: SmolVMManager,
+        sample_config: VMConfig,
+    ) -> None:
+        """Resize/grow applies to the per-VM raw ext4 disk, not the base image."""
+        sample_config.rootfs_path.write_bytes(b"\0" * (1024 * 1024))
+        mock_network = MagicMock()
+        mock_network.host_ip = "172.16.0.1"
+        mock_network.generate_mac.return_value = "AA:FC:00:00:00:01"
+        mock_network_class.return_value = mock_network
+        smol_vm.network = mock_network
+
+        def _copy(source: Path, target: Path) -> None:
+            target.write_bytes(source.read_bytes())
+
+        config = sample_config.model_copy(
+            update={"disk_size_mib": 2, "grow_filesystem": True}
+        )
+        with (
+            patch.object(SmolVMManager, "_copy_with_reflink", side_effect=_copy),
+            patch.object(smol_vm, "_grow_raw_ext4_filesystem") as mock_grow,
+        ):
+            vm_info = smol_vm.create(config)
+
+        expected_disk = smol_vm.data_dir / "disks" / "vm001.ext4"
+        assert sample_config.rootfs_path.stat().st_size == 1024 * 1024
+        assert expected_disk.stat().st_size == 2 * 1024 * 1024
+        assert vm_info.config.rootfs_path == expected_disk
+        mock_grow.assert_called_once_with(expected_disk, "vm001")
+
+    def test_resize_rejects_shared_disk_mode(
+        self,
+        smol_vm: SmolVMManager,
+        sample_config: VMConfig,
+    ) -> None:
+        """Resize requests must not mutate the caller's base image."""
+        config = sample_config.model_copy(
+            update={"disk_mode": "shared", "disk_size_mib": 2}
+        )
+        with pytest.raises(SmolVMError, match="isolated disk"):
+            smol_vm.create(config)
+
+    @patch("smolvm.vm.NetworkManager")
+    def test_create_resizes_qemu_overlay_disk(
+        self,
+        mock_network_class: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """QEMU qcow2 overlays are resized with qemu-img."""
+        smol_vm = SmolVMManager(
+            data_dir=tmp_path / "data-qemu-resize",
+            socket_dir=tmp_path / "sockets-qemu-resize",
+            backend="qemu",
+        )
+        mock_network = MagicMock()
+        mock_network.generate_mac.return_value = "AA:FC:00:00:00:01"
+        mock_network_class.return_value = mock_network
+        smol_vm.network = mock_network
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        rootfs.write_bytes(b"\0" * (1024 * 1024))
+        config = VMConfig(
+            vm_id="vm-qemu-resize",
+            kernel_path=kernel,
+            rootfs_path=rootfs,
+            backend="qemu",
+            disk_size_mib=4,
+        )
+        resize_calls: list[list[str]] = []
+
+        def _fake_qemu_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+            del kwargs
+            if command[1] == "info":
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout='{"virtual-size": 1048576}',
+                )
+            resize_calls.append(command)
+            return subprocess.CompletedProcess(command, 0, stdout="")
+
+        def _create_overlay(_base: Path, overlay: Path) -> None:
+            overlay.touch()
+
+        with (
+            patch.object(SmolVMManager, "_create_qemu_overlay_disk", side_effect=_create_overlay),
+            patch.object(smol_vm, "_find_qemu_img_binary", return_value=Path("qemu-img")),
+            patch("smolvm.vm.subprocess.run", side_effect=_fake_qemu_run),
+        ):
+            vm_info = smol_vm.create(config)
+
+        expected_disk = smol_vm.data_dir / "disks" / "vm-qemu-resize.qcow2"
+        assert vm_info.config.rootfs_path == expected_disk
+        assert resize_calls == [["qemu-img", "resize", str(expected_disk), "4M"]]
+
+    def test_grow_rejects_qcow2_disk(
+        self,
+        smol_vm: SmolVMManager,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        """Host-side filesystem growth is raw-ext4 only in this release."""
+        qcow2 = tmp_path / "disk.qcow2"
+        qcow2.touch()
+        config = sample_config.model_copy(
+            update={"rootfs_path": qcow2, "grow_filesystem": True}
+        )
+        with pytest.raises(SmolVMError, match="qcow2"):
+            smol_vm._resize_materialized_rootfs(config)
+
+    @patch("smolvm.vm.NetworkManager")
     def test_delete_removes_isolated_disk_by_default(
         self,
         mock_network_class: MagicMock,

@@ -765,11 +765,19 @@ class TestFromBootImage:
         with pytest.raises(ValueError, match="smolvm create --name vm-mismatch --help"):
             SmolVM.from_image(image, vm_id="vm-mismatch", backend="firecracker")
 
-    def test_from_image_rejects_resize_knobs_until_phase_five(self, tmp_path: Path) -> None:
+    @patch("smolvm.facade.SmolVMManager")
+    def test_from_image_passes_resize_knobs(
+        self,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
         rootfs = tmp_path / "rootfs.ext4"
         kernel = tmp_path / "vmlinux.image"
         rootfs.touch()
         kernel.touch()
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm-resize", status=VMState.CREATED)
+        mock_sdk_cls.return_value = mock_sdk
         image = BootImage(
             name="resize",
             rootfs_path=rootfs,
@@ -778,10 +786,16 @@ class TestFromBootImage:
             boot_args="console=ttyS0 root=/dev/vda rw",
         )
 
-        with pytest.raises(SmolVMError, match="disk resizing is not implemented"):
-            SmolVM.from_image(image, vm_id="vm-resize", disk_size_mb=4096)
-        with pytest.raises(SmolVMError, match="disk resizing is not implemented"):
-            SmolVM.from_image(image, vm_id="vm-grow", grow_filesystem=True)
+        SmolVM.from_image(
+            image,
+            vm_id="vm-resize",
+            disk_size_mb=4096,
+            grow_filesystem=True,
+        )
+
+        created_config = mock_sdk.create.call_args.args[0]
+        assert created_config.disk_size_mib == 4096
+        assert created_config.grow_filesystem is True
 
     def test_from_image_rejects_tap_port_forwards(self, tmp_path: Path) -> None:
         rootfs = tmp_path / "rootfs.ext4"
