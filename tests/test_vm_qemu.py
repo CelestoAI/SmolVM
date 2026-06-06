@@ -272,6 +272,31 @@ def test_create_qemu_preserves_requested_vsock_cid(tmp_path: Path) -> None:
     assert sdk.state.get_vsock_cid("vm-qemu-vsock") == 42
 
 
+def test_create_qemu_reserves_vsock_even_when_control_channel_is_ssh(tmp_path: Path) -> None:
+    """A QEMU vsock device still needs collision-safe CID reservation with SSH control."""
+    kernel = tmp_path / "vmlinux"
+    rootfs = tmp_path / "rootfs.ext4"
+    kernel.touch()
+    rootfs.touch()
+
+    config = VMConfig(
+        vm_id="vm-qemu-vsock-ssh",
+        kernel_path=kernel,
+        rootfs_path=rootfs,
+        backend="qemu",
+        comm_channel="ssh",
+        vsock=VsockConfig(guest_cid=43),
+    )
+    sdk = SmolVMManager(data_dir=tmp_path / "data", socket_dir=tmp_path / "sockets", backend="qemu")
+
+    with patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_overlay:
+        mock_overlay.side_effect = lambda source, target, **_kwargs: target.write_text("overlay")
+        vm_info = sdk.create(config)
+
+    assert vm_info.config.vsock == VsockConfig(guest_cid=43)
+    assert sdk.state.get_vsock_cid("vm-qemu-vsock-ssh") == 43
+
+
 def test_create_qemu_uses_declared_backing_format_with_misleading_suffix(
     tmp_path: Path,
 ) -> None:

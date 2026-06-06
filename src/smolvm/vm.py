@@ -944,6 +944,15 @@ class SmolVMManager:
             )
         if vm_info.config.disk_mode != "isolated":
             raise SmolVMError("Snapshotting currently supports only isolated-disk VMs")
+        if (
+            self._backend_for_vm(vm_info) == BACKEND_QEMU
+            and vm_info.config.effective_rootfs_format != "qcow2"
+        ):
+            raise SmolVMError(
+                f"Snapshots are not supported for raw QEMU disks in sandbox "
+                f"'{vm_info.vm_id}'; create it without grow_filesystem, or run "
+                f"'smolvm delete {vm_info.vm_id}'."
+            )
         if vm_info.config.extra_drives:
             raise SmolVMError("Snapshotting currently supports only VMs without extra drives")
         if vm_info.config.workspace_mounts:
@@ -1167,14 +1176,13 @@ class SmolVMManager:
         return errors
 
     def _maybe_enable_vsock(self, config: VMConfig, backend: str, vm_info: VMInfo) -> VMInfo:
-        """Reserve a vsock CID and persist ``config.vsock`` when the VM should
-        use the vsock control channel.
+        """Reserve a vsock CID and persist ``config.vsock`` when needed.
 
-        No-op unless the resolved channel is vsock (QEMU on a Linux host with
-        ``/dev/vhost-vsock``). The CID is reserved after the VM row exists (the
-        ``vsock_cids`` foreign key requires it) and written back to the config
-        so ``build_qemu_argv`` wires the ``vhost-vsock`` device at boot.
-        Returns the possibly-updated :class:`VMInfo`.
+        Auto/explicit vsock control channels need a reserved CID. An explicit
+        QEMU vsock device also needs reservation even when the control channel
+        is SSH, otherwise two guests could be configured with the same CID.
+        The reservation happens after the VM row exists because ``vsock_cids``
+        references it.
         """
         resolution = resolve_comm_channel(
             requested=None,
@@ -1182,9 +1190,11 @@ class SmolVMManager:
             backend=backend,
             guest_os=config.guest_os,
         )
-        if resolution.kind != "vsock":
-            return vm_info
         requested_vsock = config.vsock
+        should_reserve_device = backend == BACKEND_QEMU and requested_vsock is not None
+        if resolution.kind != "vsock" and not should_reserve_device:
+            return vm_info
+
         cid = self.state.reserve_vsock_cid(
             config.vm_id,
             requested_vsock.guest_cid if requested_vsock is not None else None,
@@ -1197,7 +1207,10 @@ class SmolVMManager:
                 )
             }
         )
-        logger.info("VM %s will use vsock control channel (CID %d)", config.vm_id, cid)
+        if resolution.kind == "vsock":
+            logger.info("VM %s will use vsock control channel (CID %d)", config.vm_id, cid)
+        else:
+            logger.info("VM %s reserved explicit vsock CID %d", config.vm_id, cid)
         return self.state.update_vm(config.vm_id, config=updated)
 
     @staticmethod

@@ -415,6 +415,38 @@ def test_snapshot_rejected_for_windows_guests(qemu_smol_vm: SmolVMManager, tmp_p
         qemu_smol_vm._ensure_snapshot_supported(vm_info)
 
 
+def test_snapshot_rejected_for_raw_qemu_disks(
+    qemu_smol_vm: SmolVMManager,
+    tmp_path: Path,
+) -> None:
+    """QEMU snapshot code only supports qcow2 managed disks today."""
+    kernel = tmp_path / "vmlinux"
+    rootfs = tmp_path / "vm-raw.ext4"
+    kernel.touch()
+    rootfs.touch()
+    config = VMConfig(
+        vm_id="vm-raw-snap",
+        kernel_path=kernel,
+        rootfs_path=rootfs,
+        rootfs_format="raw-ext4",
+        backend="qemu",
+    )
+    vm_info = VMInfo(
+        vm_id="vm-raw-snap",
+        status=VMState.RUNNING,
+        config=config,
+        network=NetworkConfig(
+            guest_ip="10.0.2.15",
+            tap_device="qemu-user",
+            guest_mac="52:54:00:5d:00:02",
+            ssh_host_port=2203,
+        ),
+    )
+
+    with pytest.raises(SmolVMError, match="raw QEMU disks"):
+        qemu_smol_vm._ensure_snapshot_supported(vm_info)
+
+
 def test_create_qemu_snapshot_defaults_to_full_type(
     qemu_smol_vm: SmolVMManager,
     qemu_config: VMConfig,
