@@ -1,15 +1,15 @@
 # Real-KVM end-to-end smoke of the public SmolVM API.
 #
 # Unlike the unit suite (which mocks the hypervisor) and smoke-published-images
-# (which shells out to raw qemu), this boots an actual QEMU micro-VM *through
-# the SmolVM Python API* and walks its whole lifecycle — start, exec, file
-# upload/download, pause/resume, snapshot/restore, stop/cleanup — over both the
-# SSH and vsock control transports.
+# (which shells out to raw qemu), this boots actual micro-VMs *through the
+# SmolVM Python API* and walks their lifecycle — start, exec, file
+# upload/download, pause/resume, snapshot/restore, stop/cleanup. QEMU is
+# exercised over SSH and vsock; Firecracker is exercised over SSH.
 #
 # GH-hosted ubuntu-latest (x86) exposes /dev/kvm, so this runs with hardware
-# acceleration. The whole suite boots in ~1.5 min on a runner, so it gates every
-# PR to main; the nightly cron still runs to catch runner/environment drift on
-# days with no PRs, and it can be launched manually.
+# acceleration. The suite is short enough to gate every PR to main; the nightly
+# cron still runs to catch runner/environment drift on days with no PRs, and it
+# can be launched manually.
 
 name: E2E (real KVM)
 
@@ -33,8 +33,13 @@ permissions:
 
 jobs:
   e2e:
+    name: ${{ matrix.backend }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [qemu, firecracker]
 
     steps:
       - name: Check out repository
@@ -64,25 +69,37 @@ jobs:
         uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
 
       - name: Install QEMU + tooling
+        if: matrix.backend == 'qemu'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
               qemu-system-x86 qemu-utils openssh-client
 
-      - name: Enable KVM and vsock
+      - name: Install Firecracker + tooling
+        if: matrix.backend == 'firecracker'
         run: |
-          # The runner user isn't in the kvm group; SmolVM launches QEMU from
-          # its own process and can't sudo the subprocess, so widen /dev/kvm
-          # directly (CI-only). vsock needs the vhost_vsock module loaded so the
-          # vsock-transport variant of the suite isn't skipped.
+          sudo bash scripts/system-setup.sh \
+            --configure-runtime \
+            --runtime-user "$USER"
+
+      - name: Enable KVM and optional vsock
+        run: |
+          # The runner user isn't in the active kvm group for this already-
+          # running job. Add it to /etc/group, set the devices to the same
+          # root:kvm mode used by system setup, then run KVM commands below via
+          # `sudo -u "$USER" -g kvm` so the group is active for each command.
+          sudo groupadd -f kvm
           sudo usermod -a -G kvm "$USER" || true
-          sudo chmod 666 /dev/kvm || true
-          sudo modprobe vhost_vsock || echo "vhost_vsock unavailable; vsock tests will skip"
-          # /dev/vhost-vsock ships as root:kvm mode 660; the `usermod` above
-          # doesn't apply to this already-running job, so widen it directly the
-          # same way as /dev/kvm — otherwise QEMU can't open it and the vsock
-          # VM dies on boot (the device merely *existing* isn't enough).
-          sudo chmod 666 /dev/vhost-vsock || true
+          sudo chgrp kvm /dev/kvm || true
+          sudo chmod 660 /dev/kvm || true
+          if [[ "${{ matrix.backend }}" == "qemu" ]]; then
+            sudo modprobe vhost_vsock || echo "vhost_vsock unavailable; vsock tests will skip"
+            # /dev/vhost-vsock ships as root:kvm mode 660; the `usermod` above
+            # doesn't apply to this already-running job, so normalize the
+            # device and run pytest with the kvm group active below.
+            sudo chgrp kvm /dev/vhost-vsock || true
+            sudo chmod 660 /dev/vhost-vsock || true
+          fi
           ls -l /dev/kvm /dev/vhost-vsock || true
 
       # uv workspace builds smolvm-core from the local smolvm-core/ directory.
@@ -91,17 +108,13 @@ jobs:
 
       - name: Assert native extension available
         run: |
-          uv run python -c "
-          from smolvm_core import is_available
-          assert is_available(), 'Native extension reports not available on Linux'
-          print('smolvm-core: OK')
-          "
+          sudo -n -E -u "$USER" -g kvm -- "$(command -v uv)" run python -c "from smolvm_core import is_available; assert is_available(), 'Native extension reports not available on Linux'; print('smolvm-core: OK')"
 
       - name: Diagnostics (smolvm doctor)
-        run: uv run smolvm doctor || true
+        run: sudo -n -E -u "$USER" -g kvm -- "$(command -v uv)" run smolvm doctor --backend "${{ matrix.backend }}" || true
 
       - name: Run e2e suite
-        run: uv run pytest -m e2e tests/e2e -v
+        run: sudo -n -E -u "$USER" -g kvm -- "$(command -v uv)" run pytest -m e2e tests/e2e -v --e2e-backend "${{ matrix.backend }}"
 
       - name: Dump VM logs on failure
         if: failure()

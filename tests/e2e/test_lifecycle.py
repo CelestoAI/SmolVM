@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""End-to-end lifecycle of a real QEMU sandbox via the public ``SmolVM`` API.
+"""End-to-end lifecycle of real sandboxes via the public ``SmolVM`` API.
 
 The shared-sandbox tests are a deliberately *ordered, stateful* smoke: the one
-VM from the ``vm`` fixture (booted once per transport) is walked through its
+VM from the ``vm`` fixture (booted once per variant) is walked through its
 lifecycle, asserting one capability per step. An early failure (e.g. boot)
 cascades — the signal we want from a smoke suite.
 
@@ -34,14 +34,20 @@ from contextlib import suppress
 from pathlib import Path
 
 import pytest
-from _util import BOOT_TIMEOUT, kvm_ready
+from _util import (
+    BOOT_TIMEOUT,
+    E2E_BACKENDS,
+    E2EBackend,
+    require_backend_available,
+    selected_backend,
+)
 
 from smolvm import SmolVM
 from smolvm.exceptions import SmolVMError, VMNotFoundError
+from smolvm.runtime.backends import BACKEND_QEMU
 from smolvm.types import VMState
 
 pytestmark = pytest.mark.e2e
-
 
 # ---------------------------------------------------------------------------
 # Shared sandbox: one VM (per transport), walked through its lifecycle.
@@ -116,28 +122,43 @@ def test_stop_and_cleanup(vm: SmolVM) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    reason=(
-        "QEMU snapshot RESTORE is currently broken on the isolated-disk "
-        "overlay: loadvm reports \"Device 'rootdisk0-drive' is writable but "
-        'does not support snapshots". Snapshot *creation* works; restore needs '
-        "a runtime fix (attach the restored root disk as a snapshot-capable "
-        "qcow2 node). Remove this xfail once restore lands."
-    ),
-    raises=SmolVMError,
-    strict=False,
+@pytest.mark.parametrize(
+    "backend",
+    [
+        pytest.param(
+            BACKEND_QEMU,
+            marks=pytest.mark.xfail(
+                reason=(
+                    "QEMU snapshot RESTORE is currently broken on the isolated-disk "
+                    "overlay: loadvm reports \"Device 'rootdisk0-drive' is writable but "
+                    'does not support snapshots". Snapshot *creation* works; restore needs '
+                    "a runtime fix (attach the restored root disk as a snapshot-capable "
+                    "qcow2 node). Remove this xfail once restore lands."
+                ),
+                raises=SmolVMError,
+                strict=False,
+            ),
+        ),
+        *[backend for backend in E2E_BACKENDS if backend != BACKEND_QEMU],
+    ],
+    ids=str,
 )
-def test_snapshot_restore() -> None:
+def test_snapshot_restore(backend: E2EBackend, request: pytest.FixtureRequest) -> None:
     """Snapshot a VM, restore it, and confirm guest state survived.
 
     Self-contained: ``from_snapshot`` restores into the *original* vm_id, so a
     shared sandbox can't be used. We stop the source before restoring so the
-    restore path doesn't race to kill a still-live QEMU process.
+    restore path doesn't race to kill a still-live runtime process.
     """
-    if not kvm_ready():
-        pytest.skip("requires /dev/kvm and a working smolvm-core native extension")
+    selected = selected_backend(request.config)
+    if selected != "all" and backend != selected:
+        pytest.skip(
+            f"End-to-end tests for '{backend}' are skipped because this run selected "
+            f"'{selected}'; rerun all backends with: pytest tests/e2e."
+        )
+    require_backend_available(backend, request.config, sandbox_name=f"snapshot-{backend}")
 
-    sandbox = SmolVM(backend="qemu", os="alpine", comm_channel="ssh")
+    sandbox = SmolVM(backend=backend, os="alpine", comm_channel="ssh")
     restored: SmolVM | None = None
     try:
         sandbox.start(boot_timeout=BOOT_TIMEOUT)
@@ -145,8 +166,9 @@ def test_snapshot_restore() -> None:
 
         snap = sandbox.snapshot()
         sandbox.stop()
+        sandbox.delete()
 
-        restored = SmolVM.from_snapshot(snap.snapshot_id)
+        restored = SmolVM.from_snapshot(snap.snapshot_id, backend=backend, resume_vm=True)
         result = restored.run("cat /root/sentinel.txt")
         assert result.exit_code == 0
         assert result.stdout.strip() == "sentinel-content"
