@@ -1933,6 +1933,7 @@ class SmolVMManager:
         persisted_vm_config = snapshot.vm_config.model_copy(
             update={
                 "rootfs_path": managed_disk_path,
+                "rootfs_format": snapshot.vm_config.effective_rootfs_format,
                 "backend": snapshot.backend,
             }
         )
@@ -2045,12 +2046,13 @@ class SmolVMManager:
                 with suppress(Exception):
                     self.state.delete_vm(restore_vm_id)
             elif existing_vm is not None:
-                self.state.update_vm(
-                    restore_vm_id,
-                    status=VMState.ERROR,
-                    clear_pid=True,
-                    clear_socket_path=True,
-                )
+                with suppress(Exception):
+                    self.state.update_vm(
+                        restore_vm_id,
+                        status=VMState.ERROR,
+                        clear_pid=True,
+                        clear_socket_path=True,
+                    )
                 self._close_runtime_log(
                     restore_vm_id,
                     effective_snapshot.backend,

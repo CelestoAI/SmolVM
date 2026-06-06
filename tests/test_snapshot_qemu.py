@@ -322,7 +322,7 @@ def test_restore_qemu_snapshot_rehydrates_deleted_vm(
         vm_id="vm001",
         backend="qemu",
         artifacts=SnapshotArtifacts(disk_path=snapshot_dir / "disk.qcow2"),
-        vm_config=vm_info.config,
+        vm_config=vm_info.config.model_copy(update={"rootfs_format": None}),
         network_config=vm_info.network,
         created_at=datetime.now(timezone.utc),
     )
@@ -345,6 +345,7 @@ def test_restore_qemu_snapshot_rehydrates_deleted_vm(
     restored_snapshot = qemu_smol_vm.state.get_snapshot("snap-001")
     managed_disk = qemu_smol_vm.data_dir / "disks" / "vm001.qcow2"
     assert restored.status == VMState.PAUSED
+    assert restored.config.rootfs_format == "qcow2"
     assert restored_snapshot.restored is True
     assert managed_disk.read_text() == "snapshotted-qcow2"
     mock_client.snapshot_load.assert_called_once()
@@ -467,6 +468,39 @@ def test_restore_qemu_snapshot_rolls_back_new_vm_resources_on_failure(
         qemu_smol_vm.state.get_vm("vm001")
     assert qemu_smol_vm.state.get_ssh_port("vm001") is None
     assert not (qemu_smol_vm.data_dir / "disks" / "vm001.qcow2").exists()
+
+
+def test_restore_qemu_snapshot_restores_backup_when_status_update_fails(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+) -> None:
+    """Rollback should restore the original disk even if state status update fails."""
+    _create_qemu_vm(qemu_smol_vm, qemu_config)
+    managed_disk = qemu_smol_vm.data_dir / "disks" / "vm001.qcow2"
+    managed_disk.write_text("original-managed-qcow2")
+    vm_info = qemu_smol_vm.get("vm001")
+
+    snapshot_dir = qemu_smol_vm.snapshot_dir / "snap-001"
+    snapshot_dir.mkdir(parents=True)
+    snapshot = SnapshotInfo(
+        snapshot_id="snap-001",
+        vm_id="vm001",
+        backend="qemu",
+        artifacts=SnapshotArtifacts(disk_path=snapshot_dir / "disk.qcow2"),
+        vm_config=vm_info.config,
+        network_config=vm_info.network,
+        created_at=datetime.now(timezone.utc),
+    )
+    snapshot.artifacts.disk_path.write_text("snapshotted-qcow2")
+    qemu_smol_vm.state.create_snapshot(snapshot)
+
+    with (
+        patch.object(qemu_smol_vm.state, "update_vm", side_effect=SmolVMError("state failed")),
+        pytest.raises(SmolVMError, match="state failed"),
+    ):
+        qemu_smol_vm.restore_snapshot("snap-001")
+
+    assert managed_disk.read_text() == "original-managed-qcow2"
 
 
 def test_restore_qemu_snapshot_preserves_existing_managed_disk_on_failure(
