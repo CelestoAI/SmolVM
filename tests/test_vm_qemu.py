@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from smolvm.exceptions import SmolVMError
-from smolvm.types import NetworkConfig, PortForwardConfig, VMConfig, VMInfo, VMState
+from smolvm.types import NetworkConfig, PortForwardConfig, VMConfig, VMInfo, VMState, VsockConfig
 from smolvm.vm import SmolVMManager
 
 
@@ -239,6 +239,37 @@ def test_start_qemu_uses_distinct_block_backend_and_node_names(
     # ends up being whichever virtio-blk-device was added last).
     blk_devs = [a for a in cmd if isinstance(a, str) and a.startswith("virtio-blk-device,")]
     assert blk_devs[-1] == "virtio-blk-device,drive=rootdisk0-drive"
+
+
+def test_create_qemu_preserves_requested_vsock_cid(tmp_path: Path) -> None:
+    """Explicit QEMU vsock config should reserve and persist the requested CID."""
+    kernel = tmp_path / "vmlinux"
+    rootfs = tmp_path / "rootfs.ext4"
+    kernel.touch()
+    rootfs.touch()
+
+    config = VMConfig(
+        vm_id="vm-qemu-vsock",
+        kernel_path=kernel,
+        rootfs_path=rootfs,
+        backend="qemu",
+        comm_channel="vsock",
+        vsock=VsockConfig(guest_cid=42, uds_path="/tmp/vm-qemu-vsock.sock"),
+    )
+    sdk = SmolVMManager(data_dir=tmp_path / "data", socket_dir=tmp_path / "sockets", backend="qemu")
+
+    with (
+        patch("smolvm.comm.select.host_supports_vsock", return_value=True),
+        patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_overlay,
+    ):
+        mock_overlay.side_effect = lambda source, target, **_kwargs: target.write_text("overlay")
+        vm_info = sdk.create(config)
+
+    assert vm_info.config.vsock == VsockConfig(
+        guest_cid=42,
+        uds_path="/tmp/vm-qemu-vsock.sock",
+    )
+    assert sdk.state.get_vsock_cid("vm-qemu-vsock") == 42
 
 
 def test_create_qemu_uses_declared_backing_format_with_misleading_suffix(

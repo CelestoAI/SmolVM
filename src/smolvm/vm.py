@@ -1184,8 +1184,19 @@ class SmolVMManager:
         )
         if resolution.kind != "vsock":
             return vm_info
-        cid = self.state.reserve_vsock_cid(config.vm_id)
-        updated = config.model_copy(update={"vsock": VsockConfig(guest_cid=cid)})
+        requested_vsock = config.vsock
+        cid = self.state.reserve_vsock_cid(
+            config.vm_id,
+            requested_vsock.guest_cid if requested_vsock is not None else None,
+        )
+        updated = config.model_copy(
+            update={
+                "vsock": VsockConfig(
+                    guest_cid=cid,
+                    uds_path=requested_vsock.uds_path if requested_vsock is not None else None,
+                )
+            }
+        )
         logger.info("VM %s will use vsock control channel (CID %d)", config.vm_id, cid)
         return self.state.update_vm(config.vm_id, config=updated)
 
