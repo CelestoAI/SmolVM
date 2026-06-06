@@ -99,29 +99,9 @@ def apply_preset(
     # Keychain step runs after host_configs so a directory copy that
     # targets the same parent (e.g. ~/.claude → /root/.claude) cannot
     # tar-extract over a credential file we just wrote.
-    #
-    # Notify is per-found-secret rather than rolled up because keychain
-    # entries are user-visible (typically 1 OAuth blob) and the user
-    # cares whether their login actually transferred — a missing secret
-    # must not produce a "copied X" message.
-    extracted_secrets: list[str] = []
-    for secret in preset.host_keychain_secrets:
-        # Default the account to the current macOS login user. This is
-        # what Claude Code uses for its OAuth keychain entry, and it
-        # disambiguates when multiple items share the same service name
-        # (e.g. a separate entry under acct=root for MCP tokens).
-        account = secret.account if secret.account is not None else getpass.getuser()
-        plaintext = _extract_keychain_secret(secret.service, account=account)
-        if plaintext is None:
-            logger.debug(
-                "Skipping unavailable keychain secret: service=%s account=%s",
-                secret.service,
-                account,
-            )
-            continue
-        notify(f"Copying {secret.service} from macOS keychain → {secret.guest_path}")
-        _write_secret_to_guest(ssh, plaintext, secret.guest_path, secret.file_mode)
-        extracted_secrets.append(secret.guest_path)
+    extracted_secrets: list[str] = transfer_keychain_secrets(
+        ssh, preset, on_progress=on_progress
+    )
 
     env_vars = collect_host_env(preset)
     injected_keys: list[str] = []

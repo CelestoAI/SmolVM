@@ -74,6 +74,11 @@ class HostKeychainSecret:
             entries can share a service name (e.g. one per account),
             and ``-s`` alone returns whichever the keychain hits first,
             which may not be the right one.
+        host_fallback_path: Host file path used as the credential source
+            on non-macOS hosts (e.g. ``~/.claude/.credentials.json`` on
+            Linux, where the same token lives as a plain file instead of
+            a keychain item). When ``None``, non-macOS hosts are a
+            silent no-op and the user must authenticate inside the guest.
         file_mode: Octal permission bits applied to the guest file.
             Defaults to ``0o600`` because credentials files should not
             be world-readable.
@@ -82,6 +87,7 @@ class HostKeychainSecret:
     service: str
     guest_path: str
     account: str | None = None
+    host_fallback_path: str | None = None
     file_mode: int = 0o600
 
 
