@@ -87,7 +87,7 @@ jobs:
           # The runner user isn't in the active kvm group for this already-
           # running job. Add it to /etc/group, set the devices to the same
           # root:kvm mode used by system setup, then run KVM commands below via
-          # `sg kvm -c ...` so the group is active for each command.
+          # `sudo -u "$USER" -g kvm` so the group is active for each command.
           sudo groupadd -f kvm
           sudo usermod -a -G kvm "$USER" || true
           sudo chgrp kvm /dev/kvm || true
@@ -96,7 +96,7 @@ jobs:
             sudo modprobe vhost_vsock || echo "vhost_vsock unavailable; vsock tests will skip"
             # /dev/vhost-vsock ships as root:kvm mode 660; the `usermod` above
             # doesn't apply to this already-running job, so normalize the
-            # device and run pytest under `sg kvm` below.
+            # device and run pytest with the kvm group active below.
             sudo chgrp kvm /dev/vhost-vsock || true
             sudo chmod 660 /dev/vhost-vsock || true
           fi
@@ -108,17 +108,13 @@ jobs:
 
       - name: Assert native extension available
         run: |
-          sg kvm -c 'uv run python -c "
-          from smolvm_core import is_available
-          assert is_available(), 'Native extension reports not available on Linux'
-          print('smolvm-core: OK')
-          "'
+          sudo -n -E -u "$USER" -g kvm -- "$(command -v uv)" run python -c "from smolvm_core import is_available; assert is_available(), 'Native extension reports not available on Linux'; print('smolvm-core: OK')"
 
       - name: Diagnostics (smolvm doctor)
-        run: sg kvm -c 'uv run smolvm doctor --backend "${{ matrix.backend }}"' || true
+        run: sudo -n -E -u "$USER" -g kvm -- "$(command -v uv)" run smolvm doctor --backend "${{ matrix.backend }}" || true
 
       - name: Run e2e suite
-        run: sg kvm -c 'uv run pytest -m e2e tests/e2e -v --e2e-backend "${{ matrix.backend }}"'
+        run: sudo -n -E -u "$USER" -g kvm -- "$(command -v uv)" run pytest -m e2e tests/e2e -v --e2e-backend "${{ matrix.backend }}"
 
       - name: Dump VM logs on failure
         if: failure()
