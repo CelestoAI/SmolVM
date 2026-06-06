@@ -1876,6 +1876,18 @@ class SmolVMManager:
                     restore_vm_id,
                     host_port=effective_snapshot.network_config.ssh_host_port,
                 )
+            if effective_snapshot.backend == BACKEND_QEMU and persisted_vm_config.vsock is not None:
+                try:
+                    self.state.reserve_vsock_cid(
+                        restore_vm_id,
+                        guest_cid=persisted_vm_config.vsock.guest_cid,
+                    )
+                except NetworkError as exc:
+                    raise NetworkError(
+                        f"Vsock CID {persisted_vm_config.vsock.guest_cid} is already in use; "
+                        f"stop the sandbox using that CID, or run "
+                        f"'smolvm delete {restore_vm_id}'."
+                    ) from exc
             self.state.update_vm(restore_vm_id, network=effective_snapshot.network_config)
             if effective_snapshot.backend == BACKEND_FIRECRACKER:
                 self._ensure_firecracker_network_for_restore(

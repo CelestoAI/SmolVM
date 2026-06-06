@@ -31,6 +31,7 @@ from smolvm.types import (
     VMConfig,
     VMInfo,
     VMState,
+    VsockConfig,
 )
 from smolvm.vm import SmolVMManager
 
@@ -259,6 +260,47 @@ def test_restore_qemu_snapshot_rehydrates_deleted_vm(
     assert managed_disk.read_text() == "snapshotted-qcow2"
     mock_client.snapshot_load.assert_called_once()
     mock_client.snapshot_delete.assert_called_once()
+
+
+def test_restore_qemu_snapshot_reserves_persisted_vsock_cid(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+) -> None:
+    """Restored QEMU VMs must keep their vsock CID tracked in state."""
+    qemu_config = qemu_config.model_copy(
+        update={"vsock": VsockConfig(guest_cid=42), "comm_channel": "ssh"}
+    )
+    _create_qemu_vm(qemu_smol_vm, qemu_config)
+    vm_info = qemu_smol_vm.get("vm001")
+
+    snapshot_dir = qemu_smol_vm.snapshot_dir / "snap-vsock"
+    snapshot_dir.mkdir(parents=True)
+    snapshot = SnapshotInfo(
+        snapshot_id="snap-vsock",
+        vm_id="vm001",
+        backend="qemu",
+        artifacts=SnapshotArtifacts(disk_path=snapshot_dir / "disk.qcow2"),
+        vm_config=vm_info.config,
+        network_config=vm_info.network,
+        created_at=datetime.now(timezone.utc),
+    )
+    snapshot.artifacts.disk_path.write_text("snapshotted-qcow2")
+    qemu_smol_vm.state.create_snapshot(snapshot)
+
+    qemu_smol_vm.delete("vm001")
+    process = MagicMock()
+    process.pid = 98765
+    process.poll.return_value = None
+
+    with (
+        patch.object(qemu_smol_vm, "_start_qemu", return_value=process),
+        patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls,
+    ):
+        mock_client = _mock_qmp_client()
+        mock_client_cls.return_value = mock_client
+        qemu_smol_vm.restore_snapshot("snap-vsock")
+
+    assert qemu_smol_vm.state.get_vsock_cid("vm001") == 42
 
 
 def test_restore_qemu_snapshot_rolls_back_new_vm_resources_on_failure(
