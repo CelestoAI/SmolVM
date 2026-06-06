@@ -394,9 +394,8 @@ class QemuRuntimeAdapter(RuntimeAdapter):
         )
 
         request.managed_disk_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(snapshot.artifacts.disk_path, request.managed_disk_path)
-
         if snapshot.snapshot_type == SnapshotType.DIFF:
+            shutil.copy2(snapshot.artifacts.disk_path, request.managed_disk_path)
             backing = self._qcow2_backing_file(request.managed_disk_path)
             if backing is not None and not backing.exists():
                 raise SmolVMError(
@@ -406,6 +405,8 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                     "a full snapshot next time with '--snapshot-type full'.",
                     {"snapshot_id": snapshot.snapshot_id, "backing_file": str(backing)},
                 )
+        else:
+            self._copy_disk_standalone(snapshot.artifacts.disk_path, request.managed_disk_path)
 
         control_socket_path = self._control_socket_path(snapshot.vm_id)
         if control_socket_path.exists():
@@ -499,15 +500,20 @@ class QemuRuntimeAdapter(RuntimeAdapter):
         return self._context.socket_dir / f"qmp-{vm_id}.sock"
 
     @staticmethod
-    def _copy_disk_standalone(source: Path, dest: Path) -> None:
+    def _local_backing_copy_path(root: Path, backing: Path, depth: int) -> Path:
+        """Return a sidecar path for a copied backing file."""
+        return root.with_name(f"{root.name}.backing-{depth}{backing.suffix or '.img'}")
+
+    @staticmethod
+    def _copy_disk_standalone(source: Path, dest: Path, *, _depth: int = 0) -> None:
         """Copy a qcow2 disk with a local backing chain.
 
         QEMU full snapshots store VM state as an internal qcow2 snapshot on the
         active disk. ``qemu-img convert`` would flatten an overlay, but it also
         drops those internal snapshot tags. Instead, copy the active overlay as
-        is and re-point it at a copied backing file inside the snapshot
-        directory so restore remains self-contained and can still load the
-        internal VM-state snapshot.
+        is and re-point it at copied backing files next to *dest*. Restores then
+        depend only on files under the managed disk directory, not on the
+        snapshot directory.
         """
         backing = QemuRuntimeAdapter._qcow2_backing_file(source)
         if backing is None:
@@ -520,8 +526,8 @@ class QemuRuntimeAdapter(RuntimeAdapter):
             )
 
         shutil.copy2(source, dest)
-        backing_dest = dest.with_name(f"{dest.stem}.backing{backing.suffix or '.img'}")
-        QemuRuntimeAdapter._copy_disk_standalone(backing, backing_dest)
+        backing_dest = QemuRuntimeAdapter._local_backing_copy_path(dest, backing, _depth)
+        QemuRuntimeAdapter._copy_disk_standalone(backing, backing_dest, _depth=_depth + 1)
 
         qemu_img = which("qemu-img")
         if qemu_img is None:

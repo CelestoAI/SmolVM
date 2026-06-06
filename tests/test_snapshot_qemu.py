@@ -138,6 +138,53 @@ def test_full_snapshot_copy_preserves_internal_snapshot_on_backed_overlay(
     assert backing_path.exists()
 
 
+def test_restored_full_snapshot_disk_survives_snapshot_dir_delete(tmp_path: Path) -> None:
+    """Restored full snapshot disks should not depend on the snapshot directory."""
+    qemu_img = shutil.which("qemu-img")
+    if qemu_img is None:
+        pytest.skip("qemu-img is not installed")
+
+    source_dir = tmp_path / "source"
+    snapshot_dir = tmp_path / "snap"
+    disk_dir = tmp_path / "data" / "disks"
+    source_dir.mkdir()
+    snapshot_dir.mkdir()
+    disk_dir.mkdir(parents=True)
+    base = source_dir / "base.qcow2"
+    overlay = source_dir / "overlay.qcow2"
+    snapshot_disk = snapshot_dir / "disk.qcow2"
+    restore_disk = disk_dir / "vm001.qcow2.restore-test"
+    managed_disk = disk_dir / "vm001.qcow2"
+    subprocess.run([qemu_img, "create", "-f", "qcow2", str(base), "10M"], check=True)
+    subprocess.run(
+        [qemu_img, "create", "-f", "qcow2", "-b", str(base), "-F", "qcow2", str(overlay)],
+        check=True,
+    )
+    subprocess.run([qemu_img, "snapshot", "-c", "snap-001", str(overlay)], check=True)
+    QemuRuntimeAdapter._copy_disk_standalone(overlay, snapshot_disk)
+
+    QemuRuntimeAdapter._copy_disk_standalone(snapshot_disk, restore_disk)
+    restore_disk.replace(managed_disk)
+    shutil.rmtree(snapshot_dir)
+
+    info = subprocess.run(
+        [qemu_img, "info", "--output=json", str(managed_disk)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    backing_path = Path(json.loads(info.stdout)["full-backing-filename"])
+    snapshots = subprocess.run(
+        [qemu_img, "snapshot", "-l", str(managed_disk)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert backing_path.parent == disk_dir
+    assert backing_path.exists()
+    assert "snap-001" in snapshots.stdout
+
+
 def test_wait_for_runtime_retries_when_qmp_greeting_times_out(tmp_path: Path) -> None:
     """QEMU may create the QMP socket before its greeting is readable."""
     context = MagicMock()
@@ -497,6 +544,49 @@ def test_snapshot_rejected_for_windows_guests(qemu_smol_vm: SmolVMManager, tmp_p
     )
     with pytest.raises(SmolVMError, match="Windows guests"):
         qemu_smol_vm._ensure_snapshot_supported(vm_info)
+
+
+def test_delete_qemu_vm_removes_restored_backing_sidecars(
+    qemu_smol_vm: SmolVMManager,
+    tmp_path: Path,
+) -> None:
+    """Deleting a restored full snapshot should remove local backing sidecars too."""
+    qemu_img = shutil.which("qemu-img")
+    if qemu_img is None:
+        pytest.skip("qemu-img is not installed")
+
+    kernel = tmp_path / "vmlinux"
+    kernel.touch()
+    managed_disk = qemu_smol_vm.data_dir / "disks" / "vm-sidecar.qcow2"
+    sidecar = managed_disk.with_name(f"{managed_disk.name}.restore-test.backing-0.qcow2")
+    subprocess.run([qemu_img, "create", "-f", "qcow2", str(sidecar), "10M"], check=True)
+    subprocess.run(
+        [
+            qemu_img,
+            "create",
+            "-f",
+            "qcow2",
+            "-b",
+            str(sidecar),
+            "-F",
+            "qcow2",
+            str(managed_disk),
+        ],
+        check=True,
+    )
+    config = VMConfig(
+        vm_id="vm-sidecar",
+        kernel_path=kernel,
+        rootfs_path=managed_disk,
+        rootfs_format="qcow2",
+        backend="qemu",
+    )
+    qemu_smol_vm.state.create_vm(config)
+
+    qemu_smol_vm.delete("vm-sidecar")
+
+    assert not managed_disk.exists()
+    assert not sidecar.exists()
 
 
 def test_snapshot_rejected_for_raw_qemu_disks(

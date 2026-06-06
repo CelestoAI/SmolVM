@@ -949,6 +949,42 @@ class SmolVMManager:
             return None
         return expected
 
+    @staticmethod
+    def _managed_disk_sidecars_for_root(root_path: Path) -> list[Path]:
+        """Return sidecar backing files created for a managed disk root."""
+        return sorted(root_path.parent.glob(f"{root_path.name}.backing-*"))
+
+    @staticmethod
+    def _is_managed_disk_sidecar(managed_disk: Path, candidate: Path) -> bool:
+        """Return whether *candidate* is a sidecar for *managed_disk*."""
+        name = candidate.name
+        return name.startswith(f"{managed_disk.name}.backing-") or (
+            name.startswith(f"{managed_disk.name}.restore-") and ".backing-" in name
+        )
+
+    def _managed_disk_backing_sidecars(self, managed_disk: Path) -> list[Path]:
+        """Return local backing files that should be removed with a managed disk."""
+        sidecars: list[Path] = []
+        seen: set[Path] = set()
+        current = managed_disk
+        disk_dir = self.disk_dir.resolve()
+        while True:
+            backing = QemuRuntimeAdapter._qcow2_backing_file(current)
+            if backing is None:
+                return sidecars
+            resolved = backing.resolve()
+            if resolved in seen:
+                return sidecars
+            seen.add(resolved)
+            try:
+                resolved.relative_to(disk_dir)
+            except ValueError:
+                return sidecars
+            if not self._is_managed_disk_sidecar(managed_disk, resolved):
+                return sidecars
+            sidecars.append(resolved)
+            current = resolved
+
     def _check_workspace_mounts(self, vm_info: VMInfo) -> None:
         """Verify each workspace mount's host folder is still usable.
 
@@ -2000,6 +2036,9 @@ class SmolVMManager:
             if restore_disk_path != managed_disk_path and restore_disk_path.exists():
                 with suppress(Exception):
                     restore_disk_path.unlink()
+            for sidecar in self._managed_disk_sidecars_for_root(restore_disk_path):
+                with suppress(Exception):
+                    sidecar.unlink()
             if existing_disk_backup_path is not None and existing_disk_backup_path.exists():
                 with suppress(Exception):
                     if managed_disk_path.exists():
@@ -2604,9 +2643,18 @@ class SmolVMManager:
                         managed_disk,
                     )
                 else:
+                    managed_sidecars = self._managed_disk_backing_sidecars(managed_disk)
                     with suppress(Exception):
                         managed_disk.unlink()
                         logger.info("Removed isolated disk for VM %s: %s", vm_id, managed_disk)
+                    for sidecar in managed_sidecars:
+                        with suppress(Exception):
+                            sidecar.unlink()
+                            logger.info(
+                                "Removed isolated disk sidecar for VM %s: %s",
+                                vm_id,
+                                sidecar,
+                            )
 
             # Per-VM firmware state (OVMF NVRAM + swtpm). Coupled to the
             # disk lifecycle — kept iff retain_disk_on_delete is set so
