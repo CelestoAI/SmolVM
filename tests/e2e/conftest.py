@@ -33,9 +33,9 @@ from _util import (
     BOOT_TIMEOUT,
     E2E_BACKENDS,
     E2E_VARIANTS,
-    E2EBackend,
     E2EVariant,
-    backend_unavailable_reasons,
+    require_backend_available,
+    selected_backend,
 )
 
 from smolvm import SmolVM
@@ -53,30 +53,17 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Backend to exercise in tests/e2e (default: all available backends).",
     )
 
-
-def _selected_backend(config: pytest.Config) -> str:
-    return str(config.getoption("--e2e-backend"))
-
-
-def _require_backend_available(backend: E2EBackend, config: pytest.Config) -> None:
-    reasons = backend_unavailable_reasons(backend)
-    if not reasons:
-        return
-
-    message = f"{backend} e2e unavailable: {'; '.join(reasons)}"
-    if _selected_backend(config) == backend:
-        pytest.fail(message)
-    pytest.skip(message)
-
-
 @pytest.fixture(scope="module", params=E2E_VARIANTS, ids=lambda variant: variant.id)
 def e2e_variant(request: pytest.FixtureRequest) -> E2EVariant:
     """Selected backend/transport variant for this module fixture instance."""
     variant = request.param
-    selected = _selected_backend(request.config)
+    selected = selected_backend(request.config)
     if selected != "all" and variant.backend != selected:
-        pytest.skip(f"selected e2e backend is {selected!r}")
-    _require_backend_available(variant.backend, request.config)
+        pytest.skip(
+            f"End-to-end tests for '{variant.backend}' are skipped because this run "
+            f"selected '{selected}'; rerun all backends with: pytest tests/e2e."
+        )
+    require_backend_available(variant.backend, request.config, sandbox_name=variant.id)
     return variant
 
 

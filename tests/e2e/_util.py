@@ -16,11 +16,14 @@
 
 from __future__ import annotations
 
+import os
 import platform
 from dataclasses import dataclass
 from pathlib import Path
 from shutil import which
 from typing import Literal
+
+import pytest
 
 try:
     from smolvm_core import is_available as _core_available
@@ -46,11 +49,11 @@ class E2EVariant:
         return f"{self.backend}-{self.transport}"
 
 
-E2E_BACKENDS: tuple[E2EBackend, ...] = ("qemu", "firecracker")
+E2E_BACKENDS: tuple[E2EBackend, ...] = (BACKEND_QEMU, BACKEND_FIRECRACKER)
 E2E_VARIANTS: tuple[E2EVariant, ...] = (
-    E2EVariant("qemu", "ssh"),
-    E2EVariant("qemu", "vsock"),
-    E2EVariant("firecracker", "ssh"),
+    E2EVariant(BACKEND_QEMU, "ssh"),
+    E2EVariant(BACKEND_QEMU, "vsock"),
+    E2EVariant(BACKEND_FIRECRACKER, "ssh"),
 )
 
 # Boot is fast under KVM, but auto-config may build/download the rootfs and
@@ -63,6 +66,10 @@ def kvm_ready() -> bool:
     return Path("/dev/kvm").exists() and _core_available is not None and _core_available()
 
 
+def _kvm_accessible() -> bool:
+    return Path("/dev/kvm").exists() and os.access("/dev/kvm", os.R_OK | os.W_OK)
+
+
 def _qemu_binary_available() -> bool:
     arch = platform.machine().lower()
     candidates = (
@@ -73,23 +80,60 @@ def _qemu_binary_available() -> bool:
     return any(which(candidate) is not None for candidate in candidates)
 
 
-def backend_unavailable_reasons(backend: E2EBackend) -> list[str]:
+def backend_unavailable_reasons(backend: E2EBackend, *, sandbox_name: str) -> list[str]:
     """Return human-readable reasons the backend cannot run on this host."""
     reasons: list[str] = []
     if not kvm_ready():
         reasons.append(
-            "requires /dev/kvm and a working smolvm-core native extension "
-            "(enable KVM with `sudo modprobe kvm && sudo chmod 666 /dev/kvm`, "
-            "then re-run)"
+            "Enable KVM and allow access: sudo modprobe kvm && sudo chmod 666 "
+            f"/dev/kvm && re-run tests in sandbox '{sandbox_name}'"
         )
 
     if backend == BACKEND_QEMU and not _qemu_binary_available():
-        reasons.append("requires qemu-system for this host architecture")
+        reasons.append(
+            "Install qemu-system for your host (e.g. sudo apt install qemu-system) "
+            f"and re-run tests in sandbox '{sandbox_name}'"
+        )
 
     if backend == BACKEND_FIRECRACKER:
         if platform.system() != "Linux":
-            reasons.append("Firecracker requires a Linux host")
+            reasons.append(
+                f"Run tests on a Linux host and re-run in sandbox '{sandbox_name}'"
+            )
+        if Path("/dev/kvm").exists() and not _kvm_accessible():
+            reasons.append(
+                "Allow Firecracker to read and write /dev/kvm: sudo chmod 666 /dev/kvm "
+                f"&& re-run tests in sandbox '{sandbox_name}'"
+            )
         if HostManager().find_firecracker() is None:
-            reasons.append("requires the firecracker binary on PATH or in ~/.smolvm/bin")
+            reasons.append(
+                "Download Firecracker to ~/.smolvm/bin, make it executable "
+                "(chmod +x ~/.smolvm/bin/firecracker), and re-run tests in "
+                f"sandbox '{sandbox_name}'"
+            )
 
     return reasons
+
+
+def selected_backend(config: pytest.Config) -> str:
+    return str(config.getoption("--e2e-backend"))
+
+
+def require_backend_available(
+    backend: E2EBackend,
+    config: pytest.Config,
+    *,
+    sandbox_name: str | None = None,
+) -> None:
+    sandbox = sandbox_name or f"e2e-{backend}"
+    reasons = backend_unavailable_reasons(backend, sandbox_name=sandbox)
+    if not reasons:
+        return
+
+    message = (
+        f"End-to-end tests for '{backend}' cannot run because {'; '.join(reasons)}; "
+        f"fix that and rerun: pytest tests/e2e -k '{backend}'."
+    )
+    if selected_backend(config) == backend:
+        pytest.fail(message)
+    pytest.skip(message)

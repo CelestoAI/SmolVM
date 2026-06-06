@@ -34,7 +34,13 @@ from contextlib import suppress
 from pathlib import Path
 
 import pytest
-from _util import BOOT_TIMEOUT, E2E_BACKENDS, E2EBackend, backend_unavailable_reasons
+from _util import (
+    BOOT_TIMEOUT,
+    E2E_BACKENDS,
+    E2EBackend,
+    require_backend_available,
+    selected_backend,
+)
 
 from smolvm import SmolVM
 from smolvm.exceptions import SmolVMError, VMNotFoundError
@@ -42,22 +48,6 @@ from smolvm.runtime.backends import BACKEND_QEMU
 from smolvm.types import VMState
 
 pytestmark = pytest.mark.e2e
-
-
-def _selected_backend(config: pytest.Config) -> str:
-    return str(config.getoption("--e2e-backend"))
-
-
-def _require_backend_available(backend: E2EBackend, config: pytest.Config) -> None:
-    reasons = backend_unavailable_reasons(backend)
-    if not reasons:
-        return
-
-    message = f"{backend} e2e unavailable: {'; '.join(reasons)}"
-    if _selected_backend(config) == backend:
-        pytest.fail(message)
-    pytest.skip(message)
-
 
 # ---------------------------------------------------------------------------
 # Shared sandbox: one VM (per transport), walked through its lifecycle.
@@ -160,10 +150,13 @@ def test_snapshot_restore(backend: E2EBackend, request: pytest.FixtureRequest) -
     shared sandbox can't be used. We stop the source before restoring so the
     restore path doesn't race to kill a still-live runtime process.
     """
-    selected = _selected_backend(request.config)
+    selected = selected_backend(request.config)
     if selected != "all" and backend != selected:
-        pytest.skip(f"selected e2e backend is {selected!r}")
-    _require_backend_available(backend, request.config)
+        pytest.skip(
+            f"End-to-end tests for '{backend}' are skipped because this run selected "
+            f"'{selected}'; rerun all backends with: pytest tests/e2e."
+        )
+    require_backend_available(backend, request.config, sandbox_name=f"snapshot-{backend}")
 
     sandbox = SmolVM(backend=backend, os="alpine", comm_channel="ssh")
     restored: SmolVM | None = None
