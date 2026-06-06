@@ -278,6 +278,36 @@ class TestSmolVMDiskLifecycle:
         mock_grow.assert_called_once_with(expected_disk, "vm001")
 
     @patch("smolvm.vm.NetworkManager")
+    def test_create_persistence_failure_removes_new_managed_disk(
+        self,
+        mock_network_class: MagicMock,
+        smol_vm: SmolVMManager,
+        sample_config: VMConfig,
+    ) -> None:
+        """If persisting the VM row fails, the pre-created disk is removed."""
+        sample_config.rootfs_path.write_bytes(b"\0" * (1024 * 1024))
+        mock_network = MagicMock()
+        mock_network.host_ip = "172.16.0.1"
+        mock_network.generate_mac.return_value = "AA:FC:00:00:00:01"
+        mock_network_class.return_value = mock_network
+        smol_vm.network = mock_network
+
+        def _copy(source: Path, target: Path) -> None:
+            target.write_bytes(source.read_bytes())
+
+        expected_disk = smol_vm.data_dir / "disks" / "vm001.ext4"
+        with (
+            patch.object(SmolVMManager, "_copy_with_reflink", side_effect=_copy),
+            patch.object(smol_vm.state, "create_vm", side_effect=SmolVMError("persist failed")),
+            pytest.raises(SmolVMError, match="persist failed"),
+        ):
+            smol_vm.create(sample_config)
+
+        assert not expected_disk.exists()
+        with pytest.raises(VMNotFoundError):
+            smol_vm.get("vm001")
+
+    @patch("smolvm.vm.NetworkManager")
     def test_failed_grow_removes_new_managed_disk(
         self,
         mock_network_class: MagicMock,

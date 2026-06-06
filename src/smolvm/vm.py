@@ -493,6 +493,15 @@ class SmolVMManager:
         with suppress(OSError):
             managed_disk_path.unlink()
 
+    def _cleanup_unpersisted_firmware(self, vm_id: str, *, existed_before: bool) -> None:
+        """Remove firmware state created before the VM row was persisted."""
+        if existed_before:
+            return
+        firmware_state = self.data_dir / "firmware" / vm_id
+        if firmware_state.exists():
+            with suppress(OSError, shutil.Error):
+                shutil.rmtree(firmware_state)
+
     def _ensure_vm_id_available(self, vm_id: str) -> None:
         """Fail before disk work if a VM with this ID already exists."""
         try:
@@ -1423,27 +1432,33 @@ class SmolVMManager:
             managed_disk_existed = (
                 managed_disk_path.exists() if managed_disk_path is not None else False
             )
+            firmware_state = self.data_dir / "firmware" / effective_config.vm_id
+            firmware_existed = firmware_state.exists()
             try:
                 effective_config = self._materialize_rootfs(effective_config)
                 effective_config = self._resize_materialized_rootfs(effective_config)
                 self._materialize_firmware(effective_config)
+
+                logger.info(
+                    "Creating VM: %s (backend=%s, disk_mode=%s)",
+                    effective_config.vm_id,
+                    backend,
+                    effective_config.disk_mode,
+                )
+
+                # Create VM record while still holding the create lock so a
+                # concurrent same-ID create cannot resize the same disk first.
+                vm_info = self.state.create_vm(effective_config)
             except Exception:
                 self._cleanup_unpersisted_managed_disk(
                     managed_disk_path,
                     existed_before=managed_disk_existed,
                 )
+                self._cleanup_unpersisted_firmware(
+                    effective_config.vm_id,
+                    existed_before=firmware_existed,
+                )
                 raise
-
-            logger.info(
-                "Creating VM: %s (backend=%s, disk_mode=%s)",
-                effective_config.vm_id,
-                backend,
-                effective_config.disk_mode,
-            )
-
-            # Create VM record while still holding the create lock so a
-            # concurrent same-ID create cannot resize the same disk first.
-            vm_info = self.state.create_vm(effective_config)
 
         try:
             ssh_host_port = self._reserve_available_ssh_port(effective_config.vm_id)
@@ -1933,6 +1948,7 @@ class SmolVMManager:
         adapter = self._runtime_adapter_for_snapshot(effective_snapshot)
         created_vm_record = False
         existing_disk_backup_path: Path | None = None
+        existing_disk_sidecars: list[Path] = []
         launch = None
 
         managed_disk_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1941,6 +1957,7 @@ class SmolVMManager:
             if restore_disk_path.exists():
                 restore_disk_path.unlink()
         if managed_disk_path.exists():
+            existing_disk_sidecars = self._managed_disk_backing_sidecars(managed_disk_path)
             existing_disk_backup_path = self._restore_backup_disk_path(managed_disk_path)
             os.replace(managed_disk_path, existing_disk_backup_path)
         managed_disk_path.touch(exist_ok=True)
@@ -2001,6 +2018,9 @@ class SmolVMManager:
             if existing_disk_backup_path is not None and existing_disk_backup_path.exists():
                 with suppress(Exception):
                     existing_disk_backup_path.unlink()
+            for sidecar in existing_disk_sidecars:
+                with suppress(Exception):
+                    sidecar.unlink()
             return vm_info
         except Exception:
             if launch is not None:
@@ -2713,6 +2733,8 @@ class SmolVMManager:
             managed_disk_existed = (
                 managed_disk_path.exists() if managed_disk_path is not None else False
             )
+            firmware_state = self.data_dir / "firmware" / effective_config.vm_id
+            firmware_existed = firmware_state.exists()
             try:
                 effective_config = await self._async_materialize_rootfs(effective_config)
                 effective_config = await asyncio.to_thread(
@@ -2721,21 +2743,25 @@ class SmolVMManager:
                 )
                 # Firmware materialization is a small file copy — synchronous is fine.
                 self._materialize_firmware(effective_config)
+
+                logger.info(
+                    "Creating VM (async): %s (backend=%s, disk_mode=%s)",
+                    effective_config.vm_id,
+                    backend,
+                    effective_config.disk_mode,
+                )
+
+                self.state.create_vm(effective_config)
             except Exception:
                 self._cleanup_unpersisted_managed_disk(
                     managed_disk_path,
                     existed_before=managed_disk_existed,
                 )
+                self._cleanup_unpersisted_firmware(
+                    effective_config.vm_id,
+                    existed_before=firmware_existed,
+                )
                 raise
-
-            logger.info(
-                "Creating VM (async): %s (backend=%s, disk_mode=%s)",
-                effective_config.vm_id,
-                backend,
-                effective_config.disk_mode,
-            )
-
-            self.state.create_vm(effective_config)
 
         try:
             ssh_host_port = self._reserve_available_ssh_port(effective_config.vm_id)

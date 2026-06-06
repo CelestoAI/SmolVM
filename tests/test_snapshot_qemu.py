@@ -479,6 +479,74 @@ def test_restore_qemu_snapshot_preserves_existing_managed_disk_on_failure(
     assert qemu_smol_vm.get("vm001").status == VMState.ERROR
 
 
+def test_restore_qemu_snapshot_removes_replaced_disk_sidecars(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """Re-restoring over an existing full restore should not leak old sidecars."""
+    qemu_img = shutil.which("qemu-img")
+    if qemu_img is None:
+        pytest.skip("qemu-img is not installed")
+
+    managed_disk = qemu_smol_vm.data_dir / "disks" / "vm001.qcow2"
+    old_sidecar = managed_disk.with_name(f"{managed_disk.name}.restore-old.backing-0.qcow2")
+    subprocess.run([qemu_img, "create", "-f", "qcow2", str(old_sidecar), "10M"], check=True)
+    subprocess.run(
+        [
+            qemu_img,
+            "create",
+            "-f",
+            "qcow2",
+            "-b",
+            str(old_sidecar),
+            "-F",
+            "qcow2",
+            str(managed_disk),
+        ],
+        check=True,
+    )
+    config = qemu_config.model_copy(update={"rootfs_path": managed_disk, "rootfs_format": "qcow2"})
+    qemu_smol_vm.state.create_vm(config)
+    qemu_smol_vm.state.update_vm(
+        "vm001",
+        network=NetworkConfig(
+            guest_ip="10.0.2.15",
+            tap_device="qemu-user",
+            guest_mac="52:54:00:5d:00:03",
+            ssh_host_port=2204,
+        ),
+    )
+
+    snapshot_dir = qemu_smol_vm.snapshot_dir / "snap-replace"
+    snapshot_dir.mkdir(parents=True)
+    snapshot_disk = snapshot_dir / "disk.qcow2"
+    subprocess.run([qemu_img, "create", "-f", "qcow2", str(snapshot_disk), "10M"], check=True)
+    snapshot = SnapshotInfo(
+        snapshot_id="snap-replace",
+        vm_id="vm001",
+        backend="qemu",
+        artifacts=SnapshotArtifacts(disk_path=snapshot_disk),
+        vm_config=config,
+        network_config=qemu_smol_vm.state.get_vm("vm001").network,
+        created_at=datetime.now(timezone.utc),
+    )
+    qemu_smol_vm.state.create_snapshot(snapshot)
+    process = MagicMock()
+    process.pid = 98765
+    process.poll.return_value = None
+
+    with (
+        patch.object(qemu_smol_vm, "_start_qemu", return_value=process),
+        patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls,
+    ):
+        mock_client = _mock_qmp_client()
+        mock_client_cls.return_value = mock_client
+        qemu_smol_vm.restore_snapshot("snap-replace")
+
+    assert not old_sidecar.exists()
+
+
 def test_delete_qemu_snapshot_rejects_active_restored_vm(
     qemu_smol_vm: SmolVMManager,
     qemu_config: VMConfig,
