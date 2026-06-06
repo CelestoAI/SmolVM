@@ -84,10 +84,30 @@ Implementation plan:
 
 ## Phase 4 — `SmolVM.from_image()`
 
-- Add a high-level constructor that consumes `BootImage` and builds the corresponding `VMConfig` internally.
-- Resolve backend, arch, kernel path, and boot args when missing.
-- Expose consistent knobs: `vm_id`, `vcpus`, `memory_mb`, `network`, port forwards, vsock, comm channel, disk mode, SSH capability, and readiness behavior.
-- Keep no-SSH custom images valid; do not assume command execution is available unless the image declares a supported control path.
+Goal: let SDK callers launch a `BootImage` without manually constructing `VMConfig`.
+
+Implementation plan:
+
+- Add `SmolVM.from_image(image, ...)` as a high-level constructor parallel to `SmolVM.from_id()` and `SmolVM.from_snapshot()`.
+- Resolve backend from explicit argument, image metadata, or normal backend auto-selection. Firmware images default to QEMU.
+- Resolve arch from explicit argument, image metadata, or host arch.
+- Resolve a missing direct-kernel `kernel_path` with `ensure_base_kernel_for_backend()`.
+- Render boot args from `BootImage.render_boot_args()`.
+- Build `VMConfig` internally with caller knobs for `vm_id`, `vcpus`, `memory_mb`, `network`, `port_forwards`, `vsock`, `comm_channel`, `disk_mode`, `guest_os`, and SSH facade settings.
+- Keep no-SSH custom images valid by copying `image.ssh_capable` into `VMConfig.ssh_capable` and not generating SSH keys for custom images.
+- Add the future Phase 5 knobs (`disk_size_mb`, `grow_filesystem`) to the method signature, but reject them with a clear error until disk growth is implemented.
+- Validate important mismatches early:
+  - backend mismatch with image metadata,
+  - firmware/qcow2 images on non-QEMU backends,
+  - initrd images on unsupported backends,
+  - `port_forwards` outside QEMU slirp.
+- Tests:
+  - direct-kernel image resolves a missing base kernel and creates a VM,
+  - direct-kernel image with an existing kernel does not fetch a kernel,
+  - no-SSH metadata is preserved,
+  - firmware image creates firmware-mode `VMConfig`,
+  - slirp port forwards are normalized,
+  - invalid backend/resize/port-forward combinations fail early.
 
 ## Phase 5 — per-VM disk resize/grow
 

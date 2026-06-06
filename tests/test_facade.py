@@ -25,8 +25,9 @@ from smolvm.exceptions import (
     SmolVMError,
 )
 from smolvm.facade import SmolVM, _build_auto_config
+from smolvm.images import BootImage, DirectKernelBoot, FirmwareBoot
 from smolvm.images.cloud_init import seed_cache_key
-from smolvm.types import GuestOS, VMConfig, VMState
+from smolvm.types import GuestOS, PortForwardConfig, VMConfig, VMState, VsockConfig
 
 
 @pytest.fixture
@@ -601,6 +602,205 @@ class TestVMInit:
 
         with pytest.raises(SmolVMError, match="does not match the snapshot backend"):
             SmolVM.from_snapshot("snap-001", backend="qemu")
+
+
+class TestFromBootImage:
+    """Tests for SmolVM.from_image()."""
+
+    @patch("smolvm.facade.SmolVMManager")
+    @patch("smolvm.facade.ensure_base_kernel_for_backend")
+    def test_from_image_resolves_kernel_and_creates_vm(
+        self,
+        mock_kernel: MagicMock,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel = tmp_path / "vmlinux.image"
+        rootfs.touch()
+        kernel.touch()
+        mock_kernel.return_value = kernel
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm-custom", status=VMState.CREATED)
+        mock_sdk_cls.return_value = mock_sdk
+        image = BootImage(
+            name="custom",
+            rootfs_path=rootfs,
+            rootfs_format="raw-ext4",
+            boot=DirectKernelBoot(quiet=False),
+        )
+
+        vm = SmolVM.from_image(
+            image,
+            vm_id="vm-custom",
+            backend="qemu",
+            arch="amd64",
+            vcpus=2,
+            memory_mb=2048,
+            network="tap",
+            comm_channel="vsock",
+            vsock={"guest_cid": 5},
+        )
+
+        assert vm.vm_id == "vm-custom"
+        created_config = mock_sdk.create.call_args.args[0]
+        assert created_config.vm_id == "vm-custom"
+        assert created_config.kernel_path == kernel
+        assert created_config.vcpu_count == 2
+        assert created_config.memory == 2048
+        assert created_config.backend == "qemu"
+        assert created_config.qemu_network == "tap"
+        assert created_config.comm_channel == "vsock"
+        assert created_config.vsock == VsockConfig(guest_cid=5)
+        assert "pci=off" not in created_config.boot_args
+        mock_kernel.assert_called_once_with("qemu", arch="amd64")
+
+    @patch("smolvm.facade.SmolVMManager")
+    @patch("smolvm.facade.ensure_base_kernel_for_backend")
+    def test_from_image_uses_existing_kernel_and_preserves_no_ssh(
+        self,
+        mock_kernel: MagicMock,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel = tmp_path / "vmlinux.elf"
+        rootfs.touch()
+        kernel.touch()
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm-agent", status=VMState.CREATED)
+        mock_sdk_cls.return_value = mock_sdk
+        image = BootImage(
+            name="agent-only",
+            rootfs_path=rootfs,
+            rootfs_format="raw-ext4",
+            kernel_path=kernel,
+            boot_args="console=ttyS0 root=/dev/vda rw init=/init",
+            backend="firecracker",
+            ssh_capable=False,
+        )
+
+        SmolVM.from_image(image, vm_id="vm-agent")
+
+        created_config = mock_sdk.create.call_args.args[0]
+        assert created_config.kernel_path == kernel
+        assert created_config.boot_args == "console=ttyS0 root=/dev/vda rw init=/init"
+        assert created_config.ssh_capable is False
+        mock_kernel.assert_not_called()
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_from_image_firmware_creates_firmware_config(
+        self,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        rootfs = tmp_path / "rootfs.qcow2"
+        rootfs.touch()
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm-fw", status=VMState.CREATED)
+        mock_sdk_cls.return_value = mock_sdk
+        image = BootImage(
+            name="firmware",
+            rootfs_path=rootfs,
+            rootfs_format="qcow2",
+            boot=FirmwareBoot(),
+        )
+
+        SmolVM.from_image(image, vm_id="vm-fw", guest_os="windows")
+
+        created_config = mock_sdk.create.call_args.args[0]
+        assert created_config.boot_mode == "firmware"
+        assert created_config.backend == "qemu"
+        assert created_config.kernel_path is None
+        assert created_config.boot_args == ""
+        assert created_config.guest_os == GuestOS.WINDOWS
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_from_image_accepts_slirp_port_forwards(
+        self,
+        mock_sdk_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel = tmp_path / "vmlinux.image"
+        rootfs.touch()
+        kernel.touch()
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm-ports", status=VMState.CREATED)
+        mock_sdk_cls.return_value = mock_sdk
+        image = BootImage(
+            name="ports",
+            rootfs_path=rootfs,
+            rootfs_format="raw-ext4",
+            kernel_path=kernel,
+            boot_args="console=ttyS0 root=/dev/vda rw",
+            backend="qemu",
+        )
+
+        SmolVM.from_image(
+            image,
+            vm_id="vm-ports",
+            network="slirp",
+            port_forwards=[{"host_port": 8080, "guest_port": 80}],
+        )
+
+        created_config = mock_sdk.create.call_args.args[0]
+        assert created_config.qemu_network == "slirp"
+        assert created_config.port_forwards == [PortForwardConfig(host_port=8080, guest_port=80)]
+
+    def test_from_image_rejects_backend_mismatch(self, tmp_path: Path) -> None:
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel = tmp_path / "vmlinux.image"
+        rootfs.touch()
+        kernel.touch()
+        image = BootImage(
+            name="qemu-only",
+            rootfs_path=rootfs,
+            rootfs_format="raw-ext4",
+            kernel_path=kernel,
+            boot_args="console=ttyS0 root=/dev/vda rw",
+            backend="qemu",
+        )
+
+        with pytest.raises(ValueError, match="prepared for backend"):
+            SmolVM.from_image(image, backend="firecracker")
+
+    def test_from_image_rejects_resize_knobs_until_phase_five(self, tmp_path: Path) -> None:
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel = tmp_path / "vmlinux.image"
+        rootfs.touch()
+        kernel.touch()
+        image = BootImage(
+            name="resize",
+            rootfs_path=rootfs,
+            rootfs_format="raw-ext4",
+            kernel_path=kernel,
+            boot_args="console=ttyS0 root=/dev/vda rw",
+        )
+
+        with pytest.raises(SmolVMError, match="disk resizing is not implemented"):
+            SmolVM.from_image(image, disk_size_mb=4096)
+
+    def test_from_image_rejects_tap_port_forwards(self, tmp_path: Path) -> None:
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel = tmp_path / "vmlinux.image"
+        rootfs.touch()
+        kernel.touch()
+        image = BootImage(
+            name="tap-ports",
+            rootfs_path=rootfs,
+            rootfs_format="raw-ext4",
+            kernel_path=kernel,
+            boot_args="console=ttyS0 root=/dev/vda rw",
+            backend="qemu",
+        )
+
+        with pytest.raises(ValueError, match="network='slirp'"):
+            SmolVM.from_image(
+                image,
+                network="tap",
+                port_forwards=[{"host_port": 8080, "guest_port": 80}],
+            )
 
 
 class TestVMImageParam:
