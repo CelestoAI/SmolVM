@@ -33,7 +33,8 @@ import signal
 import socket
 import subprocess
 import time
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
@@ -499,6 +500,26 @@ class SmolVMManager:
         except VMNotFoundError:
             return
         raise VMAlreadyExistsError(vm_id)
+
+    @contextmanager
+    def _vm_create_lock(self, vm_id: str) -> Iterator[None]:
+        """Serialize create-time disk mutation for one VM ID."""
+        try:
+            import fcntl
+        except ImportError:
+            # SmolVM currently targets POSIX hosts. If fcntl is unavailable,
+            # keep the old single-process behavior rather than failing import.
+            yield
+            return
+
+        lock_dir = self.data_dir / "locks"
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        with (lock_dir / f"{vm_id}.create.lock").open("w") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     @staticmethod
     def _restore_staging_disk_path(managed_disk_path: Path) -> Path:
@@ -1335,31 +1356,33 @@ class SmolVMManager:
                 {"vm_id": effective_config.vm_id, "backend": backend},
             )
 
-        self._ensure_vm_id_available(effective_config.vm_id)
-        managed_disk_path = self._managed_disk_path_for_create(effective_config, backend)
-        managed_disk_existed = (
-            managed_disk_path.exists() if managed_disk_path is not None else False
-        )
-        try:
-            effective_config = self._materialize_rootfs(effective_config)
-            effective_config = self._resize_materialized_rootfs(effective_config)
-            self._materialize_firmware(effective_config)
-        except Exception:
-            self._cleanup_unpersisted_managed_disk(
-                managed_disk_path,
-                existed_before=managed_disk_existed,
+        with self._vm_create_lock(effective_config.vm_id):
+            self._ensure_vm_id_available(effective_config.vm_id)
+            managed_disk_path = self._managed_disk_path_for_create(effective_config, backend)
+            managed_disk_existed = (
+                managed_disk_path.exists() if managed_disk_path is not None else False
             )
-            raise
+            try:
+                effective_config = self._materialize_rootfs(effective_config)
+                effective_config = self._resize_materialized_rootfs(effective_config)
+                self._materialize_firmware(effective_config)
+            except Exception:
+                self._cleanup_unpersisted_managed_disk(
+                    managed_disk_path,
+                    existed_before=managed_disk_existed,
+                )
+                raise
 
-        logger.info(
-            "Creating VM: %s (backend=%s, disk_mode=%s)",
-            effective_config.vm_id,
-            backend,
-            effective_config.disk_mode,
-        )
+            logger.info(
+                "Creating VM: %s (backend=%s, disk_mode=%s)",
+                effective_config.vm_id,
+                backend,
+                effective_config.disk_mode,
+            )
 
-        # Create VM record
-        vm_info = self.state.create_vm(effective_config)
+            # Create VM record while still holding the create lock so a
+            # concurrent same-ID create cannot resize the same disk first.
+            vm_info = self.state.create_vm(effective_config)
 
         try:
             ssh_host_port = self._reserve_available_ssh_port(effective_config.vm_id)
@@ -2611,34 +2634,35 @@ class SmolVMManager:
                 {"vm_id": effective_config.vm_id, "backend": backend},
             )
 
-        self._ensure_vm_id_available(effective_config.vm_id)
-        managed_disk_path = self._managed_disk_path_for_create(effective_config, backend)
-        managed_disk_existed = (
-            managed_disk_path.exists() if managed_disk_path is not None else False
-        )
-        try:
-            effective_config = await self._async_materialize_rootfs(effective_config)
-            effective_config = await asyncio.to_thread(
-                self._resize_materialized_rootfs,
-                effective_config,
+        with self._vm_create_lock(effective_config.vm_id):
+            self._ensure_vm_id_available(effective_config.vm_id)
+            managed_disk_path = self._managed_disk_path_for_create(effective_config, backend)
+            managed_disk_existed = (
+                managed_disk_path.exists() if managed_disk_path is not None else False
             )
-            # Firmware materialization is a small file copy — synchronous is fine.
-            self._materialize_firmware(effective_config)
-        except Exception:
-            self._cleanup_unpersisted_managed_disk(
-                managed_disk_path,
-                existed_before=managed_disk_existed,
+            try:
+                effective_config = await self._async_materialize_rootfs(effective_config)
+                effective_config = await asyncio.to_thread(
+                    self._resize_materialized_rootfs,
+                    effective_config,
+                )
+                # Firmware materialization is a small file copy — synchronous is fine.
+                self._materialize_firmware(effective_config)
+            except Exception:
+                self._cleanup_unpersisted_managed_disk(
+                    managed_disk_path,
+                    existed_before=managed_disk_existed,
+                )
+                raise
+
+            logger.info(
+                "Creating VM (async): %s (backend=%s, disk_mode=%s)",
+                effective_config.vm_id,
+                backend,
+                effective_config.disk_mode,
             )
-            raise
 
-        logger.info(
-            "Creating VM (async): %s (backend=%s, disk_mode=%s)",
-            effective_config.vm_id,
-            backend,
-            effective_config.disk_mode,
-        )
-
-        self.state.create_vm(effective_config)
+            self.state.create_vm(effective_config)
 
         try:
             ssh_host_port = self._reserve_available_ssh_port(effective_config.vm_id)
