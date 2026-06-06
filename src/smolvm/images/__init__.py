@@ -14,6 +14,7 @@
 
 """Guest image management and builders."""
 
-from smolvm.images.boot import DirectKernelBoot
+from smolvm.images.boot import BootImage, DirectKernelBoot, FirmwareBoot
+from smolvm.images.builder import DockerRootfsBuilder
 
-__all__ = ["DirectKernelBoot"]
+__all__ = ["BootImage", "DirectKernelBoot", "DockerRootfsBuilder", "FirmwareBoot"]

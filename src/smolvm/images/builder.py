@@ -30,12 +30,17 @@ import tempfile
 import typing
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
 
 from smolvm.exceptions import ImageError, SmolVMError
+from smolvm.images.boot import BootImage, DirectKernelBoot
+from smolvm.kernels import KernelArch, ensure_base_kernel_for_backend
+from smolvm.runtime.backends import resolve_backend
 from smolvm.runtime.boot_profiles import (
     KernelBootProfile,
     normalize_arch,
+    to_published_arch,
 )
 from smolvm.utils import RUNTIME_PRIVILEGE_SETUP_HINT, run_command
 
@@ -63,6 +68,72 @@ _GUEST_AGENT_GUEST_PATH = "/usr/local/bin/smolvm-guest-agent"
 def _guest_agent_source() -> str:
     """Return the guest agent source baked into every built image."""
     return _GUEST_AGENT_SOURCE_PATH.read_text()
+
+
+DockerContextValue = Path | str | bytes
+
+
+def _safe_cache_name(name: str) -> str:
+    """Validate a user-provided image cache directory name."""
+    stripped = name.strip()
+    if not stripped:
+        raise ValueError("image name must not be empty")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", stripped):
+        raise ValueError("image name must contain only letters, numbers, '.', '_', and '-'")
+    return stripped
+
+
+def _safe_context_destination(destination: str) -> Path:
+    """Return a safe relative path inside a Docker build context."""
+    path = Path(destination)
+    if path.is_absolute() or ".." in path.parts or path.name in {"", ".", ".."}:
+        raise ValueError(f"Build context path must be relative and safe: {destination!r}")
+    if path == Path("Dockerfile"):
+        raise ValueError("Build context path 'Dockerfile' is reserved")
+    return path
+
+
+def _context_value_bytes(destination: str, value: DockerContextValue) -> bytes:
+    """Read one Docker build-context value as bytes."""
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, Path):
+        if not value.exists():
+            raise ImageError(
+                f"Build context file is missing: {value}. Restore it, or update the "
+                "builder context."
+            )
+        if not value.is_file():
+            raise ImageError(
+                f"Build context path is not a file: {value}. Use file paths only."
+            )
+        return value.read_bytes()
+    if isinstance(value, str):
+        return value.encode("utf-8")
+    raise TypeError(f"Unsupported build context value for {destination!r}: {type(value).__name__}")
+
+
+def _docker_platform_for_arch(arch: str) -> str:
+    """Return Docker's platform string for a SmolVM arch key."""
+    if arch == "amd64":
+        return "linux/amd64"
+    if arch == "arm64":
+        return "linux/arm64"
+    raise ValueError(f"Unsupported Docker build arch: {arch!r}")
+
+
+@contextmanager
+def _exclusive_file_lock(lock_path: Path) -> typing.Iterator[None]:
+    """Hold an exclusive advisory lock for a cache build."""
+    import fcntl
+
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("w") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 class ImageBuilder:
@@ -1765,3 +1836,238 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
             # 5. Write cache fingerprint if provided and successful
             if fingerprint_data is not None:
                 self._write_fingerprint(image_dir, fingerprint_data)
+
+
+class DockerRootfsBuilder:
+    """Build and cache a Dockerfile-backed raw ext4 rootfs.
+
+    This generic builder does not inject SmolVM's guest agent. The caller owns
+    the Dockerfile, init process, and any guest control agent they copy in.
+    """
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        dockerfile: str,
+        context: dict[str, DockerContextValue] | None = None,
+        rootfs_size_mb: int = 512,
+        cache_dir: Path | None = None,
+        fingerprint_inputs: dict[str, typing.Any] | None = None,
+        build_args: dict[str, str] | None = None,
+        docker_platform: str | None = None,
+        ssh_capable: bool = False,
+    ) -> None:
+        """Initialize a custom Docker rootfs builder."""
+        self.name = _safe_cache_name(name)
+        if not dockerfile.strip():
+            raise ValueError("dockerfile must not be empty")
+        if rootfs_size_mb <= 0:
+            raise ValueError("rootfs_size_mb must be > 0")
+        self.dockerfile = dockerfile
+        self.context = dict(context or {})
+        self.rootfs_size_mb = rootfs_size_mb
+        self.cache_dir = cache_dir or ImageBuilder().cache_dir
+        self.fingerprint_inputs = dict(fingerprint_inputs or {})
+        self.build_args = dict(build_args or {})
+        self.docker_platform = docker_platform
+        self.ssh_capable = ssh_capable
+
+    def ensure(
+        self,
+        *,
+        backend: str,
+        arch: KernelArch | str = "host",
+        boot: DirectKernelBoot | None = None,
+        boot_args: str | None = None,
+    ) -> BootImage:
+        """Build/cache the rootfs and return a bootable image description."""
+        if boot is not None and boot_args is not None:
+            raise ValueError("boot and boot_args are mutually exclusive")
+        if boot is None and boot_args is None:
+            raise ValueError("DockerRootfsBuilder.ensure() requires boot or boot_args")
+
+        resolved_backend = resolve_backend(backend)
+        resolved_arch = to_published_arch(platform.machine() if arch == "host" else arch)
+        docker_platform = self.docker_platform or _docker_platform_for_arch(resolved_arch)
+        context_files = self._read_context_files()
+        fingerprint_data = self._fingerprint_data(
+            resolved_arch=resolved_arch,
+            docker_platform=docker_platform,
+            context_files=context_files,
+        )
+        fingerprint = self._hash_fingerprint_data(fingerprint_data)
+        image_dir = self.cache_dir / "custom" / self.name / fingerprint
+        rootfs_path = image_dir / "rootfs.ext4"
+        metadata_path = image_dir / "metadata.json"
+        lock_path = image_dir / ".build.lock"
+
+        with _exclusive_file_lock(lock_path):
+            if not self._cache_ready(rootfs_path, metadata_path, fingerprint_data):
+                helper = ImageBuilder(cache_dir=self.cache_dir)
+                if not helper.check_docker():
+                    raise helper.docker_requirement_error()
+                image_dir.mkdir(parents=True, exist_ok=True)
+                temp_rootfs = image_dir / f".{rootfs_path.name}.tmp"
+                temp_rootfs.unlink(missing_ok=True)
+                try:
+                    self._build_rootfs(
+                        helper=helper,
+                        rootfs_path=temp_rootfs,
+                        docker_platform=docker_platform,
+                        context_files=context_files,
+                        docker_tag=f"smolvm-custom-{fingerprint[:16]}",
+                    )
+                    temp_rootfs.replace(rootfs_path)
+                    metadata_path.write_text(json.dumps(fingerprint_data, sort_keys=True))
+                finally:
+                    temp_rootfs.unlink(missing_ok=True)
+
+        kernel_path = ensure_base_kernel_for_backend(
+            resolved_backend,
+            arch=resolved_arch,
+            cache_dir=self.cache_dir,
+        )
+        return BootImage(
+            name=self.name,
+            rootfs_path=rootfs_path,
+            rootfs_format="raw-ext4",
+            kernel_path=kernel_path,
+            boot=boot,
+            boot_args=boot_args,
+            backend=resolved_backend,
+            arch=resolved_arch,
+            ssh_capable=self.ssh_capable,
+        )
+
+    def _read_context_files(self) -> dict[str, bytes]:
+        """Read and validate all caller-provided Docker build-context files."""
+        files: dict[str, bytes] = {}
+        for destination, value in self.context.items():
+            safe_path = _safe_context_destination(destination)
+            safe_destination = safe_path.as_posix()
+            if safe_destination in files:
+                raise ValueError(f"Duplicate build context path: {safe_destination!r}")
+            files[safe_destination] = _context_value_bytes(destination, value)
+        return files
+
+    def _fingerprint_data(
+        self,
+        *,
+        resolved_arch: str,
+        docker_platform: str,
+        context_files: dict[str, bytes],
+    ) -> dict[str, typing.Any]:
+        """Return the stable rootfs-cache fingerprint inputs."""
+        data = {
+            "schema_version": 1,
+            "name": self.name,
+            "rootfs_size_mb": self.rootfs_size_mb,
+            "docker_platform": docker_platform,
+            "arch": resolved_arch,
+            "dockerfile_sha256": hashlib.sha256(self.dockerfile.encode()).hexdigest(),
+            "context": [
+                {
+                    "path": path,
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "size": len(content),
+                }
+                for path, content in sorted(context_files.items())
+            ],
+            "build_args": self.build_args,
+            "fingerprint_inputs": self.fingerprint_inputs,
+        }
+        # Fail early with a targeted message instead of surfacing a raw JSON
+        # TypeError from deep inside the cache check.
+        try:
+            json.dumps(data, sort_keys=True)
+        except TypeError as exc:
+            raise ValueError("fingerprint_inputs and build_args must be JSON-serializable") from exc
+        return data
+
+    @staticmethod
+    def _hash_fingerprint_data(data: dict[str, typing.Any]) -> str:
+        """Return a stable SHA-256 cache key for fingerprint data."""
+        return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
+
+    @staticmethod
+    def _cache_ready(
+        rootfs_path: Path,
+        metadata_path: Path,
+        expected_data: dict[str, typing.Any],
+    ) -> bool:
+        """Return whether an existing cache entry is complete and current."""
+        if not rootfs_path.is_file() or not metadata_path.is_file():
+            return False
+        try:
+            cached_data = json.loads(metadata_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return False
+        return cached_data == expected_data
+
+    def _build_rootfs(
+        self,
+        *,
+        helper: ImageBuilder,
+        rootfs_path: Path,
+        docker_platform: str,
+        context_files: dict[str, bytes],
+        docker_tag: str,
+    ) -> None:
+        """Build a Docker image, export it, and convert it to raw ext4."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            (tmp_path / "Dockerfile").write_text(self.dockerfile)
+            for destination, content in context_files.items():
+                output_path = tmp_path / destination
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_bytes(content)
+
+            logger.info("  [1/3] Building custom Docker image...")
+            build_cmd = ["docker", "build", "-t", docker_tag]
+            if docker_platform:
+                build_cmd.extend(["--platform", docker_platform])
+            for key, value in self.build_args.items():
+                build_cmd.extend(["--build-arg", f"{key}={value}"])
+            build_cmd.append(str(tmp_path))
+
+            subprocess.run(
+                build_cmd,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+
+            logger.info("  [2/3] Exporting custom rootfs...")
+            container_id = subprocess.run(
+                ["docker", "create", docker_tag],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+            try:
+                tar_path = tmp_path / "rootfs.tar"
+                subprocess.run(["docker", "export", container_id, "-o", str(tar_path)], check=True)
+            finally:
+                subprocess.run(
+                    ["docker", "rm", container_id],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+
+            logger.info("  [3/3] Creating custom ext4 rootfs...")
+            if helper._loopfs_helper_path() is not None:
+                helper._create_ext4_with_loopfs(
+                    tar_path,
+                    rootfs_path,
+                    self.rootfs_size_mb,
+                    tmp_path,
+                )
+            else:
+                helper._create_ext4_with_docker(
+                    tar_path,
+                    rootfs_path,
+                    self.rootfs_size_mb,
+                    tmp_path,
+                )

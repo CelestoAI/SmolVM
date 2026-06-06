@@ -40,8 +40,8 @@ from smolvm.exceptions import (
 )
 from smolvm.facade import SmolVM
 from smolvm.host.manager import HostManager
-from smolvm.images.boot import DirectKernelBoot
-from smolvm.images.builder import SSH_BOOT_ARGS, ImageBuilder
+from smolvm.images.boot import BootImage, DirectKernelBoot, FirmwareBoot
+from smolvm.images.builder import SSH_BOOT_ARGS, DockerRootfsBuilder, ImageBuilder
 from smolvm.images.manager import ImageManager, ImageSource, LocalImage, S3ImageManifest, S3ImageRef
 from smolvm.kernels import ensure_base_kernel_for_backend
 from smolvm.ssh import SSHClient
@@ -77,7 +77,10 @@ __all__ = [
     # Image management
     "ImageManager",
     "ImageBuilder",
+    "DockerRootfsBuilder",
+    "BootImage",
     "DirectKernelBoot",
+    "FirmwareBoot",
     "SSH_BOOT_ARGS",
     "ImageSource",
     "LocalImage",

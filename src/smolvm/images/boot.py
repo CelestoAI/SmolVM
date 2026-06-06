@@ -18,7 +18,10 @@ from __future__ import annotations
 
 import platform
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from smolvm.runtime.backends import (
     BACKEND_FIRECRACKER,
@@ -29,6 +32,10 @@ from smolvm.runtime.backends import (
 from smolvm.runtime.boot_profiles import normalize_arch, safe_kernel_trim_args
 
 ConsoleMode = Literal["serial", "none"]
+RootfsFormat = Literal["raw-ext4", "qcow2"]
+BootBackend = Literal["firecracker", "qemu", "libkrun"]
+BootArch = Literal["amd64", "arm64"]
+BootMode = Literal["direct_kernel", "firmware"]
 
 
 def _check_kernel_token(label: str, value: str | None) -> str | None:
@@ -129,3 +136,102 @@ class DirectKernelBoot:
             parts.extend(safe_kernel_trim_args(quiet=self.quiet))
         parts.extend(self.extra_args)
         return " ".join(parts)
+
+
+@dataclass(frozen=True, slots=True)
+class FirmwareBoot:
+    """Marker for images that boot through firmware instead of ``-kernel``."""
+
+
+class BootImage(BaseModel):
+    """A bootable base image that can be turned into an isolated VM later.
+
+    ``BootImage`` describes image artifacts and boot metadata. It does not
+    allocate networking, clone disks, resize filesystems, or start a VM.
+    """
+
+    name: str
+    rootfs_path: Path
+    rootfs_format: RootfsFormat
+    kernel_path: Path | None = None
+    initrd_path: Path | None = None
+    boot: DirectKernelBoot | FirmwareBoot | None = None
+    boot_args: str | None = None
+    backend: BootBackend | None = None
+    arch: BootArch | None = None
+    ssh_capable: bool = False
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        """Reject blank image names."""
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("name must not be empty")
+        return stripped
+
+    @field_validator("boot_args")
+    @classmethod
+    def _validate_boot_args(cls, value: str | None) -> str | None:
+        """Reject blank boot-argument overrides."""
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("boot_args must not be empty")
+        return stripped
+
+    @field_validator("rootfs_path", "kernel_path", "initrd_path")
+    @classmethod
+    def _validate_existing_file(cls, value: Path | None) -> Path | None:
+        """Ensure declared image artifacts exist and are regular files."""
+        if value is None:
+            return None
+        if not value.exists():
+            raise ValueError(f"Path does not exist: {value}")
+        if not value.is_file():
+            raise ValueError(f"Path is not a file: {value}")
+        return value
+
+    @model_validator(mode="after")
+    def _check_boot_contract(self) -> BootImage:
+        """Reject ambiguous boot metadata."""
+        if isinstance(self.boot, FirmwareBoot):
+            if self.kernel_path is not None:
+                raise ValueError("firmware images must not set kernel_path")
+            if self.initrd_path is not None:
+                raise ValueError("firmware images must not set initrd_path")
+            if self.boot_args is not None:
+                raise ValueError("firmware images must not set boot_args")
+            if self.backend is not None and self.backend != BACKEND_QEMU:
+                raise ValueError("firmware images require backend='qemu'")
+            return self
+
+        if self.boot is not None and self.boot_args is not None:
+            raise ValueError("boot and boot_args are mutually exclusive")
+        if self.boot is None and self.boot_args is None:
+            raise ValueError("direct-kernel images need boot or boot_args")
+        return self
+
+    @property
+    def boot_mode(self) -> BootMode:
+        """Return the VMConfig boot mode implied by this image."""
+        if isinstance(self.boot, FirmwareBoot):
+            return "firmware"
+        return "direct_kernel"
+
+    def render_boot_args(self, *, backend: str | None = None, arch: str | None = None) -> str:
+        """Render or return the direct-kernel command line for this image."""
+        if self.boot_mode == "firmware":
+            return ""
+        if self.boot_args is not None:
+            return self.boot_args
+        if not isinstance(self.boot, DirectKernelBoot):
+            raise ValueError("direct-kernel images need boot or boot_args")
+
+        resolved_backend = backend or self.backend
+        if resolved_backend is None:
+            raise ValueError("backend is required to render direct-kernel boot args")
+        return self.boot.render(backend=resolved_backend, arch=arch or self.arch or "host")
+
+    model_config = ConfigDict(frozen=True)

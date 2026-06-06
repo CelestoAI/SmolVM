@@ -19,12 +19,20 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from smolvm.images import DirectKernelBoot
+from smolvm.exceptions import ImageError
+from smolvm.images import BootImage, DirectKernelBoot, DockerRootfsBuilder, FirmwareBoot
 from smolvm.kernels import ensure_base_kernel_for_backend
 
 
 def _tokens(args: str) -> set[str]:
     return set(args.split())
+
+
+def _empty_file(tmp_path: Path, name: str) -> Path:
+    path = tmp_path / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"")
+    return path
 
 
 class TestDirectKernelBoot:
@@ -94,6 +102,269 @@ class TestDirectKernelBoot:
     def test_extra_args_must_be_single_tokens(self) -> None:
         with pytest.raises(ValueError, match="one kernel argument token"):
             DirectKernelBoot(extra_args=("foo=bar baz=qux",))
+
+
+class TestBootImage:
+    """BootImage describes bootable artifacts without launching a VM."""
+
+    def test_direct_kernel_image_renders_profile_args(self, tmp_path: Path) -> None:
+        rootfs = _empty_file(tmp_path, "rootfs.ext4")
+        kernel = _empty_file(tmp_path, "vmlinux.elf")
+
+        image = BootImage(
+            name=" custom-image ",
+            rootfs_path=rootfs,
+            rootfs_format="raw-ext4",
+            kernel_path=kernel,
+            boot=DirectKernelBoot(quiet=False),
+            backend="firecracker",
+            arch="amd64",
+        )
+
+        assert image.name == "custom-image"
+        assert image.boot_mode == "direct_kernel"
+        assert image.render_boot_args() == (
+            "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw "
+            "init=/init tsc=reliable no_timer_check"
+        )
+
+    def test_direct_kernel_image_accepts_explicit_boot_args(self, tmp_path: Path) -> None:
+        rootfs = _empty_file(tmp_path, "rootfs.ext4")
+
+        image = BootImage(
+            name="explicit-args",
+            rootfs_path=rootfs,
+            rootfs_format="raw-ext4",
+            boot_args=" console=ttyS0 root=/dev/vda rw init=/init ",
+        )
+
+        assert image.boot_mode == "direct_kernel"
+        assert image.render_boot_args() == "console=ttyS0 root=/dev/vda rw init=/init"
+
+    def test_direct_kernel_image_can_omit_kernel_for_later_resolution(
+        self, tmp_path: Path
+    ) -> None:
+        rootfs = _empty_file(tmp_path, "rootfs.ext4")
+
+        image = BootImage(
+            name="needs-kernel-resolution",
+            rootfs_path=rootfs,
+            rootfs_format="raw-ext4",
+            boot=DirectKernelBoot(quiet=False),
+            backend="qemu",
+            arch="amd64",
+        )
+
+        assert image.kernel_path is None
+        assert "pci=off" not in _tokens(image.render_boot_args())
+
+    def test_boot_and_boot_args_are_mutually_exclusive(self, tmp_path: Path) -> None:
+        rootfs = _empty_file(tmp_path, "rootfs.ext4")
+
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            BootImage(
+                name="ambiguous",
+                rootfs_path=rootfs,
+                rootfs_format="raw-ext4",
+                boot=DirectKernelBoot(),
+                boot_args="console=ttyS0 root=/dev/vda rw",
+            )
+
+    def test_direct_kernel_image_needs_boot_metadata(self, tmp_path: Path) -> None:
+        rootfs = _empty_file(tmp_path, "rootfs.ext4")
+
+        with pytest.raises(ValueError, match="need boot or boot_args"):
+            BootImage(name="missing-boot", rootfs_path=rootfs, rootfs_format="raw-ext4")
+
+    def test_firmware_image_has_empty_boot_args(self, tmp_path: Path) -> None:
+        rootfs = _empty_file(tmp_path, "rootfs.qcow2")
+
+        image = BootImage(
+            name="firmware-image",
+            rootfs_path=rootfs,
+            rootfs_format="qcow2",
+            boot=FirmwareBoot(),
+            backend="qemu",
+        )
+
+        assert image.boot_mode == "firmware"
+        assert image.render_boot_args() == ""
+
+    def test_firmware_image_rejects_direct_kernel_fields(self, tmp_path: Path) -> None:
+        rootfs = _empty_file(tmp_path, "rootfs.qcow2")
+        kernel = _empty_file(tmp_path, "vmlinux.image")
+
+        with pytest.raises(ValueError, match="must not set kernel_path"):
+            BootImage(
+                name="bad-firmware",
+                rootfs_path=rootfs,
+                rootfs_format="qcow2",
+                kernel_path=kernel,
+                boot=FirmwareBoot(),
+                backend="qemu",
+            )
+
+    def test_firmware_image_rejects_non_qemu_backend(self, tmp_path: Path) -> None:
+        rootfs = _empty_file(tmp_path, "rootfs.qcow2")
+
+        with pytest.raises(ValueError, match="backend='qemu'"):
+            BootImage(
+                name="bad-firmware-backend",
+                rootfs_path=rootfs,
+                rootfs_format="qcow2",
+                boot=FirmwareBoot(),
+                backend="firecracker",
+            )
+
+    def test_path_fields_must_exist(self, tmp_path: Path) -> None:
+        missing_rootfs = tmp_path / "missing.ext4"
+
+        with pytest.raises(ValueError, match="Path does not exist"):
+            BootImage(
+                name="missing-path",
+                rootfs_path=missing_rootfs,
+                rootfs_format="raw-ext4",
+                boot_args="console=ttyS0 root=/dev/vda rw",
+            )
+
+    def test_top_level_exports(self) -> None:
+        from smolvm import BootImage as TopLevelBootImage
+        from smolvm import FirmwareBoot as TopLevelFirmwareBoot
+        from smolvm.images import BootImage as ImagesBootImage
+        from smolvm.images import FirmwareBoot as ImagesFirmwareBoot
+
+        assert TopLevelBootImage is BootImage
+        assert TopLevelFirmwareBoot is FirmwareBoot
+        assert ImagesBootImage is BootImage
+        assert ImagesFirmwareBoot is FirmwareBoot
+
+
+class TestDockerRootfsBuilder:
+    """DockerRootfsBuilder builds a generic rootfs and returns BootImage metadata."""
+
+    @staticmethod
+    def _fake_build_rootfs(**kwargs: object) -> None:
+        rootfs_path = kwargs["rootfs_path"]
+        assert isinstance(rootfs_path, Path)
+        rootfs_path.write_bytes(b"ext4")
+
+    @patch("smolvm.images.builder.ensure_base_kernel_for_backend")
+    @patch("smolvm.images.builder.ImageBuilder.check_docker", return_value=True)
+    def test_ensure_builds_rootfs_and_returns_boot_image(
+        self,
+        _mock_check_docker: MagicMock,
+        mock_kernel: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        cache_dir = tmp_path / "cache"
+        kernel = _empty_file(tmp_path, "kernel/vmlinux.image")
+        mock_kernel.return_value = kernel
+
+        builder = DockerRootfsBuilder(
+            name="celesto-scratch",
+            dockerfile="FROM scratch\nCOPY init /init\n",
+            context={"init": "#!/bin/sh\n"},
+            rootfs_size_mb=64,
+            cache_dir=cache_dir,
+            fingerprint_inputs={"template": "scratch"},
+        )
+        with patch.object(
+            DockerRootfsBuilder,
+            "_build_rootfs",
+            side_effect=self._fake_build_rootfs,
+        ):
+            image = builder.ensure(
+                backend="qemu",
+                arch="amd64",
+                boot=DirectKernelBoot(quiet=False),
+            )
+
+        assert image.name == "celesto-scratch"
+        assert image.rootfs_format == "raw-ext4"
+        assert image.rootfs_path.is_file()
+        assert image.kernel_path == kernel
+        assert image.backend == "qemu"
+        assert image.arch == "amd64"
+        assert "pci=off" not in _tokens(image.render_boot_args())
+        assert image.rootfs_path.parent.parent.name == "celesto-scratch"
+        mock_kernel.assert_called_once_with("qemu", arch="amd64", cache_dir=cache_dir)
+
+    @patch("smolvm.images.builder.ensure_base_kernel_for_backend")
+    @patch("smolvm.images.builder.ImageBuilder.check_docker", return_value=True)
+    def test_cached_rootfs_is_reused_across_backends(
+        self,
+        _mock_check_docker: MagicMock,
+        mock_kernel: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        cache_dir = tmp_path / "cache"
+        qemu_kernel = _empty_file(tmp_path, "kernel/vmlinux.image")
+        fc_kernel = _empty_file(tmp_path, "kernel/vmlinux.elf")
+        mock_kernel.side_effect = [qemu_kernel, fc_kernel]
+        builder = DockerRootfsBuilder(
+            name="shared-rootfs",
+            dockerfile="FROM scratch\n",
+            rootfs_size_mb=64,
+            cache_dir=cache_dir,
+        )
+
+        with patch.object(
+            DockerRootfsBuilder,
+            "_build_rootfs",
+            side_effect=self._fake_build_rootfs,
+        ) as mock_build:
+            qemu_image = builder.ensure(
+                backend="qemu",
+                arch="amd64",
+                boot=DirectKernelBoot(quiet=False),
+            )
+            firecracker_image = builder.ensure(
+                backend="firecracker",
+                arch="amd64",
+                boot=DirectKernelBoot(quiet=False),
+            )
+
+        assert qemu_image.rootfs_path == firecracker_image.rootfs_path
+        assert qemu_image.kernel_path == qemu_kernel
+        assert firecracker_image.kernel_path == fc_kernel
+        assert mock_build.call_count == 1
+
+    def test_context_paths_must_be_relative_and_safe(self, tmp_path: Path) -> None:
+        builder = DockerRootfsBuilder(
+            name="bad-context",
+            dockerfile="FROM scratch\n",
+            context={"../init": "#!/bin/sh\n"},
+            cache_dir=tmp_path / "cache",
+        )
+
+        with pytest.raises(ValueError, match="relative and safe"):
+            builder.ensure(
+                backend="qemu",
+                arch="amd64",
+                boot_args="console=ttyS0 root=/dev/vda rw",
+            )
+
+    def test_missing_context_file_fails_before_docker(self, tmp_path: Path) -> None:
+        builder = DockerRootfsBuilder(
+            name="missing-context",
+            dockerfile="FROM scratch\n",
+            context={"init": tmp_path / "missing-init"},
+            cache_dir=tmp_path / "cache",
+        )
+
+        with pytest.raises(ImageError, match="Build context file is missing"):
+            builder.ensure(
+                backend="qemu",
+                arch="amd64",
+                boot_args="console=ttyS0 root=/dev/vda rw",
+            )
+
+    def test_top_level_builder_export(self) -> None:
+        from smolvm import DockerRootfsBuilder as TopLevelDockerRootfsBuilder
+        from smolvm.images import DockerRootfsBuilder as ImagesDockerRootfsBuilder
+
+        assert TopLevelDockerRootfsBuilder is DockerRootfsBuilder
+        assert ImagesDockerRootfsBuilder is DockerRootfsBuilder
 
 
 class TestEnsureBaseKernelForBackend:
