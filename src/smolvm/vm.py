@@ -34,7 +34,7 @@ import socket
 import subprocess
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import asynccontextmanager, contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
@@ -501,25 +501,50 @@ class SmolVMManager:
             return
         raise VMAlreadyExistsError(vm_id)
 
-    @contextmanager
-    def _vm_create_lock(self, vm_id: str) -> Iterator[None]:
-        """Serialize create-time disk mutation for one VM ID."""
+    def _acquire_vm_create_lock(self, vm_id: str) -> tuple[Any | None, TextIO | None]:
+        """Acquire the create-time disk lock for one VM ID."""
         try:
             import fcntl
         except ImportError:
             # SmolVM currently targets POSIX hosts. If fcntl is unavailable,
             # keep the old single-process behavior rather than failing import.
-            yield
-            return
+            return None, None
 
         lock_dir = self.data_dir / "locks"
         lock_dir.mkdir(parents=True, exist_ok=True)
-        with (lock_dir / f"{vm_id}.create.lock").open("w") as lock_file:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        lock_file = (lock_dir / f"{vm_id}.create.lock").open("w")
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        return fcntl, lock_file
+
+    @staticmethod
+    def _release_vm_create_lock(lock: tuple[Any | None, TextIO | None]) -> None:
+        """Release a lock acquired by :meth:`_acquire_vm_create_lock`."""
+        fcntl_module, lock_file = lock
+        if lock_file is None:
+            return
+        try:
+            if fcntl_module is not None:
+                fcntl_module.flock(lock_file.fileno(), fcntl_module.LOCK_UN)
+        finally:
+            lock_file.close()
+
+    @contextmanager
+    def _vm_create_lock(self, vm_id: str) -> Iterator[None]:
+        """Serialize create-time disk mutation for one VM ID."""
+        lock = self._acquire_vm_create_lock(vm_id)
+        try:
+            yield
+        finally:
+            self._release_vm_create_lock(lock)
+
+    @asynccontextmanager
+    async def _async_vm_create_lock(self, vm_id: str) -> Iterator[None]:
+        """Async wrapper that acquires the file lock off the event loop."""
+        lock = await asyncio.to_thread(self._acquire_vm_create_lock, vm_id)
+        try:
+            yield
+        finally:
+            await asyncio.to_thread(self._release_vm_create_lock, lock)
 
     @staticmethod
     def _restore_staging_disk_path(managed_disk_path: Path) -> Path:
@@ -2634,7 +2659,7 @@ class SmolVMManager:
                 {"vm_id": effective_config.vm_id, "backend": backend},
             )
 
-        with self._vm_create_lock(effective_config.vm_id):
+        async with self._async_vm_create_lock(effective_config.vm_id):
             self._ensure_vm_id_available(effective_config.vm_id)
             managed_disk_path = self._managed_disk_path_for_create(effective_config, backend)
             managed_disk_existed = (
