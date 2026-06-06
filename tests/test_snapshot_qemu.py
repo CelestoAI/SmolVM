@@ -14,6 +14,9 @@
 
 """QEMU snapshot lifecycle regression tests."""
 
+import json
+import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -94,6 +97,45 @@ def _mock_qmp_client() -> MagicMock:
     client.__enter__.return_value = client
     client.__exit__.return_value = False
     return client
+
+
+def test_full_snapshot_copy_preserves_internal_snapshot_on_backed_overlay(
+    tmp_path: Path,
+) -> None:
+    """Full QEMU snapshot copies must keep internal VM-state snapshot tags."""
+    qemu_img = shutil.which("qemu-img")
+    if qemu_img is None:
+        pytest.skip("qemu-img is not installed")
+
+    base = tmp_path / "base.qcow2"
+    overlay = tmp_path / "overlay.qcow2"
+    dest = tmp_path / "snapshot" / "disk.qcow2"
+    dest.parent.mkdir()
+    subprocess.run([qemu_img, "create", "-f", "qcow2", str(base), "10M"], check=True)
+    subprocess.run(
+        [qemu_img, "create", "-f", "qcow2", "-b", str(base), "-F", "qcow2", str(overlay)],
+        check=True,
+    )
+    subprocess.run([qemu_img, "snapshot", "-c", "snap-001", str(overlay)], check=True)
+
+    QemuRuntimeAdapter._copy_disk_standalone(overlay, dest)
+
+    snapshots = subprocess.run(
+        [qemu_img, "snapshot", "-l", str(dest)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    info = subprocess.run(
+        [qemu_img, "info", "--output=json", str(dest)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    backing_path = Path(json.loads(info.stdout)["full-backing-filename"])
+    assert "snap-001" in snapshots.stdout
+    assert backing_path.parent == dest.parent
+    assert backing_path.exists()
 
 
 def test_wait_for_runtime_retries_when_qmp_greeting_times_out(tmp_path: Path) -> None:
