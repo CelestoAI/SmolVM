@@ -173,6 +173,7 @@ def test_snapshot_restore(backend: E2EBackend, request: pytest.FixtureRequest) -
 
         snap = sandbox.snapshot()
         sandbox.stop()
+        sandbox.delete()
 
         restored = SmolVM.from_snapshot(snap.snapshot_id, backend=backend, resume_vm=True)
         result = restored.run("cat /root/sentinel.txt")
