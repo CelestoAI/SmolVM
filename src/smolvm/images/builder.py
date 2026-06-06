@@ -88,7 +88,7 @@ def _safe_context_destination(destination: str) -> Path:
     path = Path(destination)
     if path.is_absolute() or ".." in path.parts or path.name in {"", ".", ".."}:
         raise ValueError(f"Build context path must be relative and safe: {destination!r}")
-    if path == Path("Dockerfile"):
+    if path.name.lower() == "dockerfile":
         raise ValueError("Build context path 'Dockerfile' is reserved")
     return path
 
@@ -120,6 +120,33 @@ def _docker_platform_for_arch(arch: str) -> str:
     if arch == "arm64":
         return "linux/arm64"
     raise ValueError(f"Unsupported Docker build arch: {arch!r}")
+
+
+def _decode_process_output(output: object) -> str:
+    """Return subprocess output as a readable string."""
+    if output is None:
+        return ""
+    if isinstance(output, bytes):
+        return output.decode(errors="replace").strip()
+    return str(output).strip()
+
+
+def _run_custom_docker_command(
+    command: list[str],
+    *,
+    step: str,
+    **kwargs: typing.Any,
+) -> subprocess.CompletedProcess[typing.Any]:
+    """Run one Docker command and map failures to ImageError."""
+    try:
+        return subprocess.run(command, check=True, **kwargs)
+    except subprocess.CalledProcessError as exc:
+        stderr = _decode_process_output(exc.stderr)
+        stdout = _decode_process_output(exc.stdout)
+        details = stderr or stdout or "no output"
+        raise ImageError(
+            f"{step} failed with exit code {exc.returncode}. Docker error: {details}"
+        ) from exc
 
 
 @contextmanager
@@ -2031,24 +2058,29 @@ class DockerRootfsBuilder:
                 build_cmd.extend(["--build-arg", f"{key}={value}"])
             build_cmd.append(str(tmp_path))
 
-            subprocess.run(
+            _run_custom_docker_command(
                 build_cmd,
-                check=True,
+                step="Docker build",
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
             )
 
             logger.info("  [2/3] Exporting custom rootfs...")
-            container_id = subprocess.run(
+            container_id = _run_custom_docker_command(
                 ["docker", "create", docker_tag],
-                check=True,
+                step="Docker create",
                 capture_output=True,
                 text=True,
             ).stdout.strip()
 
             try:
                 tar_path = tmp_path / "rootfs.tar"
-                subprocess.run(["docker", "export", container_id, "-o", str(tar_path)], check=True)
+                _run_custom_docker_command(
+                    ["docker", "export", container_id, "-o", str(tar_path)],
+                    step="Docker export",
+                    capture_output=True,
+                    text=True,
+                )
             finally:
                 subprocess.run(
                     ["docker", "rm", container_id],

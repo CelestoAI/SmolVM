@@ -14,6 +14,7 @@
 
 """Tests for public custom-image boot and kernel APIs."""
 
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -344,6 +345,21 @@ class TestDockerRootfsBuilder:
                 boot_args="console=ttyS0 root=/dev/vda rw",
             )
 
+    def test_context_rejects_dockerfile_case_variants(self, tmp_path: Path) -> None:
+        builder = DockerRootfsBuilder(
+            name="bad-context",
+            dockerfile="FROM scratch\n",
+            context={"nested/dockerfile": "FROM scratch\n"},
+            cache_dir=tmp_path / "cache",
+        )
+
+        with pytest.raises(ValueError, match="Dockerfile"):
+            builder.ensure(
+                backend="qemu",
+                arch="amd64",
+                boot_args="console=ttyS0 root=/dev/vda rw",
+            )
+
     def test_missing_context_file_fails_before_docker(self, tmp_path: Path) -> None:
         builder = DockerRootfsBuilder(
             name="missing-context",
@@ -357,6 +373,92 @@ class TestDockerRootfsBuilder:
                 backend="qemu",
                 arch="amd64",
                 boot_args="console=ttyS0 root=/dev/vda rw",
+            )
+
+    def test_docker_build_failure_raises_image_error(self, tmp_path: Path) -> None:
+        builder = DockerRootfsBuilder(
+            name="build-fails",
+            dockerfile="FROM scratch\n",
+            cache_dir=tmp_path / "cache",
+        )
+
+        with (
+            patch(
+                "smolvm.images.builder.subprocess.run",
+                side_effect=subprocess.CalledProcessError(
+                    7,
+                    ["docker", "build"],
+                    stderr=b"build failed",
+                ),
+            ),
+            pytest.raises(ImageError, match="Docker build failed.*exit code 7.*build failed"),
+        ):
+            builder._build_rootfs(
+                helper=MagicMock(),
+                rootfs_path=tmp_path / "rootfs.ext4",
+                docker_platform="linux/amd64",
+                context_files={},
+                docker_tag="test-image",
+            )
+
+    def test_docker_create_failure_raises_image_error(self, tmp_path: Path) -> None:
+        builder = DockerRootfsBuilder(
+            name="create-fails",
+            dockerfile="FROM scratch\n",
+            cache_dir=tmp_path / "cache",
+        )
+
+        with (
+            patch(
+                "smolvm.images.builder.subprocess.run",
+                side_effect=[
+                    subprocess.CompletedProcess(["docker", "build"], 0),
+                    subprocess.CalledProcessError(
+                        8,
+                        ["docker", "create"],
+                        stderr="create failed",
+                    ),
+                ],
+            ),
+            pytest.raises(ImageError, match="Docker create failed.*exit code 8.*create failed"),
+        ):
+            builder._build_rootfs(
+                helper=MagicMock(),
+                rootfs_path=tmp_path / "rootfs.ext4",
+                docker_platform="linux/amd64",
+                context_files={},
+                docker_tag="test-image",
+            )
+
+    def test_docker_export_failure_raises_image_error(self, tmp_path: Path) -> None:
+        builder = DockerRootfsBuilder(
+            name="export-fails",
+            dockerfile="FROM scratch\n",
+            cache_dir=tmp_path / "cache",
+        )
+
+        with (
+            patch(
+                "smolvm.images.builder.subprocess.run",
+                side_effect=[
+                    subprocess.CompletedProcess(["docker", "build"], 0),
+                    subprocess.CompletedProcess(["docker", "create"], 0, stdout="container\n"),
+                    subprocess.CalledProcessError(
+                        9,
+                        ["docker", "export"],
+                        output="export failed",
+                    ),
+                    subprocess.CompletedProcess(["docker", "rm"], 0),
+                ],
+            ),
+            pytest.raises(ImageError, match="Docker export failed.*exit code 9.*export failed"),
+        ):
+            builder._build_rootfs(
+                helper=MagicMock(),
+                rootfs_path=tmp_path / "rootfs.ext4",
+                docker_platform="linux/amd64",
+                context_files={},
+                docker_tag="test-image",
             )
 
     def test_top_level_builder_export(self) -> None:
