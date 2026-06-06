@@ -367,6 +367,34 @@ def test_restore_qemu_snapshot_rehydrates_deleted_vm(
     mock_client.snapshot_delete.assert_called_once()
 
 
+def test_restore_validates_artifacts_before_stopping_existing_vm(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+) -> None:
+    """A bad snapshot should not stop the active VM before failing."""
+    _create_qemu_vm(qemu_smol_vm, qemu_config)
+    vm_info = qemu_smol_vm.get("vm001")
+    qemu_smol_vm.state.update_vm("vm001", status=VMState.RUNNING, pid=12345)
+    snapshot = SnapshotInfo(
+        snapshot_id="snap-missing-disk",
+        vm_id="vm001",
+        backend="qemu",
+        artifacts=SnapshotArtifacts(disk_path=qemu_smol_vm.snapshot_dir / "missing.qcow2"),
+        vm_config=vm_info.config,
+        network_config=vm_info.network,
+        created_at=datetime.now(timezone.utc),
+    )
+    qemu_smol_vm.state.create_snapshot(snapshot)
+
+    with (
+        patch.object(qemu_smol_vm, "stop") as mock_stop,
+        pytest.raises(SmolVMError, match="disk_path"),
+    ):
+        qemu_smol_vm.restore_snapshot("snap-missing-disk")
+
+    mock_stop.assert_not_called()
+
+
 def test_restore_qemu_snapshot_reserves_persisted_vsock_cid(
     qemu_smol_vm: SmolVMManager,
     qemu_config: VMConfig,

@@ -297,6 +297,34 @@ class TestSmolVMDiskLifecycle:
         assert retained_disk.exists()
         assert retained_disk.stat().st_size == 1024 * 1024
 
+    def test_failed_grow_restores_retained_managed_disk(
+        self,
+        smol_vm: SmolVMManager,
+        sample_config: VMConfig,
+    ) -> None:
+        """Failed resize/grow rolls an existing retained disk back."""
+        retained_disk = smol_vm.data_dir / "disks" / "vm001.ext4"
+        retained_disk.parent.mkdir(parents=True, exist_ok=True)
+        retained_disk.write_bytes(b"\0" * (1024 * 1024))
+        config = sample_config.model_copy(
+            update={"disk_size_mib": 2, "grow_filesystem": True}
+        )
+
+        with (
+            patch.object(
+                smol_vm,
+                "_grow_raw_ext4_filesystem",
+                side_effect=SmolVMError("grow failed"),
+            ),
+            pytest.raises(SmolVMError, match="grow failed"),
+        ):
+            smol_vm.create(config)
+
+        assert retained_disk.exists()
+        assert retained_disk.stat().st_size == 1024 * 1024
+        with pytest.raises(VMNotFoundError):
+            smol_vm.get("vm001")
+
     @patch("smolvm.vm.NetworkManager")
     def test_create_persistence_failure_removes_new_managed_disk(
         self,
@@ -340,7 +368,7 @@ class TestSmolVMDiskLifecycle:
         def _fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
             del kwargs
             calls.append(command)
-            return subprocess.CompletedProcess(command, 1 if "e2fsck" in command[0] else 0)
+            return subprocess.CompletedProcess(command, 3 if "e2fsck" in command[0] else 0)
 
         with (
             patch("smolvm.vm.which", side_effect=lambda name: Path(name)),

@@ -502,6 +502,32 @@ class SmolVMManager:
             with suppress(OSError, shutil.Error):
                 shutil.rmtree(firmware_state)
 
+    def _backup_existing_managed_disk(self, managed_disk_path: Path) -> list[tuple[Path, Path]]:
+        """Copy an existing managed disk so failed create-time resize can roll back."""
+        paths = [managed_disk_path, *self._managed_disk_backing_sidecars(managed_disk_path)]
+        backups: list[tuple[Path, Path]] = []
+        for path in paths:
+            if not path.exists():
+                continue
+            backup_path = path.with_name(f"{path.name}.create-backup-{uuid4().hex}")
+            self._copy_with_reflink(path, backup_path)
+            backups.append((path, backup_path))
+        return backups
+
+    @staticmethod
+    def _restore_existing_managed_disk_backup(backups: list[tuple[Path, Path]]) -> None:
+        """Restore managed disk backups created by :meth:`_backup_existing_managed_disk`."""
+        for original_path, backup_path in backups:
+            if backup_path.exists():
+                os.replace(backup_path, original_path)
+
+    @staticmethod
+    def _discard_existing_managed_disk_backup(backups: list[tuple[Path, Path]]) -> None:
+        """Remove no-longer-needed managed disk backups."""
+        for _original_path, backup_path in backups:
+            with suppress(OSError):
+                backup_path.unlink()
+
     def _ensure_vm_id_available(self, vm_id: str) -> None:
         """Fail before disk work if a VM with this ID already exists."""
         try:
@@ -765,7 +791,7 @@ class SmolVMManager:
             [str(e2fsck), "-fy", str(disk_path)],
             "e2fsck",
             vm_id,
-            allowed_returncodes={0, 1},
+            allowed_returncodes={0, 1, 2, 3},
         )
         self._run_resize_tool([str(resize2fs), str(disk_path)], "resize2fs", vm_id)
 
@@ -1448,6 +1474,11 @@ class SmolVMManager:
             firmware_state = self.data_dir / "firmware" / effective_config.vm_id
             firmware_existed = firmware_state.exists()
             vm_record_created = False
+            managed_disk_backup: list[tuple[Path, Path]] = []
+            if managed_disk_existed and (
+                effective_config.disk_size_mib is not None or effective_config.grow_filesystem
+            ):
+                managed_disk_backup = self._backup_existing_managed_disk(managed_disk_path)
             try:
                 effective_config = self._materialize_rootfs(effective_config)
 
@@ -1466,7 +1497,9 @@ class SmolVMManager:
                 vm_record_created = True
                 effective_config = self._resize_materialized_rootfs(effective_config)
                 self._materialize_firmware(effective_config)
+                self._discard_existing_managed_disk_backup(managed_disk_backup)
             except Exception:
+                self._restore_existing_managed_disk_backup(managed_disk_backup)
                 if vm_record_created:
                     with suppress(Exception):
                         self.state.delete_vm(effective_config.vm_id)
@@ -1911,10 +1944,6 @@ class SmolVMManager:
                 {"snapshot_id": snapshot_id, "vm_id": restore_vm_id},
             )
 
-        if existing_vm is not None and existing_vm.status in (VMState.RUNNING, VMState.PAUSED):
-            self.stop(restore_vm_id)
-            existing_vm = self.state.get_vm(restore_vm_id)
-
         if (
             snapshot.vm_config.kernel_path is not None
             and not snapshot.vm_config.kernel_path.exists()
@@ -1944,6 +1973,10 @@ class SmolVMManager:
                     f"Snapshot restore requires {label} to exist",
                     {"snapshot_id": snapshot_id, label: str(required_path)},
                 )
+
+        if existing_vm is not None and existing_vm.status in (VMState.RUNNING, VMState.PAUSED):
+            self.stop(restore_vm_id)
+            existing_vm = self.state.get_vm(restore_vm_id)
 
         managed_disk_path = self._instance_disk_path(
             restore_vm_id,
@@ -2764,6 +2797,14 @@ class SmolVMManager:
             firmware_state = self.data_dir / "firmware" / effective_config.vm_id
             firmware_existed = firmware_state.exists()
             vm_record_created = False
+            managed_disk_backup: list[tuple[Path, Path]] = []
+            if managed_disk_existed and (
+                effective_config.disk_size_mib is not None or effective_config.grow_filesystem
+            ):
+                managed_disk_backup = await asyncio.to_thread(
+                    self._backup_existing_managed_disk,
+                    managed_disk_path,
+                )
             try:
                 effective_config = await self._async_materialize_rootfs(effective_config)
 
@@ -2782,7 +2823,15 @@ class SmolVMManager:
                 )
                 # Firmware materialization is a small file copy — synchronous is fine.
                 self._materialize_firmware(effective_config)
+                await asyncio.to_thread(
+                    self._discard_existing_managed_disk_backup,
+                    managed_disk_backup,
+                )
             except Exception:
+                await asyncio.to_thread(
+                    self._restore_existing_managed_disk_backup,
+                    managed_disk_backup,
+                )
                 if vm_record_created:
                     with suppress(Exception):
                         self.state.delete_vm(effective_config.vm_id)
