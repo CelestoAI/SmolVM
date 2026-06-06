@@ -13,3 +13,7 @@
 # limitations under the License.
 
 """Guest image management and builders."""
+
+from smolvm.images.boot import DirectKernelBoot
+
+__all__ = ["DirectKernelBoot"]

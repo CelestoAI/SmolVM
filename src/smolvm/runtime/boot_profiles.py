@@ -60,6 +60,24 @@ def _quiet_flag() -> str:
     return " quiet"
 
 
+def safe_kernel_trim_args(*, quiet: bool | None = None) -> tuple[str, ...]:
+    """Return latency-safe kernel command-line trims.
+
+    ``quiet=None`` preserves SmolVM's default behavior: include ``quiet``
+    unless ``SMOLVM_VERBOSE_BOOT`` asks for verbose kernel output. Pass
+    ``quiet=True`` or ``quiet=False`` to force either behavior for a custom
+    boot profile.
+    """
+    args = _SAFE_TRIM_FLAGS.split()
+    if quiet is None:
+        quiet_arg = _quiet_flag().strip()
+        if quiet_arg:
+            args.append(quiet_arg)
+    elif quiet:
+        args.append("quiet")
+    return tuple(args)
+
+
 _MICROVM_DIRECT_FIRECRACKER_BASE = "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw"
 
 
@@ -86,7 +104,7 @@ class BootProfileSpec:
             )
 
         if self.profile is KernelBootProfile.MICROVM_DIRECT:
-            trims = f"{_SAFE_TRIM_FLAGS}{_quiet_flag()}"
+            trims = " ".join(safe_kernel_trim_args())
             if backend in {BACKEND_QEMU, BACKEND_LIBKRUN}:
                 console = "ttyAMA0" if normalized_arch == "aarch64" else "ttyS0"
                 return f"console={console} reboot=k panic=1 {trims} init=/init"
