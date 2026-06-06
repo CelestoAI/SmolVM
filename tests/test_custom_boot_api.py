@@ -101,7 +101,7 @@ class TestEnsureBaseKernelForBackend:
 
     @patch("smolvm.images.published.ensure_base_kernel")
     def test_qemu_selects_image_kernel(self, mock_ensure: MagicMock) -> None:
-        kernel = Path("/tmp/vmlinux.image")
+        kernel = Path("sentinels/vmlinux.image")
         mock_ensure.return_value = kernel
 
         assert ensure_base_kernel_for_backend("qemu", arch="amd64") == kernel
@@ -109,7 +109,7 @@ class TestEnsureBaseKernelForBackend:
 
     @patch("smolvm.images.published.ensure_base_kernel")
     def test_firecracker_selects_elf_kernel(self, mock_ensure: MagicMock) -> None:
-        kernel = Path("/tmp/vmlinux.elf")
+        kernel = Path("sentinels/vmlinux.elf")
         mock_ensure.return_value = kernel
 
         assert ensure_base_kernel_for_backend("firecracker", arch="arm64") == kernel
@@ -117,7 +117,7 @@ class TestEnsureBaseKernelForBackend:
 
     @patch("smolvm.images.published.ensure_base_kernel")
     def test_libkrun_selects_elf_kernel(self, mock_ensure: MagicMock) -> None:
-        kernel = Path("/tmp/vmlinux.elf")
+        kernel = Path("sentinels/vmlinux.elf")
         mock_ensure.return_value = kernel
 
         assert ensure_base_kernel_for_backend("libkrun", arch="x86_64") == kernel
@@ -129,7 +129,7 @@ class TestEnsureBaseKernelForBackend:
         mock_ensure: MagicMock,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        kernel = Path("/tmp/vmlinux.image")
+        kernel = Path("sentinels/vmlinux.image")
         mock_ensure.return_value = kernel
         monkeypatch.setattr("smolvm.kernels.platform.machine", lambda: "aarch64")
 
