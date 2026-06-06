@@ -84,19 +84,21 @@ jobs:
 
       - name: Enable KVM and optional vsock
         run: |
-          # The runner user isn't in the kvm group; SmolVM launches QEMU from
-          # its own process and Firecracker opens /dev/kvm directly, so widen
-          # /dev/kvm directly (CI-only). QEMU's vsock variant also needs the
-          # vhost_vsock module loaded so that leg isn't skipped.
+          # The runner user isn't in the active kvm group for this already-
+          # running job. Add it to /etc/group, set the devices to the same
+          # root:kvm mode used by system setup, then run KVM commands below via
+          # `sg kvm -c ...` so the group is active for each command.
+          sudo groupadd -f kvm
           sudo usermod -a -G kvm "$USER" || true
-          sudo chmod 666 /dev/kvm || true
+          sudo chgrp kvm /dev/kvm || true
+          sudo chmod 660 /dev/kvm || true
           if [[ "${{ matrix.backend }}" == "qemu" ]]; then
             sudo modprobe vhost_vsock || echo "vhost_vsock unavailable; vsock tests will skip"
             # /dev/vhost-vsock ships as root:kvm mode 660; the `usermod` above
-            # doesn't apply to this already-running job, so widen it directly
-            # the same way as /dev/kvm — otherwise QEMU can't open it and the
-            # vsock VM dies on boot (the device merely *existing* isn't enough).
-            sudo chmod 666 /dev/vhost-vsock || true
+            # doesn't apply to this already-running job, so normalize the
+            # device and run pytest under `sg kvm` below.
+            sudo chgrp kvm /dev/vhost-vsock || true
+            sudo chmod 660 /dev/vhost-vsock || true
           fi
           ls -l /dev/kvm /dev/vhost-vsock || true
 
@@ -106,17 +108,17 @@ jobs:
 
       - name: Assert native extension available
         run: |
-          uv run python -c "
+          sg kvm -c 'uv run python -c "
           from smolvm_core import is_available
           assert is_available(), 'Native extension reports not available on Linux'
           print('smolvm-core: OK')
-          "
+          "'
 
       - name: Diagnostics (smolvm doctor)
-        run: uv run smolvm doctor --backend "${{ matrix.backend }}" || true
+        run: sg kvm -c 'uv run smolvm doctor --backend "${{ matrix.backend }}"' || true
 
       - name: Run e2e suite
-        run: uv run pytest -m e2e tests/e2e -v --e2e-backend "${{ matrix.backend }}"
+        run: sg kvm -c 'uv run pytest -m e2e tests/e2e -v --e2e-backend "${{ matrix.backend }}"'
 
       - name: Dump VM logs on failure
         if: failure()
