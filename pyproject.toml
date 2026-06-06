@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "smolvm"
-version = "0.0.19a1"
+version = "0.0.19"
 description = "Isolated computers that AI agents can use to browse, run code, and get real work done. Free and open-source from Celesto AI"
 readme = "README.md"
 license = "Apache-2.0"
