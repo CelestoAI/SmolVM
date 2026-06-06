@@ -2294,6 +2294,14 @@ def _run_start_with_published_image(args: argparse.Namespace, preset: object) ->
             vm.start(boot_timeout=args.boot_timeout)
             vm.wait_for_ssh(timeout=args.boot_timeout)
 
+            # Transfer credentials — keychain only, no config copies or
+            # install scripts. The CLI is already baked into the image;
+            # we only need the OAuth token so the guest is logged in.
+            from smolvm.presets import transfer_keychain_secrets
+
+            ssh = vm._ensure_ssh_for_env()
+            extracted_secrets = transfer_keychain_secrets(ssh, _preset)
+
             network = vm.info.network
             data: StartPayload = {
                 "vm": {
@@ -2312,7 +2320,7 @@ def _run_start_with_published_image(args: argparse.Namespace, preset: object) ->
                 },
                 "preset": {
                     "name": _preset.name,
-                    "copied_configs": [],
+                    "copied_configs": extracted_secrets,
                     "injected_env_keys": [],
                     "no_env_hint": _preset.no_env_hint,
                 },

@@ -22,7 +22,7 @@ along with any host config files and API keys the harness expects.
 from __future__ import annotations
 
 from smolvm.presets._git import GIT_HOST_CONFIGS
-from smolvm.presets._install import apply_preset, collect_host_env
+from smolvm.presets._install import apply_preset, collect_host_env, transfer_keychain_secrets
 from smolvm.presets._types import HostConfigCopy, HostKeychainSecret, Preset
 from smolvm.presets.claude_code import CLAUDE_CODE_PRESET
 from smolvm.presets.codex import CODEX_PRESET
@@ -92,6 +92,7 @@ __all__ = [
     "apply_preset",
     "collect_host_env",
     "get_preset",
+    "transfer_keychain_secrets",
     "list_presets",
     "preset_command_names",
     "preset_names",

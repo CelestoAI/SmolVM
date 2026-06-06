@@ -361,4 +361,39 @@ def _write_secret_to_guest(ssh: CommChannel, content: str, guest_path: str, file
         tmp_path.unlink(missing_ok=True)
 
 
-__all__ = ["apply_preset", "collect_host_env"]
+def transfer_keychain_secrets(
+    ssh: CommChannel,
+    preset: Preset,
+    *,
+    on_progress: Callable[[str], None] | None = None,
+) -> list[str]:
+    """Extract macOS keychain secrets and write them into the guest.
+
+    Runs only the keychain step from :func:`apply_preset` — no config
+    copies, no env injection, no install scripts. Used by the published-
+    image path where the CLI is already baked in and only credential
+    transfer is needed.
+
+    Returns a list of guest paths where secrets were written (empty when
+    not on macOS, when the keychain item is missing, or when the user
+    denies access).
+    """
+    notify = on_progress or (lambda _msg: None)
+    extracted: list[str] = []
+    for secret in preset.host_keychain_secrets:
+        account = secret.account if secret.account is not None else getpass.getuser()
+        plaintext = _extract_keychain_secret(secret.service, account=account)
+        if plaintext is None:
+            logger.debug(
+                "Skipping unavailable keychain secret: service=%s account=%s",
+                secret.service,
+                account,
+            )
+            continue
+        notify(f"Copying {secret.service} from macOS keychain → {secret.guest_path}")
+        _write_secret_to_guest(ssh, plaintext, secret.guest_path, secret.file_mode)
+        extracted.append(secret.guest_path)
+    return extracted
+
+
+__all__ = ["apply_preset", "collect_host_env", "transfer_keychain_secrets"]
