@@ -384,7 +384,7 @@ class TestSmolVMDiskLifecycle:
         smol_vm: SmolVMManager,
         tmp_path: Path,
     ) -> None:
-        """e2fsck returns 1 when it fixed errors; resize2fs should still run."""
+        """e2fsck may return 1 or 3 after repairs; resize2fs should still run."""
         disk = tmp_path / "rootfs.ext4"
         disk.touch()
         calls: list[list[str]] = []

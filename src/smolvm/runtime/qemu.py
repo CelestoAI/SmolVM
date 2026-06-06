@@ -49,6 +49,16 @@ logger = logging.getLogger(__name__)
 QEMU_ROOT_NODE_NAME = "rootdisk0"
 
 
+def _qemu_img_install_hint() -> str:
+    """Return a short recovery hint for missing or broken qemu-img."""
+    return (
+        "Install it with 'sudo apt-get install -y qemu-utils' on Debian/Ubuntu, "
+        "'sudo dnf install -y qemu-img' or 'sudo yum install -y qemu-img' "
+        "on Fedora/RHEL, or 'sudo pacman -S --needed qemu-base' on Arch; "
+        "then verify 'qemu-img' is on PATH."
+    )
+
+
 class _SwtpmSidecar:
     """Per-VM swtpm (software TPM 2.0) process.
 
@@ -509,7 +519,10 @@ class QemuRuntimeAdapter(RuntimeAdapter):
         """Return backing path, raising when qemu-img cannot inspect the disk."""
         qemu_img = which("qemu-img")
         if qemu_img is None:
-            raise SmolVMError("qemu-img is needed to create a full QEMU snapshot.")
+            raise SmolVMError(
+                "QEMU snapshots need qemu-img to inspect qcow2 disks. "
+                f"{_qemu_img_install_hint()}"
+            )
         info = subprocess.run(
             [str(qemu_img), "info", "--output=json", str(disk)],
             capture_output=True,
@@ -518,14 +531,16 @@ class QemuRuntimeAdapter(RuntimeAdapter):
         )
         if info.returncode != 0:
             raise SmolVMError(
-                "qemu-img could not inspect the QEMU disk while creating a full snapshot.",
+                "qemu-img could not inspect the QEMU disk while creating a full snapshot. "
+                f"Confirm the disk is valid, or reinstall qemu-img. {_qemu_img_install_hint()}",
                 {"disk_path": str(disk), "stderr": info.stderr.strip()},
             )
         try:
             data = json.loads(info.stdout)
         except (ValueError, TypeError) as exc:
             raise SmolVMError(
-                "qemu-img returned invalid disk info while creating a full QEMU snapshot.",
+                "qemu-img returned invalid disk info while creating a full QEMU snapshot. "
+                f"Update or reinstall qemu-img. {_qemu_img_install_hint()}",
                 {"disk_path": str(disk)},
             ) from exc
         backing = data.get("full-backing-filename") or data.get("backing-filename")
@@ -558,7 +573,10 @@ class QemuRuntimeAdapter(RuntimeAdapter):
 
         qemu_img = which("qemu-img")
         if qemu_img is None:
-            raise SmolVMError("qemu-img is needed to create a full QEMU snapshot.")
+            raise SmolVMError(
+                "QEMU snapshots need qemu-img to rebase copied qcow2 backing files. "
+                f"{_qemu_img_install_hint()}"
+            )
         backing_fmt = QemuRuntimeAdapter._qcow2_disk_format(backing_dest) or (
             "qcow2" if backing_dest.suffix == ".qcow2" else "raw"
         )
@@ -579,7 +597,9 @@ class QemuRuntimeAdapter(RuntimeAdapter):
         )
         if rebase.returncode != 0:
             raise SmolVMError(
-                "qemu-img rebase failed while creating a full QEMU snapshot.",
+                "qemu-img rebase failed while creating a full QEMU snapshot. "
+                "Confirm qemu-img is usable and the backing image exists. "
+                f"{_qemu_img_install_hint()}",
                 {"stderr": rebase.stderr.strip()},
             )
 

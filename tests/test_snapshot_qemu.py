@@ -167,10 +167,15 @@ def test_full_snapshot_copy_requires_qemu_img(tmp_path: Path) -> None:
 
     with (
         patch("smolvm.runtime.qemu.which", return_value=None),
-        pytest.raises(SmolVMError, match="qemu-img"),
+        pytest.raises(SmolVMError, match="qemu-img") as exc_info,
     ):
         QemuRuntimeAdapter._copy_disk_standalone(source, dest)
 
+    message = str(exc_info.value)
+    assert "sudo apt-get install -y qemu-utils" in message
+    assert "sudo dnf install -y qemu-img" in message
+    assert "sudo yum install -y qemu-img" in message
+    assert "sudo pacman -S --needed qemu-base" in message
     assert not dest.exists()
 
 
