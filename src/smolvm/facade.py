@@ -44,6 +44,8 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
 
+from pydantic import ValidationError as PydanticValidationError
+
 from smolvm._naming import generate_sandbox_name
 from smolvm.callbacks import Callback, CallbackDispatcher, RunContext
 from smolvm.comm import VsockChannel
@@ -839,35 +841,68 @@ def _build_auto_config(
     return config, resolved_ssh_key_path
 
 
-def _normalize_from_image_arch(image: BootImage, arch: str | None) -> str:
+def _from_image_config_help(vm_id: str) -> str:
+    """Return the recovery command shown by from_image validation errors."""
+    return f"smolvm create --name {vm_id} --help"
+
+
+def _from_image_port_help(vm_id: str) -> str:
+    """Return the recovery command shown by port-forward validation errors."""
+    return f"smolvm port expose {vm_id} --help"
+
+
+def _normalize_from_image_arch(image: BootImage, arch: str | None, vm_id: str) -> str:
     """Resolve the architecture used for kernel lookup and boot-arg rendering."""
-    requested_arch = to_published_arch(platform.machine()) if arch in {None, "host"} else arch
-    if requested_arch not in {"amd64", "arm64"}:
-        requested_arch = to_published_arch(requested_arch)
+    try:
+        requested_arch = to_published_arch(platform.machine()) if arch in {None, "host"} else arch
+        if requested_arch not in {"amd64", "arm64"}:
+            requested_arch = to_published_arch(requested_arch)
+    except ValueError as exc:
+        raise ValueError(
+            f"Unsupported image architecture for sandbox '{vm_id}'; to fix, run "
+            f"`{_from_image_config_help(vm_id)}`."
+        ) from exc
     if image.arch is not None and arch not in {None, "host"} and image.arch != requested_arch:
         raise ValueError(
-            f"Boot image was prepared for arch={image.arch!r}; requested arch={requested_arch!r}."
+            f"Boot image was prepared for arch={image.arch!r}, but arch={requested_arch!r} "
+            f"was requested; to fix, run `{_from_image_config_help(vm_id)}`."
         )
     return image.arch or requested_arch
 
 
-def _normalize_from_image_backend(image: BootImage, backend: str | None) -> str:
+def _normalize_from_image_backend(image: BootImage, backend: str | None, vm_id: str) -> str:
     """Resolve the backend used to launch a BootImage."""
     if image.boot_mode == "firmware" and backend is None and image.backend is None:
         return BACKEND_QEMU
 
-    resolved_backend = resolve_backend(backend or image.backend)
+    try:
+        resolved_backend = resolve_backend(backend or image.backend)
+    except ValueError as exc:
+        raise ValueError(
+            f"Unsupported backend for sandbox '{vm_id}'; to fix, run "
+            f"`{_from_image_config_help(vm_id)}`."
+        ) from exc
     if image.backend is not None and backend is not None and image.backend != resolved_backend:
         raise ValueError(
-            f"Boot image was prepared for backend={image.backend!r}; "
-            f"requested backend={resolved_backend!r}."
+            f"Boot image was prepared for backend={image.backend!r}, but "
+            f"backend={resolved_backend!r} was requested; to fix, run "
+            f"`{_from_image_config_help(vm_id)}`."
         )
     if image.boot_mode == "firmware" and resolved_backend != BACKEND_QEMU:
-        raise ValueError("Firmware boot images require backend='qemu'.")
+        raise ValueError(
+            f"Firmware boot images require backend='qemu'; to fix, run "
+            f"`{_from_image_config_help(vm_id)}`."
+        )
     if image.rootfs_format == "qcow2" and resolved_backend != BACKEND_QEMU:
-        raise ValueError("qcow2 boot images require backend='qemu'.")
+        raise ValueError(
+            f"qcow2 boot images require backend='qemu'; to fix, run "
+            f"`{_from_image_config_help(vm_id)}`."
+        )
     if image.initrd_path is not None and resolved_backend == BACKEND_FIRECRACKER:
-        raise ValueError("initrd boot images are not supported with backend='firecracker'.")
+        raise ValueError(
+            f"initrd boot images are not supported with backend='firecracker'; to fix, run "
+            f"`{_from_image_config_help(vm_id)}`."
+        )
     return resolved_backend
 
 
@@ -875,19 +910,28 @@ def _normalize_from_image_network(
     *,
     backend: str,
     network: Literal["tap", "slirp"] | None,
+    vm_id: str,
 ) -> Literal["tap", "slirp"]:
     """Return the QEMU network mode for a BootImage launch."""
     if network is None:
         return "slirp"
     if network not in {"tap", "slirp"}:
-        raise ValueError("network must be 'tap' or 'slirp'")
+        raise ValueError(
+            f"network must be 'tap' or 'slirp'; to fix, run "
+            f"`{_from_image_config_help(vm_id)}`."
+        )
     if backend != BACKEND_QEMU and network == "slirp":
-        raise ValueError("network='slirp' is only supported with backend='qemu'.")
+        raise ValueError(
+            f"network='slirp' is only supported with backend='qemu'; to fix, run "
+            f"`{_from_image_config_help(vm_id)}`."
+        )
     return network
 
 
 def _normalize_port_forwards(
     forwards: list[PortForwardConfig | dict[str, Any]] | None,
+    *,
+    vm_id: str,
 ) -> list[PortForwardConfig]:
     """Normalize from_image port-forward inputs."""
     normalized: list[PortForwardConfig] = []
@@ -895,7 +939,13 @@ def _normalize_port_forwards(
         if isinstance(forward, PortForwardConfig):
             normalized.append(forward)
         else:
-            normalized.append(PortForwardConfig(**forward))
+            try:
+                normalized.append(PortForwardConfig(**forward))
+            except PydanticValidationError as exc:
+                raise ValueError(
+                    f"Invalid port-forward entry for sandbox '{vm_id}'; to fix, run "
+                    f"`{_from_image_port_help(vm_id)}`."
+                ) from exc
     return normalized
 
 
@@ -1241,27 +1291,32 @@ class SmolVM:
         per-VM runtime settings and delegates disk isolation/network setup to
         the normal SmolVM lifecycle.
         """
+        resolved_vm_id = _resolve_vm_name(vm_id, prefix=name_prefix)
         if disk_size_mb is not None or grow_filesystem:
             raise SmolVMError(
-                "Custom image disk resizing is not implemented yet; omit "
-                "disk_size_mb and grow_filesystem for now."
+                f"Custom image disk resizing is not implemented yet for sandbox "
+                f"'{resolved_vm_id}'; omit disk_size_mb and grow_filesystem, then run "
+                f"`{_from_image_config_help(resolved_vm_id)}`."
             )
 
-        resolved_backend = _normalize_from_image_backend(image, backend)
-        resolved_arch = _normalize_from_image_arch(image, arch)
+        resolved_backend = _normalize_from_image_backend(image, backend, resolved_vm_id)
+        resolved_arch = _normalize_from_image_arch(image, arch, resolved_vm_id)
         qemu_network = _normalize_from_image_network(
             backend=resolved_backend,
             network=network,
+            vm_id=resolved_vm_id,
         )
-        normalized_forwards = _normalize_port_forwards(port_forwards)
+        normalized_forwards = _normalize_port_forwards(port_forwards, vm_id=resolved_vm_id)
         if normalized_forwards and (resolved_backend != BACKEND_QEMU or qemu_network != "slirp"):
-            raise ValueError("port_forwards require backend='qemu' and network='slirp'.")
+            raise ValueError(
+                f"port_forwards require backend='qemu' and network='slirp'; to fix, run "
+                f"`{_from_image_port_help(resolved_vm_id)}`."
+            )
 
         kernel_path = image.kernel_path
         if image.boot_mode == "direct_kernel" and kernel_path is None:
             kernel_path = ensure_base_kernel_for_backend(resolved_backend, arch=resolved_arch)
 
-        resolved_vm_id = _resolve_vm_name(vm_id, prefix=name_prefix)
         config = VMConfig(
             vm_id=resolved_vm_id,
             vcpu_count=vcpus,

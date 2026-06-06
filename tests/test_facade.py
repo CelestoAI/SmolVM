@@ -762,8 +762,8 @@ class TestFromBootImage:
             backend="qemu",
         )
 
-        with pytest.raises(ValueError, match="prepared for backend"):
-            SmolVM.from_image(image, backend="firecracker")
+        with pytest.raises(ValueError, match="smolvm create --name vm-mismatch --help"):
+            SmolVM.from_image(image, vm_id="vm-mismatch", backend="firecracker")
 
     def test_from_image_rejects_resize_knobs_until_phase_five(self, tmp_path: Path) -> None:
         rootfs = tmp_path / "rootfs.ext4"
@@ -779,7 +779,9 @@ class TestFromBootImage:
         )
 
         with pytest.raises(SmolVMError, match="disk resizing is not implemented"):
-            SmolVM.from_image(image, disk_size_mb=4096)
+            SmolVM.from_image(image, vm_id="vm-resize", disk_size_mb=4096)
+        with pytest.raises(SmolVMError, match="disk resizing is not implemented"):
+            SmolVM.from_image(image, vm_id="vm-grow", grow_filesystem=True)
 
     def test_from_image_rejects_tap_port_forwards(self, tmp_path: Path) -> None:
         rootfs = tmp_path / "rootfs.ext4"
@@ -795,11 +797,34 @@ class TestFromBootImage:
             backend="qemu",
         )
 
-        with pytest.raises(ValueError, match="network='slirp'"):
+        with pytest.raises(ValueError, match="smolvm port expose vm-tap-ports --help"):
             SmolVM.from_image(
                 image,
+                vm_id="vm-tap-ports",
                 network="tap",
                 port_forwards=[{"host_port": 8080, "guest_port": 80}],
+            )
+
+    def test_from_image_rejects_invalid_port_forward_entry(self, tmp_path: Path) -> None:
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel = tmp_path / "vmlinux.image"
+        rootfs.touch()
+        kernel.touch()
+        image = BootImage(
+            name="bad-port",
+            rootfs_path=rootfs,
+            rootfs_format="raw-ext4",
+            kernel_path=kernel,
+            boot_args="console=ttyS0 root=/dev/vda rw",
+            backend="qemu",
+        )
+
+        with pytest.raises(ValueError, match="smolvm port expose vm-bad-port --help"):
+            SmolVM.from_image(
+                image,
+                vm_id="vm-bad-port",
+                network="slirp",
+                port_forwards=[{"host_port": 8080}],
             )
 
 

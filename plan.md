@@ -86,6 +86,13 @@ Implementation plan:
 
 Goal: let SDK callers launch a `BootImage` without manually constructing `VMConfig`.
 
+Key terms:
+
+- `BootImage` is an image used to start a VM.
+- `VMConfig` is the runtime configuration object for one VM.
+- `slirp` is user-mode network forwarding used for NAT and port forwarding.
+- `vsock` is a virtual socket for host–guest communication.
+
 Implementation plan:
 
 - Add `SmolVM.from_image(image, ...)` as a high-level constructor parallel to `SmolVM.from_id()` and `SmolVM.from_snapshot()`.
