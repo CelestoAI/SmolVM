@@ -1493,7 +1493,7 @@ class SmolVMManager:
                 # concurrent same-ID create cannot resize the same disk first.
                 # Resize/grow after persistence so a persistence failure cannot
                 # mutate a retained managed disk without a VM row.
-                vm_info = self.state.create_vm(effective_config)
+                self.state.create_vm(effective_config)
                 vm_record_created = True
                 effective_config = self._resize_materialized_rootfs(effective_config)
                 self._materialize_firmware(effective_config)

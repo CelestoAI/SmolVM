@@ -395,7 +395,7 @@ class TestSmolVMDiskLifecycle:
             return subprocess.CompletedProcess(command, 3 if "e2fsck" in command[0] else 0)
 
         with (
-            patch("smolvm.vm.which", side_effect=lambda name: Path(name)),
+            patch("smolvm.vm.which", side_effect=Path),
             patch("smolvm.vm.subprocess.run", side_effect=_fake_run),
         ):
             smol_vm._grow_raw_ext4_filesystem(disk, "vm001")
