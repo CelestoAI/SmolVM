@@ -70,6 +70,27 @@ def qemu_config(tmp_path: Path) -> VMConfig:
     )
 
 
+@pytest.fixture(autouse=True)
+def _mock_qcow2_inspection_for_fake_snapshot_disks(
+    request: pytest.FixtureRequest,
+):
+    """Keep mocked snapshot lifecycle tests independent of host qemu-img."""
+    real_qemu_img_tests = {
+        "test_full_snapshot_copy_preserves_internal_snapshot_on_backed_overlay",
+        "test_full_snapshot_copy_requires_qemu_img",
+        "test_restored_full_snapshot_disk_survives_snapshot_dir_delete",
+        "test_restore_qemu_snapshot_removes_replaced_disk_sidecars",
+        "test_async_delete_qemu_vm_removes_restored_backing_sidecars",
+        "test_delete_qemu_vm_removes_restored_backing_sidecars",
+    }
+    if request.node.name in real_qemu_img_tests:
+        yield
+        return
+
+    with patch.object(QemuRuntimeAdapter, "_qcow2_backing_file_required", return_value=None):
+        yield
+
+
 def _create_qemu_vm(sdk: SmolVMManager, config: VMConfig) -> None:
     with patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_convert:
         mock_convert.side_effect = (
