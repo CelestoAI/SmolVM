@@ -228,6 +228,18 @@ class TestBootImage:
                 boot_args="console=ttyS0 root=/dev/vda rw",
             )
 
+    def test_extra_fields_are_rejected(self, tmp_path: Path) -> None:
+        rootfs = _empty_file(tmp_path, "rootfs.ext4")
+
+        with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+            BootImage(
+                name="extra-field",
+                rootfs_path=rootfs,
+                rootfs_format="raw-ext4",
+                boot_args="console=ttyS0 root=/dev/vda rw",
+                unexpected=True,
+            )
+
     def test_top_level_exports(self) -> None:
         from smolvm import BootImage as TopLevelBootImage
         from smolvm import FirmwareBoot as TopLevelFirmwareBoot

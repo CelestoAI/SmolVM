@@ -1320,6 +1320,7 @@ class SmolVM:
             kernel_path=kernel_path,
             initrd_path=image.initrd_path,
             rootfs_path=image.rootfs_path,
+            rootfs_format=image.rootfs_format,
             boot_args=image.render_boot_args(backend=resolved_backend, arch=resolved_arch),
             ssh_capable=image.ssh_capable,
             backend=resolved_backend,

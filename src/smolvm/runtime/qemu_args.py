@@ -159,7 +159,7 @@ def build_qemu_argv(
     qemu_name = qemu_bin.name
     system = host_system if host_system is not None else platform.system()
 
-    disk_format = "qcow2" if vm_info.config.rootfs_path.suffix == ".qcow2" else "raw"
+    disk_format = vm_info.config.qemu_rootfs_format
     root_drive_id = f"{root_node_name}-drive"
     drive_arg = (
         f"file={vm_info.config.rootfs_path},if=none,format={disk_format},"

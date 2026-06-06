@@ -30,9 +30,9 @@ from smolvm.runtime.backends import (
     resolve_backend,
 )
 from smolvm.runtime.boot_profiles import normalize_arch, safe_kernel_trim_args
+from smolvm.types import RootfsFormat
 
 ConsoleMode = Literal["serial", "none"]
-RootfsFormat = Literal["raw-ext4", "qcow2"]
 BootBackend = Literal["firecracker", "qemu", "libkrun"]
 BootArch = Literal["amd64", "arm64"]
 BootMode = Literal["direct_kernel", "firmware"]
@@ -234,4 +234,4 @@ class BootImage(BaseModel):
             raise ValueError("backend is required to render direct-kernel boot args")
         return self.boot.render(backend=resolved_backend, arch=arch or self.arch or "host")
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")

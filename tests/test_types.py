@@ -272,6 +272,39 @@ class TestVMConfig:
                 env_vars={"A=B": "value"},
             )
 
+    def test_rootfs_format_falls_back_to_suffix_for_legacy_configs(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Configs that omit rootfs_format keep using the old suffix fallback."""
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.qcow2"
+        kernel.touch()
+        rootfs.touch()
+
+        config = VMConfig(vm_id="vm001", kernel_path=kernel, rootfs_path=rootfs)
+
+        assert config.rootfs_format is None
+        assert config.effective_rootfs_format == "qcow2"
+        assert config.qemu_rootfs_format == "qcow2"
+
+    def test_rootfs_format_overrides_misleading_suffix(self, tmp_path: Path) -> None:
+        """Declared rootfs_format wins when the filename suffix is misleading."""
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "raw-rootfs.qcow2"
+        kernel.touch()
+        rootfs.touch()
+
+        config = VMConfig(
+            vm_id="vm001",
+            kernel_path=kernel,
+            rootfs_path=rootfs,
+            rootfs_format="raw-ext4",
+        )
+
+        assert config.effective_rootfs_format == "raw-ext4"
+        assert config.qemu_rootfs_format == "raw"
+
     def test_disk_mode_defaults_to_isolated(self, tmp_path: Path) -> None:
         """Test default disk mode is isolated for sandbox-by-default behavior."""
         kernel = tmp_path / "vmlinux"

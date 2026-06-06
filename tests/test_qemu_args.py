@@ -99,6 +99,28 @@ def test_linux_x86_64_kvm_argv_byte_identical(tmp_path: Path) -> None:
     ]
 
 
+def test_root_drive_format_uses_declared_rootfs_format(tmp_path: Path) -> None:
+    """A raw-ext4 disk with a .qcow2 suffix is still passed to QEMU as raw."""
+    vm_info = _qemu_vm_info(tmp_path)
+    misleading_rootfs = tmp_path / "raw-rootfs.qcow2"
+    misleading_rootfs.touch()
+    config = vm_info.config.model_copy(
+        update={"rootfs_path": misleading_rootfs, "rootfs_format": "raw-ext4"}
+    )
+    vm_info = vm_info.model_copy(update={"config": config})
+
+    cmd = build_qemu_argv(
+        vm_info,
+        qemu_bin=Path("/usr/bin/qemu-system-x86_64"),
+        boot_args=vm_info.config.boot_args,
+        platform_spec=_LINUX_SPEC,
+        host_system="Linux",
+    )
+
+    drive_arg = cmd[cmd.index("-drive") + 1]
+    assert f"file={misleading_rootfs},if=none,format=raw," in drive_arg
+
+
 def _with_vsock(vm_info: VMInfo, guest_cid: int = 42) -> VMInfo:
     config = vm_info.config.model_copy(update={"vsock": VsockConfig(guest_cid=guest_cid)})
     return vm_info.model_copy(update={"config": config})

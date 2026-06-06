@@ -54,6 +54,20 @@ class GuestOS(str, Enum):
     WINDOWS = "windows"
 
 
+RootfsFormat = Literal["raw-ext4", "qcow2"]
+QemuDiskFormat = Literal["raw", "qcow2"]
+
+
+def infer_rootfs_format_from_path(path: Path) -> RootfsFormat:
+    """Infer a rootfs format for legacy configs that did not declare one."""
+    return "qcow2" if path.suffix.lower() == ".qcow2" else "raw-ext4"
+
+
+def qemu_disk_format_for_rootfs_format(rootfs_format: RootfsFormat) -> QemuDiskFormat:
+    """Map SmolVM's rootfs format name to QEMU's disk format name."""
+    return "qcow2" if rootfs_format == "qcow2" else "raw"
+
+
 class SnapshotType(str, Enum):
     """How much of a VM's disk a snapshot stores.
 
@@ -313,6 +327,9 @@ class VMConfig(BaseModel):
             ``boot_mode == "firmware"``.
         initrd_path: Optional path to the initrd image.
         rootfs_path: Path to the root filesystem image.
+        rootfs_format: Declared root filesystem image format. New configs
+            should set this to ``"raw-ext4"`` or ``"qcow2"``; legacy configs
+            that omit it fall back to the filename suffix.
         extra_drives: Additional block-device image paths to attach at boot.
         boot_args: Kernel boot arguments (ignored in firmware mode).
         ssh_capable: Whether this boot path is expected to start guest SSH
@@ -360,6 +377,7 @@ class VMConfig(BaseModel):
     kernel_path: Path | None = None
     initrd_path: Path | None = None
     rootfs_path: Path
+    rootfs_format: RootfsFormat | None = None
     extra_drives: list[Path] = []
     boot_args: str = "console=ttyS0 reboot=k panic=1 pci=off"
     ssh_capable: bool = False
@@ -377,6 +395,16 @@ class VMConfig(BaseModel):
     internet_settings: InternetSettings | None = None
     workspace_mounts: list[WorkspaceMount] = []
     ssh_public_key: str | None = None
+
+    @property
+    def effective_rootfs_format(self) -> RootfsFormat:
+        """Return the declared rootfs format, falling back for legacy configs."""
+        return self.rootfs_format or infer_rootfs_format_from_path(self.rootfs_path)
+
+    @property
+    def qemu_rootfs_format(self) -> QemuDiskFormat:
+        """Return the QEMU disk format for the current rootfs path."""
+        return qemu_disk_format_for_rootfs_format(self.effective_rootfs_format)
 
     @field_validator("vm_id", mode="before")
     @classmethod

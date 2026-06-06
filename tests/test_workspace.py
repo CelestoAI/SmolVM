@@ -218,7 +218,7 @@ def test_start_qemu_includes_9p_workspace_args(
         backend="qemu",
     )
     with patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_convert:
-        mock_convert.side_effect = lambda source, target: target.touch()
+        mock_convert.side_effect = lambda source, target, **_kwargs: target.touch()
         vm_info = sdk.create(config)
 
     proc = MagicMock()
@@ -277,7 +277,7 @@ def test_start_qemu_writable_mount_omits_readonly(
         backend="qemu",
     )
     with patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_convert:
-        mock_convert.side_effect = lambda source, target: target.touch()
+        mock_convert.side_effect = lambda source, target, **_kwargs: target.touch()
         vm_info = sdk.create(config)
 
     proc = MagicMock()
@@ -332,7 +332,7 @@ def test_start_friendly_error_when_workspace_host_path_missing(
         backend="qemu",
     )
     with patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_convert:
-        mock_convert.side_effect = lambda source, target: target.touch()
+        mock_convert.side_effect = lambda source, target, **_kwargs: target.touch()
         sdk.create(config)
 
     ws_dir.rmdir()  # simulate Conductor worktree cleanup
@@ -387,7 +387,7 @@ def test_start_friendly_error_when_workspace_host_path_is_a_file(
         backend="qemu",
     )
     with patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_convert:
-        mock_convert.side_effect = lambda source, target: target.touch()
+        mock_convert.side_effect = lambda source, target, **_kwargs: target.touch()
         sdk.create(config)
 
     # Replace the directory with a file at the same path.
@@ -441,7 +441,7 @@ def test_async_start_runs_the_same_workspace_preflight(
         backend="qemu",
     )
     with patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_convert:
-        mock_convert.side_effect = lambda source, target: target.touch()
+        mock_convert.side_effect = lambda source, target, **_kwargs: target.touch()
         sdk.create(config)
 
     ws_dir.rmdir()
@@ -589,7 +589,7 @@ def test_snapshot_rejected_with_workspace_mounts(tmp_path: Path) -> None:
         backend="qemu",
     )
     with patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_convert:
-        mock_convert.side_effect = lambda source, target: target.touch()
+        mock_convert.side_effect = lambda source, target, **_kwargs: target.touch()
         vm_info = sdk.create(config)
 
     with pytest.raises(SmolVMError, match="workspace mounts"):

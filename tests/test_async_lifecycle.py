@@ -97,6 +97,48 @@ class TestAsyncSmolVMManager:
     """Tests for async lifecycle methods on SmolVMManager."""
 
     @pytest.mark.asyncio
+    async def test_async_create_resizes_and_grows_raw_qemu_disk(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """async_create should apply the same raw resize/grow path as create."""
+        from smolvm.vm import SmolVMManager
+
+        kernel = tmp_path / "vmlinux"
+        rootfs = tmp_path / "rootfs.img"
+        kernel.touch()
+        rootfs.write_bytes(b"\0" * (1024 * 1024))
+        config = VMConfig(
+            vm_id="vm-async-create",
+            kernel_path=kernel,
+            rootfs_path=rootfs,
+            rootfs_format="raw-ext4",
+            backend="qemu",
+            disk_size_mib=2,
+            grow_filesystem=True,
+        )
+        manager = SmolVMManager(
+            data_dir=tmp_path / "data-async-create",
+            socket_dir=tmp_path / "sockets-async-create",
+            backend="qemu",
+        )
+
+        async def _copy(source: Path, target: Path) -> None:
+            target.write_bytes(source.read_bytes())
+
+        with (
+            patch.object(SmolVMManager, "_async_copy_with_reflink", side_effect=_copy),
+            patch.object(manager, "_grow_raw_ext4_filesystem") as mock_grow,
+        ):
+            vm_info = await manager.async_create(config)
+
+        expected_disk = manager.data_dir / "disks" / "vm-async-create.ext4"
+        assert vm_info.config.rootfs_path == expected_disk
+        assert vm_info.config.rootfs_format == "raw-ext4"
+        assert expected_disk.stat().st_size == 2 * 1024 * 1024
+        mock_grow.assert_called_once_with(expected_disk, "vm-async-create")
+
+    @pytest.mark.asyncio
     @patch("smolvm.vm.SmolVMManager._runtime_adapter_for_backend")
     @patch("smolvm.vm.SmolVMManager._backend_for_vm")
     async def test_async_start(

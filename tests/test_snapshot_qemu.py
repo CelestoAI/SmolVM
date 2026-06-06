@@ -68,7 +68,9 @@ def qemu_config(tmp_path: Path) -> VMConfig:
 
 def _create_qemu_vm(sdk: SmolVMManager, config: VMConfig) -> None:
     with patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_convert:
-        mock_convert.side_effect = lambda source, target: target.write_text("managed-qcow2")
+        mock_convert.side_effect = (
+            lambda source, target, **_kwargs: target.write_text("managed-qcow2")
+        )
         sdk.create(config)
 
 

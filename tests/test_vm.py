@@ -219,6 +219,32 @@ class TestSmolVMDiskLifecycle:
         assert not (smol_vm.data_dir / "disks" / "vm001.ext4").exists()
 
     @patch("smolvm.vm.NetworkManager")
+    def test_duplicate_create_does_not_resize_existing_disk(
+        self,
+        mock_network_class: MagicMock,
+        smol_vm: SmolVMManager,
+        sample_config: VMConfig,
+    ) -> None:
+        """Duplicate create should fail before touching the existing managed disk."""
+        sample_config.rootfs_path.write_bytes(b"\0" * (1024 * 1024))
+        mock_network = MagicMock()
+        mock_network.host_ip = "172.16.0.1"
+        mock_network.generate_mac.return_value = "AA:FC:00:00:00:01"
+        mock_network_class.return_value = mock_network
+        smol_vm.network = mock_network
+
+        first_config = sample_config.model_copy(update={"disk_size_mib": 1})
+        smol_vm.create(first_config)
+        expected_disk = smol_vm.data_dir / "disks" / "vm001.ext4"
+        assert expected_disk.stat().st_size == 1024 * 1024
+
+        second_config = sample_config.model_copy(update={"disk_size_mib": 3})
+        with pytest.raises(VMAlreadyExistsError):
+            smol_vm.create(second_config)
+
+        assert expected_disk.stat().st_size == 1024 * 1024
+
+    @patch("smolvm.vm.NetworkManager")
     def test_create_resizes_and_grows_raw_isolated_disk(
         self,
         mock_network_class: MagicMock,
@@ -250,6 +276,43 @@ class TestSmolVMDiskLifecycle:
         assert expected_disk.stat().st_size == 2 * 1024 * 1024
         assert vm_info.config.rootfs_path == expected_disk
         mock_grow.assert_called_once_with(expected_disk, "vm001")
+
+    @patch("smolvm.vm.NetworkManager")
+    def test_failed_grow_removes_new_managed_disk(
+        self,
+        mock_network_class: MagicMock,
+        smol_vm: SmolVMManager,
+        sample_config: VMConfig,
+    ) -> None:
+        """If resize/grow fails before persistence, the partial disk is removed."""
+        sample_config.rootfs_path.write_bytes(b"\0" * (1024 * 1024))
+        mock_network = MagicMock()
+        mock_network.host_ip = "172.16.0.1"
+        mock_network.generate_mac.return_value = "AA:FC:00:00:00:01"
+        mock_network_class.return_value = mock_network
+        smol_vm.network = mock_network
+
+        def _copy(source: Path, target: Path) -> None:
+            target.write_bytes(source.read_bytes())
+
+        config = sample_config.model_copy(
+            update={"disk_size_mib": 2, "grow_filesystem": True}
+        )
+        expected_disk = smol_vm.data_dir / "disks" / "vm001.ext4"
+        with (
+            patch.object(SmolVMManager, "_copy_with_reflink", side_effect=_copy),
+            patch.object(
+                smol_vm,
+                "_grow_raw_ext4_filesystem",
+                side_effect=SmolVMError("grow failed"),
+            ),
+            pytest.raises(SmolVMError, match="grow failed"),
+        ):
+            smol_vm.create(config)
+
+        assert not expected_disk.exists()
+        with pytest.raises(VMNotFoundError):
+            smol_vm.get("vm001")
 
     def test_resize_rejects_shared_disk_mode(
         self,
@@ -303,7 +366,7 @@ class TestSmolVMDiskLifecycle:
             resize_calls.append(command)
             return subprocess.CompletedProcess(command, 0, stdout="")
 
-        def _create_overlay(_base: Path, overlay: Path) -> None:
+        def _create_overlay(_base: Path, overlay: Path, **_kwargs: object) -> None:
             overlay.touch()
 
         with (
@@ -316,6 +379,35 @@ class TestSmolVMDiskLifecycle:
         expected_disk = smol_vm.data_dir / "disks" / "vm-qemu-resize.qcow2"
         assert vm_info.config.rootfs_path == expected_disk
         assert resize_calls == [["qemu-img", "resize", str(expected_disk), "4M"]]
+
+    def test_qcow2_resize_compares_bytes_not_ceil_mib(
+        self,
+        smol_vm: SmolVMManager,
+        tmp_path: Path,
+    ) -> None:
+        """A 1 MiB + 1 byte qcow2 should still resize when target is 2 MiB."""
+        disk = tmp_path / "disk.qcow2"
+        disk.touch()
+        calls: list[list[str]] = []
+
+        def _fake_qemu_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+            del kwargs
+            if command[1] == "info":
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout='{"virtual-size": 1048577}',
+                )
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, stdout="")
+
+        with (
+            patch.object(smol_vm, "_find_qemu_img_binary", return_value=Path("qemu-img")),
+            patch("smolvm.vm.subprocess.run", side_effect=_fake_qemu_run),
+        ):
+            smol_vm._resize_qcow2_disk(disk, 2, "vm-qcow2")
+
+        assert calls == [["qemu-img", "resize", str(disk), "2M"]]
 
     def test_grow_rejects_qcow2_disk(
         self,

@@ -45,6 +45,7 @@ from smolvm.exceptions import (
     SmolVMError,
     SnapshotAlreadyExistsError,
     SnapshotNotFoundError,
+    VMAlreadyExistsError,
     VMNotFoundError,
 )
 from smolvm.host.manager import HostCapability, HostManager
@@ -71,6 +72,7 @@ from smolvm.storage import (
 from smolvm.types import (
     GuestOS,
     NetworkConfig,
+    RootfsFormat,
     SnapshotInfo,
     SnapshotType,
     VMConfig,
@@ -435,10 +437,68 @@ class SmolVMManager:
         """Resolve the runtime adapter for a persisted snapshot."""
         return self._runtime_adapter_for_backend(snapshot.backend)
 
-    def _instance_disk_path(self, vm_id: str, backend: str) -> Path:
-        """Return the backend-specific managed isolated disk path for a VM ID."""
-        suffix = ".qcow2" if backend == BACKEND_QEMU else ".ext4"
+    def _instance_disk_path(
+        self,
+        vm_id: str,
+        backend: str,
+        rootfs_format: RootfsFormat | None = None,
+    ) -> Path:
+        """Return the managed isolated disk path for a VM ID and disk format."""
+        suffix = ".qcow2" if backend == BACKEND_QEMU and rootfs_format != "raw-ext4" else ".ext4"
         return self.disk_dir / f"{vm_id}{suffix}"
+
+    @staticmethod
+    def _qemu_materialized_rootfs_format(config: VMConfig) -> RootfsFormat:
+        """Return the on-disk format QEMU should create for an isolated rootfs."""
+        if config.effective_rootfs_format == "raw-ext4" and config.grow_filesystem:
+            return "raw-ext4"
+        return "qcow2"
+
+    def _materialized_rootfs_format(self, config: VMConfig, backend: str) -> RootfsFormat:
+        """Return the format of the per-VM disk after materialization."""
+        if backend == BACKEND_QEMU:
+            return self._qemu_materialized_rootfs_format(config)
+        return config.effective_rootfs_format
+
+    def _managed_disk_path_for_create(self, config: VMConfig, backend: str) -> Path | None:
+        """Return the deterministic managed disk path a create may materialize."""
+        if config.disk_mode == "shared":
+            return None
+        return self._instance_disk_path(
+            config.vm_id,
+            backend,
+            self._materialized_rootfs_format(config, backend),
+        )
+
+    def _cleanup_unpersisted_managed_disk(
+        self,
+        managed_disk_path: Path | None,
+        *,
+        existed_before: bool,
+    ) -> None:
+        """Remove a managed disk created before the VM row was persisted."""
+        if managed_disk_path is None or existed_before:
+            return
+        if not (managed_disk_path.is_file() or managed_disk_path.is_symlink()):
+            return
+        try:
+            managed_disk_path.relative_to(self.disk_dir)
+        except ValueError:
+            logger.warning(
+                "Refusing to clean up managed disk outside disk dir: %s",
+                managed_disk_path,
+            )
+            return
+        with suppress(OSError):
+            managed_disk_path.unlink()
+
+    def _ensure_vm_id_available(self, vm_id: str) -> None:
+        """Fail before disk work if a VM with this ID already exists."""
+        try:
+            self.state.get_vm(vm_id)
+        except VMNotFoundError:
+            return
+        raise VMAlreadyExistsError(vm_id)
 
     @staticmethod
     def _restore_staging_disk_path(managed_disk_path: Path) -> Path:
@@ -454,13 +514,19 @@ class SmolVMManager:
         """Find an available ``qemu-img`` binary."""
         return which("qemu-img")
 
-    def _convert_qemu_managed_disk(self, source_path: Path, target_path: Path) -> None:
+    def _convert_qemu_managed_disk(
+        self,
+        source_path: Path,
+        target_path: Path,
+        *,
+        source_format: str | None = None,
+    ) -> None:
         """Create a managed qcow2 disk for the QEMU backend (full copy)."""
         qemu_img = self._find_qemu_img_binary()
         if qemu_img is None:
             raise SmolVMError("QEMU backend requires qemu-img to materialize managed disks")
 
-        source_format = "qcow2" if source_path.suffix == ".qcow2" else "raw"
+        source_format = source_format or ("qcow2" if source_path.suffix == ".qcow2" else "raw")
         result = subprocess.run(
             [
                 str(qemu_img),
@@ -486,7 +552,13 @@ class SmolVMManager:
                 },
             )
 
-    def _create_qemu_overlay_disk(self, base_path: Path, overlay_path: Path) -> None:
+    def _create_qemu_overlay_disk(
+        self,
+        base_path: Path,
+        overlay_path: Path,
+        *,
+        backing_format: str | None = None,
+    ) -> None:
         """Create a thin qcow2 overlay backed by a shared base image.
 
         The overlay file is near-instant to create and consumes negligible disk
@@ -497,7 +569,7 @@ class SmolVMManager:
         if qemu_img is None:
             raise SmolVMError("QEMU backend requires qemu-img to create overlay disks")
 
-        base_format = "qcow2" if base_path.suffix == ".qcow2" else "raw"
+        base_format = backing_format or ("qcow2" if base_path.suffix == ".qcow2" else "raw")
         result = subprocess.run(
             [
                 str(qemu_img),
@@ -574,7 +646,7 @@ class SmolVMManager:
         if config.disk_size_mib is None and not config.grow_filesystem:
             return config
 
-        if config.rootfs_path.suffix == ".qcow2":
+        if config.effective_rootfs_format == "qcow2":
             if config.grow_filesystem:
                 raise SmolVMError(
                     f"Filesystem growth for qcow2 disks is not supported for sandbox "
@@ -648,7 +720,7 @@ class SmolVMManager:
                 {"stderr": stderr, "returncode": result.returncode},
             )
 
-    def _qcow2_virtual_size_mib(self, disk_path: Path, vm_id: str) -> int:
+    def _qcow2_virtual_size_bytes(self, disk_path: Path, vm_id: str) -> int:
         """Return qemu-img's virtual size for a qcow2/raw-backed overlay."""
         qemu_img = self._find_qemu_img_binary()
         if qemu_img is None:
@@ -670,7 +742,7 @@ class SmolVMManager:
             )
         try:
             info = json.loads(result.stdout)
-            return self._ceil_mib(int(info["virtual-size"]))
+            return int(info["virtual-size"])
         except (KeyError, TypeError, ValueError) as exc:
             raise SmolVMError(
                 f"qemu-img returned invalid disk info for sandbox '{vm_id}'; run "
@@ -685,14 +757,16 @@ class SmolVMManager:
                 f"qemu-img is needed to resize the disk for sandbox '{vm_id}'; "
                 f"{_qemu_install_hint()}"
             )
-        current_mib = self._qcow2_virtual_size_mib(disk_path, vm_id)
-        if target_mib < current_mib:
+        current_bytes = self._qcow2_virtual_size_bytes(disk_path, vm_id)
+        target_bytes = target_mib * _MIB
+        if target_bytes < current_bytes:
+            current_mib = self._ceil_mib(current_bytes)
             raise SmolVMError(
                 f"Requested disk size is smaller than the current disk for sandbox "
                 f"'{vm_id}'; choose at least {current_mib} MiB, or run "
                 f"'{self._resize_recovery(vm_id)}'."
             )
-        if target_mib == current_mib:
+        if target_bytes == current_bytes:
             return
         result = subprocess.run(
             [str(qemu_img), "resize", str(disk_path), f"{target_mib}M"],
@@ -727,7 +801,8 @@ class SmolVMManager:
             return config
 
         backend = self._backend_for_config(config)
-        instance_rootfs = self._instance_disk_path(config.vm_id, backend)
+        materialized_format = self._materialized_rootfs_format(config, backend)
+        instance_rootfs = self._instance_disk_path(config.vm_id, backend, materialized_format)
         if not instance_rootfs.exists():
             logger.info(
                 "Creating isolated disk for VM %s from %s -> %s",
@@ -735,8 +810,12 @@ class SmolVMManager:
                 config.rootfs_path,
                 instance_rootfs,
             )
-            if backend == BACKEND_QEMU:
-                self._create_qemu_overlay_disk(config.rootfs_path, instance_rootfs)
+            if backend == BACKEND_QEMU and materialized_format == "qcow2":
+                self._create_qemu_overlay_disk(
+                    config.rootfs_path,
+                    instance_rootfs,
+                    backing_format=config.qemu_rootfs_format,
+                )
             else:
                 self._copy_with_reflink(config.rootfs_path, instance_rootfs)
         else:
@@ -746,7 +825,9 @@ class SmolVMManager:
                 instance_rootfs,
             )
 
-        return config.model_copy(update={"rootfs_path": instance_rootfs})
+        return config.model_copy(
+            update={"rootfs_path": instance_rootfs, "rootfs_format": materialized_format}
+        )
 
     def _materialize_firmware(self, config: VMConfig) -> None:
         """Create the per-VM OVMF NVRAM file for UEFI-firmware guests.
@@ -812,7 +893,11 @@ class SmolVMManager:
         if vm_info.config.disk_mode != "isolated":
             return None
 
-        expected = self._instance_disk_path(vm_info.vm_id, self._backend_for_vm(vm_info)).resolve()
+        expected = self._instance_disk_path(
+            vm_info.vm_id,
+            self._backend_for_vm(vm_info),
+            vm_info.config.effective_rootfs_format,
+        ).resolve()
         actual = vm_info.config.rootfs_path.resolve()
         if actual != expected:
             return None
@@ -1226,9 +1311,21 @@ class SmolVMManager:
                 {"vm_id": effective_config.vm_id, "backend": backend},
             )
 
-        effective_config = self._materialize_rootfs(effective_config)
-        effective_config = self._resize_materialized_rootfs(effective_config)
-        self._materialize_firmware(effective_config)
+        self._ensure_vm_id_available(effective_config.vm_id)
+        managed_disk_path = self._managed_disk_path_for_create(effective_config, backend)
+        managed_disk_existed = (
+            managed_disk_path.exists() if managed_disk_path is not None else False
+        )
+        try:
+            effective_config = self._materialize_rootfs(effective_config)
+            effective_config = self._resize_materialized_rootfs(effective_config)
+            self._materialize_firmware(effective_config)
+        except Exception:
+            self._cleanup_unpersisted_managed_disk(
+                managed_disk_path,
+                existed_before=managed_disk_existed,
+            )
+            raise
 
         logger.info(
             "Creating VM: %s (backend=%s, disk_mode=%s)",
@@ -1705,7 +1802,11 @@ class SmolVMManager:
                     {"snapshot_id": snapshot_id, label: str(required_path)},
                 )
 
-        managed_disk_path = self._instance_disk_path(restore_vm_id, snapshot.backend)
+        managed_disk_path = self._instance_disk_path(
+            restore_vm_id,
+            snapshot.backend,
+            snapshot.vm_config.effective_rootfs_format,
+        )
         persisted_vm_config = snapshot.vm_config.model_copy(
             update={
                 "rootfs_path": managed_disk_path,
@@ -2465,13 +2566,34 @@ class SmolVMManager:
         if effective_config.backend != backend:
             effective_config = effective_config.model_copy(update={"backend": backend})
 
-        effective_config = await self._async_materialize_rootfs(effective_config)
-        effective_config = await asyncio.to_thread(
-            self._resize_materialized_rootfs,
-            effective_config,
+        if effective_config.workspace_mounts and backend != BACKEND_QEMU:
+            raise SmolVMError(
+                "Workspace mounts (virtio-9p) are only supported with the "
+                f"QEMU backend (got backend={backend!r}). Re-run without "
+                "--backend (SmolVM will auto-select QEMU when --mount is "
+                "used) or pass --backend qemu explicitly.",
+                {"vm_id": effective_config.vm_id, "backend": backend},
+            )
+
+        self._ensure_vm_id_available(effective_config.vm_id)
+        managed_disk_path = self._managed_disk_path_for_create(effective_config, backend)
+        managed_disk_existed = (
+            managed_disk_path.exists() if managed_disk_path is not None else False
         )
-        # Firmware materialization is a small file copy — synchronous is fine.
-        self._materialize_firmware(effective_config)
+        try:
+            effective_config = await self._async_materialize_rootfs(effective_config)
+            effective_config = await asyncio.to_thread(
+                self._resize_materialized_rootfs,
+                effective_config,
+            )
+            # Firmware materialization is a small file copy — synchronous is fine.
+            self._materialize_firmware(effective_config)
+        except Exception:
+            self._cleanup_unpersisted_managed_disk(
+                managed_disk_path,
+                existed_before=managed_disk_existed,
+            )
+            raise
 
         logger.info(
             "Creating VM (async): %s (backend=%s, disk_mode=%s)",
@@ -2673,7 +2795,8 @@ class SmolVMManager:
             return config
 
         backend = self._backend_for_config(config)
-        instance_rootfs = self._instance_disk_path(config.vm_id, backend)
+        materialized_format = self._materialized_rootfs_format(config, backend)
+        instance_rootfs = self._instance_disk_path(config.vm_id, backend, materialized_format)
         if not instance_rootfs.exists():
             logger.info(
                 "Creating isolated disk (async) for VM %s from %s -> %s",
@@ -2681,14 +2804,26 @@ class SmolVMManager:
                 config.rootfs_path,
                 instance_rootfs,
             )
-            if backend == BACKEND_QEMU:
-                await self._async_create_qemu_overlay_disk(config.rootfs_path, instance_rootfs)
+            if backend == BACKEND_QEMU and materialized_format == "qcow2":
+                await self._async_create_qemu_overlay_disk(
+                    config.rootfs_path,
+                    instance_rootfs,
+                    backing_format=config.qemu_rootfs_format,
+                )
             else:
                 await self._async_copy_with_reflink(config.rootfs_path, instance_rootfs)
 
-        return config.model_copy(update={"rootfs_path": instance_rootfs})
+        return config.model_copy(
+            update={"rootfs_path": instance_rootfs, "rootfs_format": materialized_format}
+        )
 
-    async def _async_create_qemu_overlay_disk(self, base_path: Path, overlay_path: Path) -> None:
+    async def _async_create_qemu_overlay_disk(
+        self,
+        base_path: Path,
+        overlay_path: Path,
+        *,
+        backing_format: str | None = None,
+    ) -> None:
         """Async version of :meth:`_create_qemu_overlay_disk`."""
         from smolvm.utils import async_run_command
 
@@ -2697,7 +2832,7 @@ class SmolVMManager:
             raise SmolVMError("QEMU backend requires qemu-img to create overlay disks")
 
         overlay_path.parent.mkdir(parents=True, exist_ok=True)
-        base_format = "qcow2" if base_path.suffix == ".qcow2" else "raw"
+        base_format = backing_format or ("qcow2" if base_path.suffix == ".qcow2" else "raw")
         await async_run_command(
             [
                 str(qemu_img),
