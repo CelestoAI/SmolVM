@@ -304,6 +304,50 @@ class TestDockerRootfsBuilder:
 
     @patch("smolvm.images.builder.ensure_base_kernel_for_backend")
     @patch("smolvm.images.builder.ImageBuilder.check_docker", return_value=True)
+    def test_ensure_uses_ext4_suffixed_temp_rootfs(
+        self,
+        _mock_check_docker: MagicMock,
+        mock_kernel: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        cache_dir = tmp_path / "cache"
+        kernel = _empty_file(tmp_path, "kernel/vmlinux.image")
+        mock_kernel.return_value = kernel
+        temp_paths: list[Path] = []
+
+        def fake_build_rootfs(**kwargs: object) -> None:
+            rootfs_path = kwargs["rootfs_path"]
+            assert isinstance(rootfs_path, Path)
+            temp_paths.append(rootfs_path)
+            rootfs_path.write_bytes(b"ext4")
+
+        builder = DockerRootfsBuilder(
+            name="loopfs-temp",
+            dockerfile="FROM scratch\n",
+            rootfs_size_mb=64,
+            cache_dir=cache_dir,
+        )
+        with patch.object(
+            DockerRootfsBuilder,
+            "_build_rootfs",
+            side_effect=fake_build_rootfs,
+        ):
+            image = builder.ensure(
+                backend="qemu",
+                arch="amd64",
+                boot=DirectKernelBoot(quiet=False),
+            )
+
+        assert image.rootfs_path.name == "rootfs.ext4"
+        assert len(temp_paths) == 1
+        temp_rootfs = temp_paths[0]
+        assert temp_rootfs.name == ".rootfs.tmp.ext4"
+        assert temp_rootfs.suffix == ".ext4"
+        assert temp_rootfs != image.rootfs_path
+        assert not temp_rootfs.exists()
+
+    @patch("smolvm.images.builder.ensure_base_kernel_for_backend")
+    @patch("smolvm.images.builder.ImageBuilder.check_docker", return_value=True)
     def test_cached_rootfs_is_reused_across_backends(
         self,
         _mock_check_docker: MagicMock,

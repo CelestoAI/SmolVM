@@ -1935,7 +1935,7 @@ class DockerRootfsBuilder:
                 if not helper.check_docker():
                     raise helper.docker_requirement_error()
                 image_dir.mkdir(parents=True, exist_ok=True)
-                temp_rootfs = image_dir / f".{rootfs_path.name}.tmp"
+                temp_rootfs = image_dir / f".{rootfs_path.stem}.tmp{rootfs_path.suffix}"
                 temp_rootfs.unlink(missing_ok=True)
                 try:
                     self._build_rootfs(
