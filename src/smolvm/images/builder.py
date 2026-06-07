@@ -1900,7 +1900,7 @@ class DockerRootfsBuilder:
         self.docker_platform = docker_platform
         self.ssh_capable = ssh_capable
 
-    def ensure(
+    def build_boot_image(
         self,
         *,
         backend: str,
@@ -1912,7 +1912,7 @@ class DockerRootfsBuilder:
         if boot is not None and boot_args is not None:
             raise ValueError("boot and boot_args are mutually exclusive")
         if boot is None and boot_args is None:
-            raise ValueError("DockerRootfsBuilder.ensure() requires boot or boot_args")
+            raise ValueError("DockerRootfsBuilder.build_boot_image() requires boot or boot_args")
 
         resolved_backend = resolve_backend(backend)
         resolved_arch = to_published_arch(platform.machine() if arch == "host" else arch)
@@ -1965,6 +1965,22 @@ class DockerRootfsBuilder:
             backend=resolved_backend,
             arch=resolved_arch,
             ssh_capable=self.ssh_capable,
+        )
+
+    def ensure(
+        self,
+        *,
+        backend: str,
+        arch: KernelArch | str = "host",
+        boot: DirectKernelBoot | None = None,
+        boot_args: str | None = None,
+    ) -> BootImage:
+        """Backward-compatible alias for :meth:`build_boot_image`."""
+        return self.build_boot_image(
+            backend=backend,
+            arch=arch,
+            boot=boot,
+            boot_args=boot_args,
         )
 
     def _read_context_files(self) -> dict[str, bytes]:

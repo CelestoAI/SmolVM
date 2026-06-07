@@ -263,7 +263,7 @@ class TestDockerRootfsBuilder:
 
     @patch("smolvm.images.builder.ensure_base_kernel_for_backend")
     @patch("smolvm.images.builder.ImageBuilder.check_docker", return_value=True)
-    def test_ensure_builds_rootfs_and_returns_boot_image(
+    def test_build_boot_image_builds_rootfs_and_returns_boot_image(
         self,
         _mock_check_docker: MagicMock,
         mock_kernel: MagicMock,
@@ -286,7 +286,7 @@ class TestDockerRootfsBuilder:
             "_build_rootfs",
             side_effect=self._fake_build_rootfs,
         ):
-            image = builder.ensure(
+            image = builder.build_boot_image(
                 backend="qemu",
                 arch="amd64",
                 boot=DirectKernelBoot(quiet=False),
@@ -304,7 +304,7 @@ class TestDockerRootfsBuilder:
 
     @patch("smolvm.images.builder.ensure_base_kernel_for_backend")
     @patch("smolvm.images.builder.ImageBuilder.check_docker", return_value=True)
-    def test_ensure_uses_ext4_suffixed_temp_rootfs(
+    def test_build_boot_image_uses_ext4_suffixed_temp_rootfs(
         self,
         _mock_check_docker: MagicMock,
         mock_kernel: MagicMock,
@@ -332,7 +332,7 @@ class TestDockerRootfsBuilder:
             "_build_rootfs",
             side_effect=fake_build_rootfs,
         ):
-            image = builder.ensure(
+            image = builder.build_boot_image(
                 backend="qemu",
                 arch="amd64",
                 boot=DirectKernelBoot(quiet=False),
@@ -345,6 +345,37 @@ class TestDockerRootfsBuilder:
         assert temp_rootfs.suffix == ".ext4"
         assert temp_rootfs != image.rootfs_path
         assert not temp_rootfs.exists()
+
+    @patch("smolvm.images.builder.ensure_base_kernel_for_backend")
+    @patch("smolvm.images.builder.ImageBuilder.check_docker", return_value=True)
+    def test_ensure_remains_backward_compatible(
+        self,
+        _mock_check_docker: MagicMock,
+        mock_kernel: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        cache_dir = tmp_path / "cache"
+        kernel = _empty_file(tmp_path, "kernel/vmlinux.image")
+        mock_kernel.return_value = kernel
+        builder = DockerRootfsBuilder(
+            name="ensure-alias",
+            dockerfile="FROM scratch\n",
+            rootfs_size_mb=64,
+            cache_dir=cache_dir,
+        )
+        with patch.object(
+            DockerRootfsBuilder,
+            "_build_rootfs",
+            side_effect=self._fake_build_rootfs,
+        ):
+            image = builder.ensure(
+                backend="qemu",
+                arch="amd64",
+                boot=DirectKernelBoot(quiet=False),
+            )
+
+        assert image.name == "ensure-alias"
+        assert image.rootfs_path.name == "rootfs.ext4"
 
     @patch("smolvm.images.builder.ensure_base_kernel_for_backend")
     @patch("smolvm.images.builder.ImageBuilder.check_docker", return_value=True)
@@ -370,12 +401,12 @@ class TestDockerRootfsBuilder:
             "_build_rootfs",
             side_effect=self._fake_build_rootfs,
         ) as mock_build:
-            qemu_image = builder.ensure(
+            qemu_image = builder.build_boot_image(
                 backend="qemu",
                 arch="amd64",
                 boot=DirectKernelBoot(quiet=False),
             )
-            firecracker_image = builder.ensure(
+            firecracker_image = builder.build_boot_image(
                 backend="firecracker",
                 arch="amd64",
                 boot=DirectKernelBoot(quiet=False),
@@ -395,7 +426,7 @@ class TestDockerRootfsBuilder:
         )
 
         with pytest.raises(ValueError, match="relative and safe"):
-            builder.ensure(
+            builder.build_boot_image(
                 backend="qemu",
                 arch="amd64",
                 boot_args="console=ttyS0 root=/dev/vda rw",
@@ -410,7 +441,7 @@ class TestDockerRootfsBuilder:
         )
 
         with pytest.raises(ValueError, match="Dockerfile"):
-            builder.ensure(
+            builder.build_boot_image(
                 backend="qemu",
                 arch="amd64",
                 boot_args="console=ttyS0 root=/dev/vda rw",
@@ -425,7 +456,7 @@ class TestDockerRootfsBuilder:
         )
 
         with pytest.raises(ImageError, match="Build context file is missing"):
-            builder.ensure(
+            builder.build_boot_image(
                 backend="qemu",
                 arch="amd64",
                 boot_args="console=ttyS0 root=/dev/vda rw",
