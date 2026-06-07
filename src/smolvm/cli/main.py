@@ -543,6 +543,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_cleanup_args(cleanup)
 
+    update = subparsers.add_parser(
+        "update",
+        help="Upgrade SmolVM to the latest stable release.",
+    )
+    update.add_argument(
+        "--check",
+        action="store_true",
+        help="Report whether an update is available without installing it.",
+    )
+    update.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output.",
+    )
+
     prune = subparsers.add_parser(
         "prune",
         help="Remove stale image caches from older SmolVM versions.",
@@ -3885,6 +3900,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             json_output=args.json,
             force=args.force,
         )
+
+    if args.command == "update":
+        from smolvm.cli.update import run_update
+
+        return run_update(args)
 
     if args.command == "prune":
         from smolvm.cli.prune import run_prune
