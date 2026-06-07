@@ -87,6 +87,8 @@ def _run_upgrade(*, json_output: bool) -> tuple[int, str]:
             result = subprocess.run(cmd)
             return result.returncode, ""
     except OSError as exc:
+        if not json_output:
+            sys.stderr.write(f"Upgrade failed: {exc}\n")
         return 1, str(exc)
 
 
@@ -115,7 +117,7 @@ def run_update(args: argparse.Namespace) -> int:
             else:
                 console = console_stdout()
                 console.print(
-                    f"smolvm {current} is up to date (or PyPI could not be reached)."
+                    f"smolvm {current} is up to date."
                 )
         else:
             data = {"current": current, "latest": latest, "update_available": True}
