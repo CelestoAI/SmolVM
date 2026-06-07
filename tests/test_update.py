@@ -77,6 +77,15 @@ class TestIsUvToolInstall:
         ):
             assert _is_uv_tool_install() is True
 
+    def test_returns_false_when_only_smolvm_core_in_uv_tool_list(self) -> None:
+        mock_result = MagicMock()
+        mock_result.stdout = "smolvm-core v0.0.14\n"
+        with (
+            patch("smolvm.cli.update.shutil.which", return_value="/usr/bin/uv"),
+            patch("smolvm.cli.update.subprocess.run", return_value=mock_result),
+        ):
+            assert _is_uv_tool_install() is False
+
     def test_returns_false_when_smolvm_not_in_uv_tool_list(self) -> None:
         mock_result = MagicMock()
         mock_result.stdout = "other-tool v1.0\n"
@@ -108,6 +117,7 @@ class TestRunUpdate:
         assert rc == 1
         err = capsys.readouterr().err
         assert "Could not determine" in err
+        assert "pip install --upgrade smolvm" in err
 
     def test_check_only_update_available(self, capsys: pytest.CaptureFixture[str]) -> None:
         with (

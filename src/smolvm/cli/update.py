@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import subprocess
 import sys
@@ -58,7 +59,7 @@ def _is_uv_tool_install() -> bool:
             capture_output=True,
             text=True,
         )
-        return "smolvm" in result.stdout
+        return bool(re.search(r"^smolvm[ \t]", result.stdout, re.MULTILINE))
     except OSError:
         return False
 
@@ -103,7 +104,10 @@ def run_update(args: argparse.Namespace) -> int:
                 if json_output:
                     emit_json("update", 1, data=data)
                 else:
-                    sys.stderr.write("Could not determine the installed smolvm version.\n")
+                    sys.stderr.write(
+                        "Could not determine the installed smolvm version. "
+                        "Run: pip install --upgrade smolvm\n"
+                    )
                 return 1
             data = {"current": current, "latest": None, "update_available": False}
             if json_output:
@@ -161,5 +165,7 @@ def run_update(args: argparse.Namespace) -> int:
         return returncode
 
     if returncode != 0:
-        sys.stderr.write("smolvm update failed. Check pip output above for details.\n")
+        sys.stderr.write(
+            "smolvm update failed. To retry, run: pip install --upgrade smolvm\n"
+        )
     return returncode
