@@ -1,5 +1,6 @@
 """Unit tests for the QEMU runtime adapter."""
 
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
@@ -98,3 +99,29 @@ def test_stop_raises_when_qemu_survives_hard_kill(tmp_path: Path) -> None:
         call(vm_info.pid, 5.0),
     ]
     context.unlink_socket.assert_not_called()
+
+
+def test_qcow2_backing_inspection_force_shares_running_qemu_disk(tmp_path: Path) -> None:
+    """Inspecting a paused-but-open QEMU disk must bypass qemu-img's image lock."""
+    disk = tmp_path / "vm.qcow2"
+    disk.touch()
+    result = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout='{"full-backing-filename": "/tmp/base.qcow2"}',
+        stderr="",
+    )
+
+    with (
+        patch("smolvm.runtime.qemu.which", return_value=Path("/usr/bin/qemu-img")),
+        patch("smolvm.runtime.qemu.subprocess.run", return_value=result) as mock_run,
+    ):
+        backing = QemuRuntimeAdapter._qcow2_backing_file_required(disk)
+
+    assert backing == Path("/tmp/base.qcow2")
+    mock_run.assert_called_once_with(
+        ["/usr/bin/qemu-img", "info", "-U", "--output=json", str(disk)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )

@@ -524,7 +524,7 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                 f"{_qemu_img_install_hint()}"
             )
         info = subprocess.run(
-            [str(qemu_img), "info", "--output=json", str(disk)],
+            [str(qemu_img), "info", "-U", "--output=json", str(disk)],
             capture_output=True,
             text=True,
             check=False,
