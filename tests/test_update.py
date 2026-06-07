@@ -50,6 +50,7 @@ class TestCheckForStableUpdate:
             patch("smolvm.cli.update._fetch_latest_from_pypi", return_value=None),
         ):
             current, latest = _check_for_stable_update()
+            assert current == "1.0.0"
             assert latest is None
 
     def test_handles_missing_current_version(self) -> None:
