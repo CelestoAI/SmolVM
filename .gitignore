@@ -221,3 +221,4 @@ play.ipynb
 # Working notes / scratch markdown that should not ship with the repo.
 notes/
 *.iso
+.gstack/
