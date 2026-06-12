@@ -22,7 +22,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from smolvm.exceptions import SmolVMError, SnapshotNotFoundError, VMNotFoundError
-from smolvm.types import SnapshotArtifacts, SnapshotInfo, SnapshotType, VMConfig, VMState
+from smolvm.types import (
+    SnapshotArtifacts,
+    SnapshotInfo,
+    SnapshotType,
+    VMConfig,
+    VMState,
+    VsockConfig,
+)
 from smolvm.vm import SmolVMManager
 
 
@@ -291,6 +298,53 @@ def test_restore_snapshot_rehydrates_deleted_vm(
     smol_vm.network.create_tap.assert_called_once()
     smol_vm.network.setup_nat.assert_called_once()
     mock_client.wait_for_socket.assert_called_once()
+    mock_client.load_snapshot.assert_called_once()
+
+
+def test_restore_firecracker_full_snapshot_returns_vsock_uds_path(
+    smol_vm: SmolVMManager,
+    sample_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """A full Firecracker restore should keep the host-side vsock UDS path."""
+    smol_vm.create(sample_config)
+    managed_disk = smol_vm.data_dir / "disks" / "vm001.ext4"
+    managed_disk.write_text("managed-disk")
+    vm_info = smol_vm.get("vm001")
+
+    snapshot_dir = smol_vm.snapshot_dir / "snap-vsock"
+    snapshot_dir.mkdir(parents=True)
+    uds_path = tmp_path / "vsock-vm001.sock"
+    snapshot = SnapshotInfo(
+        snapshot_id="snap-vsock",
+        vm_id="vm001",
+        backend="firecracker",
+        artifacts=SnapshotArtifacts(
+            state_path=snapshot_dir / "vmstate.bin",
+            memory_path=snapshot_dir / "mem.bin",
+            disk_path=snapshot_dir / "disk.ext4",
+        ),
+        vm_config=vm_info.config.model_copy(
+            update={"vsock": VsockConfig(guest_cid=42, uds_path=str(uds_path))}
+        ),
+        network_config=vm_info.network,
+        created_at=datetime.now(timezone.utc),
+    )
+    snapshot.artifacts.state_path.write_text("vmstate")
+    snapshot.artifacts.memory_path.write_text("memory")
+    snapshot.artifacts.disk_path.write_text("snapshotted-disk")
+    smol_vm.state.create_snapshot(snapshot)
+    smol_vm.delete("vm001")
+
+    with (
+        patch.object(smol_vm, "_start_firecracker", return_value=SimpleNamespace(pid=98765)),
+        patch("smolvm.runtime.firecracker.FirecrackerClient") as mock_client_cls,
+    ):
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        restored = smol_vm.restore_snapshot("snap-vsock", resume_vm=True)
+
+    assert restored.vsock_uds_path == uds_path
     mock_client.load_snapshot.assert_called_once()
 
 
@@ -572,7 +626,11 @@ def test_restore_firecracker_disk_snapshot_boots_fresh_without_loading_vmstate(
         snapshot_id="snap-disk",
         vm_id="vm001",
         backend="firecracker",
-        artifacts=SnapshotArtifacts(disk_path=snapshot_dir / "disk.ext4"),
+        artifacts=SnapshotArtifacts(
+            state_path=snapshot_dir / "stale-vmstate.bin",
+            memory_path=snapshot_dir / "stale-mem.bin",
+            disk_path=snapshot_dir / "disk.ext4",
+        ),
         vm_config=vm_info.config,
         network_config=vm_info.network,
         created_at=datetime.now(timezone.utc),

@@ -1832,13 +1832,9 @@ class SmolVM:
         result = channel.run("sync", timeout=10, shell="raw")
         if result.exit_code != 0:
             raise SmolVMError(
-                f"Cannot create disk snapshot for sandbox '{self._vm_id}': "
-                "syncing files inside the sandbox failed.",
-                {
-                    "vm_id": self._vm_id,
-                    "exit_code": result.exit_code,
-                    "stderr": result.stderr,
-                },
+                f"Cannot create disk snapshot for sandbox '{self._vm_id}' because syncing "
+                f"files inside it failed; retry with 'smolvm snapshot create {self._vm_id} "
+                "--snapshot-type disk'."
             )
 
     def delete(self) -> None:

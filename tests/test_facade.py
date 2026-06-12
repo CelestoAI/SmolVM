@@ -651,6 +651,23 @@ class TestSnapshot:
             ),
         ]
 
+    def test_disk_snapshot_sync_failure_names_retry_command(self) -> None:
+        """Disk snapshot sync failures should include a concrete retry command."""
+        vm = SmolVM.__new__(SmolVM)
+        vm._vm_id = "vm001"
+        vm._info = MagicMock(status=VMState.RUNNING)
+        vm._refresh_info = MagicMock()
+
+        channel = MagicMock()
+        channel.run.return_value = CommandResult(exit_code=1, stdout="", stderr="sync failed")
+        vm._ensure_control_for_operation = MagicMock(return_value=channel)
+
+        with pytest.raises(
+            SmolVMError,
+            match=r"smolvm snapshot create vm001 --snapshot-type disk",
+        ):
+            vm._sync_guest_for_disk_snapshot()
+
 
 class TestFromBootImage:
     """Tests for SmolVM.from_image()."""

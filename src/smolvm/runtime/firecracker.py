@@ -213,6 +213,13 @@ class FirecrackerRuntimeAdapter(RuntimeAdapter):
         snapshot = request.snapshot
         state_path = snapshot.artifacts.state_path
         memory_path = snapshot.artifacts.memory_path
+        vsock_uds_path = None
+        if snapshot.vm_config.vsock is not None:
+            vsock_uds_path = (
+                Path(snapshot.vm_config.vsock.uds_path)
+                if snapshot.vm_config.vsock.uds_path
+                else self._context.socket_dir / f"vsock-{snapshot.vm_id}.sock"
+            )
 
         request.managed_disk_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(snapshot.artifacts.disk_path, request.managed_disk_path)
@@ -275,6 +282,7 @@ class FirecrackerRuntimeAdapter(RuntimeAdapter):
                 pid=process.pid,
                 control_socket_path=control_socket_path,
                 status=VMState.RUNNING if request.resume_vm else VMState.PAUSED,
+                vsock_uds_path=vsock_uds_path,
             )
         except Exception:
             if process is not None:

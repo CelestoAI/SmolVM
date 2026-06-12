@@ -1977,9 +1977,9 @@ class SmolVMManager:
             (snapshot.artifacts.memory_path, "mem_file_path"),
         ]
         for required_path, label in required_artifacts:
+            if snapshot.snapshot_type == SnapshotType.DISK and label != "disk_path":
+                continue
             if required_path is None:
-                if snapshot.snapshot_type == SnapshotType.DISK and label != "disk_path":
-                    continue
                 if snapshot.backend == BACKEND_QEMU and label != "disk_path":
                     continue
                 raise SmolVMError(
@@ -2089,6 +2089,8 @@ class SmolVMManager:
                 pid=launch.pid,
                 control_socket_path=launch.control_socket_path,
             )
+            if launch.vsock_uds_path is not None:
+                vm_info = vm_info.model_copy(update={"vsock_uds_path": launch.vsock_uds_path})
             self.state.mark_snapshot_restored(snapshot_id, restore_vm_id)
             if existing_disk_backup_path is not None and existing_disk_backup_path.exists():
                 with suppress(Exception):
@@ -2108,6 +2110,7 @@ class SmolVMManager:
                             network=effective_snapshot.network_config,
                             pid=launch.pid,
                             control_socket_path=launch.control_socket_path,
+                            vsock_uds_path=launch.vsock_uds_path,
                         ),
                         timeout=5.0,
                     )
