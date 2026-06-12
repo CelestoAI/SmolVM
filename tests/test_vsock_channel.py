@@ -19,6 +19,7 @@ a socketpair whose far end is served by the real guest agent, so these tests
 validate the full host↔agent round-trip without a VM.
 """
 
+import queue
 import socket
 import threading
 
@@ -162,6 +163,38 @@ class TestUdsTransport:
             ch = VsockChannel.from_uds(uds)
             ch.wait_ready(timeout=5)
             assert ch.connected
+        finally:
+            server.close()
+            thread.join(timeout=5)
+
+    def test_from_uds_closes_socket_when_connect_rejected(self, tmp_path) -> None:
+        uds = str(tmp_path / "vsock.sock")
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(uds)
+        server.listen(1)
+        closed = queue.Queue()
+
+        def _serve() -> None:
+            conn, _ = server.accept()
+            with conn:
+                line = b""
+                while not line.endswith(b"\n"):
+                    chunk = conn.recv(1)
+                    if not chunk:
+                        break
+                    line += chunk
+                assert line.startswith(b"CONNECT")
+                conn.sendall(b"ERR denied\n")
+                conn.settimeout(2)
+                closed.put(conn.recv(1))
+
+        thread = threading.Thread(target=_serve, daemon=True)
+        thread.start()
+        try:
+            ch = VsockChannel.from_uds(uds)
+            with pytest.raises(SmolVMError, match="CONNECT handshake failed"):
+                ch._open_uds()
+            assert closed.get(timeout=2) == b""
         finally:
             server.close()
             thread.join(timeout=5)

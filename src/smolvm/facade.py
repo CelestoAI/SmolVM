@@ -926,8 +926,7 @@ def _normalize_from_image_network(
         return "slirp"
     if network not in {"tap", "slirp"}:
         raise ValueError(
-            f"network must be 'tap' or 'slirp'; to fix, run "
-            f"`{_from_image_config_help(vm_id)}`."
+            f"network must be 'tap' or 'slirp'; to fix, run `{_from_image_config_help(vm_id)}`."
         )
     if backend != BACKEND_QEMU and network == "slirp":
         raise ValueError(
@@ -2184,13 +2183,29 @@ class SmolVM:
         *,
         on_progress: Callable[[str], None] | None = None,
     ) -> SmolVM:
-        """Compatibility alias for :meth:`wait_for_ready`.
+        """Wait for SSH to become available on the guest.
 
-        Historically SmolVM used SSH for all command execution. The method
-        name remains for existing callers, but it now waits for the selected
+        Use :meth:`wait_for_ready` when you only need the resolved command
         control channel, which may be vsock.
         """
-        return self.wait_for_ready(timeout=timeout, on_progress=on_progress)
+        self._refresh_info()
+
+        if self._info.status != VMState.RUNNING:
+            raise SmolVMError(
+                "VM is not running. Start the VM using vm.start() before "
+                f"waiting for SSH (current state: {self._info.status.value})",
+                {"vm_id": self._vm_id},
+            )
+        if self._info.network is None:
+            raise SmolVMError(
+                "Cannot wait for SSH: VM has no network configuration",
+                {"vm_id": self._vm_id},
+            )
+
+        if on_progress is not None and not self._ssh_ready:
+            on_progress("Waiting for SSH...")
+        self._wait_for_ssh_over_network(timeout=timeout)
+        return self
 
     def ssh_commands(
         self,
@@ -2617,8 +2632,11 @@ class SmolVM:
         return self
 
     async def async_wait_for_ssh(self, timeout: float = 60.0) -> SmolVM:
-        """Compatibility alias for :meth:`async_wait_for_ready`."""
-        return await self.async_wait_for_ready(timeout=timeout)
+        """Async version of :meth:`wait_for_ssh`."""
+        import asyncio
+
+        await asyncio.to_thread(self.wait_for_ssh, timeout=timeout)
+        return self
 
     @classmethod
     async def async_create_many(

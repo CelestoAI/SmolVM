@@ -28,7 +28,7 @@ from smolvm.comm.rust_http_vsock_channel import RustHttpVsockChannel
 from smolvm.comm.vsock_channel import VsockChannel
 from smolvm.exceptions import OperationTimeoutError
 from smolvm.facade import SmolVM
-from smolvm.types import GuestOS, VMConfig, VMInfo, VMState, VsockConfig
+from smolvm.types import GuestOS, NetworkConfig, VMConfig, VMInfo, VMState, VsockConfig
 
 
 def _vsock_vm(tmp_path: Path, *, comm_channel: str | None, request: str | None) -> SmolVM:
@@ -78,6 +78,40 @@ def test_wait_for_ready_uses_rust_vsock_when_agent_answers(
     assert isinstance(vm._control_channel, RustHttpVsockChannel)
     assert vm._control_channel.guest_cid == 5
     assert vm._ssh is None
+
+
+def test_wait_for_ssh_waits_for_ssh_not_vsock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The SSH-named public API must not report readiness from the vsock agent."""
+    vm = _vsock_vm(tmp_path, comm_channel="vsock", request="vsock")
+    network = NetworkConfig(
+        guest_ip="172.16.0.2",
+        tap_device="tap0",
+        guest_mac="02:00:00:00:00:01",
+        ssh_host_port=2200,
+    )
+    vm._info = vm._info.model_copy(update={"network": network})
+    vm._sdk.get.return_value = vm._info
+
+    def _wait_for_ready(self, timeout: float) -> None:
+        raise AssertionError("wait_for_ssh must not use the vsock control waiter")
+
+    seen: dict[str, float | bool] = {}
+
+    def _wait_for_ssh_over_network(self, timeout: float, *, as_control: bool = False) -> None:
+        seen["timeout"] = timeout
+        seen["as_control"] = as_control
+        self._ssh_ready = True
+
+    monkeypatch.setattr(SmolVM, "_wait_for_ready", _wait_for_ready)
+    monkeypatch.setattr(SmolVM, "_wait_for_ssh_over_network", _wait_for_ssh_over_network)
+
+    vm.wait_for_ssh(timeout=5)
+
+    assert seen == {"timeout": 5, "as_control": False}
+    assert vm._ssh_ready is True
+    assert vm._control_ready is False
 
 
 def test_explicit_vsock_does_not_fall_back_to_ssh(

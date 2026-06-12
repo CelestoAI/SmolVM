@@ -131,7 +131,7 @@ class VsockChannel:
             ack = self._read_line(sock)
             if not ack.startswith("OK"):
                 raise SmolVMError(f"vsock CONNECT handshake failed: {ack!r}")
-        except OSError:
+        except Exception:
             sock.close()
             raise
         return sock

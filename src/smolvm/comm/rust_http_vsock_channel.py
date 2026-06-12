@@ -126,7 +126,7 @@ class RustHttpVsockChannel:
             ack = self._read_line(sock)
             if not ack.startswith("OK"):
                 raise SmolVMError(f"vsock CONNECT handshake failed: {ack!r}")
-        except OSError:
+        except Exception:
             sock.close()
             raise
         return sock
@@ -163,9 +163,7 @@ class RustHttpVsockChannel:
             data = resp.read()
             if resp.status >= 400:
                 detail = data.decode("utf-8", errors="replace")
-                raise SmolVMError(
-                    f"guest agent HTTP {resp.status} for {method} {path}: {detail}"
-                )
+                raise SmolVMError(f"guest agent HTTP {resp.status} for {method} {path}: {detail}")
             decoded = json.loads(data.decode("utf-8"))
             if not isinstance(decoded, dict):
                 raise SmolVMError("guest agent returned a non-object JSON response")
@@ -232,9 +230,7 @@ class RustHttpVsockChannel:
         query = urllib.parse.urlencode({"path": remote_path})
         resp = self._request_json("GET", f"/files/get?{query}")
         if not resp.get("ok"):
-            raise SmolVMError(
-                f"Failed to download guest file '{remote_path}': {resp.get('error')}"
-            )
+            raise SmolVMError(f"Failed to download guest file '{remote_path}': {resp.get('error')}")
         data_b64 = resp.get("data_base64")
         if not isinstance(data_b64, str):
             raise SmolVMError(f"Guest file response for '{remote_path}' did not include data")
