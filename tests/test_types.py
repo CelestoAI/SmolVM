@@ -498,7 +498,7 @@ class TestBrowserSessionConfig:
     """Tests for BrowserSessionConfig validation."""
 
     def test_defaults(self) -> None:
-        """Browser sessions should default to a headless ephemeral Chromium profile."""
+        """Browser sandboxes should default to a headless ephemeral Chromium profile."""
         config = BrowserSessionConfig()
 
         assert config.backend == "auto"
@@ -519,17 +519,19 @@ class TestBrowserSessionConfig:
         assert config.viewport == BrowserViewport(width=1440, height=900)
 
     def test_persistent_profile_requires_profile_id(self) -> None:
-        """Persistent browser sessions must declare a profile ID."""
+        """Persistent browser sandboxes must declare a profile ID."""
         with pytest.raises(ValidationError, match="profile_id is required"):
             BrowserSessionConfig(profile_mode="persistent")
 
-    def test_record_video_requires_live_mode(self) -> None:
-        """Video recording is only valid for live-mode sessions."""
-        with pytest.raises(ValidationError, match="record_video requires mode='live'"):
+    def test_record_video_requires_visible_mode(self) -> None:
+        """Video recording is only valid for visible sandboxes."""
+        with pytest.raises(ValidationError, match="record_video requires a visible"):
             BrowserSessionConfig(record_video=True)
+        assert BrowserSessionConfig(mode="live", record_video=True).record_video is True
+        assert BrowserSessionConfig(mode="desktop", record_video=True).record_video is True
 
     def test_workspace_mounts_are_supported(self, tmp_path: Path) -> None:
-        """Browser sessions should accept host mounts for demo app code and artifacts."""
+        """Browser sandboxes should accept host mounts for demo app code and artifacts."""
         mount = WorkspaceMount(host_path=tmp_path, guest_path="/workspace/demo", writable=True)
 
         config = BrowserSessionConfig(workspace_mounts=[mount])
@@ -537,7 +539,7 @@ class TestBrowserSessionConfig:
         assert config.workspace_mounts == [mount]
 
     def test_workspace_mount_guest_paths_must_be_unique(self, tmp_path: Path) -> None:
-        """Browser sessions should reject ambiguous mount targets."""
+        """Browser sandboxes should reject ambiguous mount targets."""
         first = tmp_path / "first"
         second = tmp_path / "second"
         first.mkdir()

@@ -33,7 +33,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -50,7 +49,7 @@ except ImportError:
     class RunContext:
         """Fallback used so runtime annotation evaluation does not fail."""
 
-        def __class_getitem__(cls, _item: Any) -> type["RunContext"]:
+        def __class_getitem__(cls, _item: Any) -> type[RunContext]:
             return cls
 
 DEFAULT_MODEL = "openai:gpt-5.4"
@@ -60,7 +59,7 @@ FINAL_SCREENSHOT_PATH = "artifacts/pydanticai-agent-browser/final.png"
 SYSTEM_INSTRUCTIONS = (
     "You are an agent who has access to control browser using some tools and CLIs.\n"
     "You must reason and plan before act.\n"
-    "You automate one SmolVM browser session from the host.\n"
+    "You automate one SmolVM browser sandbox from the host.\n"
     "First read `agent-browser --help`.\n"
     "Decide on the exact commands before you run them.\n"
     "Follow this workflow exactly:\n"
@@ -92,7 +91,7 @@ DEMO_PROMPT = (
 
 @dataclass
 class BrowserCliDeps:
-    """Hold the active browser session so cleanup can happen outside the agent."""
+    """Hold the active browser sandbox so cleanup can happen outside the agent."""
 
     session: dict[str, Any] | None = None
 
@@ -129,7 +128,7 @@ def _parse_browser_start_output(stdout: str) -> dict[str, Any] | None:
     cdp_url = data.get("cdp_url")
     if not isinstance(cdp_url, str) or not cdp_url:
         raise RuntimeError(
-            "SmolVM returned browser session JSON without a usable cdp_url. "
+            "SmolVM returned browser sandbox JSON without a usable cdp_url. "
             "This example expects `smolvm browser start --json` to include it."
         )
 
@@ -147,13 +146,15 @@ def _parse_browser_start_output(stdout: str) -> dict[str, Any] | None:
             "This example needs that port for `agent-browser --cdp`."
         )
 
-    live_url = data.get("live_url")
+    viewer_url = data.get("viewer_url")
+    display_url = data.get("display_url")
     artifacts_dir = data.get("artifacts_dir")
     return {
         "session_id": session_id,
         "cdp_url": cdp_url,
         "cdp_port": cdp_port,
-        "live_url": live_url if isinstance(live_url, str) and live_url else None,
+        "viewer_url": viewer_url if isinstance(viewer_url, str) and viewer_url else None,
+        "display_url": display_url if isinstance(display_url, str) and display_url else None,
         "artifacts_dir": (
             artifacts_dir if isinstance(artifacts_dir, str) and artifacts_dir else None
         ),
@@ -181,7 +182,8 @@ def _format_command_result(
                 f"session_id: {parsed_browser_session['session_id']}",
                 f"cdp_url: {parsed_browser_session['cdp_url']}",
                 f"cdp_port: {parsed_browser_session['cdp_port']}",
-                f"live_url: {parsed_browser_session.get('live_url') or '<none>'}",
+                f"viewer_url: {parsed_browser_session.get('viewer_url') or '<none>'}",
+                f"display_url: {parsed_browser_session.get('display_url') or '<none>'}",
                 f"artifacts_dir: {parsed_browser_session.get('artifacts_dir') or '<none>'}",
             ]
         )
@@ -213,10 +215,7 @@ def run_host_bash(
         stdout = exc.stdout or ""
         stderr = exc.stderr or ""
         timeout_message = f"Command timed out after {timeout} seconds."
-        if stderr:
-            stderr = f"{timeout_message}\n{stderr}"
-        else:
-            stderr = timeout_message
+        stderr = f"{timeout_message}\n{stderr}" if stderr else timeout_message
         formatted = _format_command_result(124, stdout, stderr)
         _log_progress(f"Command result:\n{formatted}")
         return formatted
@@ -278,8 +277,10 @@ def main() -> None:
     try:
         result = agent.run_sync(_resolve_prompt(args.input), deps=deps)
         print(result.output)
-        if deps.session is not None and deps.session.get("live_url"):
-            print(f"live_url: {deps.session['live_url']}")
+        if deps.session is not None and deps.session.get("viewer_url"):
+            print(f"viewer_url: {deps.session['viewer_url']}")
+        if deps.session is not None and deps.session.get("display_url"):
+            print(f"display_url: {deps.session['display_url']}")
         if deps.session is not None and deps.session.get("artifacts_dir"):
             print(f"artifacts_dir: {deps.session['artifacts_dir']}")
     finally:
@@ -294,7 +295,7 @@ def main() -> None:
             )
             if stop_result.returncode != 0 and "not found" not in stop_result.stderr.lower():
                 error_message = stop_result.stderr.strip() or (
-                    f"Failed to stop browser session {deps.session['session_id']}."
+                    f"Failed to stop browser sandbox {deps.session['session_id']}."
                 )
                 print(error_message, file=sys.stderr)
             deps.session = None

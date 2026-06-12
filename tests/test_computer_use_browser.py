@@ -98,7 +98,8 @@ def test_format_result_omits_missing_optional_fields() -> None:
         session_id="browser-123",
         page_url="https://celesto.ai/blog",
         cdp_url=None,
-        live_url="http://127.0.0.1:3999",
+        viewer_url="http://127.0.0.1:3999",
+        display_url="vnc://127.0.0.1:5901",
         artifacts_dir=None,
     )
 
@@ -106,6 +107,7 @@ def test_format_result_omits_missing_optional_fields() -> None:
 
     assert "answer: Orchestrating Dinner with OpenClaw" in formatted
     assert "session_id: browser-123" in formatted
-    assert "live_url: http://127.0.0.1:3999" in formatted
+    assert "viewer_url: http://127.0.0.1:3999" in formatted
+    assert "display_url: vnc://127.0.0.1:5901" in formatted
     assert "cdp_url:" not in formatted
     assert "artifacts_dir:" not in formatted

@@ -768,8 +768,6 @@ start_session() {
     downloads_enabled="$9"
     artifacts_dir="${10}"
 
-    browser_bin="$(find_browser_bin)"
-
     mkdir -p "$profile_dir" "$download_dir" "$artifacts_dir"
     if [ "${downloads_enabled}" = "1" ]; then
         chmod 700 "$download_dir"
@@ -780,9 +778,15 @@ start_session() {
     write_preferences "$profile_dir" "$download_dir"
     stop_session
 
-    if [ "${mode}" = "live" ]; then
+    if [ "${mode}" = "live" ] || [ "${mode}" = "desktop" ]; then
         start_live_stack "$width" "$height" "$live_port" "$record_video" "$artifacts_dir"
     fi
+
+    if [ "${mode}" = "desktop" ]; then
+        return 0
+    fi
+
+    browser_bin="$(find_browser_bin)"
 
     if [ "${mode}" = "headless" ]; then
         nohup "$browser_bin" \
@@ -831,7 +835,7 @@ start_session() {
 case "${1:-}" in
     start)
         if [ "$#" -ne 11 ]; then
-            echo "usage: smolvm-browser-session start <mode> <width> <height>" >&2
+            echo "usage: smolvm-browser-session start <headless|live|desktop> <width> <height>" >&2
             echo "  <debug_port> <live_port> <profile_dir> <download_dir>" >&2
             echo "  <record_video> <downloads_enabled> <artifacts_dir>" >&2
             exit 2
@@ -928,7 +932,7 @@ RUN chmod +x /init
                 "kernel_url": resolved_kernel_url,
                 "kernel_profile": kernel_profile.value,
                 "base_image": base_image,
-                "image_type": "browser-chromium-v3",
+                "image_type": "browser-chromium-v4",
                 "_browser_session_sha256": hashlib.sha256(browser_session_sh.encode()).hexdigest(),
                 "_wait_port_sha256": hashlib.sha256(wait_port_py.encode()).hexdigest(),
             },

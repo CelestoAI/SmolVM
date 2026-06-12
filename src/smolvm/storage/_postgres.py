@@ -159,7 +159,9 @@ class PostgresStateManager:
                     status TEXT NOT NULL,
                     cdp_url TEXT,
                     live_url TEXT,
+                    vnc_url TEXT,
                     debug_port INTEGER,
+                    vnc_port INTEGER,
                     profile_id TEXT,
                     expires_at TEXT,
                     artifacts_dir TEXT,
@@ -191,6 +193,8 @@ class PostgresStateManager:
                 CREATE INDEX IF NOT EXISTS idx_snapshots_vm_id ON snapshots(vm_id);
 
                 ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS snapshot_type TEXT;
+                ALTER TABLE browser_sessions ADD COLUMN IF NOT EXISTS vnc_url TEXT;
+                ALTER TABLE browser_sessions ADD COLUMN IF NOT EXISTS vnc_port INTEGER;
                 """
             )
 
@@ -693,10 +697,10 @@ class PostgresStateManager:
                 """
                 INSERT INTO browser_sessions (
                     session_id, vm_id, config, status, cdp_url, live_url,
-                    debug_port, profile_id, expires_at, artifacts_dir,
-                    created_at, updated_at
+                    vnc_url, debug_port, vnc_port, profile_id, expires_at,
+                    artifacts_dir, created_at, updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     info.session_id,
@@ -705,7 +709,9 @@ class PostgresStateManager:
                     info.status.value,
                     info.cdp_url,
                     info.live_url,
+                    info.vnc_url,
                     info.debug_port,
+                    info.vnc_port,
                     info.profile_id,
                     info.expires_at.isoformat() if info.expires_at else None,
                     str(info.artifacts_dir) if info.artifacts_dir else None,
@@ -752,7 +758,9 @@ class PostgresStateManager:
         status: BrowserSessionState | None = None,
         cdp_url: str | None = None,
         live_url: str | None = None,
+        vnc_url: str | None = None,
         debug_port: int | None = None,
+        vnc_port: int | None = None,
         profile_id: str | None = None,
         expires_at: datetime | None = None,
         artifacts_dir: Path | None = None,
@@ -783,9 +791,15 @@ class PostgresStateManager:
             if live_url is not None:
                 updates.append("live_url = %s")
                 params.append(live_url)
+            if vnc_url is not None:
+                updates.append("vnc_url = %s")
+                params.append(vnc_url)
             if debug_port is not None:
                 updates.append("debug_port = %s")
                 params.append(debug_port)
+            if vnc_port is not None:
+                updates.append("vnc_port = %s")
+                params.append(vnc_port)
             if profile_id is not None:
                 updates.append("profile_id = %s")
                 params.append(profile_id)

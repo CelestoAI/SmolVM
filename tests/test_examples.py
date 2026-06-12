@@ -30,7 +30,7 @@ README_PATH = REPO_ROOT / "README.md"
 TOP_LEVEL_EXAMPLES_DIR = REPO_ROOT / "examples"
 AGENT_TOOL_EXAMPLES_DIR = TOP_LEVEL_EXAMPLES_DIR / "agent_tools"
 EXPECTED_TOP_LEVEL_EXAMPLES = {
-    "browser_session.py",
+    "browser_sandbox.py",
     "env_injection.py",
     "openclaw.py",
     "quickstart_sandbox.py",
@@ -45,7 +45,7 @@ EXPECTED_AGENT_TOOL_EXAMPLES = {
 }
 README_EXAMPLE_LINKS = {
     "examples/quickstart_sandbox.py",
-    "examples/browser_session.py",
+    "examples/browser_sandbox.py",
     "examples/agent_tools/computer_use_browser.py",
     "examples/agent_tools/openai_agents_tool.py",
     "examples/agent_tools/langchain_tool.py",

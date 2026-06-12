@@ -542,7 +542,7 @@ class BrowserSessionConfig(BaseModel):
     ] = None
     backend: Literal["firecracker", "qemu", "libkrun", "auto"] = "auto"
     browser: Literal["chromium"] = "chromium"
-    mode: Literal["headless", "live"] = "headless"
+    mode: Literal["headless", "live", "desktop"] = "headless"
     profile_mode: Literal["ephemeral", "persistent"] = "ephemeral"
     profile_id: Annotated[
         str | None,
@@ -603,8 +603,8 @@ class BrowserSessionConfig(BaseModel):
         if self.profile_mode == "persistent" and not self.profile_id:
             raise ValueError("profile_id is required when profile_mode='persistent'")
 
-        if self.record_video and self.mode != "live":
-            raise ValueError("record_video requires mode='live'")
+        if self.record_video and self.mode == "headless":
+            raise ValueError("record_video requires a visible browser or desktop sandbox")
 
         if self.network_policy_id is not None and not self.network_policy_id.strip():
             raise ValueError("network_policy_id cannot be empty")
@@ -729,7 +729,9 @@ class BrowserSessionInfo(BaseModel):
     status: BrowserSessionState
     cdp_url: str | None = None
     live_url: str | None = None
+    vnc_url: str | None = None
     debug_port: int | None = None
+    vnc_port: int | None = None
     profile_id: str | None = None
     expires_at: datetime | None = None
     artifacts_dir: Path | None = None

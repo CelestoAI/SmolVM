@@ -116,13 +116,23 @@ def browser_session_info_from_row(row: Any) -> BrowserSessionInfo:
     """Convert a database row (dict-like) into a BrowserSessionInfo."""
     expires_at = datetime.fromisoformat(row["expires_at"]) if row["expires_at"] else None
     artifacts_dir = Path(row["artifacts_dir"]) if row["artifacts_dir"] else None
+    try:
+        vnc_url = row["vnc_url"]
+    except (KeyError, IndexError):
+        vnc_url = None
+    try:
+        vnc_port = row["vnc_port"]
+    except (KeyError, IndexError):
+        vnc_port = None
     return BrowserSessionInfo(
         session_id=row["session_id"],
         vm_id=row["vm_id"],
         status=BrowserSessionState(row["status"]),
         cdp_url=row["cdp_url"],
         live_url=row["live_url"],
+        vnc_url=vnc_url,
         debug_port=row["debug_port"],
+        vnc_port=vnc_port,
         profile_id=row["profile_id"],
         expires_at=expires_at,
         artifacts_dir=artifacts_dir,
