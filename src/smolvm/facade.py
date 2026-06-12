@@ -1803,6 +1803,8 @@ class SmolVM:
             raise ValueError(
                 f"snapshot_type must be one of {allowed}; got {snapshot_type!r}"
             ) from exc
+        if resolved_snapshot_type == SnapshotType.DISK:
+            self._sync_guest_for_disk_snapshot()
         snapshot_info = self._sdk.create_snapshot(
             self._vm_id,
             snapshot_id=snapshot_id,
@@ -1812,6 +1814,24 @@ class SmolVM:
         self._refresh_info()
         self._reset_runtime_state()
         return snapshot_info
+
+    def _sync_guest_for_disk_snapshot(self) -> None:
+        """Flush guest filesystem buffers before copying a disk-only snapshot."""
+        self._refresh_info()
+        if self._info.status != VMState.RUNNING:
+            return
+        channel = self._ensure_control_for_operation(action="create a disk snapshot", timeout=10.0)
+        result = channel.run("sync", timeout=10, shell="raw")
+        if result.exit_code != 0:
+            raise SmolVMError(
+                f"Cannot create disk snapshot for sandbox '{self._vm_id}': "
+                "syncing files inside the sandbox failed.",
+                {
+                    "vm_id": self._vm_id,
+                    "exit_code": result.exit_code,
+                    "stderr": result.stderr,
+                },
+            )
 
     def delete(self) -> None:
         """Delete the VM and release all resources."""

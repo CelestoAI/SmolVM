@@ -20,6 +20,7 @@ Automatically builds VM images with SSH using Docker.
 import hashlib
 import json
 import logging
+import os
 import platform
 import re
 import shlex
@@ -76,13 +77,35 @@ def _guest_agent_target_triple(arch: str | None = None) -> str:
 
 
 def _guest_agent_binary_path() -> Path:
-    return (
-        _REPO_ROOT
-        / "target"
-        / _guest_agent_target_triple()
-        / "release"
-        / "smolvm-guest-agent"
-    )
+    return _REPO_ROOT / "target" / _guest_agent_target_triple() / "release" / "smolvm-guest-agent"
+
+
+def _cargo_binary() -> str:
+    """Return the Cargo executable, including common sudo-reset PATH fallbacks."""
+    configured = os.environ.get("CARGO")
+    if configured:
+        configured_path = Path(configured)
+        if configured_path.is_file():
+            return str(configured_path)
+        found = shutil.which(configured)
+        if found is not None:
+            return found
+
+    found = shutil.which("cargo")
+    if found is not None:
+        return found
+
+    candidates: list[Path] = []
+    cargo_home = os.environ.get("CARGO_HOME")
+    if cargo_home:
+        candidates.append(Path(cargo_home) / "bin" / "cargo")
+    candidates.append(Path.home() / ".cargo" / "bin" / "cargo")
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+
+    return "cargo"
 
 
 def _guest_agent_source_digest() -> str:
@@ -110,7 +133,7 @@ def _guest_agent_binary() -> Path:
     try:
         subprocess.run(
             [
-                "cargo",
+                _cargo_binary(),
                 "build",
                 "--release",
                 "--target",
@@ -173,9 +196,7 @@ def _context_value_bytes(destination: str, value: DockerContextValue) -> bytes:
                 "builder context."
             )
         if not value.is_file():
-            raise ImageError(
-                f"Build context path is not a file: {value}. Use file paths only."
-            )
+            raise ImageError(f"Build context path is not a file: {value}. Use file paths only.")
         return value.read_bytes()
     if isinstance(value, str):
         return value.encode("utf-8")

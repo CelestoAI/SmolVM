@@ -528,3 +528,70 @@ def test_create_diff_snapshot_records_type_and_copies_disk(
     assert snapshot.snapshot_type is SnapshotType.DIFF
     assert persisted.snapshot_type is SnapshotType.DIFF
     assert persisted.artifacts.disk_path.read_text() == "managed-disk"
+
+
+def test_create_firecracker_disk_snapshot_skips_vmstate(
+    smol_vm: SmolVMManager,
+    sample_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """A Firecracker disk snapshot copies the disk without dumping guest RAM."""
+    _running_vm(smol_vm, sample_config, tmp_path)
+    (smol_vm.data_dir / "disks" / "vm001.ext4").write_text("managed-disk")
+
+    with patch("smolvm.runtime.firecracker.FirecrackerClient") as mock_client_cls:
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        snapshot = smol_vm.create_snapshot(
+            "vm001", snapshot_id="snap-disk", snapshot_type=SnapshotType.DISK
+        )
+
+    persisted = smol_vm.state.get_snapshot("snap-disk")
+    assert snapshot.snapshot_type is SnapshotType.DISK
+    assert persisted.snapshot_type is SnapshotType.DISK
+    assert persisted.artifacts.state_path is None
+    assert persisted.artifacts.memory_path is None
+    assert persisted.artifacts.disk_path.read_text() == "managed-disk"
+    mock_client.pause_vm.assert_called_once()
+    mock_client.create_snapshot.assert_not_called()
+
+
+def test_restore_firecracker_disk_snapshot_boots_fresh_without_loading_vmstate(
+    smol_vm: SmolVMManager,
+    sample_config: VMConfig,
+) -> None:
+    """A Firecracker disk snapshot restores by booting from the copied disk."""
+    smol_vm.create(sample_config)
+    managed_disk = smol_vm.data_dir / "disks" / "vm001.ext4"
+    managed_disk.write_text("managed-disk")
+    vm_info = smol_vm.get("vm001")
+
+    snapshot_dir = smol_vm.snapshot_dir / "snap-disk"
+    snapshot_dir.mkdir(parents=True)
+    snapshot = SnapshotInfo(
+        snapshot_id="snap-disk",
+        vm_id="vm001",
+        backend="firecracker",
+        artifacts=SnapshotArtifacts(disk_path=snapshot_dir / "disk.ext4"),
+        vm_config=vm_info.config,
+        network_config=vm_info.network,
+        created_at=datetime.now(timezone.utc),
+        snapshot_type=SnapshotType.DISK,
+    )
+    snapshot.artifacts.disk_path.write_text("disk-only-ext4")
+    smol_vm.state.create_snapshot(snapshot)
+    smol_vm.delete("vm001")
+    smol_vm.network.reset_mock()
+
+    with (
+        patch.object(smol_vm, "_start_firecracker", return_value=SimpleNamespace(pid=98765)),
+        patch("smolvm.runtime.firecracker.FirecrackerClient") as mock_client_cls,
+    ):
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        restored = smol_vm.restore_snapshot("snap-disk", resume_vm=True)
+
+    assert restored.status == VMState.RUNNING
+    assert managed_disk.read_text() == "disk-only-ext4"
+    mock_client.load_snapshot.assert_not_called()
+    mock_client.start_instance.assert_called_once()

@@ -184,6 +184,13 @@ class FirecrackerRuntimeAdapter(RuntimeAdapter):
             if request.original_status == VMState.RUNNING:
                 client.pause_vm()
 
+            if request.snapshot_type == SnapshotType.DISK:
+                shutil.copy2(request.managed_disk_path, disk_path)
+                return SnapshotCreateResult(
+                    artifacts=SnapshotArtifacts(disk_path=disk_path),
+                    source_status=VMState.PAUSED,
+                )
+
             client.create_snapshot(state_path, memory_path, snapshot_type="Full")
             if request.snapshot_type == SnapshotType.DIFF:
                 copy_with_reflink(request.managed_disk_path, disk_path)
@@ -206,14 +213,52 @@ class FirecrackerRuntimeAdapter(RuntimeAdapter):
         snapshot = request.snapshot
         state_path = snapshot.artifacts.state_path
         memory_path = snapshot.artifacts.memory_path
+
+        request.managed_disk_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(snapshot.artifacts.disk_path, request.managed_disk_path)
+
+        if snapshot.snapshot_type == SnapshotType.DISK:
+            effective_config = snapshot.vm_config.model_copy(
+                update={"rootfs_path": request.managed_disk_path}
+            )
+            vm_info = VMInfo(
+                vm_id=snapshot.vm_id,
+                status=VMState.CREATED,
+                config=effective_config,
+                network=snapshot.network_config,
+            )
+            launch = self.start(
+                vm_info, log_path=request.log_path, boot_timeout=request.boot_timeout
+            )
+            if request.resume_vm:
+                return launch
+            paused_info = VMInfo(
+                vm_id=snapshot.vm_id,
+                status=launch.status,
+                config=effective_config,
+                network=snapshot.network_config,
+                pid=launch.pid,
+                control_socket_path=launch.control_socket_path,
+                vsock_uds_path=launch.vsock_uds_path,
+            )
+            try:
+                self.pause(paused_info)
+            except Exception:
+                with suppress(Exception):
+                    self.stop(paused_info, timeout=5.0)
+                raise
+            return RuntimeLaunch(
+                pid=launch.pid,
+                control_socket_path=launch.control_socket_path,
+                status=VMState.PAUSED,
+                vsock_uds_path=launch.vsock_uds_path,
+            )
+
         if state_path is None or memory_path is None:
             raise SmolVMError(
                 "Firecracker snapshot restore requires state and memory artifacts",
                 {"snapshot_id": snapshot.snapshot_id},
             )
-
-        request.managed_disk_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(snapshot.artifacts.disk_path, request.managed_disk_path)
 
         control_socket_path = self._context.socket_dir / f"fc-{snapshot.vm_id}.sock"
         if control_socket_path.exists():

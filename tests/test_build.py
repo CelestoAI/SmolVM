@@ -22,6 +22,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from smolvm.exceptions import ImageError, SmolVMError
+from smolvm.images import builder as builder_mod
 from smolvm.images.builder import ImageBuilder
 from smolvm.images.published import BASE_KERNELS
 from smolvm.runtime.boot_profiles import KernelBootProfile
@@ -40,6 +41,21 @@ def _fake_guest_agent_binary(tmp_path: Path) -> Path:
     binary.write_bytes(b"rust-agent")
     binary.chmod(0o755)
     return binary
+
+
+def test_cargo_binary_uses_cargo_home_when_path_is_reset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cargo = tmp_path / "cargo-home" / "bin" / "cargo"
+    cargo.parent.mkdir(parents=True)
+    cargo.write_text("#!/bin/sh\n")
+    cargo.chmod(0o755)
+
+    monkeypatch.delenv("CARGO", raising=False)
+    monkeypatch.setenv("CARGO_HOME", str(cargo.parent.parent))
+    monkeypatch.setattr(builder_mod.shutil, "which", lambda _name: None)
+
+    assert builder_mod._cargo_binary() == str(cargo)
 
 
 def test_base_init_script_uses_cmdline_netmask_and_gateway_dns() -> None:
@@ -258,9 +274,7 @@ class TestAgentRuntimeBakedIntoImages:
 
         mock_do_build.side_effect = _fake_do_build
 
-        builder.build_alpine_ssh_key(
-            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKey user@test"
-        )
+        builder.build_alpine_ssh_key("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKey user@test")
 
     @patch.object(ImageBuilder, "_host_arch_key", return_value="x86_64")
     @patch.object(ImageBuilder, "check_docker", return_value=True)

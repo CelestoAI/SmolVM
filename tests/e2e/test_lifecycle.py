@@ -44,8 +44,8 @@ from _util import (
 
 from smolvm import SmolVM
 from smolvm.exceptions import SmolVMError, VMNotFoundError
-from smolvm.runtime.backends import BACKEND_QEMU
-from smolvm.types import VMState
+from smolvm.runtime.backends import BACKEND_FIRECRACKER, BACKEND_QEMU
+from smolvm.types import SnapshotType, VMState
 
 pytestmark = pytest.mark.e2e
 
@@ -164,7 +164,8 @@ def test_snapshot_restore(backend: E2EBackend, request: pytest.FixtureRequest) -
         sandbox.start(boot_timeout=BOOT_TIMEOUT)
         assert sandbox.run("echo sentinel-content > /root/sentinel.txt").exit_code == 0
 
-        snap = sandbox.snapshot()
+        snapshot_type = SnapshotType.DISK if backend == BACKEND_FIRECRACKER else SnapshotType.FULL
+        snap = sandbox.snapshot(snapshot_type=snapshot_type)
         sandbox.stop()
         sandbox.delete()
 

@@ -1964,6 +1964,8 @@ class SmolVMManager:
         ]
         for required_path, label in required_artifacts:
             if required_path is None:
+                if snapshot.snapshot_type == SnapshotType.DISK and label != "disk_path":
+                    continue
                 if snapshot.backend == BACKEND_QEMU and label != "disk_path":
                     continue
                 raise SmolVMError(

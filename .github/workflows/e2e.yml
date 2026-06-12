@@ -58,6 +58,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
 
       - name: Cache Rust build
         uses: actions/cache@v4
@@ -112,13 +114,13 @@ jobs:
 
       - name: Assert native extension available
         run: |
-          sudo -n -E -u "$USER" -g kvm -- "$(command -v uv)" run python -c "from smolvm_core import is_available; assert is_available(), 'Native extension reports not available on Linux'; print('smolvm-core: OK')"
+          sudo -n -E -u "$USER" -g kvm -- env "PATH=$PATH" "$(command -v uv)" run python -c "from smolvm_core import is_available; assert is_available(), 'Native extension reports not available on Linux'; print('smolvm-core: OK')"
 
       - name: Diagnostics (smolvm doctor)
-        run: sudo -n -E -u "$USER" -g kvm -- "$(command -v uv)" run smolvm doctor --backend "${{ matrix.backend }}" || true
+        run: sudo -n -E -u "$USER" -g kvm -- env "PATH=$PATH" "$(command -v uv)" run smolvm doctor --backend "${{ matrix.backend }}" || true
 
       - name: Run e2e suite
-        run: sudo -n -E -u "$USER" -g kvm -- "$(command -v uv)" run pytest -m e2e tests/e2e -v --e2e-backend "${{ matrix.backend }}"
+        run: sudo -n -E -u "$USER" -g kvm -- env "PATH=$PATH" "$(command -v uv)" run pytest -m e2e tests/e2e -v --e2e-backend "${{ matrix.backend }}"
 
       - name: Dump VM logs on failure
         if: failure()

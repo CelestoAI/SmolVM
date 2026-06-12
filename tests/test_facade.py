@@ -15,7 +15,7 @@
 """Tests for SmolVM VM facade module."""
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -27,7 +27,15 @@ from smolvm.exceptions import (
 from smolvm.facade import SmolVM, _build_auto_config
 from smolvm.images import BootImage, DirectKernelBoot, FirmwareBoot
 from smolvm.images.cloud_init import seed_cache_key
-from smolvm.types import GuestOS, PortForwardConfig, VMConfig, VMState, VsockConfig
+from smolvm.types import (
+    CommandResult,
+    GuestOS,
+    PortForwardConfig,
+    SnapshotType,
+    VMConfig,
+    VMState,
+    VsockConfig,
+)
 from smolvm.vm import SmolVMManager
 
 
@@ -603,6 +611,45 @@ class TestVMInit:
 
         with pytest.raises(SmolVMError, match="does not match the snapshot backend"):
             SmolVM.from_snapshot("snap-001", backend="qemu")
+
+
+class TestSnapshot:
+    """Tests for facade snapshot behavior."""
+
+    def test_disk_snapshot_syncs_guest_before_sdk_snapshot(self) -> None:
+        """Disk-only snapshots should flush guest filesystem buffers first."""
+        vm = SmolVM.__new__(SmolVM)
+        vm._vm_id = "vm001"
+        vm._info = MagicMock(status=VMState.RUNNING)
+        vm._refresh_info = MagicMock()
+        vm._reset_runtime_state = MagicMock()
+
+        channel = MagicMock()
+        channel.run.return_value = CommandResult(exit_code=0, stdout="", stderr="")
+        vm._ensure_control_for_operation = MagicMock(return_value=channel)
+        vm._sdk = MagicMock()
+        snapshot = MagicMock()
+        vm._sdk.create_snapshot.return_value = snapshot
+
+        order = MagicMock()
+        order.attach_mock(channel.run, "sync")
+        order.attach_mock(vm._sdk.create_snapshot, "create_snapshot")
+
+        assert vm.snapshot(snapshot_type=SnapshotType.DISK) is snapshot
+
+        vm._ensure_control_for_operation.assert_called_once_with(
+            action="create a disk snapshot",
+            timeout=10.0,
+        )
+        assert order.mock_calls == [
+            call.sync("sync", timeout=10, shell="raw"),
+            call.create_snapshot(
+                "vm001",
+                snapshot_id=None,
+                snapshot_type=SnapshotType.DISK,
+                resume_source=False,
+            ),
+        ]
 
 
 class TestFromBootImage:
