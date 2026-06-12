@@ -1950,17 +1950,18 @@ class TestCurrentVersionIsPrerelease:
 class TestCliBrowser:
     """Tests for `smolvm browser` commands."""
 
-    @patch("smolvm.browser.BrowserSession")
+    @patch("smolvm.browser._BrowserSandbox")
     def test_browser_start_json(
         self, mock_browser_cls: MagicMock, capsys: pytest.CaptureFixture
     ) -> None:
-        """`smolvm browser start --json` should emit machine-readable session details."""
+        """`smolvm browser start --json` should emit machine-readable sandbox details."""
         session = MagicMock()
         session.session_id = "browser-abc123"
         session.vm_id = "browser-abc123"
         session.status = BrowserSessionState.READY
         session.cdp_url = "http://127.0.0.1:39222"
-        session.live_url = "http://127.0.0.1:36080/vnc.html"
+        session.viewer_url = "http://127.0.0.1:36080/vnc.html"
+        session.display_url = "vnc://127.0.0.1:35900"
         session.info.profile_id = None
         session.artifacts_dir = Path("/tmp/browser-abc123")
         mock_browser_cls.return_value = session
@@ -1975,8 +1976,10 @@ class TestCliBrowser:
         assert payload["ok"] is True
         assert payload["data"]["session_id"] == "browser-abc123"
         assert payload["data"]["cdp_url"] == "http://127.0.0.1:39222"
+        assert payload["data"]["viewer_url"] == "http://127.0.0.1:36080/vnc.html"
+        assert payload["data"]["display_url"] == "vnc://127.0.0.1:35900"
 
-    @patch("smolvm.browser.BrowserSession")
+    @patch("smolvm.browser._BrowserSandbox")
     def test_browser_start_live_shortcut(self, mock_browser_cls: MagicMock) -> None:
         """`smolvm browser start --live` should map to live mode."""
         session = MagicMock()
@@ -1984,7 +1987,8 @@ class TestCliBrowser:
         session.vm_id = "browser-abc123"
         session.status = BrowserSessionState.READY
         session.cdp_url = "http://127.0.0.1:39222"
-        session.live_url = "http://127.0.0.1:36080/vnc.html"
+        session.viewer_url = "http://127.0.0.1:36080/vnc.html"
+        session.display_url = "vnc://127.0.0.1:35900"
         session.info.profile_id = None
         session.artifacts_dir = Path("/tmp/browser-abc123")
         mock_browser_cls.return_value = session
@@ -1997,23 +2001,23 @@ class TestCliBrowser:
         assert config.mode == "live"
         session.start.assert_called_once_with(boot_timeout=30.0)
 
-    @patch("smolvm.browser.BrowserSession")
-    def test_browser_open_requires_live_url(
+    @patch("smolvm.browser._BrowserSandbox")
+    def test_browser_open_requires_viewer_url(
         self,
         mock_browser_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
         """`smolvm browser open` should fail cleanly for headless sessions."""
         session = MagicMock()
-        session.live_url = None
+        session.viewer_url = None
         mock_browser_cls.from_id.return_value = session
 
         ret = main(["browser", "open", "browser-abc123"])
 
         assert ret == 1
-        assert "does not have a live_url" in capsys.readouterr().err
+        assert "does not have a viewer_url" in capsys.readouterr().err
 
-    @patch("smolvm.browser.BrowserSession")
+    @patch("smolvm.browser._BrowserSandbox")
     @patch("smolvm.vm.resolve_data_dir", return_value=Path("/tmp"))
     @patch("smolvm.storage.create_state_manager")
     def test_browser_stop_all(
@@ -2023,7 +2027,7 @@ class TestCliBrowser:
         mock_browser_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm browser stop --all` should stop every persisted session."""
+        """`smolvm browser stop --all` should stop every persisted sandbox."""
         state_manager = MagicMock()
         state_manager.list_browser_sessions.return_value = [
             MagicMock(session_id="browser-001"),
@@ -2045,7 +2049,55 @@ class TestCliBrowser:
         second_session.stop.assert_called_once_with()
         first_session.close.assert_called_once_with()
         second_session.close.assert_called_once_with()
-        assert "Stopped 2 browser session(s)." in capsys.readouterr().out
+        assert "Stopped 2 browser sandbox(es)." in capsys.readouterr().out
+
+    @patch("smolvm.browser._BrowserSandbox")
+    @patch("smolvm.vm.resolve_data_dir", return_value=Path("/tmp"))
+    @patch("smolvm.storage.create_state_manager")
+    def test_browser_stop_all_failure_names_recovery_command(
+        self,
+        mock_state_manager_cls: MagicMock,
+        _mock_resolve_data_dir: MagicMock,
+        mock_browser_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm browser stop --all` should show a concrete recovery command."""
+        state_manager = MagicMock()
+        state_manager.list_browser_sessions.return_value = [
+            MagicMock(session_id="browser-001"),
+        ]
+        mock_state_manager_cls.return_value = state_manager
+
+        session = MagicMock()
+        session.stop.side_effect = RuntimeError("internal failure")
+        mock_browser_cls.from_id.return_value = session
+
+        ret = main(["browser", "stop", "--all"])
+
+        assert ret == 1
+        error = capsys.readouterr().err
+        assert "smolvm browser" in error
+        assert "stop browser-001" in error
+        assert "internal failure" not in error
+
+    @patch("smolvm.browser._BrowserSandbox")
+    def test_browser_stop_failure_names_recovery_command(
+        self,
+        mock_browser_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm browser stop <id>` should show a concrete recovery command."""
+        session = MagicMock()
+        session.stop.side_effect = RuntimeError("internal failure")
+        mock_browser_cls.from_id.return_value = session
+
+        ret = main(["browser", "stop", "browser-001"])
+
+        assert ret == 1
+        error = capsys.readouterr().err
+        assert "smolvm browser" in error
+        assert "stop browser-001" in error
+        assert "internal failure" not in error
 
     @patch("smolvm.vm.resolve_data_dir", return_value=Path("/tmp"))
     @patch("smolvm.storage.create_state_manager")
@@ -2064,7 +2116,7 @@ class TestCliBrowser:
 
         assert ret == 0
         state_manager.list_browser_sessions.assert_called_once_with()
-        assert "No browser sessions found." in capsys.readouterr().out
+        assert "No browser sandboxes found." in capsys.readouterr().out
 
     @patch("smolvm.vm.resolve_data_dir", return_value=Path("/tmp"))
     @patch("smolvm.storage.create_state_manager")
@@ -2074,7 +2126,7 @@ class TestCliBrowser:
         _mock_resolve_data_dir: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm browser list --json` should serialize stored sessions."""
+        """`smolvm browser list --json` should serialize stored browser sandboxes."""
         state_manager = MagicMock()
         session = MagicMock()
         session.session_id = "browser-abc123"
@@ -2082,6 +2134,7 @@ class TestCliBrowser:
         session.status = BrowserSessionState.READY
         session.cdp_url = "http://127.0.0.1:39222"
         session.live_url = "http://127.0.0.1:36080/vnc.html"
+        session.vnc_url = "vnc://127.0.0.1:35900"
         session.profile_id = None
         state_manager.list_browser_sessions.return_value = [session]
         mock_state_manager_cls.return_value = state_manager
@@ -2095,6 +2148,8 @@ class TestCliBrowser:
         assert payload["data"]["filters"] == {"status": None}
         assert payload["data"]["sessions"][0]["session_id"] == "browser-abc123"
         assert payload["data"]["sessions"][0]["status"] == "ready"
+        assert payload["data"]["sessions"][0]["viewer_url"] == "http://127.0.0.1:36080/vnc.html"
+        assert payload["data"]["sessions"][0]["display_url"] == "vnc://127.0.0.1:35900"
 
     @patch("smolvm.cli.main.importlib.metadata.version", return_value="0.0.5b2")
     def test_beta_version_is_prerelease(self, _: MagicMock) -> None:

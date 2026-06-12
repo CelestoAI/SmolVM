@@ -586,12 +586,16 @@ class TestBrowserSessionStorage:
             status=BrowserSessionState.READY,
             cdp_url="http://127.0.0.1:39222",
             live_url="http://127.0.0.1:36080/vnc.html",
+            vnc_url="vnc://127.0.0.1:35900",
             debug_port=39222,
+            vnc_port=35900,
         )
 
         assert updated.status == BrowserSessionState.READY
         assert updated.cdp_url == "http://127.0.0.1:39222"
         assert updated.live_url == "http://127.0.0.1:36080/vnc.html"
+        assert updated.vnc_url == "vnc://127.0.0.1:35900"
+        assert updated.vnc_port == 35900
 
     def test_list_and_delete_browser_sessions(self, state_manager: StateManager) -> None:
         """Browser sessions should be listable and removable."""

@@ -153,7 +153,9 @@ class SQLiteStateManager:
                     status TEXT NOT NULL,
                     cdp_url TEXT,
                     live_url TEXT,
+                    vnc_url TEXT,
                     debug_port INTEGER,
+                    vnc_port INTEGER,
                     profile_id TEXT,
                     expires_at TEXT,
                     artifacts_dir TEXT,
@@ -194,6 +196,14 @@ class SQLiteStateManager:
                 conn.execute("ALTER TABLE snapshots ADD COLUMN artifacts TEXT")
             if "snapshot_type" not in snapshot_columns:
                 conn.execute("ALTER TABLE snapshots ADD COLUMN snapshot_type TEXT")
+            browser_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(browser_sessions)").fetchall()
+            }
+            if "vnc_url" not in browser_columns:
+                conn.execute("ALTER TABLE browser_sessions ADD COLUMN vnc_url TEXT")
+            if "vnc_port" not in browser_columns:
+                conn.execute("ALTER TABLE browser_sessions ADD COLUMN vnc_port INTEGER")
 
     # ------------------------------------------------------------------
     # VM operations
@@ -694,10 +704,10 @@ class SQLiteStateManager:
                 """
                 INSERT INTO browser_sessions (
                     session_id, vm_id, config, status, cdp_url, live_url,
-                    debug_port, profile_id, expires_at, artifacts_dir,
-                    created_at, updated_at
+                    vnc_url, debug_port, vnc_port, profile_id, expires_at,
+                    artifacts_dir, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     info.session_id,
@@ -706,7 +716,9 @@ class SQLiteStateManager:
                     info.status.value,
                     info.cdp_url,
                     info.live_url,
+                    info.vnc_url,
                     info.debug_port,
+                    info.vnc_port,
                     info.profile_id,
                     info.expires_at.isoformat() if info.expires_at else None,
                     str(info.artifacts_dir) if info.artifacts_dir else None,
@@ -753,7 +765,9 @@ class SQLiteStateManager:
         status: BrowserSessionState | None = None,
         cdp_url: str | None = None,
         live_url: str | None = None,
+        vnc_url: str | None = None,
         debug_port: int | None = None,
+        vnc_port: int | None = None,
         profile_id: str | None = None,
         expires_at: datetime | None = None,
         artifacts_dir: Path | None = None,
@@ -784,9 +798,15 @@ class SQLiteStateManager:
             if live_url is not None:
                 updates.append("live_url = ?")
                 params.append(live_url)
+            if vnc_url is not None:
+                updates.append("vnc_url = ?")
+                params.append(vnc_url)
             if debug_port is not None:
                 updates.append("debug_port = ?")
                 params.append(debug_port)
+            if vnc_port is not None:
+                updates.append("vnc_port = ?")
+                params.append(vnc_port)
             if profile_id is not None:
                 updates.append("profile_id = ?")
                 params.append(profile_id)

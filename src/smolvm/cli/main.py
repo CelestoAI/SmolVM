@@ -252,13 +252,14 @@ class FileDownloadPayload(TypedDict):
 
 
 class BrowserRow(TypedDict):
-    """Machine-readable data for a listed browser session."""
+    """Machine-readable data for a listed browser sandbox."""
 
     session_id: str
     vm_id: str
     status: str
     cdp_url: str | None
-    live_url: str | None
+    viewer_url: str | None
+    display_url: str | None
     profile_id: str | None
 
 
@@ -275,14 +276,15 @@ class BrowserListPayload(TypedDict):
     sessions: list[BrowserRow]
 
 
-class BrowserSessionPayload(TypedDict):
-    """Machine-readable session details for ``smolvm browser start``."""
+class BrowserSandboxPayload(TypedDict):
+    """Machine-readable sandbox details for ``smolvm browser start``."""
 
     session_id: str
     vm_id: str
     status: str
     cdp_url: str | None
-    live_url: str | None
+    viewer_url: str | None
+    display_url: str | None
     profile_id: str | None
     artifacts_dir: str | None
 
@@ -1133,13 +1135,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     browser_parser = subparsers.add_parser(
         "browser",
-        help="Manage disposable browser sessions.",
+        help="Manage disposable browser sandboxes.",
     )
     browser_sub = browser_parser.add_subparsers(dest="browser_action")
 
     browser_start = browser_sub.add_parser(
         "start",
-        help="Create and start a browser session.",
+        help="Create and start a browser sandbox.",
     )
     browser_start.add_argument(
         "--session-id",
@@ -1155,7 +1157,7 @@ def build_parser() -> argparse.ArgumentParser:
     browser_start.add_argument(
         "--live",
         action="store_true",
-        help="Stream the browser UI so you can watch in real time.",
+        help="Expose viewer_url and display_url so you can watch and control the browser.",
     )
     browser_start.add_argument(
         "--profile-mode",
@@ -1172,7 +1174,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--timeout-minutes",
         type=int,
         default=30,
-        help="Auto-stop the session after this many minutes (default: 30).",
+        help="Auto-stop the sandbox after this many minutes (default: 30).",
     )
     browser_start.add_argument(
         "--viewport-width",
@@ -1205,7 +1207,7 @@ def build_parser() -> argparse.ArgumentParser:
     browser_start.add_argument(
         "--record-video",
         action="store_true",
-        help="Record a video of the browser session.",
+        help="Record a video of the browser sandbox.",
     )
     browser_start.add_argument(
         "--no-downloads",
@@ -1221,30 +1223,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     browser_stop = browser_sub.add_parser(
         "stop",
-        help="Stop and delete a browser session.",
+        help="Stop and delete a browser sandbox.",
     )
     browser_stop_target = browser_stop.add_mutually_exclusive_group(required=True)
     browser_stop_target.add_argument(
         "session_id",
         nargs="?",
-        metavar="session",
-        help="Session ID (printed by 'browser start').",
+        metavar="sandbox",
+        help="Sandbox ID (printed by 'browser start').",
     )
     browser_stop_target.add_argument(
         "--all",
         action="store_true",
-        help="Stop all browser sessions.",
+        help="Stop all browser sandboxes.",
     )
 
     browser_list = browser_sub.add_parser(
         "list",
-        help="List browser sessions.",
+        help="List browser sandboxes.",
     )
     browser_list.add_argument(
         "--status",
         choices=["created", "starting", "ready", "stopping", "error"],
         default=None,
-        help="Only show sessions with this status.",
+        help="Only show sandboxes with this status.",
     )
     browser_list.add_argument(
         "--json",
@@ -1254,18 +1256,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     browser_open = browser_sub.add_parser(
         "open",
-        help="Open a live browser session in your default browser.",
+        help="Open a browser sandbox viewer in your default browser.",
     )
     browser_open.add_argument(
-        "session_id", metavar="session", help="Session ID (printed by 'browser start')."
+        "session_id", metavar="sandbox", help="Sandbox ID (printed by 'browser start')."
     )
 
     browser_logs = browser_sub.add_parser(
         "logs",
-        help="Print browser session logs.",
+        help="Print browser sandbox logs.",
     )
     browser_logs.add_argument(
-        "session_id", metavar="session", help="Session ID (printed by 'browser start')."
+        "session_id", metavar="sandbox", help="Sandbox ID (printed by 'browser start')."
     )
     browser_logs.add_argument(
         "--tail",
@@ -3601,7 +3603,7 @@ def _run_ui(host: str, port: int, allow_beta: bool) -> int:
 
 
 def _browser_rows(sessions: Sequence[BrowserSessionInfo]) -> list[BrowserRow]:
-    """Normalize browser session info objects into CLI rows."""
+    """Normalize browser sandbox info objects into CLI rows."""
     rows: list[BrowserRow] = []
     for session in sessions:
         rows.append(
@@ -3610,7 +3612,8 @@ def _browser_rows(sessions: Sequence[BrowserSessionInfo]) -> list[BrowserRow]:
                 "vm_id": session.vm_id,
                 "status": session.status.value,
                 "cdp_url": session.cdp_url,
-                "live_url": session.live_url,
+                "viewer_url": session.live_url,
+                "display_url": session.vnc_url,
                 "profile_id": session.profile_id,
             }
         )
@@ -3618,23 +3621,25 @@ def _browser_rows(sessions: Sequence[BrowserSessionInfo]) -> list[BrowserRow]:
 
 
 def _render_browser_list(rows: list[BrowserRow]) -> None:
-    """Render the human-facing browser session list."""
-    table = Table(title="SmolVM Browser Sessions")
-    table.add_column("Session")
+    """Render the human-facing browser sandbox list."""
+    table = Table(title="SmolVM Browser Sandboxes")
+    table.add_column("Sandbox")
     table.add_column("Status")
     table.add_column("VM")
-    table.add_column("Live URL")
+    table.add_column("Viewer URL")
+    table.add_column("Display URL")
     for row in rows:
         table.add_row(
             str(row["session_id"]),
             Text(str(row["status"]), style=status_style(str(row["status"]))),
             str(row["vm_id"]),
-            str(row["live_url"] or "-"),
+            str(row["viewer_url"] or "-"),
+            str(row["display_url"] or "-"),
         )
 
     console = console_stdout()
     console.print(table)
-    console.print(f"Total: {len(rows)} session(s).")
+    console.print(f"Total: {len(rows)} sandbox(es).")
 
 
 def _run_windows(args: argparse.Namespace) -> int:
@@ -3701,7 +3706,7 @@ def _run_windows_build_image(args: argparse.Namespace) -> int:
 
 def _run_browser(args: argparse.Namespace) -> int:
     """Handle ``smolvm browser`` commands."""
-    from smolvm.browser import BrowserSession
+    from smolvm.browser import _BrowserSandbox
     from smolvm.storage import create_state_manager
     from smolvm.types import BrowserSessionConfig
     from smolvm.vm import resolve_data_dir
@@ -3714,7 +3719,7 @@ def _run_browser(args: argparse.Namespace) -> int:
         return 2
 
     if args.browser_action == "start":
-        session: BrowserSession | None = None
+        session: _BrowserSandbox | None = None
         try:
             config = BrowserSessionConfig(
                 session_id=args.session_id,
@@ -3728,18 +3733,19 @@ def _run_browser(args: argparse.Namespace) -> int:
                 viewport={"width": args.viewport_width, "height": args.viewport_height},
                 record_video=args.record_video,
                 allow_downloads=not args.no_downloads,
-                memory=args.memory_mib,
+                mem_size_mib=args.memory_mib,
                 disk_size_mib=args.disk_size_mib,
             )
-            session = BrowserSession(config)
+            session = _BrowserSandbox(config)
             session.start(boot_timeout=args.boot_timeout)
 
-            data: BrowserSessionPayload = {
+            data: BrowserSandboxPayload = {
                 "session_id": session.session_id,
                 "vm_id": session.vm_id,
                 "status": session.status.value,
                 "cdp_url": session.cdp_url,
-                "live_url": session.live_url,
+                "viewer_url": session.viewer_url,
+                "display_url": session.display_url,
                 "profile_id": session.info.profile_id,
                 "artifacts_dir": str(session.artifacts_dir) if session.artifacts_dir else None,
             }
@@ -3747,12 +3753,14 @@ def _run_browser(args: argparse.Namespace) -> int:
             if json_output:
                 emit_json(command_name, 0, data=data)
             else:
-                print(f"Started browser session '{session.session_id}'.")
+                print(f"Started browser sandbox '{session.session_id}'.")
                 print(f"  VM: {session.vm_id}")
                 print(f"  Mode: {config.mode}")
                 print(f"  CDP URL: {session.cdp_url}")
-                if session.live_url:
-                    print(f"  Live URL: {session.live_url}")
+                if session.viewer_url:
+                    print(f"  Viewer URL: {session.viewer_url}")
+                if session.display_url:
+                    print(f"  Display URL: {session.display_url}")
                 if session.artifacts_dir:
                     print(f"  Artifacts: {session.artifacts_dir}")
             return 0
@@ -3771,15 +3779,15 @@ def _run_browser(args: argparse.Namespace) -> int:
                 return _emit_cli_error(command_name, 1, exc, json_output=False)
 
             if not sessions:
-                render_empty("SmolVM Browser Sessions", "No browser sessions found.")
+                render_empty("SmolVM Browser Sandboxes", "No browser sandboxes found.")
                 return 0
 
             failures: list[str] = []
             stopped_session_ids: list[str] = []
             for session_info in sessions:
-                session: BrowserSession | None = None
+                session: _BrowserSandbox | None = None
                 try:
-                    session = BrowserSession.from_id(session_info.session_id)
+                    session = _BrowserSandbox.from_id(session_info.session_id)
                     session.stop()
                     stopped_session_ids.append(session_info.session_id)
                 except Exception as exc:
@@ -3789,39 +3797,50 @@ def _run_browser(args: argparse.Namespace) -> int:
                         session.close()
 
             if failures:
+                failed_ids = [failure.split(":", 1)[0] for failure in failures]
+                commands = ", then ".join(
+                    f"`smolvm browser stop {session_id}`" for session_id in failed_ids
+                )
                 render_error(
-                    "Failed to stop one or more browser sessions.",
-                    hint="; ".join(failures),
+                    "Failed to stop browser sandbox"
+                    f"{'es' if len(failed_ids) != 1 else ''} "
+                    f"{', '.join(failed_ids)}; to fix, run: {commands}."
                 )
                 return 1
 
-            print(f"Stopped {len(stopped_session_ids)} browser session(s).")
+            print(f"Stopped {len(stopped_session_ids)} browser sandbox(es).")
             return 0
 
-        session: BrowserSession | None = None
+        session: _BrowserSandbox | None = None
         try:
             assert args.session_id is not None
-            session = BrowserSession.from_id(args.session_id)
+            session = _BrowserSandbox.from_id(args.session_id)
             session.stop()
-            print(f"Stopped browser session '{args.session_id}'.")
+            print(f"Stopped browser sandbox '{args.session_id}'.")
             return 0
-        except Exception as exc:
-            return _emit_cli_error(command_name, 1, exc, json_output=False)
+        except Exception:
+            render_error(
+                f"Failed to stop browser sandbox {args.session_id}; "
+                f"to fix, run: `smolvm browser stop {args.session_id}`."
+            )
+            return 1
         finally:
             if session is not None:
                 session.close()
 
     if args.browser_action == "open":
-        session: BrowserSession | None = None
+        session: _BrowserSandbox | None = None
         try:
-            session = BrowserSession.from_id(args.session_id)
-            if session.live_url is None:
-                raise RuntimeError(f"Browser session '{args.session_id}' does not have a live_url.")
-            opened = session.open_live_view()
+            session = _BrowserSandbox.from_id(args.session_id)
+            if session.viewer_url is None:
+                raise RuntimeError(
+                    f"Browser sandbox '{args.session_id}' does not have a viewer_url."
+                )
+            opened = session.open_viewer()
             if not opened:
-                print(f"Open this URL manually: {session.live_url}")
+                print(f"Open this URL manually: {session.viewer_url}")
             else:
-                print(f"Opened {session.live_url}")
+                print(f"Opened {session.viewer_url}")
             return 0
         except Exception as exc:
             return _emit_cli_error(command_name, 1, exc, json_output=False)
@@ -3830,9 +3849,9 @@ def _run_browser(args: argparse.Namespace) -> int:
                 session.close()
 
     if args.browser_action == "logs":
-        session: BrowserSession | None = None
+        session: _BrowserSandbox | None = None
         try:
-            session = BrowserSession.from_id(args.session_id)
+            session = _BrowserSandbox.from_id(args.session_id)
             output = session.logs(tail=args.tail)
             if output:
                 print(output)
@@ -3859,7 +3878,7 @@ def _run_browser(args: argparse.Namespace) -> int:
             return 0
 
         if not sessions:
-            render_empty("SmolVM Browser Sessions", "No browser sessions found.")
+            render_empty("SmolVM Browser Sandboxes", "No browser sandboxes found.")
             return 0
 
         _render_browser_list(rows)

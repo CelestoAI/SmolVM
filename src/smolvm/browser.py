@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 _BROWSER_DEBUG_PORT = 9222
 _BROWSER_LIVE_PORT = 6080
+_BROWSER_VNC_PORT = 5900
 _DEFAULT_BROWSER_BOOT_TIMEOUT = 90.0
 _BROWSER_GUEST_ROOT = "/opt/smolvm-browser"
 _BROWSER_GUEST_PROFILE_ROOT = f"{_BROWSER_GUEST_ROOT}/profiles"
@@ -47,7 +48,7 @@ _BROWSER_KERNEL_PROFILE = KernelBootProfile.MICROVM_DIRECT
 
 
 def _generate_browser_session_id() -> str:
-    """Generate a browser session identifier."""
+    """Generate a browser sandbox identifier."""
     return f"browser-{uuid.uuid4().hex[:8]}"
 
 
@@ -70,7 +71,7 @@ def _stable_browser_vm_id(profile_id: str) -> str:
 
 
 def _browser_vm_id(session_id: str, config: BrowserSessionConfig) -> str:
-    """Resolve the underlying VM identifier for a browser session."""
+    """Resolve the underlying VM identifier for a browser sandbox."""
     if config.profile_mode == "persistent":
         assert config.profile_id is not None
         return _stable_browser_vm_id(config.profile_id)
@@ -95,9 +96,12 @@ def _qemu_browser_port_forwards(config: BrowserSessionConfig) -> list[PortForwar
     debug_port = _allocate_browser_host_port(reserved)
     reserved.add(debug_port)
     forwards = [PortForwardConfig(host_port=debug_port, guest_port=_BROWSER_DEBUG_PORT)]
-    if config.mode == "live":
+    if config.mode in {"live", "desktop"}:
         live_port = _allocate_browser_host_port(reserved)
+        reserved.add(live_port)
+        vnc_port = _allocate_browser_host_port(reserved)
         forwards.append(PortForwardConfig(host_port=live_port, guest_port=_BROWSER_LIVE_PORT))
+        forwards.append(PortForwardConfig(host_port=vnc_port, guest_port=_BROWSER_VNC_PORT))
     return forwards
 
 
@@ -114,7 +118,7 @@ def _build_browser_vm_config(
     browser_config: BrowserSessionConfig,
     ssh_key_path: str | None = None,
 ) -> tuple[VMConfig, str | None]:
-    """Build the underlying VM config for a browser session."""
+    """Build the underlying VM config for a browser sandbox."""
     from smolvm.images.builder import ImageBuilder
     from smolvm.utils import ensure_ssh_key
 
@@ -166,8 +170,8 @@ def _build_browser_vm_config(
     return config, resolved_ssh_key_path
 
 
-class BrowserSession:
-    """Disposable browser session running inside a SmolVM guest."""
+class _BrowserSandbox:
+    """Disposable browser sandbox running inside a SmolVM guest."""
 
     def __init__(
         self,
@@ -206,8 +210,8 @@ class BrowserSession:
         data_dir: Path | None = None,
         socket_dir: Path | None = None,
         ssh_key_path: str | None = None,
-    ) -> BrowserSession:
-        """Reconnect to an existing browser session by session ID."""
+    ) -> _BrowserSandbox:
+        """Reconnect to an existing browser sandbox by ID."""
         return cls(
             session_id=session_id,
             data_dir=data_dir,
@@ -272,7 +276,7 @@ class BrowserSession:
             )
         except Exception:
             logger.warning(
-                "Browser session %s could not attach to VM %s",
+                "Browser sandbox %s could not attach to VM %s",
                 session_id,
                 self._info.vm_id,
                 exc_info=True,
@@ -281,7 +285,7 @@ class BrowserSession:
 
     @property
     def session_id(self) -> str:
-        """Stable browser session identifier."""
+        """Stable browser sandbox identifier."""
         return self._info.session_id
 
     @property
@@ -293,17 +297,17 @@ class BrowserSession:
     def vm(self) -> SmolVM:
         """Underlying SmolVM instance for shell commands and file transfer."""
         if self._vm is None:
-            raise SmolVMError("Browser session VM is unavailable.")
+            raise SmolVMError("Browser sandbox VM is unavailable.")
         return self._vm
 
     @property
     def info(self) -> BrowserSessionInfo:
-        """Current browser session info."""
+        """Current browser sandbox info."""
         return self._info
 
     @property
     def status(self) -> BrowserSessionState:
-        """Current browser session status."""
+        """Current browser sandbox status."""
         return self._info.status
 
     @property
@@ -312,9 +316,19 @@ class BrowserSession:
         return self._info.cdp_url
 
     @property
-    def live_url(self) -> str | None:
-        """Optional live-view URL exposed on localhost."""
+    def browser_cdp_url(self) -> str | None:
+        """Browser automation endpoint exposed on localhost."""
+        return self._info.cdp_url
+
+    @property
+    def viewer_url(self) -> str | None:
+        """Optional human-viewable web URL exposed on localhost."""
         return self._info.live_url
+
+    @property
+    def display_url(self) -> str | None:
+        """Optional display-control endpoint exposed on localhost."""
+        return self._info.vnc_url
 
     @property
     def artifacts_dir(self) -> Path | None:
@@ -323,7 +337,7 @@ class BrowserSession:
 
     @property
     def config(self) -> BrowserSessionConfig:
-        """Resolved browser session configuration."""
+        """Resolved browser sandbox configuration."""
         return self._session_config
 
     @property
@@ -331,7 +345,7 @@ class BrowserSession:
         """SmolVM data directory used by this session."""
         return self._data_dir
 
-    def refresh(self) -> BrowserSession:
+    def refresh(self) -> _BrowserSandbox:
         """Refresh session info from persisted state."""
         self._info = self._state.get_browser_session(self._info.session_id)
         return self
@@ -341,8 +355,8 @@ class BrowserSession:
         boot_timeout: float = _DEFAULT_BROWSER_BOOT_TIMEOUT,
         *,
         on_progress: Callable[[str], None] | None = None,
-    ) -> BrowserSession:
-        """Start the browser session and expose its CDP/live endpoints."""
+    ) -> _BrowserSandbox:
+        """Start the browser sandbox and expose its endpoints."""
         if self._session_config.network_policy_id is not None:
             raise SmolVMError(
                 "network_policy_id is reserved for future host-side policy enforcement "
@@ -350,7 +364,7 @@ class BrowserSession:
             )
         if self._vm is None:
             raise SmolVMError(
-                f"Browser session '{self.session_id}' cannot be started because "
+                f"Browser sandbox '{self.session_id}' cannot be started because "
                 "its VM is unavailable."
             )
 
@@ -364,37 +378,57 @@ class BrowserSession:
                 self._vm.start(boot_timeout=boot_timeout, on_progress=on_progress)
             self._vm.wait_for_ssh(timeout=boot_timeout, on_progress=on_progress)
 
-            debug_ready = self._wait_for_guest_port(_BROWSER_DEBUG_PORT, timeout=1.0)
+            expects_browser = self._session_config.mode != "desktop"
+            expects_display = self._session_config.mode in {"live", "desktop"}
+            debug_ready = (
+                self._wait_for_guest_port(_BROWSER_DEBUG_PORT, timeout=1.0)
+                if expects_browser
+                else True
+            )
             live_ready = (
                 self._wait_for_guest_port(_BROWSER_LIVE_PORT, timeout=1.0)
-                if self._session_config.mode == "live"
+                and self._wait_for_guest_port(_BROWSER_VNC_PORT, timeout=1.0)
+                if expects_display
                 else True
             )
             if not debug_ready or not live_ready:
                 self._start_guest_browser()
 
-            if not self._wait_for_guest_port(_BROWSER_DEBUG_PORT, timeout=boot_timeout):
-                raise SmolVMError(
-                    f"Browser session '{self.session_id}' did not expose a CDP port in time."
-                )
-            debug_host_port = self._resolve_browser_host_port(_BROWSER_DEBUG_PORT)
-            cdp_url = f"http://127.0.0.1:{debug_host_port}"
+            debug_host_port: int | None = None
+            cdp_url: str | None = None
+            if expects_browser:
+                if not self._wait_for_guest_port(_BROWSER_DEBUG_PORT, timeout=boot_timeout):
+                    raise SmolVMError(
+                        f"Browser sandbox '{self.session_id}' did not expose a CDP port in time."
+                    )
+                debug_host_port = self._resolve_browser_host_port(_BROWSER_DEBUG_PORT)
+                cdp_url = f"http://127.0.0.1:{debug_host_port}"
 
             live_url: str | None = None
-            if self._session_config.mode == "live":
+            vnc_url: str | None = None
+            vnc_host_port: int | None = None
+            if expects_display:
+                if not self._wait_for_guest_port(_BROWSER_VNC_PORT, timeout=boot_timeout):
+                    raise SmolVMError(
+                        f"Browser sandbox '{self.session_id}' did not expose VNC in time."
+                    )
                 if not self._wait_for_guest_port(_BROWSER_LIVE_PORT, timeout=boot_timeout):
                     raise SmolVMError(
-                        f"Browser session '{self.session_id}' did not expose a live view in time."
+                        f"Browser sandbox '{self.session_id}' did not expose a viewer in time."
                     )
                 live_host_port = self._resolve_browser_host_port(_BROWSER_LIVE_PORT)
                 live_url = f"http://127.0.0.1:{live_host_port}/vnc.html?autoconnect=1&resize=scale"
+                vnc_host_port = self._resolve_browser_host_port(_BROWSER_VNC_PORT)
+                vnc_url = f"vnc://127.0.0.1:{vnc_host_port}"
 
             self._info = self._state.update_browser_session(
                 self.session_id,
                 status=BrowserSessionState.READY,
                 cdp_url=cdp_url,
                 live_url=live_url,
+                vnc_url=vnc_url,
                 debug_port=debug_host_port,
+                vnc_port=vnc_host_port,
                 profile_id=self._session_config.profile_id,
                 expires_at=self._info.expires_at,
                 artifacts_dir=self._session_artifacts_dir(self.session_id),
@@ -408,8 +442,8 @@ class BrowserSession:
             )
             raise
 
-    def stop(self) -> BrowserSession:
-        """Stop the browser session and tear down its VM."""
+    def stop(self) -> _BrowserSandbox:
+        """Stop the browser sandbox and tear down its VM."""
         with suppress(BrowserSessionNotFoundError):
             self._info = self._state.update_browser_session(
                 self.session_id,
@@ -436,9 +470,9 @@ class BrowserSession:
         self.stop()
 
     def connect_playwright(self) -> Any:
-        """Connect Playwright to the browser session over CDP."""
+        """Connect Playwright to the browser sandbox over CDP."""
         if self._info.cdp_url is None:
-            raise SmolVMError("Browser session is not ready; start it before connecting.")
+            raise SmolVMError("Browser sandbox is not ready; start it before connecting.")
 
         try:
             from playwright.sync_api import sync_playwright
@@ -471,23 +505,23 @@ class BrowserSession:
         page.screenshot(path=str(output_path), full_page=full_page)
         return output_path
 
-    def open_live_view(self) -> bool:
-        """Open the live-view URL in the local default browser."""
+    def open_viewer(self) -> bool:
+        """Open the viewer URL in the local default browser."""
         if self._info.live_url is None:
-            raise SmolVMError("This browser session does not expose a live_url.")
+            raise SmolVMError("This browser sandbox does not expose a viewer_url.")
         return webbrowser.open(self._info.live_url)
 
     def push_file(self, local_path: str | Path, guest_path: str) -> None:
-        """Upload a file into the guest using the session SSH channel."""
+        """Upload a file into the guest using the sandbox SSH channel."""
         if self._vm is None:
-            raise SmolVMError("Browser session VM is unavailable.")
+            raise SmolVMError("Browser sandbox VM is unavailable.")
         ssh = self._vm._ensure_ssh_for_env()
         ssh.put_file(local_path, guest_path)
 
     def pull_file(self, guest_path: str, local_path: str | Path) -> Path:
-        """Download a file from the guest using the session SSH channel."""
+        """Download a file from the guest using the sandbox SSH channel."""
         if self._vm is None:
-            raise SmolVMError("Browser session VM is unavailable.")
+            raise SmolVMError("Browser sandbox VM is unavailable.")
         ssh = self._vm._ensure_ssh_for_env()
         return ssh.get_file(guest_path, local_path)
 
@@ -519,7 +553,7 @@ class BrowserSession:
         result = self._vm.run(command, timeout=180)
         if not result.ok:
             raise SmolVMError(
-                "Failed to collect browser session artifacts: "
+                "Failed to collect browser sandbox artifacts: "
                 f"{result.stderr.strip() or result.stdout}"
             )
 
@@ -528,7 +562,7 @@ class BrowserSession:
         return ssh.get_file(remote_archive, archive_path)
 
     def logs(self, tail: int = 100) -> str:
-        """Return combined host/guest logs for the browser session."""
+        """Return combined host/guest logs for the browser sandbox."""
         chunks: list[str] = []
 
         host_log = self.data_dir / f"{self.vm_id}.log"
@@ -550,7 +584,7 @@ class BrowserSession:
         return "\n\n".join(chunks).strip()
 
     def close(self) -> None:
-        """Release local resources without changing the remote session state."""
+        """Release local resources without changing the remote sandbox state."""
         if self._playwright_runtime is not None:
             with suppress(Exception):
                 self._playwright_runtime.stop()
@@ -560,7 +594,7 @@ class BrowserSession:
             self._vm.close()
             self._vm = None
 
-    def __enter__(self) -> BrowserSession:
+    def __enter__(self) -> _BrowserSandbox:
         if self._owns_session and self._info.status != BrowserSessionState.READY:
             self.start()
         return self
@@ -573,7 +607,7 @@ class BrowserSession:
 
     def _start_guest_browser(self) -> None:
         if self._vm is None:
-            raise SmolVMError("Browser session VM is unavailable.")
+            raise SmolVMError("Browser sandbox VM is unavailable.")
 
         command = " ".join(
             [
@@ -605,13 +639,13 @@ class BrowserSession:
         fall back to an SSH tunnel when direct guest networking is not enough.
         """
         if self._vm is None:
-            raise SmolVMError("Browser session VM is unavailable.")
+            raise SmolVMError("Browser sandbox VM is unavailable.")
 
         return self._vm.expose_local(guest_port=guest_port)
 
     def _wait_for_guest_port(self, port: int, *, timeout: float) -> bool:
         if self._vm is None:
-            raise SmolVMError("Browser session VM is unavailable.")
+            raise SmolVMError("Browser sandbox VM is unavailable.")
 
         command = f"/usr/local/bin/smolvm-browser-wait-port {port} {timeout}"
         result = self._vm.run(command, timeout=max(5, int(timeout) + 5))
@@ -639,3 +673,24 @@ class BrowserSession:
         if line_count <= 0:
             return ""
         return "\n".join(lines[-line_count:])
+
+
+class _DesktopSandbox(_BrowserSandbox):
+    """Visible desktop sandbox backed by the current live display stack."""
+
+    @property
+    def cdp_url(self) -> None:
+        """Desktop sandboxes do not expose browser automation."""
+        return None
+
+    @property
+    def browser_cdp_url(self) -> None:
+        """Desktop sandboxes do not expose browser automation."""
+        return None
+
+    def connect_playwright(self) -> Any:
+        """Desktop sandboxes do not expose Playwright automation."""
+        raise SmolVMError(
+            "Desktop sandboxes do not support Playwright or browser automation; "
+            "use SmolVM.browser() when you need a browser connection address."
+        )

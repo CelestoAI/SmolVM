@@ -19,7 +19,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from smolvm.browser import BrowserSession, _browser_vm_id, _build_browser_vm_config
+from smolvm import SmolVM
+from smolvm.browser import (
+    _browser_vm_id,
+    _BrowserSandbox,
+    _build_browser_vm_config,
+    _DesktopSandbox,
+)
 from smolvm.exceptions import BrowserSessionNotFoundError
 from smolvm.runtime.boot_profiles import KernelBootProfile
 from smolvm.types import (
@@ -55,6 +61,129 @@ def test_browser_vm_id_uses_stable_profile_id() -> None:
     vm_id = _browser_vm_id("browser-deadbeef", config)
 
     assert vm_id.startswith("browser-prof-acct-1-")
+
+
+@patch("smolvm.browser._BrowserSandbox")
+def test_smolvm_browser_factory_starts_headless_sandbox(mock_sandbox_cls: MagicMock) -> None:
+    """SmolVM.browser(headless=True) should start a CDP-only browser sandbox."""
+    sandbox = MagicMock()
+    mock_sandbox_cls.return_value = sandbox
+
+    result = SmolVM.browser(
+        headless=True,
+        viewport={"width": 1024, "height": 768},
+        boot_timeout=12.5,
+    )
+
+    assert result is sandbox
+    config = mock_sandbox_cls.call_args.args[0]
+    assert config.mode == "headless"
+    assert config.viewport_width == 1024
+    assert config.viewport_height == 768
+    session_kwargs = mock_sandbox_cls.call_args.kwargs
+    assert session_kwargs == {
+        "data_dir": None,
+        "socket_dir": None,
+        "ssh_key_path": None,
+    }
+    sandbox.start.assert_called_once_with(boot_timeout=12.5, on_progress=None)
+
+
+@patch("smolvm.browser._BrowserSandbox")
+def test_smolvm_browser_factory_starts_visible_sandbox(mock_sandbox_cls: MagicMock) -> None:
+    """SmolVM.browser(headless=False) should start a visible browser sandbox."""
+    sandbox = MagicMock()
+    mock_sandbox_cls.return_value = sandbox
+
+    result = SmolVM.browser(headless=False, record_video=True)
+
+    assert result is sandbox
+    config = mock_sandbox_cls.call_args.args[0]
+    assert config.mode == "live"
+    assert config.record_video is True
+    sandbox.start.assert_called_once_with(boot_timeout=90.0, on_progress=None)
+
+
+@patch("smolvm.browser._DesktopSandbox")
+def test_smolvm_desktop_factory_starts_visible_sandbox(mock_sandbox_cls: MagicMock) -> None:
+    """SmolVM.desktop() should start a visible desktop sandbox."""
+    sandbox = MagicMock()
+    mock_sandbox_cls.return_value = sandbox
+
+    result = SmolVM.desktop(viewport_width=1440, viewport_height=900)
+
+    assert result is sandbox
+    config = mock_sandbox_cls.call_args.args[0]
+    assert config.mode == "desktop"
+    assert config.viewport_width == 1440
+    assert config.viewport_height == 900
+    sandbox.start.assert_called_once_with(boot_timeout=90.0, on_progress=None)
+
+
+@patch("smolvm.browser._BrowserSandbox")
+def test_smolvm_browser_factory_stops_sandbox_on_start_failure(
+    mock_sandbox_cls: MagicMock,
+) -> None:
+    """SmolVM.browser() should not leave a created sandbox around after start fails."""
+    sandbox = MagicMock()
+    sandbox.start.side_effect = RuntimeError("boom")
+    mock_sandbox_cls.return_value = sandbox
+
+    with pytest.raises(RuntimeError, match="boom"):
+        SmolVM.browser()
+
+    sandbox.stop.assert_called_once_with()
+
+
+@patch("smolvm.facade.logger")
+@patch("smolvm.browser._BrowserSandbox")
+def test_smolvm_browser_factory_logs_cleanup_failure_without_replacing_start_error(
+    mock_sandbox_cls: MagicMock,
+    mock_logger: MagicMock,
+) -> None:
+    """Cleanup errors should be logged without hiding the original start failure."""
+    sandbox = MagicMock()
+    sandbox.start.side_effect = RuntimeError("start failed")
+    sandbox.stop.side_effect = RuntimeError("stop failed")
+    mock_sandbox_cls.return_value = sandbox
+
+    with pytest.raises(RuntimeError, match="start failed"):
+        SmolVM.browser()
+
+    sandbox.stop.assert_called_once_with()
+    mock_logger.exception.assert_called_once_with(
+        "Failed to clean up display sandbox after startup failed."
+    )
+
+
+@patch("smolvm.browser._BrowserSandbox")
+def test_smolvm_browser_factory_rejects_invalid_resource_limits(
+    mock_sandbox_cls: MagicMock,
+) -> None:
+    """Invalid factory limits should fail before constructing the sandbox."""
+    with pytest.raises(ValueError, match="memory_mb"):
+        SmolVM.browser(memory_mb=0)
+    with pytest.raises(ValueError, match="disk_size_mb"):
+        SmolVM.browser(disk_size_mb=0)
+    with pytest.raises(ValueError, match="timeout_minutes"):
+        SmolVM.browser(timeout_minutes=0)
+    with pytest.raises(ValueError, match="boot_timeout"):
+        SmolVM.browser(boot_timeout=0)
+
+    mock_sandbox_cls.assert_not_called()
+
+
+@patch("smolvm.browser._DesktopSandbox")
+def test_smolvm_desktop_factory_rejects_invalid_viewport(
+    mock_sandbox_cls: MagicMock,
+) -> None:
+    """Viewport values should be validated before constructing the sandbox."""
+    with pytest.raises(ValueError, match="viewport.width"):
+        SmolVM.desktop(viewport={"width": 0, "height": 900})
+    with pytest.raises(ValueError, match="viewport_height"):
+        SmolVM.desktop(viewport_height=-1)
+
+    mock_sandbox_cls.assert_not_called()
 
 
 @patch("smolvm.utils.ensure_ssh_key")
@@ -165,14 +294,14 @@ def test_build_browser_vm_config_passes_workspace_mounts_and_selects_qemu(
 
 @patch("smolvm.utils.ensure_ssh_key")
 @patch("smolvm.images.builder.ImageBuilder")
-@patch("smolvm.browser._allocate_browser_host_port", side_effect=[39011, 39012])
+@patch("smolvm.browser._allocate_browser_host_port", side_effect=[39011, 39012, 39013])
 def test_build_browser_vm_config_allocates_qemu_live_port_forwards(
     mock_allocate_host_port: MagicMock,
     mock_builder_cls: MagicMock,
     mock_ensure_ssh_key: MagicMock,
     tmp_path: Path,
 ) -> None:
-    """Live QEMU sessions should preallocate host forwards for CDP and noVNC."""
+    """Live QEMU sessions should preallocate host forwards for CDP, noVNC, and VNC."""
     kernel = tmp_path / "kernel"
     rootfs = tmp_path / "rootfs.ext4"
     private_key = tmp_path / "id_ed25519"
@@ -202,8 +331,9 @@ def test_build_browser_vm_config_allocates_qemu_live_port_forwards(
     assert [(forward.host_port, forward.guest_port) for forward in vm_config.port_forwards] == [
         (39011, 9222),
         (39012, 6080),
+        (39013, 5900),
     ]
-    assert mock_allocate_host_port.call_count == 2
+    assert mock_allocate_host_port.call_count == 3
 
 
 @patch("smolvm.utils.ensure_ssh_key")
@@ -251,13 +381,13 @@ def test_browser_session_start_persists_ready_state(
     sample_vm_config: VMConfig,
     tmp_path: Path,
 ) -> None:
-    """Starting a browser session should expose CDP/live URLs and persist READY state."""
+    """Starting a browser sandbox should expose CDP/viewer/display URLs."""
     mock_build_browser_vm_config.return_value = (sample_vm_config, str(tmp_path / "id_ed25519"))
 
     vm = MagicMock()
     vm.vm_id = "browser-abc123"
     vm.status = VMState.CREATED
-    vm.expose_local.side_effect = [39222, 36080]
+    vm.expose_local.side_effect = [39222, 36080, 35900]
 
     def _run_side_effect(command: str, timeout: int = 30, shell: str = "login") -> CommandResult:
         if command.startswith("/usr/local/bin/smolvm-browser-wait-port 9222 1.0"):
@@ -268,12 +398,14 @@ def test_browser_session_start_persists_ready_state(
             return CommandResult(exit_code=0, stdout="", stderr="")
         if command.startswith("/usr/local/bin/smolvm-browser-wait-port 6080"):
             return CommandResult(exit_code=0, stdout="", stderr="")
+        if command.startswith("/usr/local/bin/smolvm-browser-wait-port 5900"):
+            return CommandResult(exit_code=0, stdout="", stderr="")
         return CommandResult(exit_code=0, stdout="", stderr="")
 
     vm.run.side_effect = _run_side_effect
     mock_vm_cls.return_value = vm
 
-    session = BrowserSession(
+    session = _BrowserSandbox(
         BrowserSessionConfig(
             session_id="browser-abc123",
             mode="live",
@@ -286,23 +418,27 @@ def test_browser_session_start_persists_ready_state(
 
     assert session.status == BrowserSessionState.READY
     assert session.cdp_url == "http://127.0.0.1:39222"
-    assert session.live_url == "http://127.0.0.1:36080/vnc.html?autoconnect=1&resize=scale"
+    assert session.browser_cdp_url == "http://127.0.0.1:39222"
+    assert session.viewer_url == "http://127.0.0.1:36080/vnc.html?autoconnect=1&resize=scale"
+    assert session.display_url == "vnc://127.0.0.1:35900"
     assert session.vm is vm
     persisted = session.refresh().info
     assert persisted.status == BrowserSessionState.READY
     assert persisted.debug_port == 39222
+    assert persisted.vnc_port == 35900
+    assert persisted.vnc_url == "vnc://127.0.0.1:35900"
     session.close()
 
 
 @patch("smolvm.browser.SmolVM")
 @patch("smolvm.browser._build_browser_vm_config")
-def test_browser_session_start_uses_expose_local_for_qemu_cdp(
+def test_browser_sandbox_start_uses_expose_local_for_qemu_cdp(
     mock_build_browser_vm_config: MagicMock,
     mock_vm_cls: MagicMock,
     sample_vm_config: VMConfig,
     tmp_path: Path,
 ) -> None:
-    """QEMU browser sessions should expose CDP through the localhost helper path."""
+    """QEMU browser sandboxes should expose CDP through the localhost helper path."""
     qemu_vm_config = sample_vm_config.model_copy(
         update={
             "backend": "qemu",
@@ -329,7 +465,7 @@ def test_browser_session_start_uses_expose_local_for_qemu_cdp(
     vm.run.side_effect = _run_side_effect
     mock_vm_cls.return_value = vm
 
-    session = BrowserSession(
+    session = _BrowserSandbox(
         BrowserSessionConfig(session_id="browser-abc123", backend="qemu"),
         data_dir=tmp_path,
     )
@@ -343,15 +479,68 @@ def test_browser_session_start_uses_expose_local_for_qemu_cdp(
 
 @patch("smolvm.browser.SmolVM")
 @patch("smolvm.browser._build_browser_vm_config")
-@patch.object(BrowserSession, "collect_artifacts", return_value=Path("/tmp/guest-artifacts.tar.gz"))
-def test_browser_session_stop_deletes_state_record(
+def test_desktop_sandbox_start_exposes_viewer_and_display_only(
+    mock_build_browser_vm_config: MagicMock,
+    mock_vm_cls: MagicMock,
+    sample_vm_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """Desktop sandboxes should expose display URLs without a CDP endpoint."""
+    mock_build_browser_vm_config.return_value = (sample_vm_config, str(tmp_path / "id_ed25519"))
+
+    vm = MagicMock()
+    vm.vm_id = "desktop-abc123"
+    vm.status = VMState.CREATED
+    vm.expose_local.side_effect = [36080, 35900]
+
+    def _run_side_effect(command: str, timeout: int = 30, shell: str = "login") -> CommandResult:
+        del timeout, shell
+        if command.startswith("/usr/local/bin/smolvm-browser-wait-port 9222"):
+            raise AssertionError("desktop mode should not wait for CDP")
+        if command.startswith("/usr/local/bin/smolvm-browser-session start"):
+            assert " desktop " in command
+            return CommandResult(exit_code=0, stdout="", stderr="")
+        if command.startswith("/usr/local/bin/smolvm-browser-wait-port 6080"):
+            return CommandResult(exit_code=0, stdout="", stderr="")
+        if command.startswith("/usr/local/bin/smolvm-browser-wait-port 5900"):
+            return CommandResult(exit_code=0, stdout="", stderr="")
+        return CommandResult(exit_code=0, stdout="", stderr="")
+
+    vm.run.side_effect = _run_side_effect
+    mock_vm_cls.return_value = vm
+
+    session = _DesktopSandbox(
+        BrowserSessionConfig(session_id="desktop-abc123", mode="desktop"),
+        data_dir=tmp_path,
+    )
+
+    session.start()
+
+    assert session.cdp_url is None
+    assert session.viewer_url == "http://127.0.0.1:36080/vnc.html?autoconnect=1&resize=scale"
+    assert session.display_url == "vnc://127.0.0.1:35900"
+    assert [call.kwargs for call in vm.expose_local.call_args_list] == [
+        {"guest_port": 6080},
+        {"guest_port": 5900},
+    ]
+    session.close()
+
+
+@patch("smolvm.browser.SmolVM")
+@patch("smolvm.browser._build_browser_vm_config")
+@patch.object(
+    _BrowserSandbox,
+    "collect_artifacts",
+)
+def test_browser_sandbox_stop_deletes_state_record(
     _mock_collect_artifacts: MagicMock,
     mock_build_browser_vm_config: MagicMock,
     mock_vm_cls: MagicMock,
     sample_vm_config: VMConfig,
     tmp_path: Path,
 ) -> None:
-    """Stopping a browser session should delete its persisted session record."""
+    """Stopping a browser sandbox should delete its persisted state record."""
+    _mock_collect_artifacts.return_value = tmp_path / "guest-artifacts.tar.gz"
     mock_build_browser_vm_config.return_value = (sample_vm_config, str(tmp_path / "id_ed25519"))
 
     vm = MagicMock()
@@ -360,7 +549,7 @@ def test_browser_session_stop_deletes_state_record(
     vm.run.return_value = CommandResult(exit_code=0, stdout="", stderr="")
     mock_vm_cls.return_value = vm
 
-    session = BrowserSession(
+    session = _BrowserSandbox(
         BrowserSessionConfig(session_id="browser-abc123"),
         data_dir=tmp_path,
     )

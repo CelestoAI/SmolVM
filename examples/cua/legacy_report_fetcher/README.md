@@ -76,7 +76,7 @@ examples/cua/legacy_report_fetcher/artifacts/
     02-after-downloads.png
 ```
 
-Browser session logs and video are collected in the SmolVM browser artifacts directory printed by the script.
+Browser sandbox logs and video are collected in the SmolVM browser artifacts directory printed by the script.
 
 ## Fake portal credentials
 

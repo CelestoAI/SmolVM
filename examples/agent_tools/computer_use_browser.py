@@ -47,7 +47,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
 
-from smolvm import BrowserSession, BrowserSessionConfig, SmolVMError
+from smolvm import SmolVM, SmolVMError
 
 if TYPE_CHECKING:
     from openai.types.responses import ResponseComputerToolCall
@@ -108,7 +108,8 @@ class ComputerUseResult:
     session_id: str
     page_url: str
     cdp_url: str | None
-    live_url: str | None
+    viewer_url: str | None
+    display_url: str | None
     artifacts_dir: str | None
 
 
@@ -152,8 +153,10 @@ def _format_result(result: ComputerUseResult) -> str:
     ]
     if result.cdp_url:
         lines.append(f"cdp_url: {result.cdp_url}")
-    if result.live_url:
-        lines.append(f"live_url: {result.live_url}")
+    if result.viewer_url:
+        lines.append(f"viewer_url: {result.viewer_url}")
+    if result.display_url:
+        lines.append(f"display_url: {result.display_url}")
     if result.artifacts_dir:
         lines.append(f"artifacts_dir: {result.artifacts_dir}")
     return "\n".join(lines)
@@ -428,21 +431,24 @@ def _run_task(config: ComputerUseConfig) -> ComputerUseResult:
     openai_client_cls = _require_dependency("openai:OpenAI", "pip install openai")
     client = openai_client_cls()
 
-    with BrowserSession(
-        BrowserSessionConfig(
-            mode=config.browser_mode,
-            viewport={"width": config.viewport_width, "height": config.viewport_height},
-        )
+    with SmolVM.browser(
+        headless=config.browser_mode == "headless",
+        viewport={"width": config.viewport_width, "height": config.viewport_height},
     ) as session:
         _log(
-            f"session started id={session.session_id} mode={config.browser_mode} "
+            f"browser sandbox started id={session.session_id} mode={config.browser_mode} "
             f"start_url={config.start_url}"
         )
         if session.cdp_url is None:
-            raise SmolVMError("Browser session did not expose a CDP URL.")
+            raise SmolVMError(
+                "The browser sandbox failed to provide a connection address needed to "
+                "control the browser; please try again or report this problem."
+            )
         _log(f"cdp_url={session.cdp_url}")
-        if session.live_url:
-            _log(f"live_url={session.live_url}")
+        if session.viewer_url:
+            _log(f"viewer_url={session.viewer_url}")
+        if session.display_url:
+            _log(f"display_url={session.display_url}")
 
         browser: Browser = session.connect_playwright()
         context = browser.contexts[0] if browser.contexts else browser.new_context(
@@ -474,7 +480,8 @@ def _run_task(config: ComputerUseConfig) -> ComputerUseResult:
                     session_id=session.session_id,
                     page_url=page.url,
                     cdp_url=session.cdp_url,
-                    live_url=session.live_url,
+                    viewer_url=session.viewer_url,
+                    display_url=session.display_url,
                     artifacts_dir=str(session.artifacts_dir) if session.artifacts_dir else None,
                 )
 

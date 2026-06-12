@@ -9,7 +9,7 @@ flowchart TD
     A[User runs script with prompt] --> B[PydanticAI Agent initialized]
     B --> C[Agent plans browser automation steps]
     
-    C --> D[Start SmolVM browser session]
+    C --> D[Start SmolVM browser sandbox]
     D --> E{Browser ready?}
     E -->|Yes| F[Get CDP port for remote control]
     E -->|No| X[Error handling]
@@ -21,7 +21,7 @@ flowchart TD
     
     J --> K[Capture final screenshot]
     K --> L[Get page title & URL]
-    L --> M[Stop browser session]
+    L --> M[Stop browser sandbox]
     
     M --> N[Return summary to user]
     N --> O((Done))

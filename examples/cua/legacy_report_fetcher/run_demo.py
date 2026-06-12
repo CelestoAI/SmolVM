@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import urlparse
 
-from smolvm import BrowserSession, BrowserSessionConfig, CommandResult, SmolVM, WorkspaceMount
+from smolvm import CommandResult, SmolVM, WorkspaceMount
 
 DEMO_DIR = Path(__file__).resolve().parent
 GUEST_ROOT = "/workspace/legacy_report_fetcher"
@@ -693,36 +693,32 @@ def main() -> int:
     screenshots_dir = DEMO_DIR / "artifacts" / "screenshots"
     screenshots_dir.mkdir(parents=True, exist_ok=True)
 
-    session: BrowserSession | None = None
+    session: Any | None = None
     try:
         session = run_with_heartbeat(
-            "Preparing SmolVM browser session and mounted demo folder",
-            lambda: BrowserSession(
-                BrowserSessionConfig(
-                    mode=args.mode,
-                    record_video=args.mode == "live",
-                    allow_downloads=True,
-                    viewport={"width": 1440, "height": 900},
-                    workspace_mounts=[
-                        WorkspaceMount(
-                            host_path=DEMO_DIR,
-                            guest_path=GUEST_ROOT,
-                            writable=True,
-                        )
-                    ],
-                )
+            f"Starting SmolVM browser sandbox (timeout {int(args.boot_timeout)}s)",
+            lambda: SmolVM.browser(
+                headless=args.mode == "headless",
+                record_video=args.mode == "live",
+                allow_downloads=True,
+                viewport={"width": 1440, "height": 900},
+                workspace_mounts=[
+                    WorkspaceMount(
+                        host_path=DEMO_DIR,
+                        guest_path=GUEST_ROOT,
+                        writable=True,
+                    )
+                ],
+                boot_timeout=args.boot_timeout,
+                on_progress=log,
             ),
             interval_seconds=10.0,
         )
-        run_with_heartbeat(
-            f"Starting SmolVM browser sandbox (timeout {int(args.boot_timeout)}s)",
-            lambda: session.start(boot_timeout=args.boot_timeout, on_progress=log),
-            interval_seconds=10.0,
-        )
-        print(f"Session: {session.session_id}")
+        print(f"Sandbox: {session.session_id}")
         print(f"VM: {session.vm_id}")
         print(f"CDP URL: {session.cdp_url}")
-        print(f"Live URL: {session.live_url or '<headless>'}")
+        print(f"Viewer URL: {session.viewer_url or '<headless>'}")
+        print(f"Display URL: {session.display_url or '<headless>'}")
         print(f"Artifacts: {session.artifacts_dir}")
 
         vm = session.vm

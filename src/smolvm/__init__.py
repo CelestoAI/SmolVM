@@ -20,11 +20,8 @@ sandboxed environment.
 
 from importlib.metadata import version as _pkg_version
 
-from smolvm.browser import BrowserSession
 from smolvm.callbacks import Callback, CommandBlockedError, RunContext
 from smolvm.exceptions import (
-    BrowserSessionAlreadyExistsError,
-    BrowserSessionNotFoundError,
     CommandExecutionUnavailableError,
     FirecrackerAPIError,
     HostError,
@@ -46,11 +43,9 @@ from smolvm.images.manager import ImageManager, ImageSource, LocalImage, S3Image
 from smolvm.kernels import ensure_base_kernel_for_backend
 from smolvm.ssh import SSHClient
 from smolvm.types import (
-    BrowserSessionConfig,
-    BrowserSessionInfo,
-    BrowserSessionState,
     BrowserViewport,
     CommandResult,
+    DisplaySandboxProtocol,
     GuestOS,
     InternetSettings,
     NetworkConfig,
@@ -68,7 +63,6 @@ __version__ = _pkg_version("smolvm")
 __all__ = [
     # Core classes
     "SmolVM",
-    "BrowserSession",
     "SmolVMManager",
     # Callbacks / hooks
     "Callback",
@@ -100,16 +94,12 @@ __all__ = [
     "SnapshotArtifacts",
     "SnapshotInfo",
     "CommandResult",
+    "DisplaySandboxProtocol",
     "BrowserViewport",
     "WorkspaceMount",
-    "BrowserSessionConfig",
-    "BrowserSessionInfo",
-    "BrowserSessionState",
     "GuestOS",
     # Exceptions
     "SmolVMError",
-    "BrowserSessionAlreadyExistsError",
-    "BrowserSessionNotFoundError",
     "CommandExecutionUnavailableError",
     "SnapshotAlreadyExistsError",
     "SnapshotNotFoundError",

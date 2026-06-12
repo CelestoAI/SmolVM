@@ -78,7 +78,7 @@ Each microVM boots in milliseconds, runs any code or software you throw at it, p
 ## Use cases
 
 - **Run untrusted code safely.** Execute AI-generated code in an isolated sandbox instead of on your machine.
-- **Give agents a browser.** Spin up a full browser session that agents can see and control in real time.
+- **Give agents a browser.** Spin up a full browser sandbox that agents can see and control in real time.
 - **Let agents read your project.** Mount a local directory so agents can explore your codebase inside a sandbox.
 - **Keep state across turns.** Reuse the same sandbox throughout a multi-step workflow.
 
@@ -190,24 +190,47 @@ smolvm pi start  # start a new environment with the Pi coding agent preinstalled
 
 ## Browser sandbox
 
-SmolVM can also start a full browser inside a sandbox. This is useful when agents need to navigate websites, fill out forms, or take screenshots.
+SmolVM can also start a full browser inside a sandbox. This is useful when agents need to navigate websites, fill out forms, take screenshots, or connect through VNC.
 
-Start a browser session with a live view you can watch in your own browser:
+Start a visible browser sandbox from Python:
+
+```python
+from smolvm import SmolVM
+
+with SmolVM.browser(headless=False) as browser:
+    print(browser.cdp_url)      # Automation endpoint for Playwright or CDP tools
+    print(browser.viewer_url)   # Web URL you can open to watch live
+    print(browser.display_url)  # VNC URL for clients or computer-use agents
+```
+
+Use `browser.cdp_url` when a browser automation tool needs a Chromium DevTools
+connection address. Use `browser.viewer_url` when you want to watch the session
+in your own browser. Use `browser.display_url` when a VNC client or
+computer-use agent needs to control the screen.
+
+Start the same browser sandbox from the CLI:
 
 ```bash
 smolvm browser start --live
-# Session:   sess_a1b2c3
-# Live view: http://localhost:6080
+# Sandbox: browser-a1b2c3d4
+# Viewer URL: http://127.0.0.1:36080/vnc.html?autoconnect=1&resize=scale  # open in a browser
+# Display URL: vnc://127.0.0.1:35900                                      # give to a VNC client or agent
 ```
 
-Open the URL to watch the browser in real time. When you're done, list and stop sessions:
+Use `SmolVM.browser(headless=True)` for browser automation only; it gives you
+`cdp_url` and no visible viewer. Use `SmolVM.browser(headless=False)` for a
+visible browser; it gives you `cdp_url`, `viewer_url`, and `display_url`. Use
+`SmolVM.desktop()` for a full desktop display; it gives you `viewer_url` and
+`display_url`, and may not provide a browser automation endpoint.
+
+Open the viewer URL to watch the browser in real time, or give the display URL to a computer-use agent or VNC client. When you're done, list and stop sandboxes:
 
 ```bash
 smolvm browser list
 smolvm browser stop sess_a1b2c3
 ```
 
-See [examples/browser_session.py](examples/browser_session.py) for the Python equivalent.
+See [examples/browser_sandbox.py](examples/browser_sandbox.py) for a complete Python example.
 
 
 ## Network controls
@@ -299,7 +322,7 @@ with `/`), and any existing file at that path is overwritten.
 | What you'll learn | Example |
 | --- | --- |
 | Run code in a sandbox | [quickstart_sandbox.py](examples/quickstart_sandbox.py) |
-| Start a browser session | [browser_session.py](examples/browser_session.py) |
+| Start a browser sandbox | [browser_sandbox.py](examples/browser_sandbox.py) |
 | Pass environment variables into a sandbox | [env_injection.py](examples/env_injection.py) |
 
 ### Agent framework integrations

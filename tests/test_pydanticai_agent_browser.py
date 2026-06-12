@@ -47,7 +47,8 @@ def test_parse_browser_start_output_extracts_session_metadata() -> None:
         "data": {
             "session_id": "browser-abc123",
             "cdp_url": "http://127.0.0.1:39222",
-            "live_url": "http://127.0.0.1:36080/vnc.html?autoconnect=1&resize=scale",
+            "viewer_url": "http://127.0.0.1:36080/vnc.html?autoconnect=1&resize=scale",
+            "display_url": "vnc://127.0.0.1:35900",
             "artifacts_dir": "/tmp/browser-abc123",
         },
     }
@@ -58,7 +59,8 @@ def test_parse_browser_start_output_extracts_session_metadata() -> None:
     assert parsed["session_id"] == "browser-abc123"
     assert parsed["cdp_url"] == "http://127.0.0.1:39222"
     assert parsed["cdp_port"] == 39222
-    assert parsed["live_url"] == "http://127.0.0.1:36080/vnc.html?autoconnect=1&resize=scale"
+    assert parsed["viewer_url"] == "http://127.0.0.1:36080/vnc.html?autoconnect=1&resize=scale"
+    assert parsed["display_url"] == "vnc://127.0.0.1:35900"
     assert parsed["artifacts_dir"] == "/tmp/browser-abc123"
 
 
@@ -91,7 +93,8 @@ def test_format_command_result_includes_normalized_browser_section() -> None:
         "session_id": "browser-abc123",
         "cdp_url": "http://127.0.0.1:39222",
         "cdp_port": 39222,
-        "live_url": "http://127.0.0.1:36080/vnc.html",
+        "viewer_url": "http://127.0.0.1:36080/vnc.html",
+        "display_url": "vnc://127.0.0.1:35900",
         "artifacts_dir": "/tmp/browser-abc123",
     }
 
@@ -103,6 +106,7 @@ def test_format_command_result_includes_normalized_browser_section() -> None:
     assert "parsed_browser_session:" in formatted
     assert "session_id: browser-abc123" in formatted
     assert "cdp_port: 39222" in formatted
+    assert "display_url: vnc://127.0.0.1:35900" in formatted
     assert "artifacts_dir: /tmp/browser-abc123" in formatted
 
 
