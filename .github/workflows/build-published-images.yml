@@ -331,11 +331,29 @@ jobs:
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "Release tag: ${tag}"
 
+      - name: Download OpenClaw kernel
+        if: steps.filter.outputs.skip != 'true'
+        id: openclaw_kernel
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p kernel-assets
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "vmlinux-${ARCH}.elf" \
+            -D kernel-assets
+          kernel_path="$PWD/kernel-assets/vmlinux-${ARCH}.elf"
+          test -s "$kernel_path"
+          echo "path=$kernel_path" >> "$GITHUB_OUTPUT"
+
       - name: Build openclaw image
         if: steps.filter.outputs.skip != 'true'
         id: build
         env:
           ARCH: ${{ matrix.arch }}
+          KERNEL_PATH: ${{ steps.openclaw_kernel.outputs.path }}
         run: |
           uv run python <<'PY'
           import os
@@ -343,12 +361,14 @@ jobs:
           from smolvm.images.builder import ImageBuilder
 
           arch = os.environ["ARCH"]
+          kernel_url = Path(os.environ["KERNEL_PATH"]).resolve().as_uri()
           name = f"openclaw-{arch}"
 
           builder = ImageBuilder()
           kernel, rootfs = builder.build_openclaw_rootfs(
               name=name,
               rootfs_size_mb=4096,
+              kernel_url=kernel_url,
           )
 
           with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as fh:

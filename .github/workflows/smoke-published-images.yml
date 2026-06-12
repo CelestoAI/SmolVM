@@ -38,18 +38,20 @@ on:
   workflow_run:
     # NB: these are matched by the upstream workflow's `name:` field (the
     # display name), NOT the YAML filename. Keep them in sync with
-    # build-microvm-kernel.yml (`name: Build microvm Kernel`) and
     # build-published-images.yml (`name: Build Published Images`). Renaming
-    # either workflow's display name without updating this list silently
-    # disables the smoke gate.
-    workflows: ["Build microvm Kernel", "Build Published Images"]
+    # that workflow's display name without updating this list silently disables
+    # the smoke gate. Kernel-only builds do not produce rootfs assets, so they
+    # cannot trigger this workflow.
+    workflows: ["Build Published Images"]
     types:
       - completed
     branches:
       - main
 
 permissions:
-  contents: read
+  # Draft release assets require an authenticated token with repository write
+  # access; otherwise `gh release download` reports "release not found".
+  contents: write
 
 jobs:
   smoke:

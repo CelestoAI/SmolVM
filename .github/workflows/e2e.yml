@@ -51,24 +51,42 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Resolve PR image release fallback
+      - name: Resolve image release fallback
         id: image_release_fallback
-        if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # PRs may bump IMAGES_RELEASE_TAG before the draft image release exists.
-          # Use the newest published images-* release for real-KVM behavior.
-          tag=$(
+          source_tag=$(awk -F'"' '/^IMAGES_RELEASE_TAG[[:space:]]*=/{print $2; exit}' src/smolvm/images/published.py)
+          if [ -z "$source_tag" ]; then
+            echo "ERROR: IMAGES_RELEASE_TAG could not be parsed from src/smolvm/images/published.py" >&2
+            exit 1
+          fi
+
+          published_tag=$(
+            gh api "/repos/${{ github.repository }}/releases?per_page=100" \
+              --jq ".[] | select(.tag_name == \"$source_tag\" and .draft == false and .prerelease == false) | .tag_name" \
+              | head -n1
+          )
+          if [ "$published_tag" = "$source_tag" ]; then
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "Using pinned published image release: $source_tag"
+            exit 0
+          fi
+
+          fallback=$(
             gh api "/repos/${{ github.repository }}/releases?per_page=100" \
               --jq '[.[] | select(.draft == false and .prerelease == false) | .tag_name | select(startswith("images-"))][0]'
           )
-          if [[ -z "$tag" || "$tag" == "null" ]]; then
-            echo "No published images-* GitHub Release was found for PR E2E fallback." >&2
+          if [[ -z "$fallback" || "$fallback" == "null" ]]; then
+            echo "No published images-* GitHub Release was found for E2E fallback." >&2
             exit 1
           fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "Using published image release fallback: $tag"
+          gh api \
+            -H "Accept: application/vnd.github.raw" \
+            "/repos/${{ github.repository }}/contents/src/smolvm/images/published.py?ref=$fallback" \
+            > src/smolvm/images/published.py
+          echo "tag=" >> "$GITHUB_OUTPUT"
+          echo "Pinned image release $source_tag is not public yet; using published-image catalog from $fallback"
 
       - name: Set up Python 3.13
         uses: actions/setup-python@v5

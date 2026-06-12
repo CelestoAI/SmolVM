@@ -64,6 +64,26 @@ def test_published_image_workflow_uploads_guest_agent_binaries() -> None:
     assert '"${ASSET_NAME}.sha256"' in workflow
 
 
+def test_published_image_workflow_openclaw_uses_authenticated_kernel_download() -> None:
+    """OpenClaw builds must not fetch draft kernel assets via public URLs."""
+    workflow = (_REPO_ROOT / ".github" / "workflows" / "build-published-images.yml").read_text()
+    assert "Download OpenClaw kernel" in workflow
+    assert "vmlinux-${ARCH}.elf" in workflow
+    assert "KERNEL_PATH: ${{ steps.openclaw_kernel.outputs.path }}" in workflow
+    assert "kernel_url=kernel_url" in workflow
+
+
+def test_e2e_uses_image_release_fallback_until_pinned_release_is_public() -> None:
+    workflow = (_REPO_ROOT / ".github" / "workflows" / "e2e.yml").read_text()
+    assert "Resolve image release fallback" in workflow
+    assert "draft == false and .prerelease == false" in workflow
+    assert "application/vnd.github.raw" in workflow
+    assert "contents/src/smolvm/images/published.py?ref=$fallback" in workflow
+    assert "using published-image catalog from $fallback" in workflow
+    assert "SMOLVM_IMAGES_RELEASE_TAG=${SMOLVM_IMAGES_RELEASE_TAG:-}" in workflow
+    assert "github.event_name == 'pull_request'" not in workflow
+
+
 def test_smoke_published_images_uses_pinned_image_release_tag() -> None:
     """The smoke workflow should read the same image tag as build workflows."""
     workflow = (_REPO_ROOT / ".github" / "workflows" / "smoke-published-images.yml").read_text()
@@ -71,6 +91,13 @@ def test_smoke_published_images_uses_pinned_image_release_tag() -> None:
     assert "IMAGES_RELEASE_TAG" in workflow
     assert "pyproject.toml" not in workflow
     assert "images-v${version}" not in workflow
+
+
+def test_smoke_published_images_waits_for_rootfs_publish() -> None:
+    workflow = (_REPO_ROOT / ".github" / "workflows" / "smoke-published-images.yml").read_text()
+    assert 'workflows: ["Build Published Images"]' in workflow
+    assert "Build microvm Kernel" not in workflow
+    assert "contents: write" in workflow
 
 
 def test_guest_agent_source_digest_tracks_rust_crate() -> None:
