@@ -40,11 +40,6 @@ jobs:
     name: ${{ matrix.backend }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      # PRs may bump IMAGES_RELEASE_TAG before the draft image release exists.
-      # Use the last published assets for real-KVM behavior; push/nightly/manual
-      # runs use the CalVer tag from published.py.
-      SMOLVM_IMAGES_RELEASE_TAG: ${{ github.event_name == 'pull_request' && 'images-v0.0.16' || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -55,6 +50,25 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - name: Resolve PR image release fallback
+        id: image_release_fallback
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # PRs may bump IMAGES_RELEASE_TAG before the draft image release exists.
+          # Use the newest published images-* release for real-KVM behavior.
+          tag=$(
+            gh api "/repos/${{ github.repository }}/releases?per_page=100" \
+              --jq '[.[] | select(.draft == false and .prerelease == false) | .tag_name | select(startswith("images-"))][0]'
+          )
+          if [[ -z "$tag" || "$tag" == "null" ]]; then
+            echo "No published images-* GitHub Release was found for PR E2E fallback." >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Using published image release fallback: $tag"
 
       - name: Set up Python 3.13
         uses: actions/setup-python@v5
@@ -125,6 +139,8 @@ jobs:
         run: sudo -n -E -u "$USER" -g kvm -- env "PATH=$PATH" "$(command -v uv)" run smolvm doctor --backend "${{ matrix.backend }}" || true
 
       - name: Run e2e suite
+        env:
+          SMOLVM_IMAGES_RELEASE_TAG: ${{ steps.image_release_fallback.outputs.tag }}
         run: sudo -n -E -u "$USER" -g kvm -- env "PATH=$PATH" "SMOLVM_IMAGES_RELEASE_TAG=${SMOLVM_IMAGES_RELEASE_TAG:-}" "$(command -v uv)" run pytest -m e2e tests/e2e -v --e2e-backend "${{ matrix.backend }}"
 
       - name: Dump VM logs on failure
