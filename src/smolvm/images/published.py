@@ -15,9 +15,11 @@
 """Published pre-built VM images for SmolVM presets.
 
 Images are built and signed in CI, hosted on GitHub Releases, and pinned
-lock-step to the CLI version: SmolVM ``X.Y.Z`` always pulls images from
-the ``images-vX.Y.Z`` release tag. The ``MANIFEST`` below is the bundled
-catalog the CLI ships with — entries are appended as CI publishes them.
+to a content release tag such as ``images-2026.06.12.0``. This tag is
+intentionally independent of the SmolVM package version because image and
+rootfs rebuilds have their own cadence. The ``MANIFEST`` below is the
+bundled catalog the CLI ships with — entries are appended as CI publishes
+them.
 
 Resolution flow: ``ensure_published_image(preset, arch, vmm)`` looks up the
 matching entry, converts it to an :class:`ImageSource`, delegates to
@@ -125,7 +127,8 @@ class BaseKernel(BaseModel):
 # deriving from pyproject — change here flows to both sides.
 #
 # Bumping protocol — one PR:
-#   1. Edit this string (e.g. ``images-v0.0.15``).
+#   1. Edit this CalVer string (e.g. ``images-2026.06.12.0``).
+#      Bump the final sequence when publishing more than once on a day.
 #   2. Run the kernel + published-image workflows, copy SHAs from the
 #      step summaries into ``BASE_KERNELS`` and ``MANIFEST``.
 #   3. Promote the draft release on GitHub.
@@ -135,7 +138,7 @@ class BaseKernel(BaseModel):
 # upload step instead of silently swapping bytes under the existing
 # pins. Re-bakes against the same tag must opt in via the
 # ``force_overwrite`` workflow_dispatch input.
-IMAGES_RELEASE_TAG = "images-v0.0.16"
+IMAGES_RELEASE_TAG = "images-2026.06.12.0"
 
 
 def cache_name(

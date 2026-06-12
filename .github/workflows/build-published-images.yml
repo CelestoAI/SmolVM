@@ -32,7 +32,7 @@ on:
         default: "all"
       release_tag:
         description: >-
-          Release tag (e.g. images-v0.0.13). Created as draft if missing.
+          Release tag (e.g. images-2026.06.12.0). Created as draft if missing.
           Leave empty to use IMAGES_RELEASE_TAG from published.py.
         type: string
         default: ""
@@ -90,6 +90,146 @@ jobs:
           name: base-rootfs-${{ matrix.os }}-${{ matrix.arch }}
           path: /tmp/base/base-rootfs.ext4
           retention-days: 1
+
+  # ── Standalone Rust guest-agent binaries ─────────────────────
+  #
+  # Rootfs jobs bake this same binary into /usr/local/bin. Uploading it once
+  # per architecture gives users and production builders a provenance/debug
+  # artifact without making the private Celesto repo the source of truth.
+  guest-agent-binaries:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Rust musl target
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          case "$ARCH" in
+            amd64) target="x86_64-unknown-linux-musl" ;;
+            arm64) target="aarch64-unknown-linux-musl" ;;
+            *) echo "Unsupported arch: $ARCH" >&2; exit 1 ;;
+          esac
+          rustup target add "$target"
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'smolvm-core/Cargo.toml', 'guest-agent/Cargo.toml') }}
+          restore-keys: rust-${{ runner.os }}-${{ matrix.arch }}-
+
+      - name: Resolve release tag
+        id: release
+        env:
+          INPUT_TAG: ${{ inputs.release_tag }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            tag="$INPUT_TAG"
+          else
+            # Single source of truth — published.py::IMAGES_RELEASE_TAG.
+            # Read as string rather than importing: avoids forcing every
+            # job to install smolvm's Python deps just to print one tag.
+            tag=$(awk -F'"' '/^IMAGES_RELEASE_TAG[[:space:]]*=/{print $2; exit}' src/smolvm/images/published.py)
+          fi
+          if [ -z "$tag" ]; then
+            echo "ERROR: IMAGES_RELEASE_TAG could not be parsed from src/smolvm/images/published.py" >&2
+            exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Release tag: ${tag}"
+
+      - name: Build Rust guest agent
+        id: build
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          case "$ARCH" in
+            amd64)
+              target="x86_64-unknown-linux-musl"
+              asset_name="smolvm-guest-agent-linux-amd64"
+              ;;
+            arm64)
+              target="aarch64-unknown-linux-musl"
+              asset_name="smolvm-guest-agent-linux-arm64"
+              ;;
+            *) echo "Unsupported arch: $ARCH" >&2; exit 1 ;;
+          esac
+          cargo build --release --target "$target" -p smolvm-guest-agent
+          cp "target/${target}/release/smolvm-guest-agent" "$asset_name"
+          chmod 0755 "$asset_name"
+          echo "asset_name=${asset_name}" >> "$GITHUB_OUTPUT"
+
+      - name: Compute SHA-256
+        id: sha
+        env:
+          ASSET_NAME: ${{ steps.build.outputs.asset_name }}
+        run: |
+          binary_sha=$(sha256sum "$ASSET_NAME" | cut -d' ' -f1)
+          binary_size=$(stat -c '%s' "$ASSET_NAME")
+          printf '%s  %s\n' "$binary_sha" "$ASSET_NAME" > "${ASSET_NAME}.sha256"
+          {
+            echo "binary_sha=${binary_sha}"
+            echo "binary_size=${binary_size}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload to GitHub Releases (draft)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+          ASSET_NAME: ${{ steps.build.outputs.asset_name }}
+          FORCE_OVERWRITE: ${{ inputs.force_overwrite }}
+        run: |
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft \
+              --title "Published images $TAG" \
+              --notes "Auto-generated draft release for SmolVM published images. Verify SHA-256 sums and content before publishing." \
+              || echo "Draft already exists (race with another matrix cell), continuing."
+          fi
+
+          upload_args=()
+          if [ "${FORCE_OVERWRITE:-false}" = "true" ]; then
+            upload_args+=(--clobber)
+          fi
+          gh release upload "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            "${upload_args[@]}" \
+            "$ASSET_NAME" \
+            "${ASSET_NAME}.sha256"
+
+      - name: Step summary
+        env:
+          ASSET_NAME: ${{ steps.build.outputs.asset_name }}
+          TAG: ${{ steps.release.outputs.tag }}
+          BINARY_SHA: ${{ steps.sha.outputs.binary_sha }}
+          BINARY_SIZE: ${{ steps.sha.outputs.binary_size }}
+        run: |
+          {
+            echo "## Guest agent binary: \`${ASSET_NAME}\`"
+            echo ""
+            echo "Uploaded to draft release [\`${TAG}\`](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG})."
+            echo ""
+            echo "| File | Size | SHA-256 |"
+            echo "| --- | --- | --- |"
+            echo "| ${ASSET_NAME} | $(numfmt --to=iec-i --suffix=B ${BINARY_SIZE}) | \`${BINARY_SHA}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ── Stage 2a: Build openclaw (custom builder, not layered) ────
   #

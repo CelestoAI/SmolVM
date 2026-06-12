@@ -429,7 +429,7 @@ These are intentionally separate. CLI bumps happen for any user-facing change (b
 
 But the decoupling needs to be explicit. The previous `_MANIFEST_VERSION` constant was a string version like `"0.0.14a0"` that *looked* like it should track `__version__`. When the CLI bumped to `0.0.14a1` and `_MANIFEST_VERSION` stayed at `0.0.14a0`, the CI workflows derived the upload tag from `pyproject` (`images-v0.0.14a1`) while the runtime looked for `images-v0.0.14a0`. Silent drift.
 
-The fix was to rename the constant to `IMAGES_RELEASE_TAG`, change its value from a version fragment to a full tag string like `"images-v0.0.14a0"`, and have CI workflows read it from the source file (not derive from pyproject). Now there is exactly one place to bump the image release tag, and it's named to make clear it's not the CLI version.
+The fix was to rename the constant to `IMAGES_RELEASE_TAG`, change its value from a version fragment to a full tag string, and have CI workflows read it from the source file (not derive from pyproject). Image/rootfs tags now use CalVer (calendar versioning), for example `images-2026.06.12.0`, because they are content snapshots with their own cadence. Now there is exactly one place to bump the image release tag, and it's named to make clear it's not the CLI version.
 
 ### The `--clobber` trap
 

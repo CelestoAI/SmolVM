@@ -31,8 +31,8 @@ on:
     inputs:
       release_tag:
         description: >-
-          Release tag to smoke-test (e.g. images-v0.0.14a0). Leave empty to
-          derive from pyproject version (matches the build-* workflows).
+          Release tag to smoke-test (e.g. images-2026.06.12.0). Leave empty
+          to use IMAGES_RELEASE_TAG from published.py.
         type: string
         default: ""
   workflow_run:
@@ -92,8 +92,12 @@ jobs:
           if [ -n "${INPUT_TAG:-}" ]; then
             tag="$INPUT_TAG"
           else
-            version=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-            tag="images-v${version}"
+            # Single source of truth — published.py::IMAGES_RELEASE_TAG.
+            tag=$(awk -F'"' '/^IMAGES_RELEASE_TAG[[:space:]]*=/{print $2; exit}' src/smolvm/images/published.py)
+          fi
+          if [ -z "$tag" ]; then
+            echo "ERROR: IMAGES_RELEASE_TAG could not be parsed from src/smolvm/images/published.py" >&2
+            exit 1
           fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 

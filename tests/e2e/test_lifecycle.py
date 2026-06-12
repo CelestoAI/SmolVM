@@ -43,8 +43,8 @@ from _util import (
 )
 
 from smolvm import SmolVM
-from smolvm.exceptions import SmolVMError, VMNotFoundError
-from smolvm.runtime.backends import BACKEND_FIRECRACKER, BACKEND_QEMU
+from smolvm.exceptions import VMNotFoundError
+from smolvm.runtime.backends import BACKEND_FIRECRACKER
 from smolvm.types import SnapshotType, VMState
 
 pytestmark = pytest.mark.e2e
@@ -122,27 +122,7 @@ def test_stop_and_cleanup(vm: SmolVM) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "backend",
-    [
-        pytest.param(
-            BACKEND_QEMU,
-            marks=pytest.mark.xfail(
-                reason=(
-                    "QEMU snapshot RESTORE is currently broken on the isolated-disk "
-                    "overlay: loadvm reports \"Device 'rootdisk0-drive' is writable but "
-                    'does not support snapshots". Snapshot *creation* works; restore needs '
-                    "a runtime fix (attach the restored root disk as a snapshot-capable "
-                    "qcow2 node). Remove this xfail once restore lands."
-                ),
-                raises=SmolVMError,
-                strict=False,
-            ),
-        ),
-        *[backend for backend in E2E_BACKENDS if backend != BACKEND_QEMU],
-    ],
-    ids=str,
-)
+@pytest.mark.parametrize("backend", E2E_BACKENDS, ids=str)
 def test_snapshot_restore(backend: E2EBackend, request: pytest.FixtureRequest) -> None:
     """Snapshot a VM, restore it, and confirm guest state survived.
 
