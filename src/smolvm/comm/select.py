@@ -26,9 +26,9 @@ Two layers cooperate:
    allowed (auto-selection, not an explicit request) — it drops to SSH if the
    agent doesn't answer.
 
-vsock currently requires the **QEMU backend on a Linux host** (native
-``vhost-vsock-pci`` needs ``/dev/vhost-vsock``). Windows guests and other
-backends always use SSH for now.
+vsock uses native ``vhost-vsock-pci`` on QEMU/Linux and Firecracker's
+host-side Unix socket bridge on Firecracker/Linux. Windows guests always use
+SSH for now.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ from pathlib import Path
 
 from smolvm.comm.base import CommChannelKind
 from smolvm.exceptions import SmolVMError
-from smolvm.runtime.backends import BACKEND_QEMU
+from smolvm.runtime.backends import BACKEND_FIRECRACKER, BACKEND_QEMU
 from smolvm.types import GuestOS
 
 _VHOST_VSOCK_DEV = Path("/dev/vhost-vsock")
@@ -100,7 +100,11 @@ def resolve_comm_channel(
 
     is_windows = guest_os == GuestOS.WINDOWS or guest_os == "windows"
     is_qemu = backend == BACKEND_QEMU
-    vsock_possible = is_qemu and not is_windows and host_vsock_supported
+    is_firecracker = backend == BACKEND_FIRECRACKER
+    host_is_linux = platform.system() == "Linux"
+    vsock_possible = not is_windows and (
+        (is_qemu and host_vsock_supported) or (is_firecracker and host_is_linux)
+    )
 
     effective = requested if requested is not None else config_channel
 
@@ -113,15 +117,19 @@ def resolve_comm_channel(
                 "vsock is not available for Windows guests; use the SSH channel "
                 "(comm_channel='ssh') instead."
             )
-        if not is_qemu:
+        if not (is_qemu or is_firecracker):
             raise SmolVMError(
-                "vsock is only supported on the QEMU backend in this release; "
+                "vsock is only supported on the QEMU and Firecracker backends in this release; "
                 "use the SSH channel (comm_channel='ssh') instead."
             )
-        if not host_vsock_supported:
+        if is_qemu and not host_vsock_supported:
             raise SmolVMError(
                 "This host can't provide vsock (needs Linux with vhost_vsock loaded "
                 "via 'sudo modprobe vhost_vsock'); use comm_channel='ssh' instead."
+            )
+        if is_firecracker and not host_is_linux:
+            raise SmolVMError(
+                "Firecracker vsock is only available on Linux; use comm_channel='ssh' instead."
             )
         # Explicit request: use vsock, never silently downgrade to SSH.
         return ChannelResolution(kind="vsock", allow_fallback=False)

@@ -1,5 +1,5 @@
 [workspace]
-members = ["smolvm-core"]
+members = ["smolvm-core", "guest-agent"]
 resolver = "2"
 
 [workspace.package]

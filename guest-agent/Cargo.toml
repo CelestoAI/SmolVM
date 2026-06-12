@@ -1,0 +1,35 @@
+[package]
+name = "smolvm-guest-agent"
+version = "0.1.0"
+description = "Public SmolVM guest control agent"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["vsock"]
+vsock = ["dep:tokio-vsock"]
+tcp = []
+
+[dependencies]
+axum = "0.8"
+base64 = "0.22"
+clap = { version = "4", features = ["derive"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+libc = "0.2"
+once_cell = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tokio-vsock = { version = "0.6", optional = true }

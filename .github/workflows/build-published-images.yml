@@ -135,6 +135,18 @@ jobs:
         if: steps.filter.outputs.skip != 'true'
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Rust musl target
+        if: steps.filter.outputs.skip != 'true'
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          case "$ARCH" in
+            amd64) target="x86_64-unknown-linux-musl" ;;
+            arm64) target="aarch64-unknown-linux-musl" ;;
+            *) echo "Unsupported arch: $ARCH" >&2; exit 1 ;;
+          esac
+          rustup target add "$target"
+
       - name: Cache Rust build
         if: steps.filter.outputs.skip != 'true'
         uses: actions/cache@v4
@@ -143,7 +155,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: rust-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('Cargo.toml', 'smolvm-core/Cargo.toml') }}
+          key: rust-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'smolvm-core/Cargo.toml', 'guest-agent/Cargo.toml') }}
           restore-keys: rust-${{ runner.os }}-${{ matrix.arch }}-
 
       - name: Install uv
@@ -328,6 +340,33 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install Rust toolchain
+        if: steps.filter.outputs.skip != 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Rust musl target
+        if: steps.filter.outputs.skip != 'true'
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          case "$ARCH" in
+            amd64) target="x86_64-unknown-linux-musl" ;;
+            arm64) target="aarch64-unknown-linux-musl" ;;
+            *) echo "Unsupported arch: $ARCH" >&2; exit 1 ;;
+          esac
+          rustup target add "$target"
+
+      - name: Cache Rust build
+        if: steps.filter.outputs.skip != 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'smolvm-core/Cargo.toml', 'guest-agent/Cargo.toml') }}
+          restore-keys: rust-${{ runner.os }}-${{ matrix.arch }}-
+
       - name: Install uv
         if: steps.filter.outputs.skip != 'true'
         uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
@@ -359,6 +398,18 @@ jobs:
         with:
           name: base-rootfs-${{ matrix.os }}-${{ matrix.arch }}
           path: /tmp/base
+
+      - name: Build Rust guest agent
+        if: steps.filter.outputs.skip != 'true'
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          case "$ARCH" in
+            amd64) target="x86_64-unknown-linux-musl" ;;
+            arm64) target="aarch64-unknown-linux-musl" ;;
+            *) echo "Unsupported arch: $ARCH" >&2; exit 1 ;;
+          esac
+          cargo build --release --target "$target" -p smolvm-guest-agent
 
       - name: Layer preset on base rootfs
         if: steps.filter.outputs.skip != 'true'

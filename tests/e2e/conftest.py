@@ -76,13 +76,15 @@ def vm(e2e_variant: E2EVariant):
     assertion, so the ``stop``/``delete`` here are just a safety net for
     earlier failures.
     """
-    if e2e_variant.transport == "vsock" and not host_supports_vsock():
+    if (
+        e2e_variant.transport == "vsock"
+        and e2e_variant.backend == BACKEND_QEMU
+        and not host_supports_vsock()
+    ):
         pytest.skip(
             "vsock requires a Linux host with /dev/vhost-vsock "
             "(load it via `sudo modprobe vhost_vsock`)"
         )
-    if e2e_variant.transport == "vsock" and e2e_variant.backend != BACKEND_QEMU:
-        pytest.skip("vsock e2e is only supported on the QEMU backend in this release")
 
     # Pin to Alpine: the SmolVM-*built* image (vsock guest agent + python3 baked
     # in by ImageBuilder, SSH key injected on the kernel cmdline, no cloud-init

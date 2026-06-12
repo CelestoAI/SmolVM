@@ -45,9 +45,13 @@ class TestAuto:
         assert res.kind == "ssh"
         assert res.allow_fallback is False
 
-    def test_auto_uses_ssh_on_non_qemu_backend(self) -> None:
+    def test_auto_picks_vsock_with_fallback_on_firecracker_linux(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("smolvm.comm.select.platform.system", lambda: "Linux")
         res = _resolve(backend=BACKEND_FIRECRACKER)
-        assert res.kind == "ssh"
+        assert res.kind == "vsock"
+        assert res.allow_fallback is True
 
     def test_auto_uses_ssh_for_windows(self) -> None:
         res = _resolve(guest_os=GuestOS.WINDOWS, backend=BACKEND_QEMU)
@@ -69,9 +73,11 @@ class TestExplicit:
         with pytest.raises(SmolVMError, match="vhost_vsock"):
             _resolve(requested="vsock", host_vsock_supported=False)
 
-    def test_explicit_vsock_on_non_qemu_raises(self) -> None:
-        with pytest.raises(SmolVMError, match="QEMU"):
-            _resolve(requested="vsock", backend=BACKEND_FIRECRACKER)
+    def test_explicit_vsock_on_firecracker_linux(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("smolvm.comm.select.platform.system", lambda: "Linux")
+        res = _resolve(requested="vsock", backend=BACKEND_FIRECRACKER)
+        assert res.kind == "vsock"
+        assert res.allow_fallback is False
 
     def test_explicit_vsock_on_windows_raises(self) -> None:
         with pytest.raises(SmolVMError, match="Windows"):

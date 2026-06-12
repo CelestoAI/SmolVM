@@ -54,6 +54,7 @@ E2E_VARIANTS: tuple[E2EVariant, ...] = (
     E2EVariant(BACKEND_QEMU, "ssh"),
     E2EVariant(BACKEND_QEMU, "vsock"),
     E2EVariant(BACKEND_FIRECRACKER, "ssh"),
+    E2EVariant(BACKEND_FIRECRACKER, "vsock"),
 )
 
 # Boot is fast under KVM, but auto-config may build/download the rootfs and

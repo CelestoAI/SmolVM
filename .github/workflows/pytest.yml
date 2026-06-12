@@ -34,7 +34,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: rust-${{ runner.os }}-${{ hashFiles('Cargo.toml', 'smolvm-core/Cargo.toml') }}
+          key: rust-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'smolvm-core/Cargo.toml', 'guest-agent/Cargo.toml') }}
           restore-keys: rust-${{ runner.os }}-
 
       - name: Install uv
@@ -56,6 +56,9 @@ jobs:
 
       - name: Run pytest
         run: uv run pytest
+
+      - name: Run Rust guest-agent tests
+        run: cargo test -p smolvm-guest-agent
 
   package-smoke:
     runs-on: ubuntu-latest
@@ -83,7 +86,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: rust-${{ runner.os }}-${{ hashFiles('Cargo.toml', 'smolvm-core/Cargo.toml') }}
+          key: rust-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'smolvm-core/Cargo.toml', 'guest-agent/Cargo.toml') }}
           restore-keys: rust-${{ runner.os }}-
 
       - name: Install uv

@@ -39,26 +39,29 @@ def test_ci_preset_init_launches_guest_agent_before_sshd() -> None:
     PR #310 baked the agent only into the Python builder, which is why
     published images shipped without it until this fix."""
     script = (_REPO_ROOT / "scripts" / "ci" / "preset-init.sh").read_text()
-    assert "python3 /usr/local/bin/smolvm-guest-agent" in script
+    assert "/usr/local/bin/smolvm-guest-agent --listen vsock://1024" in script
+    assert "python3 /usr/local/bin/smolvm-guest-agent" not in script
     assert script.index("smolvm-guest-agent") < script.index("/usr/sbin/sshd")
 
 
 def test_ci_build_preset_bakes_guest_agent() -> None:
     """build-preset.sh must copy the guest agent into every published rootfs."""
     script = (_REPO_ROOT / "scripts" / "ci" / "build-preset.sh").read_text()
-    assert "src/smolvm/guest_agent/agent.py" in script
+    assert "target/$GUEST_AGENT_TARGET/release/smolvm-guest-agent" in script
+    assert "src/smolvm/guest_agent/agent.py" not in script
     assert "/usr/local/bin/smolvm-guest-agent" in script
 
 
-def test_guest_agent_source_is_the_real_agent() -> None:
-    source = builder_mod._guest_agent_source()
-    assert "AF_VSOCK" in source
-    assert "smolvm-guest-agent listening" in source
+def test_guest_agent_source_digest_tracks_rust_crate() -> None:
+    digest = builder_mod._guest_agent_source_digest()
+    assert len(digest) == 64
+    assert (builder_mod._GUEST_AGENT_CRATE_DIR / "src" / "main.rs").is_file()
 
 
 def test_base_init_script_launches_guest_agent_before_sshd() -> None:
     script = ImageBuilder()._default_init_script()
-    assert "python3 /usr/local/bin/smolvm-guest-agent" in script
+    assert "/usr/local/bin/smolvm-guest-agent --listen vsock://1024" in script
+    assert "python3 /usr/local/bin/smolvm-guest-agent" not in script
     # The agent must start before sshd so the channel is up independent of it.
     assert script.index("smolvm-guest-agent") < script.index("/usr/sbin/sshd")
 
@@ -86,17 +89,17 @@ def test_ci_preset_init_runs_clock_sync_loop() -> None:
 def test_fingerprint_tracks_guest_agent(tmp_path: Path) -> None:
     builder = ImageBuilder(cache_dir=tmp_path)
     fp = builder._fingerprint_with_content({"x": 1}, "FROM alpine", "init")
-    assert "_guest_agent_sha256" in fp
+    assert "_guest_agent_source_sha256" in fp
 
 
 @pytest.mark.parametrize(
     ("method_name", "expected_base"),
     [("build_alpine_ssh", "alpine"), ("build_debian_ssh_key", "debian")],
 )
-def test_base_images_install_python3_for_agent(
+def test_base_images_are_not_responsible_for_agent_runtime(
     method_name: str, expected_base: str, tmp_path: Path
 ) -> None:
-    """Alpine/Debian base images must ship python3 so the agent can run."""
+    """The Rust agent is a standalone binary, so python3 is not required for it."""
     builder = ImageBuilder(cache_dir=tmp_path / "images")
     captured: dict[str, str] = {}
 
@@ -125,7 +128,7 @@ def test_base_images_install_python3_for_agent(
         getattr(builder, method_name)("ssh-ed25519 AAAA u@t")
 
     assert expected_base in captured["dockerfile"]
-    assert "python3" in captured["dockerfile"]
+    assert "smolvm-guest-agent" not in captured["dockerfile"]
 
 
 @patch("smolvm.images.builder.subprocess.run")
@@ -135,6 +138,9 @@ def test_do_build_bakes_agent_into_context(
 ) -> None:
     """_do_build must drop the agent file into the build context and COPY it."""
     builder = ImageBuilder(cache_dir=tmp_path / "images")
+    fake_agent = tmp_path / "smolvm-guest-agent"
+    fake_agent.write_bytes(b"rust-agent")
+    fake_agent.chmod(0o755)
     captured: dict[str, object] = {}
 
     def _subprocess_side_effect(
@@ -145,7 +151,7 @@ def test_do_build_bakes_agent_into_context(
             captured["dockerfile"] = (context / "Dockerfile").read_text()
             agent_file = context / builder_mod._GUEST_AGENT_BUILD_FILE
             captured["agent_present"] = agent_file.exists()
-            captured["agent_text"] = agent_file.read_text() if agent_file.exists() else ""
+            captured["agent_bytes"] = agent_file.read_bytes() if agent_file.exists() else b""
         if cmd[:2] == ["docker", "create"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="container-id\n", stderr="")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -163,6 +169,7 @@ def test_do_build_bakes_agent_into_context(
         ),
         patch.object(ImageBuilder, "_create_ext4_with_loopfs"),
         patch.object(ImageBuilder, "_download_kernel"),
+        patch("smolvm.images.builder._guest_agent_binary", return_value=fake_agent),
     ):
         builder._do_build(
             name="demo",
@@ -179,4 +186,4 @@ def test_do_build_bakes_agent_into_context(
         in (captured["dockerfile"])
     )
     assert captured["agent_present"] is True
-    assert "AF_VSOCK" in captured["agent_text"]
+    assert captured["agent_bytes"] == b"rust-agent"

@@ -57,17 +57,86 @@ OPENCLAW_BOOT_ARGS = "reboot=k panic=1 pci=off init=/init 8250.nr_uarts=0"
 LOOPFS_HELPER_PATH = Path("/usr/local/libexec/smolvm-loopfs-helper")
 
 # The SmolVM guest agent (vsock control plane). It is baked into every image
-# built here and launched by /init. ``_GUEST_AGENT_SOURCE_PATH`` points at the
-# checked-in agent module; it ships into the build context as
-# ``_GUEST_AGENT_BUILD_FILE`` and lands in the guest at ``_GUEST_AGENT_GUEST_PATH``.
-_GUEST_AGENT_SOURCE_PATH = Path(__file__).resolve().parents[1] / "guest_agent" / "agent.py"
+# built here and launched by /init. The Rust crate lives in the repository
+# workspace and builds a standalone binary for the guest rootfs.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_GUEST_AGENT_CRATE_DIR = _REPO_ROOT / "guest-agent"
 _GUEST_AGENT_BUILD_FILE = "smolvm-guest-agent"
 _GUEST_AGENT_GUEST_PATH = "/usr/local/bin/smolvm-guest-agent"
 
 
-def _guest_agent_source() -> str:
-    """Return the guest agent source baked into every built image."""
-    return _GUEST_AGENT_SOURCE_PATH.read_text()
+def _guest_agent_target_triple(arch: str | None = None) -> str:
+    """Return the static Linux Rust target used inside SmolVM rootfs images."""
+    normalized = normalize_arch(arch or platform.machine())
+    if normalized == "x86_64":
+        return "x86_64-unknown-linux-musl"
+    if normalized == "aarch64":
+        return "aarch64-unknown-linux-musl"
+    raise ValueError(f"Unsupported guest-agent architecture: {arch!r}")
+
+
+def _guest_agent_binary_path() -> Path:
+    return (
+        _REPO_ROOT
+        / "target"
+        / _guest_agent_target_triple()
+        / "release"
+        / "smolvm-guest-agent"
+    )
+
+
+def _guest_agent_source_digest() -> str:
+    """Return a digest of source files that affect the guest-agent binary."""
+    hasher = hashlib.sha256()
+    hasher.update(_guest_agent_target_triple().encode())
+    for path in (
+        _REPO_ROOT / "Cargo.toml",
+        _REPO_ROOT / "Cargo.lock",
+        _GUEST_AGENT_CRATE_DIR / "Cargo.toml",
+    ):
+        if path.exists():
+            hasher.update(path.relative_to(_REPO_ROOT).as_posix().encode())
+            hasher.update(path.read_bytes())
+    for path in sorted((_GUEST_AGENT_CRATE_DIR / "src").glob("*.rs")):
+        hasher.update(path.relative_to(_REPO_ROOT).as_posix().encode())
+        hasher.update(path.read_bytes())
+    return hasher.hexdigest()
+
+
+def _guest_agent_binary() -> Path:
+    """Build and return the Rust guest-agent binary used by rootfs builders."""
+    target = _guest_agent_target_triple()
+    binary_path = _guest_agent_binary_path()
+    try:
+        subprocess.run(
+            [
+                "cargo",
+                "build",
+                "--release",
+                "--target",
+                target,
+                "-p",
+                "smolvm-guest-agent",
+            ],
+            cwd=_REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise ImageError(
+            "Rust guest agent could not be built because cargo is not installed."
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        raise ImageError(
+            "Rust guest agent build failed. "
+            f"Install the target with `rustup target add {target}` and retry.\n"
+            f"stderr: {stderr}"
+        ) from exc
+    if not binary_path.is_file():
+        raise ImageError(f"Rust guest agent binary was not produced: {binary_path}")
+    return binary_path
 
 
 DockerContextValue = Path | str | bytes
@@ -1366,14 +1435,14 @@ log_ts "net-ready"
 # ── Guest agent (vsock control plane) ───────────────────────
 # Started before sshd and independent of networking, so the host can
 # drive the guest over vsock the moment the kernel is up. Skipped
-# silently if the image has no python3 or the agent wasn't baked in —
-# the host falls back to SSH in that case.
+# silently if the agent wasn't baked in — the host falls back to SSH in
+# that case.
 log_ts "guest-agent-start"
-if command -v python3 >/dev/null 2>&1 && [ -f /usr/local/bin/smolvm-guest-agent ]; then
-    python3 /usr/local/bin/smolvm-guest-agent >/var/log/smolvm-agent.log 2>&1 &
+if [ -x /usr/local/bin/smolvm-guest-agent ]; then
+    /usr/local/bin/smolvm-guest-agent --listen vsock://1024 >/var/log/smolvm-agent.log 2>&1 &
     echo "SmolVM init: guest agent started (PID=$!)"
 else
-    echo "SmolVM init: guest agent not started (python3 or agent missing)"
+    echo "SmolVM init: guest agent not started (agent missing)"
 fi
 log_ts "guest-agent-started"
 
@@ -1586,7 +1655,7 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
             "_init_script_sha256": hashlib.sha256(init_script.encode()).hexdigest(),
             # The guest agent is injected into every image by _do_build, so an
             # edit to it must invalidate all cached images.
-            "_guest_agent_sha256": hashlib.sha256(_guest_agent_source().encode()).hexdigest(),
+            "_guest_agent_source_sha256": _guest_agent_source_digest(),
         }
 
     def _check_fingerprint(self, image_dir: Path, data: dict[str, typing.Any]) -> bool:
@@ -1786,7 +1855,7 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
 
         # Bake the guest agent into every image. Centralized here so all five
         # build_* recipes inherit it without each repeating the COPY; /init
-        # launches it (guarded on python3), and the host reaches it over vsock.
+        # launches it, and the host reaches it over vsock.
         # Appended after the recipe's own COPY lines — order is irrelevant for
         # an independent file drop. Its content hash is in the fingerprint via
         # _fingerprint_with_content, so edits still trigger a rebuild even
@@ -1804,7 +1873,7 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
             # Write Dockerfile and init script
             (tmp_path / "Dockerfile").write_text(dockerfile_content)
             (tmp_path / "init").write_text(init_script)
-            (tmp_path / _GUEST_AGENT_BUILD_FILE).write_text(_guest_agent_source())
+            shutil.copy2(_guest_agent_binary(), tmp_path / _GUEST_AGENT_BUILD_FILE)
             if extra_files:
                 for filename, content in extra_files.items():
                     (tmp_path / filename).write_text(content)

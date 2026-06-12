@@ -80,6 +80,9 @@ jobs:
           # always in the kvm group. Add it; sudo on the qemu invocation also
           # works as a fallback.
           sudo usermod -a -G kvm $USER || true
+          sudo modprobe vhost_vsock || echo "vhost_vsock unavailable"
+          sudo chgrp kvm /dev/vhost-vsock || true
+          sudo chmod 660 /dev/vhost-vsock || true
 
       - name: Resolve release tag
         id: release
@@ -146,10 +149,12 @@ jobs:
           if [ "$ARCH" = "amd64" ]; then
             QEMU=qemu-system-x86_64
             MACHINE="-machine pc-q35-4.2,accel=${ACCEL}"
+            VSOCK_DEVICE="vhost-vsock-pci"
             CONSOLE=ttyS0
           else
             QEMU=qemu-system-aarch64
             MACHINE="-machine virt,accel=${ACCEL}"
+            VSOCK_DEVICE="vhost-vsock-device"
             CONSOLE=ttyAMA0
           fi
           # Production boot recipe for every SmolVM image: init=/init (not
@@ -167,6 +172,7 @@ jobs:
               -device virtio-blk-pci,drive=root \
               -netdev user,id=net0,hostfwd=tcp:127.0.0.1:2223-${GUEST_IP}:22 \
               -device virtio-net-pci,netdev=net0 \
+              -device "${VSOCK_DEVICE},guest-cid=1024" \
               -append "${APPEND}" \
               -nographic -no-reboot \
               > smoke/boot.log 2>&1 &
