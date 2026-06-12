@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any, TextIO
 from uuid import uuid4
 
-from smolvm.comm.select import resolve_comm_channel
+from smolvm.comm.select import VsockNotSupportedError, resolve_comm_channel
 from smolvm.exceptions import (
     NetworkError,
     SmolVMError,
@@ -241,6 +241,14 @@ def _crashed_message(vm_id: str) -> str:
     return (
         f"VM '{vm_id}' is not running — its process has exited; "
         f"run 'smolvm delete {vm_id}' to clear it."
+    )
+
+
+def _vsock_not_supported_message(vm_id: str, error: VsockNotSupportedError) -> str:
+    """Format a user-facing explicit-vsock failure at the VM boundary."""
+    return (
+        f"Cannot use vsock for sandbox '{vm_id}': {error.reason}; "
+        "create it with comm_channel='ssh'."
     )
 
 
@@ -1313,12 +1321,18 @@ class SmolVMManager:
         host-side Unix socket, so the generated UDS path is also persisted in
         ``config.vsock`` for the facade to dial.
         """
-        resolution = resolve_comm_channel(
-            requested=None,
-            config_channel=config.comm_channel,
-            backend=backend,
-            guest_os=config.guest_os,
-        )
+        try:
+            resolution = resolve_comm_channel(
+                requested=None,
+                config_channel=config.comm_channel,
+                backend=backend,
+                guest_os=config.guest_os,
+            )
+        except VsockNotSupportedError as exc:
+            raise SmolVMError(
+                _vsock_not_supported_message(config.vm_id, exc),
+                {"vm_id": config.vm_id, **exc.details},
+            ) from exc
         requested_vsock = config.vsock
         should_reserve_device = (
             backend in {BACKEND_QEMU, BACKEND_FIRECRACKER} and requested_vsock is not None

@@ -30,6 +30,7 @@ from smolvm.comm.base import CommChannel, CommChannelKind, ShellMode
 from smolvm.comm.rust_http_vsock_channel import RustHttpVsockChannel
 from smolvm.comm.select import (
     ChannelResolution,
+    VsockNotSupportedError,
     host_supports_vsock,
     resolve_comm_channel,
 )
@@ -42,6 +43,7 @@ __all__ = [
     "CommChannel",
     "CommChannelKind",
     "ShellMode",
+    "VsockNotSupportedError",
     "VsockChannel",
     "LegacyFramedVsockChannel",
     "RustHttpVsockChannel",

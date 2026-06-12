@@ -2165,7 +2165,7 @@ class TestVMRun:
         mock_sdk_cls.return_value = mock_sdk
 
         vm = SmolVM(sample_config)
-        with pytest.raises(SmolVMError, match="VM is not running"):
+        with pytest.raises(SmolVMError, match="Start sandbox 'vm001'"):
             vm.run("echo test")
 
 

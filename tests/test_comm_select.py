@@ -16,8 +16,7 @@
 
 import pytest
 
-from smolvm.comm.select import resolve_comm_channel
-from smolvm.exceptions import SmolVMError
+from smolvm.comm.select import VsockNotSupportedError, resolve_comm_channel
 from smolvm.runtime.backends import BACKEND_FIRECRACKER, BACKEND_QEMU
 from smolvm.types import GuestOS
 
@@ -70,8 +69,10 @@ class TestExplicit:
         assert res.allow_fallback is False
 
     def test_explicit_vsock_on_macos_raises(self) -> None:
-        with pytest.raises(SmolVMError, match="vhost_vsock"):
+        with pytest.raises(VsockNotSupportedError) as exc:
             _resolve(requested="vsock", host_vsock_supported=False)
+        assert exc.value.code == "vsock_host_device_missing"
+        assert exc.value.details["required_device"] == "/dev/vhost-vsock"
 
     def test_explicit_vsock_on_firecracker_linux(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("smolvm.comm.select.platform.system", lambda: "Linux")
@@ -80,8 +81,10 @@ class TestExplicit:
         assert res.allow_fallback is False
 
     def test_explicit_vsock_on_windows_raises(self) -> None:
-        with pytest.raises(SmolVMError, match="Windows"):
+        with pytest.raises(VsockNotSupportedError) as exc:
             _resolve(requested="vsock", guest_os=GuestOS.WINDOWS)
+        assert exc.value.code == "vsock_not_supported_for_windows"
+        assert exc.value.reason == "vsock is not available for Windows guests"
 
     def test_request_overrides_config(self) -> None:
         # Explicit ssh beats a vsock preference stored on the config.

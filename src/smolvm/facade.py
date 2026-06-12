@@ -50,7 +50,7 @@ from smolvm._naming import generate_sandbox_name
 from smolvm.callbacks import Callback, CallbackDispatcher, RunContext
 from smolvm.comm import LegacyFramedVsockChannel, RustHttpVsockChannel
 from smolvm.comm.base import CommChannel, CommChannelKind
-from smolvm.comm.select import ChannelResolution, resolve_comm_channel
+from smolvm.comm.select import ChannelResolution, VsockNotSupportedError, resolve_comm_channel
 from smolvm.env import inject_env_vars, read_env_vars, remove_env_vars
 from smolvm.env_windows import (
     inject_env_vars as inject_env_vars_windows,
@@ -154,6 +154,14 @@ _QEMU_UBUNTU_AUTO_IMAGES: dict[str, str] = {
         "ubuntu-24.04-minimal-cloudimg-arm64.img"
     ),
 }
+
+
+def _vsock_not_supported_message(vm_id: str, error: VsockNotSupportedError) -> str:
+    """Format a user-facing explicit-vsock failure at the VM boundary."""
+    return (
+        f"Cannot use vsock for sandbox '{vm_id}': {error.reason}; "
+        "create or reconnect with comm_channel='ssh'."
+    )
 
 
 def _normalize_guest_os(os: GuestOS | str | None) -> GuestOS:
@@ -1874,10 +1882,11 @@ class SmolVM:
 
         if self._info.status != VMState.RUNNING:
             raise SmolVMError(
-                "VM is not running. Start the VM using vm.start() before "
-                f"running commands (current state: {self._info.status.value})",
+                f"Start sandbox '{self._vm_id}' before running commands by running "
+                f"'smolvm start {self._vm_id}' (current state: {self._info.status.value}).",
                 {"vm_id": self._vm_id},
             )
+        resolution = self._resolve_channel()
         if not self.can_run_commands():
             raise CommandExecutionUnavailableError(
                 vm_id=self._vm_id,
@@ -1887,9 +1896,10 @@ class SmolVM:
                 ),
                 remediation=self._command_exec_remediation(),
             )
-        if self._info.network is None:
+        if resolution.kind == "ssh" and self._info.network is None:
             raise SmolVMError(
-                "Cannot run command: VM has no network configuration",
+                f"Cannot run command in sandbox '{self._vm_id}' over SSH because it has "
+                f"no network; remove it with 'smolvm delete {self._vm_id}' and create it again.",
                 {"vm_id": self._vm_id},
             )
 
@@ -2181,13 +2191,14 @@ class SmolVM:
 
         if self._info.status != VMState.RUNNING:
             raise SmolVMError(
-                "VM is not running. Start the VM using vm.start() before "
-                f"waiting for the sandbox (current state: {self._info.status.value})",
+                f"Start sandbox '{self._vm_id}' before waiting for it by running "
+                f"'smolvm start {self._vm_id}' (current state: {self._info.status.value}).",
                 {"vm_id": self._vm_id},
             )
-        if self._info.network is None:
+        if self._resolve_channel().kind == "ssh" and self._info.network is None:
             raise SmolVMError(
-                "Cannot wait for sandbox: VM has no network configuration",
+                f"Cannot wait for sandbox '{self._vm_id}' over SSH because it has no network; "
+                f"remove it with 'smolvm delete {self._vm_id}' and create it again.",
                 {"vm_id": self._vm_id},
             )
 
@@ -2531,10 +2542,11 @@ class SmolVM:
         return self
 
     def can_run_commands(self) -> bool:
-        """Whether this VM config supports command execution via SSH.
+        """Whether this VM config supports command execution.
 
-        Command execution requires a boot path that is expected to
-        bring up SSH inside the guest. Three shapes qualify:
+        Explicit or auto-selected vsock is command-capable because it uses the
+        guest agent. SSH command execution requires a boot path that is
+        expected to bring up SSH inside the guest. Three SSH shapes qualify:
 
         1. ``ssh_capable=True`` — the caller has explicitly declared the
            boot path brings up SSH (used by prebuilt cloud images, S3
@@ -2543,6 +2555,8 @@ class SmolVM:
            command line (the alpine docker-build path).
         3. A legacy initrd-backed boot with ``ssh_capable`` implicitly set.
         """
+        if self._resolve_channel().kind == "vsock":
+            return True
         config = self._info.config
         ssh_capable = getattr(config, "ssh_capable", False)
         if ssh_capable is True:
@@ -2986,18 +3000,21 @@ modprobe 9pnet_virtio""".strip()
 
         if self._info.status != VMState.RUNNING:
             raise SmolVMError(
-                f"{prefix}: VM is {self._info.status.value}",
+                f"{prefix} in sandbox '{self._vm_id}' because it is "
+                f"{self._info.status.value}; start it with 'smolvm start {self._vm_id}'.",
                 {"vm_id": self._vm_id},
             )
+        resolution = self._resolve_channel()
         if not self.can_run_commands():
             raise CommandExecutionUnavailableError(
                 vm_id=self._vm_id,
                 reason="VM config does not advertise a command-capable boot path.",
                 remediation=self._command_exec_remediation(),
             )
-        if self._info.network is None:
+        if resolution.kind == "ssh" and self._info.network is None:
             raise SmolVMError(
-                f"{prefix}: VM has no network configuration",
+                f"{prefix} in sandbox '{self._vm_id}' over SSH because it has no network; "
+                f"remove it with 'smolvm delete {self._vm_id}' and create it again.",
                 {"vm_id": self._vm_id},
             )
 
@@ -3175,12 +3192,18 @@ modprobe 9pnet_virtio""".strip()
     def _resolve_channel(self) -> ChannelResolution:
         """Resolve which control channel this VM should use."""
         config = self._info.config
-        return resolve_comm_channel(
-            requested=self._comm_channel_request,
-            config_channel=getattr(config, "comm_channel", None),
-            backend=getattr(config, "backend", None),
-            guest_os=getattr(config, "guest_os", None),
-        )
+        try:
+            return resolve_comm_channel(
+                requested=getattr(self, "_comm_channel_request", None),
+                config_channel=getattr(config, "comm_channel", None),
+                backend=getattr(config, "backend", None),
+                guest_os=getattr(config, "guest_os", None),
+            )
+        except VsockNotSupportedError as exc:
+            raise SmolVMError(
+                _vsock_not_supported_message(self._vm_id, exc),
+                {"vm_id": self._vm_id, **exc.details},
+            ) from exc
 
     def _try_vsock_ready(self, timeout: float) -> bool:
         """Probe the guest vsock agents; on success cache the control channel.

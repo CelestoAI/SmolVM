@@ -77,7 +77,10 @@ def _read_http_request(sock: socket.socket) -> tuple[str, str, bytes]:
         if name.lower() == "content-length":
             content_length = int(value.strip())
     while len(body) < content_length:
-        body += sock.recv(content_length - len(body))
+        chunk = sock.recv(content_length - len(body))
+        if not chunk:
+            raise AssertionError("HTTP request closed before full body")
+        body += chunk
     return method, path, body
 
 
@@ -147,11 +150,12 @@ def test_run_timeout_maps_to_operation_timeout() -> None:
     channel = FakeRustChannel(
         [
             lambda method, path, body: {
-                "ok": True,
+                "ok": False,
                 "exit_code": -1,
                 "stdout": "",
-                "stderr": "timeout",
+                "stderr": "",
                 "timed_out": True,
+                "error": "Command timed out after 1s",
             }
         ]
     )

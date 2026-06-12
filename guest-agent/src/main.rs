@@ -86,7 +86,6 @@ async fn serve_vsock(_app: axum::Router, _port: u32) {
 
 #[cfg(feature = "tcp")]
 async fn serve_tcp(app: axum::Router, addr: &str) {
-    let addr: std::net::SocketAddr = addr.parse().expect("invalid TCP socket address");
     info!("Listening on tcp://{addr}");
     let listener = tokio::net::TcpListener::bind(addr)
         .await

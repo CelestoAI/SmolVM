@@ -191,10 +191,10 @@ class RustHttpVsockChannel:
             {"command": command, "shell": shell, "timeout_seconds": timeout},
             timeout=float(timeout + self.connect_timeout),
         )
-        if not resp.get("ok"):
-            raise SmolVMError(f"guest agent error during run: {resp.get('error', resp)}")
         if resp.get("timed_out"):
             raise OperationTimeoutError(f"vsock run: {command}", timeout)
+        if not resp.get("ok"):
+            raise SmolVMError(f"guest agent error during run: {resp.get('error', resp)}")
         return CommandResult(
             exit_code=int(resp.get("exit_code", -1)),
             stdout=str(resp.get("stdout", "")),

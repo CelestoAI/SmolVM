@@ -1,5 +1,6 @@
 use axum::{
     Json, Router,
+    extract::DefaultBodyLimit,
     routing::{get, post},
 };
 use once_cell::sync::Lazy;
@@ -10,6 +11,7 @@ use crate::exec::{self, ExecRequest, ExecResponse};
 use crate::files::{self, FileGetQuery, FileGetResponse, FilePutRequest, FilePutResponse};
 
 pub const PROTOCOL_VERSION: u32 = 1;
+const FILE_PUT_BODY_LIMIT_BYTES: usize = 50 * 1024 * 1024;
 static START_TIME: Lazy<Instant> = Lazy::new(Instant::now);
 
 pub fn router() -> Router {
@@ -19,7 +21,10 @@ pub fn router() -> Router {
         .route("/version", get(handle_version))
         .route("/capabilities", get(handle_capabilities))
         .route("/exec", post(handle_exec))
-        .route("/files/put", post(handle_file_put))
+        .route(
+            "/files/put",
+            post(handle_file_put).layer(DefaultBodyLimit::max(FILE_PUT_BODY_LIMIT_BYTES)),
+        )
         .route("/files/get", get(handle_file_get))
 }
 

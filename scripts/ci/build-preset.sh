@@ -43,7 +43,6 @@ esac
 case "$ARCH" in
   amd64) GUEST_AGENT_TARGET="x86_64-unknown-linux-musl" ;;
   arm64) GUEST_AGENT_TARGET="aarch64-unknown-linux-musl" ;;
-  *) echo "Unsupported guest-agent arch: $ARCH"; exit 1 ;;
 esac
 
 case "$OS" in

@@ -28,7 +28,15 @@ from smolvm.comm.rust_http_vsock_channel import RustHttpVsockChannel
 from smolvm.comm.vsock_channel import VsockChannel
 from smolvm.exceptions import OperationTimeoutError
 from smolvm.facade import SmolVM
-from smolvm.types import GuestOS, NetworkConfig, VMConfig, VMInfo, VMState, VsockConfig
+from smolvm.types import (
+    CommandResult,
+    GuestOS,
+    NetworkConfig,
+    VMConfig,
+    VMInfo,
+    VMState,
+    VsockConfig,
+)
 
 
 def _vsock_vm(tmp_path: Path, *, comm_channel: str | None, request: str | None) -> SmolVM:
@@ -53,6 +61,7 @@ def _vsock_vm(tmp_path: Path, *, comm_channel: str | None, request: str | None) 
     vm._vm_id = "vm1"
     vm._control_channel = None
     vm._control_ready = False
+    vm._callbacks = MagicMock()
     vm._ssh = None
     vm._ssh_ready = False
     vm._info = info
@@ -78,6 +87,33 @@ def test_wait_for_ready_uses_rust_vsock_when_agent_answers(
     assert isinstance(vm._control_channel, RustHttpVsockChannel)
     assert vm._control_channel.guest_cid == 5
     assert vm._ssh is None
+
+
+def test_public_vsock_ready_and_run_do_not_require_network(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("smolvm.comm.select.host_supports_vsock", lambda: True)
+    monkeypatch.setattr(
+        RustHttpVsockChannel,
+        "wait_ready",
+        lambda self, timeout=60.0, interval=0.1: None,
+    )
+    monkeypatch.setattr(
+        RustHttpVsockChannel,
+        "run",
+        lambda self, command, timeout=30, shell="login": CommandResult(
+            exit_code=0, stdout="ok", stderr=""
+        ),
+    )
+
+    vm = _vsock_vm(tmp_path, comm_channel="vsock", request="vsock")
+
+    vm.wait_for_ready(timeout=5)
+    result = vm.run("printf ok")
+
+    assert result.stdout == "ok"
+    assert vm._control_ready is True
+    assert vm._info.network is None
 
 
 def test_wait_for_ssh_waits_for_ssh_not_vsock(

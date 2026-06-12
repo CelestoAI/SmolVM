@@ -164,18 +164,15 @@ pub async fn run_command(req: ExecRequest) -> ExecResponse {
     }
 
     let stdout = join_output(stdout_task).await;
-    let mut stderr = join_output(stderr_task).await;
-    if timed_out {
-        stderr.extend_from_slice(format!("Command timed out after {timeout_seconds}s").as_bytes());
-    }
+    let stderr = join_output(stderr_task).await;
 
     ExecResponse {
-        ok: true,
+        ok: !timed_out,
         exit_code,
         stdout: String::from_utf8_lossy(&stdout).into_owned(),
         stderr: String::from_utf8_lossy(&stderr).into_owned(),
         timed_out,
-        error: None,
+        error: timed_out.then(|| format!("Command timed out after {timeout_seconds}s")),
     }
 }
 
@@ -220,8 +217,10 @@ mod tests {
             env: HashMap::new(),
         })
         .await;
-        assert!(res.ok);
+        assert!(!res.ok);
         assert!(res.timed_out);
         assert_eq!(res.exit_code, -1);
+        assert_eq!(res.stderr, "");
+        assert_eq!(res.error.as_deref(), Some("Command timed out after 1s"));
     }
 }

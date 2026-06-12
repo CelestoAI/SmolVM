@@ -19,8 +19,9 @@ Two layers cooperate:
 1. ``resolve_comm_channel`` (here) is the *static* decision: given the user's
    request, the VM config, the backend, the guest OS, and whether the host can
    do vsock, it returns the channel to attempt first and whether falling back
-   to SSH is allowed. It raises a plain-English error when the user explicitly
-   asked for vsock somewhere it can't work.
+   to SSH is allowed. It raises a structured error when the user explicitly
+   asked for vsock somewhere it can't work; callers format the final
+   user-facing recovery message.
 2. The facade then does the *runtime* probe: when vsock is the choice it pings
    the guest agent; on success it uses vsock, and — only when fallback is
    allowed (auto-selection, not an explicit request) — it drops to SSH if the
@@ -70,6 +71,23 @@ class ChannelResolution:
     allow_fallback: bool
 
 
+class VsockNotSupportedError(SmolVMError):
+    """Raised when an explicit vsock request cannot be satisfied."""
+
+    def __init__(
+        self,
+        code: str,
+        reason: str,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
+        details = {"code": code, "reason": reason}
+        if metadata:
+            details.update(metadata)
+        super().__init__(code, details)
+        self.code = code
+        self.reason = reason
+
+
 def resolve_comm_channel(
     *,
     requested: CommChannelKind | None,
@@ -93,7 +111,8 @@ def resolve_comm_channel(
         A :class:`ChannelResolution`.
 
     Raises:
-        SmolVMError: If vsock was explicitly requested but cannot work here.
+        VsockNotSupportedError: If vsock was explicitly requested but cannot
+            work here.
     """
     if host_vsock_supported is None:
         host_vsock_supported = host_supports_vsock()
@@ -113,23 +132,28 @@ def resolve_comm_channel(
 
     if effective == "vsock":
         if is_windows:
-            raise SmolVMError(
-                "vsock is not available for Windows guests; use the SSH channel "
-                "(comm_channel='ssh') instead."
+            raise VsockNotSupportedError(
+                "vsock_not_supported_for_windows",
+                "vsock is not available for Windows guests",
+                {"guest_os": "windows"},
             )
         if not (is_qemu or is_firecracker):
-            raise SmolVMError(
-                "vsock is only supported on the QEMU and Firecracker backends in this release; "
-                "use the SSH channel (comm_channel='ssh') instead."
+            raise VsockNotSupportedError(
+                "vsock_not_supported_for_backend",
+                "vsock is only supported on the QEMU and Firecracker backends in this release",
+                {"backend": backend},
             )
         if is_qemu and not host_vsock_supported:
-            raise SmolVMError(
-                "This host can't provide vsock (needs Linux with vhost_vsock loaded "
-                "via 'sudo modprobe vhost_vsock'); use comm_channel='ssh' instead."
+            raise VsockNotSupportedError(
+                "vsock_host_device_missing",
+                "this host cannot provide QEMU vsock because vhost_vsock is not available",
+                {"backend": backend, "required_device": str(_VHOST_VSOCK_DEV)},
             )
         if is_firecracker and not host_is_linux:
-            raise SmolVMError(
-                "Firecracker vsock is only available on Linux; use comm_channel='ssh' instead."
+            raise VsockNotSupportedError(
+                "vsock_not_supported_for_firecracker_host",
+                "Firecracker vsock is only available on Linux",
+                {"backend": backend, "host_os": platform.system()},
             )
         # Explicit request: use vsock, never silently downgrade to SSH.
         return ChannelResolution(kind="vsock", allow_fallback=False)
