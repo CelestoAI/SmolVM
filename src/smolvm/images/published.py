@@ -36,6 +36,7 @@ is policy-free.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -141,6 +142,16 @@ class BaseKernel(BaseModel):
 IMAGES_RELEASE_TAG = "images-2026.06.12.0"
 
 
+def _images_release_tag() -> str:
+    """Return the image release tag used when constructing download URLs.
+
+    ``IMAGES_RELEASE_TAG`` remains the public source of truth. The environment
+    override is for CI jobs that need to test a branch before the bumped image
+    release has been published.
+    """
+    return os.environ.get("SMOLVM_IMAGES_RELEASE_TAG") or IMAGES_RELEASE_TAG
+
+
 def cache_name(
     preset: Preset, arch: Arch, vmm: Vmm, version: str = __version__, *, os: Os = "ubuntu"
 ) -> str:
@@ -173,7 +184,7 @@ def _release_asset_url(preset: Preset, arch: Arch, suffix: str, os: Os = "ubuntu
     segment. ``scripts/ci/build-preset.sh`` mirrors this on the upload side.
     """
     slug = f"{preset}-{arch}-{suffix}" if os == "ubuntu" else f"{preset}-{arch}-{os}-{suffix}"
-    return f"https://github.com/CelestoAI/SmolVM/releases/download/{IMAGES_RELEASE_TAG}/{slug}"
+    return f"https://github.com/CelestoAI/SmolVM/releases/download/{_images_release_tag()}/{slug}"
 
 
 def _release_kernel_url(arch: Arch, fmt: KernelFormat) -> str:
@@ -185,7 +196,7 @@ def _release_kernel_url(arch: Arch, fmt: KernelFormat) -> str:
     """
     return (
         f"https://github.com/CelestoAI/SmolVM/releases/download/"
-        f"{IMAGES_RELEASE_TAG}/vmlinux-{arch}.{fmt}"
+        f"{_images_release_tag()}/vmlinux-{arch}.{fmt}"
     )
 
 

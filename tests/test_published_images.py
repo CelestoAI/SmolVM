@@ -23,6 +23,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from smolvm.exceptions import ImageError
+from smolvm.images import published as published_module
 from smolvm.images.manager import LocalImage
 from smolvm.images.published import (
     BASE_KERNELS,
@@ -95,6 +96,20 @@ class TestNaming:
         # Image/rootfs releases use CalVer because they are content snapshots,
         # not SmolVM package releases.
         assert re.fullmatch(r"images-\d{4}\.\d{2}\.\d{2}\.\d+", IMAGES_RELEASE_TAG)
+
+    def test_release_url_uses_env_override_when_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SMOLVM_IMAGES_RELEASE_TAG", "images-v0.0.16")
+
+        assert published_module._images_release_tag() == "images-v0.0.16"
+        assert "/images-v0.0.16/" in published_module._release_kernel_url("amd64", "elf")
+        assert "/images-v0.0.16/" in published_module._release_asset_url(
+            "openclaw", "amd64", "rootfs.ext4.zst"
+        )
+
+    def test_empty_release_tag_env_uses_pinned_tag(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SMOLVM_IMAGES_RELEASE_TAG", "")
+
+        assert published_module._images_release_tag() == IMAGES_RELEASE_TAG
 
     def test_cache_name_includes_preset_version_arch_vmm(self) -> None:
         assert (
