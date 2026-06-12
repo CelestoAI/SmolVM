@@ -45,6 +45,7 @@ from smolvm.ssh import SSHClient
 from smolvm.types import (
     BrowserViewport,
     CommandResult,
+    DisplaySandboxProtocol,
     GuestOS,
     InternetSettings,
     NetworkConfig,
@@ -93,6 +94,7 @@ __all__ = [
     "SnapshotArtifacts",
     "SnapshotInfo",
     "CommandResult",
+    "DisplaySandboxProtocol",
     "BrowserViewport",
     "WorkspaceMount",
     "GuestOS",

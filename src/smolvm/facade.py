@@ -41,7 +41,7 @@ from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 from urllib.parse import urlparse
 
 from pydantic import ValidationError as PydanticValidationError
@@ -92,6 +92,7 @@ from smolvm.types import (
     BrowserSessionConfig,
     BrowserViewport,
     CommandResult,
+    DisplaySandboxProtocol,
     GuestOS,
     InternetSettings,
     PortForwardConfig,
@@ -108,6 +109,11 @@ from smolvm.vm import SmolVMManager
 logger = logging.getLogger(__name__)
 
 _DEFAULT_RUN_READY_TIMEOUT = 30.0
+# Display sandboxes need more than the VM-only 30s timeout because startup
+# includes X11/Wayland-style display services, VNC/noVNC, a window manager, and
+# sometimes Chromium plus GPU/driver initialization. 90s was chosen
+# empirically; tune it if startup profiling shows a tighter bound is reliable.
+_DEFAULT_DISPLAY_SANDBOX_BOOT_TIMEOUT = 90.0
 
 # When auto-selecting the channel, how long to wait for the vsock agent before
 # falling back to SSH. Kept short: the agent binds its vsock port early in boot
@@ -120,6 +126,7 @@ _VSOCK_AUTO_PROBE_TIMEOUT = 2.5
 _LOCAL_FORWARD_PROBE_TIMEOUT = 2.0
 _LOCAL_FORWARD_PROBE_INTERVAL = 0.2
 _LOCAL_TUNNEL_START_TIMEOUT = 10.0
+_DisplaySandboxT = TypeVar("_DisplaySandboxT", bound=DisplaySandboxProtocol)
 _LOCAL_FORWARD_MAX_PORT_ATTEMPTS = 10
 _AUTO_CONFIG_DEFAULT_MEM_SIZE_MIB = {
     GuestOS.ALPINE: 512,
@@ -966,10 +973,63 @@ def _normalize_display_viewport(
 ) -> BrowserViewport:
     """Return a viewport object for browser and desktop sandboxes."""
     if viewport is None:
-        return BrowserViewport(width=width, height=height)
+        return BrowserViewport(
+            width=_validate_positive_int("viewport_width", width),
+            height=_validate_positive_int("viewport_height", height),
+        )
     if isinstance(viewport, BrowserViewport):
+        _validate_positive_int("viewport.width", viewport.width)
+        _validate_positive_int("viewport.height", viewport.height)
         return viewport
-    return BrowserViewport(**viewport)
+    try:
+        raw_width = viewport["width"]
+        raw_height = viewport["height"]
+    except KeyError as exc:
+        raise ValueError("viewport must include positive integer width and height") from exc
+    return BrowserViewport(
+        width=_validate_positive_int("viewport.width", raw_width),
+        height=_validate_positive_int("viewport.height", raw_height),
+    )
+
+
+def _validate_positive_int(name: str, value: Any) -> int:
+    """Return a positive integer or raise a parameter-specific ValueError."""
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer.")
+    return value
+
+
+def _validate_int_range(name: str, value: Any, *, minimum: int, maximum: int) -> int:
+    """Return an integer within range or raise a parameter-specific ValueError."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be an integer between {minimum} and {maximum}.")
+    if value < minimum or value > maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}.")
+    return value
+
+
+def _validate_timeout_range(name: str, value: Any, *, maximum: float) -> float:
+    """Return a positive timeout or raise a parameter-specific ValueError."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a number greater than 0 and at most {maximum}.")
+    normalized = float(value)
+    if normalized <= 0 or normalized > maximum:
+        raise ValueError(f"{name} must be greater than 0 and at most {maximum}.")
+    return normalized
+
+
+def _validate_display_sandbox_limits(
+    *,
+    memory_mb: int,
+    disk_size_mb: int,
+    timeout_minutes: int,
+    boot_timeout: float,
+) -> float:
+    """Validate browser/desktop factory limits before building VM config."""
+    _validate_int_range("memory_mb", memory_mb, minimum=512, maximum=16384)
+    _validate_int_range("disk_size_mb", disk_size_mb, minimum=2048, maximum=16384)
+    _validate_int_range("timeout_minutes", timeout_minutes, minimum=1, maximum=240)
+    return _validate_timeout_range("boot_timeout", boot_timeout, maximum=3600.0)
 
 
 @dataclass(slots=True)
@@ -1231,7 +1291,7 @@ class SmolVM:
     @classmethod
     def _start_display_sandbox(
         cls,
-        sandbox_cls: type[Any],
+        sandbox_cls: type[_DisplaySandboxT],
         *,
         mode: Literal["headless", "live", "desktop"],
         session_id: str | None,
@@ -1253,7 +1313,13 @@ class SmolVM:
         ssh_key_path: str | None,
         boot_timeout: float,
         on_progress: Callable[[str], None] | None,
-    ) -> Any:
+    ) -> _DisplaySandboxT:
+        resolved_boot_timeout = _validate_display_sandbox_limits(
+            memory_mb=memory_mb,
+            disk_size_mb=disk_size_mb,
+            timeout_minutes=timeout_minutes,
+            boot_timeout=boot_timeout,
+        )
         resolved_viewport = _normalize_display_viewport(
             viewport,
             width=viewport_width,
@@ -1286,10 +1352,12 @@ class SmolVM:
             ssh_key_path=ssh_key_path,
         )
         try:
-            sandbox.start(boot_timeout=boot_timeout, on_progress=on_progress)
+            sandbox.start(boot_timeout=resolved_boot_timeout, on_progress=on_progress)
         except Exception:
-            with suppress(Exception):
+            try:
                 sandbox.stop()
+            except Exception:
+                logger.exception("Failed to clean up display sandbox after startup failed.")
             raise
         return sandbox
 
@@ -1315,9 +1383,9 @@ class SmolVM:
         data_dir: Path | None = None,
         socket_dir: Path | None = None,
         ssh_key_path: str | None = None,
-        boot_timeout: float = 90.0,
+        boot_timeout: float = _DEFAULT_DISPLAY_SANDBOX_BOOT_TIMEOUT,
         on_progress: Callable[[str], None] | None = None,
-    ) -> Any:
+    ) -> DisplaySandboxProtocol:
         """Start a browser sandbox and return it once it is ready.
 
         ``headless=True`` exposes only ``cdp_url`` for browser automation.
@@ -1371,9 +1439,9 @@ class SmolVM:
         data_dir: Path | None = None,
         socket_dir: Path | None = None,
         ssh_key_path: str | None = None,
-        boot_timeout: float = 90.0,
+        boot_timeout: float = _DEFAULT_DISPLAY_SANDBOX_BOOT_TIMEOUT,
         on_progress: Callable[[str], None] | None = None,
-    ) -> Any:
+    ) -> DisplaySandboxProtocol:
         """Start a visible desktop sandbox and return it once it is ready."""
         from smolvm.browser import _DesktopSandbox
 

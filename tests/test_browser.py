@@ -135,6 +135,57 @@ def test_smolvm_browser_factory_stops_sandbox_on_start_failure(
     sandbox.stop.assert_called_once_with()
 
 
+@patch("smolvm.facade.logger")
+@patch("smolvm.browser._BrowserSandbox")
+def test_smolvm_browser_factory_logs_cleanup_failure_without_replacing_start_error(
+    mock_sandbox_cls: MagicMock,
+    mock_logger: MagicMock,
+) -> None:
+    """Cleanup errors should be logged without hiding the original start failure."""
+    sandbox = MagicMock()
+    sandbox.start.side_effect = RuntimeError("start failed")
+    sandbox.stop.side_effect = RuntimeError("stop failed")
+    mock_sandbox_cls.return_value = sandbox
+
+    with pytest.raises(RuntimeError, match="start failed"):
+        SmolVM.browser()
+
+    sandbox.stop.assert_called_once_with()
+    mock_logger.exception.assert_called_once_with(
+        "Failed to clean up display sandbox after startup failed."
+    )
+
+
+@patch("smolvm.browser._BrowserSandbox")
+def test_smolvm_browser_factory_rejects_invalid_resource_limits(
+    mock_sandbox_cls: MagicMock,
+) -> None:
+    """Invalid factory limits should fail before constructing the sandbox."""
+    with pytest.raises(ValueError, match="memory_mb"):
+        SmolVM.browser(memory_mb=0)
+    with pytest.raises(ValueError, match="disk_size_mb"):
+        SmolVM.browser(disk_size_mb=0)
+    with pytest.raises(ValueError, match="timeout_minutes"):
+        SmolVM.browser(timeout_minutes=0)
+    with pytest.raises(ValueError, match="boot_timeout"):
+        SmolVM.browser(boot_timeout=0)
+
+    mock_sandbox_cls.assert_not_called()
+
+
+@patch("smolvm.browser._DesktopSandbox")
+def test_smolvm_desktop_factory_rejects_invalid_viewport(
+    mock_sandbox_cls: MagicMock,
+) -> None:
+    """Viewport values should be validated before constructing the sandbox."""
+    with pytest.raises(ValueError, match="viewport.width"):
+        SmolVM.desktop(viewport={"width": 0, "height": 900})
+    with pytest.raises(ValueError, match="viewport_height"):
+        SmolVM.desktop(viewport_height=-1)
+
+    mock_sandbox_cls.assert_not_called()
+
+
 @patch("smolvm.utils.ensure_ssh_key")
 @patch("smolvm.images.builder.ImageBuilder")
 @patch("smolvm.browser._allocate_browser_host_port", side_effect=[39001])
@@ -480,7 +531,6 @@ def test_desktop_sandbox_start_exposes_viewer_and_display_only(
 @patch.object(
     _BrowserSandbox,
     "collect_artifacts",
-    return_value=Path("/tmp/guest-artifacts.tar.gz"),
 )
 def test_browser_sandbox_stop_deletes_state_record(
     _mock_collect_artifacts: MagicMock,
@@ -490,6 +540,7 @@ def test_browser_sandbox_stop_deletes_state_record(
     tmp_path: Path,
 ) -> None:
     """Stopping a browser sandbox should delete its persisted state record."""
+    _mock_collect_artifacts.return_value = tmp_path / "guest-artifacts.tar.gz"
     mock_build_browser_vm_config.return_value = (sample_vm_config, str(tmp_path / "id_ed25519"))
 
     vm = MagicMock()

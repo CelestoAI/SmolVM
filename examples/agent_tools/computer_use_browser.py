@@ -440,7 +440,10 @@ def _run_task(config: ComputerUseConfig) -> ComputerUseResult:
             f"start_url={config.start_url}"
         )
         if session.cdp_url is None:
-            raise SmolVMError("Browser sandbox did not expose a CDP URL.")
+            raise SmolVMError(
+                "The browser sandbox failed to provide a connection address needed to "
+                "control the browser; please try again or report this problem."
+            )
         _log(f"cdp_url={session.cdp_url}")
         if session.viewer_url:
             _log(f"viewer_url={session.viewer_url}")

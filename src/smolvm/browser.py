@@ -690,4 +690,7 @@ class _DesktopSandbox(_BrowserSandbox):
 
     def connect_playwright(self) -> Any:
         """Desktop sandboxes do not expose Playwright automation."""
-        raise SmolVMError("Desktop sandboxes do not expose cdp_url.")
+        raise SmolVMError(
+            "Desktop sandboxes do not support Playwright or browser automation; "
+            "use SmolVM.browser() when you need a browser connection address."
+        )

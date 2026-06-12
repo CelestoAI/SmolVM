@@ -3797,9 +3797,14 @@ def _run_browser(args: argparse.Namespace) -> int:
                         session.close()
 
             if failures:
+                failed_ids = [failure.split(":", 1)[0] for failure in failures]
+                commands = ", then ".join(
+                    f"`smolvm browser stop {session_id}`" for session_id in failed_ids
+                )
                 render_error(
-                    "Failed to stop one or more browser sandboxes.",
-                    hint="; ".join(failures),
+                    "Failed to stop browser sandbox"
+                    f"{'es' if len(failed_ids) != 1 else ''} "
+                    f"{', '.join(failed_ids)}; to fix, run: {commands}."
                 )
                 return 1
 
@@ -3813,8 +3818,12 @@ def _run_browser(args: argparse.Namespace) -> int:
             session.stop()
             print(f"Stopped browser sandbox '{args.session_id}'.")
             return 0
-        except Exception as exc:
-            return _emit_cli_error(command_name, 1, exc, json_output=False)
+        except Exception:
+            render_error(
+                f"Failed to stop browser sandbox {args.session_id}; "
+                f"to fix, run: `smolvm browser stop {args.session_id}`."
+            )
+            return 1
         finally:
             if session is not None:
                 session.close()

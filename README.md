@@ -198,23 +198,30 @@ Start a visible browser sandbox from Python:
 from smolvm import SmolVM
 
 with SmolVM.browser(headless=False) as browser:
-    print(browser.cdp_url)      # Browser automation endpoint
-    print(browser.viewer_url)   # Open this in your browser to watch
-    print(browser.display_url)  # VNC-compatible display endpoint
+    print(browser.cdp_url)      # Automation endpoint for Playwright or CDP tools
+    print(browser.viewer_url)   # Web URL you can open to watch live
+    print(browser.display_url)  # VNC URL for clients or computer-use agents
 ```
+
+Use `browser.cdp_url` when a browser automation tool needs a Chromium DevTools
+connection address. Use `browser.viewer_url` when you want to watch the session
+in your own browser. Use `browser.display_url` when a VNC client or
+computer-use agent needs to control the screen.
 
 Start the same browser sandbox from the CLI:
 
 ```bash
 smolvm browser start --live
 # Sandbox: browser-a1b2c3d4
-# Viewer URL: http://127.0.0.1:36080/vnc.html?autoconnect=1&resize=scale
-# Display URL: vnc://127.0.0.1:35900
+# Viewer URL: http://127.0.0.1:36080/vnc.html?autoconnect=1&resize=scale  # open in a browser
+# Display URL: vnc://127.0.0.1:35900                                      # give to a VNC client or agent
 ```
 
-For a browser-only automation endpoint, use `SmolVM.browser(headless=True)`.
-For a full desktop display, use `SmolVM.desktop()` and read `viewer_url` or
-`display_url`.
+Use `SmolVM.browser(headless=True)` for browser automation only; it gives you
+`cdp_url` and no visible viewer. Use `SmolVM.browser(headless=False)` for a
+visible browser; it gives you `cdp_url`, `viewer_url`, and `display_url`. Use
+`SmolVM.desktop()` for a full desktop display; it gives you `viewer_url` and
+`display_url`, and may not provide a browser automation endpoint.
 
 Open the viewer URL to watch the browser in real time, or give the display URL to a computer-use agent or VNC client. When you're done, list and stop sandboxes:
 

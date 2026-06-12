@@ -1976,6 +1976,7 @@ class TestCliBrowser:
         assert payload["ok"] is True
         assert payload["data"]["session_id"] == "browser-abc123"
         assert payload["data"]["cdp_url"] == "http://127.0.0.1:39222"
+        assert payload["data"]["viewer_url"] == "http://127.0.0.1:36080/vnc.html"
         assert payload["data"]["display_url"] == "vnc://127.0.0.1:35900"
 
     @patch("smolvm.browser._BrowserSandbox")
@@ -2050,6 +2051,54 @@ class TestCliBrowser:
         second_session.close.assert_called_once_with()
         assert "Stopped 2 browser sandbox(es)." in capsys.readouterr().out
 
+    @patch("smolvm.browser._BrowserSandbox")
+    @patch("smolvm.vm.resolve_data_dir", return_value=Path("/tmp"))
+    @patch("smolvm.storage.create_state_manager")
+    def test_browser_stop_all_failure_names_recovery_command(
+        self,
+        mock_state_manager_cls: MagicMock,
+        _mock_resolve_data_dir: MagicMock,
+        mock_browser_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm browser stop --all` should show a concrete recovery command."""
+        state_manager = MagicMock()
+        state_manager.list_browser_sessions.return_value = [
+            MagicMock(session_id="browser-001"),
+        ]
+        mock_state_manager_cls.return_value = state_manager
+
+        session = MagicMock()
+        session.stop.side_effect = RuntimeError("internal failure")
+        mock_browser_cls.from_id.return_value = session
+
+        ret = main(["browser", "stop", "--all"])
+
+        assert ret == 1
+        error = capsys.readouterr().err
+        assert "smolvm browser" in error
+        assert "stop browser-001" in error
+        assert "internal failure" not in error
+
+    @patch("smolvm.browser._BrowserSandbox")
+    def test_browser_stop_failure_names_recovery_command(
+        self,
+        mock_browser_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm browser stop <id>` should show a concrete recovery command."""
+        session = MagicMock()
+        session.stop.side_effect = RuntimeError("internal failure")
+        mock_browser_cls.from_id.return_value = session
+
+        ret = main(["browser", "stop", "browser-001"])
+
+        assert ret == 1
+        error = capsys.readouterr().err
+        assert "smolvm browser" in error
+        assert "stop browser-001" in error
+        assert "internal failure" not in error
+
     @patch("smolvm.vm.resolve_data_dir", return_value=Path("/tmp"))
     @patch("smolvm.storage.create_state_manager")
     def test_browser_stop_all_empty(
@@ -2099,6 +2148,7 @@ class TestCliBrowser:
         assert payload["data"]["filters"] == {"status": None}
         assert payload["data"]["sessions"][0]["session_id"] == "browser-abc123"
         assert payload["data"]["sessions"][0]["status"] == "ready"
+        assert payload["data"]["sessions"][0]["viewer_url"] == "http://127.0.0.1:36080/vnc.html"
         assert payload["data"]["sessions"][0]["display_url"] == "vnc://127.0.0.1:35900"
 
     @patch("smolvm.cli.main.importlib.metadata.version", return_value="0.0.5b2")

@@ -17,7 +17,7 @@
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Protocol
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -737,6 +737,101 @@ class BrowserSessionInfo(BaseModel):
     artifacts_dir: Path | None = None
 
     model_config = {"frozen": True}
+
+
+class DisplaySandboxProtocol(Protocol):
+    """Public protocol returned by browser and desktop sandbox factories."""
+
+    @property
+    def session_id(self) -> str:
+        """Stable sandbox identifier."""
+        ...
+
+    @property
+    def vm_id(self) -> str:
+        """Underlying SmolVM identifier."""
+        ...
+
+    @property
+    def cdp_url(self) -> str | None:
+        """Browser automation endpoint, when the sandbox exposes one."""
+        ...
+
+    @property
+    def browser_cdp_url(self) -> str | None:
+        """Alias for the browser automation endpoint."""
+        ...
+
+    @property
+    def viewer_url(self) -> str | None:
+        """Web URL that humans can open to watch the sandbox."""
+        ...
+
+    @property
+    def display_url(self) -> str | None:
+        """VNC-compatible display endpoint for clients and agents."""
+        ...
+
+    @property
+    def artifacts_dir(self) -> Path | None:
+        """Local directory for collected sandbox artifacts."""
+        ...
+
+    @property
+    def info(self) -> BrowserSessionInfo:
+        """Current persisted sandbox info."""
+        ...
+
+    @property
+    def status(self) -> BrowserSessionState:
+        """Current sandbox lifecycle state."""
+        ...
+
+    def start(
+        self,
+        boot_timeout: float = ...,
+        *,
+        on_progress: Any | None = ...,
+    ) -> "DisplaySandboxProtocol":
+        """Start the sandbox."""
+        ...
+
+    def stop(self) -> "DisplaySandboxProtocol":
+        """Stop the sandbox."""
+        ...
+
+    def delete(self) -> None:
+        """Delete the sandbox."""
+        ...
+
+    def close(self) -> None:
+        """Release local resources."""
+        ...
+
+    def open_viewer(self) -> bool:
+        """Open the viewer URL in the local default browser."""
+        ...
+
+    def connect_playwright(self) -> Any:
+        """Connect Playwright when the sandbox supports browser automation."""
+        ...
+
+    def screenshot(
+        self,
+        destination: str | Path,
+        *,
+        full_page: bool = True,
+    ) -> Path:
+        """Capture a screenshot when browser automation is available."""
+        ...
+
+    def __enter__(self) -> "DisplaySandboxProtocol":
+        """Enter the context manager."""
+        ...
+
+    def __exit__(self, *args: object) -> None:
+        """Exit the context manager."""
+        ...
 
 
 class CommandResult(BaseModel):
