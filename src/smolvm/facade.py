@@ -594,11 +594,9 @@ def _build_auto_config(
             resolved_disk_size_mib = required_disk_size_mib
         elif resolved_disk_size_mib < required_disk_size_mib:
             raise ValueError(
-                f"ubuntu auto-config requires disk_size_mib >= {required_disk_size_mib} "
-                f"(got {resolved_disk_size_mib}; default floor {default_disk_size_mib}); "
-                "fix by running: "
-                f"smolvm create --name {resolved_vm_name} --os ubuntu "
-                f"--backend {resolved_backend} --disk-size {required_disk_size_mib}"
+                f"Ubuntu needs at least {required_disk_size_mib} MiB for sandbox '{resolved_vm_name}'; "
+                f"recreate it with: smolvm create --name {resolved_vm_name} --os ubuntu "
+                f"--backend {resolved_backend} --disk-size {required_disk_size_mib}."
             )
         should_grow_filesystem = (
             disk_size_mib is not None and resolved_disk_size_mib > base_rootfs_size_mib
@@ -621,7 +619,7 @@ def _build_auto_config(
             ssh_capable=True,
             backend=resolved_backend,
             ssh_public_key=public_key_value,
-            disk_size_mib=resolved_disk_size_mib if disk_size_mib is not None else None,
+            disk_size_mib=resolved_disk_size_mib,
             grow_filesystem=should_grow_filesystem,
         )
         logger.info(
