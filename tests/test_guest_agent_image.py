@@ -47,23 +47,56 @@ def _assert_guest_agent_starts_before_network_and_ssh(script: str) -> None:
 
 
 def _assert_startup_timestamp_markers(script: str) -> None:
-    ordered_stages = [
-        "init-start",
-        "mounts-ready",
-        "root-ready",
-        "guest-agent-start",
-        "guest-agent-started",
-        "net-config-start",
-        "net-ready",
-        "ssh-hostkey-check-start",
-        "ssh-hostkey-check-done",
-        "ssh-authkey-inject-start",
-        "ssh-authkey-inject-done",
-        "sshd-start",
-        "sshd-invoked",
-        "init-complete",
-    ]
-    positions = [script.index(f'log_ts "{stage}"') for stage in ordered_stages]
+    if script.index('log_ts "clock-sync-start"') > script.index(
+        'log_ts "ssh-authkey-inject-done"'
+    ):
+        ordered_stages = [
+            "init-start",
+            "mounts-ready",
+            "root-ready",
+            "guest-agent-start",
+            "guest-agent-started",
+            "net-config-start",
+            "net-ready",
+            "ssh-hostkey-check-start",
+            "ssh-hostkey-check-done",
+            "ssh-authkey-inject-start",
+            "ssh-authkey-inject-done",
+            "clock-sync-start",
+            "sshd-start",
+            "sshd-invoked",
+            "init-complete",
+        ]
+    else:
+        ordered_stages = [
+            "init-start",
+            "mounts-ready",
+            "root-ready",
+            "guest-agent-start",
+            "guest-agent-started",
+            "net-config-start",
+            "net-ready",
+            "clock-sync-start",
+            "ssh-hostkey-check-start",
+            "ssh-hostkey-check-done",
+            "ssh-authkey-inject-start",
+            "ssh-authkey-inject-done",
+            "sshd-start",
+            "sshd-invoked",
+            "init-complete",
+        ]
+
+    positions = []
+    for stage in ordered_stages:
+        positions.append(script.index(f'log_ts "{stage}"'))
+        if stage == "clock-sync-start":
+            clock_sync_done_positions = [
+                script.index(f'log_ts "{candidate}"')
+                for candidate in ("clock-sync-started", "clock-sync-disabled")
+                if f'log_ts "{candidate}"' in script
+            ]
+            assert clock_sync_done_positions
+            positions.extend(sorted(clock_sync_done_positions))
     assert positions == sorted(positions)
 
 
