@@ -593,10 +593,11 @@ def _build_auto_config(
         if disk_size_mib is None:
             resolved_disk_size_mib = required_disk_size_mib
         elif resolved_disk_size_mib < required_disk_size_mib:
+            quoted_vm_name = shlex.quote(resolved_vm_name)
             raise ValueError(
                 f"Ubuntu needs at least {required_disk_size_mib} MiB for sandbox "
                 f"'{resolved_vm_name}'; "
-                f"recreate it with: smolvm create --name {resolved_vm_name} --os ubuntu "
+                f"recreate it with: smolvm create --name {quoted_vm_name} --os ubuntu "
                 f"--backend {resolved_backend} --disk-size {required_disk_size_mib}."
             )
         should_grow_filesystem = (

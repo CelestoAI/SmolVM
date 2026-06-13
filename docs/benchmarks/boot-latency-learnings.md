@@ -160,7 +160,7 @@ the default auto-config image could not start the old Python agent. The host
 then waited the full `_VSOCK_AUTO_PROBE_TIMEOUT = 8.0 s` before falling back to
 SSH:
 
-```
+```text
 QEMU auto-config (default), first command: 8066 ms   <- 8s vsock probe + SSH
 QEMU explicit comm_channel="ssh", first command: 1876 ms
 ```
