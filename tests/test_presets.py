@@ -143,65 +143,62 @@ class TestClaudeCodePreset:
         assert "@anthropic-ai/claude-code" in CLAUDE_CODE_PRESET.install_script
         assert "npm install -g" in CLAUDE_CODE_PRESET.install_script
 
-    def test_claude_code_install_strips_host_install_method(self, tmp_path: Path) -> None:
-        """The install script must drop ``installMethod`` from the copied
-        ``~/.claude.json``. The host's value (e.g. ``"native"`` after the
-        user ran ``claude migrate-installer`` on their machine) does not
-        match the guest, where claude is npm-installed under
-        ``/usr/lib/node_modules`` — leaving it makes claude error with
-        ``claude command not found at /root/.local/bin/claude`` on the
-        first launch."""
+    def test_claude_code_json_copy_uses_minimizing_transform(self) -> None:
+        """The ~/.claude.json copy must run through ``minimize_claude_json``
+        and write 0o600 — the file carries OAuth/onboarding state and the
+        host copy is mostly per-host project history we don't want in the
+        guest. The ~/.claude *directory* is intentionally not copied; the
+        keychain secret writes its only auth-relevant file."""
+        from smolvm.presets.claude_code import minimize_claude_json
+
+        pairs = [(cfg.host_path, cfg.guest_path) for cfg in CLAUDE_CODE_PRESET.host_configs]
+        assert pairs == [("~/.claude.json", "/root/.claude.json")]
+
+        cfg = CLAUDE_CODE_PRESET.host_configs[0]
+        assert cfg.transform is minimize_claude_json
+        assert cfg.file_mode == 0o600
+
+    def test_minimize_claude_json_keeps_only_auth_keys(self) -> None:
+        """The transform projects the host config down to the auth/
+        onboarding allowlist, dropping host-specific bulk (project
+        history, caches) and ``installMethod`` (which reflects the host's
+        install layout, not the guest's)."""
         import json
-        import subprocess
 
-        root = tmp_path / "root"
-        root.mkdir()
-        config = root / ".claude.json"
-        config.write_text(
-            json.dumps(
-                {
-                    "installMethod": "native",
-                    "theme": "dark",
-                    "recentProjects": ["a", "b"],
-                }
-            )
-        )
+        from smolvm.presets.claude_code import minimize_claude_json
 
-        # Extract just the cleanup snippet (after the npm install line)
-        # and rewrite the hard-coded /root/ path to our temp dir.
-        from smolvm.presets.claude_code import CLAUDE_RESET_INSTALL_METHOD
+        raw = json.dumps(
+            {
+                "oauthAccount": {"emailAddress": "u@example.com"},
+                "userID": "uid-123",
+                "hasCompletedOnboarding": True,
+                "installMethod": "native",
+                "projects": {"/home/u/repo": {"allowedTools": ["x"]}},
+                "cachedGrowthBookFeatures": {"big": "blob"},
+            }
+        ).encode()
 
-        snippet = CLAUDE_RESET_INSTALL_METHOD.replace("/root/", f"{root}/")
-        completed = subprocess.run(
-            ["bash", "-c", f"set -euo pipefail; {snippet}"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert completed.returncode == 0, completed.stderr
+        result = json.loads(minimize_claude_json(raw))
 
-        data = json.loads(config.read_text())
-        assert "installMethod" not in data
-        # Other fields are untouched.
-        assert data["theme"] == "dark"
-        assert data["recentProjects"] == ["a", "b"]
+        assert result["oauthAccount"] == {"emailAddress": "u@example.com"}
+        assert result["userID"] == "uid-123"
+        assert result["hasCompletedOnboarding"] is True
+        # Host-specific bulk and install layout are dropped.
+        assert "installMethod" not in result
+        assert "projects" not in result
+        assert "cachedGrowthBookFeatures" not in result
 
-    def test_claude_code_install_skips_when_config_absent(self, tmp_path: Path) -> None:
-        """The cleanup must be a no-op when ~/.claude.json was never
-        copied (e.g. a fresh user with no host config)."""
-        import subprocess
+    def test_minimize_claude_json_tolerates_malformed_input(self) -> None:
+        """A corrupt host ~/.claude.json must not abort provisioning — the
+        transform falls back to an empty (valid) JSON object. Valid JSON
+        that isn't an object (null, list, string) must fall back too, so
+        the allowlist projection never raises on a non-dict."""
+        import json
 
-        from smolvm.presets.claude_code import CLAUDE_RESET_INSTALL_METHOD
+        from smolvm.presets.claude_code import minimize_claude_json
 
-        # Point at an empty dir — the file does not exist.
-        snippet = CLAUDE_RESET_INSTALL_METHOD.replace("/root/", f"{tmp_path}/")
-        completed = subprocess.run(
-            ["bash", "-c", f"set -euo pipefail; {snippet}"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert completed.returncode == 0, completed.stderr
+        for raw in (b"{not json", b"null", b"[]", b'"a string"', b"42"):
+            assert json.loads(minimize_claude_json(raw)) == {}
 
 
 class TestPiPreset:
@@ -226,7 +223,6 @@ class TestPiPreset:
             ("~/.pi", "/root/.pi"),
             ("~/.codex", "/root/.codex"),
             ("~/.claude.json", "/root/.claude.json"),
-            ("~/.claude", "/root/.claude"),
         ]
 
     def test_pi_pulls_oauth_from_macos_keychain(self) -> None:
@@ -241,14 +237,19 @@ class TestPiPreset:
         assert "@mariozechner/pi-coding-agent" in PI_PRESET.install_script
         assert "npm install -g" in PI_PRESET.install_script
 
-    def test_pi_install_strips_claude_install_method(self) -> None:
-        """Pi forwards ~/.claude.json, so its install must append the
-        same installMethod cleanup that claude-code uses — otherwise
-        the host's ``installMethod`` value carries into the guest and
-        breaks claude/Pi's claude-subscription path on first launch."""
-        from smolvm.presets.claude_code import CLAUDE_RESET_INSTALL_METHOD
+    def test_pi_claude_json_copy_uses_minimizing_transform(self) -> None:
+        """Pi forwards ~/.claude.json for Claude Pro/Max delegation, so it
+        must reuse claude-code's minimizing transform — this drops the
+        host-specific ``installMethod`` (along with project history and
+        caches) that would otherwise break claude's subscription path in
+        the guest."""
+        from smolvm.presets.claude_code import minimize_claude_json
 
-        assert CLAUDE_RESET_INSTALL_METHOD in PI_PRESET.install_script
+        claude_cfg = next(
+            cfg for cfg in PI_PRESET.host_configs if cfg.guest_path == "/root/.claude.json"
+        )
+        assert claude_cfg.transform is minimize_claude_json
+        assert claude_cfg.file_mode == 0o600
 
     def test_pi_setup_uses_node20_bootstrap(self) -> None:
         from smolvm.presets._scripts import NODE20_BOOTSTRAP
@@ -501,7 +502,7 @@ class TestApplyPreset:
             ),
         )
 
-        with pytest.raises(SmolVMError, match="Required host config not found"):
+        with pytest.raises(SmolVMError, match="isn't there. Restore it"):
             apply_preset(ssh, preset)
 
     def test_copies_file_via_put_file(self, tmp_path: Path) -> None:

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 
@@ -34,12 +35,22 @@ class HostConfigCopy:
             files (e.g. ``~/.git-credentials``) that the SFTP server's
             umask would otherwise leave world-readable. ``None``
             (default) leaves the SFTP-applied mode in place.
+        transform: Optional callable applied to the host file's raw
+            bytes to produce the bytes written into the guest. Single-
+            file copies only (directory copies ignore it). Use it to
+            strip host-specific data before upload — e.g. Claude Code's
+            ``~/.claude.json`` is ~130 KB of per-host project history and
+            feature-flag caches, but the guest only needs the ~1 KB
+            auth/onboarding subset. Filtering on the host side keeps the
+            host's project history off the sandbox disk entirely.
+            ``None`` (default) copies the file verbatim.
     """
 
     host_path: str
     guest_path: str
     required: bool = False
     file_mode: int | None = None
+    transform: Callable[[bytes], bytes] | None = None
 
 
 @dataclass(frozen=True)

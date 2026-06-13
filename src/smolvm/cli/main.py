@@ -2309,15 +2309,28 @@ def _run_start_with_published_image(args: argparse.Namespace, preset: object) ->
                 writable_mounts=args.writable_mounts,
             )
             vm.start(boot_timeout=args.boot_timeout)
-            vm.wait_for_ssh(timeout=args.boot_timeout)
+            # Wait for the *resolved* control channel, not SSH specifically:
+            # the credential transfer below only needs run()/put_file(),
+            # which work over vsock too. On a Linux host with the guest
+            # agent this uses vsock (no guest network/sshd needed); on
+            # macOS it resolves to SSH. Forcing wait_for_ssh here would make
+            # the vsock path pay an unnecessary SSH handshake first.
+            vm.wait_for_ready(timeout=args.boot_timeout)
 
-            # Transfer credentials — keychain only, no config copies or
-            # install scripts. The CLI is already baked into the image;
-            # we only need the OAuth token so the guest is logged in.
-            from smolvm.presets import transfer_keychain_secrets
+            # Transfer credentials — no install scripts (the CLI is
+            # already baked into the image). We still copy the preset's
+            # host configs and the keychain token, since the OAuth token
+            # alone only satisfies headless use: the interactive claude
+            # TUI reads ~/.claude.json for onboarding state and shows its
+            # login screen without it. Configs first, keychain after, so
+            # a config copy can't clobber a credential we just wrote
+            # (mirrors apply_preset's ordering). Git configs are excluded
+            # here — the published path is credential-transfer only.
+            from smolvm.presets import transfer_host_configs, transfer_keychain_secrets
 
-            ssh = vm._ensure_ssh_for_env()
-            extracted_secrets = transfer_keychain_secrets(ssh, _preset)
+            channel = vm._ensure_control_for_file_transfer()
+            copied_configs = transfer_host_configs(channel, _preset, include_git_configs=False)
+            extracted_secrets = transfer_keychain_secrets(channel, _preset)
 
             network = vm.info.network
             data: StartPayload = {
@@ -2337,7 +2350,7 @@ def _run_start_with_published_image(args: argparse.Namespace, preset: object) ->
                 },
                 "preset": {
                     "name": _preset.name,
-                    "copied_configs": extracted_secrets,
+                    "copied_configs": [*copied_configs, *extracted_secrets],
                     "injected_env_keys": [],
                     "no_env_hint": _preset.no_env_hint,
                 },
