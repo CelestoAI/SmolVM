@@ -381,6 +381,30 @@ class TestSmolVMCreate:
             resolution=ChannelResolution(kind="vsock", allow_fallback=False),
         )
 
+    def test_explicit_vsock_error_uses_recovery_payload(
+        self,
+        smol_vm: SmolVMManager,
+        sample_config: VMConfig,
+    ) -> None:
+        """Explicit-vsock create errors should not expose selector internals."""
+        config = sample_config.model_copy(
+            update={"vm_id": "vm-vsock-bad", "backend": "libkrun", "comm_channel": "vsock"}
+        )
+
+        with pytest.raises(SmolVMError) as exc_info:
+            smol_vm._resolve_control_channel_for_config(config, "libkrun")
+
+        assert (
+            str(exc_info.value)
+            == "Cannot use vsock for sandbox 'vm-vsock-bad': this backend does not support "
+            "vsock in this release; create it with SSH by running: "
+            "smolvm create --name vm-vsock-bad --backend libkrun."
+        )
+        assert exc_info.value.details == {
+            "vm_id": "vm-vsock-bad",
+            "recovery_command": "smolvm create --name vm-vsock-bad --backend libkrun",
+        }
+
     @pytest.mark.asyncio
     @patch("smolvm.comm.select.platform.system", return_value="Linux")
     async def test_async_create_firecracker_explicit_vsock_skips_ssh_forward(

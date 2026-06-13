@@ -178,6 +178,11 @@ def _qcow2_virtual_size_mib(qcow2_path: Path) -> int:
     return int(info["virtual-size"]) // (1024 * 1024)
 
 
+def _path_size_mib(path: Path) -> int:
+    """Return a path size rounded up to MiB."""
+    return (path.stat().st_size + (1024 * 1024) - 1) // (1024 * 1024)
+
+
 def _existing_vm_ids() -> set[str]:
     """Best-effort lookup of existing VM IDs for collision-free auto-naming.
 
@@ -572,11 +577,6 @@ def _build_auto_config(
         raise ValueError("disk_size_mib must be >= 64")
 
     if resolved_os is GuestOS.UBUNTU:
-        if resolved_disk_size_mib < default_disk_size_mib:
-            raise ValueError(
-                f"ubuntu auto-config requires disk_size_mib >= {default_disk_size_mib} "
-                f"(got {resolved_disk_size_mib})"
-            )
         from smolvm.images.published import Vmm, ensure_published_image
 
         vmm_by_backend: dict[str, Vmm] = {
@@ -586,14 +586,29 @@ def _build_auto_config(
         }
         vmm = vmm_by_backend[resolved_backend]
         arch = to_published_arch(platform.machine())
+        resolved_vm_name = _resolve_vm_name(vm_name, prefix=name_prefix)
         local_image = ensure_published_image("ubuntu", arch, vmm, "ubuntu")
+        base_rootfs_size_mib = _path_size_mib(local_image.rootfs_path)
+        required_disk_size_mib = max(default_disk_size_mib, base_rootfs_size_mib)
+        if disk_size_mib is None:
+            resolved_disk_size_mib = required_disk_size_mib
+        elif resolved_disk_size_mib < required_disk_size_mib:
+            raise ValueError(
+                f"ubuntu auto-config requires disk_size_mib >= {required_disk_size_mib} "
+                f"(got {resolved_disk_size_mib}; default floor {default_disk_size_mib}); "
+                "fix by running: "
+                f"smolvm create --name {resolved_vm_name} --os ubuntu "
+                f"--backend {resolved_backend} --disk-size {required_disk_size_mib}"
+            )
+        should_grow_filesystem = (
+            disk_size_mib is not None and resolved_disk_size_mib > base_rootfs_size_mib
+        )
 
         kernel_profile = KernelBootProfile.MICROVM_DIRECT
         boot_args = get_boot_profile_spec(kernel_profile).base_boot_args_for_backend(
             resolved_backend,
             platform.machine(),
         )
-        resolved_vm_name = _resolve_vm_name(vm_name, prefix=name_prefix)
         config = VMConfig(
             vm_id=resolved_vm_name,
             vcpu_count=1,
@@ -607,6 +622,7 @@ def _build_auto_config(
             backend=resolved_backend,
             ssh_public_key=public_key_value,
             disk_size_mib=resolved_disk_size_mib if disk_size_mib is not None else None,
+            grow_filesystem=should_grow_filesystem,
         )
         logger.info(
             "Auto-configured VM: %s (os=ubuntu, backend=%s, source=published-bare-ubuntu)",

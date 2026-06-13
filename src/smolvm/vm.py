@@ -244,11 +244,30 @@ def _crashed_message(vm_id: str) -> str:
     )
 
 
-def _vsock_not_supported_message(vm_id: str, error: VsockNotSupportedError) -> str:
+def _vsock_recovery_command(vm_id: str, backend: str) -> str:
+    """Return a CLI recovery command for an explicit-vsock create failure."""
+    return f"smolvm create --name {vm_id} --backend {backend}"
+
+
+def _vsock_not_supported_message(
+    vm_id: str,
+    error: VsockNotSupportedError,
+    *,
+    recovery_command: str,
+) -> str:
     """Format a user-facing explicit-vsock failure at the VM boundary."""
+    reason_by_code = {
+        "vsock_not_supported_for_windows": "Windows guests use SSH in this release",
+        "vsock_not_supported_for_backend": "this backend does not support vsock in this release",
+        "vsock_host_device_missing": "this host is missing QEMU vsock support",
+        "vsock_not_supported_for_firecracker_host": (
+            "Firecracker vsock is only available on Linux"
+        ),
+    }
+    reason = reason_by_code.get(error.code, "vsock is not available for this sandbox")
     return (
-        f"Cannot use vsock for sandbox '{vm_id}': {error.reason}; "
-        "create it with comm_channel='ssh'."
+        f"Cannot use vsock for sandbox '{vm_id}': {reason}; "
+        f"create it with SSH by running: {recovery_command}."
     )
 
 
@@ -1327,9 +1346,14 @@ class SmolVMManager:
                 guest_os=config.guest_os,
             )
         except VsockNotSupportedError as exc:
+            recovery_command = _vsock_recovery_command(config.vm_id, backend)
             raise SmolVMError(
-                _vsock_not_supported_message(config.vm_id, exc),
-                {"vm_id": config.vm_id, **exc.details},
+                _vsock_not_supported_message(
+                    config.vm_id,
+                    exc,
+                    recovery_command=recovery_command,
+                ),
+                {"vm_id": config.vm_id, "recovery_command": recovery_command},
             ) from exc
 
     def _should_reserve_ssh_forward(

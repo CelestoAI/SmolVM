@@ -230,27 +230,48 @@ class TestVMInit:
         created_config = mock_sdk.create.call_args[0][0]
         assert created_config.ssh_public_key == pubkey_value
 
+    @patch("smolvm.images.published.ensure_published_image")
     @patch("smolvm.utils.ensure_ssh_key")
     def test_autoconfigure_ubuntu_rejects_undersized_disk(
         self,
         mock_ensure_ssh_key: MagicMock,
+        mock_ensure_published: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """Ubuntu should reject --disk-size below the default.
+        """Ubuntu should reject --disk-size below the published rootfs size."""
+        from smolvm.images.manager import LocalImage
 
-        ``ensure_ssh_key`` is mocked because the validation we're checking
-        runs after key resolution today; without the mock the test fails
-        early on hosts where ssh-keygen isn't on PATH (CI sandboxes,
-        minimal containers) and never reaches the disk-size check.
-        """
         priv = tmp_path / "id_ed25519"
         pub = tmp_path / "id_ed25519.pub"
         priv.touch()
         pub.write_text("ssh-ed25519 AAAAExampleKey test@host\n")
         mock_ensure_ssh_key.return_value = (priv, pub)
 
-        with pytest.raises(ValueError, match="disk_size_mib >= 2048"):
-            _build_auto_config(os="ubuntu", backend="qemu", disk_size_mib=512)
+        kernel = tmp_path / "vmlinux.bin"
+        rootfs = tmp_path / "rootfs.ext4"
+        kernel.touch()
+        with rootfs.open("wb") as rootfs_file:
+            rootfs_file.truncate(4096 * 1024 * 1024)
+        mock_ensure_published.return_value = LocalImage(
+            name="ubuntu-qemu", kernel_path=kernel, rootfs_path=rootfs
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            _build_auto_config(
+                vm_name="project-spacex",
+                os="ubuntu",
+                backend="qemu",
+                disk_size_mib=512,
+            )
+
+        message = str(exc_info.value)
+        assert "disk_size_mib >= 4096" in message
+        assert "got 512" in message
+        assert "default floor 2048" in message
+        assert (
+            "smolvm create --name project-spacex --os ubuntu --backend qemu --disk-size 4096"
+            in message
+        )
 
     @pytest.mark.parametrize(
         ("backend", "expected_vmm"),
@@ -301,6 +322,8 @@ class TestVMInit:
         assert "init=/init" in config.boot_args
         assert config.ssh_capable is True
         assert config.ssh_public_key == "ssh-ed25519 AAAAExampleKey test@host"
+        assert config.disk_size_mib is None
+        assert config.grow_filesystem is False
         assert not config.extra_drives
 
     @patch("smolvm.images.published.ensure_published_image")
@@ -476,6 +499,7 @@ class TestVMInit:
         assert config.initrd_path is None
         assert config.ssh_capable is True
         assert config.disk_size_mib == 8192
+        assert config.grow_filesystem is True
         assert "init=/init" in config.boot_args
         assert not config.extra_drives
         mock_image_manager_cls.assert_not_called()
