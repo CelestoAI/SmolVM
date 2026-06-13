@@ -26,7 +26,6 @@ from smolvm.exceptions import (
 )
 from smolvm.facade import SmolVM, _build_auto_config
 from smolvm.images import BootImage, DirectKernelBoot, FirmwareBoot
-from smolvm.images.cloud_init import seed_cache_key
 from smolvm.types import (
     CommandResult,
     GuestOS,
@@ -253,18 +252,25 @@ class TestVMInit:
         with pytest.raises(ValueError, match="disk_size_mib >= 2048"):
             _build_auto_config(os="ubuntu", backend="qemu", disk_size_mib=512)
 
-    @patch("smolvm.images.published.ensure_published_image")
-    @patch("smolvm.images.published.is_preset_published", return_value=True)
+    @pytest.mark.parametrize(
+        ("backend", "expected_vmm"),
+        [
+            ("qemu", "qemu"),
+            ("firecracker", "firecracker"),
+            ("libkrun", "libkrun"),
+        ],
+    )
     @patch("smolvm.utils.ensure_ssh_key")
-    def test_autoconfigure_ubuntu_firecracker_uses_published_rootfs(
+    @patch("smolvm.images.published.ensure_published_image")
+    def test_autoconfigure_ubuntu_uses_published_rootfs(
         self,
-        mock_ensure_ssh_key: MagicMock,
-        _mock_is_published: MagicMock,
         mock_ensure_published: MagicMock,
+        mock_ensure_ssh_key: MagicMock,
+        backend: str,
+        expected_vmm: str,
         tmp_path: Path,
     ) -> None:
-        """Ubuntu on firecracker pulls the published raw-ext4 image and boots
-        it direct-kernel (no qcow2, no cloud-init seed)."""
+        """Ubuntu pulls the published raw-ext4 image and boots direct-kernel."""
         from smolvm.images.manager import LocalImage
 
         priv = tmp_path / "id_ed25519"
@@ -278,64 +284,34 @@ class TestVMInit:
         kernel.touch()
         rootfs.touch()
         mock_ensure_published.return_value = LocalImage(
-            name="ubuntu-fc", kernel_path=kernel, rootfs_path=rootfs
+            name=f"ubuntu-{expected_vmm}", kernel_path=kernel, rootfs_path=rootfs
         )
 
-        config, _ = _build_auto_config(os="ubuntu", backend="firecracker")
+        config, _ = _build_auto_config(os="ubuntu", backend=backend)
 
-        # Resolved the bare-Ubuntu published image for the firecracker vmm.
         preset, _arch, vmm, os_ = mock_ensure_published.call_args.args
-        assert (preset, vmm, os_) == ("ubuntu", "firecracker", "ubuntu")
+        assert (preset, vmm, os_) == ("ubuntu", expected_vmm, "ubuntu")
 
-        # Raw-ext4 direct-kernel boot, SSH key via cmdline, no cloud-init seed.
-        assert config.backend == "firecracker"
+        assert config.backend == backend
+        assert config.guest_os is GuestOS.UBUNTU
         assert config.rootfs_path == rootfs
+        assert config.rootfs_format == "raw-ext4"
         assert config.kernel_path == kernel
         assert config.boot_mode == "direct_kernel"
         assert "init=/init" in config.boot_args
+        assert config.ssh_capable is True
         assert config.ssh_public_key == "ssh-ed25519 AAAAExampleKey test@host"
         assert not config.extra_drives
 
     @patch("smolvm.images.published.ensure_published_image")
-    @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.utils.ensure_ssh_key")
-    def test_autoconfigure_ubuntu_firecracker_unpublished_is_clear(
+    def test_autoconfigure_ubuntu_download_error_propagates(
         self,
         mock_ensure_ssh_key: MagicMock,
-        _mock_is_published: MagicMock,
         mock_ensure_published: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """When no bare-Ubuntu row is published, fail with a single-line recovery
-        command that names the sandbox — without invoking the downloader, so
-        genuine download/integrity errors stay a separate signal."""
-        from smolvm.exceptions import SmolVMError
-
-        priv = tmp_path / "id_ed25519"
-        pub = tmp_path / "id_ed25519.pub"
-        priv.touch()
-        pub.write_text("ssh-ed25519 AAAAExampleKey test@host\n")
-        mock_ensure_ssh_key.return_value = (priv, pub)
-
-        with pytest.raises(
-            SmolVMError,
-            match="smolvm create --name myvm --os ubuntu --backend qemu",
-        ):
-            _build_auto_config(os="ubuntu", backend="firecracker", vm_name="myvm")
-        mock_ensure_published.assert_not_called()
-
-    @patch("smolvm.images.published.ensure_published_image")
-    @patch("smolvm.images.published.is_preset_published", return_value=True)
-    @patch("smolvm.utils.ensure_ssh_key")
-    def test_autoconfigure_ubuntu_firecracker_download_error_propagates(
-        self,
-        mock_ensure_ssh_key: MagicMock,
-        _mock_is_published: MagicMock,
-        mock_ensure_published: MagicMock,
-        tmp_path: Path,
-    ) -> None:
-        """A published-but-broken image (download / SHA-256 failure) surfaces as
-        the original ImageError, not the friendly 'not published' message."""
+        """A published-but-broken image surfaces the original ImageError."""
         from smolvm.exceptions import ImageError
 
         priv = tmp_path / "id_ed25519"
@@ -455,23 +431,23 @@ class TestVMInit:
         assert "init=/init" in config.boot_args
         mock_builder.build_alpine_ssh_key.assert_called_once()
 
-    @patch("smolvm.facade.platform.machine", return_value="arm64")
     @patch("smolvm.facade.build_seed_iso")
     @patch("smolvm.facade.ImageManager")
     @patch("smolvm.utils.ensure_ssh_key")
-    @patch("smolvm.images.published.ensure_base_kernel")
-    def test_named_auto_config_qemu_keeps_backend_specific_settings(
+    @patch("smolvm.images.published.ensure_published_image")
+    def test_named_auto_config_qemu_uses_published_ubuntu(
         self,
-        mock_ensure_base_kernel: MagicMock,
+        mock_ensure_published: MagicMock,
         mock_ensure_ssh_key: MagicMock,
         mock_image_manager_cls: MagicMock,
         mock_build_seed_iso: MagicMock,
-        _: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """QEMU auto-config should use the prebuilt rootfs + SmolVM base kernel."""
+        """QEMU auto-config should use the public published Ubuntu image."""
+        from smolvm.images.manager import LocalImage
+
         kernel = tmp_path / "vmlinux.bin"
-        rootfs = tmp_path / "rootfs.qcow2"
+        rootfs = tmp_path / "rootfs.ext4"
         private_key = tmp_path / "id_ed25519"
         public_key = tmp_path / "id_ed25519.pub"
         kernel.touch()
@@ -480,65 +456,55 @@ class TestVMInit:
         public_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKey user@test\n")
 
         mock_ensure_ssh_key.return_value = (private_key, public_key)
-        mock_build_seed_iso.side_effect = lambda path, **kwargs: (
-            path.parent.mkdir(parents=True, exist_ok=True),
-            path.touch(),
-        )[-1]
-        mock_image_manager = MagicMock()
-        mock_image_manager.cache_dir = tmp_path
-        mock_image_manager.ensure_rootfs_only.return_value = rootfs
-        mock_image_manager_cls.return_value = mock_image_manager
-        mock_ensure_base_kernel.return_value = kernel
+        mock_ensure_published.return_value = LocalImage(
+            name="ubuntu-qemu", kernel_path=kernel, rootfs_path=rootfs
+        )
 
-        config, _ = _build_auto_config(vm_name="project-spacex", backend="qemu")
+        config, _ = _build_auto_config(
+            vm_name="project-spacex",
+            backend="qemu",
+            disk_size_mib=8192,
+        )
 
+        preset, _arch, vmm, os_ = mock_ensure_published.call_args.args
+        assert (preset, vmm, os_) == ("ubuntu", "qemu", "ubuntu")
         assert config.backend == "qemu"
         assert config.kernel_path == kernel
-        assert config.initrd_path is None  # direct kernel boot, no initrd
+        assert config.rootfs_path == rootfs
+        assert config.rootfs_format == "raw-ext4"
+        assert config.guest_os is GuestOS.UBUNTU
+        assert config.initrd_path is None
         assert config.ssh_capable is True
-        assert "root=/dev/vda1" in config.boot_args
-        assert config.extra_drives[0].suffix == ".iso"
-        mock_image_manager.ensure_rootfs_only.assert_called_once()
-        mock_ensure_base_kernel.assert_called_once()
+        assert config.disk_size_mib == 8192
+        assert "init=/init" in config.boot_args
+        assert not config.extra_drives
+        mock_image_manager_cls.assert_not_called()
+        mock_build_seed_iso.assert_not_called()
 
-    @patch("smolvm.facade.platform.machine", return_value="arm64")
     @patch("smolvm.facade.build_seed_iso")
     @patch("smolvm.facade.ImageManager")
-    @patch("smolvm.utils.ensure_ssh_key")
-    @patch("smolvm.images.published.ensure_base_kernel")
-    def test_named_auto_config_qemu_uses_explicit_ssh_key_for_seed(
+    @patch("smolvm.images.published.ensure_published_image")
+    def test_named_auto_config_qemu_uses_explicit_ssh_key(
         self,
-        mock_ensure_base_kernel: MagicMock,
-        mock_ensure_ssh_key: MagicMock,
+        mock_ensure_published: MagicMock,
         mock_image_manager_cls: MagicMock,
         mock_build_seed_iso: MagicMock,
-        _: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """QEMU auto-config should honor an explicit SSH key when building the seed ISO."""
+        """QEMU auto-config should put the explicit SSH key on the config."""
+        from smolvm.images.manager import LocalImage
+
         kernel = tmp_path / "vmlinux.bin"
-        rootfs = tmp_path / "rootfs.qcow2"
-        default_private = tmp_path / "id_ed25519"
-        default_public = tmp_path / "id_ed25519.pub"
+        rootfs = tmp_path / "rootfs.ext4"
         custom_private = tmp_path / "custom_id_ed25519"
         custom_public = tmp_path / "custom_id_ed25519.pub"
         kernel.touch()
         rootfs.touch()
-        default_private.touch()
-        default_public.write_text("ssh-ed25519 AAAAC3NzaDefault user@test\n")
         custom_private.touch()
         custom_public.write_text("ssh-ed25519 AAAAC3NzaCustom user@test\n")
-
-        mock_ensure_ssh_key.return_value = (default_private, default_public)
-        mock_build_seed_iso.side_effect = lambda path, **kwargs: (
-            path.parent.mkdir(parents=True, exist_ok=True),
-            path.touch(),
-        )[-1]
-        mock_image_manager = MagicMock()
-        mock_image_manager.cache_dir = tmp_path
-        mock_image_manager.ensure_rootfs_only.return_value = rootfs
-        mock_image_manager_cls.return_value = mock_image_manager
-        mock_ensure_base_kernel.return_value = kernel
+        mock_ensure_published.return_value = LocalImage(
+            name="ubuntu-qemu", kernel_path=kernel, rootfs_path=rootfs
+        )
 
         config, ssh_key_path = _build_auto_config(
             vm_name="project-spacex",
@@ -546,21 +512,12 @@ class TestVMInit:
             ssh_key_path=str(custom_private),
         )
 
-        actual_user_data = mock_build_seed_iso.call_args.kwargs["user_data"]
-        expected_seed_name = (
-            seed_cache_key(
-                ssh_public_key=custom_public.read_text().strip(),
-                instance_id="smolvm-20260406",
-                hostname="smolvm",
-                user_data=actual_user_data,
-            )
-            + ".iso"
-        )
         assert ssh_key_path == str(custom_private)
-        assert config.extra_drives[0].name == expected_seed_name
+        assert config.ssh_public_key == "ssh-ed25519 AAAAC3NzaCustom user@test"
         assert config.ssh_capable is True
-        assert "AAAAC3NzaCustom" in actual_user_data
-        mock_ensure_ssh_key.assert_not_called()
+        assert not config.extra_drives
+        mock_image_manager_cls.assert_not_called()
+        mock_build_seed_iso.assert_not_called()
 
     @patch("smolvm.facade.SmolVMManager")
     def test_from_id(self, mock_sdk_cls: MagicMock) -> None:

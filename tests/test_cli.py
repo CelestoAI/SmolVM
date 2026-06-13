@@ -30,8 +30,10 @@ from smolvm.cli.main import (
 )
 from smolvm.types import (
     BrowserSessionState,
+    GuestOS,
     NetworkConfig,
     SnapshotType,
+    VMConfig,
     VMState,
     WorkspaceMount,
 )
@@ -815,6 +817,73 @@ class TestCliCreate:
         assert payload["data"]["vm"]["started_at"]
         assert payload["data"]["next"]["ssh_command"] == "smolvm ssh project-spacex"
         assert payload["data"]["next"]["info_command"] == "smolvm info project-spacex"
+
+    @patch("smolvm.facade.platform.machine", return_value="x86_64")
+    @patch("smolvm.facade.build_seed_iso")
+    @patch("smolvm.facade.ImageManager")
+    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.utils.ensure_ssh_key")
+    @patch("smolvm.images.published.ensure_published_image")
+    def test_create_ubuntu_qemu_uses_published_image_config(
+        self,
+        mock_ensure_published: MagicMock,
+        mock_ensure_ssh_key: MagicMock,
+        mock_vm_cls: MagicMock,
+        mock_image_manager_cls: MagicMock,
+        mock_build_seed_iso: MagicMock,
+        _mock_machine: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """`create --os ubuntu --backend qemu` should use the published Ubuntu rootfs."""
+        from smolvm.images.manager import LocalImage
+
+        kernel = tmp_path / "vmlinuz.image"
+        rootfs = tmp_path / "ubuntu-rootfs.ext4"
+        private_key = tmp_path / "id_ed25519"
+        public_key = tmp_path / "id_ed25519.pub"
+        kernel.touch()
+        rootfs.touch()
+        private_key.touch()
+        public_key.write_text("ssh-ed25519 AAAAExampleKey test@host\n")
+        mock_ensure_ssh_key.return_value = (private_key, public_key)
+        mock_ensure_published.return_value = LocalImage(
+            name="ubuntu-qemu", kernel_path=kernel, rootfs_path=rootfs
+        )
+
+        vm = MagicMock()
+        vm.vm_id = "project-spacex"
+        vm.info.config.backend = "qemu"
+        vm.info.network = MagicMock(spec=NetworkConfig)
+        vm.info.network.guest_ip = "172.16.0.2"
+        vm.info.network.ssh_host_port = 2200
+        mock_vm_cls.return_value = vm
+
+        ret = main(
+            [
+                "create",
+                "--name",
+                "project-spacex",
+                "--os",
+                "ubuntu",
+                "--backend",
+                "qemu",
+                "--json",
+            ]
+        )
+
+        assert ret == 0
+        preset, arch, vmm, os_ = mock_ensure_published.call_args.args
+        assert (preset, arch, vmm, os_) == ("ubuntu", "amd64", "qemu", "ubuntu")
+        created_config = mock_vm_cls.call_args.args[0]
+        assert isinstance(created_config, VMConfig)
+        assert created_config.guest_os is GuestOS.UBUNTU
+        assert created_config.kernel_path == kernel
+        assert created_config.rootfs_path == rootfs
+        assert created_config.rootfs_format == "raw-ext4"
+        assert created_config.extra_drives == []
+        assert "init=/init" in created_config.boot_args
+        mock_image_manager_cls.assert_not_called()
+        mock_build_seed_iso.assert_not_called()
 
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
@@ -2757,7 +2826,7 @@ class TestCliInfo:
         tmp_path: Path,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """For qcow2 rootfs, disk size should report the guest-visible virtual size, not the host file footprint."""
+        """For qcow2 rootfs, disk size should report the guest-visible virtual size."""
         rootfs = tmp_path / "ubuntu" / "rootfs.qcow2"
         rootfs.parent.mkdir(parents=True)
         rootfs.write_bytes(b"\0" * (1 * 1024 * 1024))  # 1 MiB on disk

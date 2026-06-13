@@ -32,11 +32,9 @@ import json
 import logging
 import platform
 import shlex
-import shutil
 import socket
 import subprocess
 import time
-import uuid
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -84,7 +82,6 @@ from smolvm.runtime.backends import (
 from smolvm.runtime.boot_profiles import (
     KernelBootProfile,
     get_boot_profile_spec,
-    normalize_arch,
     to_published_arch,
 )
 from smolvm.ssh import ShellKind, SSHClient
@@ -139,21 +136,6 @@ _AUTO_CONFIG_DEFAULT_DISK_SIZE_MIB = {
     # WINDOWS: not used. The Windows path always supplies a pre-built
     # qcow2 in Phase 1, so we don't size or grow a disk for it.
 }
-_UBUNTU_CURRENT_RELEASE_DATE = "20260406"
-# Ubuntu cloud-images rootfs URLs. Post-0.0.14a0 we no longer fetch Ubuntu's
-# vmlinuz/initrd alongside — the SmolVM-built base kernel boots the rootfs
-# directly (CONFIG_ISO9660_FS=y enables the cloud-init NoCloud seed). Only
-# the qcow2 rootfs is fetched from cloud-images.ubuntu.com.
-_QEMU_UBUNTU_AUTO_IMAGES: dict[str, str] = {
-    "ubuntu-noble-minimal-qemu-x86_64": (
-        "https://cloud-images.ubuntu.com/minimal/releases/noble/release/"
-        "ubuntu-24.04-minimal-cloudimg-amd64.img"
-    ),
-    "ubuntu-noble-minimal-qemu-aarch64": (
-        "https://cloud-images.ubuntu.com/minimal/releases/noble/release/"
-        "ubuntu-24.04-minimal-cloudimg-arm64.img"
-    ),
-}
 
 
 def _vsock_not_supported_message(vm_id: str, error: VsockNotSupportedError) -> str:
@@ -184,17 +166,8 @@ def _default_guest_os_for_backend(backend: str) -> GuestOS:
     return GuestOS.ALPINE
 
 
-def _qemu_auto_config_image_name(guest_os: GuestOS = GuestOS.UBUNTU) -> str:
-    """Return the prebuilt QEMU image cache key for *guest_os* on this host."""
-    arch = platform.machine().lower()
-    image_arch = "aarch64" if arch in {"arm64", "aarch64"} else "x86_64"
-    if guest_os is GuestOS.UBUNTU:
-        return f"ubuntu-noble-minimal-qemu-{image_arch}"
-    raise ValueError(f"No prebuilt QEMU auto-config image for guest OS: {guest_os}")
-
-
 def _qcow2_virtual_size_mib(qcow2_path: Path) -> int:
-    """Return the virtual size of a qcow2 image in MiB."""
+    """Return the guest-visible virtual size of a qcow2 image in MiB."""
     result = subprocess.run(
         ["qemu-img", "info", "--output=json", str(qcow2_path)],
         check=True,
@@ -203,74 +176,6 @@ def _qcow2_virtual_size_mib(qcow2_path: Path) -> int:
     )
     info = json.loads(result.stdout)
     return int(info["virtual-size"]) // (1024 * 1024)
-
-
-def _prepare_sized_qcow2(
-    *,
-    cache_dir: Path,
-    base_image_name: str,
-    source_qcow2: Path,
-    target_mib: int,
-) -> tuple[Path, int]:
-    """Return a qcow2 rootfs sized to at least *target_mib*.
-
-    The pristine downloaded image is never mutated. When the requested size
-    exceeds the cached image's virtual size, this copies the qcow2 into a
-    size-specific cache directory (``{base_image_name}-{target_mib}m``) and
-    runs ``qemu-img resize`` on the copy. The sized copy is shared across
-    VMs of the same size; per-VM isolation still happens via
-    ``disk_mode="isolated"`` cloning later.
-
-    Returns a tuple of ``(rootfs_path, resolved_target_mib)`` where
-    ``resolved_target_mib`` is the actual virtual size of the returned image
-    (equal to ``target_mib`` for a fresh resize, or the existing cached size
-    for the default-size passthrough).
-    """
-    current_mib = _qcow2_virtual_size_mib(source_qcow2)
-    if target_mib <= current_mib:
-        # Use the pristine cached image. Cloud images ship at their minimum
-        # viable size; we refuse to shrink below that to avoid breaking the
-        # filesystem. Callers should enforce target_mib >= default upstream
-        # and surface a clear error instead of silently falling back here.
-        return source_qcow2, current_mib
-
-    sized_dir = cache_dir / f"{base_image_name}-{target_mib}m"
-    sized_qcow2 = sized_dir / source_qcow2.name
-    if sized_qcow2.is_file():
-        try:
-            existing_mib = _qcow2_virtual_size_mib(sized_qcow2)
-        except subprocess.CalledProcessError:
-            existing_mib = -1
-        if existing_mib == target_mib:
-            return sized_qcow2, existing_mib
-        logger.warning(
-            "Cached resized image %s has unexpected size (%d MiB), rebuilding",
-            sized_qcow2,
-            existing_mib,
-        )
-        sized_qcow2.unlink(missing_ok=True)
-
-    sized_dir.mkdir(parents=True, exist_ok=True)
-    temp_qcow2 = sized_qcow2.with_name(f".{sized_qcow2.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        shutil.copy2(source_qcow2, temp_qcow2)
-        subprocess.run(
-            ["qemu-img", "resize", str(temp_qcow2), f"{target_mib}M"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        temp_qcow2.replace(sized_qcow2)
-    except Exception:
-        temp_qcow2.unlink(missing_ok=True)
-        raise
-    logger.info(
-        "Prepared resized rootfs at %s (%d MiB -> %d MiB)",
-        sized_qcow2,
-        current_mib,
-        target_mib,
-    )
-    return sized_qcow2, target_mib
 
 
 def _existing_vm_ids() -> set[str]:
@@ -644,8 +549,6 @@ def _build_auto_config(
     on_download: Callable[[str, int, int | None], None] | None = None,
 ) -> tuple[VMConfig, str | None]:
     """Build the default SSH-ready VM config used by zero-config flows."""
-    from smolvm.images.builder import ImageBuilder
-
     resolved_backend = resolve_backend(backend)
     resolved_os = _normalize_guest_os(os or _default_guest_os_for_backend(resolved_backend))
     if resolved_os is GuestOS.WINDOWS:
@@ -668,30 +571,21 @@ def _build_auto_config(
     if resolved_disk_size_mib < 64:
         raise ValueError("disk_size_mib must be >= 64")
 
-    if resolved_os is GuestOS.UBUNTU and resolved_backend != BACKEND_QEMU:
-        # Firecracker / libkrun can't boot the Ubuntu cloud qcow2 (no qcow2
-        # support, no firmware/bootloader). Pull the published bare-Ubuntu
-        # raw-ext4 rootfs + ELF kernel and boot it direct-kernel, exactly like
-        # the alpine/published path below. The SSH key rides the kernel cmdline
-        # (parsed by the image's /init), not a cloud-init seed.
-        from smolvm.images.published import (
-            Vmm,
-            ensure_published_image,
-            is_preset_published,
-        )
-
-        vmm: Vmm = "libkrun" if resolved_backend == BACKEND_LIBKRUN else "firecracker"
-        arch = to_published_arch(platform.machine())
-        if not is_preset_published("ubuntu", arch, vmm, "ubuntu"):
-            # Manifest has no bare-Ubuntu row for this host yet — steer the user
-            # to the qemu path. A *published* image that then fails to download
-            # or verify raises ImageError from ensure_published_image below,
-            # which we deliberately let surface unchanged.
-            sandbox_name = vm_name or "<name>"
-            raise SmolVMError(
-                "No bare-Ubuntu image is published for this backend yet; "
-                f"run: smolvm create --name {sandbox_name} --os ubuntu --backend qemu"
+    if resolved_os is GuestOS.UBUNTU:
+        if resolved_disk_size_mib < default_disk_size_mib:
+            raise ValueError(
+                f"ubuntu auto-config requires disk_size_mib >= {default_disk_size_mib} "
+                f"(got {resolved_disk_size_mib})"
             )
+        from smolvm.images.published import Vmm, ensure_published_image
+
+        vmm_by_backend: dict[str, Vmm] = {
+            BACKEND_QEMU: "qemu",
+            BACKEND_FIRECRACKER: "firecracker",
+            BACKEND_LIBKRUN: "libkrun",
+        }
+        vmm = vmm_by_backend[resolved_backend]
+        arch = to_published_arch(platform.machine())
         local_image = ensure_published_image("ubuntu", arch, vmm, "ubuntu")
 
         kernel_profile = KernelBootProfile.MICROVM_DIRECT
@@ -706,107 +600,17 @@ def _build_auto_config(
             memory=resolved_memory,
             kernel_path=local_image.kernel_path,
             rootfs_path=local_image.rootfs_path,
+            rootfs_format="raw-ext4",
             boot_args=boot_args,
+            guest_os=GuestOS.UBUNTU,
+            ssh_capable=True,
             backend=resolved_backend,
             ssh_public_key=public_key_value,
+            disk_size_mib=resolved_disk_size_mib if disk_size_mib is not None else None,
         )
         logger.info(
             "Auto-configured VM: %s (os=ubuntu, backend=%s, source=published-bare-ubuntu)",
             resolved_vm_name,
-            resolved_backend,
-        )
-        return config, resolved_ssh_key_path
-
-    if resolved_os is GuestOS.UBUNTU:
-        if resolved_disk_size_mib < default_disk_size_mib:
-            raise ValueError(
-                f"ubuntu auto-config requires disk_size_mib >= {default_disk_size_mib} "
-                f"(got {resolved_disk_size_mib})"
-            )
-        from smolvm.images.published import ensure_base_kernel
-
-        image_name = _qemu_auto_config_image_name(GuestOS.UBUNTU)
-        rootfs_url = _QEMU_UBUNTU_AUTO_IMAGES.get(image_name)
-        if rootfs_url is None:
-            raise SmolVMError(
-                "No prebuilt Ubuntu rootfs registered for this host architecture",
-                {"image_name": image_name},
-            )
-        image_manager = ImageManager()
-        pristine_rootfs = image_manager.ensure_rootfs_only(
-            image_name,
-            url=rootfs_url,
-            filename="rootfs.qcow2",
-            on_download=on_download,
-        )
-        # Pull the SmolVM-built base kernel — Image format for QEMU
-        # (Firecracker would use the ELF; this branch is QEMU-only).
-        host_arch = platform.machine()
-        kernel_path = ensure_base_kernel(
-            to_published_arch(host_arch),
-            "image",
-            cache_dir=image_manager.cache_dir,
-        )
-
-        if resolved_disk_size_mib > default_disk_size_mib:
-            rootfs_path, _resolved_size = _prepare_sized_qcow2(
-                cache_dir=image_manager.cache_dir,
-                base_image_name=image_name,
-                source_qcow2=pristine_rootfs,
-                target_mib=resolved_disk_size_mib,
-            )
-        else:
-            rootfs_path = pristine_rootfs
-
-        # Direct kernel boot, no initrd. Ubuntu's cloud qcow2 has a 3-partition
-        # GPT layout (vda1=rootfs, vda15=ESP, vda16=/boot); without an initrd
-        # to resolve `LABEL=cloudimg-rootfs` we point at the partition directly.
-        # cloud-init userspace then reads the seed ISO at /dev/vdb
-        # (CONFIG_ISO9660_FS=y) and provisions sshd.
-        #
-        # We deliberately don't use the MICROVM_DIRECT boot-profile string here
-        # because it bakes in `init=/init` (the SmolVM-built Alpine/Debian images
-        # ship a custom /init shell script). Ubuntu's rootfs has no /init —
-        # init lives at /sbin/init (systemd). Letting the kernel pick its
-        # default search path lands on systemd, which kicks cloud-init.
-        console = "ttyAMA0" if normalize_arch(host_arch) == "aarch64" else "ttyS0"
-        boot_args = f"console={console} reboot=k panic=1 root=/dev/vda1 rw"
-
-        user_data = default_user_data(public_key_value)
-        seed_key = seed_cache_key(
-            ssh_public_key=public_key_value,
-            instance_id=f"smolvm-{_UBUNTU_CURRENT_RELEASE_DATE}",
-            hostname="smolvm",
-            user_data=user_data,
-        )
-        seed_dir = image_manager.cache_dir / "cloud-init-seeds"
-        seed_path = seed_dir / f"{seed_key}.iso"
-        if not seed_path.exists():
-            build_seed_iso(
-                seed_path,
-                user_data=user_data,
-                meta_data=default_meta_data(
-                    instance_id=f"smolvm-{_UBUNTU_CURRENT_RELEASE_DATE}",
-                    hostname="smolvm",
-                ),
-            )
-
-        resolved_vm_name = _resolve_vm_name(vm_name, prefix=name_prefix)
-        config = VMConfig(
-            vm_id=resolved_vm_name,
-            vcpu_count=1,
-            memory=resolved_memory,
-            kernel_path=kernel_path,
-            rootfs_path=rootfs_path,
-            extra_drives=[seed_path],
-            boot_args=boot_args,
-            ssh_capable=True,
-            backend=resolved_backend,
-        )
-        logger.info(
-            "Auto-configured VM: %s (os=%s, backend=%s, source=prebuilt-qemu-image)",
-            resolved_vm_name,
-            resolved_os.value,
             resolved_backend,
         )
         return config, resolved_ssh_key_path
@@ -816,6 +620,8 @@ def _build_auto_config(
         resolved_backend,
         platform.machine(),
     )
+    from smolvm.images.builder import ImageBuilder
+
     builder = ImageBuilder()
     image_name = _build_auto_config_image_name(
         resolved_os,

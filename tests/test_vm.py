@@ -20,16 +20,17 @@ import time
 from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
+from smolvm.comm.select import ChannelResolution
 from smolvm.exceptions import (
     SmolVMError,
     VMAlreadyExistsError,
     VMNotFoundError,
 )
-from smolvm.types import VMConfig, VMInfo, VMState
+from smolvm.types import VMConfig, VMInfo, VMState, WorkspaceMount
 from smolvm.vm import SmolVMManager
 
 
@@ -58,6 +59,21 @@ def sample_config(tmp_path: Path) -> VMConfig:
         kernel_path=kernel,
         rootfs_path=rootfs,
     )
+
+
+def _attach_mock_network(manager: SmolVMManager) -> MagicMock:
+    """Attach a network mock that supports sync and async create paths."""
+    mock_network = MagicMock()
+    mock_network.host_ip = "172.16.0.1"
+    mock_network.generate_mac.return_value = "AA:FC:00:00:00:01"
+    mock_network.async_create_tap = AsyncMock()
+    mock_network.async_configure_tap = AsyncMock()
+    mock_network.async_add_route = AsyncMock()
+    mock_network.async_setup_nat = AsyncMock()
+    mock_network.async_apply_egress_allowlist = AsyncMock()
+    mock_network.async_setup_ssh_port_forward = AsyncMock()
+    manager.network = mock_network
+    return mock_network
 
 
 class TestSmolVMCreate:
@@ -197,6 +213,194 @@ class TestSmolVMCreate:
             patch.object(smol_vm, "_find_qemu_img_binary", return_value=None),
         ):
             assert smol_vm.check_prerequisites() == []
+
+    @patch("smolvm.comm.select.platform.system", return_value="Linux")
+    def test_create_firecracker_explicit_vsock_skips_ssh_forward(
+        self,
+        _mock_system: MagicMock,
+        smol_vm: SmolVMManager,
+        sample_config: VMConfig,
+    ) -> None:
+        """Explicit Firecracker vsock without SSH-backed startup should not add DNAT."""
+        mock_network = _attach_mock_network(smol_vm)
+        config = sample_config.model_copy(
+            update={"vm_id": "vm-vsock", "backend": "firecracker", "comm_channel": "vsock"}
+        )
+
+        vm_info = smol_vm.create(config)
+
+        assert vm_info.network is not None
+        assert vm_info.network.ssh_host_port is None
+        assert vm_info.config.vsock is not None
+        mock_network.setup_ssh_port_forward.assert_not_called()
+
+    @patch("smolvm.comm.select.platform.system", return_value="Linux")
+    def test_create_firecracker_auto_keeps_ssh_forward_for_fallback(
+        self,
+        _mock_system: MagicMock,
+        smol_vm: SmolVMManager,
+        sample_config: VMConfig,
+    ) -> None:
+        """Auto channel keeps SSH forwarding so vsock probe fallback still works."""
+        mock_network = _attach_mock_network(smol_vm)
+        config = sample_config.model_copy(update={"vm_id": "vm-auto", "backend": "firecracker"})
+
+        vm_info = smol_vm.create(config)
+
+        assert vm_info.network is not None
+        assert vm_info.network.ssh_host_port is not None
+        mock_network.setup_ssh_port_forward.assert_called_once()
+
+    @patch("smolvm.comm.select.platform.system", return_value="Linux")
+    def test_create_firecracker_explicit_ssh_keeps_ssh_forward(
+        self,
+        _mock_system: MagicMock,
+        smol_vm: SmolVMManager,
+        sample_config: VMConfig,
+    ) -> None:
+        """Explicit SSH must reserve and expose a host SSH port."""
+        mock_network = _attach_mock_network(smol_vm)
+        config = sample_config.model_copy(
+            update={"vm_id": "vm-ssh", "backend": "firecracker", "comm_channel": "ssh"}
+        )
+
+        vm_info = smol_vm.create(config)
+
+        assert vm_info.network is not None
+        assert vm_info.network.ssh_host_port is not None
+        mock_network.setup_ssh_port_forward.assert_called_once()
+
+    @patch("smolvm.comm.select.platform.system", return_value="Linux")
+    def test_create_firecracker_explicit_vsock_with_env_keeps_ssh_forward(
+        self,
+        _mock_system: MagicMock,
+        smol_vm: SmolVMManager,
+        sample_config: VMConfig,
+    ) -> None:
+        """Env injection is still SSH-backed at startup, so keep forwarding."""
+        mock_network = _attach_mock_network(smol_vm)
+        config = sample_config.model_copy(
+            update={
+                "vm_id": "vm-vsock-env",
+                "backend": "firecracker",
+                "comm_channel": "vsock",
+                "env_vars": {"SMOLVM_TEST": "1"},
+            }
+        )
+
+        vm_info = smol_vm.create(config)
+
+        assert vm_info.network is not None
+        assert vm_info.network.ssh_host_port is not None
+        mock_network.setup_ssh_port_forward.assert_called_once()
+
+    @patch("smolvm.comm.select.host_supports_vsock", return_value=True)
+    def test_create_qemu_slirp_explicit_vsock_keeps_ssh_hostfwd(
+        self,
+        _mock_host_vsock: MagicMock,
+        tmp_path: Path,
+        sample_config: VMConfig,
+    ) -> None:
+        """QEMU slirp keeps hostfwd for terminal compatibility under explicit vsock."""
+        smol_vm = SmolVMManager(
+            data_dir=tmp_path / "data-qemu-vsock",
+            socket_dir=tmp_path / "sockets-qemu-vsock",
+            backend="qemu",
+        )
+        mock_network = _attach_mock_network(smol_vm)
+        config = sample_config.model_copy(
+            update={
+                "vm_id": "vm-qemu-vsock",
+                "backend": "qemu",
+                "comm_channel": "vsock",
+                "qemu_network": "slirp",
+            }
+        )
+
+        vm_info = smol_vm.create(config)
+
+        assert vm_info.network is not None
+        assert vm_info.network.tap_device == "usernet"
+        assert vm_info.network.ssh_host_port is not None
+        mock_network.setup_ssh_port_forward.assert_not_called()
+
+    def test_qemu_tap_workspace_policy_keeps_ssh_forward(
+        self,
+        tmp_path: Path,
+        sample_config: VMConfig,
+    ) -> None:
+        """Workspace startup remains SSH-backed even when the control channel is vsock."""
+        smol_vm = SmolVMManager(
+            data_dir=tmp_path / "data-qemu-workspace",
+            socket_dir=tmp_path / "sockets-qemu-workspace",
+            backend="qemu",
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        config = sample_config.model_copy(
+            update={
+                "vm_id": "vm-qemu-workspace",
+                "backend": "qemu",
+                "comm_channel": "vsock",
+                "qemu_network": "tap",
+                "workspace_mounts": [WorkspaceMount(host_path=workspace)],
+            }
+        )
+
+        assert smol_vm._should_reserve_ssh_forward(
+            config,
+            "qemu",
+            resolution=ChannelResolution(kind="vsock", allow_fallback=False),
+        )
+
+    def test_firecracker_workspace_policy_keeps_ssh_forward(
+        self,
+        tmp_path: Path,
+        smol_vm: SmolVMManager,
+        sample_config: VMConfig,
+    ) -> None:
+        """Workspace startup is SSH-backed by policy even before backend validation."""
+        workspace = tmp_path / "workspace-firecracker"
+        workspace.mkdir()
+        config = sample_config.model_copy(
+            update={
+                "vm_id": "vm-fc-workspace",
+                "backend": "firecracker",
+                "comm_channel": "vsock",
+                "workspace_mounts": [WorkspaceMount(host_path=workspace)],
+            }
+        )
+
+        assert smol_vm._should_reserve_ssh_forward(
+            config,
+            "firecracker",
+            resolution=ChannelResolution(kind="vsock", allow_fallback=False),
+        )
+
+    @pytest.mark.asyncio
+    @patch("smolvm.comm.select.platform.system", return_value="Linux")
+    async def test_async_create_firecracker_explicit_vsock_skips_ssh_forward(
+        self,
+        _mock_system: MagicMock,
+        tmp_path: Path,
+        sample_config: VMConfig,
+    ) -> None:
+        """Async create should mirror the Firecracker explicit-vsock no-forward policy."""
+        smol_vm = SmolVMManager(
+            data_dir=tmp_path / "data-async-vsock",
+            socket_dir=tmp_path / "sockets-async-vsock",
+            backend="firecracker",
+        )
+        mock_network = _attach_mock_network(smol_vm)
+        config = sample_config.model_copy(
+            update={"vm_id": "vm-async-vsock", "backend": "firecracker", "comm_channel": "vsock"}
+        )
+
+        vm_info = await smol_vm.async_create(config)
+
+        assert vm_info.network is not None
+        assert vm_info.network.ssh_host_port is None
+        mock_network.async_setup_ssh_port_forward.assert_not_awaited()
 
 
 class TestSmolVMDiskLifecycle:

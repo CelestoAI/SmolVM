@@ -62,6 +62,15 @@ def test_ubuntu_rows_share_one_rootfs_across_vmms() -> None:
     assert qemu.kernel_url.endswith(".image")
 
 
+def test_published_ubuntu_manifest_shares_rootfs_for_qemu_and_firecracker() -> None:
+    """The live manifest keeps QEMU and Firecracker on the same Ubuntu rootfs."""
+    qemu = MANIFEST[("ubuntu", "amd64", "qemu", "ubuntu")]
+    firecracker = MANIFEST[("ubuntu", "amd64", "firecracker", "ubuntu")]
+
+    assert qemu.rootfs_url == firecracker.rootfs_url
+    assert qemu.rootfs_sha256 == firecracker.rootfs_sha256
+
+
 @pytest.fixture
 def sample_entry() -> PublishedImage:
     """A manifest entry pointing at an UNCOMPRESSED rootfs.

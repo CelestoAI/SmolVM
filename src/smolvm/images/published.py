@@ -310,8 +310,8 @@ MANIFEST: dict[ManifestKey, PublishedImage] = {
     **_preset_rows("hermes", _HERMES_AMD64_ROOTFS_SHA, _HERMES_ARM64_ROOTFS_SHA),
     **_preset_rows("pi", _PI_AMD64_ROOTFS_SHA, _PI_ARM64_ROOTFS_SHA),
     # Bare Ubuntu base image (raw-ext4, agent baked in) — powers
-    # ``create --os ubuntu`` on firecracker/libkrun (the qemu path keeps its
-    # qcow2 cloud image). Same rootfs shared across vmms; only the kernel differs.
+    # ``create --os ubuntu`` on every supported VMM. Same rootfs shared
+    # across vmms; only the kernel differs.
     **_preset_rows("ubuntu", _UBUNTU_AMD64_ROOTFS_SHA, _UBUNTU_ARM64_ROOTFS_SHA),
     # Alpine rows — add once CI publishes ``<preset>-<arch>-alpine-rootfs.ext4.zst``
     # under :data:`IMAGES_RELEASE_TAG` and we have SHAs to pin against.

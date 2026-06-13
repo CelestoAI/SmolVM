@@ -591,11 +591,11 @@ Lesson: when you generalize a code path that used to be single-purpose, audit th
 
 A few open threads, in the order I'd tackle them.
 
-### `smolvm create` should use our base rootfs (#273)
+### `smolvm create` uses our base rootfs (#273)
 
-Right now `smolvm create` (no preset) downloads Ubuntu's official cloud image from `cloud-images.ubuntu.com`. That's the last external CDN in the boot path. The base rootfs we built for layered presets is a strict improvement: smaller (150 MB vs 227 MB compressed), faster boot (no cloud-init wait), pinnable SHAs.
+`smolvm create` now uses the published Ubuntu base rootfs from the SmolVM image release instead of downloading Ubuntu's official cloud image from `cloud-images.ubuntu.com`. That removes the last external CDN from the boot path and keeps the default image pinned by SHA.
 
-The work: publish the base ext4 as a release asset alongside the preset ones, bake `/init` into the base Dockerfile (so layered presets inherit it instead of the build script copying it), rewire `_build_auto_config` to download from our release.
+The remaining work is operational: keep the base ext4 published alongside preset images, keep `/init` in the base Dockerfile, and bump the image release tag when those bytes change.
 
 ### Drift smoke test (#265)
 

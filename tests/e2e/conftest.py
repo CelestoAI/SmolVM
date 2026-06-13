@@ -86,11 +86,10 @@ def vm(e2e_variant: E2EVariant):
             "(load it via `sudo modprobe vhost_vsock`)"
         )
 
-    # Pin to Alpine: the SmolVM-*built* image (vsock guest agent + python3 baked
-    # in by ImageBuilder, SSH key injected on the kernel cmdline, no cloud-init
-    # seed ISO). The QEMU default is Ubuntu, whose cloud qcow2 carries a seed
-    # ISO as an extra drive (snapshot then rejects it) and lacks the baked-in
-    # agent (vsock never answers) — neither of which is what we want to smoke.
+    # Pin to Alpine for these lifecycle smoke tests: it is the small local
+    # ImageBuilder path, with the agent and SSH key injected through /init.
+    # Published Ubuntu has separate e2e coverage so this fixture stays stable
+    # when the default OS image changes.
     sandbox = SmolVM(
         backend=e2e_variant.backend,
         os="alpine",
