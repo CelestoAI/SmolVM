@@ -12,11 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for the host-side VsockChannel.
+"""Tests for the legacy framed host-side VsockChannel.
 
 The channel's transport (AF_VSOCK / UDS) is exercised by pointing ``_open`` at
-a socketpair whose far end is served by the real guest agent, so these tests
-validate the full host↔agent round-trip without a VM.
+a socketpair whose far end is served by the legacy Python guest agent, so these
+tests validate the full host↔agent round-trip without a VM while the fallback
+exists.
 """
 
 import queue

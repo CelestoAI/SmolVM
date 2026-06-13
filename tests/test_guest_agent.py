@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for the guest agent and the vsock wire protocol.
+"""Tests for the legacy framed Python guest agent and vsock wire protocol.
 
-The agent (``smolvm.guest_agent.agent``) ships into the guest as a standalone
-file and embeds its own copy of the framing in ``smolvm.comm.protocol``. These
-tests drive the agent's per-connection handler over an ``AF_UNIX`` socketpair
-using the *host-side* protocol helpers, so any drift between the two framings
-is caught immediately — without needing a real VM or AF_VSOCK.
+The Rust HTTP/vsock agent is the public default. This Python agent remains as a
+migration fallback for older images and embeds its own copy of the framing in
+``smolvm.comm.protocol``. These tests drive the agent's per-connection handler
+over an ``AF_UNIX`` socketpair using the *host-side* protocol helpers, so any
+drift between the two framings is caught immediately while the fallback exists.
 """
 
 import os

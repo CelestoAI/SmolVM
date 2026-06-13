@@ -179,6 +179,13 @@ pub async fn run_command(req: ExecRequest) -> ExecResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use once_cell::sync::Lazy;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+    use tokio::time::{Duration, sleep};
+
+    static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     #[tokio::test]
     async fn exec_success() {
@@ -222,5 +229,124 @@ mod tests {
         assert_eq!(res.exit_code, -1);
         assert_eq!(res.stderr, "");
         assert_eq!(res.error.as_deref(), Some("Command timed out after 1s"));
+    }
+
+    #[tokio::test]
+    async fn exec_rejects_missing_command() {
+        let res = run_command(ExecRequest {
+            command: "  \n\t  ".to_string(),
+            shell: ShellMode::Raw,
+            timeout_seconds: 5,
+            env: HashMap::new(),
+        })
+        .await;
+        assert!(!res.ok);
+        assert!(!res.timed_out);
+        assert_eq!(res.exit_code, -1);
+        assert_eq!(res.error.as_deref(), Some("missing command"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn exec_spawn_failure_reports_error() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_shell = std::env::var_os("SHELL");
+        unsafe {
+            std::env::set_var("SHELL", "/definitely/missing/smolvm-test-shell");
+        }
+
+        let res = run_command(ExecRequest {
+            command: "printf never-runs".to_string(),
+            shell: ShellMode::Login,
+            timeout_seconds: 5,
+            env: HashMap::new(),
+        })
+        .await;
+
+        unsafe {
+            match old_shell {
+                Some(value) => std::env::set_var("SHELL", value),
+                None => std::env::remove_var("SHELL"),
+            }
+        }
+
+        assert!(!res.ok);
+        assert!(!res.timed_out);
+        assert_eq!(res.exit_code, -1);
+        assert!(
+            res.error
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("spawn failed:")
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_timeout_kills_process_group() {
+        let dir = tempfile_dir();
+        let pid_file = dir.join("child.pid");
+        let command = format!(
+            "sleep 30 & echo $! > {}; printf parent-ready; wait",
+            pid_file.display()
+        );
+
+        let res = run_command(ExecRequest {
+            command,
+            shell: ShellMode::Raw,
+            timeout_seconds: 1,
+            env: HashMap::new(),
+        })
+        .await;
+
+        assert!(!res.ok);
+        assert!(res.timed_out);
+        assert_eq!(res.stdout, "parent-ready");
+
+        let child_pid = read_pid(&pid_file).await;
+        for _ in 0..50 {
+            if !process_is_running(child_pid) {
+                return;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+        panic!("timed-out command left child process {child_pid} running");
+    }
+
+    async fn read_pid(path: &Path) -> i32 {
+        for _ in 0..50 {
+            if let Ok(raw) = fs::read_to_string(path) {
+                if let Ok(pid) = raw.trim().parse() {
+                    return pid;
+                }
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+        panic!("child pid was not written to {}", path.display());
+    }
+
+    #[cfg(target_os = "linux")]
+    fn process_is_running(pid: i32) -> bool {
+        let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => stat,
+            Err(_) => return false,
+        };
+        !stat.contains(") Z ")
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn process_is_running(pid: i32) -> bool {
+        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    }
+
+    fn tempfile_dir() -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "smolvm-agent-exec-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir(&path).unwrap();
+        path
     }
 }

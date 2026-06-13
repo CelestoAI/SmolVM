@@ -19,12 +19,13 @@ that many payload bytes. Control frames carry UTF-8 JSON; stream and file
 frames carry raw bytes, so command output and large files never pay base64
 overhead.
 
-This module is the host-side authority for the format. The guest agent
-(``smolvm/guest_agent/agent.py``) ships as a standalone, dependency-free file
-into the guest image — where the ``smolvm`` package is not installed — and
-embeds a byte-compatible copy of the framing below. ``tests/test_guest_agent.py``
-drives the agent with these host functions over a socketpair to prove the two
-ends interoperate, so the duplication can't drift silently.
+This module is the host-side authority for the legacy framed Python agent
+format. Current published images use the Rust HTTP/vsock agent; this framed
+protocol remains only as a migration fallback for older images. The Python
+agent (``smolvm/guest_agent/agent.py``) embeds a byte-compatible copy of the
+framing below. ``tests/test_guest_agent.py`` drives the agent with these host
+functions over a socketpair to prove the two ends interoperate while the
+fallback remains supported.
 
 Each request occupies its own connection: the host opens a connection, sends
 one request frame, consumes the response (which may stream many frames), and

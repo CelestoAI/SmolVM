@@ -19,9 +19,10 @@ probe readiness. :class:`~smolvm.comm.base.CommChannel` is the small interface
 every consumer relies on; it has two implementations:
 
 - :class:`~smolvm.ssh.SSHClient` — SSH/paramiko (the default, works everywhere).
-- :class:`~smolvm.comm.vsock_channel.VsockChannel` — a guest agent reached over
-  ``AF_VSOCK`` (QEMU on Linux first), which works before the guest network or
-  sshd is up.
+- :class:`~smolvm.comm.rust_http_vsock_channel.RustHttpVsockChannel` — the
+  public Rust guest agent over HTTP/vsock, for QEMU CID and Firecracker UDS.
+- :class:`~smolvm.comm.vsock_channel.VsockChannel` — the legacy framed Python
+  guest-agent fallback kept for older images during the migration window.
 """
 
 from __future__ import annotations

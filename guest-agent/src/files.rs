@@ -203,6 +203,56 @@ mod tests {
         assert!(put.error.unwrap().contains("directory"));
     }
 
+    #[tokio::test]
+    async fn put_rejects_invalid_directory_filename() {
+        let dir = tempfile_dir();
+        let put = put_file(FilePutRequest {
+            path: dir.to_string_lossy().to_string(),
+            name: Some("..".to_string()),
+            mode: None,
+            data_base64: base64::engine::general_purpose::STANDARD.encode(b"data"),
+        })
+        .await;
+        assert!(!put.ok);
+        assert!(
+            put.error
+                .unwrap()
+                .contains("destination filename is invalid")
+        );
+    }
+
+    #[tokio::test]
+    async fn put_rejects_invalid_base64() {
+        let dir = tempfile_dir();
+        let put = put_file(FilePutRequest {
+            path: dir.join("bad.bin").to_string_lossy().to_string(),
+            name: None,
+            mode: None,
+            data_base64: "%%%".to_string(),
+        })
+        .await;
+        assert!(!put.ok);
+        assert!(put.error.unwrap().contains("invalid base64 data"));
+    }
+
+    #[tokio::test]
+    async fn get_rejects_missing_and_non_regular_paths() {
+        let dir = tempfile_dir();
+        let missing = get_file(FileGetQuery {
+            path: dir.join("missing.bin").to_string_lossy().to_string(),
+        })
+        .await;
+        assert!(!missing.ok);
+        assert!(missing.error.unwrap().contains("No such file"));
+
+        let directory = get_file(FileGetQuery {
+            path: dir.to_string_lossy().to_string(),
+        })
+        .await;
+        assert!(!directory.ok);
+        assert_eq!(directory.error.as_deref(), Some("not a regular file"));
+    }
+
     fn tempfile_dir() -> PathBuf {
         let path = std::env::temp_dir().join(format!(
             "smolvm-agent-test-{}-{}",
