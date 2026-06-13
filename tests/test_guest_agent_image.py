@@ -46,6 +46,27 @@ def _assert_guest_agent_starts_before_network_and_ssh(script: str) -> None:
     assert agent_start < script.index("/usr/sbin/sshd")
 
 
+def _assert_startup_timestamp_markers(script: str) -> None:
+    ordered_stages = [
+        "init-start",
+        "mounts-ready",
+        "root-ready",
+        "guest-agent-start",
+        "guest-agent-started",
+        "net-config-start",
+        "net-ready",
+        "ssh-hostkey-check-start",
+        "ssh-hostkey-check-done",
+        "ssh-authkey-inject-start",
+        "ssh-authkey-inject-done",
+        "sshd-start",
+        "sshd-invoked",
+        "init-complete",
+    ]
+    positions = [script.index(f'log_ts "{stage}"') for stage in ordered_stages]
+    assert positions == sorted(positions)
+
+
 def test_ci_preset_init_launches_guest_agent_before_sshd() -> None:
     """The CI publish pipeline's /init must launch the agent before sshd,
     mirroring the Python builder. These two init paths have to stay in sync —
@@ -55,6 +76,7 @@ def test_ci_preset_init_launches_guest_agent_before_sshd() -> None:
     assert "/usr/local/bin/smolvm-guest-agent --listen vsock://1024" in script
     assert "python3 /usr/local/bin/smolvm-guest-agent" not in script
     _assert_guest_agent_starts_before_network_and_ssh(script)
+    _assert_startup_timestamp_markers(script)
 
 
 def test_ci_build_preset_bakes_guest_agent() -> None:
@@ -125,6 +147,7 @@ def test_base_init_script_launches_guest_agent_before_sshd() -> None:
     assert "python3 /usr/local/bin/smolvm-guest-agent" not in script
     # The agent must start before sshd so the channel is up independent of it.
     _assert_guest_agent_starts_before_network_and_ssh(script)
+    _assert_startup_timestamp_markers(script)
 
 
 def test_base_init_script_runs_clock_sync_loop() -> None:

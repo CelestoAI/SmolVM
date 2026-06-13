@@ -52,6 +52,7 @@ sys.path.insert(0, str(_REPO_ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # Local sibling import — works whether invoked as a script or a module.
+from boot_telemetry import collect_boot_telemetry, summarize_boot_telemetry  # noqa: E402
 from metrics import Phase, stats  # noqa: E402
 
 logger = logging.getLogger("smolvm.bench")
@@ -182,6 +183,17 @@ def _is_unsupported_error(exc: BaseException) -> bool:
     return "does not support" in str(exc).lower()
 
 
+def _vm_log_path(vm) -> Path | None:
+    """Return the runtime log path for a benchmark VM."""
+    vm_id = getattr(vm, "_vm_id", None)
+    if not vm_id:
+        return None
+
+    from smolvm.vm import resolve_data_dir
+
+    return resolve_data_dir() / f"{vm_id}.log"
+
+
 # ── Individual benchmarks ────────────────────────────────────────────
 
 
@@ -201,9 +213,11 @@ def _bench_boot(backend: str, iterations: int, label: str) -> dict[str, Any]:
         logger.info("[%s] iter %d/%d", label, i + 1, iterations)
         vm: SmolVM | None = None
         record: dict[str, Any] = {"iter": i}
+        log_path: Path | None = None
         try:
             with Phase() as p_create:
                 vm = _new_vm(backend)
+                log_path = _vm_log_path(vm)
             record["host_create_ms"] = round(p_create.elapsed_ms, 1)
             host_create.append(record["host_create_ms"])
 
@@ -245,10 +259,13 @@ def _bench_boot(backend: str, iterations: int, label: str) -> dict[str, Any]:
             record["error"] = repr(e)
             logger.warning("[%s] iter %d failed: %s", label, i + 1, e)
         finally:
+            if log_path is None:
+                log_path = _vm_log_path(vm)
             _safe_teardown(vm)
+            record["boot_telemetry"] = collect_boot_telemetry(log_path)
             raw.append(record)
 
-    return {
+    result: dict[str, Any] = {
         "stats": {
             "host_create_ms": stats(host_create),
             "vmm_start_ms": stats(vmm_start),
@@ -259,6 +276,10 @@ def _bench_boot(backend: str, iterations: int, label: str) -> dict[str, Any]:
         },
         "raw": raw,
     }
+    boot_telemetry_stats = summarize_boot_telemetry(raw, stats)
+    if boot_telemetry_stats:
+        result["boot_telemetry_stats"] = boot_telemetry_stats
+    return result
 
 
 def bench_cold_start(backend: str, iterations: int) -> dict[str, Any]:
@@ -424,6 +445,12 @@ def _print_human(report: dict[str, Any]) -> None:
                 f"  {metric:30s} {s['p50']:8.1f}  {s['p95']:8.1f}  "
                 f"{s['mean']:8.1f}  {s['min']:8.1f}  {s['max']:8.1f}  {s['count']:4d}"
             )
+        phase_stats = result.get("boot_telemetry_stats", {}).get("guest_init_phases_ms", {})
+        if phase_stats:
+            print()
+            print("  guest init phase p50 (ms)")
+            for phase_name, s in phase_stats.items():
+                print(f"  {phase_name:30s} {s['p50']:8.1f}")
         print()
 
 
