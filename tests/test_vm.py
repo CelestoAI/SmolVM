@@ -314,6 +314,7 @@ class TestSmolVMCreate:
                 "backend": "qemu",
                 "comm_channel": "vsock",
                 "qemu_network": "slirp",
+                "rootfs_format": "raw-ext4",
             }
         )
 
