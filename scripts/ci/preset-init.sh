@@ -58,6 +58,8 @@ chmod 1777 /tmp
 if [ -x /usr/local/bin/smolvm-guest-agent ]; then
     /usr/local/bin/smolvm-guest-agent --listen vsock://1024 >/var/log/smolvm-agent.log 2>&1 &
     echo "SmolVM init: guest agent started (PID=$!)"
+else
+    echo "SmolVM init: guest agent not found, continuing without it" >&2
 fi
 
 # ── Networking ───────────────────────────────────────────────

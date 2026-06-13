@@ -36,7 +36,12 @@ def _assert_clock_sync_loop_before_sshd(script: str) -> None:
 
 def _assert_guest_agent_starts_before_network_and_ssh(script: str) -> None:
     agent_start = script.index("/usr/local/bin/smolvm-guest-agent --listen vsock://1024")
-    assert agent_start < script.index("Networking")
+    network_ready = (
+        script.index('log_ts "net-ready"')
+        if 'log_ts "net-ready"' in script
+        else script.index("hostname smolvm")
+    )
+    assert agent_start < network_ready
     assert agent_start < script.index("ssh-keygen -A")
     assert agent_start < script.index("/usr/sbin/sshd")
 

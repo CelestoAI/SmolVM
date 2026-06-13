@@ -84,7 +84,16 @@ latency.
         "first_command_ms": { ... },
         "total_first_command_ms": { ... }
       },
-      "raw": [{"iter": 0, "host_create_ms": ..., "vmm_start_ms": ..., "guest_ready_wait_ms": ..., "total_fresh_ready_ms": ...}, ...]
+      "raw": [{
+        "iter": 0,
+        "host_create_ms": ...,
+        "vmm_start_ms": ...,
+        "guest_ready_wait_ms": ...,
+        "total_fresh_ready_ms": ...,
+        "first_command_ms": ...,
+        "total_first_command_ms": ...,
+        "guest_uptime_at_first_command_s": ...
+      }, ...]
     },
     "tti": { ... },
     "pause-resume": { "stats": {"pause_ms": ..., "resume_ms": ...}, "raw": [...] },
