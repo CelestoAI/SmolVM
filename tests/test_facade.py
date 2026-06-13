@@ -265,9 +265,7 @@ class TestVMInit:
             )
 
         message = str(exc_info.value)
-        assert "disk_size_mib >= 4096" in message
-        assert "got 512" in message
-        assert "default floor 2048" in message
+        assert "Ubuntu needs at least 4096 MiB for sandbox 'project-spacex'" in message
         assert (
             "smolvm create --name project-spacex --os ubuntu --backend qemu --disk-size 4096"
             in message
@@ -322,7 +320,7 @@ class TestVMInit:
         assert "init=/init" in config.boot_args
         assert config.ssh_capable is True
         assert config.ssh_public_key == "ssh-ed25519 AAAAExampleKey test@host"
-        assert config.disk_size_mib is None
+        assert config.disk_size_mib == 2048
         assert config.grow_filesystem is False
         assert not config.extra_drives
 
