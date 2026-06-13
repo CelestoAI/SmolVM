@@ -99,6 +99,26 @@ def test_wait_ready_uses_health() -> None:
     assert channel.requests[0][0:2] == ("GET", "/health")
 
 
+def test_wait_ready_polls_quickly_during_early_boot(monkeypatch: pytest.MonkeyPatch) -> None:
+    channel = FakeRustChannel(
+        [
+            lambda method, path, body: {"status": "starting"},
+            lambda method, path, body: {"status": "starting"},
+            lambda method, path, body: {"status": "ok", "agent_version": "0.1.0"},
+        ]
+    )
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        "smolvm.comm.rust_http_vsock_channel.time.sleep",
+        lambda duration: sleeps.append(duration),
+    )
+
+    channel.wait_ready(timeout=1, interval=0.1)
+
+    assert channel.connected is True
+    assert sleeps == [0.02, 0.02]
+
+
 def test_from_uds_closes_socket_when_connect_rejected(tmp_path: Path) -> None:
     uds = str(tmp_path / "vsock.sock")
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

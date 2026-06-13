@@ -50,6 +50,16 @@ mount -o remount,rw /
 mkdir -p /run/sshd /var/log /tmp
 chmod 1777 /tmp
 
+# ── Guest agent (vsock control plane) ────────────────────────
+# Started before networking and sshd, so explicit-vsock sandboxes can become
+# ready without waiting for SSH host-key generation or network setup. Skipped
+# silently if the agent is missing (the host falls back to SSH in that case).
+# Mirrors _base_init_script() in src/smolvm/images/builder.py.
+if [ -x /usr/local/bin/smolvm-guest-agent ]; then
+    /usr/local/bin/smolvm-guest-agent --listen vsock://1024 >/var/log/smolvm-agent.log 2>&1 &
+    echo "SmolVM init: guest agent started (PID=$!)"
+fi
+
 # ── Networking ───────────────────────────────────────────────
 # Format: ip=<guest_ip>::<gateway>:<netmask>::eth0:off (kernel ip= param)
 netmask_to_prefix() {
@@ -128,16 +138,6 @@ if [ -n "$AUTHKEY_B64" ]; then
         echo "$DECODED" > /root/.ssh/authorized_keys
         chmod 600 /root/.ssh/authorized_keys
     fi
-fi
-
-# ── Guest agent (vsock control plane) ────────────────────────
-# Started before sshd and independent of networking, so the host can drive
-# the guest over vsock the moment the kernel is up. Skipped silently if
-# the agent is missing (the host falls back to SSH in that case).
-# Mirrors _base_init_script() in src/smolvm/images/builder.py.
-if [ -x /usr/local/bin/smolvm-guest-agent ]; then
-    /usr/local/bin/smolvm-guest-agent --listen vsock://1024 >/var/log/smolvm-agent.log 2>&1 &
-    echo "SmolVM init: guest agent started (PID=$!)"
 fi
 
 # ── Clock sync (host-sleep drift) ────────────────────────────

@@ -50,13 +50,19 @@ uv run python scripts/benchmarks/bench.py --backend qemu
 
 | Benchmark      | Metrics                                                         | What it measures |
 |----------------|-----------------------------------------------------------------|------------------|
-| `cold-start`   | `construct_ms`, `boot_to_ssh_ms`, `total_ms`                    | First VM boot in this process. The image cache on disk is assumed already populated; "cold" means no warm SmolVM state in memory and no per-VM disk overlay yet. |
-| `tti`          | same as `cold-start`                                            | Subsequent boots — the steady-state experience. `tti` runs a warm-up boot first (excluded from stats), then takes `--iterations` measurements. Compare `results["tti"]["stats"]["total_ms"]["p50"]` to `results["cold-start"]["raw"][0]["total_ms"]` to see the one-time cost. |
+| `cold-start`   | `host_create_ms`, `vmm_start_ms`, `guest_ready_wait_ms`, `total_fresh_ready_ms`, `first_command_ms`, `total_first_command_ms` | First VM boot in this process. The image cache on disk is assumed already populated; "cold" means no warm SmolVM state in memory and no per-VM disk overlay yet. |
+| `tti`          | same as `cold-start`                                            | Subsequent boots — the steady-state experience. `tti` runs a warm-up boot first (excluded from stats), then takes `--iterations` measurements. Compare `results["tti"]["stats"]["total_fresh_ready_ms"]["p50"]` to `results["cold-start"]["raw"][0]["total_fresh_ready_ms"]` to see the one-time cost. |
 | `pause-resume` | `pause_ms`, `resume_ms`                                         | Freeze and unfreeze a long-lived VM. |
 | `snapshot`     | `snapshot_create_ms`, `snapshot_restore_ms`, `snapshot_restore_to_ssh_ms` | Persist VM state and bring it back. Each iteration uses a fresh source VM. |
 
 All timings are wall-clock milliseconds via `time.monotonic()`.
 Each benchmark reports `{p50, p95, mean, min, max, count}` plus the raw per-iteration values.
+
+For `cold-start` and `tti`, `vmm_start_ms` is only the host VMM process/API
+startup. `total_fresh_ready_ms` is the user-facing fresh guest readiness
+metric: host create + VMM start + guest boot until SSH is ready. Use
+`total_first_command_ms` when comparing end-to-end "sandbox can run work"
+latency.
 
 ## JSON shape
 
@@ -71,11 +77,14 @@ Each benchmark reports `{p50, p95, mean, min, max, count}` plus the raw per-iter
   "results": {
     "cold-start": {
       "stats": {
-        "construct_ms": {"p50": ..., "p95": ..., "mean": ..., "min": ..., "max": ..., "count": 5},
-        "boot_to_ssh_ms": { ... },
-        "total_ms": { ... }
+        "host_create_ms": {"p50": ..., "p95": ..., "mean": ..., "min": ..., "max": ..., "count": 5},
+        "vmm_start_ms": { ... },
+        "guest_ready_wait_ms": { ... },
+        "total_fresh_ready_ms": { ... },
+        "first_command_ms": { ... },
+        "total_first_command_ms": { ... }
       },
-      "raw": [{"iter": 0, "construct_ms": ..., "boot_to_ssh_ms": ..., "total_ms": ...}, ...]
+      "raw": [{"iter": 0, "host_create_ms": ..., "vmm_start_ms": ..., "guest_ready_wait_ms": ..., "total_fresh_ready_ms": ...}, ...]
     },
     "tti": { ... },
     "pause-resume": { "stats": {"pause_ms": ..., "resume_ms": ...}, "raw": [...] },

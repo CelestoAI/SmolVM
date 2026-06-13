@@ -36,6 +36,9 @@ from smolvm.types import CommandResult
 
 logger = logging.getLogger(__name__)
 
+_READY_FAST_POLL_WINDOW = 1.0
+_READY_FAST_POLL_INTERVAL = 0.02
+
 
 class _SocketHTTPConnection(http.client.HTTPConnection):
     """HTTPConnection that uses a caller-supplied connected socket."""
@@ -249,14 +252,21 @@ class RustHttpVsockChannel:
     def wait_ready(self, timeout: float = 60.0, interval: float = 0.1) -> None:
         if timeout <= 0:
             raise ValueError("timeout must be > 0")
+        if interval <= 0:
+            raise ValueError("interval must be > 0")
+        started_at = time.monotonic()
         deadline = time.monotonic() + timeout
         last_error = ""
         target = self.uds_path if self.uds_path is not None else f"cid={self.guest_cid}"
         logger.info("Waiting for Rust guest agent on vsock %s (timeout=%.0fs)", target, timeout)
 
         while time.monotonic() < deadline:
+            elapsed = time.monotonic() - started_at
+            poll_interval = interval
+            if elapsed < _READY_FAST_POLL_WINDOW:
+                poll_interval = min(interval, _READY_FAST_POLL_INTERVAL)
             try:
-                resp = self._request_json("GET", "/health", timeout=max(1.0, interval))
+                resp = self._request_json("GET", "/health", timeout=max(1.0, poll_interval))
                 if resp.get("status") == "ok":
                     self._ready = True
                     logger.info("Rust guest agent is ready on vsock %s", target)
@@ -267,7 +277,7 @@ class RustHttpVsockChannel:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            time.sleep(min(interval, remaining))
+            time.sleep(min(poll_interval, remaining))
 
         raise OperationTimeoutError(
             f"wait_ready(rust-vsock {target}): last error: {last_error}", timeout

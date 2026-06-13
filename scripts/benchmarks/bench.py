@@ -16,8 +16,8 @@
 """SmolVM benchmark suite — drives the public SDK and measures real lifecycle timings.
 
 Benchmarks:
-    cold-start    Time from SmolVM(...) to a booted, SSH-reachable VM (first time, no warm caches).
-    tti           Time-to-interactive on subsequent boots (image cache warm).
+    cold-start    Fresh guest readiness split into host, VMM, guest, and command phases.
+    tti           Same split on subsequent boots (image cache warm).
     pause-resume  How fast we can freeze and unfreeze a running VM.
     snapshot      How fast we can persist VM state and bring it back.
 
@@ -189,9 +189,12 @@ def _bench_boot(backend: str, iterations: int, label: str) -> dict[str, Any]:
     """Shared implementation for cold-start and tti — they differ only in cache state."""
     from smolvm.facade import SmolVM
 
-    construct: list[float] = []
-    boot_to_ssh: list[float] = []
-    totals: list[float] = []
+    host_create: list[float] = []
+    vmm_start: list[float] = []
+    guest_ready_wait: list[float] = []
+    first_command: list[float] = []
+    total_fresh_ready: list[float] = []
+    total_first_command: list[float] = []
     raw: list[dict[str, Any]] = []
 
     for i in range(iterations):
@@ -199,19 +202,45 @@ def _bench_boot(backend: str, iterations: int, label: str) -> dict[str, Any]:
         vm: SmolVM | None = None
         record: dict[str, Any] = {"iter": i}
         try:
-            with Phase() as p_construct:
+            with Phase() as p_create:
                 vm = _new_vm(backend)
-            record["construct_ms"] = round(p_construct.elapsed_ms, 1)
-            construct.append(record["construct_ms"])
+            record["host_create_ms"] = round(p_create.elapsed_ms, 1)
+            host_create.append(record["host_create_ms"])
 
-            with Phase() as p_boot:
+            with Phase() as p_start:
                 vm.start()
-                vm.wait_for_ssh()
-            record["boot_to_ssh_ms"] = round(p_boot.elapsed_ms, 1)
-            boot_to_ssh.append(record["boot_to_ssh_ms"])
+            record["vmm_start_ms"] = round(p_start.elapsed_ms, 1)
+            vmm_start.append(record["vmm_start_ms"])
 
-            record["total_ms"] = round(record["construct_ms"] + record["boot_to_ssh_ms"], 1)
-            totals.append(record["total_ms"])
+            with Phase() as p_ready:
+                vm.wait_for_ssh()
+            record["guest_ready_wait_ms"] = round(p_ready.elapsed_ms, 1)
+            guest_ready_wait.append(record["guest_ready_wait_ms"])
+
+            with Phase() as p_first_command:
+                result = vm.run("cat /proc/uptime", shell="raw")
+            record["first_command_ms"] = round(p_first_command.elapsed_ms, 1)
+            first_command.append(record["first_command_ms"])
+            try:
+                record["guest_uptime_at_first_command_s"] = round(
+                    float(result.stdout.split()[0]),
+                    3,
+                )
+            except (IndexError, TypeError, ValueError):
+                record["guest_uptime_at_first_command_s"] = None
+
+            record["total_fresh_ready_ms"] = round(
+                record["host_create_ms"]
+                + record["vmm_start_ms"]
+                + record["guest_ready_wait_ms"],
+                1,
+            )
+            total_fresh_ready.append(record["total_fresh_ready_ms"])
+            record["total_first_command_ms"] = round(
+                record["total_fresh_ready_ms"] + record["first_command_ms"],
+                1,
+            )
+            total_first_command.append(record["total_first_command_ms"])
         except Exception as e:  # noqa: BLE001
             record["error"] = repr(e)
             logger.warning("[%s] iter %d failed: %s", label, i + 1, e)
@@ -221,9 +250,12 @@ def _bench_boot(backend: str, iterations: int, label: str) -> dict[str, Any]:
 
     return {
         "stats": {
-            "construct_ms": stats(construct),
-            "boot_to_ssh_ms": stats(boot_to_ssh),
-            "total_ms": stats(totals),
+            "host_create_ms": stats(host_create),
+            "vmm_start_ms": stats(vmm_start),
+            "guest_ready_wait_ms": stats(guest_ready_wait),
+            "total_fresh_ready_ms": stats(total_fresh_ready),
+            "first_command_ms": stats(first_command),
+            "total_first_command_ms": stats(total_first_command),
         },
         "raw": raw,
     }

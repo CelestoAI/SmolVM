@@ -1394,6 +1394,20 @@ chmod 1777 /tmp
 
 log_ts "root-ready"
 
+# ── Guest agent (vsock control plane) ───────────────────────
+# Started before networking and sshd, so explicit-vsock sandboxes can become
+# ready without waiting for SSH host-key generation or network setup. Skipped
+# silently if the agent wasn't baked in — the host falls back to SSH in that
+# case.
+log_ts "guest-agent-start"
+if [ -x /usr/local/bin/smolvm-guest-agent ]; then
+    /usr/local/bin/smolvm-guest-agent --listen vsock://1024 >/var/log/smolvm-agent.log 2>&1 &
+    echo "SmolVM init: guest agent started (PID=$!)"
+else
+    echo "SmolVM init: guest agent not started (agent missing)"
+fi
+log_ts "guest-agent-started"
+
 # ── Networking ───────────────────────────────────────────────
 log_ts "net-config-start"
 # Configure from kernel command line ip= parameter
@@ -1456,20 +1470,6 @@ fi
 
 hostname {custom_hostname}
 log_ts "net-ready"
-
-# ── Guest agent (vsock control plane) ───────────────────────
-# Started before sshd and independent of networking, so the host can
-# drive the guest over vsock the moment the kernel is up. Skipped
-# silently if the agent wasn't baked in — the host falls back to SSH in
-# that case.
-log_ts "guest-agent-start"
-if [ -x /usr/local/bin/smolvm-guest-agent ]; then
-    /usr/local/bin/smolvm-guest-agent --listen vsock://1024 >/var/log/smolvm-agent.log 2>&1 &
-    echo "SmolVM init: guest agent started (PID=$!)"
-else
-    echo "SmolVM init: guest agent not started (agent missing)"
-fi
-log_ts "guest-agent-started"
 
 # ── Clock sync (host-sleep drift) ────────────────────────────
 # The guest tracks time with its own clocksource (the TSC under

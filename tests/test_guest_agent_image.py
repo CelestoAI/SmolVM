@@ -34,6 +34,13 @@ def _assert_clock_sync_loop_before_sshd(script: str) -> None:
     assert script.index('"$HWCLOCK" -s -u') < script.index("/usr/sbin/sshd")
 
 
+def _assert_guest_agent_starts_before_network_and_ssh(script: str) -> None:
+    agent_start = script.index("/usr/local/bin/smolvm-guest-agent --listen vsock://1024")
+    assert agent_start < script.index("Networking")
+    assert agent_start < script.index("ssh-keygen -A")
+    assert agent_start < script.index("/usr/sbin/sshd")
+
+
 def test_ci_preset_init_launches_guest_agent_before_sshd() -> None:
     """The CI publish pipeline's /init must launch the agent before sshd,
     mirroring the Python builder. These two init paths have to stay in sync —
@@ -42,7 +49,7 @@ def test_ci_preset_init_launches_guest_agent_before_sshd() -> None:
     script = (_REPO_ROOT / "scripts" / "ci" / "preset-init.sh").read_text()
     assert "/usr/local/bin/smolvm-guest-agent --listen vsock://1024" in script
     assert "python3 /usr/local/bin/smolvm-guest-agent" not in script
-    assert script.index("smolvm-guest-agent") < script.index("/usr/sbin/sshd")
+    _assert_guest_agent_starts_before_network_and_ssh(script)
 
 
 def test_ci_build_preset_bakes_guest_agent() -> None:
@@ -112,7 +119,7 @@ def test_base_init_script_launches_guest_agent_before_sshd() -> None:
     assert "/usr/local/bin/smolvm-guest-agent --listen vsock://1024" in script
     assert "python3 /usr/local/bin/smolvm-guest-agent" not in script
     # The agent must start before sshd so the channel is up independent of it.
-    assert script.index("smolvm-guest-agent") < script.index("/usr/sbin/sshd")
+    _assert_guest_agent_starts_before_network_and_ssh(script)
 
 
 def test_base_init_script_runs_clock_sync_loop() -> None:
