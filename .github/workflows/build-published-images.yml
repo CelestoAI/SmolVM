@@ -97,6 +97,7 @@ jobs:
   # per architecture gives users and production builders a provenance/debug
   # artifact without making the private Celesto repo the source of truth.
   guest-agent-binaries:
+    if: ${{ inputs.presets == 'all' }}
     strategy:
       fail-fast: false
       matrix:

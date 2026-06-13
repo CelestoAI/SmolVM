@@ -57,6 +57,7 @@ def test_published_image_workflow_uploads_guest_agent_binaries() -> None:
     """The image release workflow should publish standalone guest-agent binaries."""
     workflow = (_REPO_ROOT / ".github" / "workflows" / "build-published-images.yml").read_text()
     assert "guest-agent-binaries:" in workflow
+    assert "if: ${{ inputs.presets == 'all' }}" in workflow
     assert 'cargo build --release --target "$target" -p smolvm-guest-agent' in workflow
     assert "smolvm-guest-agent-linux-amd64" in workflow
     assert "smolvm-guest-agent-linux-arm64" in workflow
