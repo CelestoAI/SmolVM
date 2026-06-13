@@ -8,12 +8,13 @@
 # this minimal script that:
 #
 #   1. mounts the essential virtual filesystems
-#   2. brings up loopback + eth0 (DHCP-style static IP from kernel cmdline)
-#   3. generates SSH host keys on first boot
-#   4. injects the launching user's pubkey from the kernel cmdline param
+#   2. starts the vsock guest-agent control plane
+#   3. brings up loopback + eth0 (DHCP-style static IP from kernel cmdline)
+#   4. generates SSH host keys on first boot
+#   5. injects the launching user's pubkey from the kernel cmdline param
 #      smolvm.authorized_key_b64=<base64> (matches openclaw's mechanism)
-#   5. starts sshd
-#   6. parks PID 1 in a sleep loop, signal-handling Firecracker shutdown
+#   6. starts sshd
+#   7. parks PID 1 in a sleep loop, signal-handling Firecracker shutdown
 #
 # Mirrors `_base_init_script()` in src/smolvm/images/builder.py — keep
 # them in sync if either changes.

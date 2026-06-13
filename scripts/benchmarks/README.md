@@ -46,6 +46,23 @@ uv run python scripts/benchmarks/bench.py --backend qemu
 
 `-v` enables per-iteration progress logging.
 
+## Ubuntu Transport Comparison
+
+Use `ubuntu_transport.py` when comparing SSH vs vsock on the official Ubuntu
+preset across QEMU and Firecracker:
+
+```bash
+# Measure the currently published image bytes.
+uv run python scripts/benchmarks/ubuntu_transport.py --rootfs-source published -v
+
+# Pre-publish measurement: copy the published rootfs and replace /init with
+# scripts/ci/preset-init.sh from this checkout before booting.
+uv run python scripts/benchmarks/ubuntu_transport.py --rootfs-source current-init -v
+```
+
+`current-init` is for PR validation before a new image release exists. It avoids
+mistaking a stale published rootfs for the current branch's init behavior.
+
 ## What each benchmark means
 
 | Benchmark      | Metrics                                                         | What it measures |
