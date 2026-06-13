@@ -314,15 +314,18 @@ class TestSmolVMCreate:
                 "backend": "qemu",
                 "comm_channel": "vsock",
                 "qemu_network": "slirp",
+                "disk_mode": "shared",
                 "rootfs_format": "raw-ext4",
             }
         )
 
-        vm_info = smol_vm.create(config)
+        with patch.object(smol_vm, "_create_qemu_overlay_disk") as mock_overlay:
+            vm_info = smol_vm.create(config)
 
         assert vm_info.network is not None
         assert vm_info.network.tap_device == "usernet"
         assert vm_info.network.ssh_host_port is not None
+        mock_overlay.assert_not_called()
         mock_network.setup_ssh_port_forward.assert_not_called()
 
     def test_qemu_tap_workspace_policy_keeps_ssh_forward(
