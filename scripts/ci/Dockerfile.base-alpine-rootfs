@@ -54,7 +54,7 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
 
 # ── SSH hardening ───────────────────────────────────────────────
 # Host keys generated at first boot via /init (preset-init.sh runs
-# ``ssh-keygen -A`` if no host keys are present).
+# ``ssh-keygen -t ed25519`` if no host keys are present).
 RUN rm -f /etc/ssh/ssh_host_* \
     && mkdir -p /run/sshd /root/.ssh \
     && chmod 700 /root/.ssh \

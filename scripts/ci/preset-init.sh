@@ -10,7 +10,7 @@
 #   1. mounts the essential virtual filesystems
 #   2. starts the vsock guest-agent control plane
 #   3. brings up loopback + eth0 (DHCP-style static IP from kernel cmdline)
-#   4. generates SSH host keys on first boot
+#   4. generates a lightweight SSH host key on first boot
 #   5. injects the launching user's pubkey from the kernel cmdline param
 #      smolvm.authorized_key_b64=<base64> (matches openclaw's mechanism)
 #   6. starts sshd
@@ -149,7 +149,7 @@ log_ts "net-ready"
 # ── SSH host keys ────────────────────────────────────────────
 log_ts "ssh-hostkey-check-start"
 if ! ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1; then
-    ssh-keygen -A 2>/dev/null
+    ssh-keygen -t ed25519 -f /etc/ssh/ssh_host_ed25519_key -N "" -q 2>/dev/null
 fi
 log_ts "ssh-hostkey-check-done"
 

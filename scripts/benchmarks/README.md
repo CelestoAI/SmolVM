@@ -77,6 +77,9 @@ emits `SMOLVM_TS` markers. The per-variant `summary` also includes
 as guest-agent startup, network setup, SSH host-key checks, and sshd startup.
 Snapshot runs report the same data as `snapshot_source_boot_telemetry` and
 `snapshot_restore_boot_telemetry`.
+The command also prints a compact Markdown table after writing JSON. Use it for
+quick inspection, and use the JSON when you need exact medians, p90/p95 tail
+latency, or per-iteration raw data.
 
 ## What each benchmark means
 

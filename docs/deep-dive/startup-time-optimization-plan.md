@@ -73,6 +73,8 @@ Current status:
 - `scripts/benchmarks/ubuntu_transport.py` now attaches parsed `SMOLVM_TS`
   guest boot markers to each raw fresh-boot record and summarizes those phases
   under `boot_telemetry_stats`.
+- Ubuntu transport summaries now include p90/p95 tail latency and the CLI prints
+  a compact Markdown table for quick comparison after writing the JSON report.
 - Snapshot runs also keep separate source and restored-VM telemetry, so restore
   timing stays distinct from source fresh-boot timing.
 
@@ -106,6 +108,10 @@ Current status:
 - Published zstd rootfs decompression preserves sparse zero regions, and raw
   isolated-disk copies preserve those holes. This removes the accidental
   4 GiB copy from the Firecracker critical path on non-reflink filesystems.
+- The Ubuntu init path now generates one Ed25519 SSH host key when no host key
+  exists instead of running `ssh-keygen -A`. In the current-init benchmark this
+  moved QEMU SSH total ready from `1455.6 ms` to `1233.9 ms` and Firecracker SSH
+  total ready from `1827.7 ms` to `1576.5 ms`.
 
 Acceptance:
 

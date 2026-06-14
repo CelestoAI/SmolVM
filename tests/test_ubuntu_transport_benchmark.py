@@ -256,6 +256,41 @@ def test_parse_variants_accepts_all_and_deduplicates_selected_variants() -> None
     )
 
 
+def test_stats_include_tail_percentiles() -> None:
+    stats = ubuntu_transport._stats([100.0, 200.0, 300.0])
+
+    assert stats["median"] == 200.0
+    assert stats["p90"] == 280.0
+    assert stats["p95"] == 290.0
+
+
+def test_format_variant_summary_table_includes_ready_and_guest_phases() -> None:
+    report = {
+        "variants": {
+            "qemu-ssh": {
+                "backend": "qemu",
+                "transport": "ssh",
+                "summary": {
+                    "total_fresh_ready_ms": {"median": 1450.0, "p95": 1700.0},
+                    "first_command_ms": {"median": 9.5},
+                    "warm_exec_median_ms": {"median": 42.0},
+                    "boot_telemetry_stats": {
+                        "guest_init_phases_ms": {
+                            "ssh_hostkey_check_ms": {"median": 290.0},
+                            "network_config_ms": {"median": 10.0},
+                        }
+                    },
+                },
+            }
+        }
+    }
+
+    table = ubuntu_transport._format_variant_summary_table(report)
+
+    assert "| qemu | ssh | 1450.0 ms | 1700.0 ms | 9.5 ms | 42.0 ms |" in table
+    assert "ssh_hostkey_check_ms=290.0 ms" in table
+
+
 def test_parse_variants_rejects_unknown_variant() -> None:
     try:
         ubuntu_transport._parse_variants("qemu-bad")

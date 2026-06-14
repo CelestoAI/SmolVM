@@ -24,6 +24,8 @@ Primary target:
 | 2026-06-14 | #371 Firecracker explicit-vsock lazy network setup | Firecracker | vsock | 1195.3 ms | 1098.3 ms | -97.0 ms | 8.1% faster | Current-init local run, 3 measured iterations; published artifact was still `images-2026.06.12.0`. |
 | 2026-06-14 | #373 sparse published rootfs cache and raw disk copy | Firecracker | SSH | 2500.2 ms | 1797.9 ms | -702.3 ms | 28.1% faster | Published `images-2026.06.14.0`; avoids copying fully allocated zero regions during Firecracker disk materialization. |
 | 2026-06-14 | #373 sparse published rootfs cache and raw disk copy | Firecracker | vsock | 1979.1 ms | 1057.4 ms | -921.7 ms | 46.6% faster | Published `images-2026.06.14.0`; host create dropped from 1123.6 ms to 200.5 ms. |
+| 2026-06-14 | #374 Ubuntu transport telemetry and Ed25519 SSH host key | QEMU | SSH | 1455.6 ms | 1233.9 ms | -221.7 ms | 15.2% faster | Current-init local run; replaces `ssh-keygen -A` with one Ed25519 host key. |
+| 2026-06-14 | #374 Ubuntu transport telemetry and Ed25519 SSH host key | Firecracker | SSH | 1827.7 ms | 1576.5 ms | -251.2 ms | 13.7% faster | Current-init local run; SSH host-key phase median is now 10.0 ms. |
 
 ## Current Published Ubuntu Medians
 
@@ -63,29 +65,45 @@ methodology.
 | Firecracker | vsock | ... | ... | ... | ... |
 ```
 
-## 2026-06-14 - PR TBD: Ubuntu Transport Boot Telemetry
+## 2026-06-14 - PR #374: Ubuntu Transport Telemetry And Ed25519 Host Key
 
-- Commit: current branch.
+- Commit: current PR branch.
 - Image tag: `images-2026.06.14.0`.
 - Commands:
   - `uv run python scripts/benchmarks/ubuntu_transport.py --iterations 1 --warm-exec-runs 1 --rootfs-source published --variants qemu-vsock --output /tmp/smolvm-ubuntu-boot-telemetry-probe.json -v`
   - `uv run python scripts/benchmarks/ubuntu_transport.py --iterations 1 --warm-exec-runs 1 --rootfs-source published --variants qemu-ssh --output /tmp/smolvm-ubuntu-boot-telemetry-qemu-ssh.json -v`
+  - `uv run python scripts/benchmarks/ubuntu_transport.py --iterations 3 --warm-exec-runs 1 --rootfs-source current-init --variants all --output /tmp/smolvm-ubuntu-bundle-current-init.json -v`
 - Host: Linux x86_64, kernel `7.0.0-15-generic`, KVM available.
-- Method: one warm-up plus one measured smoke iteration per selected variant.
-- Behavior changed: benchmark methodology only; Ubuntu transport raw records now
-  include parsed guest boot telemetry from `SMOLVM_TS` runtime-log markers, and
-  each variant summary includes phase stats under `boot_telemetry_stats`.
+- Method: one warm-up VM per variant, then three measured current-init
+  iterations per variant for the bundled result.
+- Behavior changed: Ubuntu transport raw records now include parsed guest boot
+  telemetry from `SMOLVM_TS` runtime-log markers, each variant summary includes
+  phase stats under `boot_telemetry_stats`, summary stats include p90/p95, the
+  CLI prints a compact Markdown table, and `/init` generates only an Ed25519 SSH
+  host key instead of running `ssh-keygen -A`.
 
-Smoke results:
+Telemetry smoke results:
 
 | Backend | Transport | Total ready | Notable guest phase |
 |---|---|---:|---|
 | QEMU | vsock | 1057.4 ms | Guest-agent marker present; VM tears down before later SSH markers. |
 | QEMU | SSH | 1452.3 ms | `ssh_hostkey_check_ms=290.0 ms`. |
 
-This section is not a speedup claim and is intentionally excluded from the
-summary timeline. It records the benchmark payload change that lets later PRs
-explain readiness variance by guest init phase.
+Full current-init medians after Ed25519 host-key generation:
+
+| Backend | Transport | Host create | VMM start | Ready wait | Total ready | Total p95 | First command | Total first command | Warm exec | SSH host-key phase |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| QEMU | SSH | 67.7 ms | 52.7 ms | 1113.9 ms | 1233.9 ms | 1235.2 ms | 9.9 ms | 1243.8 ms | 43.2 ms | 10.0 ms |
+| QEMU | vsock | 74.5 ms | 53.2 ms | 924.7 ms | 1052.1 ms | 1071.5 ms | 1.2 ms | 1053.6 ms | 1.6 ms | 0.0 ms |
+| Firecracker | SSH | 305.4 ms | 120.6 ms | 1146.0 ms | 1576.5 ms | 1582.8 ms | 51.8 ms | 1628.3 ms | 42.4 ms | 10.0 ms |
+| Firecracker | vsock | 207.4 ms | 122.4 ms | 736.8 ms | 1066.2 ms | 1282.5 ms | 1.1 ms | 1067.3 ms | 0.9 ms | 210.0 ms |
+
+Notes:
+
+- The Firecracker-vsock SSH host-key phase is visible in the runtime log after
+  the guest agent is ready, but it is not on the vsock readiness critical path.
+- The published image still contains the old init until the next image release;
+  use the current-init numbers above as the implementation signal for this PR.
 
 ## 2026-06-14 - PR #367: Startup Phase Telemetry And Early Guest-Agent Path
 

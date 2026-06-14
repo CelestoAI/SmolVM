@@ -78,11 +78,34 @@ def _mean(values: list[float]) -> float | None:
     return round(sum(values) / len(values), 1)
 
 
+def _percentile(values: list[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return round(ordered[0], 1)
+    position = (len(ordered) - 1) * percentile
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = position - lower
+    return round(ordered[lower] * (1.0 - weight) + ordered[upper] * weight, 1)
+
+
 def _stats(values: list[float]) -> dict[str, Any]:
     if not values:
-        return {"median": None, "mean": None, "min": None, "max": None, "count": 0}
+        return {
+            "median": None,
+            "p90": None,
+            "p95": None,
+            "mean": None,
+            "min": None,
+            "max": None,
+            "count": 0,
+        }
     return {
         "median": _median(values),
+        "p90": _percentile(values, 0.90),
+        "p95": _percentile(values, 0.95),
         "mean": _mean(values),
         "min": round(min(values), 1),
         "max": round(max(values), 1),
@@ -331,6 +354,68 @@ def _parse_variants(raw: str) -> tuple[Variant, ...]:
             "Run: uv run python scripts/benchmarks/ubuntu_transport.py --variants qemu-vsock"
         )
     return tuple(selected)
+
+
+def _format_ms(value: Any) -> str:
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return f"{value:.1f} ms"
+    return "-"
+
+
+def _summary_metric(summary: dict[str, Any], metric: str, stat: str = "median") -> Any:
+    value = summary.get(metric)
+    if not isinstance(value, dict):
+        return None
+    return value.get(stat)
+
+
+def _phase_summary(summary: dict[str, Any]) -> str:
+    phase_stats = summary.get("boot_telemetry_stats", {}).get("guest_init_phases_ms", {})
+    if not isinstance(phase_stats, dict):
+        return "-"
+
+    ranked: list[tuple[str, float]] = []
+    for phase_name, stats in phase_stats.items():
+        if not isinstance(stats, dict):
+            continue
+        value = stats.get("median")
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            ranked.append((phase_name, float(value)))
+    if not ranked:
+        return "-"
+
+    ranked.sort(key=lambda item: item[1], reverse=True)
+    return ", ".join(f"{name}={value:.1f} ms" for name, value in ranked[:3])
+
+
+def _format_variant_summary_table(report: dict[str, Any]) -> str:
+    rows = [
+        "| Backend | Transport | Total ready p50 | Total ready p95 | "
+        "First command p50 | Warm exec p50 | Top guest phases |",
+        "|---|---|---:|---:|---:|---:|---|",
+    ]
+    variants = report.get("variants", {})
+    if not isinstance(variants, dict):
+        return "\n".join(rows)
+
+    for key in sorted(variants):
+        variant = variants[key]
+        if not isinstance(variant, dict):
+            continue
+        summary = variant.get("summary", {})
+        if not isinstance(summary, dict):
+            continue
+        rows.append(
+            "| "
+            f"{variant.get('backend', '-')} | "
+            f"{variant.get('transport', '-')} | "
+            f"{_format_ms(_summary_metric(summary, 'total_fresh_ready_ms'))} | "
+            f"{_format_ms(_summary_metric(summary, 'total_fresh_ready_ms', 'p95'))} | "
+            f"{_format_ms(_summary_metric(summary, 'first_command_ms'))} | "
+            f"{_format_ms(_summary_metric(summary, 'warm_exec_median_ms'))} | "
+            f"{_phase_summary(summary)} |"
+        )
+    return "\n".join(rows)
 
 
 def _run_snapshot_one(
@@ -672,6 +757,7 @@ def main() -> None:
         print(payload)
     else:
         print(f"Wrote {args.output}")
+        print(_format_variant_summary_table(report))
 
 
 if __name__ == "__main__":
