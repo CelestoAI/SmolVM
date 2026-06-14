@@ -104,7 +104,10 @@ def _current_init_fingerprint(rootfs_path: Path) -> str:
 def rootfs_with_current_init(rootfs_path: Path, *, cache_dir: Path | None = None) -> Path:
     """Return a copy of *rootfs_path* with this checkout's preset init baked in."""
     if shutil.which("debugfs") is None:
-        raise RuntimeError("debugfs is required for --rootfs-source current-init")
+        raise RuntimeError(
+            "debugfs is required for --rootfs-source current-init; "
+            "on Debian/Ubuntu install with: sudo apt install e2fsprogs"
+        )
 
     rootfs_path = rootfs_path.resolve()
     fingerprint = _current_init_fingerprint(rootfs_path)
