@@ -198,7 +198,7 @@ class TestSmolVMCreate:
         mock_network.setup_nat.assert_not_called()
         mock_network.setup_ssh_port_forward.assert_not_called()
 
-    def test_check_prerequisites_libkrun_only_checks_krunvm_and_ssh(self, tmp_path: Path) -> None:
+    def test_check_prerequisites_libkrun_only_checks_library_and_ssh(self, tmp_path: Path) -> None:
         """libkrun prerequisite checks should not require qemu/qemu-img."""
         smol_vm = SmolVMManager(
             data_dir=tmp_path / "data-libkrun-preflight",
@@ -207,7 +207,7 @@ class TestSmolVMCreate:
         )
 
         with (
-            patch.object(smol_vm, "_find_krunvm_binary", return_value=Path("/usr/bin/krunvm")),
+            patch.object(smol_vm, "_find_libkrun_library", return_value=Path("/usr/lib/libkrun.so")),
             patch("smolvm.vm.which", return_value=Path("/usr/bin/ssh")),
             patch.object(smol_vm, "_find_qemu_binary", return_value=None),
             patch.object(smol_vm, "_find_qemu_img_binary", return_value=None),

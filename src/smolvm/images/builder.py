@@ -1838,7 +1838,8 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
                     "run",
                     "--rm",
                     "-v",
-                    f"{tar_path.resolve()}:/work/in/rootfs.tar:ro",
+                    # f"{tar_path.resolve()}:/work/in/rootfs.tar:ro",
+                    f"{tar_path.parent.resolve()}:/work/in:ro",
                     "-v",
                     f"{rootfs_path.parent.resolve()}:/work/out",
                     "alpine:3.19",
@@ -1879,13 +1880,6 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
         """Execute the Docker build and image conversion."""
         docker_tag = f"smolvm-{name}"
 
-        # Bake the guest agent into every image. Centralized here so all five
-        # build_* recipes inherit it without each repeating the COPY; /init
-        # launches it, and the host reaches it over vsock.
-        # Appended after the recipe's own COPY lines — order is irrelevant for
-        # an independent file drop. Its content hash is in the fingerprint via
-        # _fingerprint_with_content, so edits still trigger a rebuild even
-        # though this COPY text is constant.
         dockerfile_content = (
             dockerfile_content
             + "\n# SmolVM guest agent (vsock control plane)\n"
@@ -1893,9 +1887,10 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
             + f"RUN chmod +x {_GUEST_AGENT_GUEST_PATH}\n"
         )
 
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp_path = Path(tmp_dir)
-
+        import uuid
+        tmp_path = image_dir / f".build-{uuid.uuid4().hex[:8]}"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        try:
             # Write Dockerfile and init script
             (tmp_path / "Dockerfile").write_text(dockerfile_content)
             (tmp_path / "init").write_text(init_script)
@@ -1958,6 +1953,9 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
             # 5. Write cache fingerprint if provided and successful
             if fingerprint_data is not None:
                 self._write_fingerprint(image_dir, fingerprint_data)
+
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
 
 
 class DockerRootfsBuilder:

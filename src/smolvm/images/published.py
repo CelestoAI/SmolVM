@@ -228,12 +228,11 @@ BASE_KERNELS: dict[Arch, BaseKernel] = {
 
 
 def _kernel_format_for_vmm(vmm: Vmm) -> KernelFormat:
-    """Map runtime vmm to the kernel binary format it accepts.
-
-    Firecracker requires an uncompressed ELF; QEMU on aarch64 ``virt`` only
-    boots the Linux ARM64 boot-protocol Image (silent hang on ELF). libkrun
-    is Firecracker-API-compatible and uses the same ELF.
-    """
+    # libkrun on Linux (KVM) accepts ELF; on macOS (Hypervisor.framework) it
+    # requires the ARM64 Image format — same as QEMU.
+    import platform
+    if vmm == "libkrun" and platform.system() == "Darwin":
+        return "image"
     return "elf" if vmm in {"firecracker", "libkrun"} else "image"
 
 

@@ -576,12 +576,29 @@ class TestEnsureBaseKernelForBackend:
         mock_ensure.assert_called_once_with("arm64", "elf", cache_dir=None)
 
     @patch("smolvm.images.published.ensure_base_kernel")
-    def test_libkrun_selects_elf_kernel(self, mock_ensure: MagicMock) -> None:
+    def test_libkrun_selects_elf_kernel_on_linux(
+        self, mock_ensure: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # libkrun on Linux uses KVM and accepts the ELF kernel like Firecracker.
+        monkeypatch.setattr("platform.system", lambda: "Linux")
         kernel = Path("sentinels/vmlinux.elf")
         mock_ensure.return_value = kernel
 
         assert ensure_base_kernel_for_backend("libkrun", arch="x86_64") == kernel
         mock_ensure.assert_called_once_with("amd64", "elf", cache_dir=None)
+
+    @patch("smolvm.images.published.ensure_base_kernel")
+    def test_libkrun_selects_image_kernel_on_darwin(
+        self, mock_ensure: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # libkrun on macOS uses Hypervisor.framework, which rejects ELF kernels
+        # and requires the ARM64 boot Image format instead.
+        monkeypatch.setattr("platform.system", lambda: "Darwin")
+        kernel = Path("sentinels/vmlinux.image")
+        mock_ensure.return_value = kernel
+
+        assert ensure_base_kernel_for_backend("libkrun", arch="arm64") == kernel
+        mock_ensure.assert_called_once_with("arm64", "image", cache_dir=None)
 
     @patch("smolvm.images.published.ensure_base_kernel")
     def test_host_arch_is_normalized(

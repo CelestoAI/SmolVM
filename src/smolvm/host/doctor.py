@@ -153,6 +153,108 @@ def _check_qemu_version(qemu_path: Path) -> DoctorCheck:
     )
 
 
+def _check_gvproxy() -> DoctorCheck:
+    """libkrun on macOS uses gvproxy for guest networking (vfkit protocol)."""
+    from smolvm.runtime._libkrun_launcher import _find_gvproxy
+
+    path = _find_gvproxy()
+    if path is None:
+        return DoctorCheck(
+            name="gvproxy",
+            status="fail",
+            detail="gvproxy not found",
+            fix="brew install podman",
+        )
+    return DoctorCheck(name="gvproxy", status="pass", detail=str(path))
+
+
+def _check_libkrun_rust_target() -> DoctorCheck:
+    """Guest agent build requires Rust + the matching musl target."""
+    arch = platform.machine().lower()
+    target = (
+        "aarch64-unknown-linux-musl"
+        if arch in {"arm64", "aarch64"}
+        else "x86_64-unknown-linux-musl"
+    )
+    name = "rust-musl-target"
+
+    cargo_home = Path(os.environ.get("CARGO_HOME") or Path.home() / ".cargo")
+    rustup_bin = which("rustup") or (
+        str(cargo_home / "bin" / "rustup") if (cargo_home / "bin" / "rustup").exists() else None
+    )
+    if rustup_bin is None and which("cargo") is None:
+        return DoctorCheck(
+            name=name,
+            status="fail",
+            detail="cargo / rustup not found",
+            fix="Install Rust via https://rustup.rs",
+        )
+    try:
+        result = subprocess.run(
+            [rustup_bin or "rustup", "target", "list", "--installed"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        return DoctorCheck(
+            name=name,
+            status="warn",
+            detail=f"could not probe rustup targets: {exc}",
+        )
+
+    if target in result.stdout.split():
+        return DoctorCheck(name=name, status="pass", detail=target)
+    return DoctorCheck(
+        name=name,
+        status="fail",
+        detail=f"{target} not installed",
+        fix=f"rustup target add {target}",
+    )
+
+
+def _check_hypervisor_entitlement() -> DoctorCheck:
+    """macOS requires the com.apple.security.hypervisor entitlement on the
+    process calling Hypervisor.framework. Without it, krun_start_enter fails
+    inside HVVirtualMachineCreate.
+    """
+    import sys
+
+    name = "hypervisor-entitlement"
+    binary = sys.executable
+    try:
+        result = subprocess.run(
+            ["codesign", "-d", "--entitlements", "-", "--xml", binary],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        return DoctorCheck(
+            name=name,
+            status="warn",
+            detail=f"could not probe entitlements: {exc}",
+        )
+
+    blob = f"{result.stdout}\n{result.stderr}"
+    fix = (
+        "Sign your Python with the hypervisor entitlement:\n"
+        "  printf '%s' '<?xml version=\"1.0\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTD/PropertyList-1.0.dtd\">"
+        "<plist version=\"1.0\"><dict><key>com.apple.security.hypervisor</key><true/></dict></plist>' > /tmp/hv.plist && "
+        f"codesign --force --sign - --entitlements /tmp/hv.plist {binary}"
+    )
+    if "com.apple.security.hypervisor" in blob:
+        return DoctorCheck(name=name, status="pass", detail=f"present on {binary}")
+    return DoctorCheck(
+        name=name,
+        status="fail",
+        detail=f"missing on {binary}",
+        fix=fix,
+    )
+
+
 def _check_nft_table(family: str, table: str) -> DoctorCheck:
     try:
         run_command(["nft", "list", "table", family, table], use_sudo=True)
@@ -607,19 +709,30 @@ def generate_doctor_report(backend: str | None = None) -> DoctorReport:
         checks.append(_check_command("qemu-img", "qemu"))
         checks.append(_check_command("ssh", "openssh-client"))
     elif resolved == BACKEND_LIBKRUN:
-        checks.append(_check_command("krunvm", "krunvm/libkrun"))
-        checks.append(_check_command("ssh", "openssh-client"))
-        if platform.system() != "Darwin":
-            checks.append(
-                DoctorCheck(
-                    name="libkrun-platform",
-                    status="warn",
-                    detail=(
-                        "libkrun backend is currently tuned for macOS in SmolVM; "
-                        "use with care on non-Darwin hosts"
-                    ),
-                )
+        from smolvm.runtime._libkrun_ffi import is_available as _libkrun_available
+
+        available = _libkrun_available()
+        checks.append(
+            DoctorCheck(
+                name="libkrun-library",
+                status="pass" if available else "fail",
+                detail=(
+                    "libkrun shared library is loadable"
+                    if available
+                    else "libkrun shared library not found; install libkrun >= 1.9"
+                ),
+                fix=None if available else "brew install libkrun  # macOS\nsudo dnf install libkrun  # Fedora",
             )
+        )
+
+        checks.append(_check_command("ssh", "openssh-client"))
+        checks.append(_check_libkrun_rust_target())
+
+        if platform.system() == "Darwin":
+            checks.append(_check_gvproxy())
+            checks.append(_check_hypervisor_entitlement())
+        else:
+            checks.append(_check_kvm_runtime())
 
     else:
         checks.append(

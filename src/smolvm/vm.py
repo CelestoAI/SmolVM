@@ -21,11 +21,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from concurrent.futures import process
 import json
 import logging
 import os
 import platform
 import pwd
+from pyexpat import errors
 import re
 import shlex
 import shutil
@@ -33,6 +35,7 @@ import signal
 import socket
 import subprocess
 import time
+import sys
 from collections.abc import Iterator
 from contextlib import asynccontextmanager, contextmanager, suppress
 from datetime import datetime, timezone
@@ -93,7 +96,8 @@ DEFAULT_SOCKET_DIR = Path("/tmp")
 # Backend-specific defaults
 QEMU_GUEST_IP = "10.0.2.15"
 _MIB = 1024 * 1024
-
+LIBKRUN_GUEST_IP = "192.168.127.2"
+LIBKRUN_GATEWAY_IP = "192.168.127.1"
 
 def _linux_os_release_ids(os_release_path: Path = Path("/etc/os-release")) -> set[str]:
     """Return Linux distribution IDs from /etc/os-release."""
@@ -1289,12 +1293,11 @@ class SmolVMManager:
         """Check host prerequisites for the libkrun backend."""
         errors: list[str] = []
 
-        if self._find_krunvm_binary() is None:
-            errors.append("'krunvm' command not found (install libkrun/krunvm)")
-
-        if which("ssh") is None:
-            errors.append("'ssh' command not found (install openssh-client)")
-
+        if not self._find_libkrun_library():
+            errors.append(
+                "libkrun shared library not found "
+                "(install libkrun >= 1.9 and ensure libkrun.so.1 / libkrun.1.dylib is on the loader path)"
+            )
         return errors
 
     def check_prerequisites(self) -> list[str]:
@@ -1607,9 +1610,11 @@ class SmolVMManager:
                     )
                 mac_seed = ((ssh_host_port or SSH_PORT_START) % 65534) + 1
                 guest_mac = self.network.generate_mac(mac_seed)
+                guest_ip = LIBKRUN_GUEST_IP if backend == BACKEND_LIBKRUN else QEMU_GUEST_IP
+                gateway_ip = LIBKRUN_GATEWAY_IP if backend == BACKEND_LIBKRUN else QEMU_GATEWAY_IP
                 network_config = NetworkConfig(
-                    guest_ip=QEMU_GUEST_IP,
-                    gateway_ip=QEMU_GATEWAY_IP,
+                    guest_ip=guest_ip,
+                    gateway_ip=gateway_ip,
                     netmask=QEMU_NETMASK,
                     tap_device="usernet",
                     guest_mac=guest_mac,
@@ -2521,40 +2526,60 @@ class SmolVMManager:
         logger.debug("Started Firecracker: PID=%d, socket=%s", process.pid, socket_path)
         return process
 
-    def _find_krunvm_binary(self) -> Path | None:
-        """Find an available ``krunvm`` binary."""
-        return which("krunvm")
+    def _find_libkrun_library(self) -> bool:
+        """Check whether libkrun is loadable on this host."""
+        from smolvm.runtime._libkrun_ffi import is_available
+        return is_available()
+    
+    def _build_libkrun_config(self, vm_info: VMInfo) -> dict[str, Any]:
+        import platform
+        from smolvm.runtime._libkrun_ffi import KERNEL_FORMAT_ELF, KERNEL_FORMAT_RAW
+
+        cfg = vm_info.config
+        # macOS Hypervisor.framework requires the ARM64 Image format; Linux KVM accepts ELF
+        kernel_format = KERNEL_FORMAT_RAW if platform.system() == "Darwin" else KERNEL_FORMAT_ELF
+        payload: dict[str, Any] = {
+            "vcpus": cfg.vcpu_count,
+            "memory_mib": cfg.memory,
+            "kernel_path": str(cfg.kernel_path),
+            "kernel_format": kernel_format,
+            "cmdline": self._resolve_boot_args(vm_info),
+            "rootfs_path": str(cfg.rootfs_path) if cfg.rootfs_path else None,
+            "initrd_path": str(cfg.initrd_path) if cfg.initrd_path else None,
+            "extra_disks": [
+                {"block_id": f"data{i}", "path": str(p), "read_only": False}
+                for i, p in enumerate(cfg.extra_drives)
+            ],
+            "vsock_ports": [],
+            "ssh_host_port": vm_info.network.ssh_host_port if vm_info.network else None,
+        }
+        if cfg.vsock is not None:
+            uds_path = cfg.vsock.uds_path or str(self.socket_dir / f"vsock-{vm_info.vm_id}.sock")
+            payload["vsock_ports"].append({"port": 1024, "uds_path": uds_path})
+        return payload
+    
+    def _write_libkrun_config(self, vm_info: VMInfo, payload: dict[str, Any]) -> Path:
+        # config_path = self._socket_dir / f"libkrun-{vm_info.vm_id}.json"
+        config_path = self.socket_dir / f"libkrun-{vm_info.vm_id}.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(payload))
+        return config_path
 
     def _start_libkrun(
-        self,
-        vm_info: VMInfo,
-        log_path: Path,
+            self,
+            vm_info: VMInfo,
+            log_path: Path,
     ) -> subprocess.Popen[bytes]:
-        """Start a libkrun VM through the ``krunvm`` CLI."""
-        krunvm_path = self._find_krunvm_binary()
-        if krunvm_path is None:
-            raise SmolVMError("libkrun backend requires krunvm to be installed and on PATH")
+        """Start a libkrun VM via the in-tree FFI launcher subprocess."""
+        if not self._find_libkrun_library():
+            raise SmolVMError(
+                "libkrun backend requires libkrun (>=1.9) to be installed and loadable"
+            )
+        
+        config_path = self._write_libkrun_config(vm_info, self._build_libkrun_config(vm_info))
+        cmd = [sys.executable, "-m", "smolvm.runtime._libkrun_launcher", str(config_path)]
 
-        cmd = [
-            str(krunvm_path),
-            "run",
-            "--cpus",
-            str(vm_info.config.vcpu_count),
-            "--memory",
-            str(vm_info.config.memory),
-            "--kernel",
-            str(vm_info.config.kernel_path),
-            "--rootfs",
-            str(vm_info.config.rootfs_path),
-            "--kernel-params",
-            self._resolve_boot_args(vm_info),
-        ]
-        if vm_info.config.initrd_path is not None:
-            cmd.extend(["--initrd", str(vm_info.config.initrd_path)])
-        if vm_info.config.vsock is not None:
-            cmd.extend(["--vsock-cid", str(vm_info.config.vsock.guest_cid)])
-
-        logger.debug("Starting libkrun: %s", " ".join(shlex.quote(part) for part in cmd))
+        logger.debug("Starting libkrun: %s", " ".join(shlex.quote(p) for p in cmd))
         log_file = open(log_path, "w")  # noqa: SIM115 - must stay open for subprocess
 
         try:
@@ -3230,30 +3255,14 @@ class SmolVMManager:
         log_path: Path,
     ) -> asyncio.subprocess.Process:
         """Async version of :meth:`_start_libkrun`."""
-        import asyncio
+        if not self._find_libkrun_library():
+            raise SmolVMError(
+                "libkrun backend requires libkrun (>=1.9) to be installed and loadable"
+            )
+        
+        config_path = self._write_libkrun_config(vm_info, self._build_libkrun_config(vm_info))
+        cmd = [sys.executable, "-m", "smolvm.runtime._libkrun_launcher", str(config_path)]
 
-        krunvm_path = self._find_krunvm_binary()
-        if krunvm_path is None:
-            raise SmolVMError("libkrun backend requires krunvm to be installed and on PATH")
-
-        cmd = [
-            str(krunvm_path),
-            "run",
-            "--cpus",
-            str(vm_info.config.vcpu_count),
-            "--memory",
-            str(vm_info.config.memory),
-            "--kernel",
-            str(vm_info.config.kernel_path),
-            "--rootfs",
-            str(vm_info.config.rootfs_path),
-            "--kernel-params",
-            self._resolve_boot_args(vm_info),
-        ]
-        if vm_info.config.initrd_path is not None:
-            cmd.extend(["--initrd", str(vm_info.config.initrd_path)])
-        if vm_info.config.vsock is not None:
-            cmd.extend(["--vsock-cid", str(vm_info.config.vsock.guest_cid)])
 
         logger.debug("Async starting libkrun: %s", " ".join(shlex.quote(part) for part in cmd))
         log_file = open(log_path, "w")  # noqa: SIM115 - must stay open while process runs
@@ -3283,9 +3292,7 @@ class SmolVMManager:
                 finally:
                     self._log_files.pop(key, None)
 
-        task = asyncio.create_task(_close_log_when_done())
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        asyncio.create_task(_close_log_when_done())
         return process
 
     async def _async_cleanup_resources(
