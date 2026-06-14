@@ -595,8 +595,10 @@ class TestZstdDecompression:
         (image_dir / "vmlinux.bin").write_bytes(kernel_bytes)
         (image_dir / "rootfs.ext4.zst").write_bytes(rootfs_zst)
         (image_dir / "rootfs.ext4").write_bytes(rootfs_plain)
-        # Sidecar from a PREVIOUS rootfs SHA (not the one in `entry`).
-        (image_dir / "rootfs.ext4.from-sha256").write_text("0" * 64)
+        # Versioned sidecar from a PREVIOUS rootfs SHA (not the one in `entry`).
+        (image_dir / "rootfs.ext4.from-sha256").write_text(
+            _decompressed_rootfs_sidecar_value("0" * 64)
+        )
 
         with patch("smolvm.images.published._decompress_zstd") as mock_decompress:
             ensure_published_image(

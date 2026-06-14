@@ -70,6 +70,7 @@ from smolvm.storage import (
     create_state_manager,
     ip_to_pool_index,
 )
+from smolvm.storage._base import VSOCK_CID_END, VSOCK_CID_START
 from smolvm.types import (
     GuestOS,
     NetworkConfig,
@@ -93,6 +94,7 @@ DEFAULT_SOCKET_DIR = Path("/tmp")
 # Backend-specific defaults
 QEMU_GUEST_IP = "10.0.2.15"
 _MIB = 1024 * 1024
+_QEMU_VSOCK_CID_RE = re.compile(r"vhost-vsock-(?:pci|device),guest-cid=(\d+)")
 
 
 def _linux_os_release_ids(os_release_path: Path = Path("/etc/os-release")) -> set[str]:
@@ -1447,8 +1449,9 @@ class SmolVMManager:
         if resolution.kind != "vsock" and not should_reserve_device:
             return vm_info
 
-        cid = self.state.reserve_vsock_cid(
+        cid = self._reserve_vsock_cid_for_backend(
             config.vm_id,
+            backend,
             requested_vsock.guest_cid if requested_vsock is not None else None,
         )
         uds_path = requested_vsock.uds_path if requested_vsock is not None else None
@@ -1467,6 +1470,63 @@ class SmolVMManager:
         else:
             logger.info("VM %s reserved explicit vsock CID %d", config.vm_id, cid)
         return self.state.update_vm(config.vm_id, config=updated)
+
+    def _reserve_vsock_cid_for_backend(
+        self,
+        vm_id: str,
+        backend: str,
+        requested_cid: int | None,
+    ) -> int:
+        """Reserve a CID, avoiding live QEMU CIDs missing from local state."""
+        if backend != BACKEND_QEMU:
+            return self.state.reserve_vsock_cid(vm_id, requested_cid)
+
+        live_cids = self._live_qemu_vsock_cids()
+        if not live_cids:
+            return self.state.reserve_vsock_cid(vm_id, requested_cid)
+
+        if requested_cid is not None:
+            cid = self.state.reserve_vsock_cid(vm_id, requested_cid)
+            if cid in live_cids:
+                self.state.release_vsock_cid(vm_id)
+                raise NetworkError(
+                    f"Vsock CID {cid} is already in use by another running QEMU VM; "
+                    f"stop that VM, or run 'smolvm delete {vm_id}' and create it again "
+                    "without that explicit CID."
+                )
+            return cid
+
+        existing_cid = self.state.get_vsock_cid(vm_id)
+        if existing_cid is not None:
+            return existing_cid
+
+        for candidate_cid in range(VSOCK_CID_START, VSOCK_CID_END + 1):
+            if candidate_cid in live_cids:
+                continue
+            try:
+                return self.state.reserve_vsock_cid(vm_id, candidate_cid)
+            except NetworkError:
+                continue
+        raise NetworkError("No vsock CIDs available in pool")
+
+    @staticmethod
+    def _live_qemu_vsock_cids() -> set[int]:
+        """Return QEMU vhost-vsock CIDs visible in local process arguments."""
+        if platform.system() != "Linux":
+            return set()
+        try:
+            result = subprocess.run(
+                ["ps", "-eo", "args="],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=2,
+            )
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return set()
+        if result.returncode != 0 or not isinstance(result.stdout, str):
+            return set()
+        return {int(match.group(1)) for match in _QEMU_VSOCK_CID_RE.finditer(result.stdout)}
 
     @staticmethod
     def _uses_host_tap_networking(config: VMConfig, backend: str) -> bool:
@@ -2192,9 +2252,10 @@ class SmolVMManager:
                 )
             if effective_snapshot.backend == BACKEND_QEMU and persisted_vm_config.vsock is not None:
                 try:
-                    self.state.reserve_vsock_cid(
+                    self._reserve_vsock_cid_for_backend(
                         restore_vm_id,
-                        guest_cid=persisted_vm_config.vsock.guest_cid,
+                        effective_snapshot.backend,
+                        persisted_vm_config.vsock.guest_cid,
                     )
                 except NetworkError as exc:
                     raise NetworkError(

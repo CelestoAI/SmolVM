@@ -37,6 +37,11 @@ Primary target:
 The current best table uses the public `images-2026.06.14.0` release with #373
 sparse-cache behavior.
 
+Snapshot restore metrics are now instrumented separately by
+`scripts/benchmarks/ubuntu_transport.py --include-snapshot`. Add snapshot
+restore rows only after running that lane; do not mix them with the fresh-boot
+summary timeline above.
+
 ## Required Entry Format
 
 Add a short section for each PR that changes startup behavior or benchmark
@@ -160,3 +165,30 @@ Cache size check:
 
 - Before sparse cache refresh: decompressed Ubuntu rootfs used about `4.1G` on disk.
 - After sparse cache refresh: decompressed Ubuntu rootfs used about `423M` on disk.
+
+## 2026-06-14 - Snapshot Restore Probe: QEMU Vsock Snapshot
+
+- Commit: current working tree on top of `ad560f1`.
+- Image tag: `images-2026.06.14.0`.
+- Command: `uv run python scripts/benchmarks/ubuntu_transport.py --iterations 1 --warm-exec-runs 1 --rootfs-source published --variants qemu-vsock --include-snapshot --output /tmp/smolvm-ubuntu-qemu-vsock-snapshot-probe.json -v`
+- Host: Linux x86_64, kernel `7.0.0-15-generic`, KVM available.
+- Method: one warm-up plus one measured QEMU-vsock source VM, snapshot after guest-agent readiness, restore with `comm_channel="vsock"`, then first `true` command.
+- Behavior changed: the Ubuntu transport benchmark can now measure snapshot restore separately from fresh boot and skips live QEMU CIDs that are not present in local state.
+
+Fresh-boot result from the same filtered run:
+
+| Backend | Transport | Host create | VMM start | Ready wait | Total ready | First command | Warm exec |
+|---|---|---:|---:|---:|---:|---:|---:|
+| QEMU | vsock | 83.4 ms | 54.1 ms | 922.9 ms | 1060.4 ms | 1.0 ms | 0.8 ms |
+
+Snapshot result:
+
+| Backend | Transport | Snapshot request | Effective snapshot | Source fresh ready | Snapshot create | Restore | Restore ready wait | Restore to first command | Warm exec |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|
+| QEMU | vsock | diff | full fallback | 1105.4 ms | 1294.2 ms | 193.5 ms | 0.6 ms | 195.0 ms | 0.8 ms |
+
+Firecracker note:
+
+- Firecracker-vsock full/diff snapshot restore is not reported yet. Stale vsock
+  UDS cleanup is fixed, but the restored guest still panics in
+  `restore_fpregs_from_fpstate` on this host before the guest-agent can answer.

@@ -571,9 +571,10 @@ class TestVMInit:
         mock_sdk_cls.return_value = restore_manager
         mock_sdk_cls.from_id.return_value = attach_manager
 
-        vm = SmolVM.from_snapshot("snap-001")
+        vm = SmolVM.from_snapshot("snap-001", comm_channel="vsock")
 
         assert vm.vm_id == "vm001"
+        assert vm._comm_channel_request == "vsock"
         restore_manager.restore_snapshot.assert_called_once_with(
             "snap-001",
             resume_vm=False,

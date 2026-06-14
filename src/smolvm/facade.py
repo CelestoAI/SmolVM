@@ -1446,6 +1446,7 @@ class SmolVM:
         force: bool = False,
         ssh_user: str = "root",
         ssh_key_path: str | None = None,
+        comm_channel: CommChannelKind | None = None,
     ) -> SmolVM:
         """Restore a snapshot and attach a facade to the restored VM."""
         requested_backend = None
@@ -1496,6 +1497,7 @@ class SmolVM:
             backend=restored_backend,
             ssh_user=ssh_user,
             ssh_key_path=ssh_key_path,
+            comm_channel=comm_channel,
         )
 
     # ------------------------------------------------------------------

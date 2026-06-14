@@ -161,6 +161,28 @@ Approach:
   SSH keys when SSH is enabled, network identity, and agent session state.
 - Benchmark restore-to-first-command separately from fresh boot.
 
+Current status:
+
+- The Ubuntu transport benchmark has an opt-in `--include-snapshot` lane that
+  reports snapshot restore-to-ready and restore-to-first-command separately from
+  fresh boot.
+- `SmolVM.from_snapshot(..., comm_channel=...)` can reattach to restored VMs
+  with the same SSH or vsock transport selected by the benchmark variant.
+- The benchmark defaults snapshot measurement to requesting diff snapshots; QEMU
+  may fall back to a full snapshot when the active disk has no backing file.
+- QEMU vsock CID allocation skips CIDs already visible in live QEMU process
+  arguments, so stale/out-of-band QEMU processes do not break benchmark runs.
+- A CLI-validated QEMU-vsock snapshot probe restored to first command in
+  `195.0 ms` (`snapshot_restore_ms=193.5`, ready wait `0.6 ms`, first command
+  `0.9 ms`).
+- QEMU published Ubuntu currently falls back to a full snapshot artifact for
+  the measured diff request because the managed qcow2 has no backing file; a
+  follow-up should evaluate raw-backed qcow2 overlays for the published raw
+  rootfs path.
+- Firecracker full/diff snapshot restore needs follow-up before we can report
+  warm numbers: stale vsock UDS cleanup is fixed, but the restored guest still
+  panics in `restore_fpregs_from_fpstate` on the local benchmark host.
+
 Acceptance:
 
 - Restore-to-first-command e2e passes.

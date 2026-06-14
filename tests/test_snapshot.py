@@ -315,6 +315,7 @@ def test_restore_firecracker_full_snapshot_returns_vsock_uds_path(
     snapshot_dir = smol_vm.snapshot_dir / "snap-vsock"
     snapshot_dir.mkdir(parents=True)
     uds_path = tmp_path / "vsock-vm001.sock"
+    uds_path.write_text("stale socket")
     snapshot = SnapshotInfo(
         snapshot_id="snap-vsock",
         vm_id="vm001",
@@ -345,6 +346,7 @@ def test_restore_firecracker_full_snapshot_returns_vsock_uds_path(
         restored = smol_vm.restore_snapshot("snap-vsock", resume_vm=True)
 
     assert restored.vsock_uds_path == uds_path
+    assert not uds_path.exists()
     mock_client.load_snapshot.assert_called_once()
 
 
