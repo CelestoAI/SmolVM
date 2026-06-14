@@ -182,11 +182,11 @@ def _check_libkrun_rust_target() -> DoctorCheck:
     rustup_bin = which("rustup") or (
         str(cargo_home / "bin" / "rustup") if (cargo_home / "bin" / "rustup").exists() else None
     )
-    if rustup_bin is None and which("cargo") is None:
+    if rustup_bin is None: 
         return DoctorCheck(
             name=name,
             status="fail",
-            detail="cargo / rustup not found",
+            detail="rustup not found",
             fix="Install Rust via https://rustup.rs",
         )
     try:

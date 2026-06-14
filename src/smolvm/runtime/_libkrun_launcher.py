@@ -20,22 +20,33 @@ from pathlib import Path
 from smolvm.runtime._libkrun_ffi import KERNEL_FORMAT_RAW, KrunContext, _libkrun
 
 
-_GVPROXY_CANDIDATES = [
-    "/opt/homebrew/Cellar/podman/5.8.3/libexec/podman/gvproxy",
-    "/opt/homebrew/libexec/podman/gvproxy",
-    "/usr/local/libexec/podman/gvproxy",
-    "/opt/homebrew/opt/podman/bin/gvproxy",
-]
-
-
 def _find_gvproxy() -> str | None:
+    import glob
     import shutil
+
     found = shutil.which("gvproxy")
     if found:
         return found
-    for candidate in _GVPROXY_CANDIDATES:
+
+    # Cellar installs: version-agnostic glob, pick the newest
+    for pattern in (
+        "/opt/homebrew/Cellar/podman/*/libexec/podman/gvproxy",
+        "/usr/local/Cellar/podman/*/libexec/podman/gvproxy",
+    ):
+        matches = sorted(glob.glob(pattern))
+        if matches:
+            return matches[-1]
+
+    # Static fallbacks (symlink layouts / custom installs)
+    for candidate in (
+        "/opt/homebrew/libexec/podman/gvproxy",
+        "/usr/local/libexec/podman/gvproxy",
+        "/opt/homebrew/opt/podman/libexec/podman/gvproxy",
+        "/usr/local/opt/podman/libexec/podman/gvproxy",
+    ):
         if Path(candidate).exists():
             return candidate
+
     return None
 
 
@@ -114,7 +125,11 @@ def main(argv: list[str]) -> int:
                 lib.krun_set_gvproxy_path.restype = ctypes.c_int32
                 rc = lib.krun_set_gvproxy_path(ctx.ctx_id, sock_path.encode())
                 if rc < 0:
-                    print(f"krun_set_gvproxy_path failed: {rc}", file=sys.stderr)
+                    print(
+                        f"Failed to configure guest networking (krun_set_gvproxy_path returned {rc}); "
+                        "reinstall libkrun with 'brew install libkrun' or check gvproxy is running.",
+                        file=sys.stderr,
+                    )
                     return 1
 
             rc = ctx.start_enter()

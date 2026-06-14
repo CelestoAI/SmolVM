@@ -21,13 +21,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from concurrent.futures import process
 import json
 import logging
 import os
 import platform
 import pwd
-from pyexpat import errors
 import re
 import shlex
 import shutil
@@ -3292,7 +3290,9 @@ class SmolVMManager:
                 finally:
                     self._log_files.pop(key, None)
 
-        asyncio.create_task(_close_log_when_done())
+        task = asyncio.create_task(_close_log_when_done())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
         return process
 
     async def _async_cleanup_resources(
