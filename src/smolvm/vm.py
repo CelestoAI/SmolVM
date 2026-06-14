@@ -716,7 +716,8 @@ class SmolVMManager:
         """Copy a file using reflink (CoW) when the filesystem supports it.
 
         On btrfs and XFS with reflinks, this is near-instant regardless of
-        file size. On other filesystems it falls back to a regular copy.
+        file size. On other filesystems it falls back to a sparse-preserving
+        Python copy.
         """
         result = subprocess.run(
             ["cp", "--reflink=auto", "--sparse=always", str(source_path), str(target_path)],
@@ -727,7 +728,24 @@ class SmolVMManager:
         if result.returncode != 0:
             # Fallback: --reflink=auto may not be supported on all platforms
             # (e.g. macOS cp doesn't have this flag).
-            shutil.copy2(source_path, target_path)
+            SmolVMManager._copy_sparse_preserving(source_path, target_path)
+
+    @staticmethod
+    def _copy_sparse_preserving(
+        source_path: Path,
+        target_path: Path,
+        *,
+        chunk_size: int = 1024 * 1024,
+    ) -> None:
+        """Copy a file while keeping all-zero regions as sparse holes."""
+        with source_path.open("rb") as src, target_path.open("wb") as dst:
+            while chunk := src.read(chunk_size):
+                if chunk.count(0) == len(chunk):
+                    dst.seek(len(chunk), os.SEEK_CUR)
+                else:
+                    dst.write(chunk)
+            dst.truncate(source_path.stat().st_size)
+        shutil.copystat(source_path, target_path)
 
     @staticmethod
     def _ceil_mib(size_bytes: int) -> int:
@@ -1491,8 +1509,8 @@ class SmolVMManager:
                 self.state.release_vsock_cid(vm_id)
                 raise NetworkError(
                     f"Vsock CID {cid} is already in use by another running QEMU VM; "
-                    f"stop that VM, or run 'smolvm delete {vm_id}' and create it again "
-                    "without that explicit CID."
+                    f"run 'smolvm delete {vm_id}' to remove this sandbox, then create it "
+                    "again without that explicit CID."
                 )
             return cid
 
@@ -2266,8 +2284,7 @@ class SmolVMManager:
                 except NetworkError as exc:
                     raise NetworkError(
                         f"Vsock CID {persisted_vm_config.vsock.guest_cid} is already in use; "
-                        f"stop the sandbox using that CID, or run "
-                        f"'smolvm delete {restore_vm_id}'."
+                        f"run 'smolvm delete {restore_vm_id}' to remove this restore attempt."
                     ) from exc
             self.state.update_vm(restore_vm_id, network=effective_snapshot.network_config)
             if effective_snapshot.backend == BACKEND_FIRECRACKER:
@@ -3342,8 +3359,6 @@ class SmolVMManager:
 
     async def _async_copy_with_reflink(self, source_path: Path, target_path: Path) -> None:
         """Async version of :meth:`_copy_with_reflink`."""
-        import shutil
-
         from smolvm.utils import async_run_command
 
         target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3353,7 +3368,7 @@ class SmolVMManager:
                 use_sudo=False,
             )
         except SmolVMError:
-            await asyncio.to_thread(shutil.copy2, source_path, target_path)
+            await asyncio.to_thread(self._copy_sparse_preserving, source_path, target_path)
 
     async def _async_unlink_socket(self, socket_path: Path) -> None:
         """Async version of :meth:`_unlink_socket`."""

@@ -175,10 +175,15 @@ Current status:
 - A CLI-validated QEMU-vsock snapshot probe restored to first command in
   `195.0 ms` (`snapshot_restore_ms=193.5`, ready wait `0.6 ms`, first command
   `0.9 ms`).
-- QEMU published Ubuntu currently falls back to a full snapshot artifact for
-  the measured diff request because the managed qcow2 has no backing file; a
-  follow-up should evaluate raw-backed qcow2 overlays for the published raw
-  rootfs path.
+- QEMU published Ubuntu restores fast enough to show the snapshot path is
+  useful, but it is not using the smallest possible snapshot artifact yet. The
+  current run asks for a diff snapshot, which should save only changed disk
+  blocks, but QEMU falls back to a full disk artifact because the managed
+  `qcow2` disk has no backing file. `qcow2` is QEMU's copy-on-write disk
+  format, a backing file is the unchanged base image it can refer back to, and
+  a raw-backed overlay would let the per-sandbox disk point at the published
+  raw rootfs while storing only sandbox changes. A follow-up should evaluate
+  raw-backed `qcow2` overlays for the published raw rootfs path.
 - Firecracker full/diff snapshot restore needs follow-up before we can report
   warm numbers: stale vsock UDS cleanup is fixed, but the restored guest still
   panics in `restore_fpregs_from_fpstate` on the local benchmark host.

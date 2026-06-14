@@ -306,7 +306,10 @@ def _parse_variants(raw: str) -> tuple[Variant, ...]:
     if invalid or not selected:
         allowed = ", ".join(["all", *by_key])
         requested = ", ".join(invalid) if invalid else raw
-        raise ValueError(f"Unknown variant {requested!r}; choose one of: {allowed}")
+        raise ValueError(
+            f"Unknown variant {requested!r}; choose one of: {allowed}. "
+            "Run: uv run python scripts/benchmarks/ubuntu_transport.py --variants qemu-vsock"
+        )
     return tuple(selected)
 
 

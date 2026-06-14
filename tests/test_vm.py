@@ -504,6 +504,22 @@ class TestSmolVMCreate:
 class TestSmolVMDiskLifecycle:
     """Tests for per-VM disk materialization and cleanup."""
 
+    @staticmethod
+    def _write_sparse_file(path: Path) -> None:
+        with path.open("wb") as file:
+            file.write(b"start")
+            file.seek(4 * 1024 * 1024)
+            file.write(b"end")
+
+    @staticmethod
+    def _assert_sparse_copy(source: Path, target: Path) -> None:
+        assert target.stat().st_size == source.stat().st_size
+        with target.open("rb") as file:
+            assert file.read(5) == b"start"
+            file.seek(4 * 1024 * 1024)
+            assert file.read(3) == b"end"
+        assert target.stat().st_blocks * 512 < target.stat().st_size
+
     def test_copy_with_reflink_preserves_sparse_holes(self, tmp_path: Path) -> None:
         """Raw isolated-disk copies should not inflate sparse rootfs holes."""
         source = tmp_path / "source.ext4"
@@ -520,6 +536,39 @@ class TestSmolVMDiskLifecycle:
             text=True,
             check=False,
         )
+
+    def test_copy_with_reflink_fallback_preserves_sparse_holes(self, tmp_path: Path) -> None:
+        """The non-GNU cp fallback should also avoid writing sparse zero ranges."""
+        source = tmp_path / "source.ext4"
+        target = tmp_path / "target.ext4"
+        self._write_sparse_file(source)
+
+        with (
+            patch("smolvm.vm.subprocess.run", return_value=SimpleNamespace(returncode=1)),
+            patch("smolvm.vm.shutil.copy2", side_effect=AssertionError("must stay sparse")),
+        ):
+            SmolVMManager._copy_with_reflink(source, target)
+
+        self._assert_sparse_copy(source, target)
+
+    @pytest.mark.asyncio
+    async def test_async_copy_with_reflink_fallback_preserves_sparse_holes(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Async disk materialization should use the same sparse fallback."""
+        source = tmp_path / "source.ext4"
+        target = tmp_path / "target.ext4"
+        self._write_sparse_file(source)
+        manager = SmolVMManager(data_dir=tmp_path / "data", socket_dir=tmp_path / "sockets")
+
+        with (
+            patch("smolvm.utils.async_run_command", side_effect=SmolVMError("cp failed")),
+            patch("smolvm.vm.shutil.copy2", side_effect=AssertionError("must stay sparse")),
+        ):
+            await manager._async_copy_with_reflink(source, target)
+
+        self._assert_sparse_copy(source, target)
 
     @patch("smolvm.vm.NetworkManager")
     def test_create_materializes_isolated_disk(

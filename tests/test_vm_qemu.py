@@ -342,11 +342,12 @@ def test_create_qemu_explicit_vsock_cid_rejects_live_qemu_conflict(tmp_path: Pat
         patch("smolvm.comm.select.host_supports_vsock", return_value=True),
         patch.object(SmolVMManager, "_live_qemu_vsock_cids", return_value={42}),
         patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_overlay,
-        pytest.raises(NetworkError, match="Vsock CID 42 is already in use"),
+        pytest.raises(NetworkError, match="Vsock CID 42 is already in use") as exc_info,
     ):
         mock_overlay.side_effect = lambda source, target, **_kwargs: target.write_text("overlay")
         sdk.create(config)
 
+    assert "smolvm delete vm-qemu-vsock-conflict" in str(exc_info.value)
     assert sdk.state.get_vsock_cid("vm-qemu-vsock-conflict") is None
     with pytest.raises(VMNotFoundError):
         sdk.state.get_vm("vm-qemu-vsock-conflict")

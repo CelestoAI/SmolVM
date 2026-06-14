@@ -180,5 +180,9 @@ def test_parse_variants_rejects_unknown_variant() -> None:
     except ValueError as exc:
         assert "qemu-bad" in str(exc)
         assert "qemu-vsock" in str(exc)
+        assert (
+            "uv run python scripts/benchmarks/ubuntu_transport.py --variants qemu-vsock"
+            in str(exc)
+        )
     else:
         raise AssertionError("expected invalid variant to fail")
