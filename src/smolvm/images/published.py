@@ -378,14 +378,39 @@ def to_image_source(entry: PublishedImage, version: str = __version__) -> ImageS
     )
 
 
+_SPARSE_DECOMPRESS_CHUNK_SIZE = 1024 * 1024
+_DECOMPRESSED_ROOTFS_CACHE_VERSION = "sparse-v1"
+
+
+def _decompressed_rootfs_sidecar_value(rootfs_sha256: str) -> str:
+    return f"{_DECOMPRESSED_ROOTFS_CACHE_VERSION}:{rootfs_sha256}"
+
+
 def _decompress_zstd(src: Path, dst: Path) -> None:
-    """Stream-decompress a zstd file. Writes to a sibling ``.tmp`` then renames."""
+    """Stream-decompress a zstd file. Writes to a sibling ``.tmp`` then renames.
+
+    Published raw ext4 images contain large zeroed regions. Keep those regions
+    sparse in the local cache so Firecracker isolated-disk materialization does
+    not copy gigabytes of zeros before every boot on filesystems without
+    reflink support.
+    """
     import zstandard
 
     tmp = dst.parent / (dst.name + ".tmp")
     try:
         with src.open("rb") as src_f, tmp.open("wb") as dst_f:
-            zstandard.ZstdDecompressor().copy_stream(src_f, dst_f)
+            reader = zstandard.ZstdDecompressor().stream_reader(src_f)
+            size = 0
+            while True:
+                chunk = reader.read(_SPARSE_DECOMPRESS_CHUNK_SIZE)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if chunk.strip(b"\0"):
+                    dst_f.write(chunk)
+                else:
+                    dst_f.seek(len(chunk), os.SEEK_CUR)
+            dst_f.truncate(size)
         tmp.replace(dst)
     finally:
         tmp.unlink(missing_ok=True)
@@ -443,7 +468,7 @@ def ensure_published_image(
     # while diagnosing the openclaw uid bake regression.
     decompressed_path = local.rootfs_path.with_suffix("")
     sidecar_path = decompressed_path.with_name(decompressed_path.name + ".from-sha256")
-    expected_sha = entry.rootfs_sha256
+    expected_sha = _decompressed_rootfs_sidecar_value(entry.rootfs_sha256)
     sidecar_sha = sidecar_path.read_text().strip() if sidecar_path.is_file() else None
     if not decompressed_path.is_file() or sidecar_sha != expected_sha:
         _decompress_zstd(local.rootfs_path, decompressed_path)

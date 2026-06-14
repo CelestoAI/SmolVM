@@ -504,6 +504,23 @@ class TestSmolVMCreate:
 class TestSmolVMDiskLifecycle:
     """Tests for per-VM disk materialization and cleanup."""
 
+    def test_copy_with_reflink_preserves_sparse_holes(self, tmp_path: Path) -> None:
+        """Raw isolated-disk copies should not inflate sparse rootfs holes."""
+        source = tmp_path / "source.ext4"
+        target = tmp_path / "target.ext4"
+        source.write_bytes(b"rootfs")
+
+        with patch("smolvm.vm.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode=0)
+            SmolVMManager._copy_with_reflink(source, target)
+
+        mock_run.assert_called_once_with(
+            ["cp", "--reflink=auto", "--sparse=always", str(source), str(target)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
     @patch("smolvm.vm.NetworkManager")
     def test_create_materializes_isolated_disk(
         self,

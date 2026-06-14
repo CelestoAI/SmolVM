@@ -22,18 +22,20 @@ Primary target:
 | 2026-06-14 | #367 startup phase telemetry and early guest-agent path | QEMU | vsock | 1551.4 ms | 1073.9 ms | -477.5 ms | 30.8% faster | Published Ubuntu, Rust guest-agent, warm-cache medians. |
 | 2026-06-14 | #367 startup phase telemetry and early guest-agent path | Firecracker | vsock | 2598.8 ms | 1195.3 ms | -1403.5 ms | 54.0% faster | Published Ubuntu, Rust guest-agent, warm-cache medians. |
 | 2026-06-14 | #371 Firecracker explicit-vsock lazy network setup | Firecracker | vsock | 1195.3 ms | 1098.3 ms | -97.0 ms | 8.1% faster | Current-init local run, 3 measured iterations; published artifact was still `images-2026.06.12.0`. |
+| 2026-06-14 | Sparse published rootfs cache and raw disk copy | Firecracker | SSH | 2500.2 ms | 1797.9 ms | -702.3 ms | 28.1% faster | Published `images-2026.06.14.0`; avoids copying fully allocated zero regions during Firecracker disk materialization. |
+| 2026-06-14 | Sparse published rootfs cache and raw disk copy | Firecracker | vsock | 1979.1 ms | 1057.4 ms | -921.7 ms | 46.6% faster | Published `images-2026.06.14.0`; host create dropped from 1123.6 ms to 200.5 ms. |
 
-## Current Best Published Ubuntu Medians
+## Current Published Ubuntu Medians
 
 | Backend | Transport | Total ready | First command | Warm exec | Source |
 |---|---:|---:|---:|---:|---|
-| QEMU | SSH | 1455.6 ms | 9.3 ms | 42.9 ms | #371 current-init run |
-| QEMU | vsock | 1067.6 ms | 1.0 ms | 0.7 ms | #371 current-init run |
-| Firecracker | SSH | 1827.7 ms | 52.7 ms | 42.8 ms | #371 current-init run |
-| Firecracker | vsock | 1098.3 ms | 1.1 ms | 1.3 ms | #371 current-init run |
+| QEMU | SSH | 1751.6 ms | 9.9 ms | 43.0 ms | Sparse-cache branch, published run |
+| QEMU | vsock | 1059.7 ms | 1.1 ms | 0.8 ms | Sparse-cache branch, published run |
+| Firecracker | SSH | 1797.9 ms | 53.0 ms | 43.0 ms | Sparse-cache branch, published run |
+| Firecracker | vsock | 1057.4 ms | 1.1 ms | 1.0 ms | Sparse-cache branch, published run |
 
-The current best table uses `--rootfs-source current-init` because the latest
-published artifact observed locally was still `images-2026.06.12.0`.
+The current best table uses the public `images-2026.06.14.0` release with this
+branch's sparse-cache behavior.
 
 ## Required Entry Format
 
@@ -105,3 +107,56 @@ Published-artifact check:
 - Command: `uv run python scripts/benchmarks/ubuntu_transport.py --iterations 2 --warm-exec-runs 3 --rootfs-source published --output /tmp/smolvm-ubuntu-transport-lazy-network.json -v`
 - Result: Firecracker-vsock used the deferred route/NAT path, but total ready was `2437.2 ms` because the locally published artifact was still `images-2026.06.12.0`.
 - Use the current-init numbers above for this PR's implementation signal until the published image is republished with the current init script.
+
+## 2026-06-14 - PR #372: Published Image Release `images-2026.06.14.0`
+
+- Commit: `269c1a5`
+- Image tag: `images-2026.06.14.0`
+- Command: `uv run python scripts/benchmarks/ubuntu_transport.py --iterations 3 --warm-exec-runs 5 --rootfs-source published --output /tmp/smolvm-benchmarks/ubuntu-transport-published-2026-06-14.json -v`
+- Host: Linux x86_64, kernel `7.0.0-15-generic`, KVM available.
+- Method: one warm-up VM per variant, then three measured warm-cache iterations per variant.
+- Behavior changed: the official published Ubuntu image now contains the current init path and Rust guest-agent startup order from #367/#371.
+
+Published medians before the sparse-cache fix:
+
+| Backend | Transport | Host create | VMM start | Ready wait | Total ready | First command | Total first command | Warm exec |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| QEMU | SSH | 82.6 ms | 54.6 ms | 1527.4 ms | 1663.8 ms | 9.7 ms | 1673.5 ms | 42.1 ms |
+| QEMU | vsock | 80.3 ms | 52.7 ms | 921.2 ms | 1055.1 ms | 1.0 ms | 1056.0 ms | 0.9 ms |
+| Firecracker | SSH | 1207.0 ms | 118.6 ms | 1150.6 ms | 2500.2 ms | 52.4 ms | 2552.0 ms | 42.4 ms |
+| Firecracker | vsock | 1123.6 ms | 121.8 ms | 734.1 ms | 1979.1 ms | 1.2 ms | 1980.4 ms | 1.0 ms |
+
+Finding:
+
+- QEMU matched the current-init expectation, but Firecracker regressed because
+  the zstd decompression cache stored `rootfs.ext4` as a fully allocated 4 GiB
+  file. On this ext4 host, Firecracker isolated-disk materialization then copied
+  gigabytes of zeros before boot.
+
+## 2026-06-14 - Pending PR: Sparse Published Rootfs Cache
+
+- Commit: pending
+- Image tag: `images-2026.06.14.0`
+- Command: `uv run python scripts/benchmarks/ubuntu_transport.py --iterations 3 --warm-exec-runs 5 --rootfs-source published --output /tmp/smolvm-benchmarks/ubuntu-transport-published-sparse-2026-06-14.json -v`
+- Host: Linux x86_64, kernel `7.0.0-15-generic`, KVM available.
+- Method: one warm-up VM per variant, then three measured warm-cache iterations per variant.
+- Behavior changed: published zstd rootfs decompression now preserves sparse zero regions and raw isolated-disk copies pass `cp --sparse=always`.
+
+| Backend | Transport | Before total ready | After total ready | Delta | Improvement |
+|---|---:|---:|---:|---:|---:|
+| Firecracker | SSH | 2500.2 ms | 1797.9 ms | -702.3 ms | 28.1% faster |
+| Firecracker | vsock | 1979.1 ms | 1057.4 ms | -921.7 ms | 46.6% faster |
+
+Full published medians after sparse-cache fix:
+
+| Backend | Transport | Host create | VMM start | Ready wait | Total ready | First command | Total first command | Warm exec |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| QEMU | SSH | 73.7 ms | 52.7 ms | 1623.1 ms | 1751.6 ms | 9.9 ms | 1761.0 ms | 43.0 ms |
+| QEMU | vsock | 80.6 ms | 54.6 ms | 924.0 ms | 1059.7 ms | 1.1 ms | 1061.4 ms | 0.8 ms |
+| Firecracker | SSH | 310.0 ms | 121.7 ms | 1362.3 ms | 1797.9 ms | 53.0 ms | 1850.7 ms | 43.0 ms |
+| Firecracker | vsock | 200.5 ms | 120.9 ms | 736.6 ms | 1057.4 ms | 1.1 ms | 1058.5 ms | 1.0 ms |
+
+Cache size check:
+
+- Before sparse cache refresh: decompressed Ubuntu rootfs used about `4.1G` on disk.
+- After sparse cache refresh: decompressed Ubuntu rootfs used about `423M` on disk.

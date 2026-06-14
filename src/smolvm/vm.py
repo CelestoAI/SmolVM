@@ -717,7 +717,7 @@ class SmolVMManager:
         file size. On other filesystems it falls back to a regular copy.
         """
         result = subprocess.run(
-            ["cp", "--reflink=auto", str(source_path), str(target_path)],
+            ["cp", "--reflink=auto", "--sparse=always", str(source_path), str(target_path)],
             capture_output=True,
             text=True,
             check=False,
@@ -3282,7 +3282,7 @@ class SmolVMManager:
         target_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             await async_run_command(
-                ["cp", "--reflink=auto", str(source_path), str(target_path)],
+                ["cp", "--reflink=auto", "--sparse=always", str(source_path), str(target_path)],
                 use_sudo=False,
             )
         except SmolVMError:

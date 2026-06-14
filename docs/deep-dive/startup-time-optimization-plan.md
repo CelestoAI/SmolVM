@@ -46,6 +46,13 @@ These are fresh Ubuntu boot numbers, not snapshot restore numbers. A 50-120 ms
 VMM launch is already plausible today; the remaining latency is mostly Linux
 boot, init, and control-channel readiness.
 
+After publishing `images-2026.06.14.0`, phase telemetry exposed a separate
+host-side Firecracker issue: the decompressed raw ext4 cache was fully
+allocated, so isolated Firecracker starts copied gigabytes of zeros on
+non-reflink filesystems. Preserving sparse holes in the published rootfs cache
+and raw disk copy path brought Firecracker-vsock published total ready to
+`1057.4 ms` on the local benchmark host.
+
 ## Optimization Roadmap
 
 ### Phase 1: Measurement Hygiene
@@ -88,6 +95,9 @@ Current status:
 - Firecracker explicit-vsock now creates/configures the TAP needed by
   Firecracker, but defers route/NAT/egress setup until SSH or port forwarding
   needs host TCP/IP connectivity.
+- Published zstd rootfs decompression preserves sparse zero regions, and raw
+  isolated-disk copies preserve those holes. This removes the accidental
+  4 GiB copy from the Firecracker critical path on non-reflink filesystems.
 
 Acceptance:
 
@@ -95,6 +105,8 @@ Acceptance:
 - SSH variants still reach SSH and accept the injected key.
 - Explicit-vsock benchmarks do not wait for SSH readiness unless the requested
   startup feature needs SSH.
+- Firecracker host-create time stays near the measured TAP/setup cost instead
+  of scaling with the apparent raw rootfs size.
 
 ### Phase 3: QEMU Fast Machine Profile
 
