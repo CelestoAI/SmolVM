@@ -29,8 +29,10 @@ from smolvm.presets.claude_code import CLAUDE_CODE_KEYCHAIN_SECRET, minimize_cla
 # The forwarded ~/.claude.json is minimized to the auth/onboarding subset
 # (see claude_code.minimize_claude_json) — this also drops the
 # host-specific installMethod that would otherwise misdirect claude in
-# the guest. The keychain secret writes ~/.claude/.credentials.json, so
-# the ~/.claude directory itself need not be copied.
+# the guest. Linux stores Claude OAuth in ~/.claude/.credentials.json,
+# so copy that single file too; the macOS keychain secret runs after
+# host-config copies and can overwrite it when available. The ~/.claude
+# directory itself need not be copied.
 PI_PRESET = Preset(
     name="pi",
     summary="Start a sandbox with the Pi coding agent preinstalled.",
@@ -45,6 +47,11 @@ PI_PRESET = Preset(
             guest_path="/root/.claude.json",
             file_mode=0o600,
             transform=minimize_claude_json,
+        ),
+        HostConfigCopy(
+            host_path="~/.claude/.credentials.json",
+            guest_path="/root/.claude/.credentials.json",
+            file_mode=0o600,
         ),
     ),
     host_keychain_secrets=(CLAUDE_CODE_KEYCHAIN_SECRET,),

@@ -100,16 +100,22 @@ CLAUDE_CODE_PRESET = Preset(
     install_script=npm_install_global("@anthropic-ai/claude-code"),
     host_env_vars=("ANTHROPIC_API_KEY",),
     host_configs=(
-        # Only ~/.claude.json, minimized to the auth/onboarding subset.
-        # The ~/.claude directory is intentionally not copied: its only
-        # auth-relevant content is .credentials.json, which the keychain
-        # secret below writes directly. Copying the whole dir would drag
-        # host caches/backups into the sandbox for no benefit.
+        # Minimize ~/.claude.json, then copy only the on-disk token file
+        # from ~/.claude. Linux stores Claude OAuth there; macOS usually
+        # lacks this file and uses the keychain secret below, which runs
+        # after config copies and can overwrite stale on-disk credentials.
+        # Copying the whole ~/.claude dir would drag host caches/backups
+        # into the sandbox for no benefit.
         HostConfigCopy(
             host_path="~/.claude.json",
             guest_path="/root/.claude.json",
             file_mode=0o600,
             transform=minimize_claude_json,
+        ),
+        HostConfigCopy(
+            host_path="~/.claude/.credentials.json",
+            guest_path="/root/.claude/.credentials.json",
+            file_mode=0o600,
         ),
     ),
     host_keychain_secrets=(CLAUDE_CODE_KEYCHAIN_SECRET,),

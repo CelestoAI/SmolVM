@@ -143,20 +143,25 @@ class TestClaudeCodePreset:
         assert "@anthropic-ai/claude-code" in CLAUDE_CODE_PRESET.install_script
         assert "npm install -g" in CLAUDE_CODE_PRESET.install_script
 
-    def test_claude_code_json_copy_uses_minimizing_transform(self) -> None:
+    def test_claude_code_forwards_minimized_json_and_on_disk_token(self) -> None:
         """The ~/.claude.json copy must run through ``minimize_claude_json``
         and write 0o600 — the file carries OAuth/onboarding state and the
         host copy is mostly per-host project history we don't want in the
-        guest. The ~/.claude *directory* is intentionally not copied; the
-        keychain secret writes its only auth-relevant file."""
+        guest. The ~/.claude *directory* is intentionally not copied, but
+        the single Linux on-disk credential file still needs to travel."""
         from smolvm.presets.claude_code import minimize_claude_json
 
         pairs = [(cfg.host_path, cfg.guest_path) for cfg in CLAUDE_CODE_PRESET.host_configs]
-        assert pairs == [("~/.claude.json", "/root/.claude.json")]
+        assert pairs == [
+            ("~/.claude.json", "/root/.claude.json"),
+            ("~/.claude/.credentials.json", "/root/.claude/.credentials.json"),
+        ]
 
-        cfg = CLAUDE_CODE_PRESET.host_configs[0]
-        assert cfg.transform is minimize_claude_json
-        assert cfg.file_mode == 0o600
+        json_cfg, token_cfg = CLAUDE_CODE_PRESET.host_configs
+        assert json_cfg.transform is minimize_claude_json
+        assert json_cfg.file_mode == 0o600
+        assert token_cfg.transform is None
+        assert token_cfg.file_mode == 0o600
 
     def test_minimize_claude_json_keeps_only_auth_keys(self) -> None:
         """The transform projects the host config down to the auth/
@@ -223,6 +228,7 @@ class TestPiPreset:
             ("~/.pi", "/root/.pi"),
             ("~/.codex", "/root/.codex"),
             ("~/.claude.json", "/root/.claude.json"),
+            ("~/.claude/.credentials.json", "/root/.claude/.credentials.json"),
         ]
 
     def test_pi_pulls_oauth_from_macos_keychain(self) -> None:
@@ -237,19 +243,26 @@ class TestPiPreset:
         assert "@mariozechner/pi-coding-agent" in PI_PRESET.install_script
         assert "npm install -g" in PI_PRESET.install_script
 
-    def test_pi_claude_json_copy_uses_minimizing_transform(self) -> None:
+    def test_pi_claude_copies_use_minimized_json_and_on_disk_token(self) -> None:
         """Pi forwards ~/.claude.json for Claude Pro/Max delegation, so it
         must reuse claude-code's minimizing transform — this drops the
         host-specific ``installMethod`` (along with project history and
-        caches) that would otherwise break claude's subscription path in
-        the guest."""
+        caches) that would otherwise break claude's subscription path.
+        It must also forward Linux's on-disk Claude token file."""
         from smolvm.presets.claude_code import minimize_claude_json
 
         claude_cfg = next(
             cfg for cfg in PI_PRESET.host_configs if cfg.guest_path == "/root/.claude.json"
         )
+        token_cfg = next(
+            cfg
+            for cfg in PI_PRESET.host_configs
+            if cfg.guest_path == "/root/.claude/.credentials.json"
+        )
         assert claude_cfg.transform is minimize_claude_json
         assert claude_cfg.file_mode == 0o600
+        assert token_cfg.transform is None
+        assert token_cfg.file_mode == 0o600
 
     def test_pi_setup_uses_node20_bootstrap(self) -> None:
         from smolvm.presets._scripts import NODE20_BOOTSTRAP
