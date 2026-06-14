@@ -80,7 +80,9 @@ methodology.
   telemetry from `SMOLVM_TS` runtime-log markers, each variant summary includes
   phase stats under `boot_telemetry_stats`, summary stats include p90/p95, the
   CLI prints a compact Markdown table, and `/init` generates only an Ed25519 SSH
-  host key instead of running `ssh-keygen -A`.
+  host key instead of running `ssh-keygen -A`. The plain `smolvm create` command
+  now waits for the resolved control channel by default, so QEMU Ubuntu can use
+  the same vsock readiness path measured by this benchmark.
 
 Telemetry smoke results:
 

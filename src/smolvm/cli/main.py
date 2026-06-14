@@ -24,11 +24,11 @@ import platform
 import re
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from rich.panel import Panel
 from rich.progress import (
@@ -806,6 +806,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Virtualization backend (default: auto-detected).",
     )
+    _add_comm_channel_arg(create_parser)
     create_parser.add_argument(
         "--json",
         action="store_true",
@@ -1842,18 +1843,18 @@ def _build_and_boot_with_progress(
     console: object,
     build_fn: object,
     boot_timeout: int,
+    comm_channel: str | None = None,
+    wait_for_control_channel: bool = False,
     mounts: list[str] | None = None,
     writable_mounts: bool = False,
 ) -> object:
     """Build a VM config and boot it, showing a Rich progress bar.
 
     Displays per-file download progress when the OS image is not cached,
-    then switches to a spinner while the VM boots and SSH becomes available.
+    then switches to a spinner while the VM boots and the requested readiness
+    check completes.
     Returns a started :class:`~smolvm.facade.SmolVM` instance.
     """
-    from collections.abc import Callable
-    from typing import Any
-
     from rich.console import Console
 
     from smolvm.facade import SmolVM
@@ -1882,8 +1883,8 @@ def _build_and_boot_with_progress(
         config, ssh_key_path = _build_fn(on_download)
 
         # One task that re-labels as the boot pipeline progresses
-        # (boot → ssh-ready → workspace mount when --mount is set).
-        # Phases come from start()/wait_for_ssh() via on_progress, so the
+        # (boot → ready → workspace mount when --mount is set).
+        # Phases come from start() and the selected readiness wait, so the
         # spinner reflects what's actually slow rather than parking on
         # "Starting VM..." for the full duration.
         boot_task = progress.add_task("Booting sandbox...", total=None)
@@ -1891,20 +1892,41 @@ def _build_and_boot_with_progress(
         def on_phase(phase: str) -> None:
             progress.update(boot_task, description=phase)
 
-        vm = SmolVM(
-            config,
-            ssh_key_path=ssh_key_path,
-            mounts=mounts,
-            writable_mounts=writable_mounts,
-        )
+        vm_kwargs: dict[str, Any] = {
+            "ssh_key_path": ssh_key_path,
+            "mounts": mounts,
+            "writable_mounts": writable_mounts,
+        }
+        if comm_channel is not None:
+            vm_kwargs["comm_channel"] = comm_channel
+        vm = SmolVM(config, **vm_kwargs)
         vm.start(boot_timeout=boot_timeout, on_progress=on_phase)
-        # Idempotent: a no-op when start() already waited (mounts/env_vars
-        # path), and the on_progress flips the label only when a real wait
-        # actually happens.
-        vm.wait_for_ssh(timeout=boot_timeout, on_progress=on_phase)
+        if wait_for_control_channel:
+            _wait_after_create(
+                vm,
+                comm_channel=comm_channel,
+                boot_timeout=boot_timeout,
+                on_progress=on_phase,
+            )
+        else:
+            vm.wait_for_ssh(timeout=boot_timeout, on_progress=on_phase)
         progress.remove_task(boot_task)
 
     return vm
+
+
+def _wait_after_create(
+    vm: Any,
+    *,
+    comm_channel: str | None,
+    boot_timeout: float,
+    on_progress: Callable[[str], None] | None = None,
+) -> None:
+    """Wait for the channel promised by ``smolvm create``."""
+    if comm_channel == "ssh":
+        vm.wait_for_ssh(timeout=boot_timeout, on_progress=on_progress)
+        return
+    vm.wait_for_ready(timeout=boot_timeout, on_progress=on_progress)
 
 
 def _run_create(args: argparse.Namespace) -> int:
@@ -1994,6 +2016,8 @@ def _run_create(args: argparse.Namespace) -> int:
                         vm_name=args.name,
                     ),
                     boot_timeout=args.boot_timeout,
+                    comm_channel=args.comm_channel,
+                    wait_for_control_channel=True,
                     mounts=args.mounts,
                     writable_mounts=args.writable_mounts,
                 )
@@ -2006,14 +2030,20 @@ def _run_create(args: argparse.Namespace) -> int:
                     ssh_key_path=None,
                     vm_name=args.name,
                 )
-                vm = SmolVM(
-                    config,
-                    ssh_key_path=ssh_key_path,
-                    mounts=args.mounts,
-                    writable_mounts=args.writable_mounts,
-                )
+                vm_kwargs: dict[str, Any] = {
+                    "ssh_key_path": ssh_key_path,
+                    "mounts": args.mounts,
+                    "writable_mounts": args.writable_mounts,
+                }
+                if args.comm_channel is not None:
+                    vm_kwargs["comm_channel"] = args.comm_channel
+                vm = SmolVM(config, **vm_kwargs)
                 vm.start(boot_timeout=args.boot_timeout)
-                vm.wait_for_ssh(timeout=args.boot_timeout)
+                _wait_after_create(
+                    vm,
+                    comm_channel=args.comm_channel,
+                    boot_timeout=args.boot_timeout,
+                )
         elif use_s3_image:
             # S3 image path
             if not args.json:
@@ -2029,6 +2059,8 @@ def _run_create(args: argparse.Namespace) -> int:
                         on_download=on_download,
                     ),
                     boot_timeout=args.boot_timeout,
+                    comm_channel=args.comm_channel,
+                    wait_for_control_channel=True,
                     mounts=args.mounts,
                     writable_mounts=args.writable_mounts,
                 )
@@ -2040,14 +2072,20 @@ def _run_create(args: argparse.Namespace) -> int:
                     memory=args.memory_mib,
                     ssh_key_path=None,
                 )
-                vm = SmolVM(
-                    config,
-                    ssh_key_path=ssh_key_path,
-                    mounts=args.mounts,
-                    writable_mounts=args.writable_mounts,
-                )
+                vm_kwargs = {
+                    "ssh_key_path": ssh_key_path,
+                    "mounts": args.mounts,
+                    "writable_mounts": args.writable_mounts,
+                }
+                if args.comm_channel is not None:
+                    vm_kwargs["comm_channel"] = args.comm_channel
+                vm = SmolVM(config, **vm_kwargs)
                 vm.start(boot_timeout=args.boot_timeout)
-                vm.wait_for_ssh(timeout=args.boot_timeout)
+                _wait_after_create(
+                    vm,
+                    comm_channel=args.comm_channel,
+                    boot_timeout=args.boot_timeout,
+                )
         else:
             # Standard auto-config path
             if not args.json:
@@ -2064,6 +2102,8 @@ def _run_create(args: argparse.Namespace) -> int:
                         on_download=on_download,
                     ),
                     boot_timeout=args.boot_timeout,
+                    comm_channel=args.comm_channel,
+                    wait_for_control_channel=True,
                     mounts=args.mounts,
                     writable_mounts=args.writable_mounts,
                 )
@@ -2076,14 +2116,20 @@ def _run_create(args: argparse.Namespace) -> int:
                     disk_size_mib=args.disk_size_mib,
                     ssh_key_path=None,
                 )
-                vm = SmolVM(
-                    config,
-                    ssh_key_path=ssh_key_path,
-                    mounts=args.mounts,
-                    writable_mounts=args.writable_mounts,
-                )
+                vm_kwargs = {
+                    "ssh_key_path": ssh_key_path,
+                    "mounts": args.mounts,
+                    "writable_mounts": args.writable_mounts,
+                }
+                if args.comm_channel is not None:
+                    vm_kwargs["comm_channel"] = args.comm_channel
+                vm = SmolVM(config, **vm_kwargs)
                 vm.start(boot_timeout=args.boot_timeout)
-                vm.wait_for_ssh(timeout=args.boot_timeout)
+                _wait_after_create(
+                    vm,
+                    comm_channel=args.comm_channel,
+                    boot_timeout=args.boot_timeout,
+                )
 
         os_label = "s3-image" if use_s3_image else resolved_guest_os.value
         data: CreatePayload = {
@@ -3264,8 +3310,9 @@ def _run_ssh(args: argparse.Namespace) -> int:
                 "before attaching."
             )
         else:
-            # VM is already running — connect directly without probing.
-            completed = subprocess.run(vm._ssh_direct_command(), check=False)
+            with console.status("Waiting for SSH...", spinner="dots"):
+                vm.wait_for_ssh(timeout=args.boot_timeout)
+            completed = subprocess.run(vm._ssh_attach_command(), check=False)
             if completed.returncode != 0:
                 _hint_if_vm_crashed(vm)
             return completed.returncode
