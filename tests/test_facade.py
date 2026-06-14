@@ -15,7 +15,7 @@
 """Tests for SmolVM VM facade module."""
 
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import ANY, MagicMock, call, patch
 
 import pytest
 
@@ -2039,12 +2039,20 @@ class TestVMRun:
 
         mock_ssh = MagicMock()
         mock_ssh_cls.return_value = mock_ssh
+        call_order = MagicMock()
+        call_order.attach_mock(
+            mock_sdk.ensure_network_connectivity,
+            "ensure_network_connectivity",
+        )
+        call_order.attach_mock(mock_ssh.wait_for_ssh, "wait_for_ssh")
 
         vm = SmolVM(sample_config)
         vm.wait_for_ssh(timeout=20.0)
 
-        mock_sdk.ensure_network_connectivity.assert_called_once_with(mock_info)
-        mock_ssh.wait_for_ssh.assert_called_once()
+        assert call_order.mock_calls == [
+            call.ensure_network_connectivity(mock_info),
+            call.wait_for_ssh(timeout=ANY),
+        ]
 
     @patch("smolvm.facade.SSHClient")
     @patch("smolvm.facade.SmolVMManager")
