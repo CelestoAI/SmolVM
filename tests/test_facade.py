@@ -2015,6 +2015,39 @@ class TestVMRun:
 
     @patch("smolvm.facade.SSHClient")
     @patch("smolvm.facade.SmolVMManager")
+    def test_wait_for_ssh_ensures_network_connectivity(
+        self,
+        mock_sdk_cls: MagicMock,
+        mock_ssh_cls: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """Lazy Firecracker network setup must run before SSH endpoint probing."""
+        mock_network = MagicMock()
+        mock_network.guest_ip = "172.16.0.2"
+        mock_network.ssh_host_port = None
+
+        mock_info = MagicMock()
+        mock_info.vm_id = "vm001"
+        mock_info.status = VMState.RUNNING
+        mock_info.network = mock_network
+        mock_info.config = sample_config
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        mock_sdk.get.return_value = mock_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        mock_ssh = MagicMock()
+        mock_ssh_cls.return_value = mock_ssh
+
+        vm = SmolVM(sample_config)
+        vm.wait_for_ssh(timeout=20.0)
+
+        mock_sdk.ensure_network_connectivity.assert_called_once_with(mock_info)
+        mock_ssh.wait_for_ssh.assert_called_once()
+
+    @patch("smolvm.facade.SSHClient")
+    @patch("smolvm.facade.SmolVMManager")
     def test_wait_for_ssh_falls_back_to_default_smolvm_key_when_no_key_configured(
         self,
         mock_sdk_cls: MagicMock,

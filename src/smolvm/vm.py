@@ -1375,6 +1375,62 @@ class SmolVMManager:
 
         return backend == BACKEND_QEMU and config.qemu_network == "slirp"
 
+    def _should_setup_tap_connectivity_for_create(
+        self,
+        config: VMConfig,
+        backend: str,
+        *,
+        resolution: ChannelResolution,
+        ssh_forward_required: bool,
+    ) -> bool:
+        """Return whether TAP route/NAT rules are needed before first boot."""
+        if not self._uses_host_tap_networking(config, backend):
+            return False
+
+        if backend != BACKEND_FIRECRACKER:
+            return True
+
+        if ssh_forward_required:
+            return True
+
+        if (
+            config.internet_settings is not None
+            and not config.internet_settings.is_allow_all_domains
+        ):
+            return True
+
+        # Explicit Firecracker-vsock command paths do not need host TCP/IP
+        # connectivity before boot. The TAP still exists for Firecracker's
+        # network device, and connectivity is installed lazily if SSH/ports need it.
+        return not (resolution.kind == "vsock" and not resolution.allow_fallback)
+
+    def ensure_network_connectivity(self, vm_info: VMInfo) -> None:
+        """Ensure host-side TAP connectivity exists for network-backed operations."""
+        if vm_info.network is None:
+            return
+
+        backend = self._backend_for_vm(vm_info)
+        if not self._uses_host_tap_networking(vm_info.config, backend):
+            return
+
+        network = vm_info.network
+        self.network.add_route(network.guest_ip, network.tap_device)
+        self.network.setup_nat(network.tap_device)
+
+        if (
+            vm_info.config.internet_settings is not None
+            and not vm_info.config.internet_settings.is_allow_all_domains
+        ):
+            allowed_ips = resolve_domains_to_ips(vm_info.config.internet_settings.allowed_domains)
+            self.network.apply_egress_allowlist(network.tap_device, allowed_ips)
+
+        if network.ssh_host_port is not None:
+            self.network.setup_ssh_port_forward(
+                vm_id=vm_info.vm_id,
+                guest_ip=network.guest_ip,
+                host_port=network.ssh_host_port,
+            )
+
     def _maybe_enable_vsock(self, config: VMConfig, backend: str, vm_info: VMInfo) -> VMInfo:
         """Reserve a vsock CID and persist ``config.vsock`` when needed.
 
@@ -1641,31 +1697,44 @@ class SmolVMManager:
             # Update the lease with the real TAP name
             self.state.update_ip_lease_tap(effective_config.vm_id, tap_name)
 
+            tap_connectivity_required = self._should_setup_tap_connectivity_for_create(
+                effective_config,
+                backend,
+                resolution=channel_resolution,
+                ssh_forward_required=ssh_forward_required,
+            )
+
             # Create and configure TAP device
             user = os.environ.get("USER", "root")
             self.network.create_tap(tap_name, user)
 
             # Use /32 mask to avoid subnet conflicts between multiple TAPs
             self.network.configure_tap(tap_name, netmask="32")
-            self.network.add_route(guest_ip, tap_name)
 
-            self.network.setup_nat(tap_name)
+            if tap_connectivity_required:
+                self.network.add_route(guest_ip, tap_name)
+                self.network.setup_nat(tap_name)
 
-            # Apply domain allowlist if configured
-            if (
-                effective_config.internet_settings is not None
-                and not effective_config.internet_settings.is_allow_all_domains
-            ):
-                allowed_ips = resolve_domains_to_ips(
-                    effective_config.internet_settings.allowed_domains
-                )
-                self.network.apply_egress_allowlist(tap_name, allowed_ips)
+                # Apply domain allowlist if configured
+                if (
+                    effective_config.internet_settings is not None
+                    and not effective_config.internet_settings.is_allow_all_domains
+                ):
+                    allowed_ips = resolve_domains_to_ips(
+                        effective_config.internet_settings.allowed_domains
+                    )
+                    self.network.apply_egress_allowlist(tap_name, allowed_ips)
 
-            if ssh_host_port is not None:
-                self.network.setup_ssh_port_forward(
-                    vm_id=effective_config.vm_id,
-                    guest_ip=guest_ip,
-                    host_port=ssh_host_port,
+                if ssh_host_port is not None:
+                    self.network.setup_ssh_port_forward(
+                        vm_id=effective_config.vm_id,
+                        guest_ip=guest_ip,
+                        host_port=ssh_host_port,
+                    )
+            else:
+                logger.info(
+                    "VM %s: deferring Firecracker route/NAT setup until network is needed",
+                    effective_config.vm_id,
                 )
 
             # Generate MAC address from pool index
@@ -2979,28 +3048,40 @@ class SmolVMManager:
             vm_number = ip_to_pool_index(guest_ip)
             tap_name = f"tap{vm_number}"
             self.state.update_ip_lease_tap(effective_config.vm_id, tap_name)
+            tap_connectivity_required = self._should_setup_tap_connectivity_for_create(
+                effective_config,
+                backend,
+                resolution=channel_resolution,
+                ssh_forward_required=ssh_forward_required,
+            )
 
             user = os.environ.get("USER", "root")
             await self.network.async_create_tap(tap_name, user)
             await self.network.async_configure_tap(tap_name, netmask="32")
-            await self.network.async_add_route(guest_ip, tap_name)
-            await self.network.async_setup_nat(tap_name)
+            if tap_connectivity_required:
+                await self.network.async_add_route(guest_ip, tap_name)
+                await self.network.async_setup_nat(tap_name)
 
-            # Apply domain allowlist if configured
-            if (
-                effective_config.internet_settings is not None
-                and not effective_config.internet_settings.is_allow_all_domains
-            ):
-                allowed_ips = resolve_domains_to_ips(
-                    effective_config.internet_settings.allowed_domains
-                )
-                await self.network.async_apply_egress_allowlist(tap_name, allowed_ips)
+                # Apply domain allowlist if configured
+                if (
+                    effective_config.internet_settings is not None
+                    and not effective_config.internet_settings.is_allow_all_domains
+                ):
+                    allowed_ips = resolve_domains_to_ips(
+                        effective_config.internet_settings.allowed_domains
+                    )
+                    await self.network.async_apply_egress_allowlist(tap_name, allowed_ips)
 
-            if ssh_host_port is not None:
-                await self.network.async_setup_ssh_port_forward(
-                    vm_id=effective_config.vm_id,
-                    guest_ip=guest_ip,
-                    host_port=ssh_host_port,
+                if ssh_host_port is not None:
+                    await self.network.async_setup_ssh_port_forward(
+                        vm_id=effective_config.vm_id,
+                        guest_ip=guest_ip,
+                        host_port=ssh_host_port,
+                    )
+            else:
+                logger.info(
+                    "VM %s: deferring Firecracker route/NAT setup until network is needed",
+                    effective_config.vm_id,
                 )
 
             guest_mac = self.network.generate_mac(vm_number)

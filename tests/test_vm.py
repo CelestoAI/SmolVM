@@ -30,7 +30,7 @@ from smolvm.exceptions import (
     VMAlreadyExistsError,
     VMNotFoundError,
 )
-from smolvm.types import VMConfig, VMInfo, VMState, WorkspaceMount
+from smolvm.types import InternetSettings, VMConfig, VMInfo, VMState, WorkspaceMount
 from smolvm.vm import SmolVMManager
 
 
@@ -232,6 +232,36 @@ class TestSmolVMCreate:
         assert vm_info.network is not None
         assert vm_info.network.ssh_host_port is None
         assert vm_info.config.vsock is not None
+        mock_network.create_tap.assert_called_once()
+        mock_network.configure_tap.assert_called_once()
+        mock_network.add_route.assert_not_called()
+        mock_network.setup_nat.assert_not_called()
+        mock_network.setup_ssh_port_forward.assert_not_called()
+
+    @patch("smolvm.comm.select.platform.system", return_value="Linux")
+    def test_create_firecracker_explicit_vsock_lazy_network_can_be_activated(
+        self,
+        _mock_system: MagicMock,
+        smol_vm: SmolVMManager,
+        sample_config: VMConfig,
+    ) -> None:
+        """Deferred Firecracker network connectivity is installed before network use."""
+        mock_network = _attach_mock_network(smol_vm)
+        config = sample_config.model_copy(
+            update={"vm_id": "vm-vsock-lazy", "backend": "firecracker", "comm_channel": "vsock"}
+        )
+        vm_info = smol_vm.create(config)
+
+        mock_network.add_route.assert_not_called()
+        mock_network.setup_nat.assert_not_called()
+
+        smol_vm.ensure_network_connectivity(vm_info)
+
+        mock_network.add_route.assert_called_once_with(
+            vm_info.network.guest_ip,
+            vm_info.network.tap_device,
+        )
+        mock_network.setup_nat.assert_called_once_with(vm_info.network.tap_device)
         mock_network.setup_ssh_port_forward.assert_not_called()
 
     @patch("smolvm.comm.select.platform.system", return_value="Linux")
@@ -249,6 +279,8 @@ class TestSmolVMCreate:
 
         assert vm_info.network is not None
         assert vm_info.network.ssh_host_port is not None
+        mock_network.add_route.assert_called_once()
+        mock_network.setup_nat.assert_called_once()
         mock_network.setup_ssh_port_forward.assert_called_once()
 
     @patch("smolvm.comm.select.platform.system", return_value="Linux")
@@ -268,6 +300,8 @@ class TestSmolVMCreate:
 
         assert vm_info.network is not None
         assert vm_info.network.ssh_host_port is not None
+        mock_network.add_route.assert_called_once()
+        mock_network.setup_nat.assert_called_once()
         mock_network.setup_ssh_port_forward.assert_called_once()
 
     @patch("smolvm.comm.select.platform.system", return_value="Linux")
@@ -292,7 +326,41 @@ class TestSmolVMCreate:
 
         assert vm_info.network is not None
         assert vm_info.network.ssh_host_port is not None
+        mock_network.add_route.assert_called_once()
+        mock_network.setup_nat.assert_called_once()
         mock_network.setup_ssh_port_forward.assert_called_once()
+
+    @patch("smolvm.comm.select.platform.system", return_value="Linux")
+    @patch("smolvm.vm.resolve_domains_to_ips", return_value=["93.184.216.34"])
+    def test_create_firecracker_explicit_vsock_with_allowlist_keeps_tap_connectivity(
+        self,
+        _mock_resolve: MagicMock,
+        _mock_system: MagicMock,
+        smol_vm: SmolVMManager,
+        sample_config: VMConfig,
+    ) -> None:
+        """Network policy needs route/NAT before boot even with explicit vsock."""
+        mock_network = _attach_mock_network(smol_vm)
+        config = sample_config.model_copy(
+            update={
+                "vm_id": "vm-vsock-policy",
+                "backend": "firecracker",
+                "comm_channel": "vsock",
+                "internet_settings": InternetSettings(allowed_domains=["example.com"]),
+            }
+        )
+
+        vm_info = smol_vm.create(config)
+
+        assert vm_info.network is not None
+        assert vm_info.network.ssh_host_port is None
+        mock_network.add_route.assert_called_once()
+        mock_network.setup_nat.assert_called_once()
+        mock_network.apply_egress_allowlist.assert_called_once_with(
+            vm_info.network.tap_device,
+            ["93.184.216.34"],
+        )
+        mock_network.setup_ssh_port_forward.assert_not_called()
 
     @patch("smolvm.comm.select.host_supports_vsock", return_value=True)
     def test_create_qemu_slirp_explicit_vsock_keeps_ssh_hostfwd(
@@ -428,6 +496,8 @@ class TestSmolVMCreate:
 
         assert vm_info.network is not None
         assert vm_info.network.ssh_host_port is None
+        mock_network.async_add_route.assert_not_awaited()
+        mock_network.async_setup_nat.assert_not_awaited()
         mock_network.async_setup_ssh_port_forward.assert_not_awaited()
 
 

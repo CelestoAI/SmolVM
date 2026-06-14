@@ -1,0 +1,188 @@
+# SmolVM Startup-Time Optimization Plan
+
+This plan tracks how we make the official published Ubuntu sandbox start faster.
+The goal is to improve the time from creating a sandbox to running the first
+command, while keeping the measurement honest about which phase became faster.
+
+OpenClaw and other presets are intentionally out of scope for this plan. They
+may share some runtime improvements, but they should not drive the benchmark or
+acceptance criteria here.
+
+## Primary Benchmark Target
+
+- Image: official published Ubuntu preset.
+- Backends: QEMU and Firecracker.
+- Transports: SSH and vsock.
+- Host state: warm image/runtime cache unless a run is explicitly marked cold.
+- Summary statistic: median of repeated runs.
+- Main user-facing metrics: cold ready, first command, total first command, and
+  warm exec.
+
+Track these fields for every optimization PR:
+
+| Field | Meaning |
+|---|---|
+| `host_create_ms` | Host-side VM object, disk, network, and runtime setup. |
+| `vmm_start_ms` | Hypervisor process/API launch time. |
+| `guest_ready_wait_ms` | Time spent waiting for SSH or the guest-agent to answer. |
+| `total_fresh_ready_ms` | Host create + VMM launch + readiness wait. |
+| `cold_ready_ms` | Ready time from a cold image/runtime cache, when explicitly measured. |
+| `first_command_ms` | First command latency after the control channel is ready. |
+| `total_first_command_ms` | End-to-end time from create to the first command result. |
+| `warm_exec_ms` | Median repeated command latency after the sandbox is ready. |
+| `guest_uptime_at_first_command_s` | Guest `/proc/uptime` when the first command ran, when available. |
+
+## Current Baseline
+
+The latest tracked improvement moved the published Ubuntu vsock path from the
+older warm-cache medians to the current measured medians:
+
+| Backend | Transport | Before total ready | After total ready | Delta | Improvement |
+|---|---:|---:|---:|---:|---:|
+| QEMU | vsock | 1551.4 ms | 1073.9 ms | -477.5 ms | 30.8% faster |
+| Firecracker | vsock | 2598.8 ms | 1195.3 ms | -1403.5 ms | 54.0% faster |
+
+These are fresh Ubuntu boot numbers, not snapshot restore numbers. A 50-120 ms
+VMM launch is already plausible today; the remaining latency is mostly Linux
+boot, init, and control-channel readiness.
+
+## Optimization Roadmap
+
+### Phase 1: Measurement Hygiene
+
+Keep improving the Ubuntu benchmark output before changing behavior. Every run
+should make it obvious whether time was spent in host setup, VMM launch, guest
+boot, control-channel probing, first command, or warm execution.
+
+Acceptance:
+
+- Benchmark output includes all fields listed above.
+- Reports label `total_fresh_ready_ms` clearly as fresh guest readiness.
+- The speed ledger is updated in the same PR when behavior or methodology
+  changes.
+
+### Phase 2: Explicit-vsock Fast Path
+
+For explicit vsock sandboxes, the guest-agent should become available before
+networking and SSH work that is not required for command execution.
+
+Keep:
+
+- Guest-agent startup before network and SSH setup in the published Ubuntu init
+  path.
+- SSH setup available after boot for users who explicitly use SSH.
+- Auto-mode SSH fallback behavior unchanged.
+
+Next work:
+
+- Keep network and SSH off the explicit-vsock critical path.
+- Defer Firecracker route/NAT/SSH forwarding work when no startup feature needs
+  SSH or network.
+- Keep QEMU slirp SSH host forwarding only where terminal compatibility requires
+  it.
+
+Current status:
+
+- Guest-agent startup already happens before network and SSH in the current
+  published Ubuntu init script.
+- Firecracker explicit-vsock now creates/configures the TAP needed by
+  Firecracker, but defers route/NAT/egress setup until SSH or port forwarding
+  needs host TCP/IP connectivity.
+
+Acceptance:
+
+- QEMU vsock and Firecracker vsock command execution still pass.
+- SSH variants still reach SSH and accept the injected key.
+- Explicit-vsock benchmarks do not wait for SSH readiness unless the requested
+  startup feature needs SSH.
+
+### Phase 3: QEMU Fast Machine Profile
+
+QEMU currently optimizes for broad compatibility. Add a measured fast profile
+for Linux direct-kernel vsock sandboxes before considering a default change.
+
+Approach:
+
+- Add an internal QEMU `microvm` experiment for Ubuntu direct-kernel vsock runs.
+- Avoid PCI/ACPI/SeaBIOS work where the fast profile supports the required
+  devices.
+- Fall back to the compatibility profile for SSH, workspace mounts, unsupported
+  host setups, or features that need the existing device model.
+
+Acceptance:
+
+- Unit tests prove the fast profile is selected only for eligible Ubuntu/vsock
+  runs.
+- QEMU vsock exec and file transfer pass.
+- Benchmarks report kernel-to-init and agent-ready deltas.
+
+### Phase 4: Kernel And Rootfs Trim
+
+Only trim kernel/rootfs work after phase telemetry shows the expensive stages.
+The target is a fast sandbox profile, not a general-purpose Ubuntu kernel.
+
+Candidates to test:
+
+- Boot args such as `raid=noautodetect`, `quiet`, `tsc=reliable`, and
+  `no_timer_check`.
+- `acpi=off` only inside a measured fast profile.
+- Less serial console output for explicit-vsock profiles.
+- Remove or modularize unused built-in paths such as sound, wireless regulatory
+  loading, RAID autodetect, and unused buses.
+
+Acceptance:
+
+- QEMU vsock and Firecracker vsock e2e tests pass.
+- SSH variants remain supported by the compatibility profile.
+- The speed ledger records both the measured win and any compatibility tradeoff.
+
+### Phase 5: Snapshot Or Warm Pool Path
+
+Fresh Ubuntu boot is unlikely to be the right path for sub-200 ms command-ready
+UX. Snapshot restore or a warm pool should be tracked separately because it
+skips kernel boot and most init work.
+
+Approach:
+
+- Create a base snapshot after the guest-agent is listening.
+- Restore and immediately repair mutable identity such as hostname, machine-id,
+  SSH keys when SSH is enabled, network identity, and agent session state.
+- Benchmark restore-to-first-command separately from fresh boot.
+
+Acceptance:
+
+- Restore-to-first-command e2e passes.
+- Isolation tests prove restored sandboxes do not share mutable identity.
+- Published reports separate fresh boot, snapshot restore, and warm-pool
+  checkout numbers.
+
+## Update Rules
+
+- Update `docs/benchmarks/startup-speedups.md` in every PR that changes startup
+  behavior, published Ubuntu image contents, runtime launch behavior, or
+  benchmark methodology.
+- Record the git SHA, image tag, benchmark command, host notes, before/after
+  medians, and what changed.
+- Do not compare fresh boot numbers to snapshot or warm-pool numbers in the
+  same headline row.
+- Keep OpenClaw and other presets out of the primary acceptance criteria until
+  they are explicitly added back.
+
+## Validation Rules
+
+- For docs-only changes, run `git diff --check`.
+- For benchmark code changes, run the focused pytest coverage for benchmark
+  payload shape and timeout handling, then `uv run ruff check` on changed Python
+  files.
+- For startup behavior changes, rerun published Ubuntu benchmarks across QEMU
+  SSH, QEMU vsock, Firecracker SSH, and Firecracker vsock.
+- Every benchmark update must record the command, git SHA, image tag, host
+  notes, and medians in `docs/benchmarks/startup-speedups.md`.
+
+## Assumptions
+
+- The official published Ubuntu image is the primary optimization target.
+- OpenClaw and other presets are out of scope for this plan.
+- Fresh boot, snapshot restore, and warm-pool numbers are tracked separately.
+- The speed ledger is updated by every PR that changes startup behavior or
+  benchmark methodology.

@@ -174,7 +174,8 @@ def _run_one(
             rootfs_source=rootfs_source,
         )
         vm = SmolVM(config=config, ssh_key_path=ssh_key_path, comm_channel=transport)
-        record["create_ms"] = round((time.perf_counter() - started) * 1000, 1)
+        record["host_create_ms"] = round((time.perf_counter() - started) * 1000, 1)
+        record["create_ms"] = record["host_create_ms"]
         record["published_rootfs_path"] = str(published_rootfs)
         record["rootfs_path"] = str(config.rootfs_path)
         record["patched_rootfs_path"] = str(patched_rootfs) if patched_rootfs else None
@@ -185,11 +186,13 @@ def _run_one(
 
         started = time.perf_counter()
         vm.start()
-        record["start_ms"] = round((time.perf_counter() - started) * 1000, 1)
+        record["vmm_start_ms"] = round((time.perf_counter() - started) * 1000, 1)
+        record["start_ms"] = record["vmm_start_ms"]
 
         started = time.perf_counter()
         vm.wait_for_ready(timeout=60.0)
-        record["ready_wait_ms"] = round((time.perf_counter() - started) * 1000, 1)
+        record["guest_ready_wait_ms"] = round((time.perf_counter() - started) * 1000, 1)
+        record["ready_wait_ms"] = record["guest_ready_wait_ms"]
         record["control_kind"] = getattr(vm._control_channel, "kind", None)
 
         started = time.perf_counter()
@@ -211,12 +214,13 @@ def _run_one(
             uptime = vm.run("cat /proc/uptime", shell="raw", timeout=10.0)
             record["guest_uptime_after_ready_s"] = round(float(uptime.stdout.split()[0]), 3)
 
-        record["total_ready_ms"] = round(
-            record["create_ms"] + record["start_ms"] + record["ready_wait_ms"],
+        record["total_fresh_ready_ms"] = round(
+            record["host_create_ms"] + record["vmm_start_ms"] + record["guest_ready_wait_ms"],
             1,
         )
+        record["total_ready_ms"] = record["total_fresh_ready_ms"]
         record["total_first_command_ms"] = round(
-            record["total_ready_ms"] + record["first_command_ms"],
+            record["total_fresh_ready_ms"] + record["first_command_ms"],
             1,
         )
     finally:
@@ -226,14 +230,18 @@ def _run_one(
 
 def _summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
     fields = [
-        "create_ms",
-        "start_ms",
-        "ready_wait_ms",
-        "total_ready_ms",
+        "host_create_ms",
+        "vmm_start_ms",
+        "guest_ready_wait_ms",
+        "total_fresh_ready_ms",
         "first_command_ms",
         "total_first_command_ms",
         "warm_exec_median_ms",
         "guest_uptime_after_ready_s",
+        "create_ms",
+        "start_ms",
+        "ready_wait_ms",
+        "total_ready_ms",
     ]
     return {
         field: _stats(
