@@ -1446,6 +1446,7 @@ class SmolVM:
         force: bool = False,
         ssh_user: str = "root",
         ssh_key_path: str | None = None,
+        comm_channel: CommChannelKind | None = None,
     ) -> SmolVM:
         """Restore a snapshot and attach a facade to the restored VM."""
         requested_backend = None
@@ -1496,6 +1497,7 @@ class SmolVM:
             backend=restored_backend,
             ssh_user=ssh_user,
             ssh_key_path=ssh_key_path,
+            comm_channel=comm_channel,
         )
 
     # ------------------------------------------------------------------
@@ -2107,6 +2109,7 @@ class SmolVM:
                 "Cannot build SSH command: VM has no network configuration",
                 {"vm_id": self._vm_id},
             )
+        self._sdk.ensure_network_connectivity(self._info)
 
         # Reuse shared endpoint selection (prefers localhost forward, falls
         # back to guest IP).
@@ -2173,6 +2176,8 @@ class SmolVM:
             )
         if guest_port < 1 or guest_port > 65535:
             raise ValueError("guest_port must be 1-65535")
+
+        self._sdk.ensure_network_connectivity(self._info)
 
         requested_port = host_port
         if host_port is None:
@@ -3095,6 +3100,7 @@ modprobe 9pnet_virtio""".strip()
 
     def _wait_for_ssh_over_network(self, timeout: float, *, as_control: bool = False) -> None:
         """Wait for SSH across available network endpoints."""
+        self._sdk.ensure_network_connectivity(self._info)
         endpoints = self._ssh_endpoints()
 
         # Prefer the already selected client first, then try remaining candidates.

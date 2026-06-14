@@ -63,6 +63,24 @@ uv run python scripts/benchmarks/ubuntu_transport.py --rootfs-source current-ini
 `current-init` is for PR validation before a new image release exists. It avoids
 mistaking a stale published rootfs for the current branch's init behavior.
 
+Add `--include-snapshot` to measure a separate snapshot lane for the same Ubuntu
+variants. The fresh-boot results stay under `variants`; snapshot restore results
+are reported under `snapshot_variants` with `snapshot_restore_to_ready_ms` and
+`snapshot_restore_to_first_command_ms`. The default `--snapshot-type auto` uses
+diff snapshots when the runtime can store them safely; QEMU may fall back to a
+full snapshot when the active disk has no backing file.
+Use `--variants qemu-vsock` or a comma-separated list such as
+`--variants qemu-vsock,firecracker-vsock` when you want a focused run.
+Each raw Ubuntu transport record includes `boot_telemetry` when the guest image
+emits `SMOLVM_TS` markers. The per-variant `summary` also includes
+`boot_telemetry_stats`, so readiness changes can be traced to guest phases such
+as guest-agent startup, network setup, SSH host-key checks, and sshd startup.
+Snapshot runs report the same data as `snapshot_source_boot_telemetry` and
+`snapshot_restore_boot_telemetry`.
+The command also prints a compact Markdown table after writing JSON. Use it for
+quick inspection, and use the JSON when you need exact medians, p90/p95 tail
+latency, or per-iteration raw data.
+
 ## What each benchmark means
 
 | Benchmark      | Metrics                                                         | What it measures |

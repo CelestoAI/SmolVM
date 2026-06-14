@@ -1,0 +1,238 @@
+# SmolVM Startup Speedups
+
+This ledger records startup speed changes for the official published Ubuntu
+benchmark target. Each startup-related PR should add a row so we can see which
+changes moved user-visible latency.
+
+Primary target:
+
+- Image: official published Ubuntu preset.
+- Backends: QEMU and Firecracker.
+- Transports: SSH and vsock.
+- Statistic: warm-cache median unless noted otherwise.
+- Required headline fields: cold ready, first command, total first command, and
+  warm exec.
+- Fresh boot, snapshot restore, and warm-pool checkout must be reported
+  separately.
+
+## Summary Timeline
+
+| Date | PR / change | Backend | Transport | Before total ready | After total ready | Delta | Improvement | Notes |
+|---|---|---|---|---:|---:|---:|---:|---|
+| 2026-06-14 | #367 startup phase telemetry and early guest-agent path | QEMU | vsock | 1551.4 ms | 1073.9 ms | -477.5 ms | 30.8% faster | Published Ubuntu, Rust guest-agent, warm-cache medians. |
+| 2026-06-14 | #367 startup phase telemetry and early guest-agent path | Firecracker | vsock | 2598.8 ms | 1195.3 ms | -1403.5 ms | 54.0% faster | Published Ubuntu, Rust guest-agent, warm-cache medians. |
+| 2026-06-14 | #371 Firecracker explicit-vsock lazy network setup | Firecracker | vsock | 1195.3 ms | 1098.3 ms | -97.0 ms | 8.1% faster | Current-init local run, 3 measured iterations; published artifact was still `images-2026.06.12.0`. |
+| 2026-06-14 | #373 sparse published rootfs cache and raw disk copy | Firecracker | SSH | 2500.2 ms | 1797.9 ms | -702.3 ms | 28.1% faster | Published `images-2026.06.14.0`; avoids copying fully allocated zero regions during Firecracker disk materialization. |
+| 2026-06-14 | #373 sparse published rootfs cache and raw disk copy | Firecracker | vsock | 1979.1 ms | 1057.4 ms | -921.7 ms | 46.6% faster | Published `images-2026.06.14.0`; host create dropped from 1123.6 ms to 200.5 ms. |
+| 2026-06-14 | #374 Ubuntu transport telemetry and Ed25519 SSH host key | QEMU | SSH | 1455.6 ms | 1233.9 ms | -221.7 ms | 15.2% faster | Current-init local run; replaces `ssh-keygen -A` with one Ed25519 host key. |
+| 2026-06-14 | #374 Ubuntu transport telemetry and Ed25519 SSH host key | Firecracker | SSH | 1827.7 ms | 1576.5 ms | -251.2 ms | 13.7% faster | Current-init local run; SSH host-key phase median is now 10.0 ms. |
+
+## Current Published Ubuntu Medians
+
+| Backend | Transport | Total ready | First command | Warm exec | Source |
+|---|---:|---:|---:|---:|---|
+| QEMU | SSH | 1751.6 ms | 9.9 ms | 43.0 ms | #373 published run |
+| QEMU | vsock | 1059.7 ms | 1.1 ms | 0.8 ms | #373 published run |
+| Firecracker | SSH | 1797.9 ms | 53.0 ms | 43.0 ms | #373 published run |
+| Firecracker | vsock | 1057.4 ms | 1.1 ms | 1.0 ms | #373 published run |
+
+The current best table uses the public `images-2026.06.14.0` release with #373
+sparse-cache behavior.
+
+Snapshot restore metrics are now instrumented separately by
+`scripts/benchmarks/ubuntu_transport.py --include-snapshot`. Add snapshot
+restore rows only after running that lane; do not mix them with the fresh-boot
+summary timeline above.
+
+## Required Entry Format
+
+Add a short section for each PR that changes startup behavior or benchmark
+methodology.
+
+```markdown
+## YYYY-MM-DD - PR #NNN: short title
+
+- Commit: `SHA`
+- Image tag: `images-YYYY.MM.DD.N`
+- Command: `...`
+- Host: CPU, kernel, KVM/vsock notes
+- Method: warm-up count, measured iterations, median/mean policy
+- Behavior changed: one sentence
+
+| Backend | Transport | Before total ready | After total ready | Delta | Improvement |
+|---|---:|---:|---:|---:|---:|
+| QEMU | vsock | ... | ... | ... | ... |
+| Firecracker | vsock | ... | ... | ... | ... |
+```
+
+## 2026-06-14 - PR #374: Ubuntu Transport Telemetry And Ed25519 Host Key
+
+- Commit: current PR branch.
+- Image tag: `images-2026.06.14.0`.
+- Commands:
+  - `uv run python scripts/benchmarks/ubuntu_transport.py --iterations 1 --warm-exec-runs 1 --rootfs-source published --variants qemu-vsock --output /tmp/smolvm-ubuntu-boot-telemetry-probe.json -v`
+  - `uv run python scripts/benchmarks/ubuntu_transport.py --iterations 1 --warm-exec-runs 1 --rootfs-source published --variants qemu-ssh --output /tmp/smolvm-ubuntu-boot-telemetry-qemu-ssh.json -v`
+  - `uv run python scripts/benchmarks/ubuntu_transport.py --iterations 3 --warm-exec-runs 1 --rootfs-source current-init --variants all --output /tmp/smolvm-ubuntu-bundle-current-init.json -v`
+- Host: Linux x86_64, kernel `7.0.0-15-generic`, KVM available.
+- Method: one warm-up VM per variant, then three measured current-init
+  iterations per variant for the bundled result.
+- Behavior changed: Ubuntu transport raw records now include parsed guest boot
+  telemetry from `SMOLVM_TS` runtime-log markers, each variant summary includes
+  phase stats under `boot_telemetry_stats`, summary stats include p90/p95, the
+  CLI prints a compact Markdown table, and `/init` generates only an Ed25519 SSH
+  host key instead of running `ssh-keygen -A`. The plain `smolvm create` command
+  now waits for the resolved control channel by default, so QEMU Ubuntu can use
+  the same vsock readiness path measured by this benchmark.
+
+Telemetry smoke results:
+
+| Backend | Transport | Total ready | Notable guest phase |
+|---|---|---:|---|
+| QEMU | vsock | 1057.4 ms | Guest-agent marker present; VM tears down before later SSH markers. |
+| QEMU | SSH | 1452.3 ms | `ssh_hostkey_check_ms=290.0 ms`. |
+
+Full current-init medians after Ed25519 host-key generation:
+
+| Backend | Transport | Host create | VMM start | Ready wait | Total ready | Total p95 | First command | Total first command | Warm exec | SSH host-key phase |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| QEMU | SSH | 67.7 ms | 52.7 ms | 1113.9 ms | 1233.9 ms | 1235.2 ms | 9.9 ms | 1243.8 ms | 43.2 ms | 10.0 ms |
+| QEMU | vsock | 74.5 ms | 53.2 ms | 924.7 ms | 1052.1 ms | 1071.5 ms | 1.2 ms | 1053.6 ms | 1.6 ms | 0.0 ms |
+| Firecracker | SSH | 305.4 ms | 120.6 ms | 1146.0 ms | 1576.5 ms | 1582.8 ms | 51.8 ms | 1628.3 ms | 42.4 ms | 10.0 ms |
+| Firecracker | vsock | 207.4 ms | 122.4 ms | 736.8 ms | 1066.2 ms | 1282.5 ms | 1.1 ms | 1067.3 ms | 0.9 ms | 210.0 ms |
+
+Notes:
+
+- The Firecracker-vsock SSH host-key phase is visible in the runtime log after
+  the guest agent is ready, but it is not on the vsock readiness critical path.
+- The published image still contains the old init until the next image release;
+  use the current-init numbers above as the implementation signal for this PR.
+
+## 2026-06-14 - PR #367: Startup Phase Telemetry And Early Guest-Agent Path
+
+- Commit: `85a7e0a`
+- Image tag: current published Ubuntu image used by the local benchmark run.
+- Method: warm-cache medians from repeated published Ubuntu benchmark runs.
+- Behavior changed: the published Ubuntu path moved the Rust guest-agent earlier
+  in boot and benchmark output now separates startup phases more clearly.
+
+| Backend | Transport | Before total ready | After total ready | Delta | Improvement |
+|---|---:|---:|---:|---:|---:|
+| QEMU | vsock | 1551.4 ms | 1073.9 ms | -477.5 ms | 30.8% faster |
+| Firecracker | vsock | 2598.8 ms | 1195.3 ms | -1403.5 ms | 54.0% faster |
+
+Notes:
+
+- These numbers are fresh Ubuntu boot readiness, not snapshot restore.
+- QEMU VMM launch is already much lower than the total ready number; the
+  remaining time is dominated by guest boot and readiness detection.
+- The next benchmark update should fill in first-command and warm-exec columns
+  for the current best table using the full phase payload.
+
+## 2026-06-14 - PR #371: Firecracker Explicit-vsock Lazy Network Setup
+
+- Commit: `9923297`
+- Image tag: `images-2026.06.12.0`
+- Command: `uv run python scripts/benchmarks/ubuntu_transport.py --iterations 3 --warm-exec-runs 5 --rootfs-source current-init --output /tmp/smolvm-ubuntu-transport-final-current-init.json`
+- Host: Linux with KVM; Firecracker networking used the unprivileged fallback path.
+- Method: one warm-up VM per variant, then three measured warm-cache iterations per variant.
+- Behavior changed: explicit Firecracker-vsock creates/configures the TAP for Firecracker, but defers route/NAT/egress setup until a network-backed operation needs it.
+
+| Backend | Transport | Before total ready | After total ready | Delta | Improvement |
+|---|---:|---:|---:|---:|---:|
+| QEMU | vsock | 1073.9 ms | 1067.6 ms | -6.3 ms | 0.6% faster |
+| Firecracker | vsock | 1195.3 ms | 1098.3 ms | -97.0 ms | 8.1% faster |
+
+Full current-init medians:
+
+| Backend | Transport | Host create | VMM start | Ready wait | Total ready | First command | Total first command | Warm exec |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| QEMU | SSH | 69.7 ms | 52.7 ms | 1325.5 ms | 1455.6 ms | 9.3 ms | 1464.8 ms | 42.9 ms |
+| QEMU | vsock | 76.6 ms | 52.4 ms | 935.1 ms | 1067.6 ms | 1.0 ms | 1068.5 ms | 0.7 ms |
+| Firecracker | SSH | 340.1 ms | 121.4 ms | 1365.6 ms | 1827.7 ms | 52.7 ms | 1880.4 ms | 42.8 ms |
+| Firecracker | vsock | 224.6 ms | 121.5 ms | 752.6 ms | 1098.3 ms | 1.1 ms | 1099.4 ms | 1.3 ms |
+
+Published-artifact check:
+
+- Command: `uv run python scripts/benchmarks/ubuntu_transport.py --iterations 2 --warm-exec-runs 3 --rootfs-source published --output /tmp/smolvm-ubuntu-transport-lazy-network.json -v`
+- Result: Firecracker-vsock used the deferred route/NAT path, but total ready was `2437.2 ms` because the locally published artifact was still `images-2026.06.12.0`.
+- Use the current-init numbers above for this PR's implementation signal until the published image is republished with the current init script.
+
+## 2026-06-14 - PR #372: Published Image Release `images-2026.06.14.0`
+
+- Commit: `269c1a5`
+- Image tag: `images-2026.06.14.0`
+- Command: `uv run python scripts/benchmarks/ubuntu_transport.py --iterations 3 --warm-exec-runs 5 --rootfs-source published --output /tmp/smolvm-benchmarks/ubuntu-transport-published-2026-06-14.json -v`
+- Host: Linux x86_64, kernel `7.0.0-15-generic`, KVM available.
+- Method: one warm-up VM per variant, then three measured warm-cache iterations per variant.
+- Behavior changed: the official published Ubuntu image now contains the current init path and Rust guest-agent startup order from #367/#371.
+
+Published medians before the sparse-cache fix:
+
+| Backend | Transport | Host create | VMM start | Ready wait | Total ready | First command | Total first command | Warm exec |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| QEMU | SSH | 82.6 ms | 54.6 ms | 1527.4 ms | 1663.8 ms | 9.7 ms | 1673.5 ms | 42.1 ms |
+| QEMU | vsock | 80.3 ms | 52.7 ms | 921.2 ms | 1055.1 ms | 1.0 ms | 1056.0 ms | 0.9 ms |
+| Firecracker | SSH | 1207.0 ms | 118.6 ms | 1150.6 ms | 2500.2 ms | 52.4 ms | 2552.0 ms | 42.4 ms |
+| Firecracker | vsock | 1123.6 ms | 121.8 ms | 734.1 ms | 1979.1 ms | 1.2 ms | 1980.4 ms | 1.0 ms |
+
+Finding:
+
+- QEMU matched the current-init expectation, but Firecracker regressed because
+  the zstd decompression cache stored `rootfs.ext4` as a fully allocated 4 GiB
+  file. On this ext4 host, Firecracker isolated-disk materialization then copied
+  gigabytes of zeros before boot.
+
+## 2026-06-14 - PR #373: Sparse Published Rootfs Cache
+
+- Commit: `2ef22c3`
+- Image tag: `images-2026.06.14.0`
+- Command: `uv run python scripts/benchmarks/ubuntu_transport.py --iterations 3 --warm-exec-runs 5 --rootfs-source published --output /tmp/smolvm-benchmarks/ubuntu-transport-published-sparse-2026-06-14.json -v`
+- Host: Linux x86_64, kernel `7.0.0-15-generic`, KVM available.
+- Method: one warm-up VM per variant, then three measured warm-cache iterations per variant.
+- Behavior changed: published zstd rootfs decompression now preserves sparse zero regions and raw isolated-disk copies pass `cp --sparse=always`.
+
+| Backend | Transport | Before total ready | After total ready | Delta | Improvement |
+|---|---:|---:|---:|---:|---:|
+| Firecracker | SSH | 2500.2 ms | 1797.9 ms | -702.3 ms | 28.1% faster |
+| Firecracker | vsock | 1979.1 ms | 1057.4 ms | -921.7 ms | 46.6% faster |
+
+Full published medians after sparse-cache fix:
+
+| Backend | Transport | Host create | VMM start | Ready wait | Total ready | First command | Total first command | Warm exec |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| QEMU | SSH | 73.7 ms | 52.7 ms | 1623.1 ms | 1751.6 ms | 9.9 ms | 1761.0 ms | 43.0 ms |
+| QEMU | vsock | 80.6 ms | 54.6 ms | 924.0 ms | 1059.7 ms | 1.1 ms | 1061.4 ms | 0.8 ms |
+| Firecracker | SSH | 310.0 ms | 121.7 ms | 1362.3 ms | 1797.9 ms | 53.0 ms | 1850.7 ms | 43.0 ms |
+| Firecracker | vsock | 200.5 ms | 120.9 ms | 736.6 ms | 1057.4 ms | 1.1 ms | 1058.5 ms | 1.0 ms |
+
+Cache size check:
+
+- Before sparse cache refresh: decompressed Ubuntu rootfs used about `4.1G` on disk.
+- After sparse cache refresh: decompressed Ubuntu rootfs used about `423M` on disk.
+
+## 2026-06-14 - Snapshot Restore Probe: QEMU Vsock Snapshot
+
+- Commit: current working tree on top of `ad560f1`.
+- Image tag: `images-2026.06.14.0`.
+- Command: `uv run python scripts/benchmarks/ubuntu_transport.py --iterations 1 --warm-exec-runs 1 --rootfs-source published --variants qemu-vsock --include-snapshot --output /tmp/smolvm-ubuntu-qemu-vsock-snapshot-probe.json -v`
+- Host: Linux x86_64, kernel `7.0.0-15-generic`, KVM available.
+- Method: one warm-up plus one measured QEMU-vsock source VM, snapshot after guest-agent readiness, restore with `comm_channel="vsock"`, then first `true` command.
+- Behavior changed: the Ubuntu transport benchmark can now measure snapshot restore separately from fresh boot and skips live QEMU CIDs that are not present in local state.
+
+Fresh-boot result from the same filtered run:
+
+| Backend | Transport | Host create | VMM start | Ready wait | Total ready | First command | Warm exec |
+|---|---|---:|---:|---:|---:|---:|---:|
+| QEMU | vsock | 83.4 ms | 54.1 ms | 922.9 ms | 1060.4 ms | 1.0 ms | 0.8 ms |
+
+Snapshot result:
+
+| Backend | Transport | Snapshot request | Effective snapshot | Source fresh ready | Snapshot create | Restore | Restore ready wait | Restore to first command | Warm exec |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|
+| QEMU | vsock | diff | full fallback | 1105.4 ms | 1294.2 ms | 193.5 ms | 0.6 ms | 195.0 ms | 0.8 ms |
+
+Firecracker note:
+
+- Firecracker-vsock full/diff snapshot restore is not reported yet. Stale vsock
+  UDS cleanup is fixed, but the restored guest still panics in
+  `restore_fpregs_from_fpstate` on this host before the guest-agent can answer.

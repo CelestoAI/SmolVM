@@ -137,7 +137,7 @@ They do six things, in order:
 1. mount /proc, /sys, /dev, /dev/pts, /run, /tmp
 2. parse ip=<guest>::<gw>:<netmask>:... from /proc/cmdline
 3. bring up lo + eth0, add address, add default route
-4. ssh-keygen -A   (generate host keys if missing)
+4. ssh-keygen -t ed25519   (generate a host key if missing)
 5. parse smolvm.authorized_key_b64=<base64> from /proc/cmdline
    → decode, write to /root/.ssh/authorized_keys mode 0600
 6. exec /usr/sbin/sshd -e

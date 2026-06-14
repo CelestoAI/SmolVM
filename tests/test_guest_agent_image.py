@@ -42,7 +42,7 @@ def _assert_guest_agent_starts_before_network_and_ssh(script: str) -> None:
         else script.index("hostname smolvm")
     )
     assert agent_start < network_ready
-    assert agent_start < script.index("ssh-keygen -A")
+    assert agent_start < script.index("ssh-keygen -t ed25519")
     assert agent_start < script.index("/usr/sbin/sshd")
 
 
@@ -108,6 +108,8 @@ def test_ci_preset_init_launches_guest_agent_before_sshd() -> None:
     script = (_REPO_ROOT / "scripts" / "ci" / "preset-init.sh").read_text()
     assert "/usr/local/bin/smolvm-guest-agent --listen vsock://1024" in script
     assert "python3 /usr/local/bin/smolvm-guest-agent" not in script
+    assert "ssh-keygen -A" not in script
+    assert "ssh-keygen -t ed25519" in script
     _assert_guest_agent_starts_before_network_and_ssh(script)
     _assert_startup_timestamp_markers(script)
 
@@ -178,6 +180,8 @@ def test_base_init_script_launches_guest_agent_before_sshd() -> None:
     script = ImageBuilder()._default_init_script()
     assert "/usr/local/bin/smolvm-guest-agent --listen vsock://1024" in script
     assert "python3 /usr/local/bin/smolvm-guest-agent" not in script
+    assert "ssh-keygen -A" not in script
+    assert "ssh-keygen -t ed25519" in script
     # The agent must start before sshd so the channel is up independent of it.
     _assert_guest_agent_starts_before_network_and_ssh(script)
     _assert_startup_timestamp_markers(script)

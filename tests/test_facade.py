@@ -15,7 +15,7 @@
 """Tests for SmolVM VM facade module."""
 
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import ANY, MagicMock, call, patch
 
 import pytest
 
@@ -571,9 +571,10 @@ class TestVMInit:
         mock_sdk_cls.return_value = restore_manager
         mock_sdk_cls.from_id.return_value = attach_manager
 
-        vm = SmolVM.from_snapshot("snap-001")
+        vm = SmolVM.from_snapshot("snap-001", comm_channel="vsock")
 
         assert vm.vm_id == "vm001"
+        assert vm._comm_channel_request == "vsock"
         restore_manager.restore_snapshot.assert_called_once_with(
             "snap-001",
             resume_vm=False,
@@ -2012,6 +2013,47 @@ class TestVMRun:
         guest_client.wait_for_ssh.assert_called_once()
         assert vm._ssh is guest_client
         assert vm._ssh_ready is True
+
+    @patch("smolvm.facade.SSHClient")
+    @patch("smolvm.facade.SmolVMManager")
+    def test_wait_for_ssh_ensures_network_connectivity(
+        self,
+        mock_sdk_cls: MagicMock,
+        mock_ssh_cls: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """Lazy Firecracker network setup must run before SSH endpoint probing."""
+        mock_network = MagicMock()
+        mock_network.guest_ip = "172.16.0.2"
+        mock_network.ssh_host_port = None
+
+        mock_info = MagicMock()
+        mock_info.vm_id = "vm001"
+        mock_info.status = VMState.RUNNING
+        mock_info.network = mock_network
+        mock_info.config = sample_config
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        mock_sdk.get.return_value = mock_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        mock_ssh = MagicMock()
+        mock_ssh_cls.return_value = mock_ssh
+        call_order = MagicMock()
+        call_order.attach_mock(
+            mock_sdk.ensure_network_connectivity,
+            "ensure_network_connectivity",
+        )
+        call_order.attach_mock(mock_ssh.wait_for_ssh, "wait_for_ssh")
+
+        vm = SmolVM(sample_config)
+        vm.wait_for_ssh(timeout=20.0)
+
+        assert call_order.mock_calls == [
+            call.ensure_network_connectivity(mock_info),
+            call.wait_for_ssh(timeout=ANY),
+        ]
 
     @patch("smolvm.facade.SSHClient")
     @patch("smolvm.facade.SmolVMManager")
