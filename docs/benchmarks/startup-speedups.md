@@ -22,20 +22,20 @@ Primary target:
 | 2026-06-14 | #367 startup phase telemetry and early guest-agent path | QEMU | vsock | 1551.4 ms | 1073.9 ms | -477.5 ms | 30.8% faster | Published Ubuntu, Rust guest-agent, warm-cache medians. |
 | 2026-06-14 | #367 startup phase telemetry and early guest-agent path | Firecracker | vsock | 2598.8 ms | 1195.3 ms | -1403.5 ms | 54.0% faster | Published Ubuntu, Rust guest-agent, warm-cache medians. |
 | 2026-06-14 | #371 Firecracker explicit-vsock lazy network setup | Firecracker | vsock | 1195.3 ms | 1098.3 ms | -97.0 ms | 8.1% faster | Current-init local run, 3 measured iterations; published artifact was still `images-2026.06.12.0`. |
-| 2026-06-14 | Sparse published rootfs cache and raw disk copy | Firecracker | SSH | 2500.2 ms | 1797.9 ms | -702.3 ms | 28.1% faster | Published `images-2026.06.14.0`; avoids copying fully allocated zero regions during Firecracker disk materialization. |
-| 2026-06-14 | Sparse published rootfs cache and raw disk copy | Firecracker | vsock | 1979.1 ms | 1057.4 ms | -921.7 ms | 46.6% faster | Published `images-2026.06.14.0`; host create dropped from 1123.6 ms to 200.5 ms. |
+| 2026-06-14 | #373 sparse published rootfs cache and raw disk copy | Firecracker | SSH | 2500.2 ms | 1797.9 ms | -702.3 ms | 28.1% faster | Published `images-2026.06.14.0`; avoids copying fully allocated zero regions during Firecracker disk materialization. |
+| 2026-06-14 | #373 sparse published rootfs cache and raw disk copy | Firecracker | vsock | 1979.1 ms | 1057.4 ms | -921.7 ms | 46.6% faster | Published `images-2026.06.14.0`; host create dropped from 1123.6 ms to 200.5 ms. |
 
 ## Current Published Ubuntu Medians
 
 | Backend | Transport | Total ready | First command | Warm exec | Source |
 |---|---:|---:|---:|---:|---|
-| QEMU | SSH | 1751.6 ms | 9.9 ms | 43.0 ms | Sparse-cache branch, published run |
-| QEMU | vsock | 1059.7 ms | 1.1 ms | 0.8 ms | Sparse-cache branch, published run |
-| Firecracker | SSH | 1797.9 ms | 53.0 ms | 43.0 ms | Sparse-cache branch, published run |
-| Firecracker | vsock | 1057.4 ms | 1.1 ms | 1.0 ms | Sparse-cache branch, published run |
+| QEMU | SSH | 1751.6 ms | 9.9 ms | 43.0 ms | #373 published run |
+| QEMU | vsock | 1059.7 ms | 1.1 ms | 0.8 ms | #373 published run |
+| Firecracker | SSH | 1797.9 ms | 53.0 ms | 43.0 ms | #373 published run |
+| Firecracker | vsock | 1057.4 ms | 1.1 ms | 1.0 ms | #373 published run |
 
-The current best table uses the public `images-2026.06.14.0` release with this
-branch's sparse-cache behavior.
+The current best table uses the public `images-2026.06.14.0` release with #373
+sparse-cache behavior.
 
 ## Required Entry Format
 
@@ -133,9 +133,9 @@ Finding:
   file. On this ext4 host, Firecracker isolated-disk materialization then copied
   gigabytes of zeros before boot.
 
-## 2026-06-14 - Pending PR: Sparse Published Rootfs Cache
+## 2026-06-14 - PR #373: Sparse Published Rootfs Cache
 
-- Commit: pending
+- Commit: `2ef22c3`
 - Image tag: `images-2026.06.14.0`
 - Command: `uv run python scripts/benchmarks/ubuntu_transport.py --iterations 3 --warm-exec-runs 5 --rootfs-source published --output /tmp/smolvm-benchmarks/ubuntu-transport-published-sparse-2026-06-14.json -v`
 - Host: Linux x86_64, kernel `7.0.0-15-generic`, KVM available.
