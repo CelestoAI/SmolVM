@@ -15,7 +15,7 @@
 """Published pre-built VM images for SmolVM presets.
 
 Images are built and signed in CI, hosted on GitHub Releases, and pinned
-to a content release tag such as ``images-2026.06.12.0``. This tag is
+to a content release tag such as ``images-2026.06.14.0``. This tag is
 intentionally independent of the SmolVM package version because image and
 rootfs rebuilds have their own cadence. The ``MANIFEST`` below is the
 bundled catalog the CLI ships with — entries are appended as CI publishes
@@ -128,7 +128,7 @@ class BaseKernel(BaseModel):
 # deriving from pyproject — change here flows to both sides.
 #
 # Bumping protocol — one PR:
-#   1. Edit this CalVer string (e.g. ``images-2026.06.12.0``).
+#   1. Edit this CalVer string (e.g. ``images-2026.06.14.0``).
 #      Bump the final sequence when publishing more than once on a day.
 #   2. Run the kernel + published-image workflows, copy SHAs from the
 #      step summaries into ``BASE_KERNELS`` and ``MANIFEST``.
@@ -139,7 +139,7 @@ class BaseKernel(BaseModel):
 # upload step instead of silently swapping bytes under the existing
 # pins. Re-bakes against the same tag must opt in via the
 # ``force_overwrite`` workflow_dispatch input.
-IMAGES_RELEASE_TAG = "images-2026.06.12.0"
+IMAGES_RELEASE_TAG = "images-2026.06.14.0"
 
 
 def _images_release_tag() -> str:
@@ -261,19 +261,19 @@ def _manifest_row(
 # Rootfs SHAs from the Build Published Images run for IMAGES_RELEASE_TAG.
 # Captured by sha256sum'ing each ``<preset>-<arch>-rootfs.ext4.zst`` asset
 # on the release page. Update together when artifacts are rebuilt.
-_OPENCLAW_AMD64_ROOTFS_SHA = "385e73d6a92af482afaf5b3baf21b83f3acc7cd25f9f3074ecef5e326b7d051a"
-_OPENCLAW_ARM64_ROOTFS_SHA = "2118b9e90833f88fcb7b94569b7f57408277d8511973f8bb97551c0533f186f4"
-_CODEX_AMD64_ROOTFS_SHA = "0621d91d60ab8939890034ee35c572312ef6bc070d4fb16623e34d92da4abb30"
-_CODEX_ARM64_ROOTFS_SHA = "a36393363b8eaaffe7459bf890c4007db64a86cc86bbb05d10b47f95fe2aff3d"
-_CLAUDE_CODE_AMD64_ROOTFS_SHA = "eb1625bda5574a7b12b679bd3a9d8038c37807262f92dd74ec4c0b54265e687e"
-_CLAUDE_CODE_ARM64_ROOTFS_SHA = "957a6b56a9ff291f2530e884b5bb4b4a6aeda3e54f43b6d95c5180ba174432bb"
-_HERMES_AMD64_ROOTFS_SHA = "50fc0ea57b864e20e3c915e7c3531c5a0d3c7994a6e8992bed215f23d31c5b09"
-_HERMES_ARM64_ROOTFS_SHA = "f0ee5d50df800b8386bf5d493b8e74746c7722e06ec3ecf54807153883817038"
-_PI_AMD64_ROOTFS_SHA = "ae9a2057cf3e929a349f3f58cc55c931a594a3cb821db86ab1808f9ac5267e46"
-_PI_ARM64_ROOTFS_SHA = "d17364dfd089931aef960e5bfe00279caf3bf7984e207422da75a703483796c4"
+_OPENCLAW_AMD64_ROOTFS_SHA = "967628d338897ab437ac669e8a151f808e0deb43871f7496abd8345f3c4f395c"
+_OPENCLAW_ARM64_ROOTFS_SHA = "78dfbb8d0b0ca976563a116bdcaca205fa54c9ff31b11acd25dc6ee2bfc09569"
+_CODEX_AMD64_ROOTFS_SHA = "68de627e77fb7d3feb7cc07eef4b986152395cabce38432b2b5752f9899e3edc"
+_CODEX_ARM64_ROOTFS_SHA = "ba4c25010beda18778f890e59f4408526c7631a127509fcf6c3c6c092c5bc837"
+_CLAUDE_CODE_AMD64_ROOTFS_SHA = "d8aaa4a501649427c583f08228c952e8429528f2345e5f84fdf2809262132dc5"
+_CLAUDE_CODE_ARM64_ROOTFS_SHA = "f8a3a12c3b21147774117bec5a709cf4cb1b0b005e40e4c4c2537637c53d7d86"
+_HERMES_AMD64_ROOTFS_SHA = "4c441d250720f7a916e4237d19a07d00f4a38de35572a1849856c78bc1f8a78f"
+_HERMES_ARM64_ROOTFS_SHA = "0513cdbb130a1b4d067613e7d4db3e81a4020c02ed5af4552abc3147d9751f3c"
+_PI_AMD64_ROOTFS_SHA = "9dbe6947da0c7765ac7726622319fbdf0e860033e46276f707f9df0b47cc3db9"
+_PI_ARM64_ROOTFS_SHA = "a5ba023a6015509c5dc92337674aab2c576afe995b58682ef7c89192dd3ff346"
 # Bare Ubuntu base image (no preset install) — raw-ext4, agent baked in.
-_UBUNTU_AMD64_ROOTFS_SHA = "5afc3cb322129c12c8557e1858cd504fc67da8ab07b524fbbb570735e209a663"
-_UBUNTU_ARM64_ROOTFS_SHA = "6e847304c4bc2cc7711c93dd24ed8110ce6b66f6e4c659adb3abbfefb6498627"
+_UBUNTU_AMD64_ROOTFS_SHA = "9c0617a33bd86b1ac27d6ccd0814d3e5a49860f553dfbbbc426533b4874030b7"
+_UBUNTU_ARM64_ROOTFS_SHA = "164c13fef8c0277dff7985a5baa5076ee3c533e61eec44543e7e02de455196bb"
 
 
 def _preset_rows(

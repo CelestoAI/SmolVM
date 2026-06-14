@@ -21,19 +21,19 @@ Primary target:
 |---|---|---|---|---:|---:|---:|---:|---|
 | 2026-06-14 | #367 startup phase telemetry and early guest-agent path | QEMU | vsock | 1551.4 ms | 1073.9 ms | -477.5 ms | 30.8% faster | Published Ubuntu, Rust guest-agent, warm-cache medians. |
 | 2026-06-14 | #367 startup phase telemetry and early guest-agent path | Firecracker | vsock | 2598.8 ms | 1195.3 ms | -1403.5 ms | 54.0% faster | Published Ubuntu, Rust guest-agent, warm-cache medians. |
-| 2026-06-14 | Pending PR: Firecracker explicit-vsock lazy network setup | Firecracker | vsock | 1195.3 ms | 1098.3 ms | -97.0 ms | 8.1% faster | Current-init local run, 3 measured iterations; published artifact is still `images-2026.06.12.0`. |
+| 2026-06-14 | #371 Firecracker explicit-vsock lazy network setup | Firecracker | vsock | 1195.3 ms | 1098.3 ms | -97.0 ms | 8.1% faster | Current-init local run, 3 measured iterations; published artifact was still `images-2026.06.12.0`. |
 
 ## Current Best Published Ubuntu Medians
 
 | Backend | Transport | Total ready | First command | Warm exec | Source |
 |---|---:|---:|---:|---:|---|
-| QEMU | SSH | 1455.6 ms | 9.3 ms | 42.9 ms | Pending PR current-init run |
-| QEMU | vsock | 1067.6 ms | 1.0 ms | 0.7 ms | Pending PR current-init run |
-| Firecracker | SSH | 1827.7 ms | 52.7 ms | 42.8 ms | Pending PR current-init run |
-| Firecracker | vsock | 1098.3 ms | 1.1 ms | 1.3 ms | Pending PR current-init run |
+| QEMU | SSH | 1455.6 ms | 9.3 ms | 42.9 ms | #371 current-init run |
+| QEMU | vsock | 1067.6 ms | 1.0 ms | 0.7 ms | #371 current-init run |
+| Firecracker | SSH | 1827.7 ms | 52.7 ms | 42.8 ms | #371 current-init run |
+| Firecracker | vsock | 1098.3 ms | 1.1 ms | 1.3 ms | #371 current-init run |
 
 The current best table uses `--rootfs-source current-init` because the latest
-published artifact observed locally is still `images-2026.06.12.0`.
+published artifact observed locally was still `images-2026.06.12.0`.
 
 ## Required Entry Format
 
@@ -77,9 +77,9 @@ Notes:
 - The next benchmark update should fill in first-command and warm-exec columns
   for the current best table using the full phase payload.
 
-## 2026-06-14 - Pending PR: Firecracker Explicit-vsock Lazy Network Setup
+## 2026-06-14 - PR #371: Firecracker Explicit-vsock Lazy Network Setup
 
-- Commit: working tree based on `85a7e0a`
+- Commit: `9923297`
 - Image tag: `images-2026.06.12.0`
 - Command: `uv run python scripts/benchmarks/ubuntu_transport.py --iterations 3 --warm-exec-runs 5 --rootfs-source current-init --output /tmp/smolvm-ubuntu-transport-final-current-init.json`
 - Host: Linux with KVM; Firecracker networking used the unprivileged fallback path.
