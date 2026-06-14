@@ -49,6 +49,27 @@ def _qemu_vm_info(tmp_path: Path) -> VMInfo:
     )
 
 
+def test_live_qemu_vsock_cids_reads_proc_cmdline_without_subprocess(tmp_path: Path) -> None:
+    """The live-CID guard should not spawn ``ps`` during VM create."""
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    (proc / "1").mkdir()
+    (proc / "1" / "cmdline").write_bytes(
+        b"qemu-system-x86_64\0-device\0vhost-vsock-pci,guest-cid=7,id=vsock0\0"
+    )
+    (proc / "2").mkdir()
+    (proc / "2" / "cmdline").write_bytes(
+        b"qemu-system-aarch64\0-device\0vhost-vsock-device,guest-cid=8,id=vsock0\0"
+    )
+    (proc / "not-a-pid").mkdir()
+
+    with (
+        patch("smolvm.vm.platform.system", return_value="Linux"),
+        patch("smolvm.vm.subprocess.run", side_effect=AssertionError("must not spawn ps")),
+    ):
+        assert SmolVMManager._live_qemu_vsock_cids(proc) == {7, 8}
+
+
 def test_start_qemu_missing_binary_uses_linux_install_hint(tmp_path: Path) -> None:
     """Linux users should get a Linux package-manager hint, not Homebrew."""
     sdk = SmolVMManager(data_dir=tmp_path / "data", socket_dir=tmp_path / "sockets", backend="qemu")

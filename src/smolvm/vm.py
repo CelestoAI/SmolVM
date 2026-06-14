@@ -1510,23 +1510,29 @@ class SmolVMManager:
         raise NetworkError("No vsock CIDs available in pool")
 
     @staticmethod
-    def _live_qemu_vsock_cids() -> set[int]:
+    def _live_qemu_vsock_cids(proc_dir: Path = Path("/proc")) -> set[int]:
         """Return QEMU vhost-vsock CIDs visible in local process arguments."""
         if platform.system() != "Linux":
             return set()
+
         try:
-            result = subprocess.run(
-                ["ps", "-eo", "args="],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=2,
+            entries = list(proc_dir.iterdir())
+        except OSError:
+            return set()
+
+        live_cids: set[int] = set()
+        for entry in entries:
+            if not entry.name.isdigit():
+                continue
+            try:
+                cmdline = (entry / "cmdline").read_bytes()
+            except OSError:
+                continue
+            text = cmdline.replace(b"\0", b" ").decode(errors="replace")
+            live_cids.update(
+                int(match.group(1)) for match in _QEMU_VSOCK_CID_RE.finditer(text)
             )
-        except (OSError, subprocess.SubprocessError, ValueError):
-            return set()
-        if result.returncode != 0 or not isinstance(result.stdout, str):
-            return set()
-        return {int(match.group(1)) for match in _QEMU_VSOCK_CID_RE.finditer(result.stdout)}
+        return live_cids
 
     @staticmethod
     def _uses_host_tap_networking(config: VMConfig, backend: str) -> bool:
