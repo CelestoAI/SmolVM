@@ -20,6 +20,7 @@ import base64
 import http.client
 import json
 import logging
+import math
 import os
 import socket
 import stat
@@ -181,21 +182,22 @@ class RustHttpVsockChannel:
     def run(
         self,
         command: str,
-        timeout: int = 30,
+        timeout: float = 30,
         shell: ShellMode = "login",
     ) -> CommandResult:
         if not command or not command.strip():
             raise ValueError("command cannot be empty")
         if timeout < 1:
             raise ValueError("timeout must be >= 1")
+        timeout_seconds = math.ceil(timeout)
         resp = self._request_json(
             "POST",
             "/exec",
-            {"command": command, "shell": shell, "timeout_seconds": timeout},
-            timeout=float(timeout + self.connect_timeout),
+            {"command": command, "shell": shell, "timeout_seconds": timeout_seconds},
+            timeout=float(timeout_seconds + self.connect_timeout),
         )
         if resp.get("timed_out"):
-            raise OperationTimeoutError(f"vsock run: {command}", timeout)
+            raise OperationTimeoutError(f"vsock run: {command}", timeout_seconds)
         if not resp.get("ok"):
             raise SmolVMError(f"guest agent error during run: {resp.get('error', resp)}")
         return CommandResult(

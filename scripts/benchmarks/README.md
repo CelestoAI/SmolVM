@@ -46,11 +46,28 @@ uv run python scripts/benchmarks/bench.py --backend qemu
 
 `-v` enables per-iteration progress logging.
 
+## Ubuntu Transport Comparison
+
+Use `ubuntu_transport.py` when comparing SSH vs vsock on the official Ubuntu
+preset across QEMU and Firecracker:
+
+```bash
+# Measure the currently published image bytes.
+uv run python scripts/benchmarks/ubuntu_transport.py --rootfs-source published -v
+
+# Pre-publish measurement: copy the published rootfs and replace /init with
+# scripts/ci/preset-init.sh from this checkout before booting.
+uv run python scripts/benchmarks/ubuntu_transport.py --rootfs-source current-init -v
+```
+
+`current-init` is for PR validation before a new image release exists. It avoids
+mistaking a stale published rootfs for the current branch's init behavior.
+
 ## What each benchmark means
 
 | Benchmark      | Metrics                                                         | What it measures |
 |----------------|-----------------------------------------------------------------|------------------|
-| `cold-start`   | `host_create_ms`, `vmm_start_ms`, `guest_ready_wait_ms`, `total_fresh_ready_ms`, `first_command_ms`, `total_first_command_ms` | First VM boot in this process. The image cache on disk is assumed already populated; "cold" means no warm SmolVM state in memory and no per-VM disk overlay yet. |
+| `cold-start`   | `host_create_ms`, `vmm_start_ms`, `guest_ready_wait_ms`, `total_fresh_ready_ms`, `first_command_ms`, `total_first_command_ms`, `boot_telemetry_stats` | First VM boot in this process. The image cache on disk is assumed already populated; "cold" means no warm SmolVM state in memory and no per-VM disk overlay yet. |
 | `tti`          | same as `cold-start`                                            | Subsequent boots — the steady-state experience. `tti` runs a warm-up boot first (excluded from stats), then takes `--iterations` measurements. Compare `results["tti"]["stats"]["total_fresh_ready_ms"]["p50"]` to `results["cold-start"]["raw"][0]["total_fresh_ready_ms"]` to see the one-time cost. |
 | `pause-resume` | `pause_ms`, `resume_ms`                                         | Freeze and unfreeze a long-lived VM. |
 | `snapshot`     | `snapshot_create_ms`, `snapshot_restore_ms`, `snapshot_restore_to_ssh_ms` | Persist VM state and bring it back. Each iteration uses a fresh source VM. |
@@ -63,6 +80,12 @@ startup. `total_fresh_ready_ms` is the user-facing fresh guest readiness
 metric: host create + VMM start + guest boot until SSH is ready. Use
 `total_first_command_ms` when comparing end-to-end "sandbox can run work"
 latency.
+
+For `cold-start` and `tti`, each raw record also includes `boot_telemetry`
+when the guest image emits `SMOLVM_TS` markers from `/init`. This reports guest
+uptime at each init stage, stage offsets from `init-start`, named phase
+durations, and the last kernel printk timestamp when the runtime log contains
+kernel messages.
 
 ## JSON shape
 
@@ -84,6 +107,15 @@ latency.
         "first_command_ms": { ... },
         "total_first_command_ms": { ... }
       },
+      "boot_telemetry_stats": {
+        "guest_init_offsets_ms": {
+          "sshd-invoked": {"p50": ..., "p95": ..., "mean": ..., "min": ..., "max": ..., "count": 5}
+        },
+        "guest_init_phases_ms": {
+          "ssh_hostkey_check_ms": {"p50": ..., "p95": ..., "mean": ..., "min": ..., "max": ..., "count": 5}
+        },
+        "kernel_last_printk_s": {"p50": ..., "p95": ..., "mean": ..., "min": ..., "max": ..., "count": 5}
+      },
       "raw": [{
         "iter": 0,
         "host_create_ms": ...,
@@ -92,7 +124,14 @@ latency.
         "total_fresh_ready_ms": ...,
         "first_command_ms": ...,
         "total_first_command_ms": ...,
-        "guest_uptime_at_first_command_s": ...
+        "guest_uptime_at_first_command_s": ...,
+        "boot_telemetry": {
+          "available": true,
+          "kernel_last_printk_s": ...,
+          "guest_init_markers_s": {"init-start": ..., "sshd-invoked": ...},
+          "guest_init_offsets_ms": {"sshd-invoked": ...},
+          "guest_init_phases_ms": {"ssh_hostkey_check_ms": ...}
+        }
       }, ...]
     },
     "tti": { ... },

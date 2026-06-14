@@ -166,6 +166,25 @@ def test_run_maps_command_result() -> None:
     assert result.stdout == "ok"
 
 
+def test_run_serializes_float_timeout_as_integer_seconds() -> None:
+    def _handler(expected_timeout_seconds: int):
+        def handle(method: str, path: str, body: bytes) -> dict:
+            assert method == "POST"
+            assert path == "/exec"
+            request = json.loads(body)
+            assert request["timeout_seconds"] == expected_timeout_seconds
+            assert isinstance(request["timeout_seconds"], int)
+            return {"ok": True, "exit_code": 0, "stdout": "", "stderr": "", "timed_out": False}
+
+        return handle
+
+    result = FakeRustChannel([_handler(10)]).run("true", timeout=10.0, shell="raw")
+    assert result.exit_code == 0
+
+    result = FakeRustChannel([_handler(11)]).run("true", timeout=10.1, shell="raw")
+    assert result.exit_code == 0
+
+
 def test_run_timeout_maps_to_operation_timeout() -> None:
     channel = FakeRustChannel(
         [

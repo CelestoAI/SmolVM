@@ -8,12 +8,13 @@
 # this minimal script that:
 #
 #   1. mounts the essential virtual filesystems
-#   2. brings up loopback + eth0 (DHCP-style static IP from kernel cmdline)
-#   3. generates SSH host keys on first boot
-#   4. injects the launching user's pubkey from the kernel cmdline param
+#   2. starts the vsock guest-agent control plane
+#   3. brings up loopback + eth0 (DHCP-style static IP from kernel cmdline)
+#   4. generates SSH host keys on first boot
+#   5. injects the launching user's pubkey from the kernel cmdline param
 #      smolvm.authorized_key_b64=<base64> (matches openclaw's mechanism)
-#   5. starts sshd
-#   6. parks PID 1 in a sleep loop, signal-handling Firecracker shutdown
+#   6. starts sshd
+#   7. parks PID 1 in a sleep loop, signal-handling Firecracker shutdown
 #
 # Mirrors `_base_init_script()` in src/smolvm/images/builder.py — keep
 # them in sync if either changes.
@@ -34,6 +35,22 @@ shutdown() {
 }
 trap shutdown INT TERM
 
+# ── Timestamp helpers (for host-side startup profiling) ──────
+ts_uptime() {
+    cut -d' ' -f1 /proc/uptime 2>/dev/null || echo "0.00"
+}
+
+ts_epoch() {
+    date +%s 2>/dev/null || echo "0"
+}
+
+log_ts() {
+    STAGE="$1"
+    echo "SMOLVM_TS stage=${STAGE} epoch_s=$(ts_epoch) uptime_s=$(ts_uptime)"
+}
+
+log_ts "init-start"
+
 # ── Mount essential filesystems ──────────────────────────────
 mount -t proc proc /proc
 mount -t sysfs sys /sys
@@ -45,24 +62,31 @@ mount -t tmpfs tmpfs /run
 # temporary writes, and a memory-sized tmpfs can fill up even when the disk
 # still has plenty of space.
 
+log_ts "mounts-ready"
+
 echo 0 > /proc/sys/kernel/ctrl-alt-del
 mount -o remount,rw /
 mkdir -p /run/sshd /var/log /tmp
 chmod 1777 /tmp
+
+log_ts "root-ready"
 
 # ── Guest agent (vsock control plane) ────────────────────────
 # Started before networking and sshd, so explicit-vsock sandboxes can become
 # ready without waiting for SSH host-key generation or network setup. Skipped
 # silently if the agent is missing (the host falls back to SSH in that case).
 # Mirrors _base_init_script() in src/smolvm/images/builder.py.
+log_ts "guest-agent-start"
 if [ -x /usr/local/bin/smolvm-guest-agent ]; then
     /usr/local/bin/smolvm-guest-agent --listen vsock://1024 >/var/log/smolvm-agent.log 2>&1 &
     echo "SmolVM init: guest agent started (PID=$!)"
 else
     echo "SmolVM init: guest agent not found, continuing without it" >&2
 fi
+log_ts "guest-agent-started"
 
 # ── Networking ───────────────────────────────────────────────
+log_ts "net-config-start"
 # Format: ip=<guest_ip>::<gateway>:<netmask>::eth0:off (kernel ip= param)
 netmask_to_prefix() {
     IFS=.
@@ -120,16 +144,20 @@ else
 fi
 
 hostname smolvm
+log_ts "net-ready"
 
 # ── SSH host keys ────────────────────────────────────────────
+log_ts "ssh-hostkey-check-start"
 if ! ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1; then
     ssh-keygen -A 2>/dev/null
 fi
+log_ts "ssh-hostkey-check-done"
 
 # ── Pubkey injection from kernel cmdline ─────────────────────
 # Format: smolvm.authorized_key_b64=<base64-of-the-pubkey-line>.
 # Same mechanism as openclaw — published images don't bake keys at
 # build time, so each VM gets the launching user's key.
+log_ts "ssh-authkey-inject-start"
 AUTHKEY_B64=$(cat /proc/cmdline | tr ' ' '\n' \
     | grep '^smolvm\.authorized_key_b64=' | head -1 | cut -d= -f2-)
 if [ -n "$AUTHKEY_B64" ]; then
@@ -141,6 +169,7 @@ if [ -n "$AUTHKEY_B64" ]; then
         chmod 600 /root/.ssh/authorized_keys
     fi
 fi
+log_ts "ssh-authkey-inject-done"
 
 # ── Clock sync (host-sleep drift) ────────────────────────────
 # The guest's clocksource (the TSC under HVF/QEMU) stops advancing
@@ -150,6 +179,7 @@ fi
 # pinned to host wall-clock time (-rtc clock=host) — and step the
 # system clock to match. No-ops on backends with no RTC (Firecracker).
 # Mirrors _base_init_script() in src/smolvm/images/builder.py.
+log_ts "clock-sync-start"
 HWCLOCK=""
 for cand in hwclock /usr/sbin/hwclock /sbin/hwclock; do
     if HWCLOCK_PATH=$(command -v "$cand" 2>/dev/null); then
@@ -165,11 +195,17 @@ if [ -n "$HWCLOCK" ]; then
         done
     ) &
     echo "SmolVM init: clock-sync loop started (PID=$!)"
+    log_ts "clock-sync-started"
+else
+    log_ts "clock-sync-disabled"
 fi
 
+log_ts "sshd-start"
 /usr/sbin/sshd -e &
+log_ts "sshd-invoked"
 
 echo "SmolVM init complete: IP=${GUEST_IP}, SSH listening on port 22"
+log_ts "init-complete"
 
 # ── Keep PID 1 alive ────────────────────────────────────────
 # Use `wait` so signals are delivered promptly (plain `sleep` in a
