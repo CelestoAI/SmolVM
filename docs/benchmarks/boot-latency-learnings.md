@@ -13,6 +13,10 @@ Numbers measured on one Linux host with KVM, 16 CPUs, an Alpine Linux guest
 (1 CPU / 512 MB), running `echo hello`. Scripts live under `scripts/`:
 `bench_backends.py`, `profile_boot.py`, `exp_vsock_trim.py`, `exp_userspace.py`.
 
+This report records the investigation as it happened. The blockers called out
+below were fixed later: published SmolVM images now start a standalone Rust
+guest agent, and both QEMU and Firecracker have vsock coverage.
+
 > **Methodology note.** SmolVM's `.start()` returns as soon as the hypervisor
 > *process* is up — it does **not** wait for the guest to finish booting. The
 > guest boot (kernel + init + sshd/agent) happens during the *first command*,
@@ -62,7 +66,7 @@ it emulates more devices the kernel must probe (biggest single stall:
 virtio-only model (`pci=off`, no SATA/VGA) avoids most of it — which is the
 whole point of a microVM.
 
-## Finding 3 — vsock helps, but is QEMU-only and needs python3 in the image
+## Finding 3 — vsock helps; the blockers here were historical
 
 `comm_channel="vsock"` uses a persistent guest agent instead of SSH.
 
@@ -72,20 +76,17 @@ whole point of a microVM.
   win for command-heavy workloads: SSH pays a fresh exec round-trip per command;
   the vsock agent is a kept-open connection.
 
-Two real blockers found:
+Two blockers were found and later fixed:
 
-1. **QEMU-only today.** `comm/select.py` gates vsock to the QEMU backend;
-   requesting it on Firecracker raises. QEMU uses native `AF_VSOCK` over the
-   host's `/dev/vhost-vsock`; Firecracker multiplexes vsock over a host Unix
-   socket whose host-side bridge client SmolVM hasn't implemented.
-2. **Default image can't run the agent.** The auto-config image
-   (`ImageBuilder.build_alpine_ssh_key`) installs `openssh iproute2 curl bash`
-   but **no `python3`**. The guest agent is a Python script that `/init` only
-   launches `if command -v python3`. No python3 → agent never starts → vsock
-   times out and (in auto mode) silently falls back to SSH. The password-auth
-   recipe (`build_alpine_ssh`) *does* install python3, which is what made vsock
-   measurable here. **This looks like a latent bug worth filing:** the default
-   image bakes the agent binary but omits its runtime.
+1. **Firecracker did not yet have the host-side bridge.** QEMU used native
+   `AF_VSOCK` over `/dev/vhost-vsock`, while Firecracker exposed vsock through
+   a host Unix socket that SmolVM did not yet speak to. The host now supports
+   the Firecracker UDS path.
+2. **The default image could not run the old agent.** At the time, the guest
+   agent was a Python script and the default image did not install `python3`,
+   so `/init` skipped the agent and auto mode fell back to SSH. Published
+   images now bake `/usr/local/bin/smolvm-guest-agent`, a standalone Rust
+   binary, so the control plane no longer depends on Python.
 
 Host requirement (present on this machine): `vhost_vsock` module loaded and
 `/dev/vhost-vsock` available.
@@ -151,27 +152,25 @@ becomes answerable the moment the agent starts (~0.9 s uptime). Guest-side
 userspace trims (baked keys) only pay off once the host-side wait is also tight
 or replaced by vsock.
 
-## Finding 6 — default QEMU auto-config has an 8-second vsock-probe penalty
+## Finding 6 — historical: default QEMU auto-config had an 8-second probe
 
-The most severe issue found. On the QEMU backend, the channel selector
-*auto-prefers* vsock with SSH fallback (`vsock_possible = is_qemu and …`). But
-the default auto-config image lacks python3, so the agent never answers. The
-host then waits the full `_VSOCK_AUTO_PROBE_TIMEOUT = 8.0 s` before falling back
-to SSH:
+This was the most severe issue found during the original investigation. On the
+QEMU backend, the channel selector auto-preferred vsock with SSH fallback, but
+the default auto-config image could not start the old Python agent. The host
+then waited the full `_VSOCK_AUTO_PROBE_TIMEOUT = 8.0 s` before falling back to
+SSH:
 
-```
+```text
 QEMU auto-config (default), first command: 8066 ms   <- 8s vsock probe + SSH
 QEMU explicit comm_channel="ssh", first command: 1876 ms
 ```
 
-So the real out-of-box QEMU number is **~8.1 s to interact**, not ~1.9 s — the
-earlier ~1.9 s figures were taken with vsock-capable or explicit-SSH paths.
-Two independent bugs compound here:
+So the real out-of-box QEMU number at that point was **~8.1 s to interact**,
+not ~1.9 s. Two independent bugs compounded here:
 
-1. Default image bakes the agent but omits its python3 runtime (Finding 3).
+1. Default image baked the old Python agent but omitted its Python runtime.
 2. Auto-mode pays an 8 s timeout discovering that, every single boot.
 
-Mitigations (any one fixes it): ship python3 in the default image; or shorten
-the auto vsock probe; or have auto-mode skip vsock when the image has no agent;
-or default QEMU auto-config to `comm_channel="ssh"`.
+This is now addressed by baking the standalone Rust agent, shortening the auto
+probe, and keeping SSH fallback only for auto-selected channels.
 ```

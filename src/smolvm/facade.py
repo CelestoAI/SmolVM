@@ -115,10 +115,10 @@ _DEFAULT_DISPLAY_SANDBOX_BOOT_TIMEOUT = 90.0
 # When auto-selecting the channel, how long to wait for the vsock agent before
 # falling back to SSH. Kept short: the agent binds its vsock port early in boot
 # (before sshd, ~0.9s guest uptime on Alpine), so if it hasn't answered by now
-# the image almost certainly can't run it (e.g. no python3) and SSH is the real
-# path. This is a guardrail — an agent-less image now costs ~2.5s of wasted
-# probe instead of 8s. (Images SmolVM builds ship the agent + python3, so they
-# answer well inside this window and never hit the fallback.)
+# the image is likely missing the agent or did not start it and SSH is the real
+# path. This is a guardrail: an agent-less image costs ~2.5s of wasted probe.
+# Images SmolVM builds ship the standalone Rust agent and should answer inside
+# this window.
 _VSOCK_AUTO_PROBE_TIMEOUT = 2.5
 _LOCAL_FORWARD_PROBE_TIMEOUT = 2.0
 _LOCAL_FORWARD_PROBE_INTERVAL = 0.2
@@ -593,9 +593,11 @@ def _build_auto_config(
         if disk_size_mib is None:
             resolved_disk_size_mib = required_disk_size_mib
         elif resolved_disk_size_mib < required_disk_size_mib:
+            quoted_vm_name = shlex.quote(resolved_vm_name)
             raise ValueError(
-                f"Ubuntu needs at least {required_disk_size_mib} MiB for sandbox '{resolved_vm_name}'; "
-                f"recreate it with: smolvm create --name {resolved_vm_name} --os ubuntu "
+                f"Ubuntu needs at least {required_disk_size_mib} MiB for sandbox "
+                f"'{resolved_vm_name}'; "
+                f"recreate it with: smolvm create --name {quoted_vm_name} --os ubuntu "
                 f"--backend {resolved_backend} --disk-size {required_disk_size_mib}."
             )
         should_grow_filesystem = (

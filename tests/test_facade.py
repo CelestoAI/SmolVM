@@ -258,16 +258,17 @@ class TestVMInit:
 
         with pytest.raises(ValueError) as exc_info:
             _build_auto_config(
-                vm_name="project-spacex",
+                vm_name="project spacex; rm -rf",
                 os="ubuntu",
                 backend="qemu",
                 disk_size_mib=512,
             )
 
         message = str(exc_info.value)
-        assert "Ubuntu needs at least 4096 MiB for sandbox 'project-spacex'" in message
+        assert "Ubuntu needs at least 4096 MiB for sandbox 'project spacex; rm -rf'" in message
         assert (
-            "smolvm create --name project-spacex --os ubuntu --backend qemu --disk-size 4096"
+            "smolvm create --name 'project spacex; rm -rf' --os ubuntu "
+            "--backend qemu --disk-size 4096"
             in message
         )
 

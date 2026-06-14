@@ -115,3 +115,116 @@ pub async fn handle_file_get(
 ) -> Json<FileGetResponse> {
     Json(files::get_file(query).await)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::{Body, to_bytes},
+        http::{Request, StatusCode},
+    };
+    use serde_json::{Value, json};
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn public_router_exposes_health_version_and_safe_capabilities() {
+        let health = request_json(router(), "GET", "/health", None).await;
+        assert_eq!(health.status, StatusCode::OK);
+        assert_eq!(health.body["status"], "ok");
+        assert_eq!(health.body["agent_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(health.body["protocol"], "smolvm-http-vsock");
+        assert_eq!(health.body["protocol_version"], PROTOCOL_VERSION);
+
+        let version = request_json(router(), "GET", "/version", None).await;
+        assert_eq!(version.status, StatusCode::OK);
+        assert_eq!(version.body["agent_name"], "smolvm-guest-agent");
+        assert_eq!(version.body["protocol_version"], PROTOCOL_VERSION);
+
+        let capabilities = request_json(router(), "GET", "/capabilities", None).await;
+        assert_eq!(capabilities.status, StatusCode::OK);
+        assert_eq!(capabilities.body["protocol_version"], PROTOCOL_VERSION);
+        assert_eq!(capabilities.body["tcp_enabled"], cfg!(feature = "tcp"));
+        assert_eq!(capabilities.body["terminal_enabled"], false);
+        assert_eq!(capabilities.body["prod_metrics_enabled"], false);
+        let endpoints = capabilities.body["endpoints"].as_array().unwrap();
+        assert!(endpoints.contains(&json!("POST /exec")));
+        assert!(endpoints.contains(&json!("POST /files/put")));
+        assert!(endpoints.contains(&json!("GET /files/get")));
+    }
+
+    #[tokio::test]
+    async fn public_router_exec_maps_validation_errors_to_json() {
+        let response = request_json(
+            router(),
+            "POST",
+            "/exec",
+            Some(json!({
+                "command": "",
+                "shell": "raw",
+                "timeout_seconds": 5
+            })),
+        )
+        .await;
+
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.body["ok"], false);
+        assert_eq!(response.body["exit_code"], -1);
+        assert_eq!(response.body["timed_out"], false);
+        assert_eq!(response.body["error"], "missing command");
+    }
+
+    #[tokio::test]
+    async fn extension_router_leaves_private_health_and_exec_routes_to_consumer() {
+        let version = request_json(extension_router(), "GET", "/version", None).await;
+        assert_eq!(version.status, StatusCode::OK);
+
+        let health = raw_request(extension_router(), "GET", "/health", None).await;
+        assert_eq!(health.status(), StatusCode::NOT_FOUND);
+
+        let exec = raw_request(
+            extension_router(),
+            "POST",
+            "/exec",
+            Some(json!({"command": "printf no-op", "shell": "raw"})),
+        )
+        .await;
+        assert_eq!(exec.status(), StatusCode::NOT_FOUND);
+    }
+
+    struct JsonResponse {
+        status: StatusCode,
+        body: Value,
+    }
+
+    async fn request_json(
+        app: Router,
+        method: &str,
+        uri: &str,
+        body: Option<Value>,
+    ) -> JsonResponse {
+        let response = raw_request(app, method, uri, body).await;
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        JsonResponse {
+            status,
+            body: serde_json::from_slice(&bytes).unwrap(),
+        }
+    }
+
+    async fn raw_request(
+        app: Router,
+        method: &str,
+        uri: &str,
+        body: Option<Value>,
+    ) -> axum::response::Response {
+        let mut builder = Request::builder().method(method).uri(uri);
+        let body = match body {
+            Some(value) => {
+                builder = builder.header("content-type", "application/json");
+                Body::from(serde_json::to_vec(&value).unwrap())
+            }
+            None => Body::empty(),
+        };
+        app.oneshot(builder.body(body).unwrap()).await.unwrap()
+    }
+}

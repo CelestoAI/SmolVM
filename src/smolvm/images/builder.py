@@ -403,8 +403,9 @@ FROM alpine:3.19
 
 ARG SSH_PASSWORD
 
-# Install SSH and networking utilities. python3 powers the SmolVM guest
-# agent (vsock control plane); the agent is stdlib-only, so no pip deps.
+# Install SSH, networking utilities, a shell, and python3. The SmolVM
+# guest agent is injected later as a standalone Rust binary, so python3 is
+# not required for the control plane.
 RUN apk add --no-cache \\
     openssh \\
     iproute2 \\
@@ -508,9 +509,9 @@ RUN chmod +x /init
         dockerfile_content = """
 FROM alpine:3.19
 
-# python3 powers the SmolVM guest agent (vsock control plane); the agent is
-# stdlib-only, so no pip deps. Without it /init silently skips the agent and the
-# host falls back to SSH after an 8s vsock probe (see _VSOCK_AUTO_PROBE_TIMEOUT).
+# Install SSH, networking utilities, a shell, and python3. The SmolVM
+# guest agent is injected later as a standalone Rust binary, so python3 is
+# not required for the control plane.
 RUN apk add --no-cache \
     openssh \
     iproute2 \
