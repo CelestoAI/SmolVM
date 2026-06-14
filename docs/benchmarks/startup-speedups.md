@@ -63,6 +63,30 @@ methodology.
 | Firecracker | vsock | ... | ... | ... | ... |
 ```
 
+## 2026-06-14 - PR TBD: Ubuntu Transport Boot Telemetry
+
+- Commit: current branch.
+- Image tag: `images-2026.06.14.0`.
+- Commands:
+  - `uv run python scripts/benchmarks/ubuntu_transport.py --iterations 1 --warm-exec-runs 1 --rootfs-source published --variants qemu-vsock --output /tmp/smolvm-ubuntu-boot-telemetry-probe.json -v`
+  - `uv run python scripts/benchmarks/ubuntu_transport.py --iterations 1 --warm-exec-runs 1 --rootfs-source published --variants qemu-ssh --output /tmp/smolvm-ubuntu-boot-telemetry-qemu-ssh.json -v`
+- Host: Linux x86_64, kernel `7.0.0-15-generic`, KVM available.
+- Method: one warm-up plus one measured smoke iteration per selected variant.
+- Behavior changed: benchmark methodology only; Ubuntu transport raw records now
+  include parsed guest boot telemetry from `SMOLVM_TS` runtime-log markers, and
+  each variant summary includes phase stats under `boot_telemetry_stats`.
+
+Smoke results:
+
+| Backend | Transport | Total ready | Notable guest phase |
+|---|---|---:|---|
+| QEMU | vsock | 1057.4 ms | Guest-agent marker present; VM tears down before later SSH markers. |
+| QEMU | SSH | 1452.3 ms | `ssh_hostkey_check_ms=290.0 ms`. |
+
+This section is not a speedup claim and is intentionally excluded from the
+summary timeline. It records the benchmark payload change that lets later PRs
+explain readiness variance by guest init phase.
+
 ## 2026-06-14 - PR #367: Startup Phase Telemetry And Early Guest-Agent Path
 
 - Commit: `85a7e0a`

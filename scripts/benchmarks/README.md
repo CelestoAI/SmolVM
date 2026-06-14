@@ -71,6 +71,12 @@ diff snapshots when the runtime can store them safely; QEMU may fall back to a
 full snapshot when the active disk has no backing file.
 Use `--variants qemu-vsock` or a comma-separated list such as
 `--variants qemu-vsock,firecracker-vsock` when you want a focused run.
+Each raw Ubuntu transport record includes `boot_telemetry` when the guest image
+emits `SMOLVM_TS` markers. The per-variant `summary` also includes
+`boot_telemetry_stats`, so readiness changes can be traced to guest phases such
+as guest-agent startup, network setup, SSH host-key checks, and sshd startup.
+Snapshot runs report the same data as `snapshot_source_boot_telemetry` and
+`snapshot_restore_boot_telemetry`.
 
 ## What each benchmark means
 

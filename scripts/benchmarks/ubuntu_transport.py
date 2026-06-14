@@ -42,11 +42,14 @@ from typing import Any, Literal
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from boot_telemetry import collect_boot_telemetry, summarize_boot_telemetry  # noqa: E402
 
 from smolvm.facade import SmolVM, _build_auto_config  # noqa: E402
 from smolvm.images.published import _images_release_tag  # noqa: E402
 from smolvm.types import SnapshotType  # noqa: E402
-from smolvm.vm import SmolVMManager  # noqa: E402
+from smolvm.vm import SmolVMManager, resolve_data_dir  # noqa: E402
 
 logger = logging.getLogger("smolvm.bench.ubuntu_transport")
 
@@ -99,6 +102,14 @@ def _safe_teardown(vm: SmolVM | None) -> None:
 def _safe_delete_snapshot(snapshot_id: str) -> None:
     with suppress(Exception), SmolVMManager() as sdk:
         sdk.delete_snapshot(snapshot_id)
+
+
+def _vm_log_path(vm: SmolVM | None) -> Path | None:
+    """Return the runtime log path for a benchmark VM."""
+    vm_id = getattr(vm, "_vm_id", None)
+    if not vm_id:
+        return None
+    return resolve_data_dir() / f"{vm_id}.log"
 
 
 def _current_init_path() -> Path:
@@ -181,6 +192,7 @@ def _run_one(
     vm_name = f"bench-{backend[:2]}-{transport[:2]}-{uuid.uuid4().hex[:8]}"
     record: dict[str, Any] = {"iter": iteration, "vm_id": vm_name, "warmup": warmup}
     vm: SmolVM | None = None
+    log_path: Path | None = None
     try:
         started = time.perf_counter()
         config, ssh_key_path, published_rootfs, patched_rootfs = _config_for_variant(
@@ -189,6 +201,7 @@ def _run_one(
             rootfs_source=rootfs_source,
         )
         vm = SmolVM(config=config, ssh_key_path=ssh_key_path, comm_channel=transport)
+        log_path = _vm_log_path(vm)
         record["host_create_ms"] = round((time.perf_counter() - started) * 1000, 1)
         record["create_ms"] = record["host_create_ms"]
         record["published_rootfs_path"] = str(published_rootfs)
@@ -239,7 +252,10 @@ def _run_one(
             1,
         )
     finally:
+        if log_path is None:
+            log_path = _vm_log_path(vm)
         _safe_teardown(vm)
+        record["boot_telemetry"] = collect_boot_telemetry(log_path)
     return record
 
 
@@ -257,7 +273,7 @@ def _summarize_fields(records: list[dict[str, Any]], fields: list[str]) -> dict[
 
 
 def _summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
-    return _summarize_fields(
+    summary = _summarize_fields(
         records,
         [
             "host_create_ms",
@@ -274,6 +290,10 @@ def _summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
             "total_ready_ms",
         ],
     )
+    boot_telemetry_stats = summarize_boot_telemetry(records, _stats)
+    if boot_telemetry_stats:
+        summary["boot_telemetry_stats"] = boot_telemetry_stats
+    return summary
 
 
 def _snapshot_type_for_choice(choice: SnapshotChoice) -> SnapshotType:
@@ -335,6 +355,8 @@ def _run_snapshot_one(
     }
     source_vm: SmolVM | None = None
     restored_vm: SmolVM | None = None
+    source_log_path: Path | None = None
+    restored_log_path: Path | None = None
     try:
         started = time.perf_counter()
         config, ssh_key_path, published_rootfs, patched_rootfs = _config_for_variant(
@@ -343,6 +365,7 @@ def _run_snapshot_one(
             rootfs_source=rootfs_source,
         )
         source_vm = SmolVM(config=config, ssh_key_path=ssh_key_path, comm_channel=transport)
+        source_log_path = _vm_log_path(source_vm)
         record["snapshot_source_host_create_ms"] = round(
             (time.perf_counter() - started) * 1000, 1
         )
@@ -390,6 +413,7 @@ def _run_snapshot_one(
             ssh_key_path=ssh_key_path,
             comm_channel=transport,
         )
+        restored_log_path = _vm_log_path(restored_vm)
         record["snapshot_restore_ms"] = round((time.perf_counter() - started) * 1000, 1)
 
         started = time.perf_counter()
@@ -428,14 +452,20 @@ def _run_snapshot_one(
                 float(uptime.stdout.split()[0]), 3
             )
     finally:
+        if source_log_path is None:
+            source_log_path = _vm_log_path(source_vm)
+        if restored_log_path is None:
+            restored_log_path = _vm_log_path(restored_vm)
         _safe_teardown(source_vm)
         _safe_teardown(restored_vm)
         _safe_delete_snapshot(snapshot_id)
+        record["snapshot_source_boot_telemetry"] = collect_boot_telemetry(source_log_path)
+        record["snapshot_restore_boot_telemetry"] = collect_boot_telemetry(restored_log_path)
     return record
 
 
 def _summarize_snapshot(records: list[dict[str, Any]]) -> dict[str, Any]:
-    return _summarize_fields(
+    summary = _summarize_fields(
         records,
         [
             "snapshot_source_host_create_ms",
@@ -451,6 +481,29 @@ def _summarize_snapshot(records: list[dict[str, Any]]) -> dict[str, Any]:
             "snapshot_warm_exec_median_ms",
             "snapshot_guest_uptime_after_ready_s",
         ],
+    )
+    source_telemetry_stats = _summarize_boot_telemetry_key(
+        records,
+        "snapshot_source_boot_telemetry",
+    )
+    if source_telemetry_stats:
+        summary["snapshot_source_boot_telemetry_stats"] = source_telemetry_stats
+    restore_telemetry_stats = _summarize_boot_telemetry_key(
+        records,
+        "snapshot_restore_boot_telemetry",
+    )
+    if restore_telemetry_stats:
+        summary["snapshot_restore_boot_telemetry_stats"] = restore_telemetry_stats
+    return summary
+
+
+def _summarize_boot_telemetry_key(
+    records: list[dict[str, Any]],
+    key: str,
+) -> dict[str, Any]:
+    return summarize_boot_telemetry(
+        [{"boot_telemetry": record.get(key)} for record in records],
+        _stats,
     )
 
 

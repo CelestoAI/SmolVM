@@ -82,11 +82,25 @@ class _FakeSmolVM:
         pass
 
 
-def test_snapshot_benchmark_restores_with_selected_transport(monkeypatch) -> None:
-    _FakeSmolVM.restored_calls = []
-    _FakeSmolVM.snapshots = []
-    deleted_snapshots: list[str] = []
+def _sample_log() -> str:
+    return """
+SMOLVM_TS stage=init-start epoch_s=1781280000 uptime_s=0.10
+SMOLVM_TS stage=guest-agent-start epoch_s=1781280000 uptime_s=0.20
+SMOLVM_TS stage=guest-agent-started epoch_s=1781280000 uptime_s=0.24
+SMOLVM_TS stage=net-config-start epoch_s=1781280000 uptime_s=0.30
+SMOLVM_TS stage=net-ready epoch_s=1781280000 uptime_s=0.40
+SMOLVM_TS stage=ssh-hostkey-check-start epoch_s=1781280000 uptime_s=0.42
+SMOLVM_TS stage=ssh-hostkey-check-done epoch_s=1781280000 uptime_s=0.62
+SMOLVM_TS stage=sshd-start epoch_s=1781280000 uptime_s=0.64
+SMOLVM_TS stage=sshd-invoked epoch_s=1781280000 uptime_s=0.72
+SMOLVM_TS stage=init-complete epoch_s=1781280000 uptime_s=0.74
+"""
+
+
+def test_fresh_benchmark_attaches_boot_telemetry(monkeypatch, tmp_path: Path) -> None:
     config = _FakeConfig(vm_id="bench-fake", rootfs_path=Path("/tmp/rootfs.ext4"))
+    log_path = tmp_path / "bench-fake.log"
+    log_path.write_text(_sample_log())
 
     monkeypatch.setattr(ubuntu_transport, "SmolVM", _FakeSmolVM)
     monkeypatch.setattr(
@@ -95,6 +109,49 @@ def test_snapshot_benchmark_restores_with_selected_transport(monkeypatch) -> Non
         lambda *_args, **_kwargs: (config, "/tmp/id_ed25519", Path("/tmp/rootfs.ext4"), None),
     )
     monkeypatch.setattr(ubuntu_transport, "_safe_teardown", lambda _vm: None)
+    monkeypatch.setattr(ubuntu_transport, "_vm_log_path", lambda _vm: log_path)
+
+    record = ubuntu_transport._run_one(
+        "qemu",
+        "ssh",
+        0,
+        rootfs_source="published",
+        warm_exec_runs=1,
+    )
+    summary = ubuntu_transport._summarize([record])
+
+    assert record["boot_telemetry"]["guest_init_phases_ms"]["ssh_hostkey_check_ms"] == 200.0
+    assert (
+        summary["boot_telemetry_stats"]["guest_init_phases_ms"]["ssh_hostkey_check_ms"][
+            "median"
+        ]
+        == 200.0
+    )
+
+
+def test_snapshot_benchmark_restores_with_selected_transport(monkeypatch, tmp_path: Path) -> None:
+    _FakeSmolVM.restored_calls = []
+    _FakeSmolVM.snapshots = []
+    deleted_snapshots: list[str] = []
+    config = _FakeConfig(vm_id="bench-fake", rootfs_path=Path("/tmp/rootfs.ext4"))
+    source_log = tmp_path / "bench-fake.log"
+    restored_log = tmp_path / "restored.log"
+    source_log.write_text(_sample_log())
+    restored_log.write_text(_sample_log())
+    logs = {"bench-fake": source_log, "restored": restored_log}
+
+    monkeypatch.setattr(ubuntu_transport, "SmolVM", _FakeSmolVM)
+    monkeypatch.setattr(
+        ubuntu_transport,
+        "_config_for_variant",
+        lambda *_args, **_kwargs: (config, "/tmp/id_ed25519", Path("/tmp/rootfs.ext4"), None),
+    )
+    monkeypatch.setattr(ubuntu_transport, "_safe_teardown", lambda _vm: None)
+    monkeypatch.setattr(
+        ubuntu_transport,
+        "_vm_log_path",
+        lambda vm: logs[vm._vm_id],
+    )
     monkeypatch.setattr(
         ubuntu_transport,
         "_safe_delete_snapshot",
@@ -113,6 +170,31 @@ def test_snapshot_benchmark_restores_with_selected_transport(monkeypatch) -> Non
     assert record["snapshot_type"] == "diff"
     assert record["source_control_kind"] == "vsock"
     assert record["restore_control_kind"] == "vsock"
+    assert (
+        record["snapshot_source_boot_telemetry"]["guest_init_phases_ms"][
+            "ssh_hostkey_check_ms"
+        ]
+        == 200.0
+    )
+    assert (
+        record["snapshot_restore_boot_telemetry"]["guest_init_phases_ms"][
+            "ssh_hostkey_check_ms"
+        ]
+        == 200.0
+    )
+    summary = ubuntu_transport._summarize_snapshot([record])
+    assert (
+        summary["snapshot_source_boot_telemetry_stats"]["guest_init_phases_ms"][
+            "ssh_hostkey_check_ms"
+        ]["median"]
+        == 200.0
+    )
+    assert (
+        summary["snapshot_restore_boot_telemetry_stats"]["guest_init_phases_ms"][
+            "ssh_hostkey_check_ms"
+        ]["median"]
+        == 200.0
+    )
     assert record["snapshot_restore_to_first_command_ms"] >= record["snapshot_restore_ms"]
     assert len(record["snapshot_warm_exec_ms"]) == 2
     assert deleted_snapshots == [record["snapshot_id"]]

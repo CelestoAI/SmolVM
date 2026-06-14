@@ -68,6 +68,14 @@ Acceptance:
 - The speed ledger is updated in the same PR when behavior or methodology
   changes.
 
+Current status:
+
+- `scripts/benchmarks/ubuntu_transport.py` now attaches parsed `SMOLVM_TS`
+  guest boot markers to each raw fresh-boot record and summarizes those phases
+  under `boot_telemetry_stats`.
+- Snapshot runs also keep separate source and restored-VM telemetry, so restore
+  timing stays distinct from source fresh-boot timing.
+
 ### Phase 2: Explicit-vsock Fast Path
 
 For explicit vsock sandboxes, the guest-agent should become available before
