@@ -2711,10 +2711,11 @@ class SmolVMManager:
         return payload
     
     def _write_libkrun_config(self, vm_info: VMInfo, payload: dict[str, Any]) -> Path:
-        # config_path = self._socket_dir / f"libkrun-{vm_info.vm_id}.json"
-        config_path = self.socket_dir / f"libkrun-{vm_info.vm_id}.json"
+        config_path = self.socket_dir / f"libkrun-{vm_info.vm_id}-{uuid4().hex}.json"
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps(payload))
+        fd = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as config_file:
+            json.dump(payload, config_file)
         return config_path
 
     def _start_libkrun(
@@ -2725,7 +2726,9 @@ class SmolVMManager:
         """Start a libkrun VM via the in-tree FFI launcher subprocess."""
         if not self._find_libkrun_library():
             raise SmolVMError(
-                "libkrun backend requires libkrun (>=1.9) to be installed and loadable"
+                f"Cannot start sandbox '{vm_info.vm_id}' because libkrun is not ready; "
+                f"run 'smolvm doctor --backend libkrun', then run "
+                f"'smolvm start {vm_info.vm_id}'."
             )
         
         config_path = self._write_libkrun_config(vm_info, self._build_libkrun_config(vm_info))
@@ -3419,7 +3422,9 @@ class SmolVMManager:
         """Async version of :meth:`_start_libkrun`."""
         if not self._find_libkrun_library():
             raise SmolVMError(
-                "libkrun backend requires libkrun (>=1.9) to be installed and loadable"
+                f"Cannot start sandbox '{vm_info.vm_id}' because libkrun is not ready; "
+                f"run 'smolvm doctor --backend libkrun', then run "
+                f"'smolvm start {vm_info.vm_id}'."
             )
         
         config_path = self._write_libkrun_config(vm_info, self._build_libkrun_config(vm_info))
