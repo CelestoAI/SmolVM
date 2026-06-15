@@ -270,6 +270,8 @@ class FirecrackerRuntimeAdapter(RuntimeAdapter):
         control_socket_path = self._context.socket_dir / f"fc-{snapshot.vm_id}.sock"
         if control_socket_path.exists():
             self._context.unlink_socket(control_socket_path)
+        if vsock_uds_path is not None and vsock_uds_path.exists():
+            self._context.unlink_socket(vsock_uds_path)
 
         process: Any | None = None
         client: FirecrackerClient | None = None

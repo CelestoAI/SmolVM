@@ -1507,8 +1507,8 @@ fi
 # ── SSH ──────────────────────────────────────────────────────
 log_ts "ssh-hostkey-check-start"
 if ! ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1; then
-    echo "SmolVM init: SSH host keys missing; generating..."
-    ssh-keygen -A 2>/dev/null
+    echo "SmolVM init: SSH host keys missing; generating Ed25519 key..."
+    ssh-keygen -t ed25519 -f /etc/ssh/ssh_host_ed25519_key -N "" -q 2>/dev/null
 fi
 log_ts "ssh-hostkey-check-done"
 

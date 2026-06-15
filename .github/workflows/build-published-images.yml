@@ -32,7 +32,7 @@ on:
         default: "all"
       release_tag:
         description: >-
-          Release tag (e.g. images-2026.06.12.0). Created as draft if missing.
+          Release tag (e.g. images-2026.06.14.0). Created as draft if missing.
           Leave empty to use IMAGES_RELEASE_TAG from published.py.
         type: string
         default: ""

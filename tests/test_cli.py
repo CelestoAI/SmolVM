@@ -651,7 +651,8 @@ class TestCliCreate:
             writable_mounts=False,
         )
         vm.start.assert_called_once_with(boot_timeout=30.0, on_progress=ANY)
-        vm.wait_for_ssh.assert_called_once_with(timeout=30.0, on_progress=ANY)
+        vm.wait_for_ready.assert_called_once_with(timeout=30.0, on_progress=ANY)
+        vm.wait_for_ssh.assert_not_called()
         vm.close.assert_called_once()
         out = capsys.readouterr().out
         assert "Created VM 'vm-a1b2c3d4'." in out
@@ -721,7 +722,8 @@ class TestCliCreate:
             writable_mounts=False,
         )
         vm.start.assert_called_once_with(boot_timeout=45.0, on_progress=ANY)
-        vm.wait_for_ssh.assert_called_once_with(timeout=45.0, on_progress=ANY)
+        vm.wait_for_ready.assert_called_once_with(timeout=45.0, on_progress=ANY)
+        vm.wait_for_ssh.assert_not_called()
         vm.stop.assert_not_called()
         vm.delete.assert_not_called()
         vm.close.assert_called_once()
@@ -735,6 +737,43 @@ class TestCliCreate:
         assert "Backend" not in out
         assert "172.16.0.2" not in out
         assert "2200" not in out
+
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.runtime.backends.platform.system", return_value="Darwin")
+    def test_create_explicit_ssh_waits_for_ssh(
+        self,
+        _: MagicMock,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`smolvm create --comm-channel ssh` preserves the SSH-ready contract."""
+        monkeypatch.delenv("SMOLVM_BACKEND", raising=False)
+        config = MagicMock(vm_id="project-spacex")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+
+        vm = MagicMock()
+        vm.vm_id = "project-spacex"
+        vm.info.config.backend = "qemu"
+        vm.info.network = MagicMock(spec=NetworkConfig)
+        vm.info.network.guest_ip = "172.16.0.2"
+        vm.info.network.ssh_host_port = 2200
+        mock_vm_cls.return_value = vm
+
+        ret = main(["create", "--name", "project-spacex", "--comm-channel", "ssh"])
+
+        assert ret == 0
+        mock_vm_cls.assert_called_once_with(
+            config,
+            ssh_key_path="/tmp/id_ed25519",
+            comm_channel="ssh",
+            mounts=None,
+            writable_mounts=False,
+        )
+        vm.start.assert_called_once_with(boot_timeout=30.0, on_progress=ANY)
+        vm.wait_for_ssh.assert_called_once_with(timeout=30.0, on_progress=ANY)
+        vm.wait_for_ready.assert_not_called()
 
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
@@ -778,7 +817,8 @@ class TestCliCreate:
             writable_mounts=False,
         )
         vm.start.assert_called_once_with(boot_timeout=30.0, on_progress=ANY)
-        vm.wait_for_ssh.assert_called_once_with(timeout=30.0, on_progress=ANY)
+        vm.wait_for_ready.assert_called_once_with(timeout=30.0, on_progress=ANY)
+        vm.wait_for_ssh.assert_not_called()
         vm.close.assert_called_once()
 
     @patch("smolvm.facade._build_auto_config")
@@ -916,7 +956,8 @@ class TestCliCreate:
             ssh_key_path=None,
         )
         vm.start.assert_called_once_with(boot_timeout=30.0)
-        vm.wait_for_ssh.assert_called_once_with(timeout=30.0)
+        vm.wait_for_ready.assert_called_once_with(timeout=30.0, on_progress=None)
+        vm.wait_for_ssh.assert_not_called()
         vm.close.assert_called_once()
 
     @patch("smolvm.facade._build_auto_config")
@@ -1619,7 +1660,7 @@ class TestCliSSH:
         """`smolvm ssh` should attach to a running VM without restarting it."""
         vm = MagicMock()
         vm.status = VMState.RUNNING
-        vm._ssh_direct_command.return_value = [
+        vm._ssh_attach_command.return_value = [
             "ssh",
             "-o",
             "StrictHostKeyChecking=no",
@@ -1654,9 +1695,9 @@ class TestCliSSH:
             ssh_key_path="/custom/key",
         )
         vm.start.assert_not_called()
-        vm.wait_for_ssh.assert_not_called()
-        vm._ssh_direct_command.assert_called_once_with()
-        mock_run.assert_called_once_with(vm._ssh_direct_command.return_value, check=False)
+        vm.wait_for_ssh.assert_called_once_with(timeout=15.0)
+        vm._ssh_attach_command.assert_called_once_with()
+        mock_run.assert_called_once_with(vm._ssh_attach_command.return_value, check=False)
         vm.close.assert_called_once()
 
     @pytest.mark.parametrize("status", [VMState.CREATED, VMState.STOPPED])

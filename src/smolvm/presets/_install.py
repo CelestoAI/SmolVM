@@ -76,25 +76,9 @@ def apply_preset(
     """
     notify = on_progress or (lambda _msg: None)
 
-    copied_configs: list[str] = []
-    # Git configs piggyback on host_configs so dir copies (e.g. ~/.ssh)
-    # preserve 0o600 modes via tar and the run summary surfaces them
-    # under the existing copied_configs key.
-    all_configs = (*preset.host_configs, *GIT_HOST_CONFIGS)
-    if all_configs:
-        notify("Copying host credentials (gitconfig, ssh keys, CLI configs)...")
-    for cfg in all_configs:
-        local = Path(cfg.host_path).expanduser()
-        if not local.exists():
-            if cfg.required:
-                raise SmolVMError(
-                    f"Required host config not found: {local}",
-                    {"preset": preset.name, "host_path": str(local)},
-                )
-            logger.debug("Skipping missing host config: %s", local)
-            continue
-        _copy_to_guest(ssh, local, cfg.guest_path, file_mode=cfg.file_mode)
-        copied_configs.append(cfg.guest_path)
+    copied_configs = transfer_host_configs(
+        ssh, preset, on_progress=on_progress, include_git_configs=True
+    )
 
     # Keychain step runs after host_configs so a directory copy that
     # targets the same parent (e.g. ~/.claude → /root/.claude) cannot
@@ -164,17 +148,29 @@ def _run_install_phase(
 
 
 def _copy_to_guest(
-    ssh: CommChannel, local: Path, guest_path: str, *, file_mode: int | None = None
+    ssh: CommChannel,
+    local: Path,
+    guest_path: str,
+    *,
+    file_mode: int | None = None,
+    transform: Callable[[bytes], bytes] | None = None,
 ) -> None:
     """Copy a host file or directory tree to *guest_path* inside the VM.
 
     *file_mode* applies only to single-file copies; directory copies
-    inherit per-file modes from the tar archive.
+    inherit per-file modes from the tar archive. *transform*, when set,
+    rewrites a single file's bytes before upload (directory copies have
+    no single byte stream and reject a transform).
     """
     if local.is_file():
-        _copy_file(ssh, local, guest_path, file_mode=file_mode)
+        _copy_file(ssh, local, guest_path, file_mode=file_mode, transform=transform)
         return
     if local.is_dir():
+        if transform is not None:
+            raise SmolVMError(
+                f"transform is not supported for directory copies: {local}",
+                {"host_path": str(local)},
+            )
         _copy_dir(ssh, local, guest_path)
         return
     raise SmolVMError(
@@ -184,7 +180,12 @@ def _copy_to_guest(
 
 
 def _copy_file(
-    ssh: CommChannel, local: Path, guest_path: str, *, file_mode: int | None = None
+    ssh: CommChannel,
+    local: Path,
+    guest_path: str,
+    *,
+    file_mode: int | None = None,
+    transform: Callable[[bytes], bytes] | None = None,
 ) -> None:
     """Upload a single host file to *guest_path* via SFTP, mkdir parent first.
 
@@ -193,6 +194,11 @@ def _copy_file(
     (e.g. ``~/.git-credentials`` with plaintext OAuth tokens), pass
     *file_mode* to chmod the guest file after the upload so it does
     not land world-readable.
+
+    When *transform* is set, the host file's bytes are passed through it
+    and the result is uploaded instead of the original — staged in a
+    0o600 host tempfile so a transformed credential file never sits
+    world-readable on the host mid-upload.
     """
     parent = _posix_dirname(guest_path)
     if parent:
@@ -202,7 +208,25 @@ def _copy_file(
                 f"Failed to create guest directory {parent!r}",
                 {"exit_code": result.exit_code, "stderr": result.stderr},
             )
-    ssh.put_file(local, guest_path)
+
+    upload_src = local
+    tmp_path: Path | None = None
+    try:
+        if transform is not None:
+            transformed = transform(local.read_bytes())
+            fd, tmp_name = tempfile.mkstemp(prefix=".smolvm-cfg-", suffix=".tmp")
+            tmp_path = Path(tmp_name)
+            # mkstemp creates the file 0o600; write via the fd to avoid a
+            # world-readable window before upload.
+            with os.fdopen(fd, "wb") as fp:
+                fp.write(transformed)
+            upload_src = tmp_path
+
+        ssh.put_file(upload_src, guest_path)
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+
     if file_mode is not None:
         chmod_cmd = f"chmod {file_mode:o} -- {shlex.quote(guest_path)}"
         result = ssh.run(chmod_cmd, timeout=5)
@@ -341,6 +365,63 @@ def _write_secret_to_guest(ssh: CommChannel, content: str, guest_path: str, file
         tmp_path.unlink(missing_ok=True)
 
 
+def transfer_host_configs(
+    ssh: CommChannel,
+    preset: Preset,
+    *,
+    on_progress: Callable[[str], None] | None = None,
+    include_git_configs: bool = True,
+) -> list[str]:
+    """Copy the preset's host config files/dirs into the guest.
+
+    Runs only the config-copy step from :func:`apply_preset` — no
+    keychain extraction, no env injection, no install scripts. The
+    published-image path reuses this so a sandbox booted from a
+    pre-baked image still receives ``~/.claude.json`` and ``~/.claude``
+    (the interactive CLI reads ``~/.claude.json`` to skip its login
+    screen; the keychain token alone only satisfies headless ``-p``).
+
+    When *include_git_configs* is True the git/ssh credential set
+    (:data:`GIT_HOST_CONFIGS`) is appended so ``git``/``gh`` work in the
+    guest. The published-image path passes False — it only needs the
+    preset's own configs.
+
+    Missing host files are skipped silently unless marked ``required``,
+    which raises :class:`SmolVMError`. Returns the guest paths written.
+    """
+    notify = on_progress or (lambda _msg: None)
+
+    copied_configs: list[str] = []
+    git_configs = GIT_HOST_CONFIGS if include_git_configs else ()
+    # Git configs piggyback on host_configs so dir copies (e.g. ~/.ssh)
+    # preserve 0o600 modes via tar and the run summary surfaces them
+    # under the existing copied_configs key.
+    all_configs = (*preset.host_configs, *git_configs)
+    if all_configs:
+        notify("Copying host credentials (gitconfig, ssh keys, CLI configs)...")
+    for cfg in all_configs:
+        local = Path(cfg.host_path).expanduser()
+        if not local.exists():
+            if cfg.required:
+                raise SmolVMError(
+                    f"The {preset.name} sandbox needs the file '{local}' on your "
+                    "machine, but it isn't there. Restore it and start the sandbox "
+                    "again.",
+                    {"preset": preset.name, "host_path": str(local)},
+                )
+            logger.debug("Skipping missing host config: %s", local)
+            continue
+        _copy_to_guest(
+            ssh,
+            local,
+            cfg.guest_path,
+            file_mode=cfg.file_mode,
+            transform=cfg.transform,
+        )
+        copied_configs.append(cfg.guest_path)
+    return copied_configs
+
+
 def transfer_keychain_secrets(
     ssh: CommChannel,
     preset: Preset,
@@ -376,4 +457,9 @@ def transfer_keychain_secrets(
     return extracted
 
 
-__all__ = ["apply_preset", "collect_host_env", "transfer_keychain_secrets"]
+__all__ = [
+    "apply_preset",
+    "collect_host_env",
+    "transfer_host_configs",
+    "transfer_keychain_secrets",
+]

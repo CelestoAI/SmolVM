@@ -35,6 +35,7 @@ from smolvm.images.published import (
     Preset,
     PublishedImage,
     _decompress_zstd,
+    _decompressed_rootfs_sidecar_value,
     _preset_rows,
     cache_name,
     ensure_base_kernel,
@@ -557,7 +558,9 @@ class TestZstdDecompression:
         (image_dir / "vmlinux.bin").write_bytes(kernel_bytes)
         (image_dir / "rootfs.ext4.zst").write_bytes(rootfs_zst)
         (image_dir / "rootfs.ext4").write_bytes(rootfs_plain)
-        (image_dir / "rootfs.ext4.from-sha256").write_text(entry.rootfs_sha256)
+        (image_dir / "rootfs.ext4.from-sha256").write_text(
+            _decompressed_rootfs_sidecar_value(entry.rootfs_sha256)
+        )
 
         with patch("smolvm.images.published._decompress_zstd") as mock_decompress:
             local = ensure_published_image(
@@ -592,8 +595,10 @@ class TestZstdDecompression:
         (image_dir / "vmlinux.bin").write_bytes(kernel_bytes)
         (image_dir / "rootfs.ext4.zst").write_bytes(rootfs_zst)
         (image_dir / "rootfs.ext4").write_bytes(rootfs_plain)
-        # Sidecar from a PREVIOUS rootfs SHA (not the one in `entry`).
-        (image_dir / "rootfs.ext4.from-sha256").write_text("0" * 64)
+        # Versioned sidecar from a PREVIOUS rootfs SHA (not the one in `entry`).
+        (image_dir / "rootfs.ext4.from-sha256").write_text(
+            _decompressed_rootfs_sidecar_value("0" * 64)
+        )
 
         with patch("smolvm.images.published._decompress_zstd") as mock_decompress:
             ensure_published_image(
@@ -607,7 +612,43 @@ class TestZstdDecompression:
             mock_decompress.assert_called_once()
             mock_get.assert_not_called()
 
-        assert (image_dir / "rootfs.ext4.from-sha256").read_text().strip() == entry.rootfs_sha256
+        assert (image_dir / "rootfs.ext4.from-sha256").read_text().strip() == (
+            _decompressed_rootfs_sidecar_value(entry.rootfs_sha256)
+        )
+
+    @patch("smolvm.images.manager.requests.get")
+    def test_decompression_reruns_when_sidecar_format_is_old(
+        self,
+        mock_get: MagicMock,
+        compressed_entry: tuple[PublishedImage, bytes, bytes, bytes],
+        tmp_path: Path,
+    ) -> None:
+        """Old bare-SHA sidecars must re-decompress into sparse cache files."""
+        entry, kernel_bytes, rootfs_zst, rootfs_plain = compressed_entry
+        manifest = {(entry.preset, entry.arch, entry.vmm, entry.os): entry}
+
+        image_dir = tmp_path / cache_name(entry.preset, entry.arch, entry.vmm, "0.0.13")
+        image_dir.mkdir(parents=True)
+        (image_dir / "vmlinux.bin").write_bytes(kernel_bytes)
+        (image_dir / "rootfs.ext4.zst").write_bytes(rootfs_zst)
+        (image_dir / "rootfs.ext4").write_bytes(rootfs_plain)
+        (image_dir / "rootfs.ext4.from-sha256").write_text(entry.rootfs_sha256)
+
+        with patch("smolvm.images.published._decompress_zstd") as mock_decompress:
+            ensure_published_image(
+                entry.preset,
+                entry.arch,
+                entry.vmm,
+                cache_dir=tmp_path,
+                manifest=manifest,
+                version="0.0.13",
+            )
+            mock_decompress.assert_called_once()
+            mock_get.assert_not_called()
+
+        assert (image_dir / "rootfs.ext4.from-sha256").read_text().strip() == (
+            _decompressed_rootfs_sidecar_value(entry.rootfs_sha256)
+        )
 
     @patch("smolvm.images.manager.requests.get")
     def test_uncompressed_rootfs_url_skips_decompression_path(
@@ -848,6 +889,20 @@ class TestBundledManifest:
 
 class TestDecompressZstd:
     """Direct tests for the streaming decompressor."""
+
+    def test_decompress_zstd_preserves_sparse_zero_ranges(self, tmp_path: Path) -> None:
+        """Published raw ext4 caches should keep large zero regions sparse."""
+        import zstandard
+
+        plain = b"start" + (b"\0" * (4 * 1024 * 1024)) + b"end"
+        src = tmp_path / "rootfs.ext4.zst"
+        src.write_bytes(zstandard.ZstdCompressor(level=3).compress(plain))
+        dst = tmp_path / "rootfs.ext4"
+
+        _decompress_zstd(src, dst)
+
+        assert dst.read_bytes() == plain
+        assert dst.stat().st_blocks * 512 < dst.stat().st_size
 
     def test_corrupted_input_cleans_up_tmp_file(self, tmp_path: Path) -> None:
         """A failed decompress must not leave a half-written ``.tmp`` behind."""

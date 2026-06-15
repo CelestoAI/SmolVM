@@ -19,7 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from smolvm.exceptions import SmolVMError
+from smolvm.exceptions import NetworkError, SmolVMError, VMNotFoundError
 from smolvm.types import NetworkConfig, PortForwardConfig, VMConfig, VMInfo, VMState, VsockConfig
 from smolvm.vm import SmolVMManager
 
@@ -47,6 +47,27 @@ def _qemu_vm_info(tmp_path: Path) -> VMInfo:
             ssh_host_port=2200,
         ),
     )
+
+
+def test_live_qemu_vsock_cids_reads_proc_cmdline_without_subprocess(tmp_path: Path) -> None:
+    """The live-CID guard should not spawn ``ps`` during VM create."""
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    (proc / "1").mkdir()
+    (proc / "1" / "cmdline").write_bytes(
+        b"qemu-system-x86_64\0-device\0vhost-vsock-pci,guest-cid=7,id=vsock0\0"
+    )
+    (proc / "2").mkdir()
+    (proc / "2" / "cmdline").write_bytes(
+        b"qemu-system-aarch64\0-device\0vhost-vsock-device,guest-cid=8,id=vsock0\0"
+    )
+    (proc / "not-a-pid").mkdir()
+
+    with (
+        patch("smolvm.vm.platform.system", return_value="Linux"),
+        patch("smolvm.vm.subprocess.run", side_effect=AssertionError("must not spawn ps")),
+    ):
+        assert SmolVMManager._live_qemu_vsock_cids(proc) == {7, 8}
 
 
 def test_start_qemu_missing_binary_uses_linux_install_hint(tmp_path: Path) -> None:
@@ -270,6 +291,66 @@ def test_create_qemu_preserves_requested_vsock_cid(tmp_path: Path) -> None:
         uds_path="/tmp/vm-qemu-vsock.sock",
     )
     assert sdk.state.get_vsock_cid("vm-qemu-vsock") == 42
+
+
+def test_create_qemu_auto_vsock_skips_live_qemu_cids(tmp_path: Path) -> None:
+    """Automatic QEMU vsock allocation should avoid CIDs already bound by QEMU."""
+    kernel = tmp_path / "vmlinux"
+    rootfs = tmp_path / "rootfs.ext4"
+    kernel.touch()
+    rootfs.touch()
+
+    config = VMConfig(
+        vm_id="vm-qemu-auto-vsock",
+        kernel_path=kernel,
+        rootfs_path=rootfs,
+        backend="qemu",
+        comm_channel="vsock",
+    )
+    sdk = SmolVMManager(data_dir=tmp_path / "data", socket_dir=tmp_path / "sockets", backend="qemu")
+
+    with (
+        patch("smolvm.comm.select.host_supports_vsock", return_value=True),
+        patch.object(SmolVMManager, "_live_qemu_vsock_cids", return_value={3, 4, 5}),
+        patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_overlay,
+    ):
+        mock_overlay.side_effect = lambda source, target, **_kwargs: target.write_text("overlay")
+        vm_info = sdk.create(config)
+
+    assert vm_info.config.vsock == VsockConfig(guest_cid=6)
+    assert sdk.state.get_vsock_cid("vm-qemu-auto-vsock") == 6
+
+
+def test_create_qemu_explicit_vsock_cid_rejects_live_qemu_conflict(tmp_path: Path) -> None:
+    """Explicit QEMU CID conflicts should fail before QEMU exits at start time."""
+    kernel = tmp_path / "vmlinux"
+    rootfs = tmp_path / "rootfs.ext4"
+    kernel.touch()
+    rootfs.touch()
+
+    config = VMConfig(
+        vm_id="vm-qemu-vsock-conflict",
+        kernel_path=kernel,
+        rootfs_path=rootfs,
+        backend="qemu",
+        comm_channel="vsock",
+        vsock=VsockConfig(guest_cid=42),
+    )
+    sdk = SmolVMManager(data_dir=tmp_path / "data", socket_dir=tmp_path / "sockets", backend="qemu")
+
+    with (
+        patch("smolvm.comm.select.host_supports_vsock", return_value=True),
+        patch.object(SmolVMManager, "_live_qemu_vsock_cids", return_value={42}),
+        patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_overlay,
+        pytest.raises(NetworkError, match="Vsock CID 42 is already in use") as exc_info,
+    ):
+        mock_overlay.side_effect = lambda source, target, **_kwargs: target.write_text("overlay")
+        sdk.create(config)
+
+    assert "smolvm delete vm-qemu-vsock-conflict" in str(exc_info.value)
+    assert sdk.state.get_vsock_cid("vm-qemu-vsock-conflict") is None
+    with pytest.raises(VMNotFoundError):
+        sdk.state.get_vm("vm-qemu-vsock-conflict")
 
 
 def test_create_qemu_reserves_vsock_even_when_control_channel_is_ssh(tmp_path: Path) -> None:
