@@ -1,0 +1,304 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "SmolVM",
+    "summary": "Disposable computers for AI agents, over HTTP.",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/sandboxes": {
+      "post": {
+        "summary": "Create Sandbox",
+        "description": "Create, boot, and register a new sandbox.\n\nBuilds a :class:`~smolvm.SmolVM` from the request's auto-config\nfields, starts it, stores it in the registry under its id, and\nreturns the client-safe view.",
+        "operationId": "createSandbox",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSandboxRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SandboxResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request was invalid or the sandbox failed to boot.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sandboxes/{sandbox_id}": {
+      "get": {
+        "summary": "Get Sandbox",
+        "description": "Return the current state of a sandbox.\n\nThe in-memory registry is treated as a cache, not the source of\ntruth: on a miss we try to reconnect to a sandbox that exists on\nthe host (e.g. one created before this server process started)\nvia :meth:`SmolVM.from_id`, and backfill the registry so later\ncalls hit the fast path. Only a sandbox that exists nowhere on\nthe host yields a 404.",
+        "operationId": "getSandbox",
+        "parameters": [
+          {
+            "name": "sandbox_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Sandbox Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SandboxResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No sandbox with that id exists on the host.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The sandbox exists but could not be reconnected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CreateSandboxRequest": {
+        "properties": {
+          "image": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image",
+            "description": "Image reference to boot (S3 ref, file:// URI, or path). Omit to use the default built-in image."
+          },
+          "os": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "alpine",
+                  "ubuntu",
+                  "windows"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Os",
+            "description": "Guest OS for auto-configured images: 'alpine', 'ubuntu', or 'windows'."
+          },
+          "memory": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 16384.0,
+                "minimum": 128.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory",
+            "description": "Guest memory in MiB."
+          },
+          "disk_size": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 262144.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disk Size",
+            "description": "Guest disk size in MiB."
+          },
+          "backend": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "firecracker",
+                  "qemu",
+                  "libkrun"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backend",
+            "description": "Runtime backend override: 'firecracker', 'qemu', or 'libkrun'."
+          }
+        },
+        "type": "object",
+        "title": "CreateSandboxRequest",
+        "description": "Request body for creating (and booting) a sandbox.\n\nMirrors the auto-config arguments of the :class:`smolvm.SmolVM`\nconstructor. All fields are optional; omitting them boots the\ndefault Alpine micro-VM."
+      },
+      "ErrorResponse": {
+        "properties": {
+          "detail": {
+            "type": "string",
+            "title": "Detail",
+            "description": "Human-readable explanation of the error."
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "ErrorResponse",
+        "description": "The body returned for a handled 4xx error.\n\nMirrors FastAPI's :class:`~fastapi.HTTPException` shape (``{detail}``)\nso the generated SDKs get a typed error surface distinct from the\n422 request-validation body, whose ``detail`` is a list of field\nerrors rather than a single string."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "SandboxResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Stable sandbox identifier."
+          },
+          "status": {
+            "$ref": "#/components/schemas/VMState",
+            "description": "Current lifecycle state."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "status"
+        ],
+        "title": "SandboxResponse",
+        "description": "A sandbox's public, client-safe state.\n\nHost-internal details (disk paths, PID, network device) are\nintentionally omitted \u2014 clients address a sandbox only by ``id``."
+      },
+      "VMState": {
+        "type": "string",
+        "enum": [
+          "created",
+          "running",
+          "paused",
+          "stopped",
+          "error"
+        ],
+        "title": "VMState",
+        "description": "VM lifecycle states."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}
