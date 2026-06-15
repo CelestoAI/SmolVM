@@ -520,8 +520,7 @@ class QemuRuntimeAdapter(RuntimeAdapter):
         qemu_img = which("qemu-img")
         if qemu_img is None:
             raise SmolVMError(
-                "QEMU snapshots need qemu-img to inspect qcow2 disks. "
-                f"{_qemu_img_install_hint()}"
+                f"QEMU snapshots need qemu-img to inspect qcow2 disks. {_qemu_img_install_hint()}"
             )
         info = subprocess.run(
             [str(qemu_img), "info", "-U", "--output=json", str(disk)],

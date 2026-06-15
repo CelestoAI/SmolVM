@@ -47,9 +47,7 @@ def _assert_guest_agent_starts_before_network_and_ssh(script: str) -> None:
 
 
 def _assert_startup_timestamp_markers(script: str) -> None:
-    if script.index('log_ts "clock-sync-start"') > script.index(
-        'log_ts "ssh-authkey-inject-done"'
-    ):
+    if script.index('log_ts "clock-sync-start"') > script.index('log_ts "ssh-authkey-inject-done"'):
         ordered_stages = [
             "init-start",
             "mounts-ready",

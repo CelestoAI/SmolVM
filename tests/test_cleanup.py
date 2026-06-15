@@ -121,7 +121,6 @@ class TestDelete:
         capsys: pytest.CaptureFixture,
     ) -> None:
         """JSON output for delete."""
-        sdk = mock_sdk_cls
 
         ret = run_delete(vm_ids=["vm-abc"], json_output=True)
 

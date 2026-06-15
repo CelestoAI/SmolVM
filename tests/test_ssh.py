@@ -17,7 +17,6 @@
 import base64
 import errno
 import logging
-import socket
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -193,7 +192,7 @@ class TestSSHClientRun:
     def test_run_timeout(self, mock_connected: MagicMock) -> None:
         """Test SSH timeout raises OperationTimeoutError."""
         mock_client = MagicMock()
-        mock_client.exec_command.side_effect = socket.timeout("timed out")
+        mock_client.exec_command.side_effect = TimeoutError("timed out")
         mock_connected.return_value = mock_client
 
         client = SSHClient("172.16.0.2")

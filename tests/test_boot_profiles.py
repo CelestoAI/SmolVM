@@ -59,9 +59,7 @@ class TestSafeBootTrims:
         assert "quiet" in _args(BACKEND_QEMU)
 
     @pytest.mark.parametrize("val", ["1", "true", "yes", "on", "TRUE"])
-    def test_verbose_boot_drops_quiet(
-        self, val: str, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_verbose_boot_drops_quiet(self, val: str, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SMOLVM_VERBOSE_BOOT", val)
         args = _args(BACKEND_QEMU)
         assert "quiet" not in args

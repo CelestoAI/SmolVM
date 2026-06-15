@@ -29,4 +29,3 @@ def create_app() -> FastAPI:
     from smolvm.dashboard.server import app
 
     return app
-

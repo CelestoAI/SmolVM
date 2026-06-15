@@ -19,8 +19,6 @@ from __future__ import annotations
 import os
 import platform
 
-from smolvm.utils import which
-
 BACKEND_FIRECRACKER = "firecracker"
 BACKEND_QEMU = "qemu"
 BACKEND_LIBKRUN = "libkrun"

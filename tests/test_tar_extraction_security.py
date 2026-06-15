@@ -24,7 +24,6 @@ import pytest
 
 from smolvm.exceptions import HostError
 
-
 # ---------------------------------------------------------------------------
 # The dashboard server module has heavy top-level imports (fastapi, uvicorn,
 # websockets …) that live in the optional ``dashboard`` extra.  The CI test
@@ -65,15 +64,15 @@ def _make_tarball_with_member(arcname: str) -> bytes:
         tar.addfile(info, io.BytesIO(data))
     return buf.getvalue()
 
+
 def _mock_response(tarball_bytes: bytes) -> MagicMock:
     mock_response = MagicMock()
     mock_response.raise_for_status = MagicMock()
     mock_response.iter_content = lambda chunk_size: iter([tarball_bytes])
     return mock_response
 
-def _make_spying_tar_open(
-    original_open, extractall_calls: list[dict]
-):
+
+def _make_spying_tar_open(original_open, extractall_calls: list[dict]):
     """Return a ``tarfile.open`` replacement that records *extractall* kwargs.
 
     Using a factory keeps the spy class in one place so every test shares the
@@ -104,6 +103,7 @@ def _make_spying_tar_open(
 
     return _spying_open
 
+
 class TestHostManagerTarExtraction:
     """Verify path-traversal guards in HostManager._download_and_extract."""
 
@@ -121,8 +121,10 @@ class TestHostManagerTarExtraction:
         dest = tmp_path / "fc"
         with mock_get, pytest.raises(HostError, match="suspicious path"):
             hm._download_and_extract(
-                url="http://example.com/fc.tgz", dest=dest,
-                version="v1.13.0", arch="x86_64",
+                url="http://example.com/fc.tgz",
+                dest=dest,
+                version="v1.13.0",
+                arch="x86_64",
             )
 
     def test_rejects_absolute_member_name(self, tmp_path: Path) -> None:
@@ -139,8 +141,10 @@ class TestHostManagerTarExtraction:
         dest = tmp_path / "fc"
         with mock_get, pytest.raises(HostError, match="suspicious path"):
             hm._download_and_extract(
-                url="http://example.com/fc.tgz", dest=dest,
-                version="v1.13.0", arch="x86_64",
+                url="http://example.com/fc.tgz",
+                dest=dest,
+                version="v1.13.0",
+                arch="x86_64",
             )
 
     def test_rejects_dotdot_at_start(self, tmp_path: Path) -> None:
@@ -157,8 +161,10 @@ class TestHostManagerTarExtraction:
         dest = tmp_path / "fc"
         with mock_get, pytest.raises(HostError, match="suspicious path"):
             hm._download_and_extract(
-                url="http://example.com/fc.tgz", dest=dest,
-                version="v1.13.0", arch="x86_64",
+                url="http://example.com/fc.tgz",
+                dest=dest,
+                version="v1.13.0",
+                arch="x86_64",
             )
 
     def test_accepts_valid_member_name(self, tmp_path: Path) -> None:
@@ -190,8 +196,10 @@ class TestHostManagerTarExtraction:
         hm = HostManager()
         with mock_get:
             hm._download_and_extract(
-                url="http://example.com/fc.tgz", dest=dest,
-                version=version, arch=arch,
+                url="http://example.com/fc.tgz",
+                dest=dest,
+                version=version,
+                arch=arch,
             )
 
         assert dest.exists()
@@ -228,8 +236,10 @@ class TestHostManagerTarExtraction:
 
         with mock_get, patch("smolvm.host.manager.tarfile.open", side_effect=spying_open):
             hm._download_and_extract(
-                url="http://example.com/fc.tgz", dest=dest,
-                version=version, arch=arch,
+                url="http://example.com/fc.tgz",
+                dest=dest,
+                version=version,
+                arch=arch,
             )
 
         assert len(extractall_calls) == 1
@@ -237,6 +247,7 @@ class TestHostManagerTarExtraction:
             assert extractall_calls[0].get("filter") == "data"
         else:
             assert "filter" not in extractall_calls[0]
+
 
 class TestDashboardExtractDist:
     """Verify path-traversal guards in _extract_dashboard_dist."""

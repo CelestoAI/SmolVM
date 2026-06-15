@@ -144,5 +144,3 @@ class CommandExecutionUnavailableError(SmolVMError):
         self.vm_id = vm_id
         self.reason = reason
         self.remediation = remediation
-
-

@@ -85,8 +85,7 @@ def detect_setup_platform(system_name: str | None = None) -> SetupPlatform:
     if detected == "Darwin":
         return "macos"
     raise RuntimeError(
-        "`smolvm setup` is supported only on Linux and macOS. "
-        f"Detected OS: {detected}."
+        f"`smolvm setup` is supported only on Linux and macOS. Detected OS: {detected}."
     )
 
 

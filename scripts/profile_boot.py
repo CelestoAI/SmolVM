@@ -17,7 +17,6 @@ from __future__ import annotations
 import re
 import socket
 import time
-from pathlib import Path
 
 from smolvm import SmolVM
 from smolvm.facade import _build_auto_config
@@ -122,15 +121,20 @@ def main():
             r = profile(backend)
             runs.append(r)
             print(
-                f"  run {i + 1}: [{r['endpoint']}] create={r['create']*1000:.0f}  launch={r['launch']*1000:.0f}  "
-                f"tcp_open={r['tcp_open']*1000:.0f}  ssh_auth={r['ssh_auth']*1000:.0f}  "
-                f"cmd={r['cmd']*1000:.0f}  | kernel_last={r['kernel_last_printk_s']}s  "
-                f"loglines={r['log_lines']}",
+                f"  run {i + 1}: [{r['endpoint']}] create={r['create'] * 1000:.0f}"
+                f"  launch={r['launch'] * 1000:.0f}"
+                f"  tcp_open={r['tcp_open'] * 1000:.0f}"
+                f"  ssh_auth={r['ssh_auth'] * 1000:.0f}  "
+                f"cmd={r['cmd'] * 1000:.0f}"
+                f"  | kernel_last={r['kernel_last_printk_s']}s"
+                f"  loglines={r['log_lines']}",
                 flush=True,
             )
+
         # mean
-        def mean(k):
-            return sum(x[k] for x in runs) / len(runs) * 1000
+        def mean(k, runs_local=runs):
+            return sum(x[k] for x in runs_local) / len(runs_local) * 1000
+
         print(
             f"  MEAN  create={mean('create'):.0f}  launch={mean('launch'):.0f}  "
             f"tcp_open={mean('tcp_open'):.0f}  ssh_auth={mean('ssh_auth'):.0f}  "
@@ -139,7 +143,7 @@ def main():
         )
         kl = [x["kernel_last_printk_s"] for x in runs if x["kernel_last_printk_s"]]
         if kl:
-            print(f"  kernel last printk (mean): {sum(kl)/len(kl):.2f}s", flush=True)
+            print(f"  kernel last printk (mean): {sum(kl) / len(kl):.2f}s", flush=True)
     print("DONE", flush=True)
 
 

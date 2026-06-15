@@ -26,6 +26,7 @@ from pycdlib import PyCdlib
 
 def default_user_data(ssh_public_key: str) -> str:
     """Return cloud-init user-data for a root SSH login."""
+    dns_cmd = 'printf "[Resolve]\\nDNS=10.0.2.3\\n" > /etc/systemd/resolved.conf.d/smolvm-dns.conf'
     return f"""#cloud-config
 disable_root: false
 ssh_pwauth: false
@@ -38,7 +39,7 @@ users:
       - {ssh_public_key}
 bootcmd:
   - mkdir -p /etc/systemd/resolved.conf.d
-  - ['sh', '-c', 'printf "[Resolve]\\nDNS=10.0.2.3\\n" > /etc/systemd/resolved.conf.d/smolvm-dns.conf']
+  - ['sh', '-c', '{dns_cmd}']
   - ['systemctl', 'restart', 'systemd-resolved']
   - ['systemctl', 'restart', 'systemd-timesyncd']
 write_files:
@@ -90,9 +91,7 @@ def build_seed_iso(
 ) -> Path:
     """Create a NoCloud ISO image at *output_path*."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_output_path = output_path.with_name(
-        f".{output_path.name}.{uuid4().hex}.tmp"
-    )
+    temp_output_path = output_path.with_name(f".{output_path.name}.{uuid4().hex}.tmp")
 
     iso = PyCdlib()
     try:

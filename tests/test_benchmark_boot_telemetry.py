@@ -97,8 +97,6 @@ def test_bench_boot_attaches_boot_telemetry(
     assert raw["guest_uptime_at_first_command_s"] == 0.95
     assert raw["boot_telemetry"]["guest_init_offsets_ms"]["sshd-invoked"] == 700.0
     assert (
-        result["boot_telemetry_stats"]["guest_init_phases_ms"]["init_to_sshd_invoked_ms"][
-            "p50"
-        ]
+        result["boot_telemetry_stats"]["guest_init_phases_ms"]["init_to_sshd_invoked_ms"]["p50"]
         == 700.0
     )

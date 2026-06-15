@@ -116,9 +116,7 @@ def run_update(args: argparse.Namespace) -> int:
                 emit_json("update", 0, data=data)
             else:
                 console = console_stdout()
-                console.print(
-                    f"smolvm {current} is up to date."
-                )
+                console.print(f"smolvm {current} is up to date.")
         else:
             data = {"current": current, "latest": latest, "update_available": True}
             if json_output:
@@ -167,7 +165,5 @@ def run_update(args: argparse.Namespace) -> int:
         return returncode
 
     if returncode != 0:
-        sys.stderr.write(
-            "smolvm update failed. To retry, run: pip install --upgrade smolvm\n"
-        )
+        sys.stderr.write("smolvm update failed. To retry, run: pip install --upgrade smolvm\n")
     return returncode

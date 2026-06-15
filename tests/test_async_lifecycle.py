@@ -311,9 +311,7 @@ class TestAsyncSmolVMFacade:
         )
 
         mock_sdk = MagicMock()
-        mock_info = MagicMock(
-            vm_id="vm-facade2", status=VMState.RUNNING, config=config
-        )
+        mock_info = MagicMock(vm_id="vm-facade2", status=VMState.RUNNING, config=config)
         mock_sdk.create.return_value = mock_info
         mock_sdk.async_stop = AsyncMock(
             return_value=MagicMock(
@@ -362,9 +360,7 @@ class TestAsyncSmolVMFacade:
             )
         )
         mock_sdk.async_stop = AsyncMock(
-            return_value=MagicMock(
-                vm_id="vm-ctx", status=VMState.STOPPED, config=config
-            )
+            return_value=MagicMock(vm_id="vm-ctx", status=VMState.STOPPED, config=config)
         )
         mock_sdk.async_delete = AsyncMock()
         mock_sdk_cls.return_value = mock_sdk

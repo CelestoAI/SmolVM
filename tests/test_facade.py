@@ -268,8 +268,7 @@ class TestVMInit:
         assert "Ubuntu needs at least 4096 MiB for sandbox 'project spacex; rm -rf'" in message
         assert (
             "smolvm create --name 'project spacex; rm -rf' --os ubuntu "
-            "--backend qemu --disk-size 4096"
-            in message
+            "--backend qemu --disk-size 4096" in message
         )
 
     @pytest.mark.parametrize(

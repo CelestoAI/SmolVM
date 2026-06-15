@@ -43,9 +43,7 @@ class TestInternetSettings:
         assert settings.is_allow_all_domains is True
 
     def test_url_extracts_hostname(self) -> None:
-        settings = InternetSettings(
-            allowed_domains=["https://Example.COM/", "http://api.test.io"]
-        )
+        settings = InternetSettings(allowed_domains=["https://Example.COM/", "http://api.test.io"])
         assert settings.allowed_domains == ["example.com", "api.test.io"]
 
     def test_bare_domain_lowercased(self) -> None:

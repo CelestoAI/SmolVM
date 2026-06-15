@@ -52,6 +52,7 @@ except ImportError:
         def __class_getitem__(cls, _item: Any) -> type[RunContext]:
             return cls
 
+
 DEFAULT_MODEL = "openai:gpt-5.4"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ARTIFACTS_DIR = REPO_ROOT / "artifacts" / "pydanticai-agent-browser"

@@ -1547,9 +1547,7 @@ class SmolVMManager:
             except OSError:
                 continue
             text = cmdline.replace(b"\0", b" ").decode(errors="replace")
-            live_cids.update(
-                int(match.group(1)) for match in _QEMU_VSOCK_CID_RE.finditer(text)
-            )
+            live_cids.update(int(match.group(1)) for match in _QEMU_VSOCK_CID_RE.finditer(text))
         return live_cids
 
     @staticmethod

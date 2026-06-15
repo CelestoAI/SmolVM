@@ -49,8 +49,9 @@ except ImportError:
     class RunContext:
         """Fallback used so runtime annotation evaluation does not fail."""
 
-        def __class_getitem__(cls, _item: Any) -> type["RunContext"]:
+        def __class_getitem__(cls, _item: Any) -> type[RunContext]:
             return cls
+
 
 DEFAULT_MODEL = "openai:gpt-4.1"
 

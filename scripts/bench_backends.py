@@ -14,6 +14,7 @@ image artifacts so those costs don't land in the timings.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import statistics as st
 import time
@@ -63,14 +64,10 @@ def time_one(backend: str) -> dict:
         rec["warm"] = warm
     finally:
         if vm is not None:
-            try:
+            with contextlib.suppress(Exception):
                 vm.stop()
-            except Exception:
-                pass
-            try:
+            with contextlib.suppress(Exception):
                 vm.delete()
-            except Exception:
-                pass
     return rec
 
 
@@ -102,14 +99,18 @@ def bench(backend: str) -> dict:
             traceback.print_exc()
 
     def summ(v):
-        return None if not v else {
-            "n": len(v),
-            "min": min(v),
-            "mean": st.mean(v),
-            "median": st.median(v),
-            "stdev": st.stdev(v) if len(v) > 1 else 0.0,
-            "max": max(v),
-        }
+        return (
+            None
+            if not v
+            else {
+                "n": len(v),
+                "min": min(v),
+                "mean": st.mean(v),
+                "median": st.median(v),
+                "stdev": st.stdev(v) if len(v) > 1 else 0.0,
+                "max": max(v),
+            }
+        )
 
     return {
         "backend": backend,
@@ -118,9 +119,11 @@ def bench(backend: str) -> dict:
         "boot": summ(boot),
         "first_cmd": summ(first),
         "warm_cmd": summ(warm),
-        "create_to_ready": summ([c + b for c, b in zip(create, boot)]),
+        "create_to_ready": summ([c + b for c, b in zip(create, boot, strict=False)]),
         # The honest end-to-end metric: nothing -> command returned.
-        "total_to_interact": summ([c + b + f for c, b, f in zip(create, boot, first)]),
+        "total_to_interact": summ(
+            [c + b + f for c, b, f in zip(create, boot, first, strict=False)]
+        ),
         "errors": errors,
     }
 

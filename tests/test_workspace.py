@@ -149,10 +149,14 @@ class TestVMConfigWorkspaceMounts:
                 tmp_path,
                 workspace_mounts=[
                     WorkspaceMount(
-                        host_path=d1, guest_path="/ws1", mount_tag="share",
+                        host_path=d1,
+                        guest_path="/ws1",
+                        mount_tag="share",
                     ),
                     WorkspaceMount(
-                        host_path=d2, guest_path="/ws2", mount_tag="share",
+                        host_path=d2,
+                        guest_path="/ws2",
+                        mount_tag="share",
                     ),
                 ],
             )
@@ -456,7 +460,8 @@ def test_async_start_runs_the_same_workspace_preflight(
 
 @pytest.mark.parametrize("backend", ["firecracker", "libkrun"])
 def test_workspace_rejected_on_non_qemu_backend(
-    tmp_path: Path, backend: str,
+    tmp_path: Path,
+    backend: str,
 ) -> None:
     """Workspace mounts should be rejected for non-QEMU backends."""
     from smolvm.exceptions import SmolVMError
@@ -620,11 +625,15 @@ class TestCliMountFlag:
         from smolvm.cli.main import build_parser
 
         parser = build_parser()
-        args = parser.parse_args([
-            "create",
-            "--mount", "/tmp/a",
-            "--mount", "/tmp/b:/data",
-        ])
+        args = parser.parse_args(
+            [
+                "create",
+                "--mount",
+                "/tmp/a",
+                "--mount",
+                "/tmp/b:/data",
+            ]
+        )
         assert args.mounts == ["/tmp/a", "/tmp/b:/data"]
 
     def test_mount_defaults_to_none(self) -> None:
@@ -645,11 +654,14 @@ class TestCliMountFlag:
         from smolvm.cli.main import build_parser
 
         parser = build_parser()
-        args = parser.parse_args([
-            "create",
-            "--mount", "/tmp/project",
-            "--writable-mounts",
-        ])
+        args = parser.parse_args(
+            [
+                "create",
+                "--mount",
+                "/tmp/project",
+                "--writable-mounts",
+            ]
+        )
         assert args.writable_mounts is True
 
     @patch("smolvm.facade.SmolVM")
@@ -685,9 +697,7 @@ class TestCliMountFlag:
         mock_smolvm_cls.return_value.info.status = VMState.RUNNING
 
         parser = build_parser()
-        args = parser.parse_args(
-            ["create", "--mount", str(tmp_path / "project"), "--json"]
-        )
+        args = parser.parse_args(["create", "--mount", str(tmp_path / "project"), "--json"])
 
         _run_create(args)
 
@@ -725,12 +735,16 @@ class TestCliMountFlag:
         mock_smolvm_cls.return_value.info.status = VMState.RUNNING
 
         parser = build_parser()
-        args = parser.parse_args([
-            "create",
-            "--mount", str(tmp_path / "project"),
-            "--backend", "firecracker",
-            "--json",
-        ])
+        args = parser.parse_args(
+            [
+                "create",
+                "--mount",
+                str(tmp_path / "project"),
+                "--backend",
+                "firecracker",
+                "--json",
+            ]
+        )
 
         _run_create(args)
 
@@ -843,10 +857,12 @@ class TestFacadeWorkspaceGuards:
             mock_sdk_cls.return_value = mock_sdk
 
             vm = SmolVM(config, ssh_user="agent")
-            with pytest.raises(SmolVMError, match="require ssh_user='root'"), \
-                 patch.object(vm, "can_run_commands", return_value=True), \
-                 patch.object(vm, "wait_for_ssh"), \
-                 patch("smolvm.facade.SSHClient"):
+            with (
+                pytest.raises(SmolVMError, match="require ssh_user='root'"),
+                patch.object(vm, "can_run_commands", return_value=True),
+                patch.object(vm, "wait_for_ssh"),
+                patch("smolvm.facade.SSHClient"),
+            ):
                 vm.start()
 
     def test_mount_workspaces_repairs_ubuntu_missing_9p_modules(
@@ -1005,9 +1021,7 @@ class TestFacadeWorkspaceGuards:
         vm._ssh = MagicMock()
         # Both 9p and overlay are registered as built-in. modprobe must
         # NOT be called.
-        proc_fs = (
-            "nodev\tsysfs\nnodev\tproc\n\text4\nnodev\toverlay\nnodev\t9p\n"
-        )
+        proc_fs = "nodev\tsysfs\nnodev\tproc\n\text4\nnodev\toverlay\nnodev\t9p\n"
         vm._ssh.run.side_effect = [
             CommandResult(exit_code=0, stdout=proc_fs, stderr=""),
             CommandResult(exit_code=0, stdout="", stderr=""),  # mount

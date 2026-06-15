@@ -329,8 +329,7 @@ def _build_windows_spec(*, host_system: str, arch: str) -> GuestPlatformSpec:
     arch_lower = arch.lower()
     if arch_lower not in {"x86_64", "amd64"}:
         raise NotImplementedError(
-            f"Windows guests on {arch} are not supported. "
-            "Phase 1 targets x86_64 hosts only."
+            f"Windows guests on {arch} are not supported. Phase 1 targets x86_64 hosts only."
         )
 
     firmware = _find_x86_64_ovmf()

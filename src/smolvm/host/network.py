@@ -68,6 +68,7 @@ def _mark_native_unprivileged() -> None:
             "Run with sudo to use the faster path."
         )
 
+
 # SmolVM-managed nftables objects
 _NFT_NAT_FAMILY = "ip"
 _NFT_NAT_TABLE = "smolvm_nat"
@@ -114,7 +115,9 @@ class NetworkManager:
                 logger.info("Detected outbound interface: %s", iface)
                 return iface
             except OSError as e:
-                logger.error("Native get_default_interface failed, falling back to subprocess: %s", e)
+                logger.error(
+                    "Native get_default_interface failed, falling back to subprocess: %s", e
+                )
 
         try:
             result = run_command(["ip", "route", "show", "default"], use_sudo=False)
@@ -181,7 +184,10 @@ class NetworkManager:
                         delay = 0.1 * (attempt + 1)
                         logger.warning(
                             "TAP %s busy (attempt %d/%d), retrying in %.2fs",
-                            tap_name, attempt + 1, max_busy_retries + 1, delay,
+                            tap_name,
+                            attempt + 1,
+                            max_busy_retries + 1,
+                            delay,
                         )
                         time.sleep(delay)
                         continue
@@ -656,9 +662,7 @@ class NetworkManager:
                     f"add chain {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} prerouting "
                     "{ type nat hook prerouting priority dstnat; policy accept; }"
                 )
-            nat_out = await self._async_nft_chain_exists(
-                _NFT_NAT_FAMILY, _NFT_NAT_TABLE, "output"
-            )
+            nat_out = await self._async_nft_chain_exists(_NFT_NAT_FAMILY, _NFT_NAT_TABLE, "output")
             if not nat_out:
                 script_lines.append(
                     f"add chain {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} output "
@@ -673,9 +677,7 @@ class NetworkManager:
                     "{ type nat hook postrouting priority srcnat; policy accept; }"
                 )
 
-        filter_exists = await self._async_nft_table_exists(
-            _NFT_FILTER_FAMILY, _NFT_FILTER_TABLE
-        )
+        filter_exists = await self._async_nft_table_exists(_NFT_FILTER_FAMILY, _NFT_FILTER_TABLE)
         if not filter_exists:
             script_lines.extend(
                 [
@@ -1276,11 +1278,15 @@ class NetworkManager:
 
         target = f"{guest_ip} . {guest_port}"
         self._delete_nft_elements_best_effort(
-            [
-                f"delete element {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} {_NFT_MAP_DNAT_EXT} {{ {host_port} }}",
-                f"delete element {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} {_NFT_MAP_DNAT_LOCAL} {{ {host_port} }}",
-                f"delete element {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} {_NFT_SET_SNAT_RETURN} {{ {target} }}",
-                f"delete element {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} {_NFT_SET_FWD_ALLOW} {{ {target} }}",
+            [  # noqa: E501
+                f"delete element {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE}"
+                f" {_NFT_MAP_DNAT_EXT} {{ {host_port} }}",
+                f"delete element {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE}"
+                f" {_NFT_MAP_DNAT_LOCAL} {{ {host_port} }}",
+                f"delete element {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE}"
+                f" {_NFT_SET_SNAT_RETURN} {{ {target} }}",
+                f"delete element {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE}"
+                f" {_NFT_SET_FWD_ALLOW} {{ {target} }}",
             ]
         )
 
@@ -1308,11 +1314,15 @@ class NetworkManager:
 
         target = f"{guest_ip} . {guest_port}"
         await self._async_delete_nft_elements_best_effort(
-            [
-                f"delete element {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} {_NFT_MAP_DNAT_EXT} {{ {host_port} }}",
-                f"delete element {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} {_NFT_MAP_DNAT_LOCAL} {{ {host_port} }}",
-                f"delete element {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE} {_NFT_SET_SNAT_RETURN} {{ {target} }}",
-                f"delete element {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} {_NFT_SET_FWD_ALLOW} {{ {target} }}",
+            [  # noqa: E501
+                f"delete element {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE}"
+                f" {_NFT_MAP_DNAT_EXT} {{ {host_port} }}",
+                f"delete element {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE}"
+                f" {_NFT_MAP_DNAT_LOCAL} {{ {host_port} }}",
+                f"delete element {_NFT_NAT_FAMILY} {_NFT_NAT_TABLE}"
+                f" {_NFT_SET_SNAT_RETURN} {{ {target} }}",
+                f"delete element {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE}"
+                f" {_NFT_SET_FWD_ALLOW} {{ {target} }}",
             ]
         )
 
@@ -1630,19 +1640,14 @@ class NetworkManager:
                     f"counter accept comment {self._quote(f'{comment_prefix}:allow')}"
                 ),
             )
-            drop_expr = (
-                f"iifname {self._quote(tap_device)} "
-                f"ip daddr != {{ {ip_set} }} counter drop"
-            )
+            drop_expr = f"iifname {self._quote(tap_device)} ip daddr != {{ {ip_set} }} counter drop"
         else:
             # No IPs allowed — drop unconditionally.
             drop_expr = f"iifname {self._quote(tap_device)} counter drop"
 
         script_lines.append(
-
-                f"add rule {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} forward "
-                f"{drop_expr} comment {self._quote(f'{comment_prefix}:drop')}"
-
+            f"add rule {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} forward "
+            f"{drop_expr} comment {self._quote(f'{comment_prefix}:drop')}"
         )
 
         script_lines.extend(old_egress_delete_lines)
@@ -1710,18 +1715,13 @@ class NetworkManager:
                     f"counter accept comment {self._quote(f'{comment_prefix}:allow')}"
                 ),
             )
-            drop_expr = (
-                f"iifname {self._quote(tap_device)} "
-                f"ip daddr != {{ {ip_set} }} counter drop"
-            )
+            drop_expr = f"iifname {self._quote(tap_device)} ip daddr != {{ {ip_set} }} counter drop"
         else:
             drop_expr = f"iifname {self._quote(tap_device)} counter drop"
 
         script_lines.append(
-
-                f"add rule {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} forward "
-                f"{drop_expr} comment {self._quote(f'{comment_prefix}:drop')}"
-
+            f"add rule {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} forward "
+            f"{drop_expr} comment {self._quote(f'{comment_prefix}:drop')}"
         )
 
         script_lines.extend(old_egress_delete_lines)

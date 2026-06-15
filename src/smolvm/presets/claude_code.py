@@ -75,6 +75,7 @@ def minimize_claude_json(raw: bytes) -> bytes:
     minimal = {k: data[k] for k in _CLAUDE_JSON_AUTH_KEYS if k in data}
     return json.dumps(minimal, indent=2).encode("utf-8")
 
+
 # On macOS, claude stores its OAuth tokens in the keychain (not in
 # ~/.claude/.credentials.json — that file does not exist on a
 # signed-in Mac). Pull the keychain item into the guest as the

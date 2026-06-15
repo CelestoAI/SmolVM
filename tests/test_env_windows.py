@@ -80,14 +80,8 @@ def test_inject_merge_true_first_time(tmp_path) -> None:  # noqa: ARG001
 
     # Set script contains both SetEnvironmentVariable calls with quote escapes.
     set_cmd = ssh.run.call_args_list[1].args[0]
-    assert (
-        "[Environment]::SetEnvironmentVariable('FOO', 'bar', 'User')"
-        in set_cmd
-    )
-    assert (
-        "[Environment]::SetEnvironmentVariable('BAZ', 'qu''ux', 'User')"
-        in set_cmd
-    )
+    assert "[Environment]::SetEnvironmentVariable('FOO', 'bar', 'User')" in set_cmd
+    assert "[Environment]::SetEnvironmentVariable('BAZ', 'qu''ux', 'User')" in set_cmd
 
     # Sentinel update contains both keys, sorted, comma-joined.
     sentinel_cmd = ssh.run.call_args_list[2].args[0]
@@ -195,11 +189,11 @@ def test_remove_only_clears_keys_actually_managed() -> None:
     ssh = MagicMock()
     # read_env_vars sequence (sentinel + value lookup).
     ssh.run.side_effect = [
-        _ok("FOO,BAZ\n"),                  # initial sentinel read in read_env_vars
+        _ok("FOO,BAZ\n"),  # initial sentinel read in read_env_vars
         _ok('{"FOO":"bar","BAZ":"q"}\n'),  # value lookup (JSON)
-        _ok(""),                           # clear PS run
-        _ok("FOO,BAZ\n"),                  # post-clear sentinel read
-        _ok(""),                           # sentinel rewrite
+        _ok(""),  # clear PS run
+        _ok("FOO,BAZ\n"),  # post-clear sentinel read
+        _ok(""),  # sentinel rewrite
     ]
     removed = remove_env_vars(ssh, ["FOO", "MISSING"])
     # Only FOO was actually managed — MISSING is silently ignored.

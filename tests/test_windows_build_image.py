@@ -131,9 +131,7 @@ def test_builder_refuses_to_clobber_existing_output(tmp_path: Path) -> None:
     win.touch()
     virtio.touch()
     out.write_bytes(b"existing image bytes")
-    builder = WindowsImageBuilder(
-        windows_iso=win, virtio_win_iso=virtio, output_qcow2=out
-    )
+    builder = WindowsImageBuilder(windows_iso=win, virtio_win_iso=virtio, output_qcow2=out)
     with pytest.raises(ValueError, match="already exists and is non-empty"):
         builder.build()
 

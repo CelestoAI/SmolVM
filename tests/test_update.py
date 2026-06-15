@@ -22,7 +22,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from smolvm.cli.update import _check_for_stable_update, _is_uv_tool_install, _run_upgrade, run_update
+from smolvm.cli.update import (
+    _check_for_stable_update,
+    _is_uv_tool_install,
+    run_update,
+)
 
 
 class TestCheckForStableUpdate:
@@ -168,7 +172,10 @@ class TestRunUpdate:
     def test_upgrade_json_output(self, capsys: pytest.CaptureFixture[str]) -> None:
         with (
             patch("smolvm.cli.update._check_for_stable_update", return_value=("0.9.0", "1.0.0")),
-            patch("smolvm.cli.update._run_upgrade", return_value=(0, "Successfully installed smolvm-1.0.0")),
+            patch(
+                "smolvm.cli.update._run_upgrade",
+                return_value=(0, "Successfully installed smolvm-1.0.0"),
+            ),
             patch("smolvm.cli.update._get_current_version", return_value="1.0.0"),
         ):
             rc = run_update(self._args(json_output=True))

@@ -70,9 +70,7 @@ class _FakeSmolVM:
         return SimpleNamespace(exit_code=0, stdout="", stderr="")
 
     def snapshot(self, *, snapshot_id: str, snapshot_type: Any) -> SimpleNamespace:
-        self.snapshots.append(
-            {"snapshot_id": snapshot_id, "snapshot_type": snapshot_type.value}
-        )
+        self.snapshots.append({"snapshot_id": snapshot_id, "snapshot_type": snapshot_type.value})
         return SimpleNamespace(snapshot_id=snapshot_id)
 
     def stop(self, *, timeout: float = 15.0) -> None:
@@ -122,9 +120,7 @@ def test_fresh_benchmark_attaches_boot_telemetry(monkeypatch, tmp_path: Path) ->
 
     assert record["boot_telemetry"]["guest_init_phases_ms"]["ssh_hostkey_check_ms"] == 200.0
     assert (
-        summary["boot_telemetry_stats"]["guest_init_phases_ms"]["ssh_hostkey_check_ms"][
-            "median"
-        ]
+        summary["boot_telemetry_stats"]["guest_init_phases_ms"]["ssh_hostkey_check_ms"]["median"]
         == 200.0
     )
 
@@ -171,15 +167,11 @@ def test_snapshot_benchmark_restores_with_selected_transport(monkeypatch, tmp_pa
     assert record["source_control_kind"] == "vsock"
     assert record["restore_control_kind"] == "vsock"
     assert (
-        record["snapshot_source_boot_telemetry"]["guest_init_phases_ms"][
-            "ssh_hostkey_check_ms"
-        ]
+        record["snapshot_source_boot_telemetry"]["guest_init_phases_ms"]["ssh_hostkey_check_ms"]
         == 200.0
     )
     assert (
-        record["snapshot_restore_boot_telemetry"]["guest_init_phases_ms"][
-            "ssh_hostkey_check_ms"
-        ]
+        record["snapshot_restore_boot_telemetry"]["guest_init_phases_ms"]["ssh_hostkey_check_ms"]
         == 200.0
     )
     summary = ubuntu_transport._summarize_snapshot([record])
@@ -297,9 +289,8 @@ def test_parse_variants_rejects_unknown_variant() -> None:
     except ValueError as exc:
         assert "qemu-bad" in str(exc)
         assert "qemu-vsock" in str(exc)
-        assert (
-            "uv run python scripts/benchmarks/ubuntu_transport.py --variants qemu-vsock"
-            in str(exc)
+        assert "uv run python scripts/benchmarks/ubuntu_transport.py --variants qemu-vsock" in str(
+            exc
         )
     else:
         raise AssertionError("expected invalid variant to fail")

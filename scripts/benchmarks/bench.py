@@ -244,9 +244,7 @@ def _bench_boot(backend: str, iterations: int, label: str) -> dict[str, Any]:
                 record["guest_uptime_at_first_command_s"] = None
 
             record["total_fresh_ready_ms"] = round(
-                record["host_create_ms"]
-                + record["vmm_start_ms"]
-                + record["guest_ready_wait_ms"],
+                record["host_create_ms"] + record["vmm_start_ms"] + record["guest_ready_wait_ms"],
                 1,
             )
             total_fresh_ready.append(record["total_fresh_ready_ms"])

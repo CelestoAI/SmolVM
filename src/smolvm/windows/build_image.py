@@ -322,9 +322,7 @@ class WindowsImageBuilder:
             try:
                 vm.start(boot_timeout=300)
                 self._poll_for_ready_marker(vm)
-                logger.info(
-                    "Build complete: shutting Windows down cleanly via SSH"
-                )
+                logger.info("Build complete: shutting Windows down cleanly via SSH")
                 # Trigger a clean Windows shutdown so the qcow2 isn't
                 # left in a dirty state. shutdown.exe returns before the
                 # OS actually halts; QEMU notices the powerdown when

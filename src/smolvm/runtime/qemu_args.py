@@ -168,9 +168,7 @@ def build_qemu_argv(
     if tap_mode:
         # Attach to the pre-created host TAP. script=no/downscript=no: the host
         # side (link up, IP, routes, NAT) is owned by NetworkManager, not QEMU.
-        netdev_arg = (
-            f"tap,id=net0,ifname={vm_info.network.tap_device},script=no,downscript=no"
-        )
+        netdev_arg = f"tap,id=net0,ifname={vm_info.network.tap_device},script=no,downscript=no"
     else:
         hostfwd_rules = [f"hostfwd=tcp:127.0.0.1:{vm_info.network.ssh_host_port}-:22"]
         for forward in vm_info.config.port_forwards:

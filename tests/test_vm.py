@@ -654,9 +654,7 @@ class TestSmolVMDiskLifecycle:
         def _copy(source: Path, target: Path) -> None:
             target.write_bytes(source.read_bytes())
 
-        config = sample_config.model_copy(
-            update={"disk_size_mib": 2, "grow_filesystem": True}
-        )
+        config = sample_config.model_copy(update={"disk_size_mib": 2, "grow_filesystem": True})
         with (
             patch.object(SmolVMManager, "_copy_with_reflink", side_effect=_copy),
             patch.object(smol_vm, "_grow_raw_ext4_filesystem") as mock_grow,
@@ -698,9 +696,7 @@ class TestSmolVMDiskLifecycle:
         retained_disk = smol_vm.data_dir / "disks" / "vm001.ext4"
         retained_disk.parent.mkdir(parents=True, exist_ok=True)
         retained_disk.write_bytes(b"\0" * (1024 * 1024))
-        config = sample_config.model_copy(
-            update={"disk_size_mib": 2, "grow_filesystem": True}
-        )
+        config = sample_config.model_copy(update={"disk_size_mib": 2, "grow_filesystem": True})
 
         with (
             patch.object(
@@ -791,9 +787,7 @@ class TestSmolVMDiskLifecycle:
         def _copy(source: Path, target: Path) -> None:
             target.write_bytes(source.read_bytes())
 
-        config = sample_config.model_copy(
-            update={"disk_size_mib": 2, "grow_filesystem": True}
-        )
+        config = sample_config.model_copy(update={"disk_size_mib": 2, "grow_filesystem": True})
         expected_disk = smol_vm.data_dir / "disks" / "vm001.ext4"
         with (
             patch.object(SmolVMManager, "_copy_with_reflink", side_effect=_copy),
@@ -816,9 +810,7 @@ class TestSmolVMDiskLifecycle:
         sample_config: VMConfig,
     ) -> None:
         """Resize requests must not mutate the caller's base image."""
-        config = sample_config.model_copy(
-            update={"disk_mode": "shared", "disk_size_mib": 2}
-        )
+        config = sample_config.model_copy(update={"disk_mode": "shared", "disk_size_mib": 2})
         with pytest.raises(SmolVMError, match="isolated disk"):
             smol_vm.create(config)
 
@@ -914,9 +906,7 @@ class TestSmolVMDiskLifecycle:
         """Host-side filesystem growth is raw-ext4 only in this release."""
         qcow2 = tmp_path / "disk.qcow2"
         qcow2.touch()
-        config = sample_config.model_copy(
-            update={"rootfs_path": qcow2, "grow_filesystem": True}
-        )
+        config = sample_config.model_copy(update={"rootfs_path": qcow2, "grow_filesystem": True})
         with pytest.raises(SmolVMError, match="qcow2"):
             smol_vm._resize_materialized_rootfs(config)
 

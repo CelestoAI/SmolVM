@@ -83,9 +83,7 @@ def apply_preset(
     # Keychain step runs after host_configs so a directory copy that
     # targets the same parent (e.g. ~/.claude → /root/.claude) cannot
     # tar-extract over a credential file we just wrote.
-    extracted_secrets: list[str] = transfer_keychain_secrets(
-        ssh, preset, on_progress=on_progress
-    )
+    extracted_secrets: list[str] = transfer_keychain_secrets(ssh, preset, on_progress=on_progress)
 
     env_vars = collect_host_env(preset)
     injected_keys: list[str] = []

@@ -85,9 +85,7 @@ def _build_agent() -> Any:
             "once and then summarize the result."
         ),
     )
-    agent.tool_plain(docstring_format="google", require_parameter_descriptions=True)(
-        run_in_smolvm
-    )
+    agent.tool_plain(docstring_format="google", require_parameter_descriptions=True)(run_in_smolvm)
     return agent
 
 
