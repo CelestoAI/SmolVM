@@ -33,9 +33,10 @@ def _find_gvproxy() -> str | None:
         "/opt/homebrew/Cellar/podman/*/libexec/podman/gvproxy",
         "/usr/local/Cellar/podman/*/libexec/podman/gvproxy",
     ):
-        matches = sorted(glob.glob(pattern))
+        matches = glob.glob(pattern)
         if matches:
-            return matches[-1]
+            matches.sort(key=lambda p: Path(p).stat().st_mtime, reverse=True)
+            return matches[0]
 
     # Static fallbacks (symlink layouts / custom installs)
     for candidate in (

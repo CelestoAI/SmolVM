@@ -1317,6 +1317,10 @@ class SmolVMManager:
                 "libkrun is not installed;"
                 " run 'smolvm doctor --backend libkrun' for setup guidance."
             )
+
+        if which("ssh") is None:
+            errors.append("'ssh' command not found (install openssh-client)")
+
         return errors
 
     def check_prerequisites(self) -> list[str]:
