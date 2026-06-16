@@ -721,7 +721,7 @@ def generate_doctor_report(backend: str | None = None) -> DoctorReport:
                     if available
                     else "libkrun shared library not found; install libkrun >= 1.9"
                 ),
-                fix=None if available else "brew install libkrun  # macOS\nsudo dnf install libkrun  # Fedora",
+                fix=None if available else "brew tap libkrun/krun && brew install libkrun/krun/libkrun  # macOS\nsudo dnf install libkrun  # Fedora",
             )
         )
 

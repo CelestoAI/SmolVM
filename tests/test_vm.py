@@ -207,7 +207,7 @@ class TestSmolVMCreate:
         )
 
         with (
-            patch.object(smol_vm, "_find_libkrun_library", return_value=Path("/usr/lib/libkrun.so")),
+            patch.object(smol_vm, "_find_libkrun_library", return_value=True),
             patch("smolvm.vm.which", return_value=Path("/usr/bin/ssh")),
             patch.object(smol_vm, "_find_qemu_binary", return_value=None),
             patch.object(smol_vm, "_find_qemu_img_binary", return_value=None),

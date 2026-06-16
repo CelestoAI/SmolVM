@@ -1314,8 +1314,7 @@ class SmolVMManager:
 
         if not self._find_libkrun_library():
             errors.append(
-                "libkrun shared library not found "
-                "(install libkrun >= 1.9 and ensure libkrun.so.1 / libkrun.1.dylib is on the loader path)"
+                "libkrun is not installed; run 'smolvm doctor --backend libkrun' for setup guidance."
             )
         return errors
 

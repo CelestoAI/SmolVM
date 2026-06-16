@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 from smolvm.runtime._libkrun_ffi import KERNEL_FORMAT_RAW, KrunContext, _libkrun
@@ -74,7 +75,11 @@ def _start_gvproxy(sock_path: str,ssh_host_port: int) -> subprocess.Popen:
         time.sleep(0.05)
 
     proc.kill()
-    print(f"gvproxy socket never appeared at {sock_path}", file=sys.stderr)
+    print(
+    "gvproxy started but failed to create its socket; "
+     "check 'brew reinstall podman' or run with verbose logging.",
+     file=sys.stderr,
+ )
     sys.exit(1)
 
 
@@ -88,7 +93,7 @@ def main(argv: list[str]) -> int:
     kernel_format = int(config.get("kernel_format", KERNEL_FORMAT_RAW))
 
     gvproxy_proc: subprocess.Popen | None = None
-    sock_path = f"/tmp/krun-gvproxy-{os.getpid()}.sock"
+    sock_path = f"/tmp/krun-gvproxy-{uuid.uuid4().hex[:8]}.sock"
 
     try:
         with KrunContext() as ctx:
@@ -127,7 +132,7 @@ def main(argv: list[str]) -> int:
                 if rc < 0:
                     print(
                         f"Failed to configure guest networking (krun_set_gvproxy_path returned {rc}); "
-                        "reinstall libkrun with 'brew install libkrun' or check gvproxy is running.",
+                        "reinstall libkrun with 'brew tap libkrun/krun && brew install libkrun/krun/libkrun' or check gvproxy is running.",
                         file=sys.stderr,
                     )
                     return 1

@@ -96,8 +96,14 @@ class LibkrunRuntimeAdapter(RuntimeAdapter):
         await asyncio.to_thread(self.stop, vm_info, timeout=timeout)
 
     def _wait_for_runtime(self, process: Any, boot_timeout: float, vm_id: str) -> None:
-        """Wait until the libkrun process looks live, or fail fast on early exit."""
+        """Wait until the libkrun process looks live, or fail fast on early exit.
+
+        libkrun's krun_start_enter blocks for the VM's lifetime, so the launcher
+        process runs until the VM shuts down. We give it a short settle window to
+        catch immediate crashes; after that, a running process means a running VM.
+        """
         import time
+        from contextlib import suppress
 
         settle = min(0.5, boot_timeout)
         deadline = time.time() + settle
@@ -111,12 +117,18 @@ class LibkrunRuntimeAdapter(RuntimeAdapter):
                 )
             time.sleep(0.05)
 
-        if process.poll() is not None:
+        rc = process.poll()
+        if rc is not None:
+            with suppress(Exception):
+                self._context.kill_process(process.pid)
             raise SmolVMError(
                 f"VM '{vm_id}' failed to start. Run 'smolvm delete {vm_id}' to remove it.",
+                {"return_code": rc, "pid": process.pid},
             )
 
     async def _async_wait_for_runtime(self, process: Any, boot_timeout: float, vm_id: str) -> None:
+        from contextlib import suppress
+
         settle = min(0.5, boot_timeout)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + settle
@@ -131,6 +143,8 @@ class LibkrunRuntimeAdapter(RuntimeAdapter):
 
         rc = process.poll() if hasattr(process, "poll") else process.returncode
         if rc is not None:
+            with suppress(Exception):
+                self._context.kill_process(process.pid)
             raise SmolVMError(
                 f"VM '{vm_id}' failed to start. Run 'smolvm delete {vm_id}' to remove it.",
                 {"return_code": rc, "pid": process.pid},

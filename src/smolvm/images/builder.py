@@ -1879,7 +1879,13 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
     ) -> None:
         """Execute the Docker build and image conversion."""
         docker_tag = f"smolvm-{name}"
-
+        # Bake the guest agent into every image. Centralized here so all five
+        # build_* recipes inherit it without each repeating the COPY; /init
+        # launches it, and the host reaches it over vsock.
+        # Appended after the recipe's own COPY lines — order is irrelevant for
+        # an independent file drop. Its content hash is in the fingerprint via
+        # _fingerprint_with_content, so edits still trigger a rebuild even
+        # though this COPY text is constant.
         dockerfile_content = (
             dockerfile_content
             + "\n# SmolVM guest agent (vsock control plane)\n"
