@@ -182,7 +182,7 @@ def _check_libkrun_rust_target() -> DoctorCheck:
     rustup_bin = which("rustup") or (
         str(cargo_home / "bin" / "rustup") if (cargo_home / "bin" / "rustup").exists() else None
     )
-    if rustup_bin is None: 
+    if rustup_bin is None:
         return DoctorCheck(
             name=name,
             status="fail",
@@ -239,10 +239,17 @@ def _check_hypervisor_entitlement() -> DoctorCheck:
         )
 
     blob = f"{result.stdout}\n{result.stderr}"
+    _plist = (
+        '<?xml version="1.0"?>'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"'
+        ' "http://www.apple.com/DTD/PropertyList-1.0.dtd">'
+        "<plist version=\"1.0\"><dict>"
+        "<key>com.apple.security.hypervisor</key><true/>"
+        "</dict></plist>"
+    )
     fix = (
         "Sign your Python with the hypervisor entitlement:\n"
-        "  printf '%s' '<?xml version=\"1.0\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTD/PropertyList-1.0.dtd\">"
-        "<plist version=\"1.0\"><dict><key>com.apple.security.hypervisor</key><true/></dict></plist>' > /tmp/hv.plist && "
+        f"  printf '%s' '{_plist}' > /tmp/hv.plist && "
         f"codesign --force --sign - --entitlements /tmp/hv.plist {binary}"
     )
     if "com.apple.security.hypervisor" in blob:
@@ -721,7 +728,12 @@ def generate_doctor_report(backend: str | None = None) -> DoctorReport:
                     if available
                     else "libkrun shared library not found; install libkrun >= 1.9"
                 ),
-                fix=None if available else "brew tap libkrun/krun && brew install libkrun/krun/libkrun  # macOS\nsudo dnf install libkrun  # Fedora",
+                fix=None
+                if available
+                else (
+                    "brew tap libkrun/krun && brew install libkrun/krun/libkrun"
+                    "  # macOS\nsudo dnf install libkrun  # Fedora"
+                ),
             )
         )
 

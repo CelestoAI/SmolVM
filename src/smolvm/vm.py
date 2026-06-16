@@ -32,8 +32,8 @@ import shutil
 import signal
 import socket
 import subprocess
-import time
 import sys
+import time
 from collections.abc import Iterator
 from contextlib import asynccontextmanager, contextmanager, suppress
 from datetime import datetime, timezone
@@ -1314,7 +1314,8 @@ class SmolVMManager:
 
         if not self._find_libkrun_library():
             errors.append(
-                "libkrun is not installed; run 'smolvm doctor --backend libkrun' for setup guidance."
+                "libkrun is not installed;"
+                " run 'smolvm doctor --backend libkrun' for setup guidance."
             )
         return errors
 
@@ -2678,10 +2679,12 @@ class SmolVMManager:
     def _find_libkrun_library(self) -> bool:
         """Check whether libkrun is loadable on this host."""
         from smolvm.runtime._libkrun_ffi import is_available
+
         return is_available()
-    
+
     def _build_libkrun_config(self, vm_info: VMInfo) -> dict[str, Any]:
         import platform
+
         from smolvm.runtime._libkrun_ffi import KERNEL_FORMAT_ELF, KERNEL_FORMAT_RAW
 
         cfg = vm_info.config
@@ -2706,7 +2709,7 @@ class SmolVMManager:
             uds_path = cfg.vsock.uds_path or str(self.socket_dir / f"vsock-{vm_info.vm_id}.sock")
             payload["vsock_ports"].append({"port": 1024, "uds_path": uds_path})
         return payload
-    
+
     def _write_libkrun_config(self, vm_info: VMInfo, payload: dict[str, Any]) -> Path:
         config_path = self.socket_dir / f"libkrun-{vm_info.vm_id}-{uuid4().hex}.json"
         config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2716,9 +2719,9 @@ class SmolVMManager:
         return config_path
 
     def _start_libkrun(
-            self,
-            vm_info: VMInfo,
-            log_path: Path,
+        self,
+        vm_info: VMInfo,
+        log_path: Path,
     ) -> subprocess.Popen[bytes]:
         """Start a libkrun VM via the in-tree FFI launcher subprocess."""
         if not self._find_libkrun_library():
@@ -2727,7 +2730,7 @@ class SmolVMManager:
                 f"run 'smolvm doctor --backend libkrun', then run "
                 f"'smolvm start {vm_info.vm_id}'."
             )
-        
+
         config_path = self._write_libkrun_config(vm_info, self._build_libkrun_config(vm_info))
         cmd = [sys.executable, "-m", "smolvm.runtime._libkrun_launcher", str(config_path)]
 
@@ -3423,10 +3426,9 @@ class SmolVMManager:
                 f"run 'smolvm doctor --backend libkrun', then run "
                 f"'smolvm start {vm_info.vm_id}'."
             )
-        
+
         config_path = self._write_libkrun_config(vm_info, self._build_libkrun_config(vm_info))
         cmd = [sys.executable, "-m", "smolvm.runtime._libkrun_launcher", str(config_path)]
-
 
         logger.debug("Async starting libkrun: %s", " ".join(shlex.quote(part) for part in cmd))
         log_file = open(log_path, "w")  # noqa: SIM115 - must stay open while process runs

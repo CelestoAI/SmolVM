@@ -3,10 +3,11 @@
 # ctypes binding for libkrun (used by libkrun runtime adapter).
 
 from __future__ import annotations
+
 import ctypes
 import ctypes.util
-from collections.abc import Mapping
 import platform
+from collections.abc import Mapping
 from pathlib import Path
 
 from smolvm.exceptions import SmolVMError
@@ -18,6 +19,7 @@ KERNEL_FORMAT_PE_GZ = 2
 KERNEL_FORMAT_IMAGE_BZ2 = 3
 KERNEL_FORMAT_IMAGE_GZ = 4
 KERNEL_FORMAT_IMAGE_ZSTD = 5
+
 
 def _candidate_library_names() -> list[str]:
     system = platform.system()
@@ -32,6 +34,7 @@ def _candidate_library_names() -> list[str]:
         return names
     # Linux
     return ["libkrun.so.1", "libkrun.so", "/usr/local/lib/libkrun.so.1"]
+
 
 def _load_library() -> ctypes.CDLL:
     last_err: OSError | None = None
@@ -52,7 +55,9 @@ def _load_library() -> ctypes.CDLL:
         {"last_error": str(last_err) if last_err else None},
     )
 
-_lib : ctypes.CDLL | None = None
+
+_lib: ctypes.CDLL | None = None
+
 
 def _libkrun() -> ctypes.CDLL:
     global _lib
@@ -72,7 +77,10 @@ def _libkrun() -> ctypes.CDLL:
         lib.krun_set_root_disk.restype = ctypes.c_int32
 
         lib.krun_add_disk.argtypes = [
-            ctypes.c_uint32, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_bool
+            ctypes.c_uint32,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_bool,
         ]
         lib.krun_add_disk.restype = ctypes.c_int32
 
@@ -97,34 +105,40 @@ def _libkrun() -> ctypes.CDLL:
         _lib = lib
     return _lib
 
+
 def is_available() -> bool:
     try:
         _libkrun()
         return True
     except SmolVMError:
         return False
-    
+
+
 def _check(rc: int, op: str) -> None:
     if rc < 0:
         raise SmolVMError(f"libkrun {op} failed", {"return_code": rc})
-    
+
+
 def _encode(value: str | Path | None) -> bytes | None:
     if value is None:
         return None
     return str(value).encode("utf-8")
 
+
 def _build_envp(env: Mapping[str, str] | None) -> ctypes.Array[ctypes.c_char_p] | None:
     if env is None:
         return None
-    items = [f"{key}={value}".encode("utf-8") for key, value in env.items()]
-    arr = (ctypes.c_char_p * (len(items) + 1))() 
+    items = [f"{key}={value}".encode() for key, value in env.items()]
+    arr = (ctypes.c_char_p * (len(items) + 1))()
     for i, item in enumerate(items):
         arr[i] = item
     arr[len(items)] = None
     return arr
 
+
 class KrunContext:
     """RAII wrapper around a libkrun context id."""
+
     def __init__(self) -> None:
         lib = _libkrun()
         rc = lib.krun_create_ctx()
@@ -136,13 +150,15 @@ class KrunContext:
     @property
     def ctx_id(self) -> int:
         return self._ctx_id
-    
+
     def set_vm_config(self, vcpus: int, memory_mib: int) -> None:
         _check(_libkrun().krun_set_vm_config(self._ctx_id, vcpus, memory_mib), "krun_set_vm_config")
-    
+
     def set_root_disk(self, disk_path: Path) -> None:
-        _check(_libkrun().krun_set_root_disk(self._ctx_id, _encode(disk_path)), "krun_set_root_disk")
-    
+        _check(
+            _libkrun().krun_set_root_disk(self._ctx_id, _encode(disk_path)), "krun_set_root_disk"
+        )
+
     def add_disk(self, block_id: str, disk_path: Path, read_only: bool = False) -> None:
         _check(
             _libkrun().krun_add_disk(
@@ -150,7 +166,7 @@ class KrunContext:
             ),
             "krun_add_disk",
         )
-    
+
     def set_kernel(
         self,
         kernel_path: Path,
@@ -169,13 +185,13 @@ class KrunContext:
             ),
             "krun_set_kernel",
         )
-    
+
     def add_vsock_port(self, port: int, uds_path: Path) -> None:
         _check(
             _libkrun().krun_add_vsock_port(self._ctx_id, port, _encode(uds_path)),
             "krun_add_vsock_port",
         )
-    
+
     def set_env(self, env: Mapping[str, str]) -> None:
         envp = _build_envp(env)
         _check(_libkrun().krun_set_env(self._ctx_id, envp), "krun_set_env")
@@ -184,7 +200,7 @@ class KrunContext:
         """Block on the guest. Returns the libkrun exit code (>=0)."""
         rc = _libkrun().krun_start_enter(self._ctx_id)
         return rc
-    
+
     def close(self) -> None:
         if self._closed:
             return
@@ -193,11 +209,12 @@ class KrunContext:
         finally:
             self._closed = True
 
-    def __enter__(self) -> "KrunContext":
+    def __enter__(self) -> KrunContext:
         return self
 
     def __exit__(self, *exc: object) -> None:
         self.close()
+
 
 __all__ = [
     "KERNEL_FORMAT_RAW",

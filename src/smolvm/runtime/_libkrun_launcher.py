@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import ctypes
 import json
-import os
 import subprocess
 import sys
 import time
@@ -51,7 +50,7 @@ def _find_gvproxy() -> str | None:
     return None
 
 
-def _start_gvproxy(sock_path: str,ssh_host_port: int) -> subprocess.Popen:
+def _start_gvproxy(sock_path: str, ssh_host_port: int) -> subprocess.Popen:
     binary = _find_gvproxy()
     if binary is None:
         print(
@@ -63,9 +62,12 @@ def _start_gvproxy(sock_path: str,ssh_host_port: int) -> subprocess.Popen:
 
     cmd = [
         binary,
-        "-listen-vfkit", f"unixgram://{sock_path}",
-        "-ssh-port", str(ssh_host_port),
-        "-mtu", "1500",
+        "-listen-vfkit",
+        f"unixgram://{sock_path}",
+        "-ssh-port",
+        str(ssh_host_port),
+        "-mtu",
+        "1500",
     ]
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -76,10 +78,10 @@ def _start_gvproxy(sock_path: str,ssh_host_port: int) -> subprocess.Popen:
 
     proc.kill()
     print(
-    "gvproxy started but failed to create its socket; "
-     "check 'brew reinstall podman' or run with verbose logging.",
-     file=sys.stderr,
- )
+        "gvproxy started but failed to create its socket; "
+        "check 'brew reinstall podman' or run with verbose logging.",
+        file=sys.stderr,
+    )
     sys.exit(1)
 
 
@@ -131,8 +133,11 @@ def main(argv: list[str]) -> int:
                 rc = lib.krun_set_gvproxy_path(ctx.ctx_id, sock_path.encode())
                 if rc < 0:
                     print(
-                        f"Failed to configure guest networking (krun_set_gvproxy_path returned {rc}); "
-                        "reinstall libkrun with 'brew tap libkrun/krun && brew install libkrun/krun/libkrun' or check gvproxy is running.",
+                        "Failed to configure guest networking"
+                        f" (krun_set_gvproxy_path returned {rc});"
+                        " reinstall libkrun with"
+                        " 'brew tap libkrun/krun && brew install libkrun/krun/libkrun'"
+                        " or check gvproxy is running.",
                         file=sys.stderr,
                     )
                     return 1
@@ -143,10 +148,10 @@ def main(argv: list[str]) -> int:
     finally:
         if gvproxy_proc is not None:
             gvproxy_proc.kill()
-        try:
+        import contextlib
+
+        with contextlib.suppress(OSError):
             Path(sock_path).unlink(missing_ok=True)
-        except OSError:
-            pass
 
 
 if __name__ == "__main__":
