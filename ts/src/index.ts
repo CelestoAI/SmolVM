@@ -28,10 +28,26 @@
  */
 
 import { createClient, createConfig } from "./client/client";
-import { createSandbox, getSandbox } from "./client/sdk.gen";
-import type { CreateSandboxRequest, SandboxResponse } from "./client/types.gen";
+import {
+  createSandbox,
+  deleteSandbox,
+  execCommand,
+  getSandbox,
+  listSandboxes,
+} from "./client/sdk.gen";
+import type {
+  CreateSandboxRequest,
+  ExecRequest,
+  ExecResponse,
+  SandboxResponse,
+} from "./client/types.gen";
 
-export type { CreateSandboxRequest, SandboxResponse } from "./client/types.gen";
+export type {
+  CreateSandboxRequest,
+  ExecRequest,
+  ExecResponse,
+  SandboxResponse,
+} from "./client/types.gen";
 
 /** Options for constructing a {@link Smolvm} client. */
 export interface SmolvmOptions {
@@ -90,6 +106,41 @@ class SandboxApi {
 
     if (error) {
       throw new Error(`Failed to get sandbox ${sandboxId}: ${describeError(error)}`);
+    }
+    return data!;
+  }
+
+  /** List every sandbox that exists on the host. */
+  async list(): Promise<SandboxResponse[]> {
+    const { data, error } = await listSandboxes({ client: this.client });
+    if (error) {
+      throw new Error(`Failed to list sandboxes: ${describeError(error)}`);
+    }
+    return data!;
+  }
+
+  /** Stop a sandbox and release its resources. */
+  async delete(sandboxId: string): Promise<void> {
+    const { error } = await deleteSandbox({
+      client: this.client,
+      path: { sandbox_id: sandboxId },
+    });
+    if (error) {
+      throw new Error(`Failed to delete sandbox ${sandboxId}: ${describeError(error)}`);
+    }
+  }
+
+  /** Run a command inside a sandbox and return its result. */
+  async exec(sandboxId: string, request: ExecRequest): Promise<ExecResponse> {
+    const { data, error } = await execCommand({
+      client: this.client,
+      path: { sandbox_id: sandboxId },
+      body: request,
+    });
+    if (error) {
+      throw new Error(
+        `Failed to run command in sandbox ${sandboxId}: ${describeError(error)}`,
+      );
     }
     return data!;
   }

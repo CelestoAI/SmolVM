@@ -7,6 +7,27 @@
   },
   "paths": {
     "/sandboxes": {
+      "get": {
+        "summary": "List Sandboxes",
+        "description": "List every sandbox that exists on the host.\n\nEnumerates host VMs directly rather than the in-memory registry,\nso sandboxes created before this server started are included.",
+        "operationId": "listSandboxes",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SandboxResponse"
+                  },
+                  "type": "array",
+                  "title": "Response Listsandboxes"
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "summary": "Create Sandbox",
         "description": "Create, boot, and register a new sandbox.\n\nBuilds a :class:`~smolvm.SmolVM` from the request's auto-config\nfields, starts it, stores it in the registry under its id, and\nreturns the client-safe view.",
@@ -58,7 +79,7 @@
     "/sandboxes/{sandbox_id}": {
       "get": {
         "summary": "Get Sandbox",
-        "description": "Return the current state of a sandbox.\n\nThe in-memory registry is treated as a cache, not the source of\ntruth: on a miss we try to reconnect to a sandbox that exists on\nthe host (e.g. one created before this server process started)\nvia :meth:`SmolVM.from_id`, and backfill the registry so later\ncalls hit the fast path. Only a sandbox that exists nowhere on\nthe host yields a 404.",
+        "description": "Return the current state of a sandbox.\n\nOn a registry miss the sandbox is reconnected from the host, so\nonly a sandbox that exists nowhere yields a 404.",
         "operationId": "getSandbox",
         "parameters": [
           {
@@ -94,6 +115,127 @@
           },
           "409": {
             "description": "The sandbox exists but could not be reconnected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Sandbox",
+        "description": "Stop the sandbox, release its resources, and forget it.\n\nEvicts the facade from the registry so its id stops resolving \u2014\nthe write-through delete the registry-as-cache model needs.",
+        "operationId": "deleteSandbox",
+        "parameters": [
+          {
+            "name": "sandbox_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Sandbox Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No sandbox with that id exists on the host.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The sandbox exists but could not be reconnected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sandboxes/{sandbox_id}/exec": {
+      "post": {
+        "summary": "Exec Command",
+        "description": "Run a command inside a sandbox and return its result.\n\nResolves the sandbox (reconnecting on a registry miss), then runs\nthe command over the facade's cached SSH channel.",
+        "operationId": "execCommand",
+        "parameters": [
+          {
+            "name": "sandbox_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Sandbox Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No sandbox with that id exists on the host.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The sandbox exists but the command could not run.",
             "content": {
               "application/json": {
                 "schema": {
@@ -213,6 +355,63 @@
         ],
         "title": "ErrorResponse",
         "description": "The body returned for a handled 4xx error.\n\nMirrors FastAPI's :class:`~fastapi.HTTPException` shape (``{detail}``)\nso the generated SDKs get a typed error surface distinct from the\n422 request-validation body, whose ``detail`` is a list of field\nerrors rather than a single string."
+      },
+      "ExecRequest": {
+        "properties": {
+          "command": {
+            "type": "string",
+            "title": "Command",
+            "description": "Shell command to execute in the sandbox."
+          },
+          "timeout": {
+            "type": "integer",
+            "maximum": 3600.0,
+            "minimum": 1.0,
+            "title": "Timeout",
+            "description": "Maximum seconds to wait for the command to finish.",
+            "default": 30
+          },
+          "shell": {
+            "type": "string",
+            "enum": [
+              "login",
+              "raw"
+            ],
+            "title": "Shell",
+            "description": "'login' runs via the guest login shell; 'raw' executes the command directly with no shell wrapping.",
+            "default": "login"
+          }
+        },
+        "type": "object",
+        "required": [
+          "command"
+        ],
+        "title": "ExecRequest",
+        "description": "Request body for running a command inside a sandbox.\n\nMirrors the arguments of :meth:`smolvm.SmolVM.run`."
+      },
+      "ExecResponse": {
+        "properties": {
+          "exit_code": {
+            "type": "integer",
+            "title": "Exit Code"
+          },
+          "stdout": {
+            "type": "string",
+            "title": "Stdout"
+          },
+          "stderr": {
+            "type": "string",
+            "title": "Stderr"
+          }
+        },
+        "type": "object",
+        "required": [
+          "exit_code",
+          "stdout",
+          "stderr"
+        ],
+        "title": "ExecResponse",
+        "description": "The result of a command run inside a sandbox.\n\nReuses the engine's :class:`~smolvm.types.CommandResult` (exit code,\nstdout, stderr) under an API-owned name so the generated SDKs expose\na stable ``ExecResponse`` type rather than an engine-internal one."
       },
       "HTTPValidationError": {
         "properties": {

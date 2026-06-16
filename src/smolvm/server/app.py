@@ -20,23 +20,28 @@ is stateful (it owns the SSH/control channel to the guest), so the
 registry is what lets a later ``GET`` or ``exec`` find the sandbox a
 prior ``POST`` created. This is the standard local-daemon pattern.
 
-This PoC exposes two endpoints:
+It exposes the sandbox lifecycle:
 
-- ``POST /sandboxes``  — create, boot, and register a sandbox.
-- ``GET  /sandboxes/{id}`` — fetch a registered sandbox's state.
+- ``POST   /sandboxes``           — create, boot, and register a sandbox.
+- ``GET    /sandboxes``           — list every sandbox on the host.
+- ``GET    /sandboxes/{id}``      — fetch a sandbox's state.
+- ``DELETE /sandboxes/{id}``      — stop the sandbox and forget it.
+- ``POST   /sandboxes/{id}/exec`` — run a command inside the sandbox.
 """
 
 from __future__ import annotations
 
 import logging
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 
 from smolvm.exceptions import SmolVMError, VMNotFoundError
-from smolvm.facade import SmolVM
+from smolvm.facade import SmolVM, _existing_vm_ids
 from smolvm.server.models import (
     CreateSandboxRequest,
     ErrorResponse,
+    ExecRequest,
+    ExecResponse,
     SandboxResponse,
 )
 
@@ -56,9 +61,50 @@ def create_app() -> FastAPI:
         version="0.1.0",
     )
 
-    # Live facade instances, keyed by sandbox id. Lives for the process
-    # lifetime; a future revision will add eviction / cleanup on stop.
+    # Live facade instances, keyed by sandbox id. Acts as a write-through
+    # cache over the host: misses reconnect via SmolVM.from_id and backfill;
+    # DELETE evicts. A facade owns the SSH/control channel, so caching it
+    # also avoids re-handshaking on every exec.
     sandboxes: dict[str, SmolVM] = {}
+
+    def resolve(sandbox_id: str) -> SmolVM:
+        """Return the live facade for ``sandbox_id``, reconnecting on miss.
+
+        The registry is a cache, not the source of truth: on a miss we
+        reconnect to a sandbox that exists on the host (e.g. one created
+        before this server process started) via :meth:`SmolVM.from_id`
+        and backfill the registry so later calls hit the fast path.
+
+        Raises:
+            HTTPException: 404 if no such sandbox exists anywhere on the
+                host; 409 if it exists but cannot be reconnected.
+        """
+        vm = sandboxes.get(sandbox_id)
+        if vm is not None:
+            return vm
+        try:
+            vm = SmolVM.from_id(sandbox_id)
+            # from_id binds vm_id verbatim, so sandbox_id == vm.vm_id here.
+            sandboxes[sandbox_id] = vm
+        except VMNotFoundError:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"No sandbox named '{sandbox_id}'. Create one with "
+                    f"POST /sandboxes, or list active sandboxes."
+                ),
+            ) from None
+        except (ValueError, SmolVMError) as exc:
+            # The sandbox exists but could not be reconnected (e.g. it is
+            # in a bad state or its control channel is unreachable).
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Could not reconnect to sandbox '{sandbox_id}': {exc}. "
+                    f"Create a fresh one with POST /sandboxes."
+                ),
+            ) from exc
+        return vm
 
     @app.post(
         "/sandboxes",
@@ -112,39 +158,101 @@ def create_app() -> FastAPI:
     def get_sandbox(sandbox_id: str) -> SandboxResponse:
         """Return the current state of a sandbox.
 
-        The in-memory registry is treated as a cache, not the source of
-        truth: on a miss we try to reconnect to a sandbox that exists on
-        the host (e.g. one created before this server process started)
-        via :meth:`SmolVM.from_id`, and backfill the registry so later
-        calls hit the fast path. Only a sandbox that exists nowhere on
-        the host yields a 404.
+        On a registry miss the sandbox is reconnected from the host, so
+        only a sandbox that exists nowhere yields a 404.
         """
-        vm = sandboxes.get(sandbox_id)
-        if vm is None:
-            try:
-                vm = SmolVM.from_id(sandbox_id)
-                # Backfill the cache so the next GET hits the fast path.
-                # from_id binds vm_id verbatim, so sandbox_id == vm.vm_id here.
-                sandboxes[sandbox_id] = vm
-            except VMNotFoundError:
-                raise HTTPException(
-                    status_code=404,
-                    detail=(
-                        f"No sandbox named '{sandbox_id}'. Create one with "
-                        f"POST /sandboxes, or list active sandboxes."
-                    ),
-                ) from None
-            except (ValueError, SmolVMError) as exc:
-                # The sandbox exists but could not be reconnected (e.g. it
-                # is in a bad state or its control channel is unreachable).
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        f"Could not reconnect to sandbox '{sandbox_id}': {exc}. "
-                        f"Create a fresh one with POST /sandboxes."
-                    ),
-                ) from exc
+        vm = resolve(sandbox_id)
         vm.refresh()
         return SandboxResponse(id=vm.vm_id, status=vm.status)
+
+    @app.get(
+        "/sandboxes",
+        response_model=list[SandboxResponse],
+        operation_id="listSandboxes",
+    )
+    def list_sandboxes() -> list[SandboxResponse]:
+        """List every sandbox that exists on the host.
+
+        Enumerates host VMs directly rather than the in-memory registry,
+        so sandboxes created before this server started are included.
+        """
+        responses: list[SandboxResponse] = []
+        for vm_id in sorted(_existing_vm_ids()):
+            try:
+                vm = resolve(vm_id)
+                vm.refresh()
+            except HTTPException:
+                # A sandbox that vanished or cannot be reconnected between
+                # listing and resolving is skipped rather than failing the
+                # whole list.
+                continue
+            responses.append(SandboxResponse(id=vm.vm_id, status=vm.status))
+        return responses
+
+    @app.delete(
+        "/sandboxes/{sandbox_id}",
+        status_code=204,
+        operation_id="deleteSandbox",
+        responses={
+            404: {
+                "model": ErrorResponse,
+                "description": "No sandbox with that id exists on the host.",
+            },
+            409: {
+                "model": ErrorResponse,
+                "description": "The sandbox exists but could not be reconnected.",
+            },
+        },
+    )
+    def delete_sandbox(sandbox_id: str) -> Response:
+        """Stop the sandbox, release its resources, and forget it.
+
+        Evicts the facade from the registry so its id stops resolving —
+        the write-through delete the registry-as-cache model needs.
+        """
+        vm = resolve(sandbox_id)
+        vm.delete()
+        sandboxes.pop(vm.vm_id, None)
+        return Response(status_code=204)
+
+    @app.post(
+        "/sandboxes/{sandbox_id}/exec",
+        response_model=ExecResponse,
+        operation_id="execCommand",
+        responses={
+            404: {
+                "model": ErrorResponse,
+                "description": "No sandbox with that id exists on the host.",
+            },
+            409: {
+                "model": ErrorResponse,
+                "description": "The sandbox exists but the command could not run.",
+            },
+        },
+    )
+    def exec_command(sandbox_id: str, body: ExecRequest) -> ExecResponse:
+        """Run a command inside a sandbox and return its result.
+
+        Resolves the sandbox (reconnecting on a registry miss), then runs
+        the command over the facade's cached SSH channel.
+        """
+
+        vm = resolve(sandbox_id)
+        try:
+            result = vm.run(body.command, body.timeout, body.shell)
+        except (ValueError, SmolVMError) as exc:
+            # The sandbox exists but the command could not run (e.g. it is
+            # not running, or has no SSH-capable channel). A command that
+            # runs and exits non-zero is NOT an error — that is a
+            # successful exec returning a non-zero exit_code below.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Could not run the command in sandbox '{sandbox_id}': {exc}. "
+                    f"Check the sandbox is running with "
+                    f"GET /sandboxes/{sandbox_id}."
+                ),
+            ) from exc
+        return ExecResponse(**result.model_dump())
 
     return app

@@ -28,7 +28,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from smolvm.types import VMState
+from smolvm.types import CommandResult, VMState
 
 
 class CreateSandboxRequest(BaseModel):
@@ -87,3 +87,32 @@ class SandboxResponse(BaseModel):
 
     id: str = Field(description="Stable sandbox identifier.")
     status: VMState = Field(description="Current lifecycle state.")
+
+
+class ExecRequest(BaseModel):
+    """Request body for running a command inside a sandbox.
+
+    Mirrors the arguments of :meth:`smolvm.SmolVM.run`.
+    """
+
+    command: str = Field(description="Shell command to execute in the sandbox.")
+    timeout: int = Field(
+        default=30,
+        ge=1,
+        le=3600,
+        description="Maximum seconds to wait for the command to finish.",
+    )
+    shell: Literal["login", "raw"] = Field(
+        default="login",
+        description="'login' runs via the guest login shell; 'raw' executes "
+        "the command directly with no shell wrapping.",
+    )
+
+
+class ExecResponse(CommandResult):
+    """The result of a command run inside a sandbox.
+
+    Reuses the engine's :class:`~smolvm.types.CommandResult` (exit code,
+    stdout, stderr) under an API-owned name so the generated SDKs expose
+    a stable ``ExecResponse`` type rather than an engine-internal one.
+    """

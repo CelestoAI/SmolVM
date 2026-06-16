@@ -66,6 +66,58 @@ export type ErrorResponse = {
 };
 
 /**
+ * ExecRequest
+ *
+ * Request body for running a command inside a sandbox.
+ *
+ * Mirrors the arguments of :meth:`smolvm.SmolVM.run`.
+ */
+export type ExecRequest = {
+    /**
+     * Command
+     *
+     * Shell command to execute in the sandbox.
+     */
+    command: string;
+    /**
+     * Timeout
+     *
+     * Maximum seconds to wait for the command to finish.
+     */
+    timeout?: number;
+    /**
+     * Shell
+     *
+     * 'login' runs via the guest login shell; 'raw' executes the command directly with no shell wrapping.
+     */
+    shell?: 'login' | 'raw';
+};
+
+/**
+ * ExecResponse
+ *
+ * The result of a command run inside a sandbox.
+ *
+ * Reuses the engine's :class:`~smolvm.types.CommandResult` (exit code,
+ * stdout, stderr) under an API-owned name so the generated SDKs expose
+ * a stable ``ExecResponse`` type rather than an engine-internal one.
+ */
+export type ExecResponse = {
+    /**
+     * Exit Code
+     */
+    exit_code: number;
+    /**
+     * Stdout
+     */
+    stdout: string;
+    /**
+     * Stderr
+     */
+    stderr: string;
+};
+
+/**
  * HTTPValidationError
  */
 export type HttpValidationError = {
@@ -131,6 +183,24 @@ export type ValidationError = {
     };
 };
 
+export type ListSandboxesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/sandboxes';
+};
+
+export type ListSandboxesResponses = {
+    /**
+     * Response Listsandboxes
+     *
+     * Successful Response
+     */
+    200: Array<SandboxResponse>;
+};
+
+export type ListSandboxesResponse = ListSandboxesResponses[keyof ListSandboxesResponses];
+
 export type CreateSandboxData = {
     body: CreateSandboxRequest;
     path?: never;
@@ -159,6 +229,44 @@ export type CreateSandboxResponses = {
 };
 
 export type CreateSandboxResponse = CreateSandboxResponses[keyof CreateSandboxResponses];
+
+export type DeleteSandboxData = {
+    body?: never;
+    path: {
+        /**
+         * Sandbox Id
+         */
+        sandbox_id: string;
+    };
+    query?: never;
+    url: '/sandboxes/{sandbox_id}';
+};
+
+export type DeleteSandboxErrors = {
+    /**
+     * No sandbox with that id exists on the host.
+     */
+    404: ErrorResponse;
+    /**
+     * The sandbox exists but could not be reconnected.
+     */
+    409: ErrorResponse;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type DeleteSandboxError = DeleteSandboxErrors[keyof DeleteSandboxErrors];
+
+export type DeleteSandboxResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type DeleteSandboxResponse = DeleteSandboxResponses[keyof DeleteSandboxResponses];
 
 export type GetSandboxData = {
     body?: never;
@@ -197,3 +305,41 @@ export type GetSandboxResponses = {
 };
 
 export type GetSandboxResponse = GetSandboxResponses[keyof GetSandboxResponses];
+
+export type ExecCommandData = {
+    body: ExecRequest;
+    path: {
+        /**
+         * Sandbox Id
+         */
+        sandbox_id: string;
+    };
+    query?: never;
+    url: '/sandboxes/{sandbox_id}/exec';
+};
+
+export type ExecCommandErrors = {
+    /**
+     * No sandbox with that id exists on the host.
+     */
+    404: ErrorResponse;
+    /**
+     * The sandbox exists but the command could not run.
+     */
+    409: ErrorResponse;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ExecCommandError = ExecCommandErrors[keyof ExecCommandErrors];
+
+export type ExecCommandResponses = {
+    /**
+     * Successful Response
+     */
+    200: ExecResponse;
+};
+
+export type ExecCommandResponse = ExecCommandResponses[keyof ExecCommandResponses];

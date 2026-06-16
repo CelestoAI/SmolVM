@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { CreateSandboxData, CreateSandboxErrors, CreateSandboxResponses, GetSandboxData, GetSandboxErrors, GetSandboxResponses } from './types.gen';
+import type { CreateSandboxData, CreateSandboxErrors, CreateSandboxResponses, DeleteSandboxData, DeleteSandboxErrors, DeleteSandboxResponses, ExecCommandData, ExecCommandErrors, ExecCommandResponses, GetSandboxData, GetSandboxErrors, GetSandboxResponses, ListSandboxesData, ListSandboxesResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -17,6 +17,16 @@ export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends 
      */
     meta?: keyof ClientMeta extends never ? Record<string, unknown> : ClientMeta;
 };
+
+/**
+ * List Sandboxes
+ *
+ * List every sandbox that exists on the host.
+ *
+ * Enumerates host VMs directly rather than the in-memory registry,
+ * so sandboxes created before this server started are included.
+ */
+export const listSandboxes = <ThrowOnError extends boolean = false>(options?: Options<ListSandboxesData, ThrowOnError>): RequestResult<ListSandboxesResponses, unknown, ThrowOnError> => (options?.client ?? client).get<ListSandboxesResponses, unknown, ThrowOnError>({ url: '/sandboxes', ...options });
 
 /**
  * Create Sandbox
@@ -37,15 +47,38 @@ export const createSandbox = <ThrowOnError extends boolean = false>(options: Opt
 });
 
 /**
+ * Delete Sandbox
+ *
+ * Stop the sandbox, release its resources, and forget it.
+ *
+ * Evicts the facade from the registry so its id stops resolving —
+ * the write-through delete the registry-as-cache model needs.
+ */
+export const deleteSandbox = <ThrowOnError extends boolean = false>(options: Options<DeleteSandboxData, ThrowOnError>): RequestResult<DeleteSandboxResponses, DeleteSandboxErrors, ThrowOnError> => (options.client ?? client).delete<DeleteSandboxResponses, DeleteSandboxErrors, ThrowOnError>({ url: '/sandboxes/{sandbox_id}', ...options });
+
+/**
  * Get Sandbox
  *
  * Return the current state of a sandbox.
  *
- * The in-memory registry is treated as a cache, not the source of
- * truth: on a miss we try to reconnect to a sandbox that exists on
- * the host (e.g. one created before this server process started)
- * via :meth:`SmolVM.from_id`, and backfill the registry so later
- * calls hit the fast path. Only a sandbox that exists nowhere on
- * the host yields a 404.
+ * On a registry miss the sandbox is reconnected from the host, so
+ * only a sandbox that exists nowhere yields a 404.
  */
 export const getSandbox = <ThrowOnError extends boolean = false>(options: Options<GetSandboxData, ThrowOnError>): RequestResult<GetSandboxResponses, GetSandboxErrors, ThrowOnError> => (options.client ?? client).get<GetSandboxResponses, GetSandboxErrors, ThrowOnError>({ url: '/sandboxes/{sandbox_id}', ...options });
+
+/**
+ * Exec Command
+ *
+ * Run a command inside a sandbox and return its result.
+ *
+ * Resolves the sandbox (reconnecting on a registry miss), then runs
+ * the command over the facade's cached SSH channel.
+ */
+export const execCommand = <ThrowOnError extends boolean = false>(options: Options<ExecCommandData, ThrowOnError>): RequestResult<ExecCommandResponses, ExecCommandErrors, ThrowOnError> => (options.client ?? client).post<ExecCommandResponses, ExecCommandErrors, ThrowOnError>({
+    url: '/sandboxes/{sandbox_id}/exec',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
