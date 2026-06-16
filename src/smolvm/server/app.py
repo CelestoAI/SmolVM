@@ -67,7 +67,7 @@ def create_app() -> FastAPI:
     # also avoids re-handshaking on every exec.
     sandboxes: dict[str, SmolVM] = {}
 
-    def resolve(sandbox_id: str) -> SmolVM:
+    def _resolve(sandbox_id: str) -> SmolVM:
         """Return the live facade for ``sandbox_id``, reconnecting on miss.
 
         The registry is a cache, not the source of truth: on a miss we
@@ -161,7 +161,7 @@ def create_app() -> FastAPI:
         On a registry miss the sandbox is reconnected from the host, so
         only a sandbox that exists nowhere yields a 404.
         """
-        vm = resolve(sandbox_id)
+        vm = _resolve(sandbox_id)
         vm.refresh()
         return SandboxResponse(id=vm.vm_id, status=vm.status)
 
@@ -180,7 +180,7 @@ def create_app() -> FastAPI:
         responses: list[SandboxResponse] = []
         for vm_id in sorted(_existing_vm_ids()):
             try:
-                vm = resolve(vm_id)
+                vm = _resolve(vm_id)
                 vm.refresh()
             except HTTPException:
                 # A sandbox that vanished or cannot be reconnected between
@@ -211,7 +211,7 @@ def create_app() -> FastAPI:
         Evicts the facade from the registry so its id stops resolving —
         the write-through delete the registry-as-cache model needs.
         """
-        vm = resolve(sandbox_id)
+        vm = _resolve(sandbox_id)
         try:
             vm.delete()
         except (ValueError, SmolVMError) as exc:
@@ -249,7 +249,7 @@ def create_app() -> FastAPI:
         the command over the facade's cached SSH channel.
         """
 
-        vm = resolve(sandbox_id)
+        vm = _resolve(sandbox_id)
         try:
             result = vm.run(body.command, body.timeout, body.shell)
         except (ValueError, SmolVMError) as exc:

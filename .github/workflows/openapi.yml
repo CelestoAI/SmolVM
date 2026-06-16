@@ -1,4 +1,4 @@
-name: Lint
+name: OpenAPI
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  ruff:
+  drift:
     runs-on: ubuntu-latest
 
     steps:
@@ -27,10 +27,14 @@ jobs:
         uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --extra dashboard
 
-      - name: ruff check
-        run: uv run ruff check --output-format github .
+      - name: Re-dump the OpenAPI spec
+        run: uv run python scripts/dump_openapi.py
 
-      - name: ruff format check
-        run: uv run ruff format --check .
+      - name: Fail if the committed spec is stale
+        run: |
+          if ! git diff --exit-code -- ts/openapi.json; then
+            echo "::error::ts/openapi.json is out of date. Run 'npm run sync' in ts/ and commit the result."
+            exit 1
+          fi
