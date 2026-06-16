@@ -243,7 +243,7 @@ def _check_hypervisor_entitlement() -> DoctorCheck:
         '<?xml version="1.0"?>'
         '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"'
         ' "http://www.apple.com/DTD/PropertyList-1.0.dtd">'
-        "<plist version=\"1.0\"><dict>"
+        '<plist version="1.0"><dict>'
         "<key>com.apple.security.hypervisor</key><true/>"
         "</dict></plist>"
     )

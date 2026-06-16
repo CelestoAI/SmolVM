@@ -1894,6 +1894,7 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
         )
 
         import uuid
+
         tmp_path = image_dir / f".build-{uuid.uuid4().hex[:8]}"
         tmp_path.mkdir(parents=True, exist_ok=True)
         try:
