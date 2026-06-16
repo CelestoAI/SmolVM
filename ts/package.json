@@ -1,0 +1,22 @@
+{
+  "name": "smolvm",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for SmolVM — disposable computers for AI agents.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "generate": "openapi-ts",
+    "typecheck": "tsc --noEmit",
+    "test": "echo 'No JS tests yet. See https://github.com/CelestoAI/SmolVM for the test plan.' && exit 0"
+  },
+  "devDependencies": {
+    "@hey-api/openapi-ts": "^0.98.0",
+    "tsx": "^4.22.4",
+    "typescript": "^5.6.0"
+  }
+}

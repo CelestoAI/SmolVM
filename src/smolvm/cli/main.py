@@ -714,6 +714,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_ui_args(ui)
 
+    server_parser = subparsers.add_parser(
+        "server",
+        help="Run the SmolVM HTTP API server (for the TypeScript/other SDKs).",
+        description=(
+            "Expose SmolVM over a local HTTP API so non-Python clients "
+            "can drive sandboxes. VMs still boot on this machine."
+        ),
+    )
+    server_actions = server_parser.add_subparsers(
+        dest="server_action",
+        metavar="ACTION",
+        required=True,
+    )
+    server_start = server_actions.add_parser(
+        "start",
+        help="Start the HTTP API server.",
+    )
+    server_start.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Address to bind (default: 127.0.0.1, localhost only).",
+    )
+    server_start.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port to listen on (default: 8000).",
+    )
+
     list_parser = subparsers.add_parser(
         "list",
         help="List sandboxes and their status.",
@@ -3609,6 +3638,43 @@ def _render_ui_startup(
     console_stdout().print(Panel.fit("\n".join(lines), title="SmolVM UI", border_style="cyan"))
 
 
+def _run_server_start(host: str, port: int) -> int:
+    """Start the SmolVM HTTP API server (backs the TypeScript/other SDKs)."""
+    try:
+        uvicorn = importlib.import_module("uvicorn")
+    except ImportError:
+        return _emit_cli_error(
+            "server",
+            1,
+            ImportError("HTTP server dependencies are not installed."),
+            json_output=False,
+            hint="Install with: pip install 'smolvm[dashboard]'",
+        )
+
+    if port < 1 or port > 65535:
+        return _emit_cli_error(
+            "server",
+            2,
+            ValueError(
+                f"Port {port} is out of range; re-run with a port between 1 and 65535, "
+                f"e.g. 'smolvm server start --host {host} --port 8000'."
+            ),
+            json_output=False,
+        )
+
+    display_host = "localhost" if host in {"0.0.0.0", "::"} else host
+    print(f"SmolVM HTTP API listening on http://{display_host}:{port}")
+    print(f"OpenAPI spec: http://{display_host}:{port}/openapi.json")
+
+    try:
+        uvicorn.run("smolvm.server.app:create_app", host=host, port=port, factory=True)
+        return 0
+    except KeyboardInterrupt:
+        return 130
+    except Exception as exc:
+        return _emit_cli_error("server", 1, exc, json_output=False)
+
+
 def _run_ui(host: str, port: int, allow_beta: bool) -> int:
     """Start the dashboard UI server with optional beta asset allowance."""
     try:
@@ -4048,6 +4114,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             json_output=args.json,
             strict=args.strict,
         )
+
+    if args.command == "server":
+        return _run_server_start(host=args.host, port=args.port)
 
     if args.command == "ui":
         return _run_ui(host=args.host, port=args.port, allow_beta=args.allow_beta)
