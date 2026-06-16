@@ -1,4 +1,4 @@
-name: OpenAPI
+name: TS client auto-gen sync
 
 on:
   push:
