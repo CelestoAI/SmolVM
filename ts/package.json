@@ -10,7 +10,9 @@
     ".": "./src/index.ts"
   },
   "scripts": {
+    "dump-openapi": "uv run --project .. --extra dashboard python ../scripts/dump_openapi.py",
     "generate": "openapi-ts",
+    "sync": "npm run dump-openapi && npm run generate",
     "typecheck": "tsc --noEmit",
     "test": "echo 'No JS tests yet. See https://github.com/CelestoAI/SmolVM for the test plan.' && exit 0"
   },

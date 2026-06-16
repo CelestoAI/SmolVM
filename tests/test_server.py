@@ -35,8 +35,8 @@ from fastapi.routing import APIRoute
 from smolvm import server as server_pkg
 from smolvm.exceptions import SmolVMError, VMNotFoundError
 from smolvm.server.app import create_app
-from smolvm.server.models import CreateSandboxRequest, SandboxResponse
-from smolvm.types import VMState
+from smolvm.server.models import CreateSandboxRequest, ExecRequest, SandboxResponse
+from smolvm.types import CommandResult, VMState
 
 
 class FakeSmolVM:
@@ -65,6 +65,13 @@ class FakeSmolVM:
             raise VMNotFoundError(vm_id)
         return cls(vm_id=vm_id)
 
+    # exec() hooks
+    run_error: Exception | None = None
+    run_result: CommandResult = CommandResult(exit_code=0, stdout="ok", stderr="")
+    last_run_args: tuple | None = None
+    # ids deleted via delete() this test
+    deleted_ids: set[str] = set()
+
     def start(self) -> "FakeSmolVM":
         if FakeSmolVM.start_error is not None:
             raise FakeSmolVM.start_error
@@ -73,6 +80,15 @@ class FakeSmolVM:
 
     def refresh(self) -> "FakeSmolVM":
         return self
+
+    def run(self, command: str, timeout: int, shell: str) -> CommandResult:
+        FakeSmolVM.last_run_args = (command, timeout, shell)
+        if FakeSmolVM.run_error is not None:
+            raise FakeSmolVM.run_error
+        return FakeSmolVM.run_result
+
+    def delete(self) -> None:
+        FakeSmolVM.deleted_ids.add(self.vm_id)
 
 
 def _handler(app: FastAPI, path: str, method: str) -> Callable:
@@ -91,7 +107,13 @@ def app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     FakeSmolVM.existing_ids = set()
     FakeSmolVM.from_id_calls = 0
     FakeSmolVM.from_id_error = None
+    FakeSmolVM.run_error = None
+    FakeSmolVM.run_result = CommandResult(exit_code=0, stdout="ok", stderr="")
+    FakeSmolVM.last_run_args = None
+    FakeSmolVM.deleted_ids = set()
     monkeypatch.setattr("smolvm.server.app.SmolVM", FakeSmolVM)
+    # list_sandboxes enumerates the host directly; back it by the stub's ids.
+    monkeypatch.setattr("smolvm.server.app._existing_vm_ids", lambda: set(FakeSmolVM.existing_ids))
     return create_app()
 
 
@@ -182,10 +204,108 @@ def test_get_unknown_sandbox_returns_404(app: FastAPI) -> None:
     assert "does-not-exist" in exc_info.value.detail
 
 
+def test_list_sandboxes_enumerates_the_host(app: FastAPI) -> None:
+    # list reflects every sandbox on the host, sorted, regardless of
+    # whether it is already in the in-memory registry.
+    FakeSmolVM.existing_ids = {"sbx-b", "sbx-a"}
+    list_all = _handler(app, "/sandboxes", "GET")
+
+    result = list_all()
+
+    assert [s.id for s in result] == ["sbx-a", "sbx-b"]
+    assert all(isinstance(s, SandboxResponse) for s in result)
+
+
+def test_list_sandboxes_empty_when_no_host_vms(app: FastAPI) -> None:
+    list_all = _handler(app, "/sandboxes", "GET")
+    assert list_all() == []
+
+
+def test_delete_sandbox_stops_and_evicts(app: FastAPI) -> None:
+    create = _handler(app, "/sandboxes", "POST")
+    delete = _handler(app, "/sandboxes/{sandbox_id}", "DELETE")
+    get = _handler(app, "/sandboxes/{sandbox_id}", "GET")
+
+    created = create(CreateSandboxRequest())
+    response = delete(created.id)
+
+    assert response.status_code == 204
+    assert created.id in FakeSmolVM.deleted_ids
+    # Evicted from the registry: a later GET no longer hits the cache and,
+    # with no host VM to reconnect to, 404s.
+    with pytest.raises(HTTPException) as exc_info:
+        get(created.id)
+    assert exc_info.value.status_code == 404
+
+
+def test_delete_unknown_sandbox_returns_404(app: FastAPI) -> None:
+    delete = _handler(app, "/sandboxes/{sandbox_id}", "DELETE")
+
+    with pytest.raises(HTTPException) as exc_info:
+        delete("does-not-exist")
+
+    assert exc_info.value.status_code == 404
+
+
+def test_exec_command_returns_result(app: FastAPI) -> None:
+    create = _handler(app, "/sandboxes", "POST")
+    exec_cmd = _handler(app, "/sandboxes/{sandbox_id}/exec", "POST")
+    FakeSmolVM.run_result = CommandResult(exit_code=0, stdout="hello\n", stderr="")
+
+    created = create(CreateSandboxRequest())
+    result = exec_cmd(created.id, ExecRequest(command="echo hello"))
+
+    assert result.exit_code == 0
+    assert result.stdout == "hello\n"
+    # Request fields are forwarded verbatim to the facade.
+    assert FakeSmolVM.last_run_args == ("echo hello", 30, "login")
+
+
+def test_exec_command_nonzero_exit_is_still_200(app: FastAPI) -> None:
+    # A command that runs and fails is a successful exec, not an HTTP error.
+    create = _handler(app, "/sandboxes", "POST")
+    exec_cmd = _handler(app, "/sandboxes/{sandbox_id}/exec", "POST")
+    FakeSmolVM.run_result = CommandResult(exit_code=1, stdout="", stderr="nope")
+
+    created = create(CreateSandboxRequest())
+    result = exec_cmd(created.id, ExecRequest(command="false"))
+
+    assert result.exit_code == 1
+    assert result.stderr == "nope"
+
+
+def test_exec_command_maps_run_failure_to_409(app: FastAPI) -> None:
+    create = _handler(app, "/sandboxes", "POST")
+    exec_cmd = _handler(app, "/sandboxes/{sandbox_id}/exec", "POST")
+    FakeSmolVM.run_error = SmolVMError("sandbox is not running")
+
+    created = create(CreateSandboxRequest())
+    with pytest.raises(HTTPException) as exc_info:
+        exec_cmd(created.id, ExecRequest(command="echo hi"))
+
+    assert exc_info.value.status_code == 409
+    assert "sandbox is not running" in exc_info.value.detail
+
+
+def test_exec_unknown_sandbox_returns_404(app: FastAPI) -> None:
+    exec_cmd = _handler(app, "/sandboxes/{sandbox_id}/exec", "POST")
+
+    with pytest.raises(HTTPException) as exc_info:
+        exec_cmd("does-not-exist", ExecRequest(command="echo hi"))
+
+    assert exc_info.value.status_code == 404
+
+
 def test_openapi_exposes_clean_operation_ids(app: FastAPI) -> None:
     spec = app.openapi()
     operation_ids = {op["operationId"] for path in spec["paths"].values() for op in path.values()}
-    assert {"createSandbox", "getSandbox"} <= operation_ids
+    assert {
+        "createSandbox",
+        "getSandbox",
+        "listSandboxes",
+        "deleteSandbox",
+        "execCommand",
+    } <= operation_ids
 
 
 def test_package_exports_create_app() -> None:
