@@ -248,7 +248,7 @@ export type DeleteSandboxErrors = {
      */
     404: ErrorResponse;
     /**
-     * The sandbox exists but could not be reconnected.
+     * The sandbox could not be reconnected or deleted.
      */
     409: ErrorResponse;
     /**
@@ -324,7 +324,7 @@ export type ExecCommandErrors = {
      */
     404: ErrorResponse;
     /**
-     * The sandbox exists but the command could not run.
+     * The sandbox could not be reconnected, or the command could not run.
      */
     409: ErrorResponse;
     /**

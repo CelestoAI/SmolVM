@@ -9,7 +9,7 @@
     "/sandboxes": {
       "get": {
         "summary": "List Sandboxes",
-        "description": "List every sandbox that exists on the host.\n\nEnumerates host VMs directly rather than the in-memory registry,\nso sandboxes created before this server started are included.",
+        "description": "List the sandboxes discoverable on the host.\n\nEnumerates host VM ids directly rather than the in-memory\nregistry, so sandboxes created before this server started are\nincluded. Sandboxes that cannot be reconnected are omitted.",
         "operationId": "listSandboxes",
         "responses": {
           "200": {
@@ -165,7 +165,7 @@
             }
           },
           "409": {
-            "description": "The sandbox exists but could not be reconnected.",
+            "description": "The sandbox could not be reconnected or deleted.",
             "content": {
               "application/json": {
                 "schema": {
@@ -235,7 +235,7 @@
             }
           },
           "409": {
-            "description": "The sandbox exists but the command could not run.",
+            "description": "The sandbox could not be reconnected, or the command could not run.",
             "content": {
               "application/json": {
                 "schema": {

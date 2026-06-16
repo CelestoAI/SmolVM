@@ -87,7 +87,11 @@ class FakeSmolVM:
             raise FakeSmolVM.run_error
         return FakeSmolVM.run_result
 
+    delete_error: Exception | None = None
+
     def delete(self) -> None:
+        if FakeSmolVM.delete_error is not None:
+            raise FakeSmolVM.delete_error
         FakeSmolVM.deleted_ids.add(self.vm_id)
 
 
@@ -111,6 +115,7 @@ def app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     FakeSmolVM.run_result = CommandResult(exit_code=0, stdout="ok", stderr="")
     FakeSmolVM.last_run_args = None
     FakeSmolVM.deleted_ids = set()
+    FakeSmolVM.delete_error = None
     monkeypatch.setattr("smolvm.server.app.SmolVM", FakeSmolVM)
     # list_sandboxes enumerates the host directly; back it by the stub's ids.
     monkeypatch.setattr("smolvm.server.app._existing_vm_ids", lambda: set(FakeSmolVM.existing_ids))
@@ -191,7 +196,10 @@ def test_get_sandbox_maps_reconnect_failure_to_409(app: FastAPI) -> None:
         get("sbx-broken")
 
     assert exc_info.value.status_code == 409
-    assert "control channel unreachable" in exc_info.value.detail
+    # Message names the sandbox and a recovery command, not the raw
+    # internal exception text.
+    assert "sbx-broken" in exc_info.value.detail
+    assert "could not be reconnected" in exc_info.value.detail
 
 
 def test_get_unknown_sandbox_returns_404(app: FastAPI) -> None:
@@ -247,6 +255,20 @@ def test_delete_unknown_sandbox_returns_404(app: FastAPI) -> None:
     assert exc_info.value.status_code == 404
 
 
+def test_delete_maps_delete_failure_to_409(app: FastAPI) -> None:
+    # The sandbox resolves but tearing it down fails -> a state conflict,
+    # not an unhandled 500.
+    create = _handler(app, "/sandboxes", "POST")
+    delete = _handler(app, "/sandboxes/{sandbox_id}", "DELETE")
+    FakeSmolVM.delete_error = SmolVMError("disk is busy")
+
+    created = create(CreateSandboxRequest())
+    with pytest.raises(HTTPException) as exc_info:
+        delete(created.id)
+
+    assert exc_info.value.status_code == 409
+
+
 def test_exec_command_returns_result(app: FastAPI) -> None:
     create = _handler(app, "/sandboxes", "POST")
     exec_cmd = _handler(app, "/sandboxes/{sandbox_id}/exec", "POST")
@@ -284,7 +306,10 @@ def test_exec_command_maps_run_failure_to_409(app: FastAPI) -> None:
         exec_cmd(created.id, ExecRequest(command="echo hi"))
 
     assert exc_info.value.status_code == 409
-    assert "sandbox is not running" in exc_info.value.detail
+    # Message names the sandbox and a recovery command, not the raw
+    # internal exception text.
+    assert "sbx-test" in exc_info.value.detail
+    assert "could not run" in exc_info.value.detail
 
 
 def test_exec_unknown_sandbox_returns_404(app: FastAPI) -> None:

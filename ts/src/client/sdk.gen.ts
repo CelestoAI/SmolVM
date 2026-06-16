@@ -21,10 +21,11 @@ export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends 
 /**
  * List Sandboxes
  *
- * List every sandbox that exists on the host.
+ * List the sandboxes discoverable on the host.
  *
- * Enumerates host VMs directly rather than the in-memory registry,
- * so sandboxes created before this server started are included.
+ * Enumerates host VM ids directly rather than the in-memory
+ * registry, so sandboxes created before this server started are
+ * included. Sandboxes that cannot be reconnected are omitted.
  */
 export const listSandboxes = <ThrowOnError extends boolean = false>(options?: Options<ListSandboxesData, ThrowOnError>): RequestResult<ListSandboxesResponses, unknown, ThrowOnError> => (options?.client ?? client).get<ListSandboxesResponses, unknown, ThrowOnError>({ url: '/sandboxes', ...options });
 

@@ -90,8 +90,8 @@ def create_app() -> FastAPI:
             raise HTTPException(
                 status_code=404,
                 detail=(
-                    f"No sandbox named '{sandbox_id}'. Create one with "
-                    f"POST /sandboxes, or list active sandboxes."
+                    f"Sandbox '{sandbox_id}' was not found; run GET /sandboxes "
+                    f"to list ids or POST /sandboxes to create one."
                 ),
             ) from None
         except (ValueError, SmolVMError) as exc:
@@ -100,8 +100,8 @@ def create_app() -> FastAPI:
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"Could not reconnect to sandbox '{sandbox_id}': {exc}. "
-                    f"Create a fresh one with POST /sandboxes."
+                    f"Sandbox '{sandbox_id}' could not be reconnected; run "
+                    f"DELETE /sandboxes/{sandbox_id} then POST /sandboxes."
                 ),
             ) from exc
         return vm
@@ -171,10 +171,11 @@ def create_app() -> FastAPI:
         operation_id="listSandboxes",
     )
     def list_sandboxes() -> list[SandboxResponse]:
-        """List every sandbox that exists on the host.
+        """List the sandboxes discoverable on the host.
 
-        Enumerates host VMs directly rather than the in-memory registry,
-        so sandboxes created before this server started are included.
+        Enumerates host VM ids directly rather than the in-memory
+        registry, so sandboxes created before this server started are
+        included. Sandboxes that cannot be reconnected are omitted.
         """
         responses: list[SandboxResponse] = []
         for vm_id in sorted(_existing_vm_ids()):
@@ -200,7 +201,7 @@ def create_app() -> FastAPI:
             },
             409: {
                 "model": ErrorResponse,
-                "description": "The sandbox exists but could not be reconnected.",
+                "description": "The sandbox could not be reconnected or deleted.",
             },
         },
     )
@@ -211,7 +212,16 @@ def create_app() -> FastAPI:
         the write-through delete the registry-as-cache model needs.
         """
         vm = resolve(sandbox_id)
-        vm.delete()
+        try:
+            vm.delete()
+        except (ValueError, SmolVMError) as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Sandbox '{sandbox_id}' could not be deleted; retry "
+                    f"DELETE /sandboxes/{sandbox_id}."
+                ),
+            ) from exc
         sandboxes.pop(vm.vm_id, None)
         return Response(status_code=204)
 
@@ -226,7 +236,9 @@ def create_app() -> FastAPI:
             },
             409: {
                 "model": ErrorResponse,
-                "description": "The sandbox exists but the command could not run.",
+                "description": (
+                    "The sandbox could not be reconnected, or the command could not run."
+                ),
             },
         },
     )
@@ -248,9 +260,8 @@ def create_app() -> FastAPI:
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"Could not run the command in sandbox '{sandbox_id}': {exc}. "
-                    f"Check the sandbox is running with "
-                    f"GET /sandboxes/{sandbox_id}."
+                    f"Command could not run in sandbox '{sandbox_id}'; check it "
+                    f"is running with GET /sandboxes/{sandbox_id}."
                 ),
             ) from exc
         return ExecResponse(**result.model_dump())
