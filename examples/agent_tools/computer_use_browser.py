@@ -451,8 +451,12 @@ def _run_task(config: ComputerUseConfig) -> ComputerUseResult:
             _log(f"display_url={session.display_url}")
 
         browser: Browser = session.connect_playwright()
-        context = browser.contexts[0] if browser.contexts else browser.new_context(
-            viewport={"width": config.viewport_width, "height": config.viewport_height}
+        context = (
+            browser.contexts[0]
+            if browser.contexts
+            else browser.new_context(
+                viewport={"width": config.viewport_width, "height": config.viewport_height}
+            )
         )
         page = context.pages[0] if context.pages else context.new_page()
         page.goto(config.start_url, wait_until="domcontentloaded")

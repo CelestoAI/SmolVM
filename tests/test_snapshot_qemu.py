@@ -93,8 +93,8 @@ def _mock_qcow2_inspection_for_fake_snapshot_disks(
 
 def _create_qemu_vm(sdk: SmolVMManager, config: VMConfig) -> None:
     with patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_convert:
-        mock_convert.side_effect = (
-            lambda source, target, **_kwargs: target.write_text("managed-qcow2")
+        mock_convert.side_effect = lambda source, target, **_kwargs: target.write_text(
+            "managed-qcow2"
         )
         sdk.create(config)
 

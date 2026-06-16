@@ -58,8 +58,9 @@ def test_start_raises_clear_error_when_swtpm_binary_missing(tmp_path: Path) -> N
         firmware_dir=tmp_path,
         context=context,
     )
-    with patch("smolvm.runtime.qemu.which", return_value=None), pytest.raises(
-        SmolVMError, match="swtpm"
+    with (
+        patch("smolvm.runtime.qemu.which", return_value=None),
+        pytest.raises(SmolVMError, match="swtpm"),
     ):
         sidecar.start()
 
@@ -81,10 +82,13 @@ def test_start_spawns_swtpm_with_expected_arguments(tmp_path: Path) -> None:
         sidecar.pidfile_path.write_text(f"{fake_pid}\n")
         return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
 
-    with patch(
-        "smolvm.runtime.qemu.which",
-        return_value=Path("/usr/bin/swtpm"),
-    ), patch("smolvm.runtime.qemu.subprocess.run", side_effect=fake_run) as mock_run:
+    with (
+        patch(
+            "smolvm.runtime.qemu.which",
+            return_value=Path("/usr/bin/swtpm"),
+        ),
+        patch("smolvm.runtime.qemu.subprocess.run", side_effect=fake_run) as mock_run,
+    ):
         returned_pid = sidecar.start()
 
     assert returned_pid == fake_pid
@@ -112,11 +116,13 @@ def test_start_raises_when_socket_never_appears(tmp_path: Path) -> None:
     def fake_run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
 
-    with patch(
-        "smolvm.runtime.qemu.which",
-        return_value=Path("/usr/bin/swtpm"),
-    ), patch("smolvm.runtime.qemu.subprocess.run", side_effect=fake_run), pytest.raises(
-        SmolVMError, match="socket never appeared"
+    with (
+        patch(
+            "smolvm.runtime.qemu.which",
+            return_value=Path("/usr/bin/swtpm"),
+        ),
+        patch("smolvm.runtime.qemu.subprocess.run", side_effect=fake_run),
+        pytest.raises(SmolVMError, match="socket never appeared"),
     ):
         sidecar.start(timeout=0.2)
 

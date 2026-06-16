@@ -1164,7 +1164,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--profile-mode",
         choices=["ephemeral", "persistent"],
         default="ephemeral",
-        help="Browser profile mode: ephemeral (fresh each time) or persistent (default: ephemeral).",
+        help="Browser profile mode: ephemeral (fresh each time) or persistent (default: ephemeral).",  # noqa: E501
     )
     browser_start.add_argument(
         "--profile-id",
@@ -1685,12 +1685,8 @@ def _query_live_vm_info(vm: VMInfo) -> dict[str, object]:
     if parts and parts[0].strip():
         out["os"] = parts[0].strip()
     if len(parts) > 1:
-        try:
+        with suppress(ValueError):
             out["memory_used"] = int(parts[1].strip())
-        except ValueError:
-            # `free -m` output unparseable on this guest (busybox variant,
-            # locale, etc.) — omit the field rather than fail the whole probe.
-            pass
     return out
 
 
@@ -3346,12 +3342,14 @@ def _run_ssh(args: argparse.Namespace) -> int:
         if vm is not None:
             vm.close()
 
+
 def _parse_port_mapping(mapping: str) -> tuple[int | None, int]:
     """Parse '[host-port:]sandbox-port' into (host_port_or_None, sandbox_port)."""
     if ":" in mapping:
         host_str, guest_str = mapping.split(":", 1)
         return int(host_str), int(guest_str)
     return None, int(mapping)
+
 
 def _port_forwards_path(vm_id: str) -> Path:
     """Path to the JSON file tracking active port forwards for a VM."""
@@ -3362,8 +3360,10 @@ def _port_forwards_path(vm_id: str) -> Path:
         raise ValueError(f"Invalid sandbox name: {vm_id!r}")
     return target
 
+
 def _load_port_forwards(vm_id: str) -> list[dict]:
     import json
+
     p = _port_forwards_path(vm_id)
     if not p.exists():
         return []
@@ -3371,19 +3371,20 @@ def _load_port_forwards(vm_id: str) -> list[dict]:
         data = json.loads(p.read_text())
     except Exception as exc:
         raise RuntimeError(
-            f"Port forward state for '{vm_id}' is unreadable. "
-            f"Remove '{p}' to reset: rm '{p}'"
+            f"Port forward state for '{vm_id}' is unreadable. Remove '{p}' to reset: rm '{p}'"
         ) from exc
     if not isinstance(data, list):
         raise RuntimeError(
-            f"Port forward state for '{vm_id}' is corrupt. "
-            f"Remove '{p}' to reset: rm '{p}'"
+            f"Port forward state for '{vm_id}' is corrupt. Remove '{p}' to reset: rm '{p}'"
         )
     return data
-    
+
+
 def _save_port_forwards(vm_id: str, forwards: list[dict]) -> None:
     import json
+
     _port_forwards_path(vm_id).write_text(json.dumps(forwards, indent=2))
+
 
 def _run_port_expose(args: argparse.Namespace) -> int:
     """Handle ``smolvm port expose``."""
@@ -3400,7 +3401,8 @@ def _run_port_expose(args: argparse.Namespace) -> int:
             1,
             ValueError(
                 f"Invalid mapping {args.mapping!r}. "
-                f"Run 'smolvm port expose {args.vm_id} 8080:3000' to forward host port 8080 to sandbox port 3000, "
+                f"Run 'smolvm port expose {args.vm_id} 8080:3000'"
+                f" to forward host port 8080 to sandbox port 3000, "
                 f"or 'smolvm port expose {args.vm_id} 3000' to auto-select a host port."
             ),
             json_output=json_output,
@@ -3425,7 +3427,8 @@ def _run_port_expose(args: argparse.Namespace) -> int:
         forwards = _load_port_forwards(args.vm_id)
         # Remove any stale entry for the same pair before appending.
         forwards = [
-            f for f in forwards
+            f
+            for f in forwards
             if not (f["host_port"] == host_port and f["guest_port"] == guest_port)
         ]
         forwards.append(forward_entry)
@@ -3445,8 +3448,7 @@ def _run_port_expose(args: argparse.Namespace) -> int:
         else:
             console = console_stdout()
             console.print(
-                f"Exposed [bold]localhost:{host_port}[/bold] → "
-                f"guest:[bold]{guest_port}[/bold]"
+                f"Exposed [bold]localhost:{host_port}[/bold] → guest:[bold]{guest_port}[/bold]"
             )
             console.print(f"Connect to [bold]localhost:{host_port}[/bold]")
             console.print(
@@ -3457,13 +3459,12 @@ def _run_port_expose(args: argparse.Namespace) -> int:
     finally:
         if vm is not None:
             vm.close()
-    
+
     return 0
-    
+
 
 def _run_port_close(args: argparse.Namespace) -> int:
     """Handle ``smolvm port close``."""
-    import signal as _signal
     from smolvm.facade import SmolVM
 
     json_output: bool = args.json
@@ -3490,12 +3491,14 @@ def _run_port_close(args: argparse.Namespace) -> int:
             import os
             import signal
             import subprocess as _sp
+
             pid = entry["pid"]
             try:
                 # Verify it's still our SSH tunnel before killing.
                 result = _sp.run(
                     ["ps", "-p", str(pid), "-o", "comm="],
-                    capture_output=True, text=True,
+                    capture_output=True,
+                    text=True,
                 )
                 if "ssh" in result.stdout:
                     os.kill(pid, signal.SIGTERM)
@@ -3513,7 +3516,8 @@ def _run_port_close(args: argparse.Namespace) -> int:
 
         # Update state file.
         forwards = [
-            f for f in forwards
+            f
+            for f in forwards
             if not (f["host_port"] == host_port and f["guest_port"] == guest_port)
         ]
         _save_port_forwards(args.vm_id, forwards)
@@ -3537,19 +3541,21 @@ def _run_port_close(args: argparse.Namespace) -> int:
 
     return 0
 
+
 def _run_port_list(args: argparse.Namespace) -> int:
     """Handle ``smolvm port list``."""
     json_output: bool = args.json
     forwards = _load_port_forwards(args.vm_id)
 
     if json_output:
-        emit_json("port list", 0 , data={"sandbox": args.vm_id, "forwards": forwards})
+        emit_json("port list", 0, data={"sandbox": args.vm_id, "forwards": forwards})
     else:
         console = console_stdout()
         if not forwards:
             render_empty("Port Forwards", f"No active port forwards for '{args.vm_id}'.")
         else:
             from rich.table import Table
+
             table = Table(title=f"Port Forwards — {args.vm_id}")
             table.add_column("Host port", justify="right")
             table.add_column("Sandbox port", justify="right")
@@ -3564,6 +3570,7 @@ def _run_port_list(args: argparse.Namespace) -> int:
 
     return 0
 
+
 def _run_port(args: argparse.Namespace) -> int:
     """Dispatch ``smolvm port <action>``."""
     action = getattr(args, "port_action", None)
@@ -3574,8 +3581,10 @@ def _run_port(args: argparse.Namespace) -> int:
     if action == "list":
         return _run_port_list(args)
     from smolvm.cli.main import build_parser
+
     build_parser().parse_args(["port", "--help"])
     return 2
+
 
 def _render_ui_startup(
     host: str,
@@ -4048,9 +4057,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "env":
         return _run_env(args)
-    
+
     if args.command == "port":
         return _run_port(args)
-    
+
     parser.print_help()
     return 2

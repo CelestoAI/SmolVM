@@ -155,9 +155,7 @@ class FirecrackerClient:
         while time.time() - start < timeout:
             if self.socket_path.exists():
                 try:
-                    await asyncio.to_thread(
-                        self._request, "GET", "/", expected_status=(200,)
-                    )
+                    await asyncio.to_thread(self._request, "GET", "/", expected_status=(200,))
                     logger.debug("Socket ready (async): %s", self.socket_path)
                     return
                 except Exception:

@@ -98,9 +98,7 @@ def backend_unavailable_reasons(backend: E2EBackend, *, sandbox_name: str) -> li
 
     if backend == BACKEND_FIRECRACKER:
         if platform.system() != "Linux":
-            reasons.append(
-                f"Run tests on a Linux host and re-run in sandbox '{sandbox_name}'"
-            )
+            reasons.append(f"Run tests on a Linux host and re-run in sandbox '{sandbox_name}'")
         if Path("/dev/kvm").exists() and not _kvm_accessible():
             reasons.append(
                 "Allow Firecracker to read and write /dev/kvm: sudo chmod 666 /dev/kvm "

@@ -404,9 +404,9 @@ class TestEgressAllowlist:
             return_value=(
                 "table inet smolvm_filter {\n"
                 "  chain forward {\n"
-                '    iifname "tap42" ct state established,related counter accept comment "smolvm:egress:tap42:established" # handle 41\n'
+                '    iifname "tap42" ct state established,related counter accept comment "smolvm:egress:tap42:established" # handle 41\n'  # noqa: E501
                 '    iifname "tap42" counter drop comment "smolvm:egress:tap42:drop" # handle 42\n'
-                '    iifname "tap42" oifname "eth0" counter accept comment "smolvm:nat:tap:tap42:to:eth0" # handle 43\n'
+                '    iifname "tap42" oifname "eth0" counter accept comment "smolvm:nat:tap:tap42:to:eth0" # handle 43\n'  # noqa: E501
                 "  }\n"
                 "}\n"
             )

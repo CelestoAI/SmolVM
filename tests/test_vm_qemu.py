@@ -458,8 +458,8 @@ def test_create_qemu_uses_managed_qcow2_disk(tmp_path: Path) -> None:
 
     sdk = SmolVMManager(data_dir=tmp_path / "data", socket_dir=tmp_path / "sockets", backend="qemu")
     with patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_convert:
-        mock_convert.side_effect = (
-            lambda source, target, **_kwargs: target.write_text("managed-qcow2")
+        mock_convert.side_effect = lambda source, target, **_kwargs: target.write_text(
+            "managed-qcow2"
         )
         vm_info = sdk.create(config)
 
@@ -521,11 +521,13 @@ def test_materialize_firmware_copies_ovmf_template_for_windows(tmp_path: Path) -
         socket_dir=tmp_path / "sockets",
         backend="qemu",
     )
-    with patch(
-        "smolvm.runtime.guest_platforms._find_x86_64_ovmf",
-        return_value=fake_spec_firmware,
-    ), patch("smolvm.vm.platform.system", return_value="Linux"), patch(
-        "smolvm.vm.platform.machine", return_value="x86_64"
+    with (
+        patch(
+            "smolvm.runtime.guest_platforms._find_x86_64_ovmf",
+            return_value=fake_spec_firmware,
+        ),
+        patch("smolvm.vm.platform.system", return_value="Linux"),
+        patch("smolvm.vm.platform.machine", return_value="x86_64"),
     ):
         sdk._materialize_firmware(config)
 
@@ -557,12 +559,15 @@ def test_materialize_firmware_raises_with_install_hint_when_no_ovmf(tmp_path: Pa
         socket_dir=tmp_path / "sockets",
         backend="qemu",
     )
-    with patch(
-        "smolvm.runtime.guest_platforms._find_x86_64_ovmf",
-        return_value=None,
-    ), patch("smolvm.vm.platform.system", return_value="Linux"), patch(
-        "smolvm.vm.platform.machine", return_value="x86_64"
-    ), pytest.raises(SmolVMError, match="OVMF"):
+    with (
+        patch(
+            "smolvm.runtime.guest_platforms._find_x86_64_ovmf",
+            return_value=None,
+        ),
+        patch("smolvm.vm.platform.system", return_value="Linux"),
+        patch("smolvm.vm.platform.machine", return_value="x86_64"),
+        pytest.raises(SmolVMError, match="OVMF"),
+    ):
         sdk._materialize_firmware(config)
 
 
@@ -605,8 +610,8 @@ def test_windows_local_image_uses_per_vm_overlay_disk(tmp_path: Path) -> None:
         patch("smolvm.vm.platform.machine", return_value="x86_64"),
         patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_overlay,
     ):
-        mock_overlay.side_effect = (
-            lambda source, target, **_kwargs: target.write_text("overlay-bytes")
+        mock_overlay.side_effect = lambda source, target, **_kwargs: target.write_text(
+            "overlay-bytes"
         )
         vm_info = sdk.create(config)
 
@@ -696,8 +701,8 @@ def test_delete_qemu_retains_isolated_disk_when_enabled(tmp_path: Path) -> None:
 
     sdk = SmolVMManager(data_dir=tmp_path / "data", socket_dir=tmp_path / "sockets", backend="qemu")
     with patch.object(SmolVMManager, "_create_qemu_overlay_disk") as mock_convert:
-        mock_convert.side_effect = (
-            lambda source, target, **_kwargs: target.write_text("managed-qcow2")
+        mock_convert.side_effect = lambda source, target, **_kwargs: target.write_text(
+            "managed-qcow2"
         )
         sdk.create(config)
 

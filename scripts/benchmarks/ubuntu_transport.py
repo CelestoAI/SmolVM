@@ -451,9 +451,7 @@ def _run_snapshot_one(
         )
         source_vm = SmolVM(config=config, ssh_key_path=ssh_key_path, comm_channel=transport)
         source_log_path = _vm_log_path(source_vm)
-        record["snapshot_source_host_create_ms"] = round(
-            (time.perf_counter() - started) * 1000, 1
-        )
+        record["snapshot_source_host_create_ms"] = round((time.perf_counter() - started) * 1000, 1)
         record["published_rootfs_path"] = str(published_rootfs)
         record["rootfs_path"] = str(config.rootfs_path)
         record["patched_rootfs_path"] = str(patched_rootfs) if patched_rootfs else None
@@ -466,15 +464,11 @@ def _run_snapshot_one(
 
         started = time.perf_counter()
         source_vm.start()
-        record["snapshot_source_vmm_start_ms"] = round(
-            (time.perf_counter() - started) * 1000, 1
-        )
+        record["snapshot_source_vmm_start_ms"] = round((time.perf_counter() - started) * 1000, 1)
 
         started = time.perf_counter()
         source_vm.wait_for_ready(timeout=60.0)
-        record["snapshot_source_ready_wait_ms"] = round(
-            (time.perf_counter() - started) * 1000, 1
-        )
+        record["snapshot_source_ready_wait_ms"] = round((time.perf_counter() - started) * 1000, 1)
         record["snapshot_source_total_ready_ms"] = round(
             record["snapshot_source_host_create_ms"]
             + record["snapshot_source_vmm_start_ms"]
@@ -503,9 +497,7 @@ def _run_snapshot_one(
 
         started = time.perf_counter()
         restored_vm.wait_for_ready(timeout=60.0)
-        record["snapshot_restore_ready_wait_ms"] = round(
-            (time.perf_counter() - started) * 1000, 1
-        )
+        record["snapshot_restore_ready_wait_ms"] = round((time.perf_counter() - started) * 1000, 1)
         record["snapshot_restore_to_ready_ms"] = round(
             record["snapshot_restore_ms"] + record["snapshot_restore_ready_wait_ms"],
             1,

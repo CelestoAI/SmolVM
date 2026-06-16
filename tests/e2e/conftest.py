@@ -53,6 +53,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Backend to exercise in tests/e2e (default: all available backends).",
     )
 
+
 @pytest.fixture(scope="module", params=E2E_VARIANTS, ids=lambda variant: variant.id)
 def e2e_variant(request: pytest.FixtureRequest) -> E2EVariant:
     """Selected backend/transport variant for this module fixture instance."""

@@ -27,7 +27,6 @@ class TestVersion:
 
     def test_cli_version_flag(self) -> None:
         """smolvm --version should print the package version."""
-        import smolvm
         from smolvm.cli.main import build_parser
 
         parser = build_parser()

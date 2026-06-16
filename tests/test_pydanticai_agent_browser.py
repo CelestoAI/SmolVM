@@ -101,7 +101,7 @@ def test_format_command_result_includes_normalized_browser_section() -> None:
     formatted = module._format_command_result(0, '{"ok": true}', "", parsed_browser_session=session)
 
     assert "exit_code: 0" in formatted
-    assert "stdout:\n{\"ok\": true}" in formatted
+    assert 'stdout:\n{"ok": true}' in formatted
     assert "stderr:\n<empty>" in formatted
     assert "parsed_browser_session:" in formatted
     assert "session_id: browser-abc123" in formatted

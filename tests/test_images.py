@@ -437,13 +437,13 @@ class TestEnsureRootfsOnly:
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(b"corrupt")
 
-        with patch.object(ImageManager, "_download_file", fake_download):
-            with pytest.raises(ImageError, match="SHA-512 mismatch"):
-                mgr.ensure_rootfs_only(
-                    "bad-image",
-                    url="https://example.com/rootfs.qcow2",
-                    sha512="0" * 128,
-                )
+        ctx = patch.object(ImageManager, "_download_file", fake_download)
+        with ctx, pytest.raises(ImageError, match="SHA-512 mismatch"):
+            mgr.ensure_rootfs_only(
+                "bad-image",
+                url="https://example.com/rootfs.qcow2",
+                sha512="0" * 128,
+            )
 
         # The file must be deleted so retries don't return a bad cache.
         assert not (tmp_path / "bad-image" / "rootfs.qcow2").exists()
@@ -578,7 +578,7 @@ class TestS3ImageManifest:
         assert manifest.boot_args == "console=ttyS0 root=/dev/vda rw"
 
     def test_manifest_missing_required_field(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017
             S3ImageManifest(name="bad", kernel="k")  # type: ignore[call-arg]
 
     def test_manifest_rejects_absolute_path(self) -> None:

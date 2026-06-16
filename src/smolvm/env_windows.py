@@ -90,10 +90,7 @@ def _set_user_var_ps(name: str, value: str) -> str:
 
 def _clear_user_var_ps(name: str) -> str:
     """Return a PowerShell statement that deletes ``HKCU\\Environment\\name``."""
-    return (
-        f"[Environment]::SetEnvironmentVariable("
-        f"'{_ps_single_quote(name)}', $null, 'User')"
-    )
+    return f"[Environment]::SetEnvironmentVariable('{_ps_single_quote(name)}', $null, 'User')"
 
 
 def _run_ps(ssh: SSHClient, script: str, *, timeout: int = 20) -> str:

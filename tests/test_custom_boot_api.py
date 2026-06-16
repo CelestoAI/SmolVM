@@ -142,9 +142,7 @@ class TestBootImage:
         assert image.boot_mode == "direct_kernel"
         assert image.render_boot_args() == "console=ttyS0 root=/dev/vda rw init=/init"
 
-    def test_direct_kernel_image_can_omit_kernel_for_later_resolution(
-        self, tmp_path: Path
-    ) -> None:
+    def test_direct_kernel_image_can_omit_kernel_for_later_resolution(self, tmp_path: Path) -> None:
         rootfs = _empty_file(tmp_path, "rootfs.ext4")
 
         image = BootImage(

@@ -77,9 +77,7 @@ def register_workspace_safe_directories(ssh: SSHClient) -> None:
         # and `*` (the only regex metachar), so escaping by hand is
         # safe and clearer than pulling in `re.escape`.
         regex = "^" + path.replace("*", r"\*") + "$"
-        parts.append(
-            f"git config --global --replace-all safe.directory '{path}' '{regex}'"
-        )
+        parts.append(f"git config --global --replace-all safe.directory '{path}' '{regex}'")
     cmd = " && ".join(parts)
     result = ssh.run(cmd, timeout=10)
     if not result.ok:

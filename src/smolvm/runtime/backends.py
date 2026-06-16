@@ -19,7 +19,7 @@ from __future__ import annotations
 import os
 import platform
 
-from smolvm.utils import which
+from smolvm.utils import which  # noqa: F401 — imported for test patching
 
 BACKEND_FIRECRACKER = "firecracker"
 BACKEND_QEMU = "qemu"
