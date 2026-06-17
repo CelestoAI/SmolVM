@@ -372,6 +372,16 @@ def _add_comm_channel_arg(command_parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_qemu_machine_arg(command_parser: argparse.ArgumentParser) -> None:
+    """Add the QEMU machine selector to a command parser."""
+    command_parser.add_argument(
+        "--qemu-machine",
+        choices=["auto", "q35", "microvm"],
+        default="auto",
+        help="QEMU machine model (default: auto; use q35 for compatibility).",
+    )
+
+
 def _add_boot_timeout_arg(command_parser: argparse.ArgumentParser) -> None:
     """Add a shared boot/SSH readiness timeout flag."""
     command_parser.add_argument(
@@ -445,6 +455,7 @@ def _add_preset_parsers(
             default=None,
             help="Virtualization backend (default: qemu, required by ubuntu).",
         )
+        _add_qemu_machine_arg(start_p)
         start_p.add_argument(
             "--os",
             choices=[guest_os.value for guest_os in GuestOS],
@@ -835,6 +846,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Virtualization backend (default: auto-detected).",
     )
+    _add_qemu_machine_arg(create_parser)
     _add_comm_channel_arg(create_parser)
     create_parser.add_argument(
         "--json",
@@ -2036,6 +2048,7 @@ def _run_create(args: argparse.Namespace) -> int:
                         image=image_uri,
                         os_input=args.os,
                         backend=args.backend,
+                        qemu_machine=args.qemu_machine,
                         memory=args.memory_mib,
                         ssh_key_path=None,
                         vm_name=args.name,
@@ -2051,6 +2064,7 @@ def _run_create(args: argparse.Namespace) -> int:
                     image=image_uri,
                     os_input=args.os,
                     backend=args.backend,
+                    qemu_machine=args.qemu_machine,
                     memory=args.memory_mib,
                     ssh_key_path=None,
                     vm_name=args.name,
@@ -2079,6 +2093,7 @@ def _run_create(args: argparse.Namespace) -> int:
                         image=image_uri,
                         vm_name=args.name,
                         backend=args.backend,
+                        qemu_machine=args.qemu_machine,
                         memory=args.memory_mib,
                         ssh_key_path=None,
                         on_download=on_download,
@@ -2094,6 +2109,7 @@ def _run_create(args: argparse.Namespace) -> int:
                     image=image_uri,
                     vm_name=args.name,
                     backend=args.backend,
+                    qemu_machine=args.qemu_machine,
                     memory=args.memory_mib,
                     ssh_key_path=None,
                 )
@@ -2121,6 +2137,7 @@ def _run_create(args: argparse.Namespace) -> int:
                         vm_name=args.name,
                         os=args.os,
                         backend=args.backend,
+                        qemu_machine=args.qemu_machine,
                         memory=args.memory_mib,
                         disk_size_mib=args.disk_size_mib,
                         ssh_key_path=None,
@@ -2137,6 +2154,7 @@ def _run_create(args: argparse.Namespace) -> int:
                     vm_name=args.name,
                     os=args.os,
                     backend=args.backend,
+                    qemu_machine=args.qemu_machine,
                     memory=args.memory_mib,
                     disk_size_mib=args.disk_size_mib,
                     ssh_key_path=None,
@@ -2367,6 +2385,7 @@ def _run_start_with_published_image(args: argparse.Namespace, preset: object) ->
             rootfs_path=local_image.rootfs_path,
             boot_args=_boot_args_for(_preset.name, vmm, arch),
             backend=backend,
+            qemu_machine=args.qemu_machine,
             ssh_public_key=public_key_value,
         )
 
@@ -2513,6 +2532,7 @@ def _run_start(args: argparse.Namespace) -> int:
                     name_prefix=preset.name,
                     os=requested_os,
                     backend=backend,
+                    qemu_machine=args.qemu_machine,
                     memory=memory_mib,
                     disk_size_mib=disk_size_mib,
                     ssh_key_path=None,
@@ -2534,6 +2554,7 @@ def _run_start(args: argparse.Namespace) -> int:
                 name_prefix=preset.name,
                 os=requested_os,
                 backend=backend,
+                qemu_machine=args.qemu_machine,
                 memory=memory_mib,
                 disk_size_mib=disk_size_mib,
                 ssh_key_path=None,

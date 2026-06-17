@@ -26,19 +26,20 @@ Primary target:
 | 2026-06-14 | #373 sparse published rootfs cache and raw disk copy | Firecracker | vsock | 1979.1 ms | 1057.4 ms | -921.7 ms | 46.6% faster | Published `images-2026.06.14.0`; host create dropped from 1123.6 ms to 200.5 ms. |
 | 2026-06-14 | #374 Ubuntu transport telemetry and Ed25519 SSH host key | QEMU | SSH | 1455.6 ms | 1233.9 ms | -221.7 ms | 15.2% faster | Current-init local run; replaces `ssh-keygen -A` with one Ed25519 host key. |
 | 2026-06-14 | #374 Ubuntu transport telemetry and Ed25519 SSH host key | Firecracker | SSH | 1827.7 ms | 1576.5 ms | -251.2 ms | 13.7% faster | Current-init local run; SSH host-key phase median is now 10.0 ms. |
-| 2026-06-17 | Current PR opt-in QEMU microvm experiment | QEMU | vsock | 1091.8 ms | 408.4 ms | -683.4 ms | 62.6% faster | Opt-in only via `SMOLVM_QEMU_MACHINE=microvm`; default remains q35. |
+| 2026-06-17 | Current PR QEMU microvm default | QEMU | vsock | 982.6 ms | 345.1 ms | -637.5 ms | 64.9% faster | Published Ubuntu preset; `qemu_machine="q35"` remains the compatibility escape hatch. |
 
 ## Current Published Ubuntu Medians
 
 | Backend | Transport | Total ready | First command | Warm exec | Source |
 |---|---:|---:|---:|---:|---|
-| QEMU | SSH | 1751.6 ms | 9.9 ms | 43.0 ms | #373 published run |
-| QEMU | vsock | 1059.7 ms | 1.1 ms | 0.8 ms | #373 published run |
+| QEMU | SSH | 1751.6 ms | 9.9 ms | 43.0 ms | #373 published run; microvm SSH not remeasured in the transport harness |
+| QEMU | vsock | 345.1 ms | 1.2 ms | 1.0 ms | Current PR microvm sweep, published Ubuntu |
 | Firecracker | SSH | 1797.9 ms | 53.0 ms | 43.0 ms | #373 published run |
 | Firecracker | vsock | 1057.4 ms | 1.1 ms | 1.0 ms | #373 published run |
 
 The current best table uses the public `images-2026.06.14.0` release with #373
-sparse-cache behavior.
+sparse-cache behavior plus the current PR's QEMU microvm default for supported
+Linux direct-kernel guests.
 
 Snapshot restore metrics are now instrumented separately by
 `scripts/benchmarks/ubuntu_transport.py --include-snapshot`. Add snapshot
@@ -66,7 +67,7 @@ methodology.
 | Firecracker | vsock | ... | ... | ... | ... |
 ```
 
-## 2026-06-17 - Current PR: Opt-In QEMU Microvm Experiment
+## 2026-06-17 - Current PR: QEMU Microvm Default
 
 - Commit: current PR branch.
 - Image tag: `images-2026.06.14.0`.
@@ -75,15 +76,28 @@ methodology.
   - `SMOLVM_QEMU_MACHINE=microvm uv run python scripts/benchmarks/ubuntu_transport.py --variants qemu-vsock --iterations 5 --warm-exec-runs 5 --rootfs-source published --output /tmp/smolvm-qemu-microvm-vsock.json`
 - Host: AMD Ryzen 7 7800X3D, Linux x86_64, kernel `7.0.0-15-generic`,
   KVM and `/dev/vhost-vsock` available.
-- Method: one warm-up VM per variant, then five measured published-image
-  iterations per variant.
-- Behavior changed: QEMU can opt into the `microvm` machine for Linux x86_64
-  direct-kernel guests with `SMOLVM_QEMU_MACHINE=microvm`; this addresses
-  compatibility issue #329 while leaving the default q35 path unchanged.
+- Method: one warm-up VM per variant, then five measured Ubuntu iterations for
+  the initial experiment and three measured iterations per published QEMU preset
+  for the broader sweep.
+- Behavior changed: QEMU now uses the `microvm` machine by default for Linux
+  x86_64 direct-kernel Linux guests; `qemu_machine="q35"`,
+  `--qemu-machine q35`, and `SMOLVM_QEMU_MACHINE=q35` keep the compatibility
+  path available.
 
 | Backend | Transport | Before total ready | After total ready | Delta | Improvement | First command | Warm exec |
 |---|---|---:|---:|---:|---:|---:|---:|
-| QEMU | vsock | 1091.8 ms | 408.4 ms | -683.4 ms | 62.6% faster | 1.3 ms | 0.9 ms |
+| QEMU | vsock | 982.6 ms | 345.1 ms | -637.5 ms | 64.9% faster | 1.2 ms | 1.0 ms |
+
+Published QEMU preset sweep, vsock-ready p50:
+
+| Preset | q35 p50 | microvm p50 | Delta | Improvement |
+|---|---:|---:|---:|---:|
+| ubuntu | 982.6 ms | 345.1 ms | -637.5 ms | 64.9% |
+| codex | 1500.1 ms | 607.8 ms | -892.3 ms | 59.5% |
+| claude-code | 1520.9 ms | 624.4 ms | -896.5 ms | 58.9% |
+| hermes | 1525.8 ms | 587.5 ms | -938.3 ms | 61.5% |
+| openclaw | 1490.6 ms | 608.5 ms | -882.1 ms | 59.2% |
+| pi | 1510.3 ms | 613.1 ms | -897.2 ms | 59.4% |
 
 ## 2026-06-14 - PR #374: Ubuntu Transport Telemetry And Ed25519 Host Key
 

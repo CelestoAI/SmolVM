@@ -639,6 +639,7 @@ class TestCliCreate:
             vm_name=None,
             os=None,
             backend=None,
+            qemu_machine="auto",
             memory=None,
             disk_size_mib=4096,
             ssh_key_path=None,
@@ -700,6 +701,8 @@ class TestCliCreate:
                 "2048",
                 "--backend",
                 "qemu",
+                "--qemu-machine",
+                "q35",
                 "--boot-timeout",
                 "45",
             ]
@@ -710,6 +713,7 @@ class TestCliCreate:
             vm_name="project-spacex",
             os=None,
             backend="qemu",
+            qemu_machine="q35",
             memory=1024,
             disk_size_mib=2048,
             ssh_key_path=None,
@@ -805,6 +809,7 @@ class TestCliCreate:
             vm_name="computer",
             os=None,
             backend=None,
+            qemu_machine="auto",
             memory=None,
             disk_size_mib=4096,
             ssh_key_path=None,
@@ -951,6 +956,7 @@ class TestCliCreate:
             vm_name=None,
             os="alpine",
             backend=None,
+            qemu_machine="auto",
             memory=None,
             disk_size_mib=None,
             ssh_key_path=None,
@@ -1182,6 +1188,7 @@ class TestCliCreateWindows:
             image=str(disk),
             os_input="windows",
             backend="qemu",
+            qemu_machine="auto",
             memory=None,
             ssh_key_path=None,
             vm_name="win-vm-1",
@@ -3068,7 +3075,7 @@ class TestCliStart:
             "injected_env_keys": ["OPENAI_API_KEY"],
         }
 
-        ret = main(["codex", "start", "--name", "sbx-codex"])
+        ret = main(["codex", "start", "--name", "sbx-codex", "--qemu-machine", "q35"])
 
         assert ret == 0
         mock_build_auto_config.assert_called_once_with(
@@ -3076,6 +3083,7 @@ class TestCliStart:
             name_prefix="codex",
             os=GuestOS.UBUNTU,
             backend="qemu",
+            qemu_machine="q35",
             memory=2048,
             disk_size_mib=8192,
             ssh_key_path=None,

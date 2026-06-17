@@ -20,11 +20,11 @@ builder is a pure function: it reads ``VMInfo`` plus a ``GuestPlatformSpec``
 and returns a ``list[str]`` argv. All side effects (spawning the process,
 opening log files, tracking PIDs) stay in ``_start_qemu``.
 
-For the Linux all-defaults spec (``_LINUX_SPEC``) this function produces
-output byte-identical to the pre-refactor ``_start_qemu`` unless the
-experimental ``SMOLVM_QEMU_MACHINE=microvm`` switch is set. The
-``GuestPlatformSpec`` fields exist to let later commits add Windows-specific
-fragments without disturbing the Linux path.
+For the Linux all-defaults spec (``_LINUX_SPEC``) this function now selects
+the faster ``microvm`` machine for supported Linux x86_64 direct-kernel guests.
+Callers can still force the legacy q35 path with ``qemu_machine="q35"`` or
+``SMOLVM_QEMU_MACHINE=q35``. The ``GuestPlatformSpec`` fields exist to let
+later commits add Windows-specific fragments without disturbing the Linux path.
 """
 
 from __future__ import annotations
@@ -32,11 +32,12 @@ from __future__ import annotations
 import os
 import platform
 from pathlib import Path
+from typing import cast
 
 from smolvm.exceptions import SmolVMError
 from smolvm.runtime.guest_platforms import GuestPlatformSpec
 from smolvm.runtime.qemu import QEMU_ROOT_NODE_NAME
-from smolvm.types import GuestOS, VMInfo
+from smolvm.types import GuestOS, QemuMachine, VMInfo
 
 # DNS server announced to the guest by QEMU's SLIRP stack. The default would
 # also work; we set it explicitly so the guest sees the same address whether
@@ -50,6 +51,7 @@ _Q35_AHCI_PORTS = 6
 
 _QEMU_MACHINE_ENV = "SMOLVM_QEMU_MACHINE"
 _QEMU_MICROVM_MACHINE = "microvm,accel=kvm,acpi=on,pcie=off,pic=off,pit=off,rtc=on"
+_QEMU_MACHINE_VALUES: set[QemuMachine] = {"auto", "q35", "microvm"}
 
 
 # Candidate UEFI firmware locations for aarch64 QEMU firmware-boot.
@@ -75,22 +77,46 @@ def _find_aarch64_uefi_firmware() -> Path | None:
     return None
 
 
-def _use_experimental_qemu_microvm(
+def _requested_qemu_machine(vm_info: VMInfo) -> QemuMachine:
+    """Return the requested QEMU machine, with env as an operator override."""
+    env_value = os.environ.get(_QEMU_MACHINE_ENV, "").strip().lower()
+    if env_value in _QEMU_MACHINE_VALUES:
+        return cast(QemuMachine, env_value)
+    return vm_info.config.qemu_machine
+
+
+def _supports_qemu_microvm(
     vm_info: VMInfo,
     *,
     qemu_name: str,
     system: str,
     platform_spec: GuestPlatformSpec,
 ) -> bool:
-    """Return whether to use the opt-in x86_64 QEMU microvm machine."""
-    requested_machine = os.environ.get(_QEMU_MACHINE_ENV, "").strip().lower()
-    if requested_machine != "microvm":
-        return False
+    """Return whether this QEMU launch can use the microvm machine."""
     return (
         system == "Linux"
         and qemu_name == "qemu-system-x86_64"
         and vm_info.config.boot_mode == "direct_kernel"
         and platform_spec.guest_os in {GuestOS.ALPINE, GuestOS.UBUNTU}
+    )
+
+
+def _use_qemu_microvm(
+    vm_info: VMInfo,
+    *,
+    qemu_name: str,
+    system: str,
+    platform_spec: GuestPlatformSpec,
+) -> bool:
+    """Return whether to use the x86_64 QEMU microvm machine."""
+    requested_machine = _requested_qemu_machine(vm_info)
+    if requested_machine == "q35":
+        return False
+    return _supports_qemu_microvm(
+        vm_info,
+        qemu_name=qemu_name,
+        system=system,
+        platform_spec=platform_spec,
     )
 
 
@@ -182,7 +208,7 @@ def build_qemu_argv(
 
     qemu_name = qemu_bin.name
     system = host_system if host_system is not None else platform.system()
-    use_qemu_microvm = _use_experimental_qemu_microvm(
+    use_qemu_microvm = _use_qemu_microvm(
         vm_info,
         qemu_name=qemu_name,
         system=system,

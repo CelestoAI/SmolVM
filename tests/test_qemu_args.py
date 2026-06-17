@@ -6,14 +6,13 @@
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
 
-"""Byte-identical-output tests for the pure QEMU argv builder.
+"""QEMU argv tests for the pure backend command builder.
 
 The builder ``build_qemu_argv`` was extracted from
 ``SmolVMManager._start_qemu`` so it can be unit-tested without spawning
-QEMU. For the Linux all-defaults platform spec (``_LINUX_SPEC``) it must
-produce output byte-for-byte equivalent to the pre-refactor code path.
-The tests in this file lock that invariant: any change to the Linux argv
-shape must be intentional and explicitly captured here.
+QEMU. The default Linux x86_64 direct-kernel path now uses the faster
+``microvm`` machine, while ``qemu_machine="q35"`` preserves the legacy
+compatibility argv exactly.
 """
 
 from pathlib import Path
@@ -31,6 +30,7 @@ from smolvm.runtime.qemu_args import build_qemu_argv
 from smolvm.types import (
     GuestOS,
     NetworkConfig,
+    QemuMachine,
     VMConfig,
     VMInfo,
     VMState,
@@ -40,11 +40,16 @@ from smolvm.types import (
 
 
 @pytest.fixture(autouse=True)
-def _clear_experimental_qemu_machine_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def _clear_qemu_machine_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SMOLVM_QEMU_MACHINE", raising=False)
 
 
-def _qemu_vm_info(tmp_path: Path, *, vm_id: str = "vm-test") -> VMInfo:
+def _qemu_vm_info(
+    tmp_path: Path,
+    *,
+    vm_id: str = "vm-test",
+    qemu_machine: QemuMachine = "auto",
+) -> VMInfo:
     """A minimal Linux VMInfo wired for the QEMU backend."""
     kernel = tmp_path / "vmlinux"
     rootfs = tmp_path / "rootfs.ext4"
@@ -58,6 +63,7 @@ def _qemu_vm_info(tmp_path: Path, *, vm_id: str = "vm-test") -> VMInfo:
             kernel_path=kernel,
             rootfs_path=rootfs,
             backend="qemu",
+            qemu_machine=qemu_machine,
             boot_args="console=ttyS0 reboot=k panic=1 init=/init",
         ),
         network=NetworkConfig(
@@ -71,7 +77,7 @@ def _qemu_vm_info(tmp_path: Path, *, vm_id: str = "vm-test") -> VMInfo:
 
 def test_linux_x86_64_kvm_argv_byte_identical(tmp_path: Path) -> None:
     """Linux x86_64 + KVM produces the legacy q35 argv exactly."""
-    vm_info = _qemu_vm_info(tmp_path)
+    vm_info = _qemu_vm_info(tmp_path, qemu_machine="q35")
     cmd = build_qemu_argv(
         vm_info,
         qemu_bin=Path("/usr/bin/qemu-system-x86_64"),
@@ -139,7 +145,7 @@ def _with_vsock(vm_info: VMInfo, guest_cid: int = 42) -> VMInfo:
     return vm_info.model_copy(update={"config": config})
 
 
-def test_vsock_device_emitted_on_linux_x86(tmp_path: Path) -> None:
+def test_vsock_device_uses_mmio_variant_on_default_linux_x86_microvm(tmp_path: Path) -> None:
     vm_info = _with_vsock(_qemu_vm_info(tmp_path))
     cmd = build_qemu_argv(
         vm_info,
@@ -149,14 +155,26 @@ def test_vsock_device_emitted_on_linux_x86(tmp_path: Path) -> None:
         host_system="Linux",
     )
     assert "-device" in cmd
+    assert "vhost-vsock-device,guest-cid=42" in cmd
+    assert "vhost-vsock-pci,guest-cid=42" not in cmd
+
+
+def test_q35_forced_linux_x86_uses_pci_vsock(tmp_path: Path) -> None:
+    vm_info = _with_vsock(_qemu_vm_info(tmp_path, qemu_machine="q35"))
+    cmd = build_qemu_argv(
+        vm_info,
+        qemu_bin=Path("/usr/bin/qemu-system-x86_64"),
+        boot_args=vm_info.config.boot_args,
+        platform_spec=_LINUX_SPEC,
+        host_system="Linux",
+    )
     assert "vhost-vsock-pci,guest-cid=42" in cmd
+    assert "vhost-vsock-device,guest-cid=42" not in cmd
 
 
-def test_experimental_qemu_microvm_emits_mmio_devices(
+def test_default_qemu_microvm_emits_mmio_devices(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SMOLVM_QEMU_MACHINE", "microvm")
     vm_info = _with_vsock(_qemu_vm_info(tmp_path))
     extra_drive = tmp_path / "extra.raw"
     extra_drive.touch()
@@ -195,11 +213,7 @@ def test_experimental_qemu_microvm_emits_mmio_devices(
     assert "vhost-vsock-pci,guest-cid=42" not in device_args
 
 
-def test_experimental_qemu_microvm_ignored_on_darwin(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("SMOLVM_QEMU_MACHINE", "microvm")
+def test_default_qemu_microvm_ignored_on_darwin(tmp_path: Path) -> None:
     cmd = build_qemu_argv(
         _with_vsock(_qemu_vm_info(tmp_path)),
         qemu_bin=Path("/opt/homebrew/bin/qemu-system-x86_64"),
@@ -213,11 +227,7 @@ def test_experimental_qemu_microvm_ignored_on_darwin(
     assert not any("vhost-vsock" in arg for arg in cmd)
 
 
-def test_experimental_qemu_microvm_ignored_for_windows(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("SMOLVM_QEMU_MACHINE", "microvm")
+def test_default_qemu_microvm_ignored_for_windows(tmp_path: Path) -> None:
     spec = _fake_windows_spec()
     cmd = build_qemu_argv(
         _windows_vm_info(tmp_path),
@@ -230,6 +240,23 @@ def test_experimental_qemu_microvm_ignored_for_windows(
     )
 
     assert cmd[cmd.index("-machine") + 1].startswith("q35,accel=kvm")
+    assert "-nodefaults" not in cmd
+
+
+def test_env_qemu_machine_q35_forces_compatibility_machine(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SMOLVM_QEMU_MACHINE", "q35")
+    cmd = build_qemu_argv(
+        _qemu_vm_info(tmp_path),
+        qemu_bin=Path("/usr/bin/qemu-system-x86_64"),
+        boot_args="console=ttyS0 root=/dev/vda rw init=/init",
+        platform_spec=_LINUX_SPEC,
+        host_system="Linux",
+    )
+
+    assert cmd[cmd.index("-machine") + 1] == "q35,accel=kvm"
     assert "-nodefaults" not in cmd
 
 
@@ -632,7 +659,7 @@ def test_build_qemu_argv_tap_mode_emits_tap_netdev(tmp_path: Path) -> None:
     )
     joined = " ".join(cmd)
     assert "tap,id=net0,ifname=tap5,script=no,downscript=no" in joined
-    assert "virtio-net-pci,netdev=net0,mac=52:54:00:12:34:56" in joined
+    assert "virtio-net-device,netdev=net0,mac=52:54:00:12:34:56" in joined
     # No userspace slirp NAT and no host port forwarding in tap mode.
     assert "user,id=net0" not in joined
     assert "hostfwd=" not in joined

@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any, Literal, TypeVar
 from urllib.parse import urlparse
 
+from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
 from smolvm._naming import generate_sandbox_name
@@ -93,6 +94,7 @@ from smolvm.types import (
     GuestOS,
     InternetSettings,
     PortForwardConfig,
+    QemuMachine,
     SnapshotInfo,
     SnapshotType,
     VMConfig,
@@ -123,6 +125,7 @@ _VSOCK_AUTO_PROBE_TIMEOUT = 2.5
 _LOCAL_FORWARD_PROBE_TIMEOUT = 2.0
 _LOCAL_FORWARD_PROBE_INTERVAL = 0.2
 _LOCAL_TUNNEL_START_TIMEOUT = 10.0
+_QEMU_MACHINE_ADAPTER = TypeAdapter(QemuMachine)
 _DisplaySandboxT = TypeVar("_DisplaySandboxT", bound=DisplaySandboxProtocol)
 _LOCAL_FORWARD_MAX_PORT_ATTEMPTS = 10
 _AUTO_CONFIG_DEFAULT_MEM_SIZE_MIB = {
@@ -157,6 +160,11 @@ def _normalize_guest_os(os: GuestOS | str | None) -> GuestOS:
     except ValueError as exc:
         valid_values = ", ".join(guest_os.value for guest_os in GuestOS)
         raise ValueError(f"Unsupported guest OS {os!r}. Valid values: {valid_values}.") from exc
+
+
+def _validate_qemu_machine(qemu_machine: object) -> QemuMachine:
+    """Validate a qemu_machine API value using the VMConfig field contract."""
+    return _QEMU_MACHINE_ADAPTER.validate_python(qemu_machine)
 
 
 def _default_guest_os_for_backend(backend: str) -> GuestOS:
@@ -358,6 +366,7 @@ def _build_local_image_config(
     backend: str | None,
     memory: int | None,
     ssh_key_path: str | None,
+    qemu_machine: QemuMachine = "auto",
     vm_name: str | None = None,
     name_prefix: str = "sbx",
 ) -> tuple[VMConfig, str | None]:
@@ -429,6 +438,7 @@ def _build_local_image_config(
         kernel_path=None,
         rootfs_path=local_path,
         backend=BACKEND_QEMU,
+        qemu_machine=qemu_machine,
         boot_mode="firmware",
         boot_args="",  # ignored in firmware mode
         # Phase 2: the contract for the Windows path is that the user's
@@ -458,6 +468,7 @@ def _build_s3_image_config(
     vm_name: str | None = None,
     name_prefix: str = "sbx",
     backend: str | None = None,
+    qemu_machine: QemuMachine = "auto",
     memory: int | None = None,
     ssh_key_path: str | None = None,
     on_download: Callable[[str, int, int | None], None] | None = None,
@@ -532,6 +543,7 @@ def _build_s3_image_config(
         boot_args=boot_args,
         ssh_capable=True,
         backend=resolved_backend,
+        qemu_machine=qemu_machine,
     )
     logger.info(
         "Configured VM from S3 image: %s (image=%s, backend=%s)",
@@ -548,6 +560,7 @@ def _build_auto_config(
     name_prefix: str = "sbx",
     os: GuestOS | str | None = None,
     backend: str | None = None,
+    qemu_machine: QemuMachine = "auto",
     memory: int | None = None,
     disk_size_mib: int | None = None,
     ssh_key_path: str | None = None,
@@ -620,6 +633,7 @@ def _build_auto_config(
             guest_os=GuestOS.UBUNTU,
             ssh_capable=True,
             backend=resolved_backend,
+            qemu_machine=qemu_machine,
             ssh_public_key=public_key_value,
             disk_size_mib=resolved_disk_size_mib,
             grow_filesystem=should_grow_filesystem,
@@ -669,6 +683,7 @@ def _build_auto_config(
         rootfs_path=rootfs,
         boot_args=boot_args,
         backend=resolved_backend,
+        qemu_machine=qemu_machine,
         ssh_public_key=public_key_value,
     )
     logger.info(
@@ -889,6 +904,7 @@ class SmolVM:
         socket_dir: Override the default socket directory.
         backend: Runtime backend override (``firecracker``, ``qemu``, or ``auto``).
         os: Guest OS for auto-config mode (``"alpine"`` or ``"ubuntu"``).
+        qemu_machine: QEMU machine model (``"auto"``, ``"q35"``, or ``"microvm"``).
         memory: Guest memory in MiB for auto-config mode (``SmolVM()`` only).
         disk_size: Root filesystem size in MiB for auto-config mode (``SmolVM()`` only).
         ssh_user: SSH user for :meth:`run` (default ``root``; pass the
@@ -935,6 +951,7 @@ class SmolVM:
         socket_dir: Path | None = None,
         backend: str | None = None,
         os: GuestOS | str | None = None,
+        qemu_machine: QemuMachine = "auto",
         memory: int | None = None,
         disk_size: int | None = None,
         ssh_user: str = "root",
@@ -951,6 +968,11 @@ class SmolVM:
 
         if comm_channel is not None and comm_channel not in ("ssh", "vsock"):
             raise ValueError(f"comm_channel must be 'ssh' or 'vsock', got {comm_channel!r}")
+
+        if config is not None and qemu_machine != "auto":
+            config = config.model_copy(
+                update={"qemu_machine": _validate_qemu_machine(qemu_machine)}
+            )
 
         if image is not None and (config is not None or vm_id is not None):
             raise ValueError("image cannot be combined with config or vm_id.")
@@ -1017,6 +1039,7 @@ class SmolVM:
                     image=image,
                     os_input=os,
                     backend=backend,
+                    qemu_machine=qemu_machine,
                     memory=memory,
                     ssh_key_path=ssh_key_path,
                 )
@@ -1026,6 +1049,7 @@ class SmolVM:
                 config, ssh_key_path = _build_s3_image_config(
                     image=image,
                     backend=backend,
+                    qemu_machine=qemu_machine,
                     memory=memory,
                     ssh_key_path=ssh_key_path,
                 )
@@ -1035,6 +1059,7 @@ class SmolVM:
             config, ssh_key_path = _build_auto_config(
                 os=os,
                 backend=backend,
+                qemu_machine=qemu_machine,
                 memory=memory,
                 disk_size_mib=disk_size,
                 ssh_key_path=ssh_key_path,
@@ -1355,6 +1380,7 @@ class SmolVM:
         socket_dir: Path | None = None,
         backend: str | None = None,
         arch: str | None = None,
+        qemu_machine: QemuMachine = "auto",
         vcpus: int = 1,
         memory_mb: int = 512,
         guest_os: GuestOS | str = GuestOS.ALPINE,
@@ -1413,6 +1439,7 @@ class SmolVM:
             ssh_capable=image.ssh_capable,
             backend=resolved_backend,
             qemu_network=qemu_network,
+            qemu_machine=qemu_machine,
             disk_mode=disk_mode,
             disk_size_mib=disk_size_mb,
             grow_filesystem=grow_filesystem,

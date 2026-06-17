@@ -128,21 +128,23 @@ Acceptance:
 
 ### Phase 3: QEMU Fast Machine Profile
 
-QEMU currently optimizes for broad compatibility. Add a measured fast profile
-for Linux direct-kernel vsock sandboxes before considering a default change.
+QEMU now uses the measured fast profile for Linux x86_64 direct-kernel guests
+where the required devices are supported, while keeping the compatibility
+profile available through `qemu_machine="q35"` or `--qemu-machine q35`.
 
 Approach:
 
-- Add an internal QEMU `microvm` experiment for Ubuntu direct-kernel vsock runs.
+- Use the QEMU `microvm` machine by default for eligible Linux direct-kernel
+  runs.
 - Avoid PCI/ACPI/SeaBIOS work where the fast profile supports the required
   devices.
-- Fall back to the compatibility profile for SSH, workspace mounts, unsupported
-  host setups, or features that need the existing device model.
+- Fall back to the compatibility profile for unsupported host setups or features
+  that need the existing device model.
 
 Acceptance:
 
-- Unit tests prove the fast profile is selected only for eligible Ubuntu/vsock
-  runs.
+- Unit tests prove the fast profile is selected only for eligible Linux x86_64
+  direct-kernel runs.
 - QEMU vsock exec and file transfer pass.
 - Benchmarks report kernel-to-init and agent-ready deltas.
 

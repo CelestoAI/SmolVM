@@ -56,6 +56,7 @@ class GuestOS(str, Enum):
 
 RootfsFormat = Literal["raw-ext4", "qcow2"]
 QemuDiskFormat = Literal["raw", "qcow2"]
+QemuMachine = Literal["auto", "q35", "microvm"]
 
 
 def infer_rootfs_format_from_path(path: Path) -> RootfsFormat:
@@ -339,6 +340,11 @@ class VMConfig(BaseModel):
             userspace NAT + host port forwards) or ``"tap"`` (host TAP device
             under the shared nftables NAT/isolation rules). Ignored by non-QEMU
             backends.
+        qemu_machine: QEMU machine model — ``"auto"`` picks ``microvm`` for
+            Linux x86_64 direct-kernel Linux guests and the compatibility
+            machine elsewhere, ``"q35"`` forces the compatibility machine, and
+            ``"microvm"`` opts into microvm where supported. Ignored by
+            non-QEMU backends.
         disk_mode: Disk lifecycle mode:
             - ``"isolated"`` (default): clone rootfs per VM for sandbox isolation.
             - ``"shared"``: boot directly from ``rootfs_path``.
@@ -383,6 +389,7 @@ class VMConfig(BaseModel):
     ssh_capable: bool = False
     backend: str | None = None
     qemu_network: Literal["slirp", "tap"] = "slirp"
+    qemu_machine: QemuMachine = "auto"
     disk_mode: Literal["isolated", "shared"] = "isolated"
     disk_size_mib: Annotated[int, Field(ge=1)] | None = None
     grow_filesystem: bool = False

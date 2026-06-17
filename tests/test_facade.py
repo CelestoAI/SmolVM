@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest.mock import ANY, MagicMock, call, patch
 
 import pytest
+from pydantic import ValidationError as PydanticValidationError
 
 from smolvm.exceptions import (
     CommandExecutionUnavailableError,
@@ -73,6 +74,35 @@ class TestVMInit:
 
         assert vm.vm_id == "vm001"
         mock_sdk.create.assert_called_once_with(sample_config)
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_create_with_config_accepts_qemu_machine_override(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """qemu_machine= should override a supplied VMConfig for API callers."""
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        mock_sdk_cls.return_value = mock_sdk
+
+        SmolVM(sample_config, qemu_machine="q35")
+
+        created_config = mock_sdk.create.call_args.args[0]
+        assert created_config.qemu_machine == "q35"
+        assert sample_config.qemu_machine == "auto"
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_create_with_config_validates_qemu_machine_override(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        """Invalid qemu_machine= values should be rejected before copying config."""
+        with pytest.raises(PydanticValidationError):
+            SmolVM(sample_config, qemu_machine="pc")  # type: ignore[arg-type]
+
+        mock_sdk_cls.assert_not_called()
 
     @patch("smolvm.facade.SmolVMManager")
     def test_create_with_config_without_vm_id(
@@ -977,6 +1007,7 @@ class TestVMImageParam:
         mock_build_s3.assert_called_once_with(
             image="s3://bucket/images/alpine/",
             backend=None,
+            qemu_machine="auto",
             memory=None,
             ssh_key_path=None,
         )
@@ -1015,6 +1046,7 @@ class TestVMImageParam:
         mock_build_s3.assert_called_once_with(
             image="s3://bucket/img/",
             backend="qemu",
+            qemu_machine="auto",
             memory=1024,
             ssh_key_path=None,
         )
