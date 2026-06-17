@@ -17,7 +17,7 @@
 ``CommChannel`` is the least-common-denominator surface every caller already
 uses: run a command, push/pull a file, wait until the guest answers, and
 close. :class:`~smolvm.ssh.SSHClient` satisfies it structurally (it predates
-this protocol), and :class:`~smolvm.comm.vsock_channel.VsockChannel`
+this protocol), and :class:`~smolvm.comm.rust_http_vsock_channel.RustHttpVsockChannel`
 implements it explicitly. Keeping the interface this narrow means env-var
 injection (``smolvm.env``) and preset credential copying
 (``smolvm.presets``) work over either transport with no code change — they

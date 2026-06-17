@@ -25,7 +25,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from smolvm.comm.rust_http_vsock_channel import RustHttpVsockChannel
-from smolvm.comm.vsock_channel import VsockChannel
 from smolvm.exceptions import OperationTimeoutError
 from smolvm.facade import SmolVM
 from smolvm.types import (
@@ -159,7 +158,6 @@ def test_explicit_vsock_does_not_fall_back_to_ssh(
         raise OperationTimeoutError("vsock", timeout)
 
     monkeypatch.setattr(RustHttpVsockChannel, "wait_ready", _fail)
-    monkeypatch.setattr(VsockChannel, "wait_ready", _fail)
 
     # request="vsock" → explicit, allow_fallback=False
     vm = _vsock_vm(tmp_path, comm_channel="vsock", request="vsock")
@@ -184,7 +182,6 @@ def test_auto_vsock_falls_back_to_ssh_within_probe_budget(
         raise OperationTimeoutError("vsock", timeout)
 
     monkeypatch.setattr(RustHttpVsockChannel, "wait_ready", _fail)
-    monkeypatch.setattr(VsockChannel, "wait_ready", _fail)
 
     ssh_called = {}
 
@@ -201,6 +198,7 @@ def test_auto_vsock_falls_back_to_ssh_within_probe_budget(
 
     # vsock probe was capped at the (short) auto budget, not the 30s call timeout
     assert seen["probe_timeouts"][0] == pytest.approx(facade._VSOCK_AUTO_PROBE_TIMEOUT)
+    assert len(seen["probe_timeouts"]) == 1
     assert all(timeout <= facade._VSOCK_AUTO_PROBE_TIMEOUT for timeout in seen["probe_timeouts"])
     assert facade._VSOCK_AUTO_PROBE_TIMEOUT <= 3.0  # guardrail stays short
     # and we then fell back to SSH

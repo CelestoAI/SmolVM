@@ -21,8 +21,6 @@ every consumer relies on; it has two implementations:
 - :class:`~smolvm.ssh.SSHClient` — SSH/paramiko (the default, works everywhere).
 - :class:`~smolvm.comm.rust_http_vsock_channel.RustHttpVsockChannel` — the
   public Rust guest agent over HTTP/vsock, for QEMU CID and Firecracker UDS.
-- :class:`~smolvm.comm.vsock_channel.VsockChannel` — the legacy framed Python
-  guest-agent fallback kept for older images during the migration window.
 """
 
 from __future__ import annotations
@@ -35,9 +33,6 @@ from smolvm.comm.select import (
     host_supports_vsock,
     resolve_comm_channel,
 )
-from smolvm.comm.vsock_channel import VsockChannel
-
-LegacyFramedVsockChannel = VsockChannel
 
 __all__ = [
     "ChannelResolution",
@@ -45,8 +40,6 @@ __all__ = [
     "CommChannelKind",
     "ShellMode",
     "VsockNotSupportedError",
-    "VsockChannel",
-    "LegacyFramedVsockChannel",
     "RustHttpVsockChannel",
     "host_supports_vsock",
     "resolve_comm_channel",

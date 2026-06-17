@@ -30,12 +30,14 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from smolvm.comm import protocol
 from smolvm.comm.base import CommChannelKind, ShellMode
 from smolvm.exceptions import OperationTimeoutError, SmolVMError
 from smolvm.types import CommandResult
 
 logger = logging.getLogger(__name__)
+
+SMOLVM_AGENT_PORT = 1024
+"""Guest vsock port where the Rust guest agent listens."""
 
 _READY_FAST_POLL_WINDOW = 1.0
 _READY_FAST_POLL_INTERVAL = 0.02
@@ -68,7 +70,7 @@ class RustHttpVsockChannel:
         *,
         guest_cid: int | None = None,
         uds_path: str | Path | None = None,
-        agent_port: int = protocol.SMOLVM_AGENT_PORT,
+        agent_port: int = SMOLVM_AGENT_PORT,
         connect_timeout: int = 10,
     ) -> None:
         if (guest_cid is None) == (uds_path is None):
@@ -86,7 +88,7 @@ class RustHttpVsockChannel:
         cls,
         guest_cid: int,
         *,
-        agent_port: int = protocol.SMOLVM_AGENT_PORT,
+        agent_port: int = SMOLVM_AGENT_PORT,
         connect_timeout: int = 10,
     ) -> RustHttpVsockChannel:
         return cls(guest_cid=guest_cid, agent_port=agent_port, connect_timeout=connect_timeout)
@@ -96,7 +98,7 @@ class RustHttpVsockChannel:
         cls,
         uds_path: str | Path,
         *,
-        agent_port: int = protocol.SMOLVM_AGENT_PORT,
+        agent_port: int = SMOLVM_AGENT_PORT,
         connect_timeout: int = 10,
     ) -> RustHttpVsockChannel:
         return cls(uds_path=uds_path, agent_port=agent_port, connect_timeout=connect_timeout)

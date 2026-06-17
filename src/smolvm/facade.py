@@ -46,7 +46,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 from smolvm._naming import generate_sandbox_name
 from smolvm.callbacks import Callback, CallbackDispatcher, RunContext
-from smolvm.comm import LegacyFramedVsockChannel, RustHttpVsockChannel
+from smolvm.comm import RustHttpVsockChannel
 from smolvm.comm.base import CommChannel, CommChannelKind
 from smolvm.comm.select import ChannelResolution, VsockNotSupportedError, resolve_comm_channel
 from smolvm.env import inject_env_vars, read_env_vars, remove_env_vars
@@ -3039,36 +3039,23 @@ modprobe 9pnet_virtio""".strip()
         vsock = getattr(self._info.config, "vsock", None)
         if vsock is None:
             return False
-        channels: list[CommChannel] = []
         backend = getattr(self._info.config, "backend", None)
         if backend == BACKEND_FIRECRACKER:
             uds_path = vsock.uds_path or getattr(self._info, "vsock_uds_path", None)
             if not uds_path:
                 return False
-            channels = [
-                RustHttpVsockChannel.from_uds(uds_path),
-                LegacyFramedVsockChannel.from_uds(uds_path),
-            ]
+            channel: CommChannel = RustHttpVsockChannel.from_uds(uds_path)
         else:
-            channels = [
-                RustHttpVsockChannel.from_cid(vsock.guest_cid),
-                LegacyFramedVsockChannel.from_cid(vsock.guest_cid),
-            ]
+            channel = RustHttpVsockChannel.from_cid(vsock.guest_cid)
 
-        deadline = time.monotonic() + timeout
-        for channel in channels:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            try:
-                channel.wait_ready(timeout=remaining)
-            except (OperationTimeoutError, SmolVMError, OSError):
-                channel.close()
-                continue
-            self._control_channel = channel
-            self._control_ready = True
-            return True
-        return False
+        try:
+            channel.wait_ready(timeout=timeout)
+        except (OperationTimeoutError, SmolVMError, OSError):
+            channel.close()
+            return False
+        self._control_channel = channel
+        self._control_ready = True
+        return True
 
     def _wait_for_ready(self, timeout: float) -> None:
         """Wait until the resolved control channel is ready.

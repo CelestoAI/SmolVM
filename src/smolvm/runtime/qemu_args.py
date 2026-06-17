@@ -416,7 +416,7 @@ def build_qemu_argv(
             cmd.extend(["-device", device_arg])
 
     # vsock control-plane device. The guest agent listens on this CID and the
-    # host VsockChannel connects to it. Native vhost-vsock needs the host's
+    # host RustHttpVsockChannel connects to it. Native vhost-vsock needs the host's
     # /dev/vhost-vsock, which only exists on Linux — macOS/HVF has no
     # equivalent, so we emit nothing there and the host stays on SSH. The
     # device variant differs by machine type (PCI for q35, MMIO for virt).
