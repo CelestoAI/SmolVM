@@ -18,6 +18,7 @@ Automatically builds VM images with SSH using Docker.
 """
 
 import hashlib
+import io
 import json
 import logging
 import os
@@ -31,7 +32,7 @@ import tempfile
 import typing
 import urllib.error
 import urllib.request
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
 from smolvm.exceptions import ImageError, SmolVMError
@@ -64,6 +65,10 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 _GUEST_AGENT_CRATE_DIR = _REPO_ROOT / "guest-agent"
 _GUEST_AGENT_BUILD_FILE = "smolvm-guest-agent"
 _GUEST_AGENT_GUEST_PATH = "/usr/local/bin/smolvm-guest-agent"
+_GUEST_AGENT_RELEASE_SHA256: dict[str, str] = {
+    "amd64": "08f10561688891b43f64a2e0d83dd365fadf515bb0889603c974e506b2eceed5",
+    "arm64": "8976db4f9a337ad3b7e9b44b4f96913577598373d772fb79d50adca11e3364a7",
+}
 
 
 def _guest_agent_target_triple(arch: str | None = None) -> str:
@@ -78,6 +83,21 @@ def _guest_agent_target_triple(arch: str | None = None) -> str:
 
 def _guest_agent_binary_path() -> Path:
     return _REPO_ROOT / "target" / _guest_agent_target_triple() / "release" / "smolvm-guest-agent"
+
+
+def _has_guest_agent_source_checkout() -> bool:
+    """Whether the installed package is running from a Rust workspace checkout."""
+    return (_REPO_ROOT / "Cargo.toml").is_file() and (
+        _GUEST_AGENT_CRATE_DIR / "Cargo.toml"
+    ).is_file()
+
+
+def _sha256_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 def _cargo_binary() -> str:
@@ -112,6 +132,20 @@ def _guest_agent_source_digest() -> str:
     """Return a digest of source files that affect the guest-agent binary."""
     hasher = hashlib.sha256()
     hasher.update(_guest_agent_target_triple().encode())
+    configured = _configured_guest_agent_binary()
+    if configured is not None:
+        hasher.update(b"configured-binary")
+        hasher.update(str(configured).encode())
+        hasher.update(_sha256_file(configured).encode())
+        return hasher.hexdigest()
+
+    if not _has_guest_agent_source_checkout():
+        url, _asset_name, expected_sha256 = _guest_agent_release_asset()
+        hasher.update(b"release-binary")
+        hasher.update(url.encode())
+        hasher.update(expected_sha256.encode())
+        return hasher.hexdigest()
+
     for path in (
         _REPO_ROOT / "Cargo.toml",
         _REPO_ROOT / "Cargo.lock",
@@ -126,8 +160,100 @@ def _guest_agent_source_digest() -> str:
     return hasher.hexdigest()
 
 
+def _configured_guest_agent_binary() -> Path | None:
+    raw = os.environ.get("SMOLVM_GUEST_AGENT_BINARY")
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    if not path.is_file():
+        raise ImageError(
+            f"SMOLVM_GUEST_AGENT_BINARY points to a missing file: {path}; "
+            "run `unset SMOLVM_GUEST_AGENT_BINARY` and retry to use the published "
+            "SmolVM guest agent binary."
+        )
+    return path
+
+
+def _guest_agent_release_asset() -> tuple[str, str, str]:
+    """Return URL, asset name, and SHA-256 for the published guest-agent binary."""
+    from smolvm.images.published import _images_release_tag
+
+    arch = to_published_arch(platform.machine())
+    asset_name = f"smolvm-guest-agent-linux-{arch}"
+    expected_sha256 = _GUEST_AGENT_RELEASE_SHA256[arch]
+    url = (
+        "https://github.com/CelestoAI/SmolVM/releases/download/"
+        f"{_images_release_tag()}/{asset_name}"
+    )
+    return url, asset_name, expected_sha256
+
+
+def _guest_agent_binary_cache_dir() -> Path:
+    return Path.home() / ".smolvm" / "images" / "_guest-agent"
+
+
+def _download_guest_agent_binary() -> Path:
+    """Download and cache the pinned Rust guest-agent binary for installed wheels."""
+    from smolvm.images.published import _images_release_tag
+
+    url, asset_name, expected_sha256 = _guest_agent_release_asset()
+    cache_dir = (
+        _guest_agent_binary_cache_dir()
+        / _images_release_tag()
+        / to_published_arch(platform.machine())
+    )
+    binary_path = cache_dir / asset_name
+    quoted_binary_path = shlex.quote(str(binary_path))
+    if binary_path.is_file() and _sha256_file(binary_path) == expected_sha256:
+        binary_path.chmod(0o755)
+        return binary_path
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix=f".{asset_name}.",
+            dir=cache_dir,
+            delete=False,
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+            with urllib.request.urlopen(  # noqa: S310 - pinned GitHub release URL
+                url,
+                timeout=60,
+            ) as response:
+                shutil.copyfileobj(typing.cast(io.BufferedReader, response), tmp)
+        actual_sha256 = _sha256_file(tmp_path)
+        if actual_sha256 != expected_sha256:
+            raise ImageError(
+                f"Downloaded Rust guest agent binary from {url} failed SHA-256 "
+                f"verification (expected {expected_sha256}, got {actual_sha256}); "
+                f"run `rm -f {quoted_binary_path}` and retry so SmolVM downloads it again."
+            )
+        tmp_path.chmod(0o755)
+        os.replace(tmp_path, binary_path)
+        return binary_path
+    except ImageError:
+        raise
+    except (OSError, urllib.error.URLError) as exc:
+        raise ImageError(
+            f"Could not download the Rust guest agent binary from {url}; run "
+            f"`mkdir -p {shlex.quote(str(cache_dir))} && curl -fL {shlex.quote(url)} "
+            f"-o {quoted_binary_path} && chmod 755 {quoted_binary_path}` and retry."
+        ) from exc
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            with suppress(OSError):
+                tmp_path.unlink()
+
+
 def _guest_agent_binary() -> Path:
     """Build and return the Rust guest-agent binary used by rootfs builders."""
+    configured = _configured_guest_agent_binary()
+    if configured is not None:
+        return configured
+    if not _has_guest_agent_source_checkout():
+        return _download_guest_agent_binary()
+
     target = _guest_agent_target_triple()
     binary_path = _guest_agent_binary_path()
     try:

@@ -14,12 +14,15 @@
 
 """Tests that the guest agent is baked into and launched by built images."""
 
+import hashlib
+import io
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from smolvm.exceptions import ImageError
 from smolvm.images import builder as builder_mod
 from smolvm.images.builder import ImageBuilder
 from smolvm.images.published import IMAGES_RELEASE_TAG
@@ -172,6 +175,136 @@ def test_guest_agent_source_digest_tracks_rust_crate() -> None:
     digest = builder_mod._guest_agent_source_digest()
     assert len(digest) == 64
     assert (builder_mod._GUEST_AGENT_CRATE_DIR / "src" / "main.rs").is_file()
+
+
+def test_guest_agent_source_digest_tracks_release_binary_without_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SMOLVM_GUEST_AGENT_BINARY", raising=False)
+    monkeypatch.setattr(builder_mod, "_has_guest_agent_source_checkout", lambda: False)
+    monkeypatch.setattr(
+        builder_mod,
+        "_guest_agent_release_asset",
+        lambda: ("https://example.invalid/agent-a", "smolvm-guest-agent-linux-amd64", "a" * 64),
+    )
+    first = builder_mod._guest_agent_source_digest()
+    monkeypatch.setattr(
+        builder_mod,
+        "_guest_agent_release_asset",
+        lambda: ("https://example.invalid/agent-b", "smolvm-guest-agent-linux-amd64", "b" * 64),
+    )
+    second = builder_mod._guest_agent_source_digest()
+
+    assert len(first) == 64
+    assert len(second) == 64
+    assert first != second
+
+
+def test_guest_agent_source_digest_tracks_env_binary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binary = tmp_path / "custom-agent"
+    binary.write_bytes(b"first")
+    monkeypatch.setenv("SMOLVM_GUEST_AGENT_BINARY", str(binary))
+
+    first = builder_mod._guest_agent_source_digest()
+    binary.write_bytes(b"second")
+    second = builder_mod._guest_agent_source_digest()
+
+    assert len(first) == 64
+    assert len(second) == 64
+    assert first != second
+
+
+def test_guest_agent_binary_honors_env_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binary = tmp_path / "custom-agent"
+    binary.write_bytes(b"custom")
+    monkeypatch.setenv("SMOLVM_GUEST_AGENT_BINARY", str(binary))
+    monkeypatch.setattr(
+        builder_mod,
+        "_download_guest_agent_binary",
+        lambda: pytest.fail("env override should not download"),
+    )
+
+    assert builder_mod._guest_agent_binary() == binary
+
+
+def test_guest_agent_binary_downloads_release_without_source_checkout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"release-agent"
+    expected_sha = hashlib.sha256(payload).hexdigest()
+    opened_urls: list[str] = []
+
+    class Response(io.BytesIO):
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            self.close()
+
+    def fake_urlopen(url: str, **_kwargs: object) -> Response:
+        opened_urls.append(url)
+        return Response(payload)
+
+    monkeypatch.delenv("SMOLVM_GUEST_AGENT_BINARY", raising=False)
+    monkeypatch.setattr(builder_mod, "_has_guest_agent_source_checkout", lambda: False)
+    monkeypatch.setattr(builder_mod, "_guest_agent_binary_cache_dir", lambda: tmp_path)
+    monkeypatch.setattr(builder_mod.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(
+        builder_mod,
+        "_guest_agent_release_asset",
+        lambda: ("https://example.invalid/agent", "smolvm-guest-agent-linux-amd64", expected_sha),
+    )
+    monkeypatch.setattr(builder_mod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        builder_mod.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("installed package should not run cargo"),
+    )
+
+    binary = builder_mod._guest_agent_binary()
+
+    assert binary.name == "smolvm-guest-agent-linux-amd64"
+    assert binary.read_bytes() == payload
+    assert binary.stat().st_mode & 0o111
+    assert opened_urls == ["https://example.invalid/agent"]
+    assert builder_mod._guest_agent_binary() == binary
+    assert opened_urls == ["https://example.invalid/agent"]
+
+
+def test_guest_agent_binary_rejects_bad_release_sha(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Response(io.BytesIO):
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            self.close()
+
+    monkeypatch.delenv("SMOLVM_GUEST_AGENT_BINARY", raising=False)
+    monkeypatch.setattr(builder_mod, "_guest_agent_binary_cache_dir", lambda: tmp_path)
+    monkeypatch.setattr(builder_mod.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(
+        builder_mod,
+        "_guest_agent_release_asset",
+        lambda: ("https://example.invalid/agent", "smolvm-guest-agent-linux-amd64", "0" * 64),
+    )
+    monkeypatch.setattr(
+        builder_mod.urllib.request,
+        "urlopen",
+        lambda _url, **_kwargs: Response(b"not-the-pinned-binary"),
+    )
+
+    with pytest.raises(ImageError, match="SHA-256 verification"):
+        builder_mod._download_guest_agent_binary()
 
 
 def test_base_init_script_launches_guest_agent_before_sshd() -> None:

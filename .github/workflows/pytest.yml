@@ -135,6 +135,7 @@ jobs:
             "smolvm==${VERSION}"
 
           .smoke-venv/bin/python3 - <<PY
+          import os
           import platform
           import subprocess
           from pathlib import Path
@@ -142,6 +143,7 @@ jobs:
 
           from smolvm.host._accel import HAS_NETLINK
           from smolvm.host.setup import detect_setup_platform, resolve_setup_script
+          from smolvm.images import builder as image_builder
 
           assert pkg_version("smolvm") == "${VERSION}"
           assert pkg_version("smolvm-core") == "${CORE_VERSION}"
@@ -164,5 +166,18 @@ jobs:
           ):
               helper_path = assets_dir / "internal" / helper
               assert helper_path.is_file(), f"missing packaged helper: {helper_path}"
+
+          os.environ.pop("SMOLVM_GUEST_AGENT_BINARY", None)
+          assert not image_builder._has_guest_agent_source_checkout()
+          release_downloads = []
+          expected_agent = Path("/tmp/fake-smolvm-guest-agent")
+
+          def fake_download_guest_agent_binary():
+              release_downloads.append("download")
+              return expected_agent
+
+          image_builder._download_guest_agent_binary = fake_download_guest_agent_binary
+          assert image_builder._guest_agent_binary() == expected_agent
+          assert release_downloads == ["download"]
           print("artifact install: OK")
           PY
