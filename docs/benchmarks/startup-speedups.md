@@ -26,6 +26,7 @@ Primary target:
 | 2026-06-14 | #373 sparse published rootfs cache and raw disk copy | Firecracker | vsock | 1979.1 ms | 1057.4 ms | -921.7 ms | 46.6% faster | Published `images-2026.06.14.0`; host create dropped from 1123.6 ms to 200.5 ms. |
 | 2026-06-14 | #374 Ubuntu transport telemetry and Ed25519 SSH host key | QEMU | SSH | 1455.6 ms | 1233.9 ms | -221.7 ms | 15.2% faster | Current-init local run; replaces `ssh-keygen -A` with one Ed25519 host key. |
 | 2026-06-14 | #374 Ubuntu transport telemetry and Ed25519 SSH host key | Firecracker | SSH | 1827.7 ms | 1576.5 ms | -251.2 ms | 13.7% faster | Current-init local run; SSH host-key phase median is now 10.0 ms. |
+| 2026-06-17 | Current PR opt-in QEMU microvm experiment | QEMU | vsock | 1091.8 ms | 408.4 ms | -683.4 ms | 62.6% faster | Opt-in only via `SMOLVM_QEMU_MACHINE=microvm`; default remains q35. |
 
 ## Current Published Ubuntu Medians
 
@@ -64,6 +65,25 @@ methodology.
 | QEMU | vsock | ... | ... | ... | ... |
 | Firecracker | vsock | ... | ... | ... | ... |
 ```
+
+## 2026-06-17 - Current PR: Opt-In QEMU Microvm Experiment
+
+- Commit: current PR branch.
+- Image tag: `images-2026.06.14.0`.
+- Commands:
+  - `uv run python scripts/benchmarks/ubuntu_transport.py --variants qemu-vsock --iterations 5 --warm-exec-runs 5 --rootfs-source published --output /tmp/smolvm-qemu-q35-vsock.json`
+  - `SMOLVM_QEMU_MACHINE=microvm uv run python scripts/benchmarks/ubuntu_transport.py --variants qemu-vsock --iterations 5 --warm-exec-runs 5 --rootfs-source published --output /tmp/smolvm-qemu-microvm-vsock.json`
+- Host: AMD Ryzen 7 7800X3D, Linux x86_64, kernel `7.0.0-15-generic`,
+  KVM and `/dev/vhost-vsock` available.
+- Method: one warm-up VM per variant, then five measured published-image
+  iterations per variant.
+- Behavior changed: QEMU can opt into the `microvm` machine for Linux x86_64
+  direct-kernel guests with `SMOLVM_QEMU_MACHINE=microvm`; this addresses
+  compatibility issue #329 while leaving the default q35 path unchanged.
+
+| Backend | Transport | Before total ready | After total ready | Delta | Improvement | First command | Warm exec |
+|---|---|---:|---:|---:|---:|---:|---:|
+| QEMU | vsock | 1091.8 ms | 408.4 ms | -683.4 ms | 62.6% faster | 1.3 ms | 0.9 ms |
 
 ## 2026-06-14 - PR #374: Ubuntu Transport Telemetry And Ed25519 Host Key
 

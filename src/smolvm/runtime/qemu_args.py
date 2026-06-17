@@ -21,13 +21,15 @@ and returns a ``list[str]`` argv. All side effects (spawning the process,
 opening log files, tracking PIDs) stay in ``_start_qemu``.
 
 For the Linux all-defaults spec (``_LINUX_SPEC``) this function produces
-output byte-identical to the pre-refactor ``_start_qemu``. The
+output byte-identical to the pre-refactor ``_start_qemu`` unless the
+experimental ``SMOLVM_QEMU_MACHINE=microvm`` switch is set. The
 ``GuestPlatformSpec`` fields exist to let later commits add Windows-specific
 fragments without disturbing the Linux path.
 """
 
 from __future__ import annotations
 
+import os
 import platform
 from pathlib import Path
 
@@ -45,6 +47,9 @@ QEMU_SLIRP_DNS = "10.0.2.3"
 # cdrom_bus="ide" occupy ide.0..ide.5 in order; any beyond port 5 fall back
 # to virtio-blk-pci so the QEMU command line stays valid.
 _Q35_AHCI_PORTS = 6
+
+_QEMU_MACHINE_ENV = "SMOLVM_QEMU_MACHINE"
+_QEMU_MICROVM_MACHINE = "microvm,accel=kvm,acpi=on,pcie=off,pic=off,pit=off,rtc=on"
 
 
 # Candidate UEFI firmware locations for aarch64 QEMU firmware-boot.
@@ -68,6 +73,25 @@ def _find_aarch64_uefi_firmware() -> Path | None:
         if path.is_file():
             return path
     return None
+
+
+def _use_experimental_qemu_microvm(
+    vm_info: VMInfo,
+    *,
+    qemu_name: str,
+    system: str,
+    platform_spec: GuestPlatformSpec,
+) -> bool:
+    """Return whether to use the opt-in x86_64 QEMU microvm machine."""
+    requested_machine = os.environ.get(_QEMU_MACHINE_ENV, "").strip().lower()
+    if requested_machine != "microvm":
+        return False
+    return (
+        system == "Linux"
+        and qemu_name == "qemu-system-x86_64"
+        and vm_info.config.boot_mode == "direct_kernel"
+        and platform_spec.guest_os in {GuestOS.ALPINE, GuestOS.UBUNTU}
+    )
 
 
 def build_qemu_argv(
@@ -158,6 +182,12 @@ def build_qemu_argv(
 
     qemu_name = qemu_bin.name
     system = host_system if host_system is not None else platform.system()
+    use_qemu_microvm = _use_experimental_qemu_microvm(
+        vm_info,
+        qemu_name=qemu_name,
+        system=system,
+        platform_spec=platform_spec,
+    )
 
     disk_format = vm_info.config.qemu_rootfs_format
     root_drive_id = f"{root_node_name}-drive"
@@ -184,6 +214,8 @@ def build_qemu_argv(
         "-m",
         str(vm_info.config.memory),
     ]
+    if use_qemu_microvm:
+        cmd.extend(["-nodefaults", "-serial", "stdio"])
     # Boot mode: direct-kernel passes -kernel/-append (optionally -initrd);
     # firmware mode lets QEMU boot the rootfs disk via default firmware
     # (OVMF on aarch64, SeaBIOS on x86_64) — the guest kernel lives inside
@@ -207,6 +239,8 @@ def build_qemu_argv(
             "-no-reboot",
         ]
     )
+    if use_qemu_microvm:
+        cmd.extend(["-monitor", "none"])
     # Pin the emulated hardware RTC to host wall-clock UTC. clock=host is
     # already QEMU's default, but we set it explicitly because the guest's
     # clock-sync loop depends on it: under HVF (macOS) there is no kvm-clock,
@@ -292,6 +326,20 @@ def build_qemu_argv(
         # cloud-init seed), the rootdisk-block device must be the LAST
         # virtio-blk-device added. Workspace fsdevs and the NIC must
         # come before it too.
+        for drive_id in extra_drive_ids:
+            cmd.extend(["-device", f"virtio-blk-device,drive={drive_id}"])
+        for fsdev_id, tag in workspace_fsdev_ids:
+            cmd.extend(["-device", f"virtio-9p-device,fsdev={fsdev_id},mount_tag={tag}"])
+        cmd.extend(
+            [
+                "-device",
+                f"virtio-net-device,netdev=net0,mac={guest_mac}",
+                "-device",
+                f"virtio-blk-device,drive={root_drive_id}",
+            ]
+        )
+    elif use_qemu_microvm:
+        cmd.extend(["-machine", _QEMU_MICROVM_MACHINE, "-cpu", "host"])
         for drive_id in extra_drive_ids:
             cmd.extend(["-device", f"virtio-blk-device,drive={drive_id}"])
         for fsdev_id, tag in workspace_fsdev_ids:
@@ -419,9 +467,13 @@ def build_qemu_argv(
     # host RustHttpVsockChannel connects to it. Native vhost-vsock needs the host's
     # /dev/vhost-vsock, which only exists on Linux — macOS/HVF has no
     # equivalent, so we emit nothing there and the host stays on SSH. The
-    # device variant differs by machine type (PCI for q35, MMIO for virt).
+    # device variant differs by machine type (PCI for q35, MMIO for virt/microvm).
     if vm_info.config.vsock is not None and system == "Linux":
-        vsock_device = "vhost-vsock-device" if "aarch64" in qemu_name else "vhost-vsock-pci"
+        vsock_device = (
+            "vhost-vsock-device"
+            if "aarch64" in qemu_name or use_qemu_microvm
+            else "vhost-vsock-pci"
+        )
         cmd.extend(["-device", f"{vsock_device},guest-cid={vm_info.config.vsock.guest_cid}"])
 
     return cmd

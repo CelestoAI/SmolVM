@@ -28,7 +28,20 @@ from smolvm.runtime.guest_platforms import (
     _build_windows_spec,
 )
 from smolvm.runtime.qemu_args import build_qemu_argv
-from smolvm.types import GuestOS, NetworkConfig, VMConfig, VMInfo, VMState, VsockConfig
+from smolvm.types import (
+    GuestOS,
+    NetworkConfig,
+    VMConfig,
+    VMInfo,
+    VMState,
+    VsockConfig,
+    WorkspaceMount,
+)
+
+
+@pytest.fixture(autouse=True)
+def _clear_experimental_qemu_machine_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SMOLVM_QEMU_MACHINE", raising=False)
 
 
 def _qemu_vm_info(tmp_path: Path, *, vm_id: str = "vm-test") -> VMInfo:
@@ -137,6 +150,87 @@ def test_vsock_device_emitted_on_linux_x86(tmp_path: Path) -> None:
     )
     assert "-device" in cmd
     assert "vhost-vsock-pci,guest-cid=42" in cmd
+
+
+def test_experimental_qemu_microvm_emits_mmio_devices(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SMOLVM_QEMU_MACHINE", "microvm")
+    vm_info = _with_vsock(_qemu_vm_info(tmp_path))
+    extra_drive = tmp_path / "extra.raw"
+    extra_drive.touch()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = vm_info.config.model_copy(
+        update={
+            "extra_drives": [extra_drive],
+            "workspace_mounts": [WorkspaceMount(host_path=workspace, mount_tag="ws0")],
+        }
+    )
+    vm_info = vm_info.model_copy(update={"config": config})
+
+    cmd = build_qemu_argv(
+        vm_info,
+        qemu_bin=Path("/usr/bin/qemu-system-x86_64"),
+        boot_args=vm_info.config.boot_args,
+        platform_spec=_LINUX_SPEC,
+        host_system="Linux",
+    )
+
+    assert cmd[cmd.index("-machine") + 1] == (
+        "microvm,accel=kvm,acpi=on,pcie=off,pic=off,pit=off,rtc=on"
+    )
+    assert cmd[cmd.index("-serial") + 1] == "stdio"
+    assert cmd[cmd.index("-monitor") + 1] == "none"
+    assert "-nodefaults" in cmd
+    device_args = [cmd[i + 1] for i, token in enumerate(cmd) if token == "-device"]
+    assert "virtio-blk-device,drive=extra0-drive" in device_args
+    assert "virtio-9p-device,fsdev=fsdev-ws0,mount_tag=ws0" in device_args
+    assert "virtio-net-device,netdev=net0,mac=52:54:00:12:34:56" in device_args
+    assert "virtio-blk-device,drive=rootdisk0-drive" in device_args
+    assert "vhost-vsock-device,guest-cid=42" in device_args
+    assert not any(arg.startswith("virtio-blk-pci,") for arg in device_args)
+    assert not any(arg.startswith("virtio-net-pci,") for arg in device_args)
+    assert "vhost-vsock-pci,guest-cid=42" not in device_args
+
+
+def test_experimental_qemu_microvm_ignored_on_darwin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SMOLVM_QEMU_MACHINE", "microvm")
+    cmd = build_qemu_argv(
+        _with_vsock(_qemu_vm_info(tmp_path)),
+        qemu_bin=Path("/opt/homebrew/bin/qemu-system-x86_64"),
+        boot_args="console=ttyS0 root=/dev/vda rw init=/init",
+        platform_spec=_LINUX_SPEC,
+        host_system="Darwin",
+    )
+
+    assert cmd[cmd.index("-machine") + 1] == "q35,accel=hvf"
+    assert "-nodefaults" not in cmd
+    assert not any("vhost-vsock" in arg for arg in cmd)
+
+
+def test_experimental_qemu_microvm_ignored_for_windows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SMOLVM_QEMU_MACHINE", "microvm")
+    spec = _fake_windows_spec()
+    cmd = build_qemu_argv(
+        _windows_vm_info(tmp_path),
+        qemu_bin=Path("/usr/bin/qemu-system-x86_64"),
+        boot_args="",
+        platform_spec=spec,
+        firmware_vars_path=Path("/state/OVMF_VARS.fd"),
+        swtpm_socket=Path("/state/swtpm-sock"),
+        host_system="Linux",
+    )
+
+    assert cmd[cmd.index("-machine") + 1].startswith("q35,accel=kvm")
+    assert "-nodefaults" not in cmd
 
 
 def test_vsock_device_uses_mmio_variant_on_aarch64(tmp_path: Path) -> None:
