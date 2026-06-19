@@ -72,7 +72,6 @@ _SKIP_FIRST_ARGS: frozenset[str] = frozenset(
         # Running-sandbox operations
         "env",
         "file",
-        "port",
     }
 )
 
@@ -85,6 +84,7 @@ _SKIP_SANDBOX_ACTIONS: frozenset[str] = frozenset(
         "pause",
         "resume",
         "delete",
+        "port",
     }
 )
 

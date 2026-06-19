@@ -90,11 +90,14 @@ class TestShouldAttemptReexec:
 
     @patch("smolvm.cli._kvm_session.platform.system", return_value="Linux")
     def test_verb_level_help_short_circuits(self, _mock_system: MagicMock) -> None:
-        # ``smolvm sandbox create --help`` argparse's into ["sandbox", "create", "--help"] —
+        # ``smolvm sandbox create --help`` reaches ["sandbox", "create", "--help"] —
         # this should not trigger a re-exec even though ``create`` is a
         # kvm-using verb, because no kvm work will actually run.
         assert _kvm_session._should_attempt_reexec(["sandbox", "create", "--help"]) is False
-        assert _kvm_session._should_attempt_reexec(["snapshot", "create", "-h"]) is False
+        assert (
+            _kvm_session._should_attempt_reexec(["sandbox", "snapshot", "create", "-h"])
+            is False
+        )
         assert (
             _kvm_session._should_attempt_reexec(["sandbox", "create", "--name", "x", "-V"])
             is False
@@ -104,9 +107,20 @@ class TestShouldAttemptReexec:
     def test_read_only_verbs_skip(self, _mock_system: MagicMock) -> None:
         # Read-only / VM-process-targeted verbs don't need /dev/kvm; a
         # re-exec for them would just print a confusing notice.
-        for verb in ("list", "info", "env", "ssh", "stop", "pause", "delete", "cleanup"):
-            assert _kvm_session._should_attempt_reexec([verb]) is False, (
-                f"expected {verb!r} to skip re-exec"
+        skipped = [
+            ["env"],
+            ["file"],
+            ["sandbox", "list"],
+            ["sandbox", "info"],
+            ["sandbox", "ssh"],
+            ["sandbox", "stop"],
+            ["sandbox", "pause"],
+            ["sandbox", "delete"],
+            ["sandbox", "port"],
+        ]
+        for argv in skipped:
+            assert _kvm_session._should_attempt_reexec(argv) is False, (
+                f"expected {argv!r} to skip re-exec"
             )
 
     @patch("smolvm.cli._kvm_session._KVM_DEV")

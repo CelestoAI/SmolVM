@@ -1547,7 +1547,7 @@ class TestCliVmStart:
 
 
 class TestCliSnapshot:
-    """Tests for `smolvm snapshot` subcommands."""
+    """Tests for `smolvm sandbox snapshot` subcommands."""
 
     @patch("smolvm.facade.SmolVM")
     def test_snapshot_create_success(
@@ -1555,12 +1555,12 @@ class TestCliSnapshot:
         mock_vm_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm snapshot create` should create a snapshot from an existing VM."""
+        """`smolvm sandbox snapshot create` should create a snapshot from an existing VM."""
         vm = MagicMock()
         vm.snapshot.return_value = _make_snapshot_info()
         mock_vm_cls.from_id.return_value = vm
 
-        ret = main(["snapshot", "create", "vm001", "--snapshot-id", "snap-001"])
+        ret = main(["sandbox", "snapshot", "create", "vm001", "--snapshot-id", "snap-001"])
 
         assert ret == 0
         mock_vm_cls.from_id.assert_called_once_with("vm001")
@@ -1577,16 +1577,16 @@ class TestCliSnapshot:
         mock_vm_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm snapshot create --json` should emit snapshot metadata."""
+        """`smolvm sandbox snapshot create --json` should emit snapshot metadata."""
         vm = MagicMock()
         vm.snapshot.return_value = _make_snapshot_info()
         mock_vm_cls.from_id.return_value = vm
 
-        ret = main(["snapshot", "create", "vm001", "--json"])
+        ret = main(["sandbox", "snapshot", "create", "vm001", "--json"])
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["command"] == "snapshot.create"
+        assert payload["command"] == "sandbox.snapshot.create"
         assert payload["data"]["snapshot"]["snapshot_id"] == "snap-001"
         assert payload["data"]["snapshot"]["vm_id"] == "vm001"
         assert payload["data"]["snapshot"]["backend"] == "firecracker"
@@ -1600,7 +1600,7 @@ class TestCliSnapshot:
         mock_vm_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm snapshot restore --json` should report both snapshot and VM state."""
+        """`smolvm sandbox snapshot restore --json` should report both snapshot and VM state."""
         sdk = mock_sdk_cls.return_value
         sdk.__enter__.return_value = sdk
         sdk.__exit__.side_effect = lambda *args: sdk.close()
@@ -1612,7 +1612,7 @@ class TestCliSnapshot:
         vm.info = _make_vm_info("vm001", VMState.PAUSED, "172.16.0.2", 2200, 999)
         mock_vm_cls.from_snapshot.return_value = vm
 
-        ret = main(["snapshot", "restore", "snap-001", "--json"])
+        ret = main(["sandbox", "snapshot", "restore", "snap-001", "--json"])
 
         assert ret == 0
         mock_vm_cls.from_snapshot.assert_called_once_with(
@@ -1621,7 +1621,7 @@ class TestCliSnapshot:
             force=False,
         )
         payload = json.loads(capsys.readouterr().out)
-        assert payload["command"] == "snapshot.restore"
+        assert payload["command"] == "sandbox.snapshot.restore"
         assert payload["data"]["snapshot"]["restored"] is True
         assert payload["data"]["snapshot"]["backend"] == "firecracker"
         assert payload["data"]["vm"]["name"] == "vm001"
@@ -1633,13 +1633,13 @@ class TestCliSnapshot:
         mock_sdk_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm snapshot delete` should delete snapshot metadata and files."""
+        """`smolvm sandbox snapshot delete` should delete snapshot metadata and files."""
         sdk = mock_sdk_cls.return_value
         sdk.__enter__.return_value = sdk
         sdk.__exit__.side_effect = lambda *args: sdk.close()
         sdk.get_snapshot.return_value = _make_snapshot_info()
 
-        ret = main(["snapshot", "delete", "snap-001"])
+        ret = main(["sandbox", "snapshot", "delete", "snap-001"])
 
         assert ret == 0
         sdk.get_snapshot.assert_called_once_with("snap-001")
@@ -1652,7 +1652,7 @@ class TestCliSnapshot:
         mock_sdk_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm snapshot list --json` should emit snapshot rows."""
+        """`smolvm sandbox snapshot list --json` should emit snapshot rows."""
         sdk = mock_sdk_cls.return_value
         sdk.__enter__.return_value = sdk
         sdk.__exit__.side_effect = lambda *args: sdk.close()
@@ -1661,16 +1661,61 @@ class TestCliSnapshot:
             _make_snapshot_info("snap-002", restored=True, restored_vm_id="vm001"),
         ]
 
-        ret = main(["snapshot", "list", "--json"])
+        ret = main(["sandbox", "snapshot", "list", "--json"])
 
         assert ret == 0
         sdk.list_snapshots.assert_called_once_with(vm_id=None)
         payload = json.loads(capsys.readouterr().out)
-        assert payload["command"] == "snapshot.list"
+        assert payload["command"] == "sandbox.snapshot.list"
         assert payload["data"]["filters"] == {"vm_id": None}
         assert payload["data"]["snapshots"][0]["snapshot_id"] == "snap-001"
         assert payload["data"]["snapshots"][0]["backend"] == "firecracker"
         assert payload["data"]["snapshots"][1]["restored"] is True
+
+
+class TestCliPort:
+    """Tests for `smolvm sandbox port` subcommands."""
+
+    @patch("smolvm.cli.main._run_port_expose", return_value=0)
+    def test_port_expose_forwards_nested_command_name(
+        self,
+        mock_run_port_expose: MagicMock,
+    ) -> None:
+        ret = main(["sandbox", "port", "expose", "vm001", "8080:3000", "--json"])
+
+        assert ret == 0
+        args = mock_run_port_expose.call_args.args[0]
+        assert args.vm_id == "vm001"
+        assert args.mapping == "8080:3000"
+        assert args.command_name == "sandbox.port.expose"
+        assert args.json is True
+
+    @patch("smolvm.cli.main._run_port_close", return_value=0)
+    def test_port_close_forwards_nested_command_name(
+        self,
+        mock_run_port_close: MagicMock,
+    ) -> None:
+        ret = main(["sandbox", "port", "close", "vm001", "8080:3000", "--json"])
+
+        assert ret == 0
+        args = mock_run_port_close.call_args.args[0]
+        assert args.vm_id == "vm001"
+        assert args.mapping == "8080:3000"
+        assert args.command_name == "sandbox.port.close"
+        assert args.json is True
+
+    @patch("smolvm.cli.main._run_port_list", return_value=0)
+    def test_port_list_forwards_nested_command_name(
+        self,
+        mock_run_port_list: MagicMock,
+    ) -> None:
+        ret = main(["sandbox", "port", "list", "vm001", "--json"])
+
+        assert ret == 0
+        args = mock_run_port_list.call_args.args[0]
+        assert args.vm_id == "vm001"
+        assert args.command_name == "sandbox.port.list"
+        assert args.json is True
 
 
 class TestCliSSH:
@@ -2927,6 +2972,20 @@ class TestCliStart:
         assert "codex" in out
         assert "claude" in out
         assert "claude-code" not in out
+        assert "\n  snapshot" not in out
+        assert "\n  port" not in out
+
+    def test_sandbox_help_lists_nested_resource_groups(
+        self,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """`smolvm sandbox --help` should expose sandbox-owned resources."""
+        ret = main(["sandbox", "--help"])
+        assert ret == 0
+        out = capsys.readouterr().out
+        assert "snapshot" in out
+        assert "port" in out
+        assert "cleanup" not in out
 
     def test_preset_help_lists_start_action(self, capsys: pytest.CaptureFixture) -> None:
         """`smolvm codex --help` should list the `start` action."""

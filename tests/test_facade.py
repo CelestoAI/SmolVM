@@ -674,7 +674,7 @@ class TestSnapshot:
 
         with pytest.raises(
             SmolVMError,
-            match=r"smolvm snapshot create vm001 --snapshot-type disk",
+            match=r"smolvm sandbox snapshot create vm001 --snapshot-type disk",
         ):
             vm._sync_guest_for_disk_snapshot()
 
@@ -926,7 +926,7 @@ class TestFromBootImage:
             backend="qemu",
         )
 
-        with pytest.raises(ValueError, match="smolvm port expose vm-tap-ports --help"):
+        with pytest.raises(ValueError, match="smolvm sandbox port expose vm-tap-ports --help"):
             SmolVM.from_image(
                 image,
                 vm_id="vm-tap-ports",
@@ -948,7 +948,7 @@ class TestFromBootImage:
             backend="qemu",
         )
 
-        with pytest.raises(ValueError, match="smolvm port expose vm-bad-port --help"):
+        with pytest.raises(ValueError, match="smolvm sandbox port expose vm-bad-port --help"):
             SmolVM.from_image(
                 image,
                 vm_id="vm-bad-port",

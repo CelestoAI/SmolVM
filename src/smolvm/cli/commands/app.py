@@ -356,7 +356,7 @@ def server_start(host: str, port: int) -> Any:
     return _handlers()._run_server_start(host=host, port=port)
 
 
-@cli.group(context_settings=CONTEXT_SETTINGS)
+@sandbox.group(context_settings=CONTEXT_SETTINGS)
 def snapshot() -> None:
     """Save and restore sandbox state."""
 
@@ -387,6 +387,7 @@ def snapshot_create(
             snapshot_id=snapshot_id,
             snapshot_type=snapshot_type,
             resume_source=resume_source,
+            command_name="sandbox.snapshot.create",
             json=json_output,
         )
     )
@@ -405,6 +406,7 @@ def snapshot_restore(snapshot_id: str, resume: bool, force: bool, json_output: b
             snapshot_id=snapshot_id,
             resume=resume,
             force=force,
+            command_name="sandbox.snapshot.restore",
             json=json_output,
         )
     )
@@ -416,7 +418,12 @@ def snapshot_restore(snapshot_id: str, resume: bool, force: bool, json_output: b
 def snapshot_delete(snapshot_id: str, json_output: bool) -> Any:
     _before_command(json_output=json_output)
     return _handlers()._run_snapshot(
-        _ns(snapshot_action="delete", snapshot_id=snapshot_id, json=json_output)
+        _ns(
+            snapshot_action="delete",
+            snapshot_id=snapshot_id,
+            command_name="sandbox.snapshot.delete",
+            json=json_output,
+        )
     )
 
 
@@ -426,7 +433,12 @@ def snapshot_delete(snapshot_id: str, json_output: bool) -> Any:
 def snapshot_list(vm_id: str | None, json_output: bool) -> Any:
     _before_command(json_output=json_output)
     return _handlers()._run_snapshot(
-        _ns(snapshot_action="list", vm_id=vm_id, json=json_output)
+        _ns(
+            snapshot_action="list",
+            vm_id=vm_id,
+            command_name="sandbox.snapshot.list",
+            json=json_output,
+        )
     )
 
 
@@ -592,7 +604,7 @@ def env_list(
     )
 
 
-@cli.group(context_settings=CONTEXT_SETTINGS)
+@sandbox.group(context_settings=CONTEXT_SETTINGS)
 def port() -> None:
     """Manage port forwarding for a sandbox."""
 
@@ -619,6 +631,7 @@ def port_expose(
             ssh_key=ssh_key,
             ssh_user=ssh_user,
             comm_channel=comm_channel,
+            command_name="sandbox.port.expose",
             json=json_output,
         )
     )
@@ -646,6 +659,7 @@ def port_close(
             ssh_key=ssh_key,
             ssh_user=ssh_user,
             comm_channel=comm_channel,
+            command_name="sandbox.port.close",
             json=json_output,
         )
     )
@@ -670,6 +684,7 @@ def port_list(
             ssh_key=ssh_key,
             ssh_user=ssh_user,
             comm_channel=comm_channel,
+            command_name="sandbox.port.list",
             json=json_output,
         )
     )

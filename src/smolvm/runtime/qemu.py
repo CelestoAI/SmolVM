@@ -411,7 +411,7 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                 raise SmolVMError(
                     "This space-saving snapshot needs its original base image, "
                     f"which is missing: '{backing}'. Restore that file and run "
-                    f"'smolvm snapshot restore {snapshot.snapshot_id}' again, or take "
+                    f"'smolvm sandbox snapshot restore {snapshot.snapshot_id}' again, or take "
                     "a full snapshot next time with '--snapshot-type full'.",
                     {"snapshot_id": snapshot.snapshot_id, "backing_file": str(backing)},
                 )

@@ -212,7 +212,7 @@ class SnapshotListFiltersPayload(TypedDict):
 
 
 class SnapshotListPayload(TypedDict):
-    """JSON payload for ``smolvm snapshot list``."""
+    """JSON payload for ``smolvm sandbox snapshot list``."""
 
     filters: SnapshotListFiltersPayload
     snapshots: list[SnapshotRow]
@@ -225,7 +225,7 @@ class SnapshotPayload(TypedDict):
 
 
 class SnapshotRestoreVmPayload(TypedDict):
-    """Machine-readable VM details for ``smolvm snapshot restore``."""
+    """Machine-readable VM details for ``smolvm sandbox snapshot restore``."""
 
     name: str
     status: str
@@ -234,7 +234,7 @@ class SnapshotRestoreVmPayload(TypedDict):
 
 
 class SnapshotRestorePayload(TypedDict):
-    """JSON payload for ``smolvm snapshot restore``."""
+    """JSON payload for ``smolvm sandbox snapshot restore``."""
 
     snapshot: SnapshotRow
     vm: SnapshotRestoreVmPayload
@@ -1865,15 +1865,19 @@ def _run_vm_start(args: SimpleNamespace) -> int:
 
 
 def _run_snapshot(args: SimpleNamespace) -> int:
-    """Handle ``smolvm snapshot`` commands."""
+    """Handle ``smolvm sandbox snapshot`` commands."""
     from smolvm.facade import SmolVM
     from smolvm.vm import SmolVMManager
 
     json_output = getattr(args, "json", False)
-    command_name = f"snapshot.{args.snapshot_action}" if args.snapshot_action else "snapshot"
+    command_name = getattr(args, "command_name", None) or (
+        f"sandbox.snapshot.{args.snapshot_action}"
+        if args.snapshot_action
+        else "sandbox.snapshot"
+    )
 
     if args.snapshot_action is None:
-        render_error("Usage: smolvm snapshot {create,restore,delete,list} ...")
+        render_error("Usage: smolvm sandbox snapshot {create,restore,delete,list} ...")
         return 2
 
     if args.snapshot_action == "create":
@@ -2335,23 +2339,25 @@ def _save_port_forwards(vm_id: str, forwards: list[dict]) -> None:
 
 
 def _run_port_expose(args: SimpleNamespace) -> int:
-    """Handle ``smolvm port expose``."""
+    """Handle ``smolvm sandbox port expose``."""
     from smolvm.facade import SmolVM
 
     json_output: bool = args.json
+    command_name = getattr(args, "command_name", "sandbox.port.expose")
     vm: SmolVM | None = None
 
     try:
         host_port_req, guest_port = _parse_port_mapping(args.mapping)
     except ValueError:
         return _emit_cli_error(
-            "port.expose",
+            command_name,
             1,
             ValueError(
                 f"Invalid mapping {args.mapping!r}. "
-                f"Run 'smolvm port expose {args.vm_id} 8080:3000'"
+                f"Run 'smolvm sandbox port expose {args.vm_id} 8080:3000'"
                 f" to forward host port 8080 to sandbox port 3000, "
-                f"or 'smolvm port expose {args.vm_id} 3000' to auto-select a host port."
+                f"or 'smolvm sandbox port expose {args.vm_id} 3000' "
+                "to auto-select a host port."
             ),
             json_output=json_output,
         )
@@ -2384,7 +2390,7 @@ def _run_port_expose(args: SimpleNamespace) -> int:
 
         if json_output:
             emit_json(
-                "port.expose",
+                command_name,
                 0,
                 data={
                     "sandbox": args.vm_id,
@@ -2400,10 +2406,11 @@ def _run_port_expose(args: SimpleNamespace) -> int:
             )
             console.print(f"Connect to [bold]localhost:{host_port}[/bold]")
             console.print(
-                f"Stop with: [bold]smolvm port close {args.vm_id} {host_port}:{guest_port}[/bold]"
+                f"Stop with: [bold]smolvm sandbox port close "
+                f"{args.vm_id} {host_port}:{guest_port}[/bold]"
             )
     except Exception as exc:
-        return _emit_cli_error("port.expose", 1, exc, json_output=json_output)
+        return _emit_cli_error(command_name, 1, exc, json_output=json_output)
     finally:
         if vm is not None:
             vm.close()
@@ -2412,10 +2419,11 @@ def _run_port_expose(args: SimpleNamespace) -> int:
 
 
 def _run_port_close(args: SimpleNamespace) -> int:
-    """Handle ``smolvm port close``."""
+    """Handle ``smolvm sandbox port close``."""
     from smolvm.facade import SmolVM
 
     json_output: bool = args.json
+    command_name = getattr(args, "command_name", "sandbox.port.close")
     vm: SmolVM | None = None
 
     try:
@@ -2423,10 +2431,10 @@ def _run_port_close(args: SimpleNamespace) -> int:
         if host_port is None:
             raise ValueError(
                 f"Use 'host-port:sandbox-port' format. "
-                f"Run 'smolvm port list {args.vm_id}' to see active forwards."
+                f"Run 'smolvm sandbox port list {args.vm_id}' to see active forwards."
             )
     except ValueError as exc:
-        return _emit_cli_error("port.close", 1, exc, json_output=json_output)
+        return _emit_cli_error(command_name, 1, exc, json_output=json_output)
 
     try:
         # Kill stored SSH tunnel process if present.
@@ -2472,7 +2480,7 @@ def _run_port_close(args: SimpleNamespace) -> int:
 
         if json_output:
             emit_json(
-                "port.close",
+                command_name,
                 0,
                 data={"sandbox": args.vm_id, "host_port": host_port, "guest_port": guest_port},
             )
@@ -2482,7 +2490,7 @@ def _run_port_close(args: SimpleNamespace) -> int:
             )
 
     except Exception as exc:
-        return _emit_cli_error("port.close", 1, exc, json_output=json_output)
+        return _emit_cli_error(command_name, 1, exc, json_output=json_output)
     finally:
         if vm is not None:
             vm.close()
@@ -2491,12 +2499,13 @@ def _run_port_close(args: SimpleNamespace) -> int:
 
 
 def _run_port_list(args: SimpleNamespace) -> int:
-    """Handle ``smolvm port list``."""
+    """Handle ``smolvm sandbox port list``."""
     json_output: bool = args.json
+    command_name = getattr(args, "command_name", "sandbox.port.list")
     forwards = _load_port_forwards(args.vm_id)
 
     if json_output:
-        emit_json("port.list", 0, data={"sandbox": args.vm_id, "forwards": forwards})
+        emit_json(command_name, 0, data={"sandbox": args.vm_id, "forwards": forwards})
     else:
         console = console_stdout()
         if not forwards:
@@ -2520,7 +2529,7 @@ def _run_port_list(args: SimpleNamespace) -> int:
 
 
 def _run_port(args: SimpleNamespace) -> int:
-    """Dispatch ``smolvm port <action>``."""
+    """Dispatch ``smolvm sandbox port <action>``."""
     action = getattr(args, "port_action", None)
     if action == "expose":
         return _run_port_expose(args)
@@ -2529,7 +2538,7 @@ def _run_port(args: SimpleNamespace) -> int:
     if action == "list":
         return _run_port_list(args)
 
-    render_error("Usage: smolvm port {expose,close,list} ...")
+    render_error("Usage: smolvm sandbox port {expose,close,list} ...")
     return 2
 
 
@@ -2945,12 +2954,16 @@ def _command_name_from_argv(args: Sequence[str]) -> str:
     tokens = [arg for arg in args if not arg.startswith("-")]
     if not tokens:
         return "smolvm"
+    if (
+        len(tokens) >= 3
+        and tokens[0] == "sandbox"
+        and tokens[1] in {"snapshot", "port"}
+    ):
+        return f"sandbox.{tokens[1]}.{tokens[2]}"
     if len(tokens) >= 2 and tokens[0] in {
         "sandbox",
-        "snapshot",
         "file",
         "env",
-        "port",
         "windows",
         "browser",
         "server",
@@ -2966,6 +2979,12 @@ def _command_name_from_argv(args: Sequence[str]) -> str:
 
 def _recovery_from_argv(args: Sequence[str]) -> str:
     tokens = [arg for arg in args if not arg.startswith("-")]
+    if (
+        len(tokens) >= 3
+        and tokens[0] == "sandbox"
+        and tokens[1] in {"snapshot", "port"}
+    ):
+        return f"Run 'smolvm {' '.join(tokens[:3])} --help' for usage."
     if tokens:
         return f"Run 'smolvm {' '.join(tokens[:2])} --help' for usage."
     return "Run 'smolvm --help' for usage."

@@ -702,7 +702,7 @@ def _from_image_config_help(vm_id: str) -> str:
 
 def _from_image_port_help(vm_id: str) -> str:
     """Return the recovery command shown by port-forward validation errors."""
-    return f"smolvm port expose {vm_id} --help"
+    return f"smolvm sandbox port expose {vm_id} --help"
 
 
 def _normalize_from_image_arch(image: BootImage, arch: str | None, vm_id: str) -> str:
@@ -1684,8 +1684,8 @@ class SmolVM:
         if result.exit_code != 0:
             raise SmolVMError(
                 f"Cannot create disk snapshot for sandbox '{self._vm_id}' because syncing "
-                f"files inside it failed; retry with 'smolvm snapshot create {self._vm_id} "
-                "--snapshot-type disk'."
+                f"files inside it failed; retry with 'smolvm sandbox snapshot create "
+                f"{self._vm_id} --snapshot-type disk'."
             )
 
     def delete(self) -> None:
