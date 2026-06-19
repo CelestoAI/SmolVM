@@ -112,6 +112,7 @@ class TestShouldAttemptReexec:
             ["sandbox", "delete"],
             ["sandbox", "env"],
             ["sandbox", "file"],
+            ["sandbox", "snapshot", "list"],
             ["sandbox", "port"],
         ]
         for argv in skipped:

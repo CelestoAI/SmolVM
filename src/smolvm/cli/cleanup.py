@@ -25,7 +25,14 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from smolvm.cli.output import console_stdout, emit_json, render_empty, render_error, status_style
+from smolvm.cli.output import (
+    console_stdout,
+    emit_error,
+    emit_json,
+    render_empty,
+    render_error,
+    status_style,
+)
 from smolvm.vm import SmolVMManager
 
 # ---------------------------------------------------------------------------
@@ -239,7 +246,7 @@ def run_delete(
             return exit_code
     except Exception as exc:
         if json_output:
-            emit_json(command_name, 1, data=None, error=_error_payload(exc))
+            emit_error(command_name, exit_code=1, **_error_payload(exc))
         else:
             render_error(f"Error: {exc}")
         return 1
@@ -268,17 +275,13 @@ def _confirm_cleanup(
         return None
 
     if json_output:
-        emit_json(
+        emit_error(
             command_name,
-            1,
-            data=None,
-            error={
-                "message": (
-                    "Refusing to delete VMs without --force in --json mode. "
-                    "Pass --force to confirm."
-                ),
-                "code": "refused",
-            },
+            "refused",
+            "Refusing to delete VMs without --force in --json mode. "
+            "Run 'smolvm sandbox delete --all --force --json' to confirm.",
+            recovery="Run 'smolvm sandbox delete --all --force --json' to confirm.",
+            exit_code=1,
         )
         return 1
 
@@ -358,7 +361,7 @@ def run_cleanup(
             return exit_code
     except Exception as exc:
         if json_output:
-            emit_json(command_name, 1, data=None, error=_error_payload(exc))
+            emit_error(command_name, exit_code=1, **_error_payload(exc))
         else:
             render_error(f"Error: {exc}")
         return 1

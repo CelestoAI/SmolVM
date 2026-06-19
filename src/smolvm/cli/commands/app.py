@@ -130,7 +130,10 @@ def sandbox_create(
 @json_option
 def sandbox_list(include_all: bool, status_filter: str | None, json_output: bool) -> Any:
     if include_all and status_filter is not None:
-        raise click.UsageError("Use either --all or --status, not both.")
+        raise click.UsageError(
+            "Use one filter. Run 'smolvm sandbox list --all' or "
+            "'smolvm sandbox list --status running'."
+        )
     _before_command(json_output=json_output)
     return _handlers()._run_list(
         include_all=include_all,
@@ -229,16 +232,23 @@ def sandbox_delete(
     json_output: bool,
 ) -> Any:
     if all_sandboxes and vm_ids:
-        raise click.UsageError("Use either sandbox names or --all, not both.")
+        raise click.UsageError(
+            "Choose one target. Run 'smolvm sandbox delete my-sandbox' or "
+            "'smolvm sandbox delete --all --force'."
+        )
     if not all_sandboxes and not vm_ids:
-        raise click.UsageError("Pass one or more sandboxes, or use --all.")
+        raise click.UsageError(
+            "Pass a target. Run 'smolvm sandbox delete my-sandbox' or "
+            "'smolvm sandbox delete --all --force'."
+        )
     if all_sandboxes and json_output and not force:
         from smolvm.cli.output import emit_error
 
         return emit_error(
             "sandbox.delete",
             "refused",
-            "Refusing to delete sandboxes without --force in --json mode.",
+            "Refusing to delete sandboxes without --force in --json mode. "
+            "Run 'smolvm sandbox delete --all --force --json' to confirm.",
             recovery="Run 'smolvm sandbox delete --all --force --json' to confirm.",
         )
 
@@ -801,7 +811,10 @@ def browser_start(
 @click.option("--all", "all_sessions", is_flag=True)
 def browser_stop(session_id: str | None, all_sessions: bool) -> Any:
     if all_sessions == (session_id is not None):
-        raise click.UsageError("Pass a browser sandbox ID or --all.")
+        raise click.UsageError(
+            "Choose one target. Run 'smolvm browser stop browser-id' or "
+            "'smolvm browser stop --all'."
+        )
     _before_command()
     return _handlers()._run_browser(
         _ns(browser_action="stop", session_id=session_id, all=all_sessions)

@@ -132,6 +132,59 @@ def test_create_help_describes_backend_specific_guest_default(
     assert "auto-detected" in help_text
 
 
+def test_json_error_preserves_empty_details(capsys: pytest.CaptureFixture) -> None:
+    """Explicit empty error details should survive JSON normalization."""
+    from smolvm.cli.output import emit_json
+
+    emit_json(
+        "sandbox.test",
+        1,
+        error={"code": "invalid_input", "message": "Bad input.", "details": []},
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["error"]["details"] == []
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (
+            ["sandbox", "list", "--all", "--status", "running"],
+            ["smolvm sandbox list --all", "smolvm sandbox list --status running"],
+        ),
+        (
+            ["sandbox", "delete", "my-sandbox", "--all"],
+            ["smolvm sandbox delete my-sandbox", "smolvm sandbox delete --all --force"],
+        ),
+        (
+            ["sandbox", "delete"],
+            ["smolvm sandbox delete my-sandbox", "smolvm sandbox delete --all --force"],
+        ),
+        (
+            ["browser", "stop"],
+            ["smolvm browser stop browser-id", "smolvm browser stop --all"],
+        ),
+        (
+            ["browser", "stop", "browser-id", "--all"],
+            ["smolvm browser stop browser-id", "smolvm browser stop --all"],
+        ),
+    ],
+)
+def test_usage_errors_include_recovery_commands(
+    argv: list[str],
+    expected: list[str],
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """Click usage errors should name concrete recovery commands."""
+    ret = main(argv)
+
+    assert ret == 2
+    err = capsys.readouterr().err
+    for text in expected:
+        assert text in err
+
+
 class TestCliEnv:
     """Tests for `smolvm sandbox env` subcommands."""
 

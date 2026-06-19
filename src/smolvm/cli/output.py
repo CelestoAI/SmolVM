@@ -39,7 +39,7 @@ def emit_json(
     exit_code: int,
     *,
     data: Any = None,
-    error: dict[str, str] | None = None,
+    error: dict[str, Any] | None = None,
 ) -> None:
     """Emit the unified JSON envelope to stdout."""
     normalized_error: dict[str, Any] | None = None
@@ -50,8 +50,8 @@ def emit_json(
         }
         if recovery := error.get("recovery"):
             normalized_error["recovery"] = recovery
-        if details := error.get("details"):
-            normalized_error["details"] = details
+        if "details" in error:
+            normalized_error["details"] = error["details"]
 
     payload = {
         "ok": exit_code == 0 and normalized_error is None,

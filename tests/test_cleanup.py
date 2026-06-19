@@ -270,6 +270,11 @@ class TestCleanup:
         assert payload["command"] == "sandbox.delete"
         assert payload["exit_code"] == 1
         assert "force" in payload["error"]["message"].lower()
+        assert "smolvm sandbox delete --all --force --json" in payload["error"]["message"]
+        assert (
+            payload["error"]["recovery"]
+            == "Run 'smolvm sandbox delete --all --force --json' to confirm."
+        )
 
     @patch("smolvm.cli.cleanup.os.geteuid", return_value=0)
     @patch("smolvm.cli.cleanup.sys.stdin")
@@ -365,4 +370,9 @@ class TestCleanup:
         assert payload["ok"] is False
         assert payload["command"] == "sandbox.delete"
         assert payload["error"]["code"] == "refused"
+        assert "smolvm sandbox delete --all --force --json" in payload["error"]["message"]
+        assert (
+            payload["error"]["recovery"]
+            == "Run 'smolvm sandbox delete --all --force --json' to confirm."
+        )
         mock_run_cleanup.assert_not_called()

@@ -1875,7 +1875,10 @@ def _run_snapshot(args: SimpleNamespace) -> int:
     )
 
     if args.snapshot_action is None:
-        render_error("Usage: smolvm sandbox snapshot {create,restore,delete,list} ...")
+        render_error(
+            "Usage: smolvm sandbox snapshot {create,restore,delete,list} ... "
+            "Run 'smolvm sandbox snapshot --help' for usage."
+        )
         return 2
 
     if args.snapshot_action == "create":
@@ -2028,7 +2031,10 @@ def _run_env(args: SimpleNamespace) -> int:
     from smolvm.facade import SmolVM
 
     if args.env_action is None:
-        render_error("Usage: smolvm sandbox env {set,unset,list} <vm_id> ...")
+        render_error(
+            "Usage: smolvm sandbox env {set,unset,list} <vm_id> ... "
+            "Run 'smolvm sandbox env --help' for usage."
+        )
         return 2
 
     vm: SmolVM | None = None
@@ -2163,7 +2169,10 @@ def _run_file(args: SimpleNamespace) -> int:
     from smolvm.facade import SmolVM
 
     if args.file_action is None:
-        render_error("Usage: smolvm sandbox file {upload,download} ...")
+        render_error(
+            "Usage: smolvm sandbox file {upload,download} ... "
+            "Run 'smolvm sandbox file --help' for usage."
+        )
         return 2
 
     json_output = args.json
@@ -2211,7 +2220,10 @@ def _run_file(args: SimpleNamespace) -> int:
                 _render_file_download(download_data)
             return 0
 
-        render_error("Usage: smolvm sandbox file {upload,download} ...")
+        render_error(
+            "Usage: smolvm sandbox file {upload,download} ... "
+            "Run 'smolvm sandbox file --help' for usage."
+        )
         return 2
     except Exception as exc:
         return _emit_cli_error(command_name, 1, exc, json_output=json_output)
@@ -2536,7 +2548,10 @@ def _run_port(args: SimpleNamespace) -> int:
     if action == "list":
         return _run_port_list(args)
 
-    render_error("Usage: smolvm sandbox port {expose,close,list} ...")
+    render_error(
+        "Usage: smolvm sandbox port {expose,close,list} ... "
+        "Run 'smolvm sandbox port --help' for usage."
+    )
     return 2
 
 

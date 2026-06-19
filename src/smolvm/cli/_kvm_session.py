@@ -87,6 +87,12 @@ _SKIP_SANDBOX_ACTIONS: frozenset[str] = frozenset(
     }
 )
 
+_SKIP_SANDBOX_NESTED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("snapshot", "list"),
+    }
+)
+
 _SKIP_BROWSER_ACTIONS: frozenset[str] = frozenset({"list", "stop", "open", "logs"})
 
 # Help/version flags can appear anywhere in argv (top-level *or* per-verb,
@@ -165,6 +171,12 @@ def _should_attempt_reexec(argv: Sequence[str] | None) -> bool:
     if args and args[0] in _SKIP_FIRST_ARGS:
         return False
     if len(args) >= 2 and args[0] == "sandbox" and args[1] in _SKIP_SANDBOX_ACTIONS:
+        return False
+    if (
+        len(args) >= 3
+        and args[0] == "sandbox"
+        and (args[1], args[2]) in _SKIP_SANDBOX_NESTED_ACTIONS
+    ):
         return False
     if len(args) >= 2 and args[0] == "browser" and args[1] in _SKIP_BROWSER_ACTIONS:
         return False

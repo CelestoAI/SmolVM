@@ -256,7 +256,7 @@ See [docs/concepts/network-egress-controls.md](docs/concepts/network-egress-cont
 You can give a sandbox access to a folder on your machine. This is useful when an agent needs to work with an existing project without copying files back and forth.
 
 ```bash
-smolvm sandbox create --mount ~/Projects/my-app
+smolvm sandbox create --name my-sandbox --mount ~/Projects/my-app
 smolvm sandbox ssh my-sandbox
 ls /workspace   # your host files appear here
 ```
