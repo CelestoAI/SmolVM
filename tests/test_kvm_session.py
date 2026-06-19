@@ -94,13 +94,9 @@ class TestShouldAttemptReexec:
         # this should not trigger a re-exec even though ``create`` is a
         # kvm-using verb, because no kvm work will actually run.
         assert _kvm_session._should_attempt_reexec(["sandbox", "create", "--help"]) is False
+        assert _kvm_session._should_attempt_reexec(["sandbox", "snapshot", "create", "-h"]) is False
         assert (
-            _kvm_session._should_attempt_reexec(["sandbox", "snapshot", "create", "-h"])
-            is False
-        )
-        assert (
-            _kvm_session._should_attempt_reexec(["sandbox", "create", "--name", "x", "-V"])
-            is False
+            _kvm_session._should_attempt_reexec(["sandbox", "create", "--name", "x", "-V"]) is False
         )
 
     @patch("smolvm.cli._kvm_session.platform.system", return_value="Linux")

@@ -185,9 +185,7 @@ def sandbox_stop(vm_id: str, timeout: float, json_output: bool) -> Any:
 @json_option
 def sandbox_pause(vm_id: str, json_output: bool) -> Any:
     _before_command(json_output=json_output)
-    return _handlers()._run_pause(
-        _ns(command_name="sandbox.pause", vm_id=vm_id, json=json_output)
-    )
+    return _handlers()._run_pause(_ns(command_name="sandbox.pause", vm_id=vm_id, json=json_output))
 
 
 @sandbox.command("resume")
@@ -819,9 +817,7 @@ def browser_stop(session_id: str | None, all_sessions: bool) -> Any:
 @json_option
 def browser_list(status: str | None, json_output: bool) -> Any:
     _before_command(json_output=json_output)
-    return _handlers()._run_browser(
-        _ns(browser_action="list", status=status, json=json_output)
-    )
+    return _handlers()._run_browser(_ns(browser_action="list", status=status, json=json_output))
 
 
 @browser.command("open")

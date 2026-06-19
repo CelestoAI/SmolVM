@@ -123,8 +123,7 @@ class LibkrunRuntimeAdapter(RuntimeAdapter):
             with suppress(Exception):
                 self._context.kill_process(process.pid)
             raise SmolVMError(
-                f"VM '{vm_id}' failed to start. "
-                f"Run 'smolvm sandbox delete {vm_id}' to remove it.",
+                f"VM '{vm_id}' failed to start. Run 'smolvm sandbox delete {vm_id}' to remove it.",
                 {"return_code": rc, "pid": process.pid},
             )
 
@@ -149,7 +148,6 @@ class LibkrunRuntimeAdapter(RuntimeAdapter):
             with suppress(Exception):
                 self._context.kill_process(process.pid)
             raise SmolVMError(
-                f"VM '{vm_id}' failed to start. "
-                f"Run 'smolvm sandbox delete {vm_id}' to remove it.",
+                f"VM '{vm_id}' failed to start. Run 'smolvm sandbox delete {vm_id}' to remove it.",
                 {"return_code": rc, "pid": process.pid},
             )

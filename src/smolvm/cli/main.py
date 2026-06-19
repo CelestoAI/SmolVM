@@ -1871,9 +1871,7 @@ def _run_snapshot(args: SimpleNamespace) -> int:
 
     json_output = getattr(args, "json", False)
     command_name = getattr(args, "command_name", None) or (
-        f"sandbox.snapshot.{args.snapshot_action}"
-        if args.snapshot_action
-        else "sandbox.snapshot"
+        f"sandbox.snapshot.{args.snapshot_action}" if args.snapshot_action else "sandbox.snapshot"
     )
 
     if args.snapshot_action is None:
@@ -2739,7 +2737,7 @@ def _run_windows_build_image(args: SimpleNamespace) -> int:
 
     if args.json:
         emit_json(
-                "windows.build-image",
+            "windows.build-image",
             0,
             data={
                 "output_qcow2": str(output),
