@@ -396,7 +396,7 @@ class TestPwshEncodedCommand:
 class TestPutFileDirectoryDestination:
     """``put_file`` resolves a directory destination to a file inside it.
 
-    Regression for ``smolvm file upload <vm> ./f /root`` failing with the
+    Regression for ``smolvm sandbox file upload <vm> ./f /root`` failing with the
     opaque SFTP ``Failure`` because ``/root`` is a directory: SFTP ``put``
     cannot overwrite a directory with a regular file. ``put_file`` now stats
     the destination on the already-open SFTP channel and, when it is a

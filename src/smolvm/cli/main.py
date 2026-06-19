@@ -241,7 +241,7 @@ class SnapshotRestorePayload(TypedDict):
 
 
 class FileUploadPayload(TypedDict):
-    """JSON payload for ``smolvm file upload``."""
+    """JSON payload for ``smolvm sandbox file upload``."""
 
     vm_id: str
     local_path: str
@@ -249,7 +249,7 @@ class FileUploadPayload(TypedDict):
 
 
 class FileDownloadPayload(TypedDict):
-    """JSON payload for ``smolvm file download``."""
+    """JSON payload for ``smolvm sandbox file download``."""
 
     vm_id: str
     guest_path: str
@@ -2026,16 +2026,16 @@ def _render_env_list(vm_id: str, data: dict[str, object]) -> None:
 
 
 def _run_env(args: SimpleNamespace) -> int:
-    """Handle ``smolvm env set|unset|list``."""
+    """Handle ``smolvm sandbox env set|unset|list``."""
     from smolvm.facade import SmolVM
 
     if args.env_action is None:
-        render_error("Usage: smolvm env {set,unset,list} <vm_id> ...")
+        render_error("Usage: smolvm sandbox env {set,unset,list} <vm_id> ...")
         return 2
 
     vm: SmolVM | None = None
     json_output = getattr(args, "json", False)
-    command_name = f"env.{args.env_action}"
+    command_name = getattr(args, "command_name", f"sandbox.env.{args.env_action}")
     try:
         parsed_env_vars: dict[str, str] | None = None
         if args.env_action == "set":
@@ -2161,15 +2161,15 @@ def _render_file_download(data: FileDownloadPayload) -> None:
 
 
 def _run_file(args: SimpleNamespace) -> int:
-    """Handle ``smolvm file`` commands."""
+    """Handle ``smolvm sandbox file`` commands."""
     from smolvm.facade import SmolVM
 
     if args.file_action is None:
-        render_error("Usage: smolvm file {upload,download} ...")
+        render_error("Usage: smolvm sandbox file {upload,download} ...")
         return 2
 
     json_output = args.json
-    command_name = f"file.{args.file_action}"
+    command_name = getattr(args, "command_name", f"sandbox.file.{args.file_action}")
     vm: SmolVM | None = None
     try:
         vm = SmolVM.from_id(
@@ -2213,7 +2213,7 @@ def _run_file(args: SimpleNamespace) -> int:
                 _render_file_download(download_data)
             return 0
 
-        render_error("Usage: smolvm file {upload,download} ...")
+        render_error("Usage: smolvm sandbox file {upload,download} ...")
         return 2
     except Exception as exc:
         return _emit_cli_error(command_name, 1, exc, json_output=json_output)
@@ -2957,13 +2957,11 @@ def _command_name_from_argv(args: Sequence[str]) -> str:
     if (
         len(tokens) >= 3
         and tokens[0] == "sandbox"
-        and tokens[1] in {"snapshot", "port"}
+        and tokens[1] in {"env", "file", "snapshot", "port"}
     ):
         return f"sandbox.{tokens[1]}.{tokens[2]}"
     if len(tokens) >= 2 and tokens[0] in {
         "sandbox",
-        "file",
-        "env",
         "windows",
         "browser",
         "server",
@@ -2982,7 +2980,7 @@ def _recovery_from_argv(args: Sequence[str]) -> str:
     if (
         len(tokens) >= 3
         and tokens[0] == "sandbox"
-        and tokens[1] in {"snapshot", "port"}
+        and tokens[1] in {"env", "file", "snapshot", "port"}
     ):
         return f"Run 'smolvm {' '.join(tokens[:3])} --help' for usage."
     if tokens:

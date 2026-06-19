@@ -133,7 +133,7 @@ def test_create_help_describes_backend_specific_guest_default(
 
 
 class TestCliEnv:
-    """Tests for `smolvm env` subcommands."""
+    """Tests for `smolvm sandbox env` subcommands."""
 
     @pytest.fixture
     def mock_vm_cls(self) -> MagicMock:
@@ -151,11 +151,11 @@ class TestCliEnv:
         mock_vm_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """Test `smolvm env set` success path."""
+        """Test `smolvm sandbox env set` success path."""
         vm = self._setup_vm(mock_vm_cls)
         vm.set_env_vars.return_value = ["FOO"]
 
-        ret = main(["env", "set", "vm001", "FOO=bar"])
+        ret = main(["sandbox", "env", "set", "vm001", "FOO=bar"])
 
         assert ret == 0
         mock_vm_cls.from_id.assert_called_once_with(
@@ -178,7 +178,7 @@ class TestCliEnv:
         vm = self._setup_vm(mock_vm_cls)
         vm.set_env_vars.return_value = ["FOO"]
 
-        ret = main(["env", "set", "vm001", "FOO=bar", "--comm-channel", channel])
+        ret = main(["sandbox", "env", "set", "vm001", "FOO=bar", "--comm-channel", channel])
 
         assert ret == 0
         mock_vm_cls.from_id.assert_called_once_with(
@@ -192,11 +192,11 @@ class TestCliEnv:
         self,
         mock_vm_cls: MagicMock,
     ) -> None:
-        """Test `smolvm env set` with multiple variables."""
+        """Test `smolvm sandbox env set` with multiple variables."""
         vm = self._setup_vm(mock_vm_cls)
         vm.set_env_vars.return_value = ["A", "B"]
 
-        ret = main(["env", "set", "vm001", "A=1", "B=2"])
+        ret = main(["sandbox", "env", "set", "vm001", "A=1", "B=2"])
 
         assert ret == 0
         vm.set_env_vars.assert_called_once_with({"A": "1", "B": "2"})
@@ -207,7 +207,7 @@ class TestCliEnv:
         capsys: pytest.CaptureFixture,
     ) -> None:
         """Test execution fails on malformed key=value pair."""
-        ret = main(["env", "set", "vm001", "BADPAIR"])
+        ret = main(["sandbox", "env", "set", "vm001", "BADPAIR"])
 
         assert ret == 1
         mock_vm_cls.from_id.assert_not_called()
@@ -218,11 +218,11 @@ class TestCliEnv:
         mock_vm_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """Test `smolvm env unset` success path."""
+        """Test `smolvm sandbox env unset` success path."""
         vm = self._setup_vm(mock_vm_cls)
         vm.unset_env_vars.return_value = {"FOO": "bar"}
 
-        ret = main(["env", "unset", "vm001", "FOO"])
+        ret = main(["sandbox", "env", "unset", "vm001", "FOO"])
 
         assert ret == 0
         vm.unset_env_vars.assert_called_once_with(["FOO"])
@@ -233,11 +233,11 @@ class TestCliEnv:
         mock_vm_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """Test `smolvm env list` success path (masked by default)."""
+        """Test `smolvm sandbox env list` success path (masked by default)."""
         vm = self._setup_vm(mock_vm_cls)
         vm.list_env_vars.return_value = {"FOO": "bar", "SECRET": "xyz"}
 
-        ret = main(["env", "list", "vm001"])
+        ret = main(["sandbox", "env", "list", "vm001"])
 
         assert ret == 0
         out = capsys.readouterr().out
@@ -251,11 +251,11 @@ class TestCliEnv:
         mock_vm_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """Test `smolvm env list --show-values` reveals values."""
+        """Test `smolvm sandbox env list --show-values` reveals values."""
         vm = self._setup_vm(mock_vm_cls)
         vm.list_env_vars.return_value = {"FOO": "bar"}
 
-        ret = main(["env", "list", "vm001", "--show-values"])
+        ret = main(["sandbox", "env", "list", "vm001", "--show-values"])
 
         assert ret == 0
         out = capsys.readouterr().out
@@ -267,15 +267,15 @@ class TestCliEnv:
         mock_vm_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm env set --json` should emit the shared envelope."""
+        """`smolvm sandbox env set --json` should emit the shared envelope."""
         vm = self._setup_vm(mock_vm_cls)
         vm.set_env_vars.return_value = ["FOO"]
 
-        ret = main(["env", "set", "vm001", "FOO=bar", "--json"])
+        ret = main(["sandbox", "env", "set", "vm001", "FOO=bar", "--json"])
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["command"] == "env.set"
+        assert payload["command"] == "sandbox.env.set"
         assert payload["ok"] is True
         assert payload["data"]["vm_id"] == "vm001"
         assert payload["data"]["requested_keys"] == ["FOO"]
@@ -287,15 +287,15 @@ class TestCliEnv:
         mock_vm_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm env unset --json` should emit removed and missing keys."""
+        """`smolvm sandbox env unset --json` should emit removed and missing keys."""
         vm = self._setup_vm(mock_vm_cls)
         vm.unset_env_vars.return_value = {"FOO": "bar"}
 
-        ret = main(["env", "unset", "vm001", "FOO", "MISSING", "--json"])
+        ret = main(["sandbox", "env", "unset", "vm001", "FOO", "MISSING", "--json"])
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["command"] == "env.unset"
+        assert payload["command"] == "sandbox.env.unset"
         assert payload["data"]["removed_keys"] == ["FOO"]
         assert payload["data"]["missing_keys"] == ["MISSING"]
 
@@ -304,15 +304,15 @@ class TestCliEnv:
         mock_vm_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm env list --json` should mask values by default."""
+        """`smolvm sandbox env list --json` should mask values by default."""
         vm = self._setup_vm(mock_vm_cls)
         vm.list_env_vars.return_value = {"FOO": "bar"}
 
-        ret = main(["env", "list", "vm001", "--json"])
+        ret = main(["sandbox", "env", "list", "vm001", "--json"])
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["command"] == "env.list"
+        assert payload["command"] == "sandbox.env.list"
         assert payload["data"]["masked"] is True
         assert payload["data"]["variables"] == {"FOO": "****"}
 
@@ -321,11 +321,11 @@ class TestCliEnv:
         mock_vm_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm env list --json --show-values` should reveal values."""
+        """`smolvm sandbox env list --json --show-values` should reveal values."""
         vm = self._setup_vm(mock_vm_cls)
         vm.list_env_vars.return_value = {"FOO": "bar"}
 
-        ret = main(["env", "list", "vm001", "--show-values", "--json"])
+        ret = main(["sandbox", "env", "list", "vm001", "--show-values", "--json"])
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
@@ -342,6 +342,7 @@ class TestCliEnv:
 
         main(
             [
+                "sandbox",
                 "env",
                 "list",
                 "vm001",
@@ -367,7 +368,7 @@ class TestCliEnv:
         """Test handling of VM lookup failure."""
         mock_vm_cls.from_id.side_effect = Exception("VM not found")
 
-        ret = main(["env", "list", "missing-vm"])
+        ret = main(["sandbox", "env", "list", "missing-vm"])
 
         assert ret == 1
         assert "Error: VM not found" in capsys.readouterr().err
@@ -381,7 +382,7 @@ class TestCliEnv:
         vm = self._setup_vm(mock_vm_cls)
         vm.list_env_vars.side_effect = Exception("VM has no network configuration")
 
-        ret = main(["env", "list", "vm001"])
+        ret = main(["sandbox", "env", "list", "vm001"])
 
         assert ret == 1
         assert "no network configuration" in capsys.readouterr().err
@@ -389,7 +390,7 @@ class TestCliEnv:
 
 
 class TestCliFile:
-    """Tests for `smolvm file` subcommands."""
+    """Tests for `smolvm sandbox file` subcommands."""
 
     @pytest.fixture
     def mock_vm_cls(self) -> MagicMock:
@@ -402,14 +403,14 @@ class TestCliFile:
         tmp_path: Path,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm file upload` should copy a local file into a sandbox."""
+        """`smolvm sandbox file upload` should copy a local file into a sandbox."""
         source = tmp_path / "note.txt"
         source.write_text("hello")
         vm = MagicMock()
         vm.upload_file.return_value = "/tmp/note.txt"
         mock_vm_cls.from_id.return_value = vm
 
-        ret = main(["file", "upload", "vm001", str(source), "/tmp/"])
+        ret = main(["sandbox", "file", "upload", "vm001", str(source), "/tmp/"])
 
         assert ret == 0
         mock_vm_cls.from_id.assert_called_once_with(
@@ -440,7 +441,9 @@ class TestCliFile:
         vm.upload_file.return_value = "/tmp/note.txt"
         mock_vm_cls.from_id.return_value = vm
 
-        ret = main(["file", "upload", "vm001", str(source), "/tmp/", "--comm-channel", channel])
+        ret = main(
+            ["sandbox", "file", "upload", "vm001", str(source), "/tmp/", "--comm-channel", channel]
+        )
 
         assert ret == 0
         mock_vm_cls.from_id.assert_called_once_with(
@@ -456,18 +459,18 @@ class TestCliFile:
         tmp_path: Path,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm file upload --json` should emit the upload destination."""
+        """`smolvm sandbox file upload --json` should emit the upload destination."""
         source = tmp_path / "note.txt"
         source.write_text("hello")
         vm = MagicMock()
         vm.upload_file.return_value = "/tmp/note.txt"
         mock_vm_cls.from_id.return_value = vm
 
-        ret = main(["file", "upload", "vm001", str(source), "/tmp/", "--json"])
+        ret = main(["sandbox", "file", "upload", "vm001", str(source), "/tmp/", "--json"])
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["command"] == "file.upload"
+        assert payload["command"] == "sandbox.file.upload"
         assert payload["ok"] is True
         assert payload["data"]["vm_id"] == "vm001"
         assert payload["data"]["local_path"] == str(source)
@@ -485,7 +488,9 @@ class TestCliFile:
         vm.upload_file.return_value = "/tmp/note.txt"
         mock_vm_cls.from_id.return_value = vm
 
-        ret = main(["file", "upload", "vm001", str(source), "/tmp/note.txt", "--no-create-dirs"])
+        ret = main(
+            ["sandbox", "file", "upload", "vm001", str(source), "/tmp/note.txt", "--no-create-dirs"]
+        )
 
         assert ret == 0
         vm.upload_file.assert_called_once_with(
@@ -506,7 +511,7 @@ class TestCliFile:
         vm.upload_file.side_effect = RuntimeError("boom")
         mock_vm_cls.from_id.return_value = vm
 
-        ret = main(["file", "upload", "vm001", str(source), "/tmp/"])
+        ret = main(["sandbox", "file", "upload", "vm001", str(source), "/tmp/"])
 
         assert ret != 0
         vm.close.assert_called_once()
@@ -517,13 +522,13 @@ class TestCliFile:
         tmp_path: Path,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm file download` should copy a guest file to the host."""
+        """`smolvm sandbox file download` should copy a guest file to the host."""
         destination = tmp_path / "note.txt"
         vm = MagicMock()
         vm.download_file.return_value = str(destination)
         mock_vm_cls.from_id.return_value = vm
 
-        ret = main(["file", "download", "vm001", "/tmp/note.txt", str(destination)])
+        ret = main(["sandbox", "file", "download", "vm001", "/tmp/note.txt", str(destination)])
 
         assert ret == 0
         mock_vm_cls.from_id.assert_called_once_with(
@@ -546,17 +551,19 @@ class TestCliFile:
         tmp_path: Path,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm file download --json` should emit the resolved local path."""
+        """`smolvm sandbox file download --json` should emit the resolved local path."""
         destination = tmp_path / "note.txt"
         vm = MagicMock()
         vm.download_file.return_value = str(destination)
         mock_vm_cls.from_id.return_value = vm
 
-        ret = main(["file", "download", "vm001", "/tmp/note.txt", str(tmp_path) + "/", "--json"])
+        ret = main(
+            ["sandbox", "file", "download", "vm001", "/tmp/note.txt", str(tmp_path) + "/", "--json"]
+        )
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["command"] == "file.download"
+        assert payload["command"] == "sandbox.file.download"
         assert payload["ok"] is True
         assert payload["data"]["vm_id"] == "vm001"
         assert payload["data"]["guest_path"] == "/tmp/note.txt"
@@ -575,6 +582,7 @@ class TestCliFile:
 
         ret = main(
             [
+                "sandbox",
                 "file",
                 "download",
                 "vm001",
@@ -601,7 +609,9 @@ class TestCliFile:
         vm.download_file.side_effect = RuntimeError("boom")
         mock_vm_cls.from_id.return_value = vm
 
-        ret = main(["file", "download", "vm001", "/tmp/note.txt", str(tmp_path / "out.txt")])
+        ret = main(
+            ["sandbox", "file", "download", "vm001", "/tmp/note.txt", str(tmp_path / "out.txt")]
+        )
 
         assert ret != 0
         vm.close.assert_called_once()
@@ -2972,6 +2982,8 @@ class TestCliStart:
         assert "codex" in out
         assert "claude" in out
         assert "claude-code" not in out
+        assert "\n  env" not in out
+        assert "\n  file" not in out
         assert "\n  snapshot" not in out
         assert "\n  port" not in out
 
@@ -2983,9 +2995,22 @@ class TestCliStart:
         ret = main(["sandbox", "--help"])
         assert ret == 0
         out = capsys.readouterr().out
+        assert "env" in out
+        assert "file" in out
         assert "snapshot" in out
         assert "port" in out
         assert "cleanup" not in out
+
+    @pytest.mark.parametrize("command", ["env", "file"])
+    def test_old_root_sandbox_resource_groups_are_absent(
+        self,
+        command: str,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Sandbox-owned resource groups should not remain as root aliases."""
+        ret = main([command, "--help"])
+        assert ret == 2
+        assert "No such command" in capsys.readouterr().err
 
     def test_preset_help_lists_start_action(self, capsys: pytest.CaptureFixture) -> None:
         """`smolvm codex --help` should list the `start` action."""

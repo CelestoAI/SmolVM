@@ -293,7 +293,7 @@ This is useful when an agent needs a config file, script, or small input file.
 
 ```bash
 # Copy a file from your machine into the sandbox.
-smolvm file upload my-sandbox ./prompt.txt /tmp/prompt.txt
+smolvm sandbox file upload my-sandbox ./prompt.txt /tmp/prompt.txt
 
 # Open a shell in the sandbox to confirm the file is there.
 smolvm sandbox ssh my-sandbox

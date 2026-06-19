@@ -442,7 +442,7 @@ def snapshot_list(vm_id: str | None, json_output: bool) -> Any:
     )
 
 
-@cli.group(context_settings=CONTEXT_SETTINGS)
+@sandbox.group(context_settings=CONTEXT_SETTINGS)
 def file() -> None:
     """Copy files into or out of a sandbox."""
 
@@ -476,6 +476,7 @@ def file_upload(
             ssh_key=ssh_key,
             ssh_user=ssh_user,
             comm_channel=comm_channel,
+            command_name="sandbox.file.upload",
             json=json_output,
         )
     )
@@ -510,12 +511,13 @@ def file_download(
             ssh_key=ssh_key,
             ssh_user=ssh_user,
             comm_channel=comm_channel,
+            command_name="sandbox.file.download",
             json=json_output,
         )
     )
 
 
-@cli.group(context_settings=CONTEXT_SETTINGS)
+@sandbox.group(context_settings=CONTEXT_SETTINGS)
 def env() -> None:
     """Manage sandbox environment variables."""
 
@@ -543,6 +545,7 @@ def env_set(
             ssh_key=ssh_key,
             ssh_user=ssh_user,
             comm_channel=comm_channel,
+            command_name="sandbox.env.set",
             json=json_output,
         )
     )
@@ -571,6 +574,7 @@ def env_unset(
             ssh_key=ssh_key,
             ssh_user=ssh_user,
             comm_channel=comm_channel,
+            command_name="sandbox.env.unset",
             json=json_output,
         )
     )
@@ -599,6 +603,7 @@ def env_list(
             ssh_key=ssh_key,
             ssh_user=ssh_user,
             comm_channel=comm_channel,
+            command_name="sandbox.env.list",
             json=json_output,
         )
     )

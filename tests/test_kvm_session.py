@@ -108,14 +108,14 @@ class TestShouldAttemptReexec:
         # Read-only / VM-process-targeted verbs don't need /dev/kvm; a
         # re-exec for them would just print a confusing notice.
         skipped = [
-            ["env"],
-            ["file"],
             ["sandbox", "list"],
             ["sandbox", "info"],
             ["sandbox", "ssh"],
             ["sandbox", "stop"],
             ["sandbox", "pause"],
             ["sandbox", "delete"],
+            ["sandbox", "env"],
+            ["sandbox", "file"],
             ["sandbox", "port"],
         ]
         for argv in skipped:
