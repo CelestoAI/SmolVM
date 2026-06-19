@@ -16,10 +16,8 @@
 
 from __future__ import annotations
 
-import argparse
 import os
 import sys
-from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 
@@ -65,51 +63,6 @@ class DeleteResult:
 
 
 # ---------------------------------------------------------------------------
-# Argument helpers
-# ---------------------------------------------------------------------------
-
-
-def add_delete_args(parser: argparse.ArgumentParser) -> None:
-    """Add CLI arguments for ``smolvm delete``."""
-    parser.add_argument(
-        "vm_ids",
-        nargs="+",
-        metavar="vm-id",
-        help="One or more VM IDs to delete.",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what would be deleted without actually deleting.",
-    )
-    parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-
-
-def add_cleanup_args(parser: argparse.ArgumentParser) -> None:
-    """Add CLI arguments for ``smolvm cleanup``."""
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what would be cleaned up without actually deleting.",
-    )
-    parser.add_argument(
-        "--force",
-        "-f",
-        action="store_true",
-        help="Skip the confirmation prompt and delete all VMs.",
-    )
-    parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-
-
-# ---------------------------------------------------------------------------
 # Shared rendering
 # ---------------------------------------------------------------------------
 
@@ -117,7 +70,7 @@ def add_cleanup_args(parser: argparse.ArgumentParser) -> None:
 def _error_payload(exc: Exception) -> dict[str, str]:
     return {
         "message": str(exc),
-        "type": "runtime_error",
+        "code": "runtime_error",
     }
 
 
@@ -234,17 +187,17 @@ def _delete_vms_concurrent(
     with ThreadPoolExecutor(max_workers=min(len(target_ids), 8)) as pool:
         futures = {pool.submit(_do_delete, vm_id): vm_id for vm_id in target_ids}
         for future in as_completed(futures):
-            vm_id, exc = future.result()
-            if exc is None:
+            vm_id, delete_error = future.result()
+            if delete_error is None:
                 deleted.append(vm_id)
             else:
-                failed.append(DeleteFailure(vm_id=vm_id, error=str(exc)))
+                failed.append(DeleteFailure(vm_id=vm_id, error=str(delete_error)))
 
     return deleted, failed
 
 
 # ---------------------------------------------------------------------------
-# smolvm delete <vm-id> [vm-id ...]
+# smolvm sandbox delete <vm-id> [vm-id ...]
 # ---------------------------------------------------------------------------
 
 
@@ -253,6 +206,7 @@ def run_delete(
     vm_ids: list[str],
     dry_run: bool = False,
     json_output: bool = False,
+    command_name: str = "sandbox.delete",
 ) -> int:
     """Delete specific VMs by ID."""
     warn_not_root = sys.platform == "linux" and os.geteuid() != 0
@@ -278,21 +232,21 @@ def run_delete(
             exit_code = 1 if failed else 0
 
             if json_output:
-                emit_json("delete", exit_code, data=asdict(result))
+                emit_json(command_name, exit_code, data=asdict(result))
             else:
                 _render_result(result, command="delete", warn_not_root=warn_not_root)
 
             return exit_code
     except Exception as exc:
         if json_output:
-            emit_json("delete", 1, data=None, error=_error_payload(exc))
+            emit_json(command_name, 1, data=None, error=_error_payload(exc))
         else:
             render_error(f"Error: {exc}")
         return 1
 
 
 # ---------------------------------------------------------------------------
-# smolvm cleanup
+# smolvm sandbox delete --all
 # ---------------------------------------------------------------------------
 
 
@@ -301,6 +255,7 @@ def _confirm_cleanup(
     *,
     force: bool,
     json_output: bool,
+    command_name: str,
 ) -> int | None:
     """Confirm the destructive cleanup with the user.
 
@@ -314,7 +269,7 @@ def _confirm_cleanup(
 
     if json_output:
         emit_json(
-            "cleanup",
+            command_name,
             1,
             data=None,
             error={
@@ -322,7 +277,7 @@ def _confirm_cleanup(
                     "Refusing to delete VMs without --force in --json mode. "
                     "Pass --force to confirm."
                 ),
-                "type": "refused",
+                "code": "refused",
             },
         )
         return 1
@@ -356,6 +311,7 @@ def run_cleanup(
     dry_run: bool = False,
     json_output: bool = False,
     force: bool = False,
+    command_name: str = "sandbox.delete",
 ) -> int:
     """Delete all VMs."""
     warn_not_root = sys.platform == "linux" and os.geteuid() != 0
@@ -369,7 +325,12 @@ def run_cleanup(
             deleted: list[str] = []
             failed: list[DeleteFailure] = []
             if not dry_run and target_ids:
-                abort_code = _confirm_cleanup(target_ids, force=force, json_output=json_output)
+                abort_code = _confirm_cleanup(
+                    target_ids,
+                    force=force,
+                    json_output=json_output,
+                    command_name=command_name,
+                )
                 if abort_code is not None:
                     return abort_code
             if not dry_run:
@@ -390,35 +351,14 @@ def run_cleanup(
             exit_code = 1 if failed else 0
 
             if json_output:
-                emit_json("cleanup", exit_code, data=asdict(result))
+                emit_json(command_name, exit_code, data=asdict(result))
             else:
-                _render_result(result, command="cleanup", warn_not_root=warn_not_root)
+                _render_result(result, command="delete", warn_not_root=warn_not_root)
 
             return exit_code
     except Exception as exc:
         if json_output:
-            emit_json("cleanup", 1, data=None, error=_error_payload(exc))
+            emit_json(command_name, 1, data=None, error=_error_payload(exc))
         else:
             render_error(f"Error: {exc}")
         return 1
-
-
-# ---------------------------------------------------------------------------
-# Standalone entrypoint (smolvm-cleanup)
-# ---------------------------------------------------------------------------
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Delete all SmolVM VMs")
-    add_cleanup_args(parser)
-    return parser
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    """Cleanup CLI entrypoint."""
-    args = build_parser().parse_args(argv)
-    return run_cleanup(
-        dry_run=args.dry_run,
-        json_output=args.json,
-        force=args.force,
-    )

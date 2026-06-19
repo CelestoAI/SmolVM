@@ -468,7 +468,7 @@ def _check_kvm_runtime() -> DoctorCheck:
                 ),
                 fix=(
                     "Log out of this shell and reconnect to apply the new group, "
-                    "or run any other 'smolvm' command (such as 'smolvm list') — "
+                    "or run any other 'smolvm' command (such as 'smolvm sandbox list') — "
                     "it will auto-activate the group via 'sg kvm' for that run."
                 ),
             )

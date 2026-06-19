@@ -14,7 +14,7 @@
 
 """Friendly auto-names for sandboxes (e.g. ``sbx-einstein``).
 
-When a user runs ``smolvm create`` without a name we pick a scientist's last
+When a user runs ``smolvm sandbox create`` without a name we pick a scientist's last
 name. If that name is already taken we append a city for disambiguation
 (``sbx-tesla-london``). A short hex suffix is used as a final fallback to
 guarantee uniqueness when the scientist+city space is exhausted.

@@ -610,7 +610,7 @@ def _build_auto_config(
             raise ValueError(
                 f"Ubuntu needs at least {required_disk_size_mib} MiB for sandbox "
                 f"'{resolved_vm_name}'; "
-                f"recreate it with: smolvm create --name {quoted_vm_name} --os ubuntu "
+                f"recreate it with: smolvm sandbox create --name {quoted_vm_name} --os ubuntu "
                 f"--backend {resolved_backend} --disk-size {required_disk_size_mib}."
             )
         should_grow_filesystem = (
@@ -697,7 +697,7 @@ def _build_auto_config(
 
 def _from_image_config_help(vm_id: str) -> str:
     """Return the recovery command shown by from_image validation errors."""
-    return f"smolvm create --name {vm_id} --help"
+    return f"smolvm sandbox create --name {vm_id} --help"
 
 
 def _from_image_port_help(vm_id: str) -> str:
@@ -1730,7 +1730,8 @@ class SmolVM:
         if self._info.status != VMState.RUNNING:
             raise SmolVMError(
                 f"Start sandbox '{self._vm_id}' before running commands by running "
-                f"'smolvm start {self._vm_id}' (current state: {self._info.status.value}).",
+                f"'smolvm sandbox start {self._vm_id}' "
+                f"(current state: {self._info.status.value}).",
                 {"vm_id": self._vm_id},
             )
         resolution = self._resolve_channel()
@@ -1746,7 +1747,8 @@ class SmolVM:
         if resolution.kind == "ssh" and self._info.network is None:
             raise SmolVMError(
                 f"Cannot run command in sandbox '{self._vm_id}' over SSH because it has "
-                f"no network; remove it with 'smolvm delete {self._vm_id}' and create it again.",
+                f"no network; remove it with 'smolvm sandbox delete {self._vm_id}' "
+                "and create it again.",
                 {"vm_id": self._vm_id},
             )
 
@@ -2039,13 +2041,14 @@ class SmolVM:
         if self._info.status != VMState.RUNNING:
             raise SmolVMError(
                 f"Start sandbox '{self._vm_id}' before waiting for it by running "
-                f"'smolvm start {self._vm_id}' (current state: {self._info.status.value}).",
+                f"'smolvm sandbox start {self._vm_id}' "
+                f"(current state: {self._info.status.value}).",
                 {"vm_id": self._vm_id},
             )
         if self._resolve_channel().kind == "ssh" and self._info.network is None:
             raise SmolVMError(
                 f"Cannot wait for sandbox '{self._vm_id}' over SSH because it has no network; "
-                f"remove it with 'smolvm delete {self._vm_id}' and create it again.",
+                f"remove it with 'smolvm sandbox delete {self._vm_id}' and create it again.",
                 {"vm_id": self._vm_id},
             )
 
@@ -2851,7 +2854,8 @@ modprobe 9pnet_virtio""".strip()
         if self._info.status != VMState.RUNNING:
             raise SmolVMError(
                 f"{prefix} in sandbox '{self._vm_id}' because it is "
-                f"{self._info.status.value}; start it with 'smolvm start {self._vm_id}'.",
+                f"{self._info.status.value}; start it with "
+                f"'smolvm sandbox start {self._vm_id}'.",
                 {"vm_id": self._vm_id},
             )
         resolution = self._resolve_channel()
@@ -2864,7 +2868,7 @@ modprobe 9pnet_virtio""".strip()
         if resolution.kind == "ssh" and self._info.network is None:
             raise SmolVMError(
                 f"{prefix} in sandbox '{self._vm_id}' over SSH because it has no network; "
-                f"remove it with 'smolvm delete {self._vm_id}' and create it again.",
+                f"remove it with 'smolvm sandbox delete {self._vm_id}' and create it again.",
                 {"vm_id": self._vm_id},
             )
 

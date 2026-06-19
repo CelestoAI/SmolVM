@@ -126,20 +126,20 @@ vm.stop()
 Create a sandbox, check that it's running, then stop it:
 
 ```bash
-smolvm create --name my-sandbox
+smolvm sandbox create --name my-sandbox
 # my-sandbox  running  172.16.0.2
 
-smolvm list
+smolvm sandbox list
 # NAME         STATUS   IP
 # my-sandbox   running  172.16.0.2
 
-smolvm stop my-sandbox
+smolvm sandbox stop my-sandbox
 ```
 
 Open a shell inside a running sandbox:
 
 ```bash
-smolvm ssh my-sandbox
+smolvm sandbox ssh my-sandbox
 ```
 
 ## Windows sandbox
@@ -256,8 +256,8 @@ See [docs/concepts/network-egress-controls.md](docs/concepts/network-egress-cont
 You can give a sandbox access to a folder on your machine. This is useful when an agent needs to work with an existing project without copying files back and forth.
 
 ```bash
-smolvm create --mount ~/Projects/my-app
-smolvm ssh my-sandbox
+smolvm sandbox create --mount ~/Projects/my-app
+smolvm sandbox ssh my-sandbox
 ls /workspace   # your host files appear here
 ```
 
@@ -266,13 +266,13 @@ By default the host folder is read-only — the sandbox can read every file, but
 Mount at a custom path, or mount multiple directories:
 
 ```bash
-smolvm create --mount ~/Projects/my-app:/code --mount ~/data:/mnt/data
+smolvm sandbox create --mount ~/Projects/my-app:/code --mount ~/data:/mnt/data
 ```
 
 When you do want the sandbox to edit your host files, add `--writable-mounts`:
 
 ```bash
-smolvm create --mount ~/Projects/my-app --writable-mounts
+smolvm sandbox create --mount ~/Projects/my-app --writable-mounts
 ```
 
 Every directory passed with `--mount` becomes writable; writes from the guest are visible on the host immediately. The flag applies to all mounts on that command, so don't pair a folder you want the sandbox to modify with one you want kept untouched.
@@ -296,7 +296,7 @@ This is useful when an agent needs a config file, script, or small input file.
 smolvm file upload my-sandbox ./prompt.txt /tmp/prompt.txt
 
 # Open a shell in the sandbox to confirm the file is there.
-smolvm ssh my-sandbox
+smolvm sandbox ssh my-sandbox
 # Then, inside the sandbox shell:
 cat /tmp/prompt.txt
 ```

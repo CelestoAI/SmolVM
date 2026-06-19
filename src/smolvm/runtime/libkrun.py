@@ -112,7 +112,8 @@ class LibkrunRuntimeAdapter(RuntimeAdapter):
             rc = process.poll()
             if rc is not None:
                 raise SmolVMError(
-                    f"VM '{vm_id}' failed to start. Run 'smolvm delete {vm_id}' to remove it.",
+                    f"VM '{vm_id}' failed to start. "
+                    f"Run 'smolvm sandbox delete {vm_id}' to remove it.",
                     {"return_code": rc, "pid": process.pid},
                 )
             time.sleep(0.05)
@@ -122,7 +123,8 @@ class LibkrunRuntimeAdapter(RuntimeAdapter):
             with suppress(Exception):
                 self._context.kill_process(process.pid)
             raise SmolVMError(
-                f"VM '{vm_id}' failed to start. Run 'smolvm delete {vm_id}' to remove it.",
+                f"VM '{vm_id}' failed to start. "
+                f"Run 'smolvm sandbox delete {vm_id}' to remove it.",
                 {"return_code": rc, "pid": process.pid},
             )
 
@@ -136,7 +138,8 @@ class LibkrunRuntimeAdapter(RuntimeAdapter):
             rc = process.poll() if hasattr(process, "poll") else process.returncode
             if rc is not None:
                 raise SmolVMError(
-                    f"VM '{vm_id}' failed to start. Run 'smolvm delete {vm_id}' to remove it.",
+                    f"VM '{vm_id}' failed to start. "
+                    f"Run 'smolvm sandbox delete {vm_id}' to remove it.",
                     {"return_code": rc, "pid": process.pid},
                 )
             await asyncio.sleep(0.05)
@@ -146,6 +149,7 @@ class LibkrunRuntimeAdapter(RuntimeAdapter):
             with suppress(Exception):
                 self._context.kill_process(process.pid)
             raise SmolVMError(
-                f"VM '{vm_id}' failed to start. Run 'smolvm delete {vm_id}' to remove it.",
+                f"VM '{vm_id}' failed to start. "
+                f"Run 'smolvm sandbox delete {vm_id}' to remove it.",
                 {"return_code": rc, "pid": process.pid},
             )

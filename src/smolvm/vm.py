@@ -245,13 +245,13 @@ def _crashed_message(vm_id: str) -> str:
     """User-facing message for a VM whose process is gone."""
     return (
         f"VM '{vm_id}' is not running — its process has exited; "
-        f"run 'smolvm delete {vm_id}' to clear it."
+        f"run 'smolvm sandbox delete {vm_id}' to clear it."
     )
 
 
 def _vsock_recovery_command(vm_id: str, backend: str) -> str:
     """Return a CLI recovery command for an explicit-vsock create failure."""
-    return f"smolvm create --name {vm_id} --backend {backend}"
+    return f"smolvm sandbox create --name {vm_id} --backend {backend}"
 
 
 def _vsock_not_supported_message(
@@ -758,7 +758,7 @@ class SmolVMManager:
     @staticmethod
     def _resize_recovery(vm_id: str) -> str:
         """Return a cleanup command for disk resize errors."""
-        return f"smolvm delete {vm_id}"
+        return f"smolvm sandbox delete {vm_id}"
 
     @staticmethod
     def _ensure_disk_can_be_resized(config: VMConfig) -> None:
@@ -1104,7 +1104,7 @@ class SmolVMManager:
         paths = ", ".join(str(p) for p in bad_paths)
         raise SmolVMError(
             f"Cannot start sandbox '{vm_info.vm_id}': shared folder is missing: "
-            f"{paths}. Restore it, or run 'smolvm delete {vm_info.vm_id}'.",
+            f"{paths}. Restore it, or run 'smolvm sandbox delete {vm_info.vm_id}'.",
             {
                 "vm_id": vm_info.vm_id,
                 "missing_mounts": [str(p) for p in bad_paths],
@@ -1131,7 +1131,7 @@ class SmolVMManager:
             raise SmolVMError(
                 f"Snapshots are not supported for raw QEMU disks in sandbox "
                 f"'{vm_info.vm_id}'; create it without grow_filesystem, or run "
-                f"'smolvm delete {vm_info.vm_id}'."
+                f"'smolvm sandbox delete {vm_info.vm_id}'."
             )
         if vm_info.config.extra_drives:
             raise SmolVMError("Snapshotting currently supports only VMs without extra drives")
@@ -1515,7 +1515,7 @@ class SmolVMManager:
                 self.state.release_vsock_cid(vm_id)
                 raise NetworkError(
                     f"Vsock CID {cid} is already in use by another running QEMU VM; "
-                    f"run 'smolvm delete {vm_id}' to remove this sandbox, then create it "
+                    f"run 'smolvm sandbox delete {vm_id}' to remove this sandbox, then create it "
                     "again without that explicit CID."
                 )
             return cid
@@ -1626,7 +1626,7 @@ class SmolVMManager:
         if ssh_port is not None and not self._local_ssh_port_is_available(ssh_port):
             raise SmolVMError(
                 f"Local SSH port {ssh_port} is already in use. Free that port, or run "
-                f"'smolvm delete {vm_info.vm_id}' to remove the sandbox.",
+                f"'smolvm sandbox delete {vm_info.vm_id}' to remove the sandbox.",
                 {"vm_id": vm_info.vm_id, "ssh_host_port": ssh_port},
             )
 
@@ -1635,7 +1635,8 @@ class SmolVMManager:
                 continue
             raise SmolVMError(
                 f"Local port {forward.host_address}:{forward.host_port} is already in use. "
-                f"Free that port, or run 'smolvm delete {vm_info.vm_id}' to remove the sandbox.",
+                f"Free that port, or run 'smolvm sandbox delete {vm_info.vm_id}' "
+                "to remove the sandbox.",
                 {
                     "vm_id": vm_info.vm_id,
                     "host_address": forward.host_address,
@@ -2028,9 +2029,9 @@ class SmolVMManager:
         # the status string itself is the explanation.
         recovery = ""
         if vm_info.status == VMState.ERROR:
-            recovery = f"; run 'smolvm delete {vm_info.vm_id}' to clear it"
+            recovery = f"; run 'smolvm sandbox delete {vm_info.vm_id}' to clear it"
         elif vm_info.status in (VMState.STOPPED, VMState.CREATED):
-            recovery = f"; run 'smolvm start {vm_info.vm_id}' to start it"
+            recovery = f"; run 'smolvm sandbox start {vm_info.vm_id}' to start it"
         raise SmolVMError(
             f"Cannot {action} VM in state '{vm_info.status.value}'{recovery}.",
             {"vm_id": vm_info.vm_id, "current_status": vm_info.status.value},
@@ -2290,7 +2291,8 @@ class SmolVMManager:
                 except NetworkError as exc:
                     raise NetworkError(
                         f"Vsock CID {persisted_vm_config.vsock.guest_cid} is already in use; "
-                        f"run 'smolvm delete {restore_vm_id}' to remove this restore attempt."
+                        f"run 'smolvm sandbox delete {restore_vm_id}' "
+                        "to remove this restore attempt."
                     ) from exc
             self.state.update_vm(restore_vm_id, network=effective_snapshot.network_config)
             if effective_snapshot.backend == BACKEND_FIRECRACKER:
@@ -2732,7 +2734,7 @@ class SmolVMManager:
             raise SmolVMError(
                 f"Cannot start sandbox '{vm_info.vm_id}' because libkrun is not ready; "
                 f"run 'smolvm doctor --backend libkrun', then run "
-                f"'smolvm start {vm_info.vm_id}'."
+                f"'smolvm sandbox start {vm_info.vm_id}'."
             )
 
         config_path = self._write_libkrun_config(vm_info, self._build_libkrun_config(vm_info))
@@ -3428,7 +3430,7 @@ class SmolVMManager:
             raise SmolVMError(
                 f"Cannot start sandbox '{vm_info.vm_id}' because libkrun is not ready; "
                 f"run 'smolvm doctor --backend libkrun', then run "
-                f"'smolvm start {vm_info.vm_id}'."
+                f"'smolvm sandbox start {vm_info.vm_id}'."
             )
 
         config_path = self._write_libkrun_config(vm_info, self._build_libkrun_config(vm_info))

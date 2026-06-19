@@ -42,17 +42,53 @@ def emit_json(
     error: dict[str, str] | None = None,
 ) -> None:
     """Emit the unified JSON envelope to stdout."""
+    normalized_error: dict[str, Any] | None = None
+    if error is not None:
+        normalized_error = {
+            "code": error.get("code") or error.get("type") or "runtime_error",
+            "message": error.get("message", ""),
+        }
+        if recovery := error.get("recovery"):
+            normalized_error["recovery"] = recovery
+        if details := error.get("details"):
+            normalized_error["details"] = details
+
     payload = {
-        "ok": exit_code == 0 and error is None,
+        "ok": exit_code == 0 and normalized_error is None,
         "command": command,
         "exit_code": exit_code,
         "data": data,
-        "error": error,
+        "error": normalized_error,
     }
     stdout = console_stdout().file
     stdout.write(json.dumps(payload, indent=2))
     stdout.write("\n")
     stdout.flush()
+
+
+def emit_success(command: str, data: Any = None, *, exit_code: int = 0) -> int:
+    """Emit a successful JSON envelope."""
+    emit_json(command, exit_code, data=data)
+    return exit_code
+
+
+def emit_error(
+    command: str,
+    code: str,
+    message: str,
+    *,
+    recovery: str | None = None,
+    details: Any = None,
+    exit_code: int = 1,
+) -> int:
+    """Emit a failed JSON envelope."""
+    error: dict[str, Any] = {"code": code, "message": message}
+    if recovery is not None:
+        error["recovery"] = recovery
+    if details is not None:
+        error["details"] = details
+    emit_json(command, exit_code, data=None, error=error)
+    return exit_code
 
 
 def render_error(message: str, hint: str | None = None) -> None:

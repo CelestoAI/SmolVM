@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import argparse
 import importlib
 import importlib.metadata
 import os
@@ -28,8 +27,10 @@ from collections.abc import Callable, Sequence
 from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, TypedDict
 
+import click
 from rich.panel import Panel
 from rich.progress import (
     BarColumn,
@@ -44,11 +45,15 @@ from rich.table import Table
 from rich.text import Text
 
 from smolvm.cli._kvm_session import maybe_reexec_for_kvm_group
-from smolvm.cli.cleanup import add_cleanup_args, add_delete_args, run_cleanup, run_delete
-from smolvm.cli.output import console_stdout, emit_json, render_empty, render_error, status_style
-from smolvm.cli.version_check import maybe_print_update_notice
-from smolvm.host.doctor import run_doctor
-from smolvm.types import BrowserSessionState, GuestOS, SnapshotType, VMState
+from smolvm.cli.output import (
+    console_stdout,
+    emit_error,
+    emit_json,
+    render_empty,
+    render_error,
+    status_style,
+)
+from smolvm.types import BrowserSessionState, GuestOS, VMState
 
 if TYPE_CHECKING:
     from smolvm.images.published import Arch, Vmm
@@ -82,14 +87,14 @@ class ListFiltersPayload(TypedDict):
 
 
 class ListPayload(TypedDict):
-    """JSON payload for ``smolvm list``."""
+    """JSON payload for ``smolvm sandbox list``."""
 
     filters: ListFiltersPayload
     vms: list[VmRow]
 
 
 class CreateVmPayload(TypedDict):
-    """Machine-readable VM details for ``smolvm create``."""
+    """Machine-readable VM details for ``smolvm sandbox create``."""
 
     name: str
     status: str
@@ -98,14 +103,14 @@ class CreateVmPayload(TypedDict):
 
 
 class CreateNextPayload(TypedDict):
-    """Suggested follow-up actions for ``smolvm create``."""
+    """Suggested follow-up actions for ``smolvm sandbox create``."""
 
     ssh_command: str
     info_command: str
 
 
 class InfoVmPayload(TypedDict):
-    """Machine-readable VM details for ``smolvm info``.
+    """Machine-readable VM details for ``smolvm sandbox info``.
 
     Memory and disk fields are in MiB (SmolVM's house unit, matching
     :attr:`VMConfig.memory`).
@@ -125,13 +130,13 @@ class InfoVmPayload(TypedDict):
 
 
 class InfoPayload(TypedDict):
-    """JSON payload for ``smolvm info``."""
+    """JSON payload for ``smolvm sandbox info``."""
 
     vm: InfoVmPayload
 
 
 class CreatePayload(TypedDict):
-    """JSON payload for ``smolvm create``."""
+    """JSON payload for ``smolvm sandbox create``."""
 
     vm: CreateVmPayload
     next: CreateNextPayload
@@ -304,1141 +309,6 @@ def _current_version_is_prerelease() -> bool:
         return bool(_PRERELEASE_RE.search(ver))
 
 
-def _positive_float(value: str) -> float:
-    """argparse type enforcing a strictly positive floating-point number."""
-    parsed = float(value)
-    if parsed <= 0:
-        raise argparse.ArgumentTypeError("value must be > 0")
-    return parsed
-
-
-def _positive_int(value: str) -> int:
-    """argparse type enforcing a strictly positive integer."""
-    parsed = int(value)
-    if parsed <= 0:
-        raise argparse.ArgumentTypeError("value must be > 0")
-    return parsed
-
-
-class _LinuxOnlyOption(argparse.Action):
-    """Reject setup flags that are only valid on Linux when used on macOS."""
-
-    def __call__(
-        self,
-        parser: argparse.ArgumentParser,
-        namespace: argparse.Namespace,
-        values: str | Sequence[str] | None,
-        option_string: str | None = None,
-    ) -> None:
-        if platform.system() != "Linux":
-            parser.error(
-                f"argument {option_string}: only supported on Linux "
-                "(configures Firecracker/KVM runtime). "
-                f"Detected OS: {platform.system()}. "
-                "Run `smolvm setup` without this flag."
-            )
-
-        if self.nargs == 0:
-            setattr(namespace, self.dest, self.const if self.const is not None else True)
-            return
-
-        setattr(namespace, self.dest, values)
-
-
-def _add_ssh_auth_args(command_parser: argparse.ArgumentParser) -> None:
-    """Add common SSH identity arguments to a command parser."""
-    command_parser.add_argument(
-        "--ssh-key",
-        default=None,
-        help="Path to SSH private key (default: ~/.smolvm/keys/id_ed25519).",
-    )
-    command_parser.add_argument(
-        "--ssh-user",
-        default="root",
-        help="SSH user (default: root).",
-    )
-
-
-def _add_comm_channel_arg(command_parser: argparse.ArgumentParser) -> None:
-    """Add the host↔guest control-channel selector to a command parser."""
-    command_parser.add_argument(
-        "--comm-channel",
-        choices=["ssh", "vsock"],
-        default=None,
-        help=(
-            "Host-to-guest control channel for this command (default: auto — "
-            "vsock when the guest agent answers on a QEMU/Linux host, else SSH)."
-        ),
-    )
-
-
-def _add_qemu_machine_arg(command_parser: argparse.ArgumentParser) -> None:
-    """Add the QEMU machine selector to a command parser."""
-    command_parser.add_argument(
-        "--qemu-machine",
-        choices=["auto", "q35", "microvm"],
-        default="auto",
-        help="QEMU machine model (default: auto; use q35 for compatibility).",
-    )
-
-
-def _add_boot_timeout_arg(command_parser: argparse.ArgumentParser) -> None:
-    """Add a shared boot/SSH readiness timeout flag."""
-    command_parser.add_argument(
-        "--boot-timeout",
-        type=_positive_float,
-        default=30.0,
-        help="Seconds to wait for the sandbox to be ready (default: 30).",
-    )
-
-
-def _add_preset_parsers(
-    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
-) -> None:
-    """Wire ``smolvm <preset> <action>`` into the CLI.
-
-    Each agent harness is a top-level subcommand (``smolvm codex``,
-    ``smolvm claude-code``) with its own action subcommands. This follows
-    the project's NOUN-VERB CLI convention so future harness actions
-    (``logs``, ``status``, etc.) compose naturally.
-    """
-    from smolvm.presets import list_presets
-
-    for preset in list_presets():
-        preset_parser = subparsers.add_parser(
-            preset.name,
-            aliases=list(preset.aliases),
-            help=preset.summary,
-            description=preset.summary,
-        )
-        action_sub = preset_parser.add_subparsers(
-            dest="preset_action",
-            metavar="ACTION",
-            required=True,
-        )
-
-        start_p = action_sub.add_parser(
-            "start",
-            help=f"Start a sandbox preconfigured for {preset.name}.",
-            description=(
-                f"Boot a fresh sandbox and preinstall {preset.name}. "
-                "Copies relevant host config (e.g. ~/.codex, ~/.claude) "
-                "and forwards API keys from the host environment."
-            ),
-        )
-        start_p.set_defaults(preset_name=preset.name)
-
-        start_p.add_argument(
-            "-n",
-            "--name",
-            help="Name for the sandbox (default: auto-generated).",
-        )
-        start_p.add_argument(
-            "--memory",
-            dest="memory_mib",
-            type=int,
-            default=None,
-            metavar="MIB",
-            help=f"Sandbox memory in MiB (default: {preset.default_mem_mib}).",
-        )
-        start_p.add_argument(
-            "--disk-size",
-            dest="disk_size_mib",
-            type=int,
-            default=None,
-            metavar="MIB",
-            help=f"Sandbox disk size in MiB (default: {preset.default_disk_mib}).",
-        )
-        start_p.add_argument(
-            "--backend",
-            choices=["auto", "firecracker", "qemu", "libkrun"],
-            default=None,
-            help="Virtualization backend (default: qemu, required by ubuntu).",
-        )
-        _add_qemu_machine_arg(start_p)
-        start_p.add_argument(
-            "--os",
-            choices=[guest_os.value for guest_os in GuestOS],
-            default=None,
-            help="Operating system image (default: ubuntu).",
-        )
-        start_p.add_argument(
-            "--mount",
-            action="append",
-            default=None,
-            dest="mounts",
-            metavar="HOST_PATH[:GUEST_PATH]",
-            help=(
-                "Host directory to mount inside the sandbox. "
-                "Defaults to /workspace if no guest path is given. "
-                "Can be repeated."
-            ),
-        )
-        start_p.add_argument(
-            "--writable-mounts",
-            action="store_true",
-            dest="writable_mounts",
-            help=(
-                "Allow the sandbox to write back to mounted host directories. "
-                "Default is read-only with a writable in-VM overlay; writes "
-                "from the guest do not reach the host."
-            ),
-        )
-        start_p.add_argument(
-            "--install-timeout",
-            type=_positive_float,
-            default=600.0,
-            help="Seconds to wait for the harness install (default: 600).",
-        )
-        if preset.launch_command is not None:
-            attach_group = start_p.add_mutually_exclusive_group()
-            attach_group.add_argument(
-                "--attach",
-                dest="attach",
-                action="store_true",
-                default=None,
-                help=(
-                    f"After install, ssh in and run `{preset.launch_command}` without prompting."
-                ),
-            )
-            attach_group.add_argument(
-                "--no-attach",
-                dest="attach",
-                action="store_false",
-                help="Skip the post-install attach prompt.",
-            )
-        start_p.add_argument(
-            "--json",
-            action="store_true",
-            help="Emit machine-readable JSON output.",
-        )
-        _add_boot_timeout_arg(start_p)
-
-
-def _is_preset_command(args: argparse.Namespace) -> bool:
-    """Return True when ``args`` came from ``smolvm <preset> ...``.
-
-    Accepts canonical preset names and aliases (e.g. ``claude`` for
-    ``claude-code``); argparse stores whichever spelling the user typed
-    in ``args.command``.
-    """
-    from smolvm.presets import preset_command_names
-
-    return args.command in preset_command_names()
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="smolvm",
-        description="Create, manage, and connect to disposable sandboxes for AI agents.",
-        epilog=(
-            "Most non-interactive commands support --json to emit machine-readable "
-            "output for LLMs, agents, and automation."
-        ),
-    )
-    parser.add_argument(
-        "-V",
-        "--version",
-        action="version",
-        version=f"%(prog)s {importlib.metadata.version('smolvm')}",
-    )
-    subparsers = parser.add_subparsers(dest="command")
-
-    delete = subparsers.add_parser(
-        "delete",
-        help="Delete one or more sandboxes by ID.",
-    )
-    add_delete_args(delete)
-
-    cleanup = subparsers.add_parser(
-        "cleanup",
-        help="Delete all sandboxes.",
-    )
-    add_cleanup_args(cleanup)
-
-    update = subparsers.add_parser(
-        "update",
-        help="Upgrade SmolVM to the latest stable release.",
-    )
-    update.add_argument(
-        "--check",
-        action="store_true",
-        help="Report whether an update is available without installing it.",
-    )
-    update.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-
-    prune = subparsers.add_parser(
-        "prune",
-        help="Remove stale image caches from older SmolVM versions.",
-    )
-    prune.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what would be removed without deleting anything.",
-    )
-    prune.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-    prune.add_argument(
-        "--cache-dir",
-        default=None,
-        help=argparse.SUPPRESS,
-    )
-
-    doctor = subparsers.add_parser(
-        "doctor",
-        help="Run host diagnostics for the selected backend.",
-    )
-    doctor.add_argument(
-        "--backend",
-        choices=["auto", "firecracker", "qemu", "libkrun"],
-        default=None,
-        help="Virtualization backend to check (default: auto-detected).",
-    )
-    doctor.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-    doctor.add_argument(
-        "--strict",
-        action="store_true",
-        help="Exit with an error if any check reports a warning.",
-    )
-
-    def _linux_only_help(text: str) -> str:
-        """Return *text* on Linux; suppress the flag from ``--help`` elsewhere."""
-        return text if platform.system() == "Linux" else argparse.SUPPRESS
-
-    setup = subparsers.add_parser(
-        "setup",
-        help="Install or validate one-time host prerequisites.",
-    )
-    setup.add_argument(
-        "--check-only",
-        action="store_true",
-        help="Check what's needed without installing anything.",
-    )
-    setup.add_argument(
-        "--with-docker",
-        action="store_true",
-        help="Also install or check Docker.",
-    )
-    setup.add_argument(
-        "--no-configure-runtime",
-        action=_LinuxOnlyOption,
-        nargs=0,
-        const=True,
-        default=False,
-        help=_linux_only_help("Skip runtime permission setup (Linux only)."),
-    )
-    setup.add_argument(
-        "--skip-deps",
-        action="store_true",
-        default=False,
-        help="Skip installing system packages.",
-    )
-    setup.add_argument(
-        "--runtime-user",
-        action=_LinuxOnlyOption,
-        default=None,
-        help=_linux_only_help("User to grant runtime permissions to (Linux only)."),
-    )
-    setup.add_argument(
-        "--remove-runtime-config",
-        action=_LinuxOnlyOption,
-        nargs=0,
-        const=True,
-        default=False,
-        help=_linux_only_help("Remove previously configured runtime permissions (Linux only)."),
-    )
-    setup.add_argument(
-        "--for-bake",
-        action=_LinuxOnlyOption,
-        nargs=0,
-        const=True,
-        default=False,
-        help=_linux_only_help(
-            "Bake-friendly install: skip KVM and runtime self-tests so this can run "
-            "on a builder without /dev/kvm. Run 'smolvm doctor' on the runtime host."
-        ),
-    )
-    setup.add_argument(
-        "--skip-kvm-check",
-        action=_LinuxOnlyOption,
-        nargs=0,
-        const=True,
-        default=False,
-        help=_linux_only_help("Do not require /dev/kvm at install time (Linux only)."),
-    )
-    setup.add_argument(
-        "--skip-runtime-check",
-        action=_LinuxOnlyOption,
-        nargs=0,
-        const=True,
-        default=False,
-        help=_linux_only_help("Skip the post-install sudoers self-test (Linux only)."),
-    )
-    setup.add_argument(
-        "--firecracker-version",
-        action=_LinuxOnlyOption,
-        default=None,
-        metavar="VER",
-        help=_linux_only_help(
-            "Pin Firecracker release tag (e.g. v1.14.1). "
-            "Falls back to the built-in default (Linux only)."
-        ),
-    )
-    setup.add_argument(
-        "--assets-dir",
-        action="store_true",
-        help="Print the packaged setup-assets directory and exit.",
-    )
-
-    def _add_ui_args(command_parser: argparse.ArgumentParser) -> None:
-        command_parser.add_argument(
-            "--host",
-            default="127.0.0.1",
-            help="Bind host (default: 127.0.0.1).",
-        )
-        command_parser.add_argument(
-            "--port",
-            type=int,
-            default=8080,
-            help="Bind port (default: 8080).",
-        )
-        command_parser.add_argument(
-            "--allow-beta",
-            action="store_true",
-            help="Allow dashboard UI downloads from prerelease/beta tags.",
-        )
-
-    ui = subparsers.add_parser(
-        "ui",
-        help="Start the SmolVM dashboard UI server.",
-    )
-    _add_ui_args(ui)
-
-    server_parser = subparsers.add_parser(
-        "server",
-        help="Run the SmolVM HTTP API server (for the TypeScript/other SDKs).",
-        description=(
-            "Expose SmolVM over a local HTTP API so non-Python clients "
-            "can drive sandboxes. VMs still boot on this machine."
-        ),
-    )
-    server_actions = server_parser.add_subparsers(
-        dest="server_action",
-        metavar="ACTION",
-        required=True,
-    )
-    server_start = server_actions.add_parser(
-        "start",
-        help="Start the HTTP API server.",
-    )
-    server_start.add_argument(
-        "--host",
-        default="127.0.0.1",
-        help="Address to bind (default: 127.0.0.1, localhost only).",
-    )
-    server_start.add_argument(
-        "--port",
-        type=int,
-        default=8000,
-        help="Port to listen on (default: 8000).",
-    )
-
-    list_parser = subparsers.add_parser(
-        "list",
-        help="List sandboxes and their status.",
-    )
-    list_filters = list_parser.add_mutually_exclusive_group()
-    list_filters.add_argument(
-        "--all",
-        action="store_true",
-        help="Show all sandboxes, not just running ones.",
-    )
-    list_filters.add_argument(
-        "--status",
-        choices=[state.value for state in VMState],
-        default=None,
-        help="Only show sandboxes with this status.",
-    )
-    list_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-
-    info_parser = subparsers.add_parser(
-        "info",
-        help="Show full details for a sandbox.",
-    )
-    info_parser.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
-    info_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-
-    create_parser = subparsers.add_parser(
-        "create",
-        help="Create a sandbox and leave it running.",
-    )
-    create_parser.add_argument(
-        "-n",
-        "--name",
-        help="Name for the sandbox (default: auto-generated).",
-    )
-    # --os and --image are not in an argparse mutex group: Windows guests
-    # need BOTH (--os windows + --image /path/to/win11.qcow2). The facade
-    # rejects illegal combos (e.g. --os alpine + S3 image) at runtime with
-    # a clearer message than argparse can produce.
-    create_parser.add_argument(
-        "--os",
-        choices=[guest_os.value for guest_os in GuestOS],
-        default=None,
-        help=(
-            "Operating system image (default: auto-detected based on backend). "
-            "--os windows requires --image with a local Windows qcow2 path."
-        ),
-    )
-    create_parser.add_argument(
-        "--image",
-        default=None,
-        help=(
-            "Image URI: S3 URI (e.g. s3://bucket/path/to/image/) or a local "
-            "filesystem path / file:// URI to a pre-built qcow2 (used with "
-            "--os windows). Configure S3-compatible stores via "
-            "SMOLVM_S3_ENDPOINT_URL, SMOLVM_S3_ACCESS_KEY_ID, "
-            "SMOLVM_S3_SECRET_ACCESS_KEY env vars."
-        ),
-    )
-    create_parser.add_argument(
-        "--memory",
-        dest="memory_mib",
-        type=int,
-        default=None,
-        metavar="MIB",
-        help="Sandbox memory in MiB (default: 512).",
-    )
-    create_parser.add_argument(
-        "--disk-size",
-        dest="disk_size_mib",
-        type=int,
-        default=None,
-        metavar="MIB",
-        help=(
-            "Sandbox disk size in MiB. Defaults: 512 for alpine, "
-            "4096 for debian/ubuntu. Minimum: 64 for alpine; 2048 for "
-            "debian/ubuntu on qemu (values below 2048 are rejected)."
-        ),
-    )
-    create_parser.add_argument(
-        "--backend",
-        choices=["auto", "firecracker", "qemu", "libkrun"],
-        default=None,
-        help="Virtualization backend (default: auto-detected).",
-    )
-    _add_qemu_machine_arg(create_parser)
-    _add_comm_channel_arg(create_parser)
-    create_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-    create_parser.add_argument(
-        "--mount",
-        action="append",
-        default=None,
-        dest="mounts",
-        metavar="HOST_PATH[:GUEST_PATH]",
-        help=(
-            "Host directory to mount inside the sandbox. "
-            "Defaults to /workspace if no guest path is given. "
-            "The host directory stays read-only by default; writes go "
-            "to an overlay and do not affect the host. "
-            "Pass --writable-mounts to allow guest writes to reach the host. "
-            "Can be repeated for multiple mounts."
-        ),
-    )
-    create_parser.add_argument(
-        "--writable-mounts",
-        action="store_true",
-        dest="writable_mounts",
-        help=(
-            "Allow the sandbox to write back to mounted host directories. "
-            "Default is read-only with a writable in-VM overlay; writes "
-            "from the guest do not reach the host."
-        ),
-    )
-    _add_boot_timeout_arg(create_parser)
-
-    _add_preset_parsers(subparsers)
-
-    stop_parser = subparsers.add_parser(
-        "stop",
-        help="Stop a running sandbox.",
-    )
-    stop_parser.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
-    stop_parser.add_argument(
-        "--timeout",
-        type=_positive_float,
-        default=3.0,
-        help="Seconds to wait before forcing shutdown (default: 3).",
-    )
-    stop_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-
-    pause_parser = subparsers.add_parser(
-        "pause",
-        help="Pause a running sandbox.",
-    )
-    pause_parser.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
-    pause_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-
-    resume_parser = subparsers.add_parser(
-        "resume",
-        help="Resume a paused sandbox.",
-    )
-    resume_parser.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
-    resume_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-
-    start_parser = subparsers.add_parser(
-        "start",
-        help="Start a stopped sandbox.",
-    )
-    start_parser.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
-    _add_boot_timeout_arg(start_parser)
-    start_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-
-    snapshot_parser = subparsers.add_parser(
-        "snapshot",
-        help="Save and restore sandbox state.",
-    )
-    snapshot_sub = snapshot_parser.add_subparsers(dest="snapshot_action")
-
-    snapshot_create = snapshot_sub.add_parser(
-        "create",
-        help="Create a full snapshot for a sandbox.",
-    )
-    snapshot_create.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
-    snapshot_create.add_argument(
-        "--snapshot-id",
-        default=None,
-        help="Custom snapshot name (default: auto-generated).",
-    )
-    snapshot_create.add_argument(
-        "--snapshot-type",
-        choices=[t.value for t in SnapshotType],
-        default=SnapshotType.FULL.value,
-        help=(
-            "How much disk to store. 'full' (default) is a self-contained copy "
-            "that always restores on its own. 'diff' stores only what changed "
-            "since the base image to save space, but needs that base image to "
-            "stay present."
-        ),
-    )
-    snapshot_create.add_argument(
-        "--resume-source",
-        action="store_true",
-        help="Keep the sandbox running after the snapshot is taken.",
-    )
-    snapshot_create.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-
-    snapshot_restore = snapshot_sub.add_parser(
-        "restore",
-        help="Restore a snapshot back into its original sandbox.",
-    )
-    snapshot_restore.add_argument(
-        "snapshot_id", metavar="snapshot", help="Name or ID of the snapshot."
-    )
-    snapshot_restore.add_argument(
-        "--resume",
-        action="store_true",
-        help="Resume the restored VM immediately.",
-    )
-    snapshot_restore.add_argument(
-        "--force",
-        action="store_true",
-        help="Allow restoring a snapshot that was already restored once.",
-    )
-    snapshot_restore.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-
-    snapshot_delete = snapshot_sub.add_parser(
-        "delete",
-        help="Delete a snapshot and its files.",
-    )
-    snapshot_delete.add_argument(
-        "snapshot_id", metavar="snapshot", help="Name or ID of the snapshot."
-    )
-    snapshot_delete.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-
-    snapshot_list = snapshot_sub.add_parser(
-        "list",
-        help="List snapshots.",
-    )
-    snapshot_list.add_argument(
-        "--vm-id",
-        default=None,
-        help="Only show snapshots from this sandbox.",
-    )
-    snapshot_list.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-
-    ssh_parser = subparsers.add_parser(
-        "ssh",
-        help="Open a shell in a sandbox (starts it if stopped).",
-    )
-    ssh_parser.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
-    _add_ssh_auth_args(ssh_parser)
-    _add_boot_timeout_arg(ssh_parser)
-
-    file_parser = subparsers.add_parser(
-        "file",
-        help="Copy files into or out of a sandbox.",
-    )
-    file_sub = file_parser.add_subparsers(dest="file_action")
-
-    file_upload = file_sub.add_parser(
-        "upload",
-        help="Upload one local file into a running sandbox.",
-    )
-    file_upload.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
-    file_upload.add_argument("local_path", metavar="local-path", help="File on this machine.")
-    file_upload.add_argument(
-        "guest_path",
-        metavar="guest-path",
-        help="Destination path in the sandbox.",
-    )
-    file_upload.add_argument(
-        "--no-create-dirs",
-        action="store_true",
-        help="Do not create the destination directory in the sandbox.",
-    )
-    file_upload.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-    _add_ssh_auth_args(file_upload)
-    _add_comm_channel_arg(file_upload)
-
-    file_download = file_sub.add_parser(
-        "download",
-        help="Download one file from a running sandbox.",
-    )
-    file_download.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
-    file_download.add_argument(
-        "guest_path",
-        metavar="guest-path",
-        help="File path in the sandbox.",
-    )
-    file_download.add_argument(
-        "local_path",
-        metavar="local-path",
-        help="Destination path on this machine.",
-    )
-    file_download.add_argument(
-        "--no-create-dirs",
-        action="store_true",
-        help="Do not create the destination directory on this machine.",
-    )
-    file_download.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-    _add_ssh_auth_args(file_download)
-    _add_comm_channel_arg(file_download)
-
-    # ── windows: image-building helpers ────────────────────────────
-    windows_parser = subparsers.add_parser(
-        "windows",
-        help="Windows-guest helpers (image building, etc.).",
-    )
-    windows_sub = windows_parser.add_subparsers(dest="windows_action")
-
-    windows_build = windows_sub.add_parser(
-        "build-image",
-        help=(
-            "Build a reusable Windows qcow2 from a Windows ISO via "
-            "unattended install (no clicks required)."
-        ),
-    )
-    windows_build.add_argument(
-        "--iso",
-        dest="windows_iso",
-        required=True,
-        metavar="PATH",
-        help="Path to the Windows ISO (e.g. ./Win11.iso).",
-    )
-    windows_build.add_argument(
-        "--virtio-win-iso",
-        dest="virtio_win_iso",
-        required=True,
-        metavar="PATH",
-        help=(
-            "Path to the virtio-win driver ISO. Download from "
-            "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/"
-            "stable-virtio/virtio-win.iso (one-time, ~750 MiB)."
-        ),
-    )
-    windows_build.add_argument(
-        "--output",
-        dest="output_qcow2",
-        required=True,
-        metavar="PATH",
-        help="Where to write the built qcow2 (e.g. ~/.smolvm/images/win11.qcow2).",
-    )
-    windows_build.add_argument(
-        "--username",
-        default="smolvm",
-        help="Local admin account name to create (default: smolvm).",
-    )
-    windows_build.add_argument(
-        "--password",
-        default="smolvm",
-        help=(
-            "Local admin account password (default: smolvm — OVERRIDE for "
-            "any image you'll re-use beyond throwaway POC work)."
-        ),
-    )
-    windows_build.add_argument(
-        "--hostname",
-        default="smolvm-win",
-        help="Windows computer name baked into the install (default: smolvm-win).",
-    )
-    windows_build.add_argument(
-        "--edition",
-        default="Windows 11 Pro",
-        help=(
-            "Edition to install, as it appears in install.wim "
-            "(default: 'Windows 11 Pro'; 'Windows 11 Home' also valid)."
-        ),
-    )
-    windows_build.add_argument(
-        "--disk-size",
-        dest="disk_size_mib",
-        type=_positive_int,
-        default=64 * 1024,
-        metavar="MIB",
-        help="Virtual size of the built qcow2 in MiB (default: 65536 = 64 GiB).",
-    )
-    windows_build.add_argument(
-        "--build-timeout",
-        dest="build_timeout_s",
-        type=_positive_float,
-        default=45 * 60,
-        metavar="SECONDS",
-        help="Upper bound on the install duration (default: 2700 = 45 min).",
-    )
-    windows_build.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-
-    browser_parser = subparsers.add_parser(
-        "browser",
-        help="Manage disposable browser sandboxes.",
-    )
-    browser_sub = browser_parser.add_subparsers(dest="browser_action")
-
-    browser_start = browser_sub.add_parser(
-        "start",
-        help="Create and start a browser sandbox.",
-    )
-    browser_start.add_argument(
-        "--session-id",
-        default=None,
-        help="Custom session ID (default: auto-generated).",
-    )
-    browser_start.add_argument(
-        "--backend",
-        choices=["auto", "firecracker", "qemu", "libkrun"],
-        default="auto",
-        help="Virtualization backend (default: auto-detected).",
-    )
-    browser_start.add_argument(
-        "--live",
-        action="store_true",
-        help="Expose viewer_url and display_url so you can watch and control the browser.",
-    )
-    browser_start.add_argument(
-        "--profile-mode",
-        choices=["ephemeral", "persistent"],
-        default="ephemeral",
-        help="Browser profile mode: ephemeral (fresh each time) or persistent (default: ephemeral).",  # noqa: E501
-    )
-    browser_start.add_argument(
-        "--profile-id",
-        default=None,
-        help="Reuse a saved browser profile by its ID.",
-    )
-    browser_start.add_argument(
-        "--timeout-minutes",
-        type=int,
-        default=30,
-        help="Auto-stop the sandbox after this many minutes (default: 30).",
-    )
-    browser_start.add_argument(
-        "--viewport-width",
-        type=int,
-        default=1280,
-        help="Browser viewport width (default: 1280).",
-    )
-    browser_start.add_argument(
-        "--viewport-height",
-        type=int,
-        default=720,
-        help="Browser viewport height (default: 720).",
-    )
-    browser_start.add_argument(
-        "--memory",
-        dest="memory_mib",
-        type=int,
-        default=2048,
-        metavar="MIB",
-        help="Sandbox memory in MiB (default: 2048).",
-    )
-    browser_start.add_argument(
-        "--disk-size",
-        dest="disk_size_mib",
-        type=int,
-        default=4096,
-        metavar="MIB",
-        help="Sandbox disk size in MiB (default: 4096).",
-    )
-    browser_start.add_argument(
-        "--record-video",
-        action="store_true",
-        help="Record a video of the browser sandbox.",
-    )
-    browser_start.add_argument(
-        "--no-downloads",
-        action="store_true",
-        help="Prevent the browser from saving downloaded files.",
-    )
-    browser_start.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-    _add_boot_timeout_arg(browser_start)
-
-    browser_stop = browser_sub.add_parser(
-        "stop",
-        help="Stop and delete a browser sandbox.",
-    )
-    browser_stop_target = browser_stop.add_mutually_exclusive_group(required=True)
-    browser_stop_target.add_argument(
-        "session_id",
-        nargs="?",
-        metavar="sandbox",
-        help="Sandbox ID (printed by 'browser start').",
-    )
-    browser_stop_target.add_argument(
-        "--all",
-        action="store_true",
-        help="Stop all browser sandboxes.",
-    )
-
-    browser_list = browser_sub.add_parser(
-        "list",
-        help="List browser sandboxes.",
-    )
-    browser_list.add_argument(
-        "--status",
-        choices=["created", "starting", "ready", "stopping", "error"],
-        default=None,
-        help="Only show sandboxes with this status.",
-    )
-    browser_list.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-
-    browser_open = browser_sub.add_parser(
-        "open",
-        help="Open a browser sandbox viewer in your default browser.",
-    )
-    browser_open.add_argument(
-        "session_id", metavar="sandbox", help="Sandbox ID (printed by 'browser start')."
-    )
-
-    browser_logs = browser_sub.add_parser(
-        "logs",
-        help="Print browser sandbox logs.",
-    )
-    browser_logs.add_argument(
-        "session_id", metavar="sandbox", help="Sandbox ID (printed by 'browser start')."
-    )
-    browser_logs.add_argument(
-        "--tail",
-        type=int,
-        default=100,
-        help="Number of recent log lines to show (default: 100).",
-    )
-
-    env_parser = subparsers.add_parser(
-        "env",
-        help="Manage environment variables on a running sandbox.",
-    )
-    env_sub = env_parser.add_subparsers(dest="env_action")
-
-    env_set = env_sub.add_parser(
-        "set",
-        help="Set environment variables (merges with existing).",
-    )
-    env_set.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
-    env_set.add_argument(
-        "pairs",
-        nargs="+",
-        metavar="KEY=VALUE",
-        help="One or more KEY=VALUE pairs",
-    )
-    env_set.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-    _add_ssh_auth_args(env_set)
-    _add_comm_channel_arg(env_set)
-
-    env_unset = env_sub.add_parser(
-        "unset",
-        help="Remove environment variables.",
-    )
-    env_unset.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
-    env_unset.add_argument(
-        "keys",
-        nargs="+",
-        metavar="KEY",
-        help="Variable names to remove",
-    )
-    env_unset.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-    _add_ssh_auth_args(env_unset)
-    _add_comm_channel_arg(env_unset)
-
-    env_list = env_sub.add_parser(
-        "list",
-        help="List current environment variables.",
-    )
-    env_list.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
-    env_list.add_argument(
-        "--show-values",
-        action="store_true",
-        help="Show variable values (masked by default).",
-    )
-    env_list.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-    _add_ssh_auth_args(env_list)
-
-    port_parser = subparsers.add_parser(
-        "port",
-        help="Manage port forwarding for a running sandbox.",
-    )
-    port_sub = port_parser.add_subparsers(dest="port_action")
-
-    port_expose = port_sub.add_parser(
-        "expose",
-        help="Forward a guest port to localhost.",
-    )
-    port_expose.add_argument("vm_id", metavar="sandbox", help="Name or ID of the same sandbox.")
-    port_expose.add_argument(
-        "mapping",
-        metavar="[host-port:]sandbox-port",
-        help="Port mapping, e.g. 8080:3000 or just 3000 to auto-select host port.",
-    )
-    port_expose.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-    _add_ssh_auth_args(port_expose)
-    _add_comm_channel_arg(port_expose)
-
-    port_close = port_sub.add_parser(
-        "close",
-        help="Remove a forwarded port.",
-    )
-    port_close.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
-    port_close.add_argument(
-        "mapping",
-        metavar="host-port:sandbox-port",
-        help="Mapping to remove, e.g. 8080:3000.",
-    )
-    port_close.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-    _add_ssh_auth_args(port_close)
-    _add_comm_channel_arg(port_close)
-
-    port_list = port_sub.add_parser(
-        "list",
-        help="List active port forwards for a sandbox.",
-    )
-    port_list.add_argument("vm_id", metavar="sandbox", help="Name or ID of the sandbox.")
-    port_list.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
-    _add_ssh_auth_args(port_list)
-    _add_comm_channel_arg(port_list)
-
-    _add_comm_channel_arg(env_list)
-
-    return parser
-
-
 def _parse_env_pairs(pairs: list[str]) -> dict[str, str]:
     """Parse ``KEY=VALUE`` pairs, raising on malformed entries."""
     from smolvm.env import validate_env_key
@@ -1506,7 +376,7 @@ def _vm_warnings(vm: VMInfo) -> list[str]:
             warnings.append(
                 f"Shared folder is missing on your machine: "
                 f"'{mount.host_path}'. Restore it, or run "
-                f"'smolvm delete {vm.vm_id}' to remove the sandbox."
+                f"'smolvm sandbox delete {vm.vm_id}' to remove the sandbox."
             )
     return warnings
 
@@ -1558,41 +428,55 @@ def _render_list(rows: list[VmRow]) -> None:
                 console.print(f"  • {warning}")
 
 
-def _run_setup(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+def _run_setup(
+    *,
+    check_only: bool,
+    with_docker: bool,
+    configure_runtime: bool,
+    no_configure_runtime: bool,
+    skip_deps: bool,
+    runtime_user: str | None,
+    remove_runtime_config: bool,
+    for_bake: bool,
+    skip_kvm_check: bool,
+    skip_runtime_check: bool,
+    firecracker_version: str | None,
+    assets_dir: bool,
+) -> int:
     """Handle ``smolvm setup``."""
     from smolvm.host.setup import SetupOptions, packaged_asset_root, run_setup
 
-    if args.assets_dir:
+    if assets_dir:
         print(packaged_asset_root())
         return 0
 
     invalid_remove_runtime_flags: list[str] = []
-    if args.check_only:
+    if check_only:
         invalid_remove_runtime_flags.append("--check-only")
-    if args.with_docker:
+    if with_docker:
         invalid_remove_runtime_flags.append("--with-docker")
-    if args.no_configure_runtime:
+    if no_configure_runtime:
         invalid_remove_runtime_flags.append("--no-configure-runtime")
-    if args.skip_deps:
+    if skip_deps:
         invalid_remove_runtime_flags.append("--skip-deps")
 
-    if args.remove_runtime_config and invalid_remove_runtime_flags:
-        parser.error(
+    if remove_runtime_config and invalid_remove_runtime_flags:
+        raise click.UsageError(
             "argument --remove-runtime-config: not allowed with "
             + ", ".join(invalid_remove_runtime_flags)
         )
 
     options = SetupOptions(
-        check_only=args.check_only,
-        with_docker=args.with_docker,
-        configure_runtime=not args.no_configure_runtime,
-        skip_deps=args.skip_deps,
-        runtime_user=args.runtime_user,
-        remove_runtime_config=args.remove_runtime_config,
-        for_bake=args.for_bake,
-        skip_kvm_check=args.skip_kvm_check,
-        skip_runtime_check=args.skip_runtime_check,
-        firecracker_version=args.firecracker_version,
+        check_only=check_only,
+        with_docker=with_docker,
+        configure_runtime=configure_runtime,
+        skip_deps=skip_deps,
+        runtime_user=runtime_user,
+        remove_runtime_config=remove_runtime_config,
+        for_bake=for_bake,
+        skip_kvm_check=skip_kvm_check,
+        skip_runtime_check=skip_runtime_check,
+        firecracker_version=firecracker_version,
     )
 
     if options.for_bake:
@@ -1607,8 +491,14 @@ def _run_setup(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int
         return _emit_cli_error("setup", 1, exc, json_output=False)
 
 
-def _run_list(*, include_all: bool, status_filter: str | None, json_output: bool) -> int:
-    """Handle ``smolvm list``."""
+def _run_list(
+    *,
+    include_all: bool,
+    status_filter: str | None,
+    json_output: bool,
+    command_name: str = "sandbox.list",
+) -> int:
+    """Handle ``smolvm sandbox list``."""
     from smolvm.vm import SmolVMManager
 
     with SmolVMManager() as sdk:
@@ -1631,7 +521,7 @@ def _run_list(*, include_all: bool, status_filter: str | None, json_output: bool
                 "vms": rows,
             }
             if json_output:
-                emit_json("list", 0, data=data)
+                emit_json(command_name, 0, data=data)
                 return 0
 
             if not vms:
@@ -1647,7 +537,7 @@ def _run_list(*, include_all: bool, status_filter: str | None, json_output: bool
             _render_list(rows)
             return 0
         except Exception as exc:
-            return _emit_cli_error("list", 1, exc, json_output=json_output)
+            return _emit_cli_error(command_name, 1, exc, json_output=json_output)
 
 
 _OS_HINT_KEYWORDS = ("ubuntu", "alpine")
@@ -1818,8 +708,8 @@ def _render_info_result(data: InfoPayload) -> None:
     console.print(details)
 
 
-def _run_info(*, vm_id: str, json_output: bool) -> int:
-    """Handle ``smolvm info``."""
+def _run_info(*, vm_id: str, json_output: bool, command_name: str = "sandbox.info") -> int:
+    """Handle ``smolvm sandbox info``."""
     from smolvm.vm import SmolVMManager
 
     with SmolVMManager() as sdk:
@@ -1830,12 +720,12 @@ def _run_info(*, vm_id: str, json_output: bool) -> int:
                 live_data = _query_live_vm_info(vm)
             data = _info_payload(vm, live_data=live_data)
             if json_output:
-                emit_json("info", 0, data=data)
+                emit_json(command_name, 0, data=data)
             else:
                 _render_info_result(data)
             return 0
         except Exception as exc:
-            return _emit_cli_error("info", 1, exc, json_output=json_output)
+            return _emit_cli_error(command_name, 1, exc, json_output=json_output)
 
 
 def _format_started_at(iso_ts: str) -> str:
@@ -1959,15 +849,15 @@ def _wait_after_create(
     boot_timeout: float,
     on_progress: Callable[[str], None] | None = None,
 ) -> None:
-    """Wait for the channel promised by ``smolvm create``."""
+    """Wait for the channel promised by ``smolvm sandbox create``."""
     if comm_channel == "ssh":
         vm.wait_for_ssh(timeout=boot_timeout, on_progress=on_progress)
         return
     vm.wait_for_ready(timeout=boot_timeout, on_progress=on_progress)
 
 
-def _run_create(args: argparse.Namespace) -> int:
-    """Handle ``smolvm create``."""
+def _run_create(args: SimpleNamespace) -> int:
+    """Handle ``smolvm sandbox create``."""
     from smolvm.facade import (
         SmolVM,
         _build_auto_config,
@@ -1979,6 +869,7 @@ def _run_create(args: argparse.Namespace) -> int:
     from smolvm.runtime.backends import resolve_backend
 
     vm: SmolVM | None = None
+    command_name = getattr(args, "command_name", "sandbox.create")
     try:
         # Workspace mounts ride a virtio-9p share, which only the QEMU backend
         # exposes today. Auto-pick QEMU when the user asked for --mount but did
@@ -2031,7 +922,7 @@ def _run_create(args: argparse.Namespace) -> int:
             )
 
         # CLI default: roomier disk for ubuntu so package installs
-        # and apt cache don't fill the rootfs on a basic `smolvm create`.
+        # and apt cache don't fill the rootfs on a basic `smolvm sandbox create`.
         if not use_s3_image and args.disk_size_mib is None and resolved_guest_os is GuestOS.UBUNTU:
             args.disk_size_mib = 4096
 
@@ -2187,18 +1078,18 @@ def _run_create(args: argparse.Namespace) -> int:
                 "started_at": datetime.now(timezone.utc).isoformat(),
             },
             "next": {
-                "ssh_command": f"smolvm ssh {vm.vm_id}",
-                "info_command": f"smolvm info {vm.vm_id}",
+                "ssh_command": f"smolvm sandbox ssh {vm.vm_id}",
+                "info_command": f"smolvm sandbox info {vm.vm_id}",
             },
         }
 
         if args.json:
-            emit_json("create", 0, data=data)
+            emit_json(command_name, 0, data=data)
         else:
             _render_create_result(data)
         return 0
     except Exception as exc:
-        return _emit_cli_error("create", 1, exc, json_output=args.json)
+        return _emit_cli_error(command_name, 1, exc, json_output=args.json)
     finally:
         if vm is not None:
             vm.close()
@@ -2324,7 +1215,7 @@ def _host_arch_for_published() -> Arch:
     raise RuntimeError(f"Unsupported host architecture for published images: {machine!r}.")
 
 
-def _run_start_with_published_image(args: argparse.Namespace, preset: object) -> int:
+def _run_start_with_published_image(args: SimpleNamespace, preset: object) -> int:
     """Launch a sandbox using a pre-built published image.
 
     Bypasses the default install-at-boot flow:
@@ -2346,15 +1237,16 @@ def _run_start_with_published_image(args: argparse.Namespace, preset: object) ->
     from smolvm.utils import ensure_ssh_key
 
     _preset: Preset = preset  # type: ignore[assignment]
+    command_name = getattr(args, "command_name", f"{_preset.name}.start")
 
     try:
         vmm = _vmm_for_host()
     except RuntimeError as exc:
-        return _emit_cli_error("start", 2, exc, json_output=args.json)
+        return _emit_cli_error(command_name, 2, exc, json_output=args.json)
 
     if (_preset.name, vmm) not in _PUBLISHED_IMAGE_BOOT_ARGS:
         return _emit_cli_error(
-            "start",
+            command_name,
             2,
             ValueError(
                 f"Preset {_preset.name!r} isn't available as a prebuilt image "
@@ -2444,10 +1336,10 @@ def _run_start_with_published_image(args: argparse.Namespace, preset: object) ->
                     "injected_env_keys": [],
                     "no_env_hint": _preset.no_env_hint,
                 },
-                "next": {"ssh_command": f"smolvm ssh {vm.vm_id}"},
+                "next": {"ssh_command": f"smolvm sandbox ssh {vm.vm_id}"},
             }
             if args.json:
-                emit_json("start", 0, data=data)
+                emit_json(command_name, 0, data=data)
             else:
                 _render_start_result(data)
 
@@ -2470,18 +1362,19 @@ def _run_start_with_published_image(args: argparse.Namespace, preset: object) ->
                         vm.delete()
                 vm.close()
     except ImageError as exc:
-        return _emit_cli_error("start", 1, exc, json_output=args.json)
+        return _emit_cli_error(command_name, 1, exc, json_output=args.json)
     except Exception as exc:
-        return _emit_cli_error("start", 1, exc, json_output=args.json)
+        return _emit_cli_error(command_name, 1, exc, json_output=args.json)
 
 
-def _run_start(args: argparse.Namespace) -> int:
+def _run_start(args: SimpleNamespace) -> int:
     """Handle ``smolvm <preset> start``."""
     from smolvm.facade import SmolVM, _build_auto_config
     from smolvm.images.published import is_preset_published
     from smolvm.presets import apply_preset, get_preset
 
     preset = get_preset(args.preset_name)
+    command_name = getattr(args, "command_name", f"{preset.name}.start")
 
     # The user-facing default is ubuntu when --os is omitted.
     requested_os = GuestOS(args.os) if args.os is not None else GuestOS.UBUNTU
@@ -2509,7 +1402,7 @@ def _run_start(args: argparse.Namespace) -> int:
         # Built-in presets target the ubuntu cloud image, which only boots on
         # qemu in this codebase. Fail loudly rather than silently downgrade.
         return _emit_cli_error(
-            "start",
+            command_name,
             2,
             ValueError(f"Preset {preset.name!r} requires --backend qemu (got {backend!r})."),
             json_output=args.json,
@@ -2595,12 +1488,12 @@ def _run_start(args: argparse.Namespace) -> int:
                 "no_env_hint": preset.no_env_hint,
             },
             "next": {
-                "ssh_command": f"smolvm ssh {vm.vm_id}",
+                "ssh_command": f"smolvm sandbox ssh {vm.vm_id}",
             },
         }
 
         if args.json:
-            emit_json("start", 0, data=data)
+            emit_json(command_name, 0, data=data)
         else:
             _render_start_result(data)
 
@@ -2609,7 +1502,7 @@ def _run_start(args: argparse.Namespace) -> int:
             return _maybe_attach_and_launch(vm, preset, attach=getattr(args, "attach", None))
         return 0
     except Exception as exc:
-        return _emit_cli_error("start", 1, exc, json_output=args.json)
+        return _emit_cli_error(command_name, 1, exc, json_output=args.json)
     finally:
         if vm is not None:
             if not success:
@@ -2858,11 +1751,12 @@ def _render_snapshot_restore(data: SnapshotRestorePayload) -> None:
     console.print(details)
 
 
-def _run_stop(args: argparse.Namespace) -> int:
-    """Handle ``smolvm stop``."""
+def _run_stop(args: SimpleNamespace) -> int:
+    """Handle ``smolvm sandbox stop``."""
     from smolvm.facade import SmolVM
 
     vm: SmolVM | None = None
+    command_name = getattr(args, "command_name", "sandbox.stop")
     try:
         vm = SmolVM.from_id(args.vm_id)
         vm.stop(timeout=args.timeout)
@@ -2870,7 +1764,7 @@ def _run_stop(args: argparse.Namespace) -> int:
         data = _vm_lifecycle_payload(vm.vm_id, VMState.STOPPED)
 
         if args.json:
-            emit_json("stop", 0, data=data)
+            emit_json(command_name, 0, data=data)
         else:
             _render_vm_lifecycle_result(
                 data,
@@ -2880,24 +1774,25 @@ def _run_stop(args: argparse.Namespace) -> int:
             )
         return 0
     except Exception as exc:
-        return _emit_cli_error("stop", 1, exc, json_output=args.json)
+        return _emit_cli_error(command_name, 1, exc, json_output=args.json)
     finally:
         if vm is not None:
             vm.close()
 
 
-def _run_pause(args: argparse.Namespace) -> int:
-    """Handle ``smolvm pause``."""
+def _run_pause(args: SimpleNamespace) -> int:
+    """Handle ``smolvm sandbox pause``."""
     from smolvm.facade import SmolVM
 
     vm: SmolVM | None = None
+    command_name = getattr(args, "command_name", "sandbox.pause")
     try:
         vm = SmolVM.from_id(args.vm_id)
         vm.pause()
 
         data = _vm_lifecycle_payload(vm.vm_id, VMState.PAUSED)
         if args.json:
-            emit_json("pause", 0, data=data)
+            emit_json(command_name, 0, data=data)
         else:
             _render_vm_lifecycle_result(
                 data,
@@ -2907,24 +1802,25 @@ def _run_pause(args: argparse.Namespace) -> int:
             )
         return 0
     except Exception as exc:
-        return _emit_cli_error("pause", 1, exc, json_output=args.json)
+        return _emit_cli_error(command_name, 1, exc, json_output=args.json)
     finally:
         if vm is not None:
             vm.close()
 
 
-def _run_resume(args: argparse.Namespace) -> int:
-    """Handle ``smolvm resume``."""
+def _run_resume(args: SimpleNamespace) -> int:
+    """Handle ``smolvm sandbox resume``."""
     from smolvm.facade import SmolVM
 
     vm: SmolVM | None = None
+    command_name = getattr(args, "command_name", "sandbox.resume")
     try:
         vm = SmolVM.from_id(args.vm_id)
         vm.resume()
 
         data = _vm_lifecycle_payload(vm.vm_id, VMState.RUNNING)
         if args.json:
-            emit_json("resume", 0, data=data)
+            emit_json(command_name, 0, data=data)
         else:
             _render_vm_lifecycle_result(
                 data,
@@ -2934,24 +1830,25 @@ def _run_resume(args: argparse.Namespace) -> int:
             )
         return 0
     except Exception as exc:
-        return _emit_cli_error("resume", 1, exc, json_output=args.json)
+        return _emit_cli_error(command_name, 1, exc, json_output=args.json)
     finally:
         if vm is not None:
             vm.close()
 
 
-def _run_vm_start(args: argparse.Namespace) -> int:
-    """Handle ``smolvm start``."""
+def _run_vm_start(args: SimpleNamespace) -> int:
+    """Handle ``smolvm sandbox start``."""
     from smolvm.facade import SmolVM
 
     vm: SmolVM | None = None
+    command_name = getattr(args, "command_name", "sandbox.start")
     try:
         vm = SmolVM.from_id(args.vm_id)
         vm.start(boot_timeout=args.boot_timeout)
 
         data = _vm_lifecycle_payload(vm.vm_id, VMState.RUNNING)
         if args.json:
-            emit_json("start", 0, data=data)
+            emit_json(command_name, 0, data=data)
         else:
             _render_vm_lifecycle_result(
                 data,
@@ -2961,13 +1858,13 @@ def _run_vm_start(args: argparse.Namespace) -> int:
             )
         return 0
     except Exception as exc:
-        return _emit_cli_error("start", 1, exc, json_output=args.json)
+        return _emit_cli_error(command_name, 1, exc, json_output=args.json)
     finally:
         if vm is not None:
             vm.close()
 
 
-def _run_snapshot(args: argparse.Namespace) -> int:
+def _run_snapshot(args: SimpleNamespace) -> int:
     """Handle ``smolvm snapshot`` commands."""
     from smolvm.facade import SmolVM
     from smolvm.vm import SmolVMManager
@@ -3124,7 +2021,7 @@ def _render_env_list(vm_id: str, data: dict[str, object]) -> None:
         console.print("Use --show-values to reveal values.")
 
 
-def _run_env(args: argparse.Namespace) -> int:
+def _run_env(args: SimpleNamespace) -> int:
     """Handle ``smolvm env set|unset|list``."""
     from smolvm.facade import SmolVM
 
@@ -3259,7 +2156,7 @@ def _render_file_download(data: FileDownloadPayload) -> None:
     )
 
 
-def _run_file(args: argparse.Namespace) -> int:
+def _run_file(args: SimpleNamespace) -> int:
     """Handle ``smolvm file`` commands."""
     from smolvm.facade import SmolVM
 
@@ -3340,11 +2237,12 @@ def _hint_if_vm_crashed(vm: object) -> None:
         render_error(_crashed_message(_vm.vm_id))
 
 
-def _run_ssh(args: argparse.Namespace) -> int:
-    """Handle ``smolvm ssh``."""
+def _run_ssh(args: SimpleNamespace) -> int:
+    """Handle ``smolvm sandbox ssh``."""
     from smolvm.facade import SmolVM
 
     vm: SmolVM | None = None
+    command_name = getattr(args, "command_name", "sandbox.ssh")
     try:
         vm = SmolVM.from_id(
             args.vm_id,
@@ -3381,13 +2279,13 @@ def _run_ssh(args: argparse.Namespace) -> int:
         return completed.returncode
     except FileNotFoundError:
         return _emit_cli_error(
-            "ssh",
+            command_name,
             1,
             FileNotFoundError("ssh binary not found. Install openssh-client."),
             json_output=False,
         )
     except Exception as exc:
-        return _emit_cli_error("ssh", 1, exc, json_output=False)
+        return _emit_cli_error(command_name, 1, exc, json_output=False)
     finally:
         if vm is not None:
             vm.close()
@@ -3436,7 +2334,7 @@ def _save_port_forwards(vm_id: str, forwards: list[dict]) -> None:
     _port_forwards_path(vm_id).write_text(json.dumps(forwards, indent=2))
 
 
-def _run_port_expose(args: argparse.Namespace) -> int:
+def _run_port_expose(args: SimpleNamespace) -> int:
     """Handle ``smolvm port expose``."""
     from smolvm.facade import SmolVM
 
@@ -3447,7 +2345,7 @@ def _run_port_expose(args: argparse.Namespace) -> int:
         host_port_req, guest_port = _parse_port_mapping(args.mapping)
     except ValueError:
         return _emit_cli_error(
-            "port expose",
+            "port.expose",
             1,
             ValueError(
                 f"Invalid mapping {args.mapping!r}. "
@@ -3486,7 +2384,7 @@ def _run_port_expose(args: argparse.Namespace) -> int:
 
         if json_output:
             emit_json(
-                "port expose",
+                "port.expose",
                 0,
                 data={
                     "sandbox": args.vm_id,
@@ -3505,7 +2403,7 @@ def _run_port_expose(args: argparse.Namespace) -> int:
                 f"Stop with: [bold]smolvm port close {args.vm_id} {host_port}:{guest_port}[/bold]"
             )
     except Exception as exc:
-        return _emit_cli_error("port expose", 1, exc, json_output=json_output)
+        return _emit_cli_error("port.expose", 1, exc, json_output=json_output)
     finally:
         if vm is not None:
             vm.close()
@@ -3513,7 +2411,7 @@ def _run_port_expose(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_port_close(args: argparse.Namespace) -> int:
+def _run_port_close(args: SimpleNamespace) -> int:
     """Handle ``smolvm port close``."""
     from smolvm.facade import SmolVM
 
@@ -3528,7 +2426,7 @@ def _run_port_close(args: argparse.Namespace) -> int:
                 f"Run 'smolvm port list {args.vm_id}' to see active forwards."
             )
     except ValueError as exc:
-        return _emit_cli_error("port close", 1, exc, json_output=json_output)
+        return _emit_cli_error("port.close", 1, exc, json_output=json_output)
 
     try:
         # Kill stored SSH tunnel process if present.
@@ -3574,7 +2472,7 @@ def _run_port_close(args: argparse.Namespace) -> int:
 
         if json_output:
             emit_json(
-                "port close",
+                "port.close",
                 0,
                 data={"sandbox": args.vm_id, "host_port": host_port, "guest_port": guest_port},
             )
@@ -3584,7 +2482,7 @@ def _run_port_close(args: argparse.Namespace) -> int:
             )
 
     except Exception as exc:
-        return _emit_cli_error("port close", 1, exc, json_output=json_output)
+        return _emit_cli_error("port.close", 1, exc, json_output=json_output)
     finally:
         if vm is not None:
             vm.close()
@@ -3592,13 +2490,13 @@ def _run_port_close(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_port_list(args: argparse.Namespace) -> int:
+def _run_port_list(args: SimpleNamespace) -> int:
     """Handle ``smolvm port list``."""
     json_output: bool = args.json
     forwards = _load_port_forwards(args.vm_id)
 
     if json_output:
-        emit_json("port list", 0, data={"sandbox": args.vm_id, "forwards": forwards})
+        emit_json("port.list", 0, data={"sandbox": args.vm_id, "forwards": forwards})
     else:
         console = console_stdout()
         if not forwards:
@@ -3621,7 +2519,7 @@ def _run_port_list(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_port(args: argparse.Namespace) -> int:
+def _run_port(args: SimpleNamespace) -> int:
     """Dispatch ``smolvm port <action>``."""
     action = getattr(args, "port_action", None)
     if action == "expose":
@@ -3630,9 +2528,8 @@ def _run_port(args: argparse.Namespace) -> int:
         return _run_port_close(args)
     if action == "list":
         return _run_port_list(args)
-    from smolvm.cli.main import build_parser
 
-    build_parser().parse_args(["port", "--help"])
+    render_error("Usage: smolvm port {expose,close,list} ...")
     return 2
 
 
@@ -3798,7 +2695,7 @@ def _render_browser_list(rows: list[BrowserRow]) -> None:
     console.print(f"Total: {len(rows)} sandbox(es).")
 
 
-def _run_windows(args: argparse.Namespace) -> int:
+def _run_windows(args: SimpleNamespace) -> int:
     """Handle ``smolvm windows`` commands."""
     action = getattr(args, "windows_action", None)
     if action == "build-image":
@@ -3811,7 +2708,7 @@ def _run_windows(args: argparse.Namespace) -> int:
     return 2
 
 
-def _run_windows_build_image(args: argparse.Namespace) -> int:
+def _run_windows_build_image(args: SimpleNamespace) -> int:
     """Handle ``smolvm windows build-image``."""
     from smolvm.windows import WindowsImageBuilder
 
@@ -3829,11 +2726,11 @@ def _run_windows_build_image(args: argparse.Namespace) -> int:
         )
         output = builder.build()
     except Exception as exc:  # noqa: BLE001
-        return _emit_cli_error("windows build-image", 1, exc, json_output=args.json)
+        return _emit_cli_error("windows.build-image", 1, exc, json_output=args.json)
 
     if args.json:
         emit_json(
-            "windows build-image",
+                "windows.build-image",
             0,
             data={
                 "output_qcow2": str(output),
@@ -3849,7 +2746,7 @@ def _run_windows_build_image(args: argparse.Namespace) -> int:
             Panel.fit(
                 f"Built Windows image: [bold]{output}[/bold]\n\n"
                 f"Boot it with:\n"
-                f"  [bold]smolvm create --os windows --image {output}[/bold]\n"
+                f"  [bold]smolvm sandbox create --os windows --image {output}[/bold]\n"
                 f"or in Python:\n"
                 f'  [bold]SmolVM(os="windows", image="{output}", '
                 f'ssh_user="{args.username}", ssh_password="<hidden>")[/bold]',
@@ -3860,7 +2757,7 @@ def _run_windows_build_image(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_browser(args: argparse.Namespace) -> int:
+def _run_browser(args: SimpleNamespace) -> int:
     """Handle ``smolvm browser`` commands."""
     from smolvm.browser import _BrowserSandbox
     from smolvm.storage import create_state_manager
@@ -4043,113 +2940,69 @@ def _run_browser(args: argparse.Namespace) -> int:
         return _emit_cli_error(command_name, 1, exc, json_output=json_output)
 
 
+def _command_name_from_argv(args: Sequence[str]) -> str:
+    """Best-effort command name for parse-time JSON errors."""
+    tokens = [arg for arg in args if not arg.startswith("-")]
+    if not tokens:
+        return "smolvm"
+    if len(tokens) >= 2 and tokens[0] in {
+        "sandbox",
+        "snapshot",
+        "file",
+        "env",
+        "port",
+        "windows",
+        "browser",
+        "server",
+        "codex",
+        "claude",
+        "openclaw",
+        "hermes",
+        "pi",
+    }:
+        return f"{tokens[0]}.{tokens[1]}"
+    return tokens[0]
+
+
+def _recovery_from_argv(args: Sequence[str]) -> str:
+    tokens = [arg for arg in args if not arg.startswith("-")]
+    if tokens:
+        return f"Run 'smolvm {' '.join(tokens[:2])} --help' for usage."
+    return "Run 'smolvm --help' for usage."
+
+
+def build_cli() -> click.Group:
+    """Return the Click root command."""
+    from smolvm.cli.commands import build_cli as _build_cli
+
+    return _build_cli()
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entrypoint for `smolvm`."""
-    # Best-effort: if the user has been added to the kvm group but the
-    # current shell session hasn't picked it up yet, re-exec under
-    # `sg kvm -c …` so /dev/kvm becomes accessible without a manual
-    # `newgrp kvm` or relog. Linux-only; no-op everywhere else.
     maybe_reexec_for_kvm_group(argv)
 
-    parser = build_parser()
-    args = parser.parse_args(argv)
-
-    # Best-effort PyPI update nag. Skipped in --json mode and for
-    # `setup --assets-dir` so we never pollute machine-readable output
-    # that scripts (Packer, Make, etc.) consume directly.
-    suppress_update_notice = bool(getattr(args, "json", False)) or (
-        args.command == "setup" and bool(getattr(args, "assets_dir", False))
-    )
-    maybe_print_update_notice(json_output=suppress_update_notice)
-
-    if args.command == "delete":
-        return run_delete(
-            vm_ids=args.vm_ids,
-            dry_run=args.dry_run,
-            json_output=args.json,
+    args = list(argv) if argv is not None else sys.argv[1:]
+    cli = build_cli()
+    try:
+        result = cli.main(
+            args=args,
+            prog_name="smolvm",
+            standalone_mode=False,
         )
-
-    if args.command == "cleanup":
-        return run_cleanup(
-            dry_run=args.dry_run,
-            json_output=args.json,
-            force=args.force,
-        )
-
-    if args.command == "update":
-        from smolvm.cli.update import run_update
-
-        return run_update(args)
-
-    if args.command == "prune":
-        from smolvm.cli.prune import run_prune
-
-        return run_prune(args)
-
-    if args.command == "setup":
-        return _run_setup(parser, args)
-
-    if args.command == "list":
-        return _run_list(
-            include_all=args.all,
-            status_filter=args.status,
-            json_output=args.json,
-        )
-
-    if args.command == "info":
-        return _run_info(vm_id=args.vm_id, json_output=args.json)
-
-    if args.command == "create":
-        return _run_create(args)
-
-    if _is_preset_command(args):
-        return _run_start(args)
-
-    if args.command == "stop":
-        return _run_stop(args)
-
-    if args.command == "pause":
-        return _run_pause(args)
-
-    if args.command == "resume":
-        return _run_resume(args)
-
-    if args.command == "start":
-        return _run_vm_start(args)
-
-    if args.command == "snapshot":
-        return _run_snapshot(args)
-
-    if args.command == "ssh":
-        return _run_ssh(args)
-
-    if args.command == "file":
-        return _run_file(args)
-
-    if args.command == "windows":
-        return _run_windows(args)
-
-    if args.command == "doctor":
-        return run_doctor(
-            backend=args.backend,
-            json_output=args.json,
-            strict=args.strict,
-        )
-
-    if args.command == "server":
-        return _run_server_start(host=args.host, port=args.port)
-
-    if args.command == "ui":
-        return _run_ui(host=args.host, port=args.port, allow_beta=args.allow_beta)
-
-    if args.command == "browser":
-        return _run_browser(args)
-
-    if args.command == "env":
-        return _run_env(args)
-
-    if args.command == "port":
-        return _run_port(args)
-
-    parser.print_help()
-    return 2
+        return 0 if result is None else int(result)
+    except click.ClickException as exc:
+        json_output = "--json" in args
+        if json_output:
+            emit_error(
+                _command_name_from_argv(args),
+                "usage_error",
+                exc.format_message(),
+                recovery=_recovery_from_argv(args),
+                exit_code=exc.exit_code,
+            )
+        else:
+            exc.show(file=sys.stderr)
+        return exc.exit_code
+    except click.Abort:
+        return 130

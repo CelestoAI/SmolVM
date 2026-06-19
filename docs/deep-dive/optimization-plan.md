@@ -87,8 +87,8 @@ S3 bucket
 
 **CLI:**
 ```bash
-smolvm create --image s3://bucket/images/alpine-ssh/
-smolvm create --image s3://bucket/images/alpine-ssh/ --name my-vm --memory 1024
+smolvm sandbox create --image s3://bucket/images/alpine-ssh/
+smolvm sandbox create --image s3://bucket/images/alpine-ssh/ --name my-vm --memory 1024
 ```
 `--image` and `--os` are mutually exclusive.
 
@@ -125,7 +125,7 @@ Falls back to boto3's standard credential chain (`AWS_*` env vars, `~/.aws/crede
 - Offline cache fallback — fully cached images work when S3 is unreachable
 - Path traversal protection — manifest filenames validated via Pydantic (rejects `../`, absolute paths, collisions)
 
-**Verified end-to-end:** Ubuntu cloud image uploaded to Cloudflare R2, pulled via `smolvm create --image s3://...`, VM booted, SSH connected, commands executed.
+**Verified end-to-end:** Ubuntu cloud image uploaded to Cloudflare R2, pulled via `smolvm sandbox create --image s3://...`, VM booted, SSH connected, commands executed.
 
 **Phase 2b (FUSE mount) was evaluated and dropped** — see Recommended Order section for rationale.
 

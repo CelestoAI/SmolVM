@@ -58,30 +58,41 @@ _REEXEC_DISABLE_ENV = "SMOLVM_NO_KVM_REEXEC"
 #      kvm at all.
 #
 # ``-h``/``--help``/``-V``/``--version`` are checked separately because they
-# can appear at *any* depth (e.g. ``smolvm create --help``), not just as
+# can appear at *any* depth (e.g. ``smolvm sandbox create --help``), not just as
 # the first argument.
 _SKIP_FIRST_ARGS: frozenset[str] = frozenset(
     {
         # Diagnostic / administrative
         "doctor",
         "setup",
-        # Read-only state inspection
-        "list",
-        "info",
+        "update",
+        "prune",
+        "ui",
+        "server",
+        # Running-sandbox operations
         "env",
-        # VM-process-targeted (talks to an already-running sandbox; no kvm open)
-        "ssh",
-        "stop",
-        "pause",
-        # State-file maintenance
-        "delete",
-        "cleanup",
+        "file",
+        "port",
     }
 )
 
+_SKIP_SANDBOX_ACTIONS: frozenset[str] = frozenset(
+    {
+        "list",
+        "info",
+        "ssh",
+        "stop",
+        "pause",
+        "resume",
+        "delete",
+    }
+)
+
+_SKIP_BROWSER_ACTIONS: frozenset[str] = frozenset({"list", "stop", "open", "logs"})
+
 # Help/version flags can appear anywhere in argv (top-level *or* per-verb,
-# e.g. ``smolvm create --help``). When any of these is present, argparse
-# is going to short-circuit before any kvm work happens, so we should too.
+# e.g. ``smolvm sandbox create --help``). When any of these is present, Click is
+# going to short-circuit before any kvm work happens, so we should too.
 _HELP_VERSION_FLAGS: frozenset[str] = frozenset({"-h", "--help", "-V", "--version"})
 
 _KVM_DEV = Path("/dev/kvm")
@@ -153,6 +164,10 @@ def _should_attempt_reexec(argv: Sequence[str] | None) -> bool:
 
     args = list(argv) if argv is not None else sys.argv[1:]
     if args and args[0] in _SKIP_FIRST_ARGS:
+        return False
+    if len(args) >= 2 and args[0] == "sandbox" and args[1] in _SKIP_SANDBOX_ACTIONS:
+        return False
+    if len(args) >= 2 and args[0] == "browser" and args[1] in _SKIP_BROWSER_ACTIONS:
         return False
     if any(arg in _HELP_VERSION_FLAGS for arg in args):
         return False

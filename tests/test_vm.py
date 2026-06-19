@@ -466,11 +466,11 @@ class TestSmolVMCreate:
             str(exc_info.value)
             == "Cannot use vsock for sandbox 'vm-vsock-bad': this backend does not support "
             "vsock in this release; create it with SSH by running: "
-            "smolvm create --name vm-vsock-bad --backend libkrun."
+            "smolvm sandbox create --name vm-vsock-bad --backend libkrun."
         )
         assert exc_info.value.details == {
             "vm_id": "vm-vsock-bad",
-            "recovery_command": "smolvm create --name vm-vsock-bad --backend libkrun",
+            "recovery_command": "smolvm sandbox create --name vm-vsock-bad --backend libkrun",
         }
 
     @pytest.mark.asyncio
@@ -1564,7 +1564,7 @@ def _info(config: VMConfig, status: VMState, pid: int | None = None) -> VMInfo:
 
 
 class TestRefreshStatus:
-    """Tests for the cheap per-row liveness check used by ``smolvm list``."""
+    """Tests for the cheap per-row liveness check used by ``smolvm sandbox list``."""
 
     def test_running_with_live_pid_unchanged(
         self, smol_vm: SmolVMManager, sample_config: VMConfig

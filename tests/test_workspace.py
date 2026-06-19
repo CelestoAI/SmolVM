@@ -79,7 +79,7 @@ class TestWorkspaceMountValidation:
     def test_missing_host_path_loads_under_validate_paths_false(self, tmp_path: Path) -> None:
         """Persisted configs reload even when the host path was deleted.
 
-        Read-only commands like ``smolvm list`` pass
+        Read-only commands like ``smolvm sandbox list`` pass
         ``context={"validate_paths": False}`` so a stale mount path on disk
         does not crash the whole command. The validator must respect that.
         """
@@ -164,7 +164,7 @@ class TestVMConfigWorkspaceMounts:
     def test_persisted_config_reloads_with_missing_mount_host(self, tmp_path: Path) -> None:
         """Storage reads must succeed when a workspace host folder is gone.
 
-        Reproduces the ``smolvm list`` crash where a deleted Conductor
+        Reproduces the ``smolvm sandbox list`` crash where a deleted Conductor
         worktree caused the whole command to fail. The fix is that
         ``WorkspaceMount`` honors the ``validate_paths=False`` context the
         storage layer already passes via ``vm_config_from_json``.
@@ -347,7 +347,7 @@ def test_start_friendly_error_when_workspace_host_path_missing(
     # user can act on it without reading the source.
     message = str(exc_info.value)
     assert "vm-stale-mount" in message
-    assert "smolvm delete vm-stale-mount" in message
+    assert "smolvm sandbox delete vm-stale-mount" in message
     mock_popen.assert_not_called()
 
 
@@ -607,27 +607,26 @@ def test_snapshot_rejected_with_workspace_mounts(tmp_path: Path) -> None:
 class TestCliMountFlag:
     """Tests for the --mount CLI flag on create."""
 
-    def test_single_mount_host_only(self) -> None:
-        from smolvm.cli.main import build_parser
+    def _create_args(self, argv: list[str]) -> object:
+        from smolvm.cli.main import main
 
-        parser = build_parser()
-        args = parser.parse_args(["create", "--mount", "/tmp/project"])
+        with patch("smolvm.cli.main._run_create", return_value=0) as mock_run_create:
+            ret = main(["sandbox", "create", *argv])
+
+        assert ret == 0
+        return mock_run_create.call_args.args[0]
+
+    def test_single_mount_host_only(self) -> None:
+        args = self._create_args(["--mount", "/tmp/project"])
         assert args.mounts == ["/tmp/project"]
 
     def test_single_mount_with_guest_path(self) -> None:
-        from smolvm.cli.main import build_parser
-
-        parser = build_parser()
-        args = parser.parse_args(["create", "--mount", "/tmp/project:/code"])
+        args = self._create_args(["--mount", "/tmp/project:/code"])
         assert args.mounts == ["/tmp/project:/code"]
 
     def test_multiple_mounts(self) -> None:
-        from smolvm.cli.main import build_parser
-
-        parser = build_parser()
-        args = parser.parse_args(
+        args = self._create_args(
             [
-                "create",
                 "--mount",
                 "/tmp/a",
                 "--mount",
@@ -637,26 +636,16 @@ class TestCliMountFlag:
         assert args.mounts == ["/tmp/a", "/tmp/b:/data"]
 
     def test_mount_defaults_to_none(self) -> None:
-        from smolvm.cli.main import build_parser
-
-        parser = build_parser()
-        args = parser.parse_args(["create"])
+        args = self._create_args([])
         assert args.mounts is None
 
     def test_writable_mounts_defaults_to_false(self) -> None:
-        from smolvm.cli.main import build_parser
-
-        parser = build_parser()
-        args = parser.parse_args(["create", "--mount", "/tmp/project"])
+        args = self._create_args(["--mount", "/tmp/project"])
         assert args.writable_mounts is False
 
     def test_writable_mounts_flag_sets_true(self) -> None:
-        from smolvm.cli.main import build_parser
-
-        parser = build_parser()
-        args = parser.parse_args(
+        args = self._create_args(
             [
-                "create",
                 "--mount",
                 "/tmp/project",
                 "--writable-mounts",
@@ -672,12 +661,12 @@ class TestCliMountFlag:
         mock_smolvm_cls: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """`smolvm create --mount /path` (no --backend) must auto-select QEMU
+        """`smolvm sandbox create --mount /path` (no --backend) must auto-select QEMU
         at the CLI layer. Without this, _build_auto_config gets backend=None,
         resolves to the platform default (firecracker on Linux), and the
         downstream guard rejects the mount + firecracker combo with a
         confusing 'Re-run without --backend' message — the user already did."""
-        from smolvm.cli.main import _run_create, build_parser
+        from smolvm.cli.main import main
 
         kernel = tmp_path / "vmlinux"
         rootfs = tmp_path / "rootfs.ext4"
@@ -696,12 +685,9 @@ class TestCliMountFlag:
         mock_smolvm_cls.return_value.vm_id = "vm-mnt"
         mock_smolvm_cls.return_value.info.status = VMState.RUNNING
 
-        parser = build_parser()
-        args = parser.parse_args(["create", "--mount", str(tmp_path / "project"), "--json"])
+        ret = main(["sandbox", "create", "--mount", str(tmp_path / "project"), "--json"])
 
-        _run_create(args)
-
-        assert args.backend == "qemu"
+        assert ret == 0
         assert mock_build_auto_config.call_args.kwargs["backend"] == "qemu"
 
     @patch("smolvm.facade.SmolVM")
@@ -715,7 +701,7 @@ class TestCliMountFlag:
         """Explicit `--backend firecracker --mount /path` must NOT be silently
         upgraded; the downstream guard should still fire so the user sees the
         incompatibility they explicitly requested."""
-        from smolvm.cli.main import _run_create, build_parser
+        from smolvm.cli.main import main
 
         kernel = tmp_path / "vmlinux"
         rootfs = tmp_path / "rootfs.ext4"
@@ -734,9 +720,9 @@ class TestCliMountFlag:
         mock_smolvm_cls.return_value.vm_id = "vm-mnt"
         mock_smolvm_cls.return_value.info.status = VMState.RUNNING
 
-        parser = build_parser()
-        args = parser.parse_args(
+        ret = main(
             [
+                "sandbox",
                 "create",
                 "--mount",
                 str(tmp_path / "project"),
@@ -746,9 +732,8 @@ class TestCliMountFlag:
             ]
         )
 
-        _run_create(args)
-
-        assert args.backend == "firecracker"
+        assert ret == 0
+        assert mock_build_auto_config.call_args.kwargs["backend"] == "firecracker"
 
 
 # ── Mount spec parsing ──────────────────────────────────────────────

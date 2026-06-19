@@ -74,7 +74,7 @@ Earlier versions of SmolVM pulled kernels from elsewhere:
 - Ubuntu cloud images' `vmlinuz-6.x` from `cloud-images.ubuntu.com`
 
 That had three problems:
-1. **External CDN dependencies** — Ubuntu's CDN had a slow first-byte that hung `smolvm create` for a user.
+1. **External CDN dependencies** — Ubuntu's CDN had a slow first-byte that hung `smolvm sandbox create` for a user.
 2. **Old kernel** — 5.10 missed years of microVM optimizations and CVE patches.
 3. **Generic kernel surface** — Ubuntu ships drivers for Bluetooth, USB, sound, etc. None of that exists in a microVM. Dead code = bigger attack surface.
 
@@ -544,7 +544,7 @@ Back on the host, `cli/main.py` polls TCP port 2200 with a 30-second timeout. As
 │ Started 'codex-davinci' │
 │ with codex preinstalled │
 ╰─────────────────────────╯
-Next: smolvm ssh codex-davinci
+Next: smolvm sandbox ssh codex-davinci
 ```
 
 End-to-end, on a warm cache, this takes 5–10 seconds. On a cold cache (first download), add ~30s for the rootfs zstd download.
@@ -591,9 +591,9 @@ Lesson: when you generalize a code path that used to be single-purpose, audit th
 
 A few open threads, in the order I'd tackle them.
 
-### `smolvm create` uses our base rootfs (#273)
+### `smolvm sandbox create` uses our base rootfs (#273)
 
-`smolvm create` now uses the published Ubuntu base rootfs from the SmolVM image release instead of downloading Ubuntu's official cloud image from `cloud-images.ubuntu.com`. That removes the last external CDN from the boot path and keeps the default image pinned by SHA.
+`smolvm sandbox create` now uses the published Ubuntu base rootfs from the SmolVM image release instead of downloading Ubuntu's official cloud image from `cloud-images.ubuntu.com`. That removes the last external CDN from the boot path and keeps the default image pinned by SHA.
 
 The remaining work is operational: keep the base ext4 published alongside preset images, keep `/init` in the base Dockerfile, and bump the image release tag when those bytes change.
 

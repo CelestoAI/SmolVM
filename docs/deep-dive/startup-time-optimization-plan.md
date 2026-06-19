@@ -112,10 +112,10 @@ Current status:
   exists instead of running `ssh-keygen -A`. In the current-init benchmark this
   moved QEMU SSH total ready from `1455.6 ms` to `1233.9 ms` and Firecracker SSH
   total ready from `1827.7 ms` to `1576.5 ms`.
-- `smolvm create` now waits for the resolved control channel by default, so a
+- `smolvm sandbox create` now waits for the resolved control channel by default, so a
   plain QEMU Ubuntu create can return when the vsock guest-agent is ready instead
   of always waiting for SSH. Users can still force the old SSH-ready behavior
-  with `smolvm create --comm-channel ssh`.
+  with `smolvm sandbox create --comm-channel ssh`.
 
 Acceptance:
 

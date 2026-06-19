@@ -90,12 +90,15 @@ class TestShouldAttemptReexec:
 
     @patch("smolvm.cli._kvm_session.platform.system", return_value="Linux")
     def test_verb_level_help_short_circuits(self, _mock_system: MagicMock) -> None:
-        # ``smolvm create --help`` argparse's into ["create", "--help"] —
+        # ``smolvm sandbox create --help`` argparse's into ["sandbox", "create", "--help"] —
         # this should not trigger a re-exec even though ``create`` is a
         # kvm-using verb, because no kvm work will actually run.
-        assert _kvm_session._should_attempt_reexec(["create", "--help"]) is False
+        assert _kvm_session._should_attempt_reexec(["sandbox", "create", "--help"]) is False
         assert _kvm_session._should_attempt_reexec(["snapshot", "create", "-h"]) is False
-        assert _kvm_session._should_attempt_reexec(["create", "--name", "x", "-V"]) is False
+        assert (
+            _kvm_session._should_attempt_reexec(["sandbox", "create", "--name", "x", "-V"])
+            is False
+        )
 
     @patch("smolvm.cli._kvm_session.platform.system", return_value="Linux")
     def test_read_only_verbs_skip(self, _mock_system: MagicMock) -> None:
@@ -110,7 +113,7 @@ class TestShouldAttemptReexec:
     @patch("smolvm.cli._kvm_session.platform.system", return_value="Linux")
     def test_no_dev_kvm_skips(self, _mock_system: MagicMock, mock_dev: MagicMock) -> None:
         mock_dev.exists.return_value = False
-        assert _kvm_session._should_attempt_reexec(["create"]) is False
+        assert _kvm_session._should_attempt_reexec(["sandbox", "create"]) is False
 
     @patch("smolvm.cli._kvm_session.os.access", return_value=True)
     @patch("smolvm.cli._kvm_session._KVM_DEV")
@@ -122,7 +125,7 @@ class TestShouldAttemptReexec:
         _mock_access: MagicMock,
     ) -> None:
         mock_dev.exists.return_value = True
-        assert _kvm_session._should_attempt_reexec(["create"]) is False
+        assert _kvm_session._should_attempt_reexec(["sandbox", "create"]) is False
 
     @patch("smolvm.cli._kvm_session.os.getuid", return_value=1000)
     @patch("smolvm.cli._kvm_session.os.access", return_value=False)
@@ -142,7 +145,7 @@ class TestShouldAttemptReexec:
             patch("grp.getgrnam", return_value=_mock_kvm_grp(members=["other"])),
             patch("pwd.getpwuid", return_value=_mock_pwd_user("alice")),
         ):
-            assert _kvm_session._should_attempt_reexec(["create"]) is False
+            assert _kvm_session._should_attempt_reexec(["sandbox", "create"]) is False
 
     @patch("smolvm.cli._kvm_session.os.getgroups", return_value=[999])
     @patch("smolvm.cli._kvm_session.os.getuid", return_value=1000)
@@ -168,7 +171,7 @@ class TestShouldAttemptReexec:
             ),
             patch("pwd.getpwuid", return_value=_mock_pwd_user("alice")),
         ):
-            assert _kvm_session._should_attempt_reexec(["create"]) is False
+            assert _kvm_session._should_attempt_reexec(["sandbox", "create"]) is False
 
     @patch("smolvm.cli._kvm_session.os.getgroups", return_value=[1000])
     @patch("smolvm.cli._kvm_session.os.getuid", return_value=1000)
@@ -191,7 +194,7 @@ class TestShouldAttemptReexec:
             ),
             patch("pwd.getpwuid", return_value=_mock_pwd_user("alice")),
         ):
-            assert _kvm_session._should_attempt_reexec(["create"]) is True
+            assert _kvm_session._should_attempt_reexec(["sandbox", "create"]) is True
 
 
 class TestMaybeReexec:

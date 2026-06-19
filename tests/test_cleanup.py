@@ -19,8 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from smolvm.cli.cleanup import build_parser, run_cleanup, run_delete
-from smolvm.cli.cleanup import main as cleanup_main
+from smolvm.cli.cleanup import run_cleanup, run_delete
 from smolvm.cli.main import main as cli_main
 
 
@@ -31,7 +30,7 @@ def _make_vm(vm_id: str) -> MagicMock:
 
 
 class TestDelete:
-    """Tests for ``smolvm delete <vm-id>``."""
+    """Tests for ``smolvm sandbox delete <vm-id>``."""
 
     @pytest.fixture
     def mock_sdk_cls(self) -> MagicMock:
@@ -126,26 +125,27 @@ class TestDelete:
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["command"] == "delete"
+        assert payload["command"] == "sandbox.delete"
         assert payload["ok"] is True
         assert payload["data"]["targets"] == ["vm-abc"]
         assert payload["data"]["deleted"] == ["vm-abc"]
 
-    @patch("smolvm.cli.main.run_delete", return_value=0)
+    @patch("smolvm.cli.cleanup.run_delete", return_value=0)
     def test_cli_delete_forwards_args(self, mock_run_delete: MagicMock) -> None:
-        """`smolvm delete vm-abc vm-def --json` forwards correctly."""
-        ret = cli_main(["delete", "vm-abc", "vm-def", "--json"])
+        """`smolvm sandbox delete vm-abc vm-def --json` forwards correctly."""
+        ret = cli_main(["sandbox", "delete", "vm-abc", "vm-def", "--json"])
 
         assert ret == 0
         mock_run_delete.assert_called_once_with(
             vm_ids=["vm-abc", "vm-def"],
             dry_run=False,
             json_output=True,
+            command_name="sandbox.delete",
         )
 
 
 class TestCleanup:
-    """Tests for ``smolvm cleanup``."""
+    """Tests for ``smolvm sandbox delete --all``."""
 
     @pytest.fixture
     def mock_sdk_cls(self) -> MagicMock:
@@ -220,7 +220,7 @@ class TestCleanup:
 
         assert ret == 1
         out = capsys.readouterr().out
-        assert "Cleanup Results" in out
+        assert "Delete Results" in out
         assert "deleted" in out
         assert "failed" in out
         assert "busy" in out
@@ -241,7 +241,7 @@ class TestCleanup:
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["command"] == "cleanup"
+        assert payload["command"] == "sandbox.delete"
         assert payload["ok"] is True
         assert set(payload["data"]["targets"]) == {"vm-stale", "vm-other"}
         assert set(payload["data"]["deleted"]) == {"vm-stale", "vm-other"}
@@ -267,7 +267,7 @@ class TestCleanup:
         payload = json.loads(capsys.readouterr().out)
         assert isinstance(payload, dict)
         assert payload["ok"] is False
-        assert payload["command"] == "cleanup"
+        assert payload["command"] == "sandbox.delete"
         assert payload["exit_code"] == 1
         assert "force" in payload["error"]["message"].lower()
 
@@ -338,36 +338,31 @@ class TestCleanup:
         sdk.delete.assert_not_called()
         assert "Aborted" in capsys.readouterr().out
 
-    def test_cleanup_parser_includes_json(self) -> None:
-        """The standalone cleanup parser should expose `--json`."""
-        args = build_parser().parse_args(["--json"])
-        assert args.json is True
-
-    def test_cleanup_parser_includes_force(self) -> None:
-        """The standalone cleanup parser should expose `--force`."""
-        args = build_parser().parse_args(["--force"])
-        assert args.force is True
-
-    @patch("smolvm.cli.main.run_cleanup", return_value=0)
-    def test_cli_cleanup_forwards_json(self, mock_run_cleanup: MagicMock) -> None:
-        """`smolvm cleanup --json` forwards correctly."""
-        ret = cli_main(["cleanup", "--json"])
-
-        assert ret == 0
-        mock_run_cleanup.assert_called_once_with(
-            dry_run=False,
-            json_output=True,
-            force=False,
-        )
-
     @patch("smolvm.cli.cleanup.run_cleanup", return_value=0)
-    def test_standalone_cleanup_main_forwards_json(self, mock_run_cleanup: MagicMock) -> None:
-        """`smolvm-cleanup --json` forwards correctly."""
-        ret = cleanup_main(["--json"])
+    def test_cli_cleanup_forwards_json(self, mock_run_cleanup: MagicMock) -> None:
+        """`smolvm sandbox delete --all --force --json` forwards correctly."""
+        ret = cli_main(["sandbox", "delete", "--all", "--force", "--json"])
 
         assert ret == 0
         mock_run_cleanup.assert_called_once_with(
             dry_run=False,
             json_output=True,
-            force=False,
+            force=True,
+            command_name="sandbox.delete",
         )
+
+    @patch("smolvm.cli.cleanup.run_cleanup")
+    def test_cli_cleanup_json_requires_force(
+        self,
+        mock_run_cleanup: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """`smolvm sandbox delete --all --json` is rejected before runtime."""
+        ret = cli_main(["sandbox", "delete", "--all", "--json"])
+
+        assert ret == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["ok"] is False
+        assert payload["command"] == "sandbox.delete"
+        assert payload["error"]["code"] == "refused"
+        mock_run_cleanup.assert_not_called()

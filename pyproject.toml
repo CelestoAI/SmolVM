@@ -28,6 +28,7 @@ classifiers = [
     "Topic :: System :: Emulators",
 ]
 dependencies = [
+    "click>=8.0",
     "smolvm-core~=0.0.14",
     "paramiko>=3.0",
     "pycdlib>=1.14.0",
@@ -70,7 +71,6 @@ all = [
 
 [project.scripts]
 smolvm = "smolvm.cli.main:main"
-smolvm-delete = "smolvm.cli.cleanup:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/smolvm"]

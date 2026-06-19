@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import argparse
 import re
 import shutil
 from pathlib import Path
@@ -67,28 +66,33 @@ def find_stale_caches(
     return stale
 
 
-def run_prune(args: argparse.Namespace) -> int:
+def run_prune(
+    *,
+    dry_run: bool = False,
+    json_output: bool = False,
+    cache_dir: str | None = None,
+) -> int:
     """Execute ``smolvm prune``."""
-    cache_dir = Path(args.cache_dir) if getattr(args, "cache_dir", None) else None
-    stale = find_stale_caches(cache_dir=cache_dir)
+    cache_root = Path(cache_dir) if cache_dir else None
+    stale = find_stale_caches(cache_dir=cache_root)
 
     if not stale:
-        if args.json:
+        if json_output:
             emit_json("prune", 0, data={"removed": [], "freed_bytes": 0})
         else:
             console = console_stdout()
             console.print("Nothing to prune — cache is clean.")
         return 0
 
-    entries = []
+    entries: list[dict[str, str | int]] = []
     total_bytes = 0
     for path in stale:
         size = _total_size(path)
         total_bytes += size
         entries.append({"path": str(path), "size_bytes": size})
 
-    if args.dry_run:
-        if args.json:
+    if dry_run:
+        if json_output:
             emit_json(
                 "prune",
                 0,
@@ -105,13 +109,15 @@ def run_prune(args: argparse.Namespace) -> int:
                 f"({_format_bytes(total_bytes)}):[/bold]"
             )
             for e in entries:
-                console.print(f"  {e['path']}  ({_format_bytes(e['size_bytes'])})")
+                size_bytes = e["size_bytes"]
+                assert isinstance(size_bytes, int)
+                console.print(f"  {e['path']}  ({_format_bytes(size_bytes)})")
         return 0
 
     for path in stale:
         shutil.rmtree(path)
 
-    if args.json:
+    if json_output:
         emit_json(
             "prune",
             0,

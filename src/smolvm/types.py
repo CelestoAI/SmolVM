@@ -114,7 +114,7 @@ def _should_validate_paths(info: ValidationInfo) -> bool:
 
     Storage reads (``vm_config_from_json``) pass ``validate_paths=False`` in
     the validation context so a stale or missing host path on disk does not
-    blow up read-only commands like ``smolvm list``. Defaults to ``True`` so
+    blow up read-only commands like ``smolvm sandbox list``. Defaults to ``True`` so
     direct construction (creates, tests) keeps its safety net.
     """
     return bool((info.context or {}).get("validate_paths", True))

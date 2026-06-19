@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import argparse
 import re
 import shutil
 import subprocess
@@ -84,7 +83,7 @@ def _run_upgrade(*, json_output: bool) -> tuple[int, str]:
             output = result.stdout + result.stderr
             return result.returncode, output
         else:
-            result = subprocess.run(cmd)
+            result = subprocess.run(cmd, text=True)
             return result.returncode, ""
     except OSError as exc:
         if not json_output:
@@ -92,17 +91,18 @@ def _run_upgrade(*, json_output: bool) -> tuple[int, str]:
         return 1, str(exc)
 
 
-def run_update(args: argparse.Namespace) -> int:
+def run_update(*, check: bool = False, json_output: bool = False) -> int:
     """Execute ``smolvm update``."""
-    json_output: bool = getattr(args, "json", False)
-    check_only: bool = getattr(args, "check", False)
-
     current, latest = _check_for_stable_update()
 
-    if check_only:
+    if check:
         if latest is None:
             if current is None:
-                data = {"current": None, "latest": None, "update_available": False}
+                data: dict[str, object] = {
+                    "current": None,
+                    "latest": None,
+                    "update_available": False,
+                }
                 if json_output:
                     emit_json("update", 1, data=data)
                 else:

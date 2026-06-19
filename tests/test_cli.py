@@ -25,7 +25,6 @@ import pytest
 from smolvm.cli.main import (
     DASHBOARD_ALLOW_BETA_ENV,
     _current_version_is_prerelease,
-    build_parser,
     main,
 )
 from smolvm.types import (
@@ -109,22 +108,25 @@ def _make_snapshot_info(
 
 
 def test_top_level_help_mentions_json_for_agents() -> None:
-    """Top-level help should describe the machine-readable JSON mode."""
-    help_text = build_parser().format_help()
+    """Command help should describe the machine-readable JSON mode."""
+    from click.testing import CliRunner
 
-    assert "--json" in help_text
-    assert "machine-readable output" in help_text
-    assert "LLMs, agents, and automation" in help_text
+    from smolvm.cli.main import build_cli
+
+    result = CliRunner().invoke(build_cli(), ["sandbox", "create", "--help"])
+
+    assert result.exit_code == 0
+    assert "--json" in result.output
+    assert "Output a JSON envelope" in result.output
 
 
 def test_create_help_describes_backend_specific_guest_default(
     capsys: pytest.CaptureFixture,
 ) -> None:
     """Create help should describe the OS option and its auto-detected default."""
-    with pytest.raises(SystemExit) as exc_info:
-        main(["create", "--help"])
+    ret = main(["sandbox", "create", "--help"])
 
-    assert exc_info.value.code == 0
+    assert ret == 0
     help_text = capsys.readouterr().out
     assert "Operating system image" in help_text
     assert "auto-detected" in help_text
@@ -606,7 +608,7 @@ class TestCliFile:
 
 
 class TestCliCreate:
-    """Tests for `smolvm create`."""
+    """Tests for `smolvm sandbox create`."""
 
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
@@ -619,7 +621,7 @@ class TestCliCreate:
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm create` should auto-generate a VM name when omitted."""
+        """`smolvm sandbox create` should auto-generate a VM name when omitted."""
         monkeypatch.delenv("SMOLVM_BACKEND", raising=False)
         config = MagicMock(vm_id="vm-a1b2c3d4")
         mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
@@ -632,7 +634,7 @@ class TestCliCreate:
         vm.info.network.ssh_host_port = 2200
         mock_vm_cls.return_value = vm
 
-        ret = main(["create"])
+        ret = main(["sandbox", "create"])
 
         assert ret == 0
         mock_build_auto_config.assert_called_once_with(
@@ -660,8 +662,8 @@ class TestCliCreate:
         assert "OS" in out
         assert "ubuntu" in out
         assert "Started" in out
-        assert "smolvm ssh vm-a1b2c3d4" in out
-        assert "smolvm info vm-a1b2c3d4" in out
+        assert "smolvm sandbox ssh vm-a1b2c3d4" in out
+        assert "smolvm sandbox info vm-a1b2c3d4" in out
         assert "Backend" not in out
         assert "IP Address" not in out
         assert "SSH Port" not in out
@@ -677,7 +679,7 @@ class TestCliCreate:
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm create` should build, start, and report a named VM."""
+        """`smolvm sandbox create` should build, start, and report a named VM."""
         monkeypatch.delenv("SMOLVM_BACKEND", raising=False)
         config = MagicMock(vm_id="project-spacex")
         mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
@@ -692,6 +694,7 @@ class TestCliCreate:
 
         ret = main(
             [
+                "sandbox",
                 "create",
                 "--name",
                 "project-spacex",
@@ -736,8 +739,8 @@ class TestCliCreate:
         assert "OS" in out
         assert "ubuntu" in out
         assert "Started" in out
-        assert "smolvm ssh project-spacex" in out
-        assert "smolvm info project-spacex" in out
+        assert "smolvm sandbox ssh project-spacex" in out
+        assert "smolvm sandbox info project-spacex" in out
         assert "Backend" not in out
         assert "172.16.0.2" not in out
         assert "2200" not in out
@@ -752,7 +755,7 @@ class TestCliCreate:
         mock_build_auto_config: MagicMock,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """`smolvm create --comm-channel ssh` preserves the SSH-ready contract."""
+        """`smolvm sandbox create --comm-channel ssh` preserves the SSH-ready contract."""
         monkeypatch.delenv("SMOLVM_BACKEND", raising=False)
         config = MagicMock(vm_id="project-spacex")
         mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
@@ -765,7 +768,7 @@ class TestCliCreate:
         vm.info.network.ssh_host_port = 2200
         mock_vm_cls.return_value = vm
 
-        ret = main(["create", "--name", "project-spacex", "--comm-channel", "ssh"])
+        ret = main(["sandbox", "create", "--name", "project-spacex", "--comm-channel", "ssh"])
 
         assert ret == 0
         mock_vm_cls.assert_called_once_with(
@@ -789,7 +792,7 @@ class TestCliCreate:
         mock_build_auto_config: MagicMock,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """`smolvm create -n ...` should behave the same as `--name`."""
+        """`smolvm sandbox create -n ...` should behave the same as `--name`."""
         monkeypatch.delenv("SMOLVM_BACKEND", raising=False)
         config = MagicMock(vm_id="computer")
         mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
@@ -802,7 +805,7 @@ class TestCliCreate:
         vm.info.network.ssh_host_port = 2200
         mock_vm_cls.return_value = vm
 
-        ret = main(["create", "-n", "computer"])
+        ret = main(["sandbox", "create", "-n", "computer"])
 
         assert ret == 0
         mock_build_auto_config.assert_called_once_with(
@@ -837,7 +840,7 @@ class TestCliCreate:
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm create --json` should emit the shared envelope."""
+        """`smolvm sandbox create --json` should emit the shared envelope."""
         monkeypatch.delenv("SMOLVM_BACKEND", raising=False)
         config = MagicMock(vm_id="project-spacex")
         mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
@@ -850,18 +853,18 @@ class TestCliCreate:
         vm.info.network.ssh_host_port = 2200
         mock_vm_cls.return_value = vm
 
-        ret = main(["create", "--name", "project-spacex", "--json"])
+        ret = main(["sandbox", "create", "--name", "project-spacex", "--json"])
 
         assert ret == 0
         out = capsys.readouterr().out
         assert "Preparing ubuntu operating system image" not in out
         payload = json.loads(out)
-        assert payload["command"] == "create"
+        assert payload["command"] == "sandbox.create"
         assert payload["data"]["vm"]["name"] == "project-spacex"
         assert payload["data"]["vm"]["os"] == "ubuntu"
         assert payload["data"]["vm"]["started_at"]
-        assert payload["data"]["next"]["ssh_command"] == "smolvm ssh project-spacex"
-        assert payload["data"]["next"]["info_command"] == "smolvm info project-spacex"
+        assert payload["data"]["next"]["ssh_command"] == "smolvm sandbox ssh project-spacex"
+        assert payload["data"]["next"]["info_command"] == "smolvm sandbox info project-spacex"
 
     @patch("smolvm.facade.platform.machine", return_value="x86_64")
     @patch("smolvm.facade.build_seed_iso")
@@ -905,6 +908,7 @@ class TestCliCreate:
 
         ret = main(
             [
+                "sandbox",
                 "create",
                 "--name",
                 "project-spacex",
@@ -949,7 +953,7 @@ class TestCliCreate:
         vm.info.network.ssh_host_port = 2200
         mock_vm_cls.return_value = vm
 
-        ret = main(["create", "--os", "alpine", "--json"])
+        ret = main(["sandbox", "create", "--os", "alpine", "--json"])
 
         assert ret == 0
         mock_build_auto_config.assert_called_once_with(
@@ -978,7 +982,7 @@ class TestCliCreate:
         mock_build_auto_config.return_value = (MagicMock(vm_id="project-spacex"), "/tmp/id_ed25519")
         mock_vm_cls.side_effect = Exception("VM 'project-spacex' already exists")
 
-        ret = main(["create", "--name", "project-spacex"])
+        ret = main(["sandbox", "create", "--name", "project-spacex"])
 
         assert ret == 1
         assert "already exists" in capsys.readouterr().err
@@ -992,7 +996,7 @@ class TestCliCreate:
         """Invalid VM IDs should be reported to the user."""
         mock_build_auto_config.side_effect = Exception("1 validation error for VMConfig")
 
-        ret = main(["create", "--name", "Project SpaceX"])
+        ret = main(["sandbox", "create", "--name", "Project SpaceX"])
 
         assert ret == 1
         assert "validation error" in capsys.readouterr().err
@@ -1006,7 +1010,7 @@ class TestCliCreate:
         """Image build failures should surface actionable output."""
         mock_build_auto_config.side_effect = Exception("Docker is required to build images")
 
-        ret = main(["create", "--name", "project-spacex"])
+        ret = main(["sandbox", "create", "--name", "project-spacex"])
 
         assert ret == 1
         assert "Docker is required" in capsys.readouterr().err
@@ -1015,29 +1019,34 @@ class TestCliCreate:
         self,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Argparse should reject unsupported guest OS values."""
-        with pytest.raises(SystemExit) as exc_info:
-            main(["create", "--os", "fedora"])
+        """Click should reject unsupported guest OS values."""
+        ret = main(["sandbox", "create", "--os", "fedora"])
 
-        assert exc_info.value.code == 2
-        assert "invalid choice" in capsys.readouterr().err
+        assert ret == 2
+        assert "Invalid value for '--os'" in capsys.readouterr().err
 
 
 class TestCliCreateImage:
-    """Tests for `smolvm create --image`."""
+    """Tests for `smolvm sandbox create --image`."""
 
-    def test_image_flag_parsed(self) -> None:
-        """--image flag should be recognized by the parser."""
-        parser = build_parser()
-        args = parser.parse_args(["create", "--image", "s3://bucket/images/test/"])
+    @patch("smolvm.cli.main._run_create", return_value=0)
+    def test_image_flag_parsed(self, mock_run_create: MagicMock) -> None:
+        """--image flag should be wired into the create handler."""
+        ret = main(["sandbox", "create", "--image", "s3://bucket/images/test/"])
+
+        assert ret == 0
+        args = mock_run_create.call_args.args[0]
         assert args.image == "s3://bucket/images/test/"
         assert args.os is None
 
-    def test_image_and_os_parsed_together(self) -> None:
+    @patch("smolvm.cli.main._run_create", return_value=0)
+    def test_image_and_os_parsed_together(self, mock_run_create: MagicMock) -> None:
         """--image and --os now both parse (Windows guests need both); the
         facade rejects illegal combos at runtime with a clearer message."""
-        parser = build_parser()
-        args = parser.parse_args(["create", "--image", "s3://bucket/img/", "--os", "alpine"])
+        ret = main(["sandbox", "create", "--image", "s3://bucket/img/", "--os", "alpine"])
+
+        assert ret == 0
+        args = mock_run_create.call_args.args[0]
         assert args.image == "s3://bucket/img/"
         assert args.os == "alpine"
 
@@ -1046,16 +1055,17 @@ class TestCliCreateImage:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """S3 image + --os surfaces a one-sentence CLI error."""
-        ret = main(["create", "--image", "s3://bucket/img/", "--os", "alpine"])
+        ret = main(["sandbox", "create", "--image", "s3://bucket/img/", "--os", "alpine"])
         assert ret == 1
         err = capsys.readouterr().err
         assert "--image (S3) and --os are mutually exclusive" in err
 
-    def test_image_with_name_and_memory(self) -> None:
+    @patch("smolvm.cli.main._run_create", return_value=0)
+    def test_image_with_name_and_memory(self, mock_run_create: MagicMock) -> None:
         """--image should work alongside --name, --memory, and --disk-size."""
-        parser = build_parser()
-        args = parser.parse_args(
+        ret = main(
             [
+                "sandbox",
                 "create",
                 "--image",
                 "s3://bucket/img/",
@@ -1067,6 +1077,9 @@ class TestCliCreateImage:
                 "2048",
             ]
         )
+
+        assert ret == 0
+        args = mock_run_create.call_args.args[0]
         assert args.image == "s3://bucket/img/"
         assert args.name == "my-vm"
         assert args.memory_mib == 1024
@@ -1079,6 +1092,7 @@ class TestCliCreateImage:
         """--disk-size has no effect on prebuilt S3 images and must be rejected."""
         ret = main(
             [
+                "sandbox",
                 "create",
                 "--image",
                 "s3://bucket/img/",
@@ -1093,15 +1107,16 @@ class TestCliCreateImage:
 
 
 class TestCliCreateWindows:
-    """Tests for `smolvm create --os windows` routing."""
+    """Tests for `smolvm sandbox create --os windows` routing."""
 
     def test_windows_backend_explicit_firecracker_rejected(
         self,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """`smolvm create --os windows --backend firecracker` fails cleanly."""
+        """`smolvm sandbox create --os windows --backend firecracker` fails cleanly."""
         ret = main(
             [
+                "sandbox",
                 "create",
                 "--os",
                 "windows",
@@ -1123,6 +1138,7 @@ class TestCliCreateWindows:
         """libkrun + Windows also fails with the same shape of error."""
         ret = main(
             [
+                "sandbox",
                 "create",
                 "--os",
                 "windows",
@@ -1140,8 +1156,8 @@ class TestCliCreateWindows:
         self,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """`smolvm create --os windows` (no --image) fires the facade error."""
-        ret = main(["create", "--os", "windows"])
+        """`smolvm sandbox create --os windows` (no --image) fires the facade error."""
+        ret = main(["sandbox", "create", "--os", "windows"])
         assert ret == 1
         err = capsys.readouterr().err
         assert "Windows guests need a pre-installed disk image" in err
@@ -1171,6 +1187,7 @@ class TestCliCreateWindows:
 
         ret = main(
             [
+                "sandbox",
                 "create",
                 "--name",
                 "win-vm-1",
@@ -1194,14 +1211,16 @@ class TestCliCreateWindows:
             vm_name="win-vm-1",
         )
 
+    @patch("smolvm.cli.main._run_create", return_value=0)
     def test_windows_with_explicit_backend_qemu_is_accepted(
         self,
+        mock_run_create: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """`--os windows --backend qemu` parses without error (no auto-pick conflict)."""
-        parser = build_parser()
-        args = parser.parse_args(
+        """`--os windows --backend qemu` parses without error."""
+        ret = main(
             [
+                "sandbox",
                 "create",
                 "--os",
                 "windows",
@@ -1211,6 +1230,9 @@ class TestCliCreateWindows:
                 "qemu",
             ]
         )
+
+        assert ret == 0
+        args = mock_run_create.call_args.args[0]
         assert args.os == "windows"
         assert args.backend == "qemu"
 
@@ -1220,17 +1242,14 @@ class TestCliWindowsBuildImage:
 
     def test_help_is_listed(self) -> None:
         """`smolvm windows --help` advertises the build-image verb."""
-        parser = build_parser()
-        # Argparse raises SystemExit(0) on --help.
-        with pytest.raises(SystemExit):
-            parser.parse_args(["windows", "--help"])
+        assert main(["windows", "--help"]) == 0
 
-    def test_build_image_flag_parsing(self, tmp_path: Path) -> None:
-        parser = build_parser()
+    @patch("smolvm.cli.main._run_windows_build_image", return_value=0)
+    def test_build_image_flag_parsing(self, mock_run_windows: MagicMock, tmp_path: Path) -> None:
         win = tmp_path / "Win11.iso"
         virtio = tmp_path / "virtio-win.iso"
         out = tmp_path / "win11.qcow2"
-        args = parser.parse_args(
+        ret = main(
             [
                 "windows",
                 "build-image",
@@ -1254,8 +1273,9 @@ class TestCliWindowsBuildImage:
                 "1200",
             ]
         )
-        assert args.command == "windows"
-        assert args.windows_action == "build-image"
+
+        assert ret == 0
+        args = mock_run_windows.call_args.args[0]
         assert args.windows_iso == str(win)
         assert args.virtio_win_iso == str(virtio)
         assert args.output_qcow2 == str(out)
@@ -1270,10 +1290,9 @@ class TestCliWindowsBuildImage:
         self,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Missing required args → argparse exits with code 2."""
-        with pytest.raises(SystemExit) as exc_info:
-            main(["windows", "build-image", "--iso", "/tmp/win.iso"])
-        assert exc_info.value.code == 2
+        """Missing required args returns Click usage exit code 2."""
+        ret = main(["windows", "build-image", "--iso", "/tmp/win.iso"])
+        assert ret == 2
         err = capsys.readouterr().err
         assert "--virtio-win-iso" in err or "--output" in err
 
@@ -1358,12 +1377,12 @@ class TestCliWindowsBuildImage:
         mock_builder.build.assert_called_once()
         out_text = capsys.readouterr().out
         assert '"ok": true' in out_text
-        assert '"command": "windows build-image"' in out_text
+        assert '"command": "windows.build-image"' in out_text
         assert '"output_qcow2"' in out_text
 
 
 class TestCliStop:
-    """Tests for `smolvm stop`."""
+    """Tests for `smolvm sandbox stop`."""
 
     @patch("smolvm.facade.SmolVM")
     def test_stop_success(
@@ -1371,12 +1390,12 @@ class TestCliStop:
         mock_vm_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm stop` should stop an existing VM and report the result."""
+        """`smolvm sandbox stop` should stop an existing VM and report the result."""
         vm = MagicMock()
         vm.vm_id = "vm001"
         mock_vm_cls.from_id.return_value = vm
 
-        ret = main(["stop", "vm001", "--timeout", "7"])
+        ret = main(["sandbox", "stop", "vm001", "--timeout", "7"])
 
         assert ret == 0
         mock_vm_cls.from_id.assert_called_once_with("vm001")
@@ -1392,16 +1411,16 @@ class TestCliStop:
         mock_vm_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm stop --json` should emit the shared envelope."""
+        """`smolvm sandbox stop --json` should emit the shared envelope."""
         vm = MagicMock()
         vm.vm_id = "vm001"
         mock_vm_cls.from_id.return_value = vm
 
-        ret = main(["stop", "vm001", "--json"])
+        ret = main(["sandbox", "stop", "vm001", "--json"])
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["command"] == "stop"
+        assert payload["command"] == "sandbox.stop"
         assert payload["ok"] is True
         assert payload["data"]["vm"]["name"] == "vm001"
         assert payload["data"]["vm"]["status"] == "stopped"
@@ -1415,14 +1434,14 @@ class TestCliStop:
         """Missing VMs should surface a clean error."""
         mock_vm_cls.from_id.side_effect = Exception("VM 'missing' not found")
 
-        ret = main(["stop", "missing"])
+        ret = main(["sandbox", "stop", "missing"])
 
         assert ret == 1
         assert "VM 'missing' not found" in capsys.readouterr().err
 
 
 class TestCliPauseResume:
-    """Tests for `smolvm pause` and `smolvm resume`."""
+    """Tests for `smolvm sandbox pause` and `smolvm sandbox resume`."""
 
     @patch("smolvm.facade.SmolVM")
     def test_pause_success(
@@ -1430,12 +1449,12 @@ class TestCliPauseResume:
         mock_vm_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm pause` should pause an existing VM and report the result."""
+        """`smolvm sandbox pause` should pause an existing VM and report the result."""
         vm = MagicMock()
         vm.vm_id = "vm001"
         mock_vm_cls.from_id.return_value = vm
 
-        ret = main(["pause", "vm001"])
+        ret = main(["sandbox", "pause", "vm001"])
 
         assert ret == 0
         mock_vm_cls.from_id.assert_called_once_with("vm001")
@@ -1451,23 +1470,23 @@ class TestCliPauseResume:
         mock_vm_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm resume --json` should emit the shared envelope."""
+        """`smolvm sandbox resume --json` should emit the shared envelope."""
         vm = MagicMock()
         vm.vm_id = "vm001"
         mock_vm_cls.from_id.return_value = vm
 
-        ret = main(["resume", "vm001", "--json"])
+        ret = main(["sandbox", "resume", "vm001", "--json"])
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["command"] == "resume"
+        assert payload["command"] == "sandbox.resume"
         assert payload["ok"] is True
         assert payload["data"]["vm"]["name"] == "vm001"
         assert payload["data"]["vm"]["status"] == "running"
 
 
 class TestCliVmStart:
-    """Tests for `smolvm start`."""
+    """Tests for `smolvm sandbox start`."""
 
     @patch("smolvm.facade.SmolVM")
     def test_start_success(
@@ -1475,12 +1494,12 @@ class TestCliVmStart:
         mock_vm_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm start` should start a stopped VM and report the result."""
+        """`smolvm sandbox start` should start a stopped VM and report the result."""
         vm = MagicMock()
         vm.vm_id = "vm001"
         mock_vm_cls.from_id.return_value = vm
 
-        ret = main(["start", "vm001"])
+        ret = main(["sandbox", "start", "vm001"])
 
         assert ret == 0
         mock_vm_cls.from_id.assert_called_once_with("vm001")
@@ -1496,16 +1515,16 @@ class TestCliVmStart:
         mock_vm_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm start --json` should emit the shared envelope."""
+        """`smolvm sandbox start --json` should emit the shared envelope."""
         vm = MagicMock()
         vm.vm_id = "vm001"
         mock_vm_cls.from_id.return_value = vm
 
-        ret = main(["start", "vm001", "--json"])
+        ret = main(["sandbox", "start", "vm001", "--json"])
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["command"] == "start"
+        assert payload["command"] == "sandbox.start"
         assert payload["ok"] is True
         assert payload["data"]["vm"]["name"] == "vm001"
         assert payload["data"]["vm"]["status"] == "running"
@@ -1515,12 +1534,12 @@ class TestCliVmStart:
         self,
         mock_vm_cls: MagicMock,
     ) -> None:
-        """`smolvm start --boot-timeout` should forward the value to the facade."""
+        """`smolvm sandbox start --boot-timeout` should forward the value to the facade."""
         vm = MagicMock()
         vm.vm_id = "vm001"
         mock_vm_cls.from_id.return_value = vm
 
-        ret = main(["start", "vm001", "--boot-timeout", "75"])
+        ret = main(["sandbox", "start", "vm001", "--boot-timeout", "75"])
 
         assert ret == 0
         vm.start.assert_called_once_with(boot_timeout=75.0)
@@ -1655,7 +1674,7 @@ class TestCliSnapshot:
 
 
 class TestCliSSH:
-    """Tests for `smolvm ssh`."""
+    """Tests for `smolvm sandbox ssh`."""
 
     @patch("smolvm.cli.main.subprocess.run")
     @patch("smolvm.facade.SmolVM")
@@ -1664,7 +1683,7 @@ class TestCliSSH:
         mock_vm_cls: MagicMock,
         mock_run: MagicMock,
     ) -> None:
-        """`smolvm ssh` should attach to a running VM without restarting it."""
+        """`smolvm sandbox ssh` should attach to a running VM without restarting it."""
         vm = MagicMock()
         vm.status = VMState.RUNNING
         vm._ssh_attach_command.return_value = [
@@ -1684,6 +1703,7 @@ class TestCliSSH:
 
         ret = main(
             [
+                "sandbox",
                 "ssh",
                 "vm001",
                 "--ssh-user",
@@ -1716,19 +1736,19 @@ class TestCliSSH:
         mock_run: MagicMock,
         status: VMState,
     ) -> None:
-        """`smolvm ssh` should auto-start attachable non-running VMs."""
+        """`smolvm sandbox ssh` should auto-start attachable non-running VMs."""
         vm = MagicMock()
         vm.status = status
-        vm._ssh_attach_command.return_value = ["ssh", "root@127.0.0.1"]
+        vm._ssh_attach_command.return_value = ["sandbox", "ssh", "root@127.0.0.1"]
         mock_vm_cls.from_id.return_value = vm
         mock_run.return_value = MagicMock(returncode=0)
 
-        ret = main(["ssh", "vm001"])
+        ret = main(["sandbox", "ssh", "vm001"])
 
         assert ret == 0
         vm.start.assert_called_once_with(boot_timeout=30.0)
         vm.wait_for_ssh.assert_called_once_with(timeout=30.0)
-        mock_run.assert_called_once_with(["ssh", "root@127.0.0.1"], check=False)
+        mock_run.assert_called_once_with(["sandbox", "ssh", "root@127.0.0.1"], check=False)
 
     @patch("smolvm.cli.main.subprocess.run")
     @patch("smolvm.facade.SmolVM")
@@ -1737,20 +1757,20 @@ class TestCliSSH:
         mock_vm_cls: MagicMock,
         mock_run: MagicMock,
     ) -> None:
-        """`smolvm ssh` should resume paused VMs before attaching."""
+        """`smolvm sandbox ssh` should resume paused VMs before attaching."""
         vm = MagicMock()
         vm.status = VMState.PAUSED
-        vm._ssh_attach_command.return_value = ["ssh", "root@127.0.0.1"]
+        vm._ssh_attach_command.return_value = ["sandbox", "ssh", "root@127.0.0.1"]
         mock_vm_cls.from_id.return_value = vm
         mock_run.return_value = MagicMock(returncode=0)
 
-        ret = main(["ssh", "vm001"])
+        ret = main(["sandbox", "ssh", "vm001"])
 
         assert ret == 0
         vm.resume.assert_called_once_with()
         vm.start.assert_not_called()
         vm.wait_for_ssh.assert_called_once_with(timeout=30.0)
-        mock_run.assert_called_once_with(["ssh", "root@127.0.0.1"], check=False)
+        mock_run.assert_called_once_with(["sandbox", "ssh", "root@127.0.0.1"], check=False)
 
     @patch("smolvm.cli.main.subprocess.run")
     @patch("smolvm.facade.SmolVM")
@@ -1765,7 +1785,7 @@ class TestCliSSH:
         vm.status = VMState.ERROR
         mock_vm_cls.from_id.return_value = vm
 
-        ret = main(["ssh", "vm001"])
+        ret = main(["sandbox", "ssh", "vm001"])
 
         assert ret == 1
         vm.start.assert_not_called()
@@ -1785,7 +1805,7 @@ class TestCliSSH:
         """Missing VMs should surface a clean error."""
         mock_vm_cls.from_id.side_effect = Exception("VM 'missing' not found")
 
-        ret = main(["ssh", "missing"])
+        ret = main(["sandbox", "ssh", "missing"])
 
         assert ret == 1
         mock_run.assert_not_called()
@@ -1802,10 +1822,10 @@ class TestCliSSH:
         """Missing host ssh binary should produce an actionable error."""
         vm = MagicMock()
         vm.status = VMState.RUNNING
-        vm._ssh_attach_command.return_value = ["ssh", "root@127.0.0.1"]
+        vm._ssh_attach_command.return_value = ["sandbox", "ssh", "root@127.0.0.1"]
         mock_vm_cls.from_id.return_value = vm
 
-        ret = main(["ssh", "vm001"])
+        ret = main(["sandbox", "ssh", "vm001"])
 
         assert ret == 1
         assert "openssh-client" in capsys.readouterr().err
@@ -1821,11 +1841,11 @@ class TestCliSSH:
         """Nonzero ssh child exit codes should be returned unchanged."""
         vm = MagicMock()
         vm.status = VMState.RUNNING
-        vm._ssh_attach_command.return_value = ["ssh", "root@127.0.0.1"]
+        vm._ssh_attach_command.return_value = ["sandbox", "ssh", "root@127.0.0.1"]
         mock_vm_cls.from_id.return_value = vm
         mock_run.return_value = MagicMock(returncode=255)
 
-        ret = main(["ssh", "vm001"])
+        ret = main(["sandbox", "ssh", "vm001"])
 
         assert ret == 255
 
@@ -1833,7 +1853,7 @@ class TestCliSSH:
 class TestCliDoctor:
     """Tests for `smolvm doctor`."""
 
-    @patch("smolvm.cli.main.run_doctor")
+    @patch("smolvm.cli.commands.app.run_doctor")
     def test_doctor_default(self, mock_run_doctor: MagicMock) -> None:
         """Default doctor invocation should call run_doctor with defaults."""
         mock_run_doctor.return_value = 0
@@ -1847,7 +1867,7 @@ class TestCliDoctor:
             strict=False,
         )
 
-    @patch("smolvm.cli.main.run_doctor")
+    @patch("smolvm.cli.commands.app.run_doctor")
     def test_doctor_with_flags(self, mock_run_doctor: MagicMock) -> None:
         """Doctor flags should be forwarded to run_doctor."""
         mock_run_doctor.return_value = 1
@@ -1880,21 +1900,20 @@ class TestCliSetup:
         assert ret == 0
         mock_run_setup.assert_called_once()
 
-    @patch("smolvm.cli.main.platform.system", return_value="Darwin")
+    @patch("smolvm.cli.commands.options.platform.system", return_value="Darwin")
     def test_setup_rejects_linux_only_flags_on_macos(
         self,
         mock_platform_system: MagicMock,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Linux-only setup flags should fail at argparse time on macOS."""
-        with pytest.raises(SystemExit) as exc_info:
-            main(["setup", "--runtime-user", "foo"])
+        """Linux-only setup flags should fail at Click parse time on macOS."""
+        ret = main(["setup", "--runtime-user", "foo"])
 
-        assert exc_info.value.code == 2
+        assert ret == 2
         assert mock_platform_system.called
         err = capsys.readouterr().err
         assert "only supported on Linux" in err
-        assert "Firecracker/KVM" in err
+        assert "smolvm setup" in err
 
     @patch("smolvm.cli.main._run_setup")
     @patch("smolvm.cli.main.platform.system", return_value="Darwin")
@@ -1911,29 +1930,27 @@ class TestCliSetup:
         assert ret == 0
         mock_run_setup.assert_called_once()
 
-    @patch("smolvm.cli.main.platform.system", return_value="Windows")
+    @patch("smolvm.cli.commands.options.platform.system", return_value="Windows")
     def test_setup_rejects_linux_only_flags_on_unsupported_os(
         self,
         mock_platform_system: MagicMock,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """Linux-only flags should be rejected on any non-Linux platform."""
-        with pytest.raises(SystemExit) as exc_info:
-            main(["setup", "--no-configure-runtime"])
+        ret = main(["setup", "--no-configure-runtime"])
 
-        assert exc_info.value.code == 2
+        assert ret == 2
         assert "only supported on Linux" in capsys.readouterr().err
 
-    @patch("smolvm.cli.main.platform.system", return_value="Darwin")
+    @patch("smolvm.cli.commands.options.platform.system", return_value="Darwin")
     def test_setup_help_hides_linux_only_flags_on_macos(
         self,
         mock_platform_system: MagicMock,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """Linux-only flags should not appear in ``--help`` on macOS."""
-        with pytest.raises(SystemExit) as exc_info:
-            main(["setup", "--help"])
-        assert exc_info.value.code == 0
+        ret = main(["setup", "--help"])
+        assert ret == 0
 
         help_text = capsys.readouterr().out
 
@@ -1944,17 +1961,16 @@ class TestCliSetup:
         # Cross-platform flags should still appear
         assert "--skip-deps" in help_text
 
-    @patch("smolvm.cli.main.platform.system", return_value="Linux")
+    @patch("smolvm.cli.commands.options.platform.system", return_value="Linux")
     def test_setup_remove_runtime_config_conflicts_with_other_modes(
         self,
         mock_platform_system: MagicMock,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Removal mode should reject provisioning flags via argparse."""
-        with pytest.raises(SystemExit) as exc_info:
-            main(["setup", "--remove-runtime-config", "--with-docker"])
+        """Removal mode should reject provisioning flags via Click usage errors."""
+        ret = main(["setup", "--remove-runtime-config", "--with-docker"])
 
-        assert exc_info.value.code == 2
+        assert ret == 2
         assert mock_platform_system.called
         assert "not allowed with --with-docker" in capsys.readouterr().err
 
@@ -2015,7 +2031,7 @@ class TestCliSetup:
             Path(out) / "system-setup-macos.sh"
         ).is_file()
 
-    @patch("smolvm.cli.main.maybe_print_update_notice")
+    @patch("smolvm.cli.commands.app.maybe_print_update_notice")
     @patch("smolvm.cli.main.platform.system", return_value="Linux")
     @patch("smolvm.host.setup.run_setup")
     def test_setup_assets_dir_suppresses_update_notice(
@@ -2031,7 +2047,7 @@ class TestCliSetup:
         mock_notice.assert_called_once()
         assert mock_notice.call_args.kwargs.get("json_output") is True
 
-    @patch("smolvm.cli.main.maybe_print_update_notice")
+    @patch("smolvm.cli.commands.app.maybe_print_update_notice")
     @patch("smolvm.cli.main.platform.system", return_value="Linux")
     @patch("smolvm.host.setup.run_setup")
     def test_setup_without_assets_dir_does_not_suppress_update_notice(
@@ -2421,7 +2437,7 @@ class TestCliUi:
 
 
 class TestCliList:
-    """Tests for `smolvm list`."""
+    """Tests for `smolvm sandbox list`."""
 
     @pytest.fixture
     def mock_sdk_cls(self) -> MagicMock:
@@ -2438,10 +2454,10 @@ class TestCliList:
         mock_sdk_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm list` with no running VMs should print a friendly message."""
+        """`smolvm sandbox list` with no running VMs should print a friendly message."""
         mock_sdk_cls.return_value.list_vms.return_value = []
 
-        ret = main(["list"])
+        ret = main(["sandbox", "list"])
 
         assert ret == 0
         assert "No running VMs found." in capsys.readouterr().out
@@ -2453,11 +2469,11 @@ class TestCliList:
         mock_sdk_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm list` should print a Rich table with name, status, and pid."""
+        """`smolvm sandbox list` should print a Rich table with name, status, and pid."""
         vms = [_make_vm_info("vm-abc123", VMState.RUNNING, "172.16.0.2", 2200, 12345)]
         mock_sdk_cls.return_value.list_vms.return_value = vms
 
-        ret = main(["list"])
+        ret = main(["sandbox", "list"])
 
         assert ret == 0
         out = capsys.readouterr().out
@@ -2476,14 +2492,14 @@ class TestCliList:
         mock_sdk_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm list --all` should include stopped VMs."""
+        """`smolvm sandbox list --all` should include stopped VMs."""
         vms = [
             _make_vm_info("vm-abc123", VMState.RUNNING, "172.16.0.2", 2200, 12345),
             _make_vm_info("vm-def456", VMState.STOPPED, "172.16.0.3", None, None),
         ]
         mock_sdk_cls.return_value.list_vms.return_value = vms
 
-        ret = main(["list", "--all"])
+        ret = main(["sandbox", "list", "--all"])
 
         assert ret == 0
         out = capsys.readouterr().out
@@ -2498,12 +2514,12 @@ class TestCliList:
         mock_sdk_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm list` should show '-' for a missing PID."""
+        """`smolvm sandbox list` should show '-' for a missing PID."""
         vms = [_make_vm_info("vm-abc123", VMState.RUNNING, "", None, None)]
         vms[0].network = None
         mock_sdk_cls.return_value.list_vms.return_value = vms
 
-        ret = main(["list"])
+        ret = main(["sandbox", "list"])
 
         assert ret == 0
         out = capsys.readouterr().out
@@ -2517,10 +2533,10 @@ class TestCliList:
         self,
         mock_sdk_cls: MagicMock,
     ) -> None:
-        """`smolvm list --status running` passes status to list_vms."""
+        """`smolvm sandbox list --status running` passes status to list_vms."""
         mock_sdk_cls.return_value.list_vms.return_value = []
 
-        ret = main(["list", "--status", "running"])
+        ret = main(["sandbox", "list", "--status", "running"])
 
         assert ret == 0
         mock_sdk_cls.return_value.list_vms.assert_called_once_with(status=VMState.RUNNING)
@@ -2530,16 +2546,16 @@ class TestCliList:
         mock_sdk_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm list --json` should emit structured data for running VMs."""
+        """`smolvm sandbox list --json` should emit structured data for running VMs."""
         mock_sdk_cls.return_value.list_vms.return_value = [
             _make_vm_info("vm-abc123", VMState.RUNNING, "172.16.0.2", 2200, 12345),
         ]
 
-        ret = main(["list", "--json"])
+        ret = main(["sandbox", "list", "--json"])
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["command"] == "list"
+        assert payload["command"] == "sandbox.list"
         assert payload["ok"] is True
         assert payload["data"]["filters"] == {"all": False, "status": "running"}
         assert payload["data"]["vms"] == [
@@ -2559,10 +2575,10 @@ class TestCliList:
         mock_sdk_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm list --json` should emit an empty JSON array when nothing matches."""
+        """`smolvm sandbox list --json` should emit an empty JSON array when nothing matches."""
         mock_sdk_cls.return_value.list_vms.return_value = []
 
-        ret = main(["list", "--json"])
+        ret = main(["sandbox", "list", "--json"])
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
@@ -2575,13 +2591,13 @@ class TestCliList:
         mock_sdk_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm list --all --json` should emit all VM rows."""
+        """`smolvm sandbox list --all --json` should emit all VM rows."""
         mock_sdk_cls.return_value.list_vms.return_value = [
             _make_vm_info("vm-abc123", VMState.RUNNING, "172.16.0.2", 2200, 12345),
             _make_vm_info("vm-def456", VMState.STOPPED, "172.16.0.3", None, None),
         ]
 
-        ret = main(["list", "--all", "--json"])
+        ret = main(["sandbox", "list", "--all", "--json"])
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
@@ -2596,10 +2612,10 @@ class TestCliList:
         mock_sdk_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm list --status stopped` with no results shows filtered message."""
+        """`smolvm sandbox list --status stopped` with no results shows filtered message."""
         mock_sdk_cls.return_value.list_vms.return_value = []
 
-        ret = main(["list", "--status", "stopped"])
+        ret = main(["sandbox", "list", "--status", "stopped"])
 
         assert ret == 0
         assert "stopped" in capsys.readouterr().out
@@ -2609,10 +2625,10 @@ class TestCliList:
         mock_sdk_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm list` prints error and returns 1 on unexpected failure."""
+        """`smolvm sandbox list` prints error and returns 1 on unexpected failure."""
         mock_sdk_cls.return_value.list_vms.side_effect = RuntimeError("db unavailable")
 
-        ret = main(["list"])
+        ret = main(["sandbox", "list"])
 
         assert ret == 1
         assert "Error: db unavailable" in capsys.readouterr().err
@@ -2624,12 +2640,12 @@ class TestCliList:
         capsys: pytest.CaptureFixture,
         tmp_path: Path,
     ) -> None:
-        """`smolvm list` should keep listing VMs whose host mount is gone,
+        """`smolvm sandbox list` should keep listing VMs whose host mount is gone,
         and print a warning naming the missing path."""
         vm, missing = _make_vm_with_stale_mount(tmp_path)
         mock_sdk_cls.return_value.list_vms.return_value = [vm]
 
-        ret = main(["list"])
+        ret = main(["sandbox", "list"])
 
         # Rich may wrap long tmp paths across lines; flatten before asserting.
         out = capsys.readouterr().out.replace("\n", "")
@@ -2638,7 +2654,7 @@ class TestCliList:
         assert "Warnings:" in out
         assert str(missing) in out
         # The warning explains what to do, not just what's wrong.
-        assert "smolvm delete vm-abc123" in out
+        assert "smolvm sandbox delete vm-abc123" in out
 
     def test_list_warning_does_not_claim_running_sandbox_cannot_start(
         self,
@@ -2656,7 +2672,7 @@ class TestCliList:
         vm, _ = _make_vm_with_stale_mount(tmp_path, vm_id="sbx-running")
         mock_sdk_cls.return_value.list_vms.return_value = [vm]
 
-        ret = main(["list", "--json"])
+        ret = main(["sandbox", "list", "--json"])
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
@@ -2669,11 +2685,11 @@ class TestCliList:
         capsys: pytest.CaptureFixture,
         tmp_path: Path,
     ) -> None:
-        """`smolvm list --json` should expose stale mounts via `warnings`."""
+        """`smolvm sandbox list --json` should expose stale mounts via `warnings`."""
         vm, missing = _make_vm_with_stale_mount(tmp_path)
         mock_sdk_cls.return_value.list_vms.return_value = [vm]
 
-        ret = main(["list", "--json"])
+        ret = main(["sandbox", "list", "--json"])
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
@@ -2683,11 +2699,11 @@ class TestCliList:
         # what's wrong, the missing path, and how to recover.
         assert str(missing) in warnings[0]
         assert "missing" in warnings[0]
-        assert "smolvm delete vm-abc123" in warnings[0]
+        assert "smolvm sandbox delete vm-abc123" in warnings[0]
 
 
 class TestCliInfo:
-    """Tests for `smolvm info`."""
+    """Tests for `smolvm sandbox info`."""
 
     @pytest.fixture
     def mock_sdk_cls(self) -> MagicMock:
@@ -2734,7 +2750,7 @@ class TestCliInfo:
         tmp_path: Path,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm info <name>` should show the full details table."""
+        """`smolvm sandbox info <name>` should show the full details table."""
         rootfs = tmp_path / "ubuntu-noble-minimal-qemu-x86_64" / "rootfs.qcow2"
         rootfs.parent.mkdir(parents=True)
         rootfs.write_bytes(b"\0" * (5 * 1024 * 1024))  # 5 MiB
@@ -2742,7 +2758,7 @@ class TestCliInfo:
             status=VMState.STOPPED, rootfs_path=rootfs
         )
 
-        ret = main(["info", "sbx-pauling"])
+        ret = main(["sandbox", "info", "sbx-pauling"])
 
         assert ret == 0
         out = capsys.readouterr().out
@@ -2775,7 +2791,7 @@ class TestCliInfo:
                 "memory_used": 312,
             }
 
-            ret = main(["info", "sbx-pauling"])
+            ret = main(["sandbox", "info", "sbx-pauling"])
 
         assert ret == 0
         out = capsys.readouterr().out
@@ -2795,7 +2811,7 @@ class TestCliInfo:
         with patch("smolvm.cli.main._query_live_vm_info") as mock_query:
             mock_query.return_value = {}
 
-            ret = main(["info", "sbx-pauling"])
+            ret = main(["sandbox", "info", "sbx-pauling"])
 
         assert ret == 0
         out = capsys.readouterr().out
@@ -2808,12 +2824,12 @@ class TestCliInfo:
         mock_sdk_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm info` should render '-' when the VM has no network."""
+        """`smolvm sandbox info` should render '-' when the VM has no network."""
         mock_sdk_cls.return_value.state.get_vm.return_value = self._make_info_vm(
             status=VMState.STOPPED, guest_ip=None, ssh_host_port=None, pid=None
         )
 
-        ret = main(["info", "sbx-pauling"])
+        ret = main(["sandbox", "info", "sbx-pauling"])
 
         assert ret == 0
         out = capsys.readouterr().out
@@ -2826,7 +2842,7 @@ class TestCliInfo:
         tmp_path: Path,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm info --json` should emit a structured envelope."""
+        """`smolvm sandbox info --json` should emit a structured envelope."""
         rootfs = tmp_path / "alpine-virt" / "rootfs.ext4"
         rootfs.parent.mkdir(parents=True)
         rootfs.write_bytes(b"\0" * (3 * 1024 * 1024))  # 3 MiB
@@ -2834,11 +2850,11 @@ class TestCliInfo:
             status=VMState.STOPPED, rootfs_path=rootfs
         )
 
-        ret = main(["info", "sbx-pauling", "--json"])
+        ret = main(["sandbox", "info", "sbx-pauling", "--json"])
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["command"] == "info"
+        assert payload["command"] == "sandbox.info"
         assert payload["ok"] is True
         assert payload["data"]["vm"] == {
             "name": "sbx-pauling",
@@ -2859,10 +2875,10 @@ class TestCliInfo:
         mock_sdk_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm info` returns 1 and an error message when the VM is missing."""
+        """`smolvm sandbox info` returns 1 and an error message when the VM is missing."""
         mock_sdk_cls.return_value.state.get_vm.side_effect = RuntimeError("VM 'ghost' not found")
 
-        ret = main(["info", "ghost"])
+        ret = main(["sandbox", "info", "ghost"])
 
         assert ret == 1
         assert "VM 'ghost' not found" in capsys.readouterr().err
@@ -2882,7 +2898,7 @@ class TestCliInfo:
             status=VMState.STOPPED, rootfs_path=rootfs
         )
         with patch("smolvm.facade._qcow2_virtual_size_mib", return_value=8192) as mock_qsize:
-            ret = main(["info", "sbx-pauling", "--json"])
+            ret = main(["sandbox", "info", "sbx-pauling", "--json"])
 
         assert ret == 0
         mock_qsize.assert_called_once_with(rootfs)
@@ -2905,26 +2921,26 @@ class TestCliStart:
 
     def test_top_level_help_lists_known_presets(self, capsys: pytest.CaptureFixture) -> None:
         """`smolvm --help` should list every registered preset as a top-level command."""
-        with pytest.raises(SystemExit):
-            main(["--help"])
+        ret = main(["--help"])
+        assert ret == 0
         out = capsys.readouterr().out
         assert "codex" in out
-        assert "claude-code" in out
+        assert "claude" in out
+        assert "claude-code" not in out
 
     def test_preset_help_lists_start_action(self, capsys: pytest.CaptureFixture) -> None:
         """`smolvm codex --help` should list the `start` action."""
-        with pytest.raises(SystemExit):
-            main(["codex", "--help"])
+        ret = main(["codex", "--help"])
+        assert ret == 0
         out = capsys.readouterr().out
         assert "start" in out
 
     def test_unknown_preset_errors(self, capsys: pytest.CaptureFixture) -> None:
-        """An unknown preset name should fail at argparse-level."""
-        with pytest.raises(SystemExit):
-            main(["nonexistent-agent", "start"])
+        """An unknown preset name should fail at Click parse time."""
+        ret = main(["nonexistent-agent", "start"])
+        assert ret == 2
         err = capsys.readouterr().err
-        # argparse produces "invalid choice" for unknown subcommand
-        assert "invalid choice" in err or "argument command" in err
+        assert "No such command" in err
 
     def test_launch_snippet_runs_when_env_file_missing(self, tmp_path: Path) -> None:
         """The remote command built by `_exec_launch_command` must exec the
@@ -2940,7 +2956,7 @@ class TestCliStart:
 
         class _StubSshVm:
             def _ssh_attach_command(self) -> list[str]:
-                return ["ssh", "-p", "2200", "root@127.0.0.1"]
+                return ["sandbox", "ssh", "-p", "2200", "root@127.0.0.1"]
 
         def fake_run(*args: object, **_kwargs: object) -> MagicMock:
             # Tolerate future kwargs (e.g. text=, env=) on the real
@@ -2982,7 +2998,7 @@ class TestCliStart:
 
         class _StubSshVm:
             def _ssh_attach_command(self) -> list[str]:
-                return ["ssh", "-p", "2200", "root@127.0.0.1"]
+                return ["sandbox", "ssh", "-p", "2200", "root@127.0.0.1"]
 
         def fake_run(*args: object, **_kwargs: object) -> MagicMock:
             captured.append(args[0])  # type: ignore[arg-type]
@@ -3016,34 +3032,23 @@ class TestCliStart:
         assert completed.returncode == 0
         assert str(local_bin / "claude") in completed.stdout
 
-    def test_claude_alias_resolves_to_claude_code(self) -> None:
-        """`smolvm claude start` should be accepted as an alias for
-        `smolvm claude-code start` — first-time users keep typing the
-        short name and the previous behaviour was an unfriendly
-        argparse 'invalid choice' error."""
-        parser = build_parser()
-        args = parser.parse_args(["claude", "start"])
-        # argparse stores whichever spelling the user typed in
-        # ``args.command``, but the canonical preset name (set via
-        # ``set_defaults``) is what the dispatch path looks up.
-        assert args.command == "claude"
-        assert args.preset_name == "claude-code"
-
-    def test_top_level_help_lists_claude_alias(self, capsys: pytest.CaptureFixture) -> None:
-        """The alias should appear in the top-level help so the
-        shorthand is discoverable, not a hidden trick."""
-        import re
-
-        with pytest.raises(SystemExit):
-            main(["--help"])
+    def test_top_level_help_lists_canonical_claude_only(
+        self,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """The public CLI should expose `claude`, not the old internal preset key."""
+        ret = main(["--help"])
+        assert ret == 0
         out = capsys.readouterr().out
-        # Must check 'claude' as a distinct token, not a substring of
-        # 'claude-code'. argparse renders the choices block as
-        # ``{a,b,claude-code,claude,...}`` so split on whitespace and the
-        # punctuation argparse uses there.
-        tokens = set(re.split(r"[\s{},]+", out))
-        assert "claude" in tokens
-        assert "claude-code" in tokens
+        assert "claude" in out
+        assert "claude-code" not in out
+
+    def test_old_claude_code_command_is_removed(self, capsys: pytest.CaptureFixture) -> None:
+        """The alpha redesign intentionally removes `claude-code` as a CLI command."""
+        ret = main(["claude-code", "start", "--help"])
+
+        assert ret == 2
+        assert "No such command" in capsys.readouterr().err
 
     @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.cli.main._apply_preset_with_progress")
@@ -3104,7 +3109,7 @@ class TestCliStart:
         assert "sbx-codex" in out
         assert "codex" in out
         assert "OPENAI_API_KEY" in out
-        assert "smolvm ssh sbx-codex" in out
+        assert "smolvm sandbox ssh sbx-codex" in out
 
     @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.presets.apply_preset")
@@ -3133,13 +3138,13 @@ class TestCliStart:
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["command"] == "start"
+        assert payload["command"] == "codex.start"
         assert payload["ok"] is True
         assert payload["data"]["vm"]["name"] == "sbx-1"
         assert payload["data"]["vm"]["os"] == "ubuntu"
         assert payload["data"]["preset"]["name"] == "codex"
         assert payload["data"]["preset"]["injected_env_keys"] == ["OPENAI_API_KEY"]
-        assert payload["data"]["next"]["ssh_command"] == "smolvm ssh sbx-1"
+        assert payload["data"]["next"]["ssh_command"] == "smolvm sandbox ssh sbx-1"
 
     @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.cli.main._apply_preset_with_progress")
@@ -3170,7 +3175,7 @@ class TestCliStart:
 
         ret = main(
             [
-                "claude-code",
+                "claude",
                 "start",
                 "--name",
                 "sbx-claude",
@@ -3209,7 +3214,7 @@ class TestCliStart:
 
         mock_is_published.side_effect = _published_only_for_alpine
 
-        ret = main(["claude-code", "start", "--os", "alpine", "--json"])
+        ret = main(["claude", "start", "--os", "alpine", "--json"])
 
         assert ret == 0
         mock_published_path.assert_called_once()
@@ -3242,7 +3247,7 @@ class TestCliStart:
             "injected_env_keys": [],
         }
 
-        ret = main(["claude-code", "start", "--name", "sbx-claude"])
+        ret = main(["claude", "start", "--name", "sbx-claude"])
 
         assert ret == 0
         kwargs = mock_build_auto_config.call_args.kwargs
@@ -3252,12 +3257,11 @@ class TestCliStart:
         self,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Argparse should reject unsupported --os values for preset start."""
-        with pytest.raises(SystemExit) as exc_info:
-            main(["codex", "start", "--os", "fedora"])
+        """Click should reject unsupported --os values for preset start."""
+        ret = main(["codex", "start", "--os", "fedora"])
 
-        assert exc_info.value.code == 2
-        assert "invalid choice" in capsys.readouterr().err
+        assert ret == 2
+        assert "Invalid value for '--os'" in capsys.readouterr().err
 
     @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.cli.main._apply_preset_with_progress")
@@ -3281,7 +3285,7 @@ class TestCliStart:
             "injected_env_keys": [],
         }
 
-        ret = main(["claude-code", "start", "--memory", "4096", "--disk-size", "16384"])
+        ret = main(["claude", "start", "--memory", "4096", "--disk-size", "16384"])
 
         assert ret == 0
         kwargs = mock_build_auto_config.call_args.kwargs
@@ -3416,7 +3420,7 @@ class TestCliStart:
         config = MagicMock(vm_id="sbx")
         mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
         vm = self._make_vm_mock("sbx")
-        vm._ssh_attach_command.return_value = ["ssh", "root@127.0.0.1"]
+        vm._ssh_attach_command.return_value = ["sandbox", "ssh", "root@127.0.0.1"]
         mock_vm_cls.return_value = vm
         mock_apply.return_value = {
             "preset": "codex",

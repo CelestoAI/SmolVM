@@ -34,7 +34,7 @@ from smolvm.host.manager import HostManager
 from smolvm.runtime.backends import BACKEND_FIRECRACKER, BACKEND_QEMU
 
 E2EBackend = Literal["qemu", "firecracker"]
-E2ETransport = Literal["ssh", "vsock"]
+E2ETransport = Literal["sandbox", "ssh", "vsock"]
 
 
 @dataclass(frozen=True, slots=True)

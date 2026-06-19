@@ -297,7 +297,7 @@ class TestVMInit:
         message = str(exc_info.value)
         assert "Ubuntu needs at least 4096 MiB for sandbox 'project spacex; rm -rf'" in message
         assert (
-            "smolvm create --name 'project spacex; rm -rf' --os ubuntu "
+            "smolvm sandbox create --name 'project spacex; rm -rf' --os ubuntu "
             "--backend qemu --disk-size 4096" in message
         )
 
@@ -838,7 +838,7 @@ class TestFromBootImage:
             backend="qemu",
         )
 
-        with pytest.raises(ValueError, match="smolvm create --name vm-mismatch --help"):
+        with pytest.raises(ValueError, match="smolvm sandbox create --name vm-mismatch --help"):
             SmolVM.from_image(image, vm_id="vm-mismatch", backend="firecracker")
 
     @patch("smolvm.facade.SmolVMManager")
@@ -2097,8 +2097,8 @@ class TestVMRun:
     ) -> None:
         """wait_for_ssh() without an explicit key should retry with ~/.smolvm/keys/id_ed25519.
 
-        Regression test for: smolvm ssh <name> failing with 'Authentication failed'
-        after smolvm create, because from_id() sets ssh_key_path=None but the VM
+        Regression test for: smolvm sandbox ssh <name> failing with 'Authentication failed'
+        after smolvm sandbox create, because from_id() sets ssh_key_path=None but the VM
         was provisioned with the default SmolVM key.
         """
         mock_network = MagicMock()

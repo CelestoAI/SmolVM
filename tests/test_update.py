@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 from unittest.mock import MagicMock, patch
 
@@ -101,14 +100,11 @@ class TestIsUvToolInstall:
 
 
 class TestRunUpdate:
-    def _args(self, *, check: bool = False, json_output: bool = False) -> argparse.Namespace:
-        return argparse.Namespace(check=check, json=json_output)
-
     def test_check_only_no_update(self, capsys: pytest.CaptureFixture[str]) -> None:
         with (
             patch("smolvm.cli.update._check_for_stable_update", return_value=("1.0.0", None)),
         ):
-            rc = run_update(self._args(check=True))
+            rc = run_update(check=True)
         assert rc == 0
         out = capsys.readouterr().out
         assert "up to date" in out
@@ -117,7 +113,7 @@ class TestRunUpdate:
         with (
             patch("smolvm.cli.update._check_for_stable_update", return_value=(None, None)),
         ):
-            rc = run_update(self._args(check=True))
+            rc = run_update(check=True)
         assert rc == 1
         err = capsys.readouterr().err
         assert "Could not determine" in err
@@ -127,7 +123,7 @@ class TestRunUpdate:
         with (
             patch("smolvm.cli.update._check_for_stable_update", return_value=("0.9.0", "1.0.0")),
         ):
-            rc = run_update(self._args(check=True))
+            rc = run_update(check=True)
         assert rc == 0
         out = capsys.readouterr().out
         assert "1.0.0" in out
@@ -136,7 +132,7 @@ class TestRunUpdate:
         with (
             patch("smolvm.cli.update._check_for_stable_update", return_value=("1.0.0", None)),
         ):
-            rc = run_update(self._args(check=True, json_output=True))
+            rc = run_update(check=True, json_output=True)
         assert rc == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["data"]["update_available"] is False
@@ -146,7 +142,7 @@ class TestRunUpdate:
             patch("smolvm.cli.update._check_for_stable_update", return_value=("1.0.0", None)),
             patch("smolvm.cli.update._run_upgrade") as mock_pip,
         ):
-            rc = run_update(self._args())
+            rc = run_update()
         assert rc == 0
         mock_pip.assert_not_called()
 
@@ -156,7 +152,7 @@ class TestRunUpdate:
             patch("smolvm.cli.update._run_upgrade", return_value=(0, "")) as mock_pip,
             patch("smolvm.cli.update._get_current_version", return_value="1.0.0"),
         ):
-            rc = run_update(self._args())
+            rc = run_update()
         assert rc == 0
         mock_pip.assert_called_once_with(json_output=False)
 
@@ -166,7 +162,7 @@ class TestRunUpdate:
             patch("smolvm.cli.update._run_upgrade", return_value=(1, "error output")),
             patch("smolvm.cli.update._get_current_version", return_value="0.9.0"),
         ):
-            rc = run_update(self._args())
+            rc = run_update()
         assert rc == 1
 
     def test_upgrade_json_output(self, capsys: pytest.CaptureFixture[str]) -> None:
@@ -178,7 +174,7 @@ class TestRunUpdate:
             ),
             patch("smolvm.cli.update._get_current_version", return_value="1.0.0"),
         ):
-            rc = run_update(self._args(json_output=True))
+            rc = run_update(json_output=True)
         assert rc == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["data"]["upgraded"] is True
