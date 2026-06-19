@@ -20,11 +20,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import ANY, MagicMock, patch
 
+import click
 import pytest
 
 from smolvm.cli.main import (
     DASHBOARD_ALLOW_BETA_ENV,
     _current_version_is_prerelease,
+    build_cli,
     main,
 )
 from smolvm.types import (
@@ -130,6 +132,49 @@ def test_create_help_describes_backend_specific_guest_default(
     help_text = capsys.readouterr().out
     assert "Operating system image" in help_text
     assert "auto-detected" in help_text
+
+
+def test_sandbox_help_describes_all_commands(capsys: pytest.CaptureFixture) -> None:
+    """Sandbox help should explain every command in plain language."""
+    ret = main(["sandbox", "--help"])
+
+    assert ret == 0
+    help_text = capsys.readouterr().out
+    for description in [
+        "Create a new sandbox.",
+        "Delete one or more sandboxes.",
+        "Manage sandbox environment variables.",
+        "Copy files into or out of a sandbox.",
+        "Show details about a sandbox.",
+        "List your sandboxes.",
+        "Pause a running sandbox.",
+        "Manage port forwarding for a sandbox.",
+        "Resume a paused sandbox.",
+        "Save and restore sandbox state.",
+        "Open a shell in a sandbox.",
+        "Start a stopped sandbox.",
+        "Stop a running sandbox.",
+    ]:
+        assert description in help_text
+
+
+def test_all_commands_have_short_descriptions() -> None:
+    """Every Click command should have text in parent command help."""
+    missing: list[str] = []
+
+    def walk(command: click.Command, path: list[str]) -> None:
+        if not isinstance(command, click.Group):
+            return
+
+        for name, child in command.commands.items():
+            child_path = [*path, name]
+            if not child.get_short_help_str(limit=120):
+                missing.append(" ".join(child_path))
+            walk(child, child_path)
+
+    walk(build_cli(), [])
+
+    assert missing == []
 
 
 def test_json_error_preserves_empty_details(capsys: pytest.CaptureFixture) -> None:

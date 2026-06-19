@@ -99,6 +99,7 @@ def sandbox_create(
     boot_timeout: float,
     json_output: bool,
 ) -> Any:
+    """Create a new sandbox."""
     _before_command(json_output=json_output)
     return _handlers()._run_create(
         _ns(
@@ -129,6 +130,7 @@ def sandbox_create(
 )
 @json_option
 def sandbox_list(include_all: bool, status_filter: str | None, json_output: bool) -> Any:
+    """List your sandboxes."""
     if include_all and status_filter is not None:
         raise click.UsageError(
             "Use one filter. Run 'smolvm sandbox list --all' or "
@@ -147,6 +149,7 @@ def sandbox_list(include_all: bool, status_filter: str | None, json_output: bool
 @click.argument("vm_id", metavar="sandbox")
 @json_option
 def sandbox_info(vm_id: str, json_output: bool) -> Any:
+    """Show details about a sandbox."""
     _before_command(json_output=json_output)
     return _handlers()._run_info(
         vm_id=vm_id,
@@ -160,6 +163,7 @@ def sandbox_info(vm_id: str, json_output: bool) -> Any:
 @boot_timeout_option
 @json_option
 def sandbox_start(vm_id: str, boot_timeout: float, json_output: bool) -> Any:
+    """Start a stopped sandbox."""
     _before_command(json_output=json_output)
     return _handlers()._run_vm_start(
         _ns(command_name="sandbox.start", vm_id=vm_id, boot_timeout=boot_timeout, json=json_output)
@@ -177,6 +181,7 @@ def sandbox_start(vm_id: str, boot_timeout: float, json_output: bool) -> Any:
 )
 @json_option
 def sandbox_stop(vm_id: str, timeout: float, json_output: bool) -> Any:
+    """Stop a running sandbox."""
     _before_command(json_output=json_output)
     return _handlers()._run_stop(
         _ns(command_name="sandbox.stop", vm_id=vm_id, timeout=timeout, json=json_output)
@@ -187,6 +192,7 @@ def sandbox_stop(vm_id: str, timeout: float, json_output: bool) -> Any:
 @click.argument("vm_id", metavar="sandbox")
 @json_option
 def sandbox_pause(vm_id: str, json_output: bool) -> Any:
+    """Pause a running sandbox."""
     _before_command(json_output=json_output)
     return _handlers()._run_pause(_ns(command_name="sandbox.pause", vm_id=vm_id, json=json_output))
 
@@ -195,6 +201,7 @@ def sandbox_pause(vm_id: str, json_output: bool) -> Any:
 @click.argument("vm_id", metavar="sandbox")
 @json_option
 def sandbox_resume(vm_id: str, json_output: bool) -> Any:
+    """Resume a paused sandbox."""
     _before_command(json_output=json_output)
     return _handlers()._run_resume(
         _ns(command_name="sandbox.resume", vm_id=vm_id, json=json_output)
@@ -206,6 +213,7 @@ def sandbox_resume(vm_id: str, json_output: bool) -> Any:
 @ssh_auth_options
 @boot_timeout_option
 def sandbox_ssh(vm_id: str, ssh_key: str | None, ssh_user: str, boot_timeout: float) -> Any:
+    """Open a shell in a sandbox."""
     _before_command()
     return _handlers()._run_ssh(
         _ns(
@@ -231,6 +239,7 @@ def sandbox_delete(
     dry_run: bool,
     json_output: bool,
 ) -> Any:
+    """Delete one or more sandboxes."""
     if all_sandboxes and vm_ids:
         raise click.UsageError(
             "Choose one target. Run 'smolvm sandbox delete my-sandbox' or "
@@ -360,6 +369,7 @@ def server() -> None:
 @click.option("--host", default="127.0.0.1", show_default=True)
 @click.option("--port", default=8000, show_default=True, type=int)
 def server_start(host: str, port: int) -> Any:
+    """Start the local API server."""
     _before_command()
     return _handlers()._run_server_start(host=host, port=port)
 
@@ -387,6 +397,7 @@ def snapshot_create(
     resume_source: bool,
     json_output: bool,
 ) -> Any:
+    """Save a sandbox snapshot."""
     _before_command(json_output=json_output)
     return _handlers()._run_snapshot(
         _ns(
@@ -407,6 +418,7 @@ def snapshot_create(
 @click.option("--force", is_flag=True)
 @json_option
 def snapshot_restore(snapshot_id: str, resume: bool, force: bool, json_output: bool) -> Any:
+    """Restore a sandbox from a snapshot."""
     _before_command(json_output=json_output)
     return _handlers()._run_snapshot(
         _ns(
@@ -424,6 +436,7 @@ def snapshot_restore(snapshot_id: str, resume: bool, force: bool, json_output: b
 @click.argument("snapshot_id", metavar="snapshot")
 @json_option
 def snapshot_delete(snapshot_id: str, json_output: bool) -> Any:
+    """Delete a snapshot."""
     _before_command(json_output=json_output)
     return _handlers()._run_snapshot(
         _ns(
@@ -439,6 +452,7 @@ def snapshot_delete(snapshot_id: str, json_output: bool) -> Any:
 @click.option("--vm-id", default=None)
 @json_option
 def snapshot_list(vm_id: str | None, json_output: bool) -> Any:
+    """List saved snapshots."""
     _before_command(json_output=json_output)
     return _handlers()._run_snapshot(
         _ns(
@@ -473,6 +487,7 @@ def file_upload(
     comm_channel: str | None,
     json_output: bool,
 ) -> Any:
+    """Copy a file into a sandbox."""
     _before_command(json_output=json_output)
     return _handlers()._run_file(
         _ns(
@@ -508,6 +523,7 @@ def file_download(
     comm_channel: str | None,
     json_output: bool,
 ) -> Any:
+    """Copy a file out of a sandbox."""
     _before_command(json_output=json_output)
     return _handlers()._run_file(
         _ns(
@@ -544,6 +560,7 @@ def env_set(
     comm_channel: str | None,
     json_output: bool,
 ) -> Any:
+    """Set environment variables in a sandbox."""
     _before_command(json_output=json_output)
     return _handlers()._run_env(
         _ns(
@@ -573,6 +590,7 @@ def env_unset(
     comm_channel: str | None,
     json_output: bool,
 ) -> Any:
+    """Remove environment variables from a sandbox."""
     _before_command(json_output=json_output)
     return _handlers()._run_env(
         _ns(
@@ -602,6 +620,7 @@ def env_list(
     comm_channel: str | None,
     json_output: bool,
 ) -> Any:
+    """List environment variables in a sandbox."""
     _before_command(json_output=json_output)
     return _handlers()._run_env(
         _ns(
@@ -636,6 +655,7 @@ def port_expose(
     comm_channel: str | None,
     json_output: bool,
 ) -> Any:
+    """Share a sandbox port with your machine."""
     _before_command(json_output=json_output)
     return _handlers()._run_port_expose(
         _ns(
@@ -664,6 +684,7 @@ def port_close(
     comm_channel: str | None,
     json_output: bool,
 ) -> Any:
+    """Stop sharing a sandbox port."""
     _before_command(json_output=json_output)
     return _handlers()._run_port_close(
         _ns(
@@ -690,6 +711,7 @@ def port_list(
     comm_channel: str | None,
     json_output: bool,
 ) -> Any:
+    """List shared sandbox ports."""
     _before_command(json_output=json_output)
     return _handlers()._run_port_list(
         _ns(
@@ -731,6 +753,7 @@ def windows_build_image(
     build_timeout_s: float,
     json_output: bool,
 ) -> Any:
+    """Build a Windows sandbox image."""
     _before_command(json_output=json_output)
     return _handlers()._run_windows_build_image(
         _ns(
@@ -784,6 +807,7 @@ def browser_start(
     boot_timeout: float,
     json_output: bool,
 ) -> Any:
+    """Start a browser sandbox."""
     _before_command(json_output=json_output)
     return _handlers()._run_browser(
         _ns(
@@ -810,6 +834,7 @@ def browser_start(
 @click.argument("session_id", required=False, metavar="sandbox")
 @click.option("--all", "all_sessions", is_flag=True)
 def browser_stop(session_id: str | None, all_sessions: bool) -> Any:
+    """Stop a browser sandbox."""
     if all_sessions == (session_id is not None):
         raise click.UsageError(
             "Choose one target. Run 'smolvm browser stop browser-id' or "
@@ -829,6 +854,7 @@ def browser_stop(session_id: str | None, all_sessions: bool) -> Any:
 )
 @json_option
 def browser_list(status: str | None, json_output: bool) -> Any:
+    """List browser sandboxes."""
     _before_command(json_output=json_output)
     return _handlers()._run_browser(_ns(browser_action="list", status=status, json=json_output))
 
@@ -836,6 +862,7 @@ def browser_list(status: str | None, json_output: bool) -> Any:
 @browser.command("open")
 @click.argument("session_id", metavar="sandbox")
 def browser_open(session_id: str) -> Any:
+    """Open a browser view."""
     _before_command()
     return _handlers()._run_browser(_ns(browser_action="open", session_id=session_id))
 
@@ -844,6 +871,7 @@ def browser_open(session_id: str) -> Any:
 @click.argument("session_id", metavar="sandbox")
 @click.option("--tail", type=int, default=100, show_default=True)
 def browser_logs(session_id: str, tail: int) -> Any:
+    """Show recent browser output."""
     _before_command()
     return _handlers()._run_browser(_ns(browser_action="logs", session_id=session_id, tail=tail))
 
@@ -861,7 +889,7 @@ def _register_preset_commands() -> None:
             pass
 
         def _make_start_callback(preset_name: str, command_name: str) -> Any:
-            @click.command("start")
+            @click.command("start", help="Start this agent in a sandbox.")
             @click.option("-n", "--name", default=None)
             @click.option("--memory", "memory_mib", type=int, default=None)
             @click.option("--disk-size", "disk_size_mib", type=int, default=None)
