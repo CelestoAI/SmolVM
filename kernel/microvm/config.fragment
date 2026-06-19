@@ -63,7 +63,7 @@ CONFIG_VSOCKETS=y               # why: AF_VSOCK socket family
 CONFIG_VIRTIO_VSOCKETS=y        # why: virtio transport for vsock
 
 # ── Workspace mounts (--mount / --writable-mounts) ───────────────────
-# `smolvm create --mount <host-dir>` shares a host directory into the
+# `smolvm sandbox create --mount <host-dir>` shares a host directory into the
 # guest using virtio-9p (a paravirt filesystem that speaks the 9P2000.L
 # protocol over a virtio transport). For read-only host shares the guest
 # stacks overlayfs on top so writes inside the VM stay in a tmpfs upper

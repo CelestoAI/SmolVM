@@ -105,7 +105,7 @@ into right now:
 This sandbox was set up to share the folder '...' with you, but that
 folder no longer exists on your machine. The sandbox cannot start
 until you put the folder back, or delete the sandbox with
-'smolvm delete sbx-einstein'.
+'smolvm sandbox delete sbx-einstein'.
 ```
 
 **Good** — one sentence, true in every state, names the recovery:
@@ -113,5 +113,5 @@ until you put the folder back, or delete the sandbox with
 ```
 Shared folder is missing on your machine:
 '/Users/aniket/conductor/workspaces/SmolVM/lome'. Restore it, or run
-'smolvm delete sbx-einstein' to remove the sandbox.
+'smolvm sandbox delete sbx-einstein' to remove the sandbox.
 ```

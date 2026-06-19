@@ -19,7 +19,7 @@ Firecracker on macOS errors out at startup.
 
 1. SmolVM installed and `smolvm setup` completed for your platform.
 2. The default image is already pulled (`smolvm doctor` will tell you, or run
-   `smolvm create --name probe` once and `smolvm delete probe`).
+   `smolvm sandbox create --name probe` once and `smolvm sandbox delete probe`).
 3. Linux only: `smolvm setup` configured the host networking and your user can
    talk to Firecracker.
 
@@ -174,5 +174,5 @@ becomes `{"status": "unsupported", "backend": "...", "reason": "..."}`.
 - **Cleanup**: every benchmark wraps work in `try/finally` and stops/deletes its VMs
   even on error. The teardown chain is `vm.delete()` → `SmolVMManager.delete()` →
   direct SIGKILL + DB row removal, so flaky QEMU shutdown paths on macOS don't
-  leak VMs. If a run is killed mid-flight, run `smolvm list` to spot leftovers.
+  leak VMs. If a run is killed mid-flight, run `smolvm sandbox list` to spot leftovers.
 - **CI**: not currently wired in. Run locally on each platform.
