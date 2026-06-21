@@ -10,19 +10,36 @@ users through :class:`smolvm.qmp.QMPClient`, which provides the stable error
 and fallback behavior.
 """
 
-from . import _smolvm_core as _native
-
-_native_add_addr = _native.add_addr
-_native_add_route = _native.add_route
-_native_create_tap = _native.create_tap
-_native_delete_tap = _native.delete_tap
-_native_flush_addrs = _native.flush_addrs
-_native_get_default_interface = _native.get_default_interface
-_native_has_native_networking = _native.has_native_networking
-_native_has_native_qmp = _native.has_native_qmp
-_native_set_link_up = _native.set_link_up
-_native_write_sysctl = _native.write_sysctl
-del _native
+from ._smolvm_core import (
+    add_addr as _native_add_addr,
+)
+from ._smolvm_core import (
+    add_route as _native_add_route,
+)
+from ._smolvm_core import (
+    create_tap as _native_create_tap,
+)
+from ._smolvm_core import (
+    delete_tap as _native_delete_tap,
+)
+from ._smolvm_core import (
+    flush_addrs as _native_flush_addrs,
+)
+from ._smolvm_core import (
+    get_default_interface as _native_get_default_interface,
+)
+from ._smolvm_core import (
+    has_native_networking as _native_has_native_networking,
+)
+from ._smolvm_core import (
+    has_native_qmp as _native_has_native_qmp,
+)
+from ._smolvm_core import (
+    set_link_up as _native_set_link_up,
+)
+from ._smolvm_core import (
+    write_sysctl as _native_write_sysctl,
+)
 
 
 def has_native_networking() -> bool:
