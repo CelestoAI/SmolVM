@@ -331,6 +331,76 @@ def test_qmp_connect_can_retry_after_capabilities_handshake_failure(
     ]
 
 
+def test_native_qmp_client_smoke_exercises_socket_protocol(qmp_socket_path: Path) -> None:
+    """Native QMP should work on every platform that ships smolvm-core."""
+    if qmp_module._NativeQMPClient is None:
+        pytest.skip("native QMP binding is unavailable")
+
+    socket_path = qmp_socket_path
+    requests: list[dict[str, object]] = []
+    responses: dict[str, list[dict[str, object] | list[dict[str, object]]]] = {
+        "qmp_capabilities": [{"return": {}}],
+        "query-status": [
+            [
+                {"event": "STOP", "data": {}},
+                {"return": {"running": False, "status": "paused"}},
+            ]
+        ],
+        "snapshot-save": [{"return": {}}],
+        "query-jobs": [
+            {
+                "return": [
+                    {
+                        "id": "job0",
+                        "type": "snapshot-save",
+                        "status": "running",
+                        "current-progress": 0,
+                        "total-progress": 1,
+                    }
+                ]
+            },
+            {
+                "return": [
+                    {
+                        "id": "job0",
+                        "type": "snapshot-save",
+                        "status": "concluded",
+                        "current-progress": 1,
+                        "total-progress": 1,
+                    }
+                ]
+            },
+        ],
+        "job-dismiss": [{"return": {}}],
+    }
+    thread = _start_qmp_server(socket_path, responses, requests)
+    client = qmp_module._NativeQMPClient(str(socket_path))
+
+    try:
+        client.connect(5.0, 30.0)
+        status = json.loads(client.execute("query-status", None))
+        client.snapshot_save("job0", "snap0", "disk0", ["disk0"])
+        job = json.loads(client.wait_for_job("job0", 1.0, 0.01))
+    finally:
+        client.close()
+
+    thread.join(timeout=2.0)
+    if socket_path.exists():
+        socket_path.unlink()
+
+    assert status["status"] == "paused"
+    assert job["job_id"] == "job0"
+    assert job["status"] == "concluded"
+    assert [request["execute"] for request in requests] == [
+        "qmp_capabilities",
+        "query-status",
+        "snapshot-save",
+        "query-jobs",
+        "query-jobs",
+        "job-dismiss",
+    ]
+
+
 @pytest.mark.skipif(
     sys.platform == "darwin",
     reason="Socket binding fails in macOS automated test sandbox",

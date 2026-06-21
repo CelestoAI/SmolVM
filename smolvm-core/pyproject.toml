@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "smolvm-core"
 dynamic = ["version"]
-description = "Rust-accelerated network operations for SmolVM"
+description = "Rust-accelerated runtime and network operations for SmolVM"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
