@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import socket
-import sys
 import tempfile
 import threading
 import time
@@ -100,10 +99,6 @@ def _start_qmp_server(
     return thread
 
 
-@pytest.mark.skipif(
-    sys.platform == "darwin",
-    reason="Socket binding fails in macOS automated test sandbox",
-)
 def test_qmp_handshake_command_execution_and_job_polling(qmp_socket_path: Path) -> None:
     """QMPClient should negotiate capabilities, execute commands, and poll jobs."""
     socket_path = qmp_socket_path
@@ -168,10 +163,6 @@ def test_qmp_handshake_command_execution_and_job_polling(qmp_socket_path: Path) 
     ]
 
 
-@pytest.mark.skipif(
-    sys.platform == "darwin",
-    reason="Socket binding fails in macOS automated test sandbox",
-)
 def test_qmp_wait_for_job_raises_on_job_error(qmp_socket_path: Path) -> None:
     """wait_for_job should surface the QMP job error field."""
     socket_path = qmp_socket_path
@@ -213,10 +204,6 @@ def test_qmp_wait_for_job_raises_on_job_error(qmp_socket_path: Path) -> None:
     ]
 
 
-@pytest.mark.skipif(
-    sys.platform == "darwin",
-    reason="Socket binding fails in macOS automated test sandbox",
-)
 def test_qmp_connect_raises_read_timeout_above_connect_probe_timeout(
     qmp_socket_path: Path,
 ) -> None:
@@ -245,10 +232,6 @@ def test_qmp_connect_raises_read_timeout_above_connect_probe_timeout(
         socket_path.unlink()
 
 
-@pytest.mark.skipif(
-    sys.platform == "darwin",
-    reason="Socket binding fails in macOS automated test sandbox",
-)
 def test_qmp_blockdev_internal_snapshot_round_trips(qmp_socket_path: Path) -> None:
     """Disk-only internal snapshot create/delete issue synchronous QMP commands."""
     socket_path = qmp_socket_path
@@ -278,10 +261,6 @@ def test_qmp_blockdev_internal_snapshot_round_trips(qmp_socket_path: Path) -> No
     assert create_req["arguments"] == {"device": "rootdisk0", "name": "snap0"}
 
 
-@pytest.mark.skipif(
-    sys.platform == "darwin",
-    reason="Socket binding fails in macOS automated test sandbox",
-)
 def test_qmp_connect_can_retry_after_capabilities_handshake_failure(
     qmp_socket_path: Path,
 ) -> None:
@@ -401,10 +380,6 @@ def test_native_qmp_client_smoke_exercises_socket_protocol(qmp_socket_path: Path
     ]
 
 
-@pytest.mark.skipif(
-    sys.platform == "darwin",
-    reason="Socket binding fails in macOS automated test sandbox",
-)
 def test_qmp_python_fallback_still_executes(
     monkeypatch: pytest.MonkeyPatch,
     qmp_socket_path: Path,
