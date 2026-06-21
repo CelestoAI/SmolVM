@@ -641,7 +641,7 @@ class _BrowserSandbox:
         if self._vm is None:
             raise SmolVMError("Browser sandbox VM is unavailable.")
 
-        return self._vm.expose_local(guest_port=guest_port)
+        return self._vm.expose_local(guest_port=guest_port, guest_loopback=True)
 
     def _wait_for_guest_port(self, port: int, *, timeout: float) -> bool:
         if self._vm is None:

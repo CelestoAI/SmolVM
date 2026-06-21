@@ -473,7 +473,7 @@ def test_browser_sandbox_start_uses_expose_local_for_qemu_cdp(
     session.start()
 
     assert session.cdp_url == "http://127.0.0.1:39222"
-    vm.expose_local.assert_called_once_with(guest_port=9222)
+    vm.expose_local.assert_called_once_with(guest_port=9222, guest_loopback=True)
     session.close()
 
 
@@ -520,8 +520,8 @@ def test_desktop_sandbox_start_exposes_viewer_and_display_only(
     assert session.viewer_url == "http://127.0.0.1:36080/vnc.html?autoconnect=1&resize=scale"
     assert session.display_url == "vnc://127.0.0.1:35900"
     assert [call.kwargs for call in vm.expose_local.call_args_list] == [
-        {"guest_port": 6080},
-        {"guest_port": 5900},
+        {"guest_port": 6080, "guest_loopback": True},
+        {"guest_port": 5900, "guest_loopback": True},
     ]
     session.close()
 
