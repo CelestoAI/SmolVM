@@ -2180,7 +2180,13 @@ class SmolVM:
         command.append(f"{self._ssh_user}@{host}")
         return command
 
-    def expose_local(self, guest_port: int, host_port: int | None = None) -> int:
+    def expose_local(
+        self,
+        guest_port: int,
+        host_port: int | None = None,
+        *,
+        guest_loopback: bool = False,
+    ) -> int:
         """Expose a guest TCP port on localhost only.
 
         Forwards ``127.0.0.1:<host_port>`` on the host to
@@ -2189,6 +2195,9 @@ class SmolVM:
         Args:
             guest_port: Guest TCP port to expose.
             host_port: Host localhost port. If omitted, an available port is chosen.
+            guest_loopback: Route to guest 127.0.0.1 instead of the guest's
+                network address. This uses an SSH tunnel and is required for
+                services that bind guest loopback only.
 
         Returns:
             The host localhost port to connect to.
@@ -2228,8 +2237,10 @@ class SmolVM:
 
         guest_ip = self._info.network.guest_ip
         attempts: list[str] = []
-        should_try_nftables = self._should_try_nftables_local_forward()
-        should_try_qemu_hostfwd = self._should_try_qemu_hostfwd_local_forward()
+        should_try_nftables = not guest_loopback and self._should_try_nftables_local_forward()
+        should_try_qemu_hostfwd = (
+            not guest_loopback and self._should_try_qemu_hostfwd_local_forward()
+        )
 
         for candidate in candidate_ports:
             key = (candidate, guest_port)
@@ -2298,8 +2309,7 @@ class SmolVM:
                         )
                         keep_qemu_hostfwd = True
                         logger.info(
-                            "VM %s exposed localhost:%d -> guest:%d "
-                            "(transport=qemu_hostfwd)",
+                            "VM %s exposed localhost:%d -> guest:%d (transport=qemu_hostfwd)",
                             self._vm_id,
                             candidate,
                             guest_port,
@@ -2311,8 +2321,7 @@ class SmolVM:
                     )
                 except Exception as e:
                     attempts.append(
-                        f"qemu hostfwd localhost:{candidate} -> guest:{guest_port} "
-                        f"failed: {e}"
+                        f"qemu hostfwd localhost:{candidate} -> guest:{guest_port} failed: {e}"
                     )
                 finally:
                     if qemu_hostfwd_configured and not keep_qemu_hostfwd:
@@ -3284,9 +3293,7 @@ modprobe 9pnet_virtio""".strip()
 
     def _remove_qemu_hostfwd(self, host_port: int, guest_port: int) -> None:
         """Remove a QEMU slirp hostfwd rule for localhost exposure."""
-        self._execute_qemu_human_monitor_command(
-            f"hostfwd_remove net0 tcp:127.0.0.1:{host_port}"
-        )
+        self._execute_qemu_human_monitor_command(f"hostfwd_remove net0 tcp:127.0.0.1:{host_port}")
 
     @staticmethod
     def _find_available_local_port() -> int:

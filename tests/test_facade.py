@@ -2248,9 +2248,7 @@ class TestVMQemuLocalExpose:
         sample_config: VMConfig,
         tmp_path: Path,
     ) -> SmolVM:
-        config = sample_config.model_copy(
-            update={"backend": "qemu", "qemu_network": "slirp"}
-        )
+        config = sample_config.model_copy(update={"backend": "qemu", "qemu_network": "slirp"})
         mock_network = MagicMock()
         mock_network.guest_ip = "10.0.2.15"
 
@@ -2395,6 +2393,35 @@ class TestVMQemuLocalExpose:
                 {"command-line": "hostfwd_remove net0 tcp:127.0.0.1:18080"},
             ),
         ]
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_qemu_guest_loopback_exposure_uses_ssh_tunnel(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        tunnel_proc = MagicMock()
+        with (
+            patch("smolvm.facade.QMPClient") as mock_qmp_cls,
+            patch("smolvm.facade.SmolVM._allocate_local_port", return_value=18081),
+            patch(
+                "smolvm.facade.SmolVM._start_local_tunnel",
+                return_value=tunnel_proc,
+            ) as mock_start_tunnel,
+        ):
+            vm = self._running_qemu_vm(mock_sdk_cls, sample_config, tmp_path)
+
+            host_port = vm.expose_local(
+                guest_port=8080,
+                host_port=18080,
+                guest_loopback=True,
+            )
+
+        assert host_port == 18080
+        mock_qmp_cls.assert_not_called()
+        mock_sdk_cls.return_value.network.setup_local_port_forward.assert_not_called()
+        mock_start_tunnel.assert_called_once_with(host_port=18080, guest_port=8080)
 
 
 @pytest.mark.skip(reason="Fails in macOS secure sandboxes due to bind restrictions")
