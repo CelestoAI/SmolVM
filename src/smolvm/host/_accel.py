@@ -14,7 +14,10 @@ logger = logging.getLogger(__name__)
 try:
     import smolvm_core as native
 
-    HAS_NETLINK = native.is_available()
+    if hasattr(native, "has_native_networking"):
+        HAS_NETLINK = native.has_native_networking()
+    else:  # pragma: no cover - compatibility with older smolvm-core wheels
+        HAS_NETLINK = native.is_available()
 except ImportError:
     native = None  # type: ignore[assignment]
     HAS_NETLINK = False

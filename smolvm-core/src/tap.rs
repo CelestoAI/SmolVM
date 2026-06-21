@@ -90,14 +90,21 @@ fn create_once(name: &str, owner_uid: u32) -> Result<(), NetlinkError> {
     let ret = unsafe { libc::ioctl(fd.as_raw_fd(), 0x400454CC_u64, owner_uid as libc::c_ulong) };
     if ret < 0 {
         let errno = unsafe { *libc::__errno_location() };
-        return Err(NetlinkError::from_errno(errno, &format!("TUNSETOWNER {}", name)));
+        return Err(NetlinkError::from_errno(
+            errno,
+            &format!("TUNSETOWNER {}", name),
+        ));
     }
 
     // TUNSETPERSIST
     let ret = unsafe { libc::ioctl(fd.as_raw_fd(), 0x400454CB_u64, 1 as libc::c_int) };
     if ret < 0 {
         let errno = unsafe { *libc::__errno_location() };
-        let msg = format!("TUNSETPERSIST {}: {}", name, NetlinkError::from_errno(errno, ""));
+        let msg = format!(
+            "TUNSETPERSIST {}: {}",
+            name,
+            NetlinkError::from_errno(errno, "")
+        );
         return Err(NetlinkError::Other(msg));
     }
 
@@ -110,23 +117,26 @@ pub fn delete(name: &str) -> Result<(), NetlinkError> {
     use crate::route::with_netlink;
 
     with_netlink(async {
-        let (connection, handle, _) = rtnetlink::new_connection().map_err(|e| {
-            NetlinkError::Other(format!("netlink connection failed: {}", e))
-        })?;
+        let (connection, handle, _) = rtnetlink::new_connection()
+            .map_err(|e| NetlinkError::Other(format!("netlink connection failed: {}", e)))?;
         tokio::spawn(connection);
 
         // Find the link index
         let mut links = handle.link().get().match_name(name.to_string()).execute();
         use futures_util::TryStreamExt;
-        let link = links.try_next().await.map_err(|e| {
-            NetlinkError::Other(format!("Failed to find device {}: {}", name, e))
-        })?;
+        let link = links
+            .try_next()
+            .await
+            .map_err(|e| NetlinkError::Other(format!("Failed to find device {}: {}", name, e)))?;
 
         if let Some(link) = link {
             let index = link.header.index;
-            handle.link().del(index).execute().await.map_err(|e| {
-                NetlinkError::Other(format!("Failed to delete {}: {}", name, e))
-            })?;
+            handle
+                .link()
+                .del(index)
+                .execute()
+                .await
+                .map_err(|e| NetlinkError::Other(format!("Failed to delete {}: {}", name, e)))?;
             log::debug!("TAP {} deleted", name);
         } else {
             return Err(NetlinkError::DeviceNotFound(name.to_string()));

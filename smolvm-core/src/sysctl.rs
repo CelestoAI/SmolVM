@@ -14,9 +14,8 @@ pub fn write(key: &str, value: &str) -> Result<(), NetlinkError> {
         .collect::<PathBuf>()
         .join(key.replace('.', "/"));
 
-    fs::write(&path, value).map_err(|e| {
-        NetlinkError::Other(format!("sysctl write {} = {}: {}", key, value, e))
-    })?;
+    fs::write(&path, value)
+        .map_err(|e| NetlinkError::Other(format!("sysctl write {} = {}: {}", key, value, e)))?;
 
     log::debug!("sysctl {} = {}", key, value);
     Ok(())

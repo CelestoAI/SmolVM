@@ -27,16 +27,14 @@ where
 }
 
 /// Get the interface index for a device name.
-async fn get_link_index(
-    handle: &rtnetlink::Handle,
-    name: &str,
-) -> Result<u32, NetlinkError> {
+async fn get_link_index(handle: &rtnetlink::Handle, name: &str) -> Result<u32, NetlinkError> {
     use futures_util::TryStreamExt;
 
     let mut links = handle.link().get().match_name(name.to_string()).execute();
-    let link = links.try_next().await.map_err(|e| {
-        NetlinkError::Other(format!("Failed to find device {}: {}", name, e))
-    })?;
+    let link = links
+        .try_next()
+        .await
+        .map_err(|e| NetlinkError::Other(format!("Failed to find device {}: {}", name, e)))?;
 
     link.map(|l| l.header.index)
         .ok_or_else(|| NetlinkError::DeviceNotFound(name.to_string()))
@@ -74,10 +72,16 @@ pub fn flush_addrs(name: &str) -> Result<(), NetlinkError> {
         let index = get_link_index(&handle, name).await?;
 
         use futures_util::TryStreamExt;
-        let mut addrs = handle.address().get().set_link_index_filter(index).execute();
-        while let Some(addr) = addrs.try_next().await.map_err(|e| {
-            NetlinkError::Other(format!("list addrs {}: {}", name, e))
-        })? {
+        let mut addrs = handle
+            .address()
+            .get()
+            .set_link_index_filter(index)
+            .execute();
+        while let Some(addr) = addrs
+            .try_next()
+            .await
+            .map_err(|e| NetlinkError::Other(format!("list addrs {}: {}", name, e)))?
+        {
             handle
                 .address()
                 .del(addr)
@@ -140,19 +144,17 @@ pub fn add_route(dest: &str, prefix_len: u8, dev: &str) -> Result<(), NetlinkErr
             .destination_prefix(dest_addr, prefix_len)
             .output_interface(index)
             .build();
-        handle
-            .route()
-            .add(route)
-            .execute()
-            .await
-            .map_err(|e| {
-                let msg = format!("{}", e);
-                if msg.contains("File exists") || msg.contains("EEXIST") {
-                    NetlinkError::RouteExists
-                } else {
-                    NetlinkError::Other(format!("add_route {}/{} dev {}: {}", dest, prefix_len, dev, e))
-                }
-            })?;
+        handle.route().add(route).execute().await.map_err(|e| {
+            let msg = format!("{}", e);
+            if msg.contains("File exists") || msg.contains("EEXIST") {
+                NetlinkError::RouteExists
+            } else {
+                NetlinkError::Other(format!(
+                    "add_route {}/{} dev {}: {}",
+                    dest, prefix_len, dev, e
+                ))
+            }
+        })?;
 
         log::debug!("Route {}/{} via {}", dest, prefix_len, dev);
         Ok(())
@@ -173,18 +175,22 @@ pub fn get_default_interface() -> Result<String, NetlinkError> {
 
         let route_filter = RouteMessageBuilder::<Ipv4Addr>::new().build();
         let mut routes = handle.route().get(route_filter).execute();
-        while let Some(route) = routes.try_next().await.map_err(|e| {
-            NetlinkError::Other(format!("get routes: {}", e))
-        })? {
+        while let Some(route) = routes
+            .try_next()
+            .await
+            .map_err(|e| NetlinkError::Other(format!("get routes: {}", e)))?
+        {
             // Default route has dst_len == 0
             if route.header.destination_prefix_length == 0 {
                 for attr in &route.attributes {
                     if let RouteAttribute::Oif(idx) = attr {
                         // Resolve index to name
                         let mut links = handle.link().get().match_index(*idx).execute();
-                        if let Some(link) = links.try_next().await.map_err(|e| {
-                            NetlinkError::Other(format!("get link: {}", e))
-                        })? {
+                        if let Some(link) = links
+                            .try_next()
+                            .await
+                            .map_err(|e| NetlinkError::Other(format!("get link: {}", e)))?
+                        {
                             use netlink_packet_route::link::LinkAttribute;
                             for attr in &link.attributes {
                                 if let LinkAttribute::IfName(name) = attr {

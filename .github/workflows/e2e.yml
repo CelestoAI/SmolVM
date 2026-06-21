@@ -151,7 +151,7 @@ jobs:
 
       - name: Assert native extension available
         run: |
-          sudo -n -E -u "$USER" -g kvm -- env "PATH=$PATH" "$(command -v uv)" run python -c "from smolvm_core import is_available; assert is_available(), 'Native extension reports not available on Linux'; print('smolvm-core: OK')"
+          sudo -n -E -u "$USER" -g kvm -- env "PATH=$PATH" "$(command -v uv)" run python -c "from smolvm_core import has_native_networking; assert has_native_networking(), 'Native extension reports native networking unavailable on Linux'; print('smolvm-core: OK')"
 
       - name: Diagnostics (smolvm doctor)
         run: sudo -n -E -u "$USER" -g kvm -- env "PATH=$PATH" "$(command -v uv)" run smolvm doctor --backend "${{ matrix.backend }}" || true

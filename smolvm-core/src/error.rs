@@ -1,7 +1,7 @@
 //! Error types that map to Python exceptions with kernel-compatible messages.
 
-use pyo3::exceptions::PyOSError;
 use pyo3::PyErr;
+use pyo3::exceptions::PyOSError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum NetlinkError {

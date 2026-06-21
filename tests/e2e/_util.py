@@ -26,7 +26,7 @@ from typing import Literal
 import pytest
 
 try:
-    from smolvm_core import is_available as _core_available
+    from smolvm_core import has_native_networking as _core_available
 except (ImportError, OSError):  # pragma: no cover - native extension missing entirely
     _core_available = None
 

@@ -45,6 +45,8 @@ smolvm doctor
 
 `smolvm setup` installs Firecracker, configures host networking permissions, and confirms the machine is ready to run sandboxes. It assumes the machine already has `/dev/kvm` (i.e. it is the host where sandboxes will run).
 
+`smolvm-core` is installed as a native helper dependency on supported platforms. Most users never import it directly; see [smolvm-core](deep-dive/smolvm-core.md) if you are developing the native extension or debugging native networking and QMP acceleration.
+
 ## Bake-time install (golden AMI / two-stage deploys)
 
 Some teams want to pre-install everything SmolVM needs into a base image, so that booting a fresh machine becomes "boot the AMI, accept secrets, start serving traffic" rather than "boot, then spend several minutes installing." This is common on AWS where you bake the image on a cheap builder (e.g. `c5.large`) and run it on an expensive metal instance (e.g. `c5.metal`) where KVM is actually available.
