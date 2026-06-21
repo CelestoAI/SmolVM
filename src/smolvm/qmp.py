@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import socket
@@ -23,11 +24,17 @@ import time
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from smolvm.exceptions import SmolVMError
 
 logger = logging.getLogger(__name__)
+
+try:
+    _smolvm_core = importlib.import_module("smolvm_core._smolvm_core")
+    _NativeQMPClient: Any | None = getattr(_smolvm_core, "_QmpClient", None)
+except Exception:  # pragma: no cover - depends on optional native wheel shape
+    _NativeQMPClient = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -42,8 +49,8 @@ class QMPJob:
     error: str | None = None
 
 
-class QMPClient:
-    """Small synchronous QMP client over a Unix socket."""
+class _PythonQMPClient:
+    """Pure-Python QMP client fallback over a Unix socket."""
 
     def __init__(self, socket_path: Path) -> None:
         """Initialize a client for the given QMP control socket."""
@@ -55,7 +62,7 @@ class QMPClient:
         self._reader: Any | None = None
         self._writer: Any | None = None
 
-    def __enter__(self) -> QMPClient:
+    def __enter__(self) -> _PythonQMPClient:
         return self
 
     def __exit__(self, *args: object) -> None:
@@ -94,7 +101,8 @@ class QMPClient:
                         {"socket_path": str(self.socket_path)},
                     ) from None
                 with suppress(Exception):
-                    qmp_socket.close()
+                    if qmp_socket is not None:
+                        qmp_socket.close()
                 time.sleep(0.05)
 
         try:
@@ -320,4 +328,248 @@ class QMPClient:
             raise SmolVMError(
                 "QMP socket closed unexpectedly", {"socket_path": str(self.socket_path)}
             )
-        return json.loads(line)
+        message = json.loads(line)
+        if not isinstance(message, dict):
+            raise SmolVMError(
+                "Invalid QMP message",
+                {"socket_path": str(self.socket_path), "message": message},
+            )
+        return cast(dict[str, Any], message)
+
+
+def _native_error_to_smolvm(exc: Exception, socket_path: Path) -> SmolVMError:
+    """Convert private PyO3 QMP errors into the public SmolVMError shape."""
+    message = str(exc)
+    context: dict[str, Any] = {"socket_path": str(socket_path)}
+    try:
+        payload = json.loads(message)
+    except (TypeError, ValueError):
+        return SmolVMError(message, context)
+
+    if isinstance(payload, dict):
+        payload_message = payload.get("message")
+        payload_context = payload.get("context")
+        if isinstance(payload_message, str):
+            message = payload_message
+        if isinstance(payload_context, dict):
+            context = payload_context
+            context.setdefault("socket_path", str(socket_path))
+    return SmolVMError(message, context)
+
+
+class QMPClient:
+    """Small synchronous QMP client over a Unix socket."""
+
+    def __init__(self, socket_path: Path) -> None:
+        """Initialize a client for the given QMP control socket."""
+        if socket_path is None:
+            raise ValueError("socket_path cannot be None")
+
+        self.socket_path = socket_path
+        self._native: Any | None = (
+            _NativeQMPClient(str(socket_path)) if _NativeQMPClient is not None else None
+        )
+        self._fallback: _PythonQMPClient | None = (
+            None if self._native is not None else _PythonQMPClient(socket_path)
+        )
+
+    @property
+    def _socket(self) -> socket.socket | None:
+        """Expose fallback socket for legacy tests/debugging."""
+        return self._fallback._socket if self._fallback is not None else None
+
+    @property
+    def _reader(self) -> Any | None:
+        """Expose fallback reader for legacy tests/debugging."""
+        return self._fallback._reader if self._fallback is not None else None
+
+    @property
+    def _writer(self) -> Any | None:
+        """Expose fallback writer for legacy tests/debugging."""
+        return self._fallback._writer if self._fallback is not None else None
+
+    def __enter__(self) -> QMPClient:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
+    def connect(self, timeout: float = 5.0, read_timeout: float = 30.0) -> None:
+        """Connect to the QMP socket and negotiate capabilities."""
+        if self._native is None:
+            assert self._fallback is not None
+            self._fallback.connect(timeout=timeout, read_timeout=read_timeout)
+            return
+        try:
+            self._native.connect(timeout, read_timeout)
+        except Exception as exc:
+            raise _native_error_to_smolvm(exc, self.socket_path) from exc
+
+    def execute(
+        self,
+        command: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> Any:
+        """Execute a QMP command and return the ``return`` payload."""
+        if self._native is None:
+            assert self._fallback is not None
+            return self._fallback.execute(command, arguments)
+
+        arguments_json = json.dumps(arguments) if arguments else None
+        try:
+            result_json = self._native.execute(command, arguments_json)
+        except Exception as exc:
+            raise _native_error_to_smolvm(exc, self.socket_path) from exc
+        return json.loads(result_json)
+
+    def query_status(self) -> dict[str, Any]:
+        """Query the current VM run state."""
+        result = self.execute("query-status")
+        if not isinstance(result, dict):
+            raise SmolVMError("Unexpected QMP query-status response", {"result": result})
+        return result
+
+    def query_version(self) -> dict[str, Any]:
+        """Query the runtime QEMU version."""
+        result = self.execute("query-version")
+        if not isinstance(result, dict):
+            raise SmolVMError("Unexpected QMP query-version response", {"result": result})
+        return result
+
+    def stop_vm(self) -> None:
+        """Pause guest execution."""
+        if self._native is None:
+            assert self._fallback is not None
+            self._fallback.stop_vm()
+            return
+        try:
+            self._native.stop_vm()
+        except Exception as exc:
+            raise _native_error_to_smolvm(exc, self.socket_path) from exc
+
+    def cont(self) -> None:
+        """Resume guest execution."""
+        if self._native is None:
+            assert self._fallback is not None
+            self._fallback.cont()
+            return
+        try:
+            self._native.cont()
+        except Exception as exc:
+            raise _native_error_to_smolvm(exc, self.socket_path) from exc
+
+    def snapshot_save(self, job_id: str, tag: str, vmstate: str, devices: list[str]) -> None:
+        """Create a QEMU internal snapshot."""
+        if self._native is None:
+            assert self._fallback is not None
+            self._fallback.snapshot_save(job_id, tag, vmstate, devices)
+            return
+        try:
+            self._native.snapshot_save(job_id, tag, vmstate, devices)
+        except Exception as exc:
+            raise _native_error_to_smolvm(exc, self.socket_path) from exc
+
+    def snapshot_load(self, job_id: str, tag: str, vmstate: str, devices: list[str]) -> None:
+        """Load a QEMU internal snapshot."""
+        if self._native is None:
+            assert self._fallback is not None
+            self._fallback.snapshot_load(job_id, tag, vmstate, devices)
+            return
+        try:
+            self._native.snapshot_load(job_id, tag, vmstate, devices)
+        except Exception as exc:
+            raise _native_error_to_smolvm(exc, self.socket_path) from exc
+
+    def snapshot_delete(self, job_id: str, tag: str, devices: list[str]) -> None:
+        """Delete a QEMU internal snapshot."""
+        if self._native is None:
+            assert self._fallback is not None
+            self._fallback.snapshot_delete(job_id, tag, devices)
+            return
+        try:
+            self._native.snapshot_delete(job_id, tag, devices)
+        except Exception as exc:
+            raise _native_error_to_smolvm(exc, self.socket_path) from exc
+
+    def blockdev_snapshot_internal_sync(self, device: str, name: str) -> None:
+        """Create a disk-only internal qcow2 snapshot, synchronously."""
+        if self._native is None:
+            assert self._fallback is not None
+            self._fallback.blockdev_snapshot_internal_sync(device, name)
+            return
+        try:
+            self._native.blockdev_snapshot_internal_sync(device, name)
+        except Exception as exc:
+            raise _native_error_to_smolvm(exc, self.socket_path) from exc
+
+    def blockdev_snapshot_delete_internal_sync(self, device: str, name: str) -> None:
+        """Delete a disk-only internal qcow2 snapshot, synchronously."""
+        if self._native is None:
+            assert self._fallback is not None
+            self._fallback.blockdev_snapshot_delete_internal_sync(device, name)
+            return
+        try:
+            self._native.blockdev_snapshot_delete_internal_sync(device, name)
+        except Exception as exc:
+            raise _native_error_to_smolvm(exc, self.socket_path) from exc
+
+    def query_jobs(self) -> list[QMPJob]:
+        """Return normalized job status rows."""
+        if self._native is None:
+            assert self._fallback is not None
+            return self._fallback.query_jobs()
+        try:
+            result = json.loads(self._native.query_jobs())
+        except Exception as exc:
+            raise _native_error_to_smolvm(exc, self.socket_path) from exc
+        if not isinstance(result, list):
+            raise SmolVMError("Unexpected QMP query-jobs response", {"result": result})
+        return [QMPJob(**job) for job in result]
+
+    def dismiss_job(self, job_id: str) -> None:
+        """Dismiss a concluded QMP job."""
+        if self._native is None:
+            assert self._fallback is not None
+            self._fallback.dismiss_job(job_id)
+            return
+        try:
+            self._native.dismiss_job(job_id)
+        except Exception as exc:
+            raise _native_error_to_smolvm(exc, self.socket_path) from exc
+
+    def wait_for_job(
+        self,
+        job_id: str,
+        *,
+        timeout: float = 60.0,
+        poll_interval: float = 0.1,
+    ) -> QMPJob:
+        """Wait until a QMP job reaches the concluded state."""
+        if self._native is None:
+            assert self._fallback is not None
+            return self._fallback.wait_for_job(
+                job_id, timeout=timeout, poll_interval=poll_interval
+            )
+        try:
+            result = json.loads(self._native.wait_for_job(job_id, timeout, poll_interval))
+        except Exception as exc:
+            raise _native_error_to_smolvm(exc, self.socket_path) from exc
+        return QMPJob(**result)
+
+    def close(self) -> None:
+        """Close all file and socket handles."""
+        if self._native is None:
+            assert self._fallback is not None
+            self._fallback.close()
+            return
+        with suppress(Exception):
+            self._native.close()
+
+    def _read_message(self) -> dict[str, Any]:
+        """Read a single QMP JSON message through the fallback client."""
+        if self._fallback is None:
+            raise SmolVMError(
+                "QMP native client does not expose raw message reads",
+                {"socket_path": str(self.socket_path)},
+            )
+        return self._fallback._read_message()

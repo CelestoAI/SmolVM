@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pytest
 
+import smolvm.qmp as qmp_module
 from smolvm.exceptions import SmolVMError
 from smolvm.qmp import QMPClient
 
@@ -99,7 +100,10 @@ def _start_qmp_server(
     return thread
 
 
-@pytest.mark.skip(reason="Socket binding fails in macOS automated test sandbox")
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="Socket binding fails in macOS automated test sandbox",
+)
 def test_qmp_handshake_command_execution_and_job_polling(qmp_socket_path: Path) -> None:
     """QMPClient should negotiate capabilities, execute commands, and poll jobs."""
     socket_path = qmp_socket_path
@@ -164,7 +168,10 @@ def test_qmp_handshake_command_execution_and_job_polling(qmp_socket_path: Path) 
     ]
 
 
-@pytest.mark.skip(reason="Socket binding fails in macOS automated test sandbox")
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="Socket binding fails in macOS automated test sandbox",
+)
 def test_qmp_wait_for_job_raises_on_job_error(qmp_socket_path: Path) -> None:
     """wait_for_job should surface the QMP job error field."""
     socket_path = qmp_socket_path
@@ -228,8 +235,10 @@ def test_qmp_connect_raises_read_timeout_above_connect_probe_timeout(
 
     with QMPClient(socket_path) as client:
         client.connect(timeout=5.0, read_timeout=30.0)
-        assert client._socket is not None
-        assert client._socket.gettimeout() == 30.0
+        if client._socket is not None:
+            assert client._socket.gettimeout() == 30.0
+        else:
+            assert client._native is not None
 
     thread.join(timeout=2.0)
     if socket_path.exists():
@@ -269,7 +278,10 @@ def test_qmp_blockdev_internal_snapshot_round_trips(qmp_socket_path: Path) -> No
     assert create_req["arguments"] == {"device": "rootdisk0", "name": "snap0"}
 
 
-@pytest.mark.skip(reason="Socket binding fails in macOS automated test sandbox")
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="Socket binding fails in macOS automated test sandbox",
+)
 def test_qmp_connect_can_retry_after_capabilities_handshake_failure(
     qmp_socket_path: Path,
 ) -> None:
@@ -317,3 +329,64 @@ def test_qmp_connect_can_retry_after_capabilities_handshake_failure(
         "qmp_capabilities",
         "query-status",
     ]
+
+
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="Socket binding fails in macOS automated test sandbox",
+)
+def test_qmp_python_fallback_still_executes(
+    monkeypatch: pytest.MonkeyPatch,
+    qmp_socket_path: Path,
+) -> None:
+    """The public QMPClient should keep working when the Rust binding is absent."""
+    monkeypatch.setattr(qmp_module, "_NativeQMPClient", None)
+    socket_path = qmp_socket_path
+    requests: list[dict[str, object]] = []
+    responses: dict[str, list[dict[str, object] | list[dict[str, object]]]] = {
+        "qmp_capabilities": [{"return": {}}],
+        "query-status": [{"return": {"running": False, "status": "paused"}}],
+    }
+    thread = _start_qmp_server(socket_path, responses, requests)
+
+    with qmp_module.QMPClient(socket_path) as client:
+        client.connect()
+        assert client._socket is not None
+        status = client.query_status()
+
+    thread.join(timeout=2.0)
+    if socket_path.exists():
+        socket_path.unlink()
+
+    assert status["status"] == "paused"
+    assert [request["execute"] for request in requests] == [
+        "qmp_capabilities",
+        "query-status",
+    ]
+
+
+def test_qmp_native_errors_become_smolvm_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Private native exceptions should not leak past the public Python wrapper."""
+
+    class BrokenNativeClient:
+        def __init__(self, socket_path: str) -> None:
+            self.socket_path = socket_path
+
+        def connect(self, _timeout: float, _read_timeout: float) -> None:
+            raise RuntimeError(
+                json.dumps(
+                    {
+                        "message": "Timed out waiting for QMP socket",
+                        "context": {"socket_path": self.socket_path},
+                    }
+                )
+            )
+
+    socket_path = Path("/tmp/qmp-missing.sock")
+    monkeypatch.setattr(qmp_module, "_NativeQMPClient", BrokenNativeClient)
+    client = qmp_module.QMPClient(socket_path)
+
+    with pytest.raises(SmolVMError, match="Timed out waiting for QMP socket") as exc_info:
+        client.connect()
+
+    assert exc_info.value.details == {"socket_path": str(socket_path)}

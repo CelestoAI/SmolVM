@@ -5,6 +5,7 @@
 //! Falls back gracefully on non-Linux platforms.
 
 mod error;
+mod qmp;
 #[cfg(target_os = "linux")]
 mod route;
 mod sysctl;
@@ -122,6 +123,7 @@ fn _smolvm_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(add_route, m)?)?;
     m.add_function(wrap_pyfunction!(get_default_interface, m)?)?;
     m.add_function(wrap_pyfunction!(write_sysctl, m)?)?;
+    qmp::register(m)?;
 
     Ok(())
 }
