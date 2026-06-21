@@ -139,6 +139,7 @@ def write_sysctl(key: str, value: str) -> None:
 
     _native_write_sysctl(key, value)
 
+
 __all__ = [
     "has_native_networking",
     "has_native_qmp",
