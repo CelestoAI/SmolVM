@@ -10,7 +10,7 @@ users through :class:`smolvm.qmp.QMPClient`, which provides the stable error
 and fallback behavior.
 """
 
-from smolvm_core import _smolvm_core as _native
+from . import _smolvm_core as _native
 
 _native_add_addr = _native.add_addr
 _native_add_route = _native.add_route

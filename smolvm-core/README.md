@@ -1,6 +1,6 @@
 # smolvm-core
 
-`smolvm-core` is the small native helper package for SmolVM. It speeds up low-level work for the main `smolvm` package, but most applications should not import it directly.
+Most projects should use `smolvm`. It installs `smolvm-core` automatically so sandboxes can start and be controlled efficiently on supported hosts. Import `smolvm-core` directly only when you are working on that package itself.
 
 Most users should install `smolvm`, not `smolvm-core` directly:
 
@@ -14,10 +14,10 @@ Install `smolvm-core` directly only if you are developing the native extension o
 
 ## When the native extension is used
 
-SmolVM uses `smolvm-core` for two native paths when they are available:
+SmolVM uses `smolvm-core` for two host-side jobs when they are available:
 
-- fast host networking on Linux — creating TAP devices, adding routes, writing sysctls
-- QEMU runtime control on Linux and macOS — speaking QMP, QEMU's JSON control protocol, over a Unix socket
+- Linux sandbox networking setup — creating TAP devices (virtual network cards), adding routes, and writing sysctls (kernel settings)
+- QEMU sandbox control on Linux and macOS — speaking QMP, QEMU's JSON control protocol, over a Unix socket
 
 When native host networking is unavailable, SmolVM falls back to running `ip`, `nft`, and `sysctl` as subprocesses. When native QMP is unavailable, SmolVM falls back to its pure-Python QMP client. Both fallback paths produce the same result; the native paths are faster and keep low-level protocol handling out of the main Python API.
 

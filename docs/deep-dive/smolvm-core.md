@@ -1,6 +1,6 @@
 # smolvm-core
 
-Most developers should install and use `smolvm`, not `smolvm-core`. The `smolvm-core` package is the native helper that makes SmolVM faster when the host can support it.
+`smolvm-core` helps SmolVM prepare sandbox networking and control local virtual machines efficiently on supported hosts. Most application developers use it through `smolvm`; direct imports are only for people working on this helper package or checking which native features are available.
 
 ## What It Does
 
