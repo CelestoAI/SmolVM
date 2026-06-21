@@ -547,9 +547,7 @@ class QMPClient:
         """Wait until a QMP job reaches the concluded state."""
         if self._native is None:
             assert self._fallback is not None
-            return self._fallback.wait_for_job(
-                job_id, timeout=timeout, poll_interval=poll_interval
-            )
+            return self._fallback.wait_for_job(job_id, timeout=timeout, poll_interval=poll_interval)
         try:
             result = json.loads(self._native.wait_for_job(job_id, timeout, poll_interval))
         except Exception as exc:
