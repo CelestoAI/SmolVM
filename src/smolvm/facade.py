@@ -74,6 +74,7 @@ from smolvm.images.cloud_init import (
 )
 from smolvm.images.manager import ImageManager
 from smolvm.kernels import ensure_base_kernel_for_backend
+from smolvm.qmp import QMPClient
 from smolvm.runtime.backends import (
     BACKEND_FIRECRACKER,
     BACKEND_LIBKRUN,
@@ -882,7 +883,7 @@ class _LocalForward:
 
     host_port: int
     guest_port: int
-    transport: Literal["nftables", "ssh_tunnel"]
+    transport: Literal["nftables", "qemu_hostfwd", "ssh_tunnel"]
     tunnel_proc: subprocess.Popen[str] | None = None
 
 
@@ -2179,7 +2180,13 @@ class SmolVM:
         command.append(f"{self._ssh_user}@{host}")
         return command
 
-    def expose_local(self, guest_port: int, host_port: int | None = None) -> int:
+    def expose_local(
+        self,
+        guest_port: int,
+        host_port: int | None = None,
+        *,
+        guest_loopback: bool = False,
+    ) -> int:
         """Expose a guest TCP port on localhost only.
 
         Forwards ``127.0.0.1:<host_port>`` on the host to
@@ -2188,6 +2195,9 @@ class SmolVM:
         Args:
             guest_port: Guest TCP port to expose.
             host_port: Host localhost port. If omitted, an available port is chosen.
+            guest_loopback: Route to guest 127.0.0.1 instead of the guest's
+                network address. This uses an SSH tunnel and is required for
+                services that bind guest loopback only.
 
         Returns:
             The host localhost port to connect to.
@@ -2227,7 +2237,10 @@ class SmolVM:
 
         guest_ip = self._info.network.guest_ip
         attempts: list[str] = []
-        should_try_nftables = self._should_try_nftables_local_forward()
+        should_try_nftables = not guest_loopback and self._should_try_nftables_local_forward()
+        should_try_qemu_hostfwd = (
+            not guest_loopback and self._should_try_qemu_hostfwd_local_forward()
+        )
 
         for candidate in candidate_ports:
             key = (candidate, guest_port)
@@ -2278,6 +2291,42 @@ class SmolVM:
                             self._sdk.network.cleanup_local_port_forward(
                                 vm_id=self._vm_id,
                                 guest_ip=guest_ip,
+                                host_port=candidate,
+                                guest_port=guest_port,
+                            )
+
+            qemu_hostfwd_configured = False
+            keep_qemu_hostfwd = False
+            if should_try_qemu_hostfwd:
+                try:
+                    self._add_qemu_hostfwd(host_port=candidate, guest_port=guest_port)
+                    qemu_hostfwd_configured = True
+                    if self._probe_local_forward(candidate):
+                        self._local_forwards[key] = _LocalForward(
+                            host_port=candidate,
+                            guest_port=guest_port,
+                            transport="qemu_hostfwd",
+                        )
+                        keep_qemu_hostfwd = True
+                        logger.info(
+                            "VM %s exposed localhost:%d -> guest:%d (transport=qemu_hostfwd)",
+                            self._vm_id,
+                            candidate,
+                            guest_port,
+                        )
+                        return candidate
+                    attempts.append(
+                        f"qemu hostfwd localhost:{candidate} -> guest:{guest_port} "
+                        "was configured but not reachable"
+                    )
+                except Exception as e:
+                    attempts.append(
+                        f"qemu hostfwd localhost:{candidate} -> guest:{guest_port} failed: {e}"
+                    )
+                finally:
+                    if qemu_hostfwd_configured and not keep_qemu_hostfwd:
+                        with suppress(Exception):
+                            self._remove_qemu_hostfwd(
                                 host_port=candidate,
                                 guest_port=guest_port,
                             )
@@ -2333,6 +2382,10 @@ class SmolVM:
             return self
 
         self._refresh_info()
+        if self._should_try_qemu_hostfwd_local_forward():
+            self._remove_qemu_hostfwd(host_port=host_port, guest_port=guest_port)
+            return self
+
         if self._info.network is None:
             raise SmolVMError(
                 "Cannot remove local port forward: VM has no network configuration",
@@ -3205,6 +3258,43 @@ modprobe 9pnet_virtio""".strip()
         backend = getattr(config, "backend", None)
         return backend not in {BACKEND_QEMU, BACKEND_LIBKRUN}
 
+    def _should_try_qemu_hostfwd_local_forward(self) -> bool:
+        """Return whether localhost exposure should use QEMU's slirp hostfwd."""
+        config = getattr(self._info, "config", None)
+        backend = getattr(config, "backend", None)
+        qemu_network = getattr(config, "qemu_network", None)
+        return (
+            backend == BACKEND_QEMU
+            and qemu_network == "slirp"
+            and getattr(self._info, "control_socket_path", None) is not None
+        )
+
+    def _execute_qemu_human_monitor_command(self, command_line: str) -> None:
+        """Execute a QEMU human monitor command through the VM's QMP socket."""
+        control_socket_path = getattr(self._info, "control_socket_path", None)
+        if control_socket_path is None:
+            raise SmolVMError(
+                "Cannot update QEMU hostfwd: VM has no QMP control socket",
+                {"vm_id": self._vm_id},
+            )
+
+        with QMPClient(Path(control_socket_path)) as client:
+            client.connect()
+            client.execute(
+                "human-monitor-command",
+                {"command-line": command_line},
+            )
+
+    def _add_qemu_hostfwd(self, host_port: int, guest_port: int) -> None:
+        """Add a QEMU slirp hostfwd rule for localhost exposure."""
+        self._execute_qemu_human_monitor_command(
+            f"hostfwd_add net0 tcp:127.0.0.1:{host_port}-:{guest_port}"
+        )
+
+    def _remove_qemu_hostfwd(self, host_port: int, guest_port: int) -> None:
+        """Remove a QEMU slirp hostfwd rule for localhost exposure."""
+        self._execute_qemu_human_monitor_command(f"hostfwd_remove net0 tcp:127.0.0.1:{host_port}")
+
     @staticmethod
     def _find_available_local_port() -> int:
         """Return an available TCP port bound on localhost."""
@@ -3356,6 +3446,13 @@ modprobe 9pnet_virtio""".strip()
         """Remove one tracked localhost exposure."""
         if forward.transport == "ssh_tunnel":
             self._stop_local_tunnel(forward.tunnel_proc)
+            return
+
+        if forward.transport == "qemu_hostfwd":
+            self._remove_qemu_hostfwd(
+                host_port=forward.host_port,
+                guest_port=forward.guest_port,
+            )
             return
 
         if guest_ip is None:

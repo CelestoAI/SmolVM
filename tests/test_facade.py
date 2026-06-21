@@ -2239,6 +2239,191 @@ class TestVMRun:
             vm.run("echo test")
 
 
+class TestVMQemuLocalExpose:
+    """Tests for QEMU slirp localhost exposure."""
+
+    @staticmethod
+    def _running_qemu_vm(
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> SmolVM:
+        config = sample_config.model_copy(update={"backend": "qemu", "qemu_network": "slirp"})
+        mock_network = MagicMock()
+        mock_network.guest_ip = "10.0.2.15"
+
+        mock_info = MagicMock()
+        mock_info.vm_id = "vm001"
+        mock_info.status = VMState.RUNNING
+        mock_info.network = mock_network
+        mock_info.config = config
+        mock_info.control_socket_path = tmp_path / "vm001.qmp"
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = MagicMock(vm_id="vm001", status=VMState.CREATED)
+        mock_sdk.get.return_value = mock_info
+        mock_sdk.network = MagicMock()
+        mock_sdk_cls.return_value = mock_sdk
+
+        return SmolVM(config)
+
+    @staticmethod
+    def _qmp_client(mock_qmp_cls: MagicMock) -> MagicMock:
+        client = MagicMock()
+        mock_qmp_cls.return_value.__enter__.return_value = client
+        return client
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_qemu_slirp_expose_local_uses_qmp_hostfwd_before_ssh(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        with (
+            patch("smolvm.facade.QMPClient") as mock_qmp_cls,
+            patch("smolvm.facade.SmolVM._allocate_local_port", return_value=18081),
+            patch("smolvm.facade.SmolVM._probe_local_forward", return_value=True),
+            patch("smolvm.facade.SmolVM._start_local_tunnel") as mock_start_tunnel,
+        ):
+            client = self._qmp_client(mock_qmp_cls)
+            vm = self._running_qemu_vm(mock_sdk_cls, sample_config, tmp_path)
+
+            host_port = vm.expose_local(guest_port=8080, host_port=18080)
+
+        assert host_port == 18080
+        mock_qmp_cls.assert_called_once_with(tmp_path / "vm001.qmp")
+        client.connect.assert_called_once_with()
+        client.execute.assert_called_once_with(
+            "human-monitor-command",
+            {"command-line": "hostfwd_add net0 tcp:127.0.0.1:18080-:8080"},
+        )
+        mock_start_tunnel.assert_not_called()
+        mock_sdk_cls.return_value.network.setup_local_port_forward.assert_not_called()
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_unexpose_local_removes_qemu_hostfwd(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        with (
+            patch("smolvm.facade.QMPClient") as mock_qmp_cls,
+            patch("smolvm.facade.SmolVM._allocate_local_port", return_value=18081),
+            patch("smolvm.facade.SmolVM._probe_local_forward", return_value=True),
+        ):
+            client = self._qmp_client(mock_qmp_cls)
+            vm = self._running_qemu_vm(mock_sdk_cls, sample_config, tmp_path)
+
+            vm.expose_local(guest_port=8080, host_port=18080)
+            vm.unexpose_local(host_port=18080, guest_port=8080)
+
+        assert client.execute.call_args_list == [
+            call(
+                "human-monitor-command",
+                {"command-line": "hostfwd_add net0 tcp:127.0.0.1:18080-:8080"},
+            ),
+            call(
+                "human-monitor-command",
+                {"command-line": "hostfwd_remove net0 tcp:127.0.0.1:18080"},
+            ),
+        ]
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_qemu_hostfwd_failure_falls_back_to_ssh_tunnel(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        tunnel_proc = MagicMock()
+        with (
+            patch("smolvm.facade.QMPClient") as mock_qmp_cls,
+            patch("smolvm.facade.SmolVM._allocate_local_port", return_value=18081),
+            patch("smolvm.facade.SmolVM._probe_local_forward", return_value=False),
+            patch(
+                "smolvm.facade.SmolVM._start_local_tunnel",
+                return_value=tunnel_proc,
+            ) as mock_start_tunnel,
+        ):
+            client = self._qmp_client(mock_qmp_cls)
+            client.execute.side_effect = SmolVMError("qmp unavailable")
+            vm = self._running_qemu_vm(mock_sdk_cls, sample_config, tmp_path)
+
+            host_port = vm.expose_local(guest_port=8080, host_port=18080)
+
+        assert host_port == 18080
+        client.execute.assert_called_once_with(
+            "human-monitor-command",
+            {"command-line": "hostfwd_add net0 tcp:127.0.0.1:18080-:8080"},
+        )
+        mock_start_tunnel.assert_called_once_with(host_port=18080, guest_port=8080)
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_qemu_hostfwd_probe_failure_removes_rule_before_ssh_fallback(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        tunnel_proc = MagicMock()
+        with (
+            patch("smolvm.facade.QMPClient") as mock_qmp_cls,
+            patch("smolvm.facade.SmolVM._allocate_local_port", return_value=18081),
+            patch("smolvm.facade.SmolVM._probe_local_forward", return_value=False),
+            patch(
+                "smolvm.facade.SmolVM._start_local_tunnel",
+                return_value=tunnel_proc,
+            ),
+        ):
+            client = self._qmp_client(mock_qmp_cls)
+            vm = self._running_qemu_vm(mock_sdk_cls, sample_config, tmp_path)
+
+            host_port = vm.expose_local(guest_port=8080, host_port=18080)
+
+        assert host_port == 18080
+        assert client.execute.call_args_list == [
+            call(
+                "human-monitor-command",
+                {"command-line": "hostfwd_add net0 tcp:127.0.0.1:18080-:8080"},
+            ),
+            call(
+                "human-monitor-command",
+                {"command-line": "hostfwd_remove net0 tcp:127.0.0.1:18080"},
+            ),
+        ]
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_qemu_guest_loopback_exposure_uses_ssh_tunnel(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        tunnel_proc = MagicMock()
+        with (
+            patch("smolvm.facade.QMPClient") as mock_qmp_cls,
+            patch("smolvm.facade.SmolVM._allocate_local_port", return_value=18081),
+            patch(
+                "smolvm.facade.SmolVM._start_local_tunnel",
+                return_value=tunnel_proc,
+            ) as mock_start_tunnel,
+        ):
+            vm = self._running_qemu_vm(mock_sdk_cls, sample_config, tmp_path)
+
+            host_port = vm.expose_local(
+                guest_port=8080,
+                host_port=18080,
+                guest_loopback=True,
+            )
+
+        assert host_port == 18080
+        mock_qmp_cls.assert_not_called()
+        mock_sdk_cls.return_value.network.setup_local_port_forward.assert_not_called()
+        mock_start_tunnel.assert_called_once_with(host_port=18080, guest_port=8080)
+
+
 @pytest.mark.skip(reason="Fails in macOS secure sandboxes due to bind restrictions")
 class TestVMLocalExpose:
     """Tests for localhost-only port exposure."""
