@@ -100,8 +100,8 @@ jobs:
       - name: Smoke test built wheels
         run: |
           # Read smolvm version and the smolvm-core version it depends on.
-          # smolvm and smolvm-core are released independently within the
-          # 0.0.x series, so we pull the expected core version from the
+          # smolvm and smolvm-core are released independently, so we pull the
+          # expected core version from the
           # pyproject dependency string rather than assuming lockstep.
           eval "$(python3 - <<'PY'
           import re

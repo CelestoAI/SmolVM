@@ -12,6 +12,19 @@ That install pulls in the matching `smolvm-core` wheel automatically on supporte
 
 Install `smolvm-core` directly only if you are developing the native extension or testing package releases.
 
+## Versioning and release tags
+
+`smolvm-core` uses date-based versions in `YYYY.M.D` form, such as `2026.6.22`. This keeps the same version valid for Cargo, maturin, and Python package metadata.
+
+Release tags use the same version with a `core-v` prefix:
+
+```bash
+git tag core-v2026.6.22
+git push origin core-v2026.6.22
+```
+
+The publish workflow checks that the tag matches `smolvm-core/Cargo.toml` before it builds wheels and publishes them to PyPI.
+
 ## When the native extension is used
 
 SmolVM uses `smolvm-core` for two host-side jobs when they are available:

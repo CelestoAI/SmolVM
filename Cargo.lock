@@ -878,7 +878,7 @@ checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 
 [[package]]
 name = "smolvm-core"
-version = "0.0.15"
+version = "2026.6.22"
 dependencies = [
  "futures-util",
  "libc",
