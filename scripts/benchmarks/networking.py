@@ -144,7 +144,7 @@ def _has_direct_tap_privileges() -> bool:
                 effective_caps = int(line.split(":", 1)[1].strip(), 16)
                 return bool(effective_caps & (1 << CAP_NET_ADMIN))
     except (OSError, ValueError):
-        pass
+        logger.debug("Could not read effective capabilities from /proc/self/status", exc_info=True)
     return os.geteuid() == 0
 
 
