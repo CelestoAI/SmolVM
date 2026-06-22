@@ -211,7 +211,22 @@ class RustHttpVsockChannel:
     def sync(self, timeout: float = 10) -> None:
         if timeout <= 0:
             raise ValueError("timeout must be > 0")
-        resp = self._request_json("POST", "/sync", timeout=float(timeout + self.connect_timeout))
+        try:
+            resp = self._request_json(
+                "POST",
+                "/sync",
+                timeout=float(timeout + self.connect_timeout),
+            )
+        except SmolVMError as exc:
+            if "guest agent HTTP 404 for POST /sync" not in str(exc):
+                raise
+            result = self.run("sync", timeout=timeout, shell="raw")
+            if result.exit_code != 0:
+                raise SmolVMError(
+                    "guest agent error during legacy sync fallback: "
+                    f"exit_code={result.exit_code} stderr={result.stderr!r}"
+                ) from exc
+            return
         if not resp.get("ok"):
             raise SmolVMError(f"guest agent error during sync: {resp.get('error', resp)}")
 

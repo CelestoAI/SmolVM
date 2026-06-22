@@ -31,7 +31,7 @@ from smolvm.comm.base import CommChannel
 from smolvm.comm.rust_http_vsock_channel import RustHttpVsockChannel
 from smolvm.exceptions import OperationTimeoutError, SmolVMError
 
-Handler = Callable[[str, str, bytes], dict]
+Handler = Callable[[str, str, bytes], dict | tuple[int, dict | str]]
 
 
 class FakeRustChannel(RustHttpVsockChannel):
@@ -49,10 +49,17 @@ class FakeRustChannel(RustHttpVsockChannel):
                 data = _read_http_request(guest)
                 method, path, body = data
                 self.requests.append(data)
-                payload = json.dumps(handler(method, path, body)).encode()
+                result = handler(method, path, body)
+                status = 200
+                if isinstance(result, tuple):
+                    status, result = result
+                payload = (
+                    result.encode() if isinstance(result, str) else json.dumps(result).encode()
+                )
+                status_text = "OK" if status < 400 else "ERROR"
                 guest.sendall(
-                    b"HTTP/1.1 200 OK\r\n"
-                    b"Content-Type: application/json\r\n"
+                    f"HTTP/1.1 {status} {status_text}\r\n".encode()
+                    + b"Content-Type: application/json\r\n"
                     + f"Content-Length: {len(payload)}\r\n".encode()
                     + b"Connection: close\r\n\r\n"
                     + payload
@@ -220,6 +227,38 @@ def test_sync_error_maps_to_smolvm_error() -> None:
 
     with pytest.raises(SmolVMError, match="busy"):
         channel.sync()
+
+
+def test_sync_falls_back_to_raw_exec_when_endpoint_missing() -> None:
+    def _missing_sync(method: str, path: str, body: bytes) -> tuple[int, str]:
+        assert method == "POST"
+        assert path == "/sync"
+        assert body == b""
+        return (404, "")
+
+    def _legacy_exec(method: str, path: str, body: bytes) -> dict:
+        assert method == "POST"
+        assert path == "/exec"
+        request = json.loads(body)
+        assert request["command"] == "sync"
+        assert request["shell"] == "raw"
+        assert request["timeout_seconds"] == 10
+        return {"ok": True, "exit_code": 0, "stdout": "", "stderr": "", "timed_out": False}
+
+    channel = FakeRustChannel([_missing_sync, _legacy_exec])
+    channel.sync(timeout=10)
+
+
+def test_sync_fallback_exec_failure_maps_to_smolvm_error() -> None:
+    def _missing_sync(method: str, path: str, body: bytes) -> tuple[int, str]:
+        return (404, "")
+
+    def _legacy_exec(method: str, path: str, body: bytes) -> dict:
+        return {"ok": True, "exit_code": 1, "stdout": "", "stderr": "nope", "timed_out": False}
+
+    channel = FakeRustChannel([_missing_sync, _legacy_exec])
+    with pytest.raises(SmolVMError, match="legacy sync fallback"):
+        channel.sync(timeout=10)
 
 
 def test_put_and_get_file(tmp_path: Path) -> None:
