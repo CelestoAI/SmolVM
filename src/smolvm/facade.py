@@ -1683,6 +1683,8 @@ class SmolVM:
         channel = self._ensure_control_for_operation(action="create a disk snapshot", timeout=10.0)
         try:
             channel.sync(timeout=10)
+        except OperationTimeoutError:
+            raise
         except Exception as exc:
             raise SmolVMError(
                 f"Cannot create disk snapshot for sandbox '{self._vm_id}' because syncing "

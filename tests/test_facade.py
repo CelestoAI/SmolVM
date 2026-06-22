@@ -676,6 +676,23 @@ class TestSnapshot:
         ):
             vm._sync_guest_for_disk_snapshot()
 
+    def test_disk_snapshot_sync_timeout_preserves_operation_context(self) -> None:
+        """Timeouts should keep the low-level operation name visible to callers."""
+        vm = SmolVM.__new__(SmolVM)
+        vm._vm_id = "vm001"
+        vm._info = MagicMock(status=VMState.RUNNING)
+        vm._refresh_info = MagicMock()
+
+        channel = MagicMock()
+        channel.sync.side_effect = OperationTimeoutError(
+            "guest agent request: POST /sync",
+            10.0,
+        )
+        vm._ensure_control_for_operation = MagicMock(return_value=channel)
+
+        with pytest.raises(OperationTimeoutError, match=r"POST /sync"):
+            vm._sync_guest_for_disk_snapshot()
+
 
 class TestFromBootImage:
     """Tests for SmolVM.from_image()."""
