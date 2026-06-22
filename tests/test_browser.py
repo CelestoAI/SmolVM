@@ -225,6 +225,7 @@ def test_build_browser_vm_config_uses_persistent_disk_reuse(
 
     assert vm_config.retain_disk_on_delete is True
     assert vm_config.backend == "qemu"
+    assert vm_config.comm_channel == "ssh"
     assert vm_config.vm_id.startswith("browser-prof-acct-1-")
     assert ssh_key_path == str(private_key)
     assert len(vm_config.port_forwards) == 1

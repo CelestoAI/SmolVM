@@ -166,6 +166,7 @@ def _build_browser_vm_config(
         port_forwards=port_forwards,
         workspace_mounts=browser_config.workspace_mounts,
         ssh_public_key=public_key.read_text().strip(),
+        comm_channel="ssh",
     )
     return config, resolved_ssh_key_path
 
