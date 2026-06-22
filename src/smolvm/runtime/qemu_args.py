@@ -181,10 +181,12 @@ def build_qemu_argv(
 
     if vm_info.network is None:
         raise SmolVMError("QEMU backend requires a VM network config")
-    if not tap_mode and vm_info.network.ssh_host_port is None:
-        raise SmolVMError(
-            "QEMU slirp networking requires a reserved ssh_host_port in VM network config"
-        )
+    if (
+        not tap_mode
+        and vm_info.config.comm_channel == "ssh"
+        and vm_info.network.ssh_host_port is None
+    ):
+        raise SmolVMError("QEMU slirp networking requires a reserved ssh_host_port for SSH control")
 
     # Defensive sanity check: if the platform spec forces a specific boot
     # mode, the VMConfig must already match. The authoritative invariant
@@ -226,12 +228,15 @@ def build_qemu_argv(
         # side (link up, IP, routes, NAT) is owned by NetworkManager, not QEMU.
         netdev_arg = f"tap,id=net0,ifname={vm_info.network.tap_device},script=no,downscript=no"
     else:
-        hostfwd_rules = [f"hostfwd=tcp:127.0.0.1:{vm_info.network.ssh_host_port}-:22"]
+        hostfwd_rules = []
+        if vm_info.network.ssh_host_port is not None:
+            hostfwd_rules.append(f"hostfwd=tcp:127.0.0.1:{vm_info.network.ssh_host_port}-:22")
         for forward in vm_info.config.port_forwards:
             hostfwd_rules.append(
                 f"hostfwd=tcp:{forward.host_address}:{forward.host_port}-:{forward.guest_port}"
             )
-        netdev_arg = f"user,id=net0,dns={QEMU_SLIRP_DNS},{','.join(hostfwd_rules)}"
+        netdev_options = [f"user,id=net0,dns={QEMU_SLIRP_DNS}", *hostfwd_rules]
+        netdev_arg = ",".join(netdev_options)
 
     cmd: list[str] = [
         str(qemu_bin),

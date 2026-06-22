@@ -364,13 +364,13 @@ class TestSmolVMCreate:
         mock_network.setup_ssh_port_forward.assert_not_called()
 
     @patch("smolvm.comm.select.host_supports_vsock", return_value=True)
-    def test_create_qemu_slirp_explicit_vsock_keeps_ssh_hostfwd(
+    def test_create_qemu_slirp_explicit_vsock_skips_ssh_hostfwd(
         self,
         _mock_host_vsock: MagicMock,
         tmp_path: Path,
         sample_config: VMConfig,
     ) -> None:
-        """QEMU slirp keeps hostfwd for terminal compatibility under explicit vsock."""
+        """QEMU slirp does not expose SSH unless SSH is the selected channel."""
         smol_vm = SmolVMManager(
             data_dir=tmp_path / "data-qemu-vsock",
             socket_dir=tmp_path / "sockets-qemu-vsock",
@@ -393,7 +393,7 @@ class TestSmolVMCreate:
 
         assert vm_info.network is not None
         assert vm_info.network.tap_device == "usernet"
-        assert vm_info.network.ssh_host_port is not None
+        assert vm_info.network.ssh_host_port is None
         mock_overlay.assert_not_called()
         mock_network.setup_ssh_port_forward.assert_not_called()
 

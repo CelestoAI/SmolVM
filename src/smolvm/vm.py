@@ -1394,10 +1394,7 @@ class SmolVMManager:
             return True
 
         resolution = resolution or self._resolve_control_channel_for_config(config, backend)
-        if resolution.kind == "ssh":
-            return True
-
-        return backend == BACKEND_QEMU and config.qemu_network == "slirp"
+        return resolution.kind == "ssh"
 
     def _should_setup_tap_connectivity_for_create(
         self,

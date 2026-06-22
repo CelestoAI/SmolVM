@@ -398,11 +398,14 @@ def test_firmware_mode_aarch64_needs_uefi_firmware(tmp_path: Path) -> None:
 
 
 def test_missing_ssh_host_port_raises(tmp_path: Path) -> None:
-    """The QEMU backend requires a reserved ssh_host_port."""
+    """SSH control over QEMU slirp requires a reserved ssh_host_port."""
     vm_info = _qemu_vm_info(tmp_path)
-    # Pydantic frozen model — swap the network for one without the port.
+    # Pydantic frozen model — swap the config/network for explicit SSH with no port.
     vm_info = vm_info.model_copy(
-        update={"network": vm_info.network.model_copy(update={"ssh_host_port": None})}
+        update={
+            "config": vm_info.config.model_copy(update={"comm_channel": "ssh"}),
+            "network": vm_info.network.model_copy(update={"ssh_host_port": None}),
+        }
     )
     with pytest.raises(SmolVMError, match="ssh_host_port"):
         build_qemu_argv(
@@ -679,16 +682,18 @@ def test_build_qemu_argv_tap_mode_allows_no_ssh_host_port(tmp_path: Path) -> Non
     assert "tap,id=net0,ifname=tap5,script=no,downscript=no" in " ".join(cmd)
 
 
-def test_build_qemu_argv_slirp_still_requires_ssh_host_port(tmp_path: Path) -> None:
-    """Default (slirp) mode keeps requiring a reserved ssh_host_port."""
+def test_build_qemu_argv_slirp_allows_no_ssh_host_port(tmp_path: Path) -> None:
+    """Slirp can run without exposing guest SSH."""
     base = _qemu_vm_info(tmp_path)
     network = base.network.model_copy(update={"ssh_host_port": None})
     vm = base.model_copy(update={"network": network})
-    with pytest.raises(SmolVMError, match="ssh_host_port"):
-        build_qemu_argv(
-            vm,
-            qemu_bin=Path("/usr/bin/qemu-system-x86_64"),
-            boot_args="console=ttyS0 root=/dev/vda rw",
-            platform_spec=_LINUX_SPEC,
-            host_system="Linux",
-        )
+    cmd = build_qemu_argv(
+        vm,
+        qemu_bin=Path("/usr/bin/qemu-system-x86_64"),
+        boot_args="console=ttyS0 root=/dev/vda rw",
+        platform_spec=_LINUX_SPEC,
+        host_system="Linux",
+    )
+    joined = " ".join(cmd)
+    assert "user,id=net0,dns=10.0.2.3" in joined
+    assert "-:22" not in joined

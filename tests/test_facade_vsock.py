@@ -192,7 +192,10 @@ def test_auto_vsock_requires_guest_agent(tmp_path: Path, monkeypatch: pytest.Mon
     with pytest.raises(OperationTimeoutError) as exc:
         vm._wait_for_ready(timeout=30)
 
-    assert "use a current SmolVM image or start with --comm-channel ssh" in str(exc.value)
+    assert (
+        "Sandbox 'vm1' did not become ready; run 'smolvm sandbox delete vm1' "
+        "and then 'smolvm sandbox create --name vm1 --comm-channel ssh'"
+    ) in str(exc.value)
     assert seen["probe_timeouts"] == [30]
     assert ssh_called == {}
     assert vm._control_ready is False

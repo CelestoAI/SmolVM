@@ -99,6 +99,7 @@ def test_create_qemu_skips_local_ssh_port_that_is_already_in_use(tmp_path: Path)
         kernel_path=kernel,
         rootfs_path=rootfs,
         backend="qemu",
+        comm_channel="ssh",
     )
     sdk = SmolVMManager(data_dir=tmp_path / "data", socket_dir=tmp_path / "sockets", backend="qemu")
 
@@ -188,6 +189,7 @@ def test_start_qemu_includes_configured_hostfwd_rules(
         kernel_path=kernel,
         rootfs_path=rootfs,
         backend="qemu",
+        comm_channel="ssh",
         boot_args="console=ttyAMA0 reboot=k panic=1 init=/init",
         port_forwards=[
             PortForwardConfig(host_port=39011, guest_port=9222),

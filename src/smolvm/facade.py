@@ -3150,8 +3150,10 @@ modprobe 9pnet_virtio""".strip()
             if self._try_vsock_ready(timeout):
                 return
             raise OperationTimeoutError(
-                "wait_for_ready: the Rust guest agent did not answer over vsock; "
-                "use a current SmolVM image or start with --comm-channel ssh",
+                f"Sandbox '{self._vm_id}' did not become ready; run "
+                f"'smolvm sandbox delete {self._vm_id}' and then "
+                f"'smolvm sandbox create --name {self._vm_id} --comm-channel ssh' "
+                "to use the compatible startup path",
                 timeout,
             )
         self._wait_for_ssh_over_network(timeout, as_control=True)
