@@ -91,9 +91,10 @@ def _mark_native_unprivileged() -> None:
     if not _native_unprivileged:
         _native_unprivileged = True
         logger.warning(
-            "Using the slower networking path. VMs will still work; "
-            "each is a fraction of a second slower to start. "
-            "Run with sudo to use the faster path."
+            "Fast Rust networking needs permission to change Linux networking "
+            "directly (root or CAP_NET_ADMIN). SmolVM is using the slower sudo "
+            "fallback; run `smolvm setup` if sudo fallback is missing, or start "
+            "the same SmolVM command with sudo to get the Rust networking speedup."
         )
 
 

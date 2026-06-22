@@ -14,6 +14,7 @@
 
 """Tests for SmolVM network module."""
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -187,12 +188,16 @@ class TestTapManagement:
     @patch("smolvm.host.network.run_command")
     @patch("smolvm.host.network.native")
     def test_create_tap_falls_back_to_subprocess_on_eperm(
-        self, mock_native: MagicMock, mock_run_command: MagicMock
+        self,
+        mock_native: MagicMock,
+        mock_run_command: MagicMock,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """When the native ioctl returns EPERM, fall through to sudo ip path."""
         mock_native.create_tap.side_effect = OSError("tap2: errno 1")
         mock_run_command.return_value = MagicMock(stdout="")
 
+        caplog.set_level(logging.WARNING, logger="smolvm.host.network")
         with patch("smolvm.host.network.HAS_NETLINK", True):
             nm = NetworkManager()
             nm.create_tap("tap2", "alice")
@@ -201,6 +206,11 @@ class TestTapManagement:
         mock_run_command.assert_called_once_with(
             ["ip", "tuntap", "add", "tap2", "mode", "tap", "user", "alice"]
         )
+        warning = caplog.text
+        assert "Fast Rust networking needs permission" in warning
+        assert "root or CAP_NET_ADMIN" in warning
+        assert "smolvm setup" in warning
+        assert "same SmolVM command with sudo" in warning
 
     @patch("smolvm.host.network.run_command")
     @patch("smolvm.host.network.native")

@@ -158,15 +158,18 @@ def _should_skip_mode(mode: str) -> str | None:
         if network_module._native_unprivileged:
             return (
                 "native networking hit EPERM and fell back; "
-                "use unprivileged-fallback to measure fallback"
+                "rerun this benchmark with sudo to measure the native speedup"
             )
         if _has_direct_tap_privileges():
             return None
         if not _sudo_fallback_available():
-            return "native mode needs direct TAP privileges and sudo fallback is unavailable"
+            return (
+                "native mode needs root or CAP_NET_ADMIN; rerun this benchmark "
+                "with sudo for native speed, or run `smolvm setup` to enable fallback"
+            )
         return (
-            "native mode needs direct TAP privileges; "
-            "use unprivileged-fallback to measure EPERM fallback"
+            "native mode needs root or CAP_NET_ADMIN; rerun this benchmark "
+            "with sudo to measure the native speedup"
         )
     if mode != "unprivileged-fallback":
         return None
@@ -177,7 +180,7 @@ def _should_skip_mode(mode: str) -> str | None:
     if os.geteuid() == 0:
         return "unprivileged fallback needs a non-root process"
     if not _sudo_fallback_available():
-        return "sudo fallback is unavailable"
+        return "sudo fallback is unavailable; run `smolvm setup` before measuring fallback"
     return None
 
 

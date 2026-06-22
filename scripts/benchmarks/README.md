@@ -64,10 +64,12 @@ uv run python scripts/benchmarks/networking.py --include-full-start --output /tm
 
 This benchmark is Linux-only and touches real host networking. It expects the
 same privileges as Firecracker TAP networking. The `native` mode uses Rust
-helpers when direct TAP privileges are available, `forced-off` sets
-`SMOLVM_DISABLE_NATIVE_NETWORKING=1`, and `unprivileged-fallback` is skipped
-unless native can be attempted without direct TAP privileges and the existing
-sudo fallback is available.
+helpers when direct TAP privileges are available; rerun the benchmark with
+`sudo` or another root/CAP_NET_ADMIN launch path to measure that speedup.
+`forced-off` sets `SMOLVM_DISABLE_NATIVE_NETWORKING=1`, and
+`unprivileged-fallback` is skipped unless native can be attempted without
+direct TAP privileges and the existing sudo fallback is available. Run
+`smolvm setup` first if the sudo fallback is missing.
 
 ## Ubuntu Transport Comparison
 
