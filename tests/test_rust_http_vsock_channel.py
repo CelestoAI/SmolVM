@@ -54,9 +54,7 @@ class FakeRustChannel(RustHttpVsockChannel):
                 if isinstance(result, tuple):
                     status, result = result
                 payload = (
-                    result.encode()
-                    if isinstance(result, str)
-                    else json.dumps(result).encode()
+                    result.encode() if isinstance(result, str) else json.dumps(result).encode()
                 )
                 status_text = "OK" if status < 400 else "ERROR"
                 guest.sendall(
