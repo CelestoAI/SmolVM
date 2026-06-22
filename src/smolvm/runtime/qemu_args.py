@@ -186,7 +186,10 @@ def build_qemu_argv(
         and vm_info.config.comm_channel == "ssh"
         and vm_info.network.ssh_host_port is None
     ):
-        raise SmolVMError("QEMU slirp networking requires a reserved ssh_host_port for SSH control")
+        raise SmolVMError(
+            f"Sandbox '{vm_info.vm_id}' needs an SSH port reserved for SSH control; recreate it with "
+            f"'smolvm sandbox create --name {vm_info.vm_id} --comm-channel ssh'."
+        )
 
     # Defensive sanity check: if the platform spec forces a specific boot
     # mode, the VMConfig must already match. The authoritative invariant
