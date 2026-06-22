@@ -21,6 +21,7 @@ pub fn router() -> Router {
         .route("/version", get(handle_version))
         .route("/capabilities", get(handle_capabilities))
         .route("/exec", post(handle_exec))
+        .route("/sync", post(handle_sync))
         .route(
             "/files/put",
             post(handle_file_put).layer(DefaultBodyLimit::max(FILE_PUT_BODY_LIMIT_BYTES)),
@@ -33,6 +34,7 @@ pub fn extension_router() -> Router {
     Router::new()
         .route("/version", get(handle_version))
         .route("/capabilities", get(handle_capabilities))
+        .route("/sync", post(handle_sync))
         .route(
             "/files/put",
             post(handle_file_put).layer(DefaultBodyLimit::max(FILE_PUT_BODY_LIMIT_BYTES)),
@@ -93,6 +95,7 @@ pub async fn handle_capabilities() -> Json<CapabilitiesResponse> {
             "GET /version",
             "GET /capabilities",
             "POST /exec",
+            "POST /sync",
             "POST /files/put",
             "GET /files/get",
         ],
@@ -104,6 +107,27 @@ pub async fn handle_capabilities() -> Json<CapabilitiesResponse> {
 
 pub async fn handle_exec(Json(req): Json<ExecRequest>) -> Json<ExecResponse> {
     Json(exec::run_command(req).await)
+}
+
+#[derive(Serialize)]
+pub struct SyncResponse {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+pub async fn handle_sync() -> Json<SyncResponse> {
+    let result = tokio::task::spawn_blocking(|| unsafe { libc::sync() }).await;
+    match result {
+        Ok(()) => Json(SyncResponse {
+            ok: true,
+            error: None,
+        }),
+        Err(error) => Json(SyncResponse {
+            ok: false,
+            error: Some(format!("sync task failed: {error}")),
+        }),
+    }
 }
 
 pub async fn handle_file_put(Json(req): Json<FilePutRequest>) -> Json<FilePutResponse> {
@@ -148,6 +172,7 @@ mod tests {
         assert_eq!(capabilities.body["prod_metrics_enabled"], false);
         let endpoints = capabilities.body["endpoints"].as_array().unwrap();
         assert!(endpoints.contains(&json!("POST /exec")));
+        assert!(endpoints.contains(&json!("POST /sync")));
         assert!(endpoints.contains(&json!("POST /files/put")));
         assert!(endpoints.contains(&json!("GET /files/get")));
     }
@@ -174,6 +199,15 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn public_router_sync_flushes_filesystems() {
+        let response = request_json(router(), "POST", "/sync", None).await;
+
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.body["ok"], true);
+        assert_eq!(response.body.get("error"), None);
+    }
+
+    #[tokio::test]
     async fn extension_router_leaves_private_health_and_exec_routes_to_consumer() {
         let version = request_json(extension_router(), "GET", "/version", None).await;
         assert_eq!(version.status, StatusCode::OK);
@@ -189,6 +223,10 @@ mod tests {
         )
         .await;
         assert_eq!(exec.status(), StatusCode::NOT_FOUND);
+
+        let sync = request_json(extension_router(), "POST", "/sync", None).await;
+        assert_eq!(sync.status, StatusCode::OK);
+        assert_eq!(sync.body["ok"], true);
     }
 
     struct JsonResponse {

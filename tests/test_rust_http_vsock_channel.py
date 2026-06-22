@@ -20,6 +20,7 @@ import base64
 import json
 import queue
 import socket
+import tempfile
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -119,8 +120,9 @@ def test_wait_ready_polls_quickly_during_early_boot(monkeypatch: pytest.MonkeyPa
     assert sleeps == [0.02, 0.02]
 
 
-def test_from_uds_closes_socket_when_connect_rejected(tmp_path: Path) -> None:
-    uds = str(tmp_path / "vsock.sock")
+def test_from_uds_closes_socket_when_connect_rejected() -> None:
+    sock_dir = tempfile.TemporaryDirectory(prefix="svsock-", dir="/tmp")
+    uds = str(Path(sock_dir.name) / "vsock.sock")
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(uds)
     server.listen(1)
@@ -150,6 +152,7 @@ def test_from_uds_closes_socket_when_connect_rejected(tmp_path: Path) -> None:
     finally:
         server.close()
         thread.join(timeout=5)
+        sock_dir.cleanup()
 
 
 def test_run_maps_command_result() -> None:
@@ -200,6 +203,23 @@ def test_run_timeout_maps_to_operation_timeout() -> None:
     )
     with pytest.raises(OperationTimeoutError):
         channel.run("sleep 10", timeout=1)
+
+
+def test_sync_posts_dedicated_endpoint() -> None:
+    def _handler(method: str, path: str, body: bytes) -> dict:
+        assert method == "POST"
+        assert path == "/sync"
+        assert body == b""
+        return {"ok": True}
+
+    FakeRustChannel([_handler]).sync(timeout=10)
+
+
+def test_sync_error_maps_to_smolvm_error() -> None:
+    channel = FakeRustChannel([lambda method, path, body: {"ok": False, "error": "busy"}])
+
+    with pytest.raises(SmolVMError, match="busy"):
+        channel.sync()
 
 
 def test_put_and_get_file(tmp_path: Path) -> None:

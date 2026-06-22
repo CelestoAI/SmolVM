@@ -22,6 +22,7 @@ eliminating the ~170ms overhead of forking a new ``ssh`` process per call.
 
 import base64
 import logging
+import math
 import shlex
 import socket
 import stat
@@ -393,6 +394,15 @@ class SSHClient:
             raise SmolVMError(f"SSH command failed: {e}") from e
         except Exception as e:
             raise SmolVMError(f"SSH command failed: {e}") from e
+
+    def sync(self, timeout: float = 10) -> None:
+        """Flush guest filesystem buffers through the SSH control channel."""
+        if timeout <= 0:
+            raise ValueError("timeout must be > 0")
+        result = self.run("sync", timeout=math.ceil(timeout), shell="raw")
+        if result.exit_code != 0:
+            detail = result.stderr.strip() or result.stdout.strip() or "no output"
+            raise SmolVMError(f"guest sync failed over SSH: {detail}")
 
     # ── Readiness detection ─────────────────────────────────────
 

@@ -1681,13 +1681,16 @@ class SmolVM:
         if self._info.status != VMState.RUNNING:
             return
         channel = self._ensure_control_for_operation(action="create a disk snapshot", timeout=10.0)
-        result = channel.run("sync", timeout=10, shell="raw")
-        if result.exit_code != 0:
+        try:
+            channel.sync(timeout=10)
+        except OperationTimeoutError:
+            raise
+        except Exception as exc:
             raise SmolVMError(
                 f"Cannot create disk snapshot for sandbox '{self._vm_id}' because syncing "
                 f"files inside it failed; retry with 'smolvm sandbox snapshot create "
                 f"{self._vm_id} --snapshot-type disk'."
-            )
+            ) from exc
 
     def delete(self) -> None:
         """Delete the VM and release all resources."""

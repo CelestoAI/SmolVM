@@ -59,6 +59,10 @@ class CommChannel(Protocol):
         """Execute *command* on the guest and return its result."""
         ...
 
+    def sync(self, timeout: float = 10) -> None:
+        """Flush guest filesystem buffers."""
+        pass
+
     def put_file(self, local_path: str | Path, remote_path: str) -> None:
         """Upload a local file to *remote_path* in the guest."""
         ...
