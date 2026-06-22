@@ -34,23 +34,20 @@ def _resolve(**overrides):
 
 
 class TestAuto:
-    def test_auto_picks_vsock_with_fallback_on_linux_qemu(self) -> None:
+    def test_auto_picks_vsock_without_fallback_on_linux_qemu(self) -> None:
         res = _resolve()
         assert res.kind == "vsock"
-        assert res.allow_fallback is True
 
     def test_auto_falls_back_to_ssh_without_host_vsock(self) -> None:
         res = _resolve(host_vsock_supported=False)
         assert res.kind == "ssh"
-        assert res.allow_fallback is False
 
-    def test_auto_picks_vsock_with_fallback_on_firecracker_linux(
+    def test_auto_picks_vsock_without_fallback_on_firecracker_linux(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr("smolvm.comm.select.platform.system", lambda: "Linux")
         res = _resolve(backend=BACKEND_FIRECRACKER)
         assert res.kind == "vsock"
-        assert res.allow_fallback is True
 
     def test_auto_uses_ssh_for_windows(self) -> None:
         res = _resolve(guest_os=GuestOS.WINDOWS, backend=BACKEND_QEMU)
@@ -61,12 +58,10 @@ class TestExplicit:
     def test_explicit_ssh(self) -> None:
         res = _resolve(requested="ssh")
         assert res.kind == "ssh"
-        assert res.allow_fallback is False
 
     def test_explicit_vsock_no_fallback(self) -> None:
         res = _resolve(requested="vsock")
         assert res.kind == "vsock"
-        assert res.allow_fallback is False
 
     def test_explicit_vsock_on_macos_raises(self) -> None:
         with pytest.raises(VsockNotSupportedError) as exc:
@@ -78,7 +73,6 @@ class TestExplicit:
         monkeypatch.setattr("smolvm.comm.select.platform.system", lambda: "Linux")
         res = _resolve(requested="vsock", backend=BACKEND_FIRECRACKER)
         assert res.kind == "vsock"
-        assert res.allow_fallback is False
 
     def test_explicit_vsock_on_windows_raises(self) -> None:
         with pytest.raises(VsockNotSupportedError) as exc:

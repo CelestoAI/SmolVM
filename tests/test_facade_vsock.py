@@ -159,20 +159,15 @@ def test_explicit_vsock_does_not_fall_back_to_ssh(
 
     monkeypatch.setattr(RustHttpVsockChannel, "wait_ready", _fail)
 
-    # request="vsock" → explicit, allow_fallback=False
+    # request="vsock" -> explicit
     vm = _vsock_vm(tmp_path, comm_channel="vsock", request="vsock")
     with pytest.raises(OperationTimeoutError):
         vm._wait_for_ready(timeout=1)
     assert vm._control_ready is False
 
 
-def test_auto_vsock_falls_back_to_ssh_within_probe_budget(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An agent-less image (vsock never answers) must fall back to SSH and only
-    spend up to _VSOCK_AUTO_PROBE_TIMEOUT probing, not the full call timeout."""
-    import smolvm.facade as facade
-
+def test_auto_vsock_requires_guest_agent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An agent-less image must fail vsock readiness instead of hiding it behind SSH."""
     monkeypatch.setattr("smolvm.comm.select.host_supports_vsock", lambda: True)
 
     seen = {"probe_timeouts": []}
@@ -192,19 +187,15 @@ def test_auto_vsock_falls_back_to_ssh_within_probe_budget(
 
     monkeypatch.setattr(SmolVM, "_wait_for_ssh_over_network", _ssh_ok)
 
-    # auto channel (comm_channel=None, request=None) → vsock with fallback
+    # auto channel (comm_channel=None, request=None) -> vsock, agent required
     vm = _vsock_vm(tmp_path, comm_channel=None, request=None)
-    vm._wait_for_ready(timeout=30)
+    with pytest.raises(OperationTimeoutError) as exc:
+        vm._wait_for_ready(timeout=30)
 
-    # vsock probe was capped at the (short) auto budget, not the 30s call timeout
-    assert seen["probe_timeouts"][0] == pytest.approx(facade._VSOCK_AUTO_PROBE_TIMEOUT)
-    assert len(seen["probe_timeouts"]) == 1
-    assert all(timeout <= facade._VSOCK_AUTO_PROBE_TIMEOUT for timeout in seen["probe_timeouts"])
-    assert facade._VSOCK_AUTO_PROBE_TIMEOUT <= 3.0  # guardrail stays short
-    # and we then fell back to SSH
-    assert ssh_called  # SSH path was taken
-    assert ssh_called["as_control"] is True
-    assert vm._control_ready is True
+    assert "use a current SmolVM image or start with --comm-channel ssh" in str(exc.value)
+    assert seen["probe_timeouts"] == [30]
+    assert ssh_called == {}
+    assert vm._control_ready is False
 
 
 def test_resolve_channel_reads_config_and_request(
@@ -212,7 +203,6 @@ def test_resolve_channel_reads_config_and_request(
 ) -> None:
     monkeypatch.setattr("smolvm.comm.select.host_supports_vsock", lambda: True)
     vm = _vsock_vm(tmp_path, comm_channel=None, request=None)
-    # auto on linux+qemu → vsock with fallback allowed
+    # auto on linux+qemu -> vsock, agent required
     res = vm._resolve_channel()
     assert res.kind == "vsock"
-    assert res.allow_fallback is True

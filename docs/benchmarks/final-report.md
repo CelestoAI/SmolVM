@@ -12,7 +12,8 @@ cell after an untimed warm-up; variance was small. Scripts: `scripts/exp_final.p
 
 This is a historical report. The old Python guest-agent and QEMU-only vsock
 limitations described below have since been replaced by the standalone Rust
-guest-agent and Firecracker vsock support.
+guest-agent and Firecracker vsock support. Current auto-selected vsock requires
+that Rust guest-agent; users who need SSH can force it with `--comm-channel ssh`.
 
 ---
 
@@ -114,19 +115,19 @@ also tightened (or replaced by vsock).
 3. **Firecracker could not use vsock** in that release because the selector
    hard-gated vsock to QEMU.
 
-These have since been addressed by the Rust guest-agent bake path, a shorter
-auto probe, and Firecracker vsock support.
+These have since been addressed by the Rust guest-agent bake path, requiring
+auto-selected vsock to use that agent, and Firecracker vsock support.
 
 ---
 
 ## Historical recommendations and current status
 
-1. **Fix the 8 s penalty first.** Done: the probe is shorter and published
-   images now start the Rust guest agent.
+1. **Fix the 8 s penalty first.** Done: auto-selected vsock now requires the
+   Rust guest agent instead of keeping the old hidden SSH downgrade.
 2. **Make vsock work out of the box.** Done for published images without a
    Python runtime dependency.
 3. **Adopt the trimmed boot cmdline.** Still image/profile-specific; keep
    validating before broadening defaults.
-4. **Tighten the host-side SSH wait loop.** Done for the SSH fallback path.
+4. **Tighten the host-side SSH wait loop.** Done for explicit SSH.
 5. **Implement the Firecracker vsock host bridge.** Done, with E2E coverage for
    Firecracker SSH and vsock.

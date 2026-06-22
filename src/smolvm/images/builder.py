@@ -1523,15 +1523,15 @@ log_ts "root-ready"
 
 # ── Guest agent (vsock control plane) ───────────────────────
 # Started before networking and sshd, so explicit-vsock sandboxes can become
-# ready without waiting for SSH host-key generation or network setup. Skipped
-# silently if the agent wasn't baked in — the host falls back to SSH in that
-# case.
+# ready without waiting for SSH host-key generation or network setup. SSH-only
+# sandboxes can still boot if the agent is missing, but vsock sandboxes require
+# the Rust agent to answer.
 log_ts "guest-agent-start"
 if [ -x /usr/local/bin/smolvm-guest-agent ]; then
     /usr/local/bin/smolvm-guest-agent --listen vsock://1024 >/var/log/smolvm-agent.log 2>&1 &
     echo "SmolVM init: guest agent started (PID=$!)"
 else
-    echo "SmolVM init: guest agent not started (agent missing)"
+    echo "SmolVM init: guest agent not found; vsock control will be unavailable" >&2
 fi
 log_ts "guest-agent-started"
 

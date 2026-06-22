@@ -94,7 +94,8 @@ class TestSmolVMCreate:
         mock_network_class.return_value = mock_network
         smol_vm.network = mock_network
 
-        vm_info = smol_vm.create(sample_config)
+        config = sample_config.model_copy(update={"comm_channel": "ssh"})
+        vm_info = smol_vm.create(config)
 
         assert vm_info.vm_id == "vm001"
         assert vm_info.status == VMState.CREATED
@@ -265,23 +266,23 @@ class TestSmolVMCreate:
         mock_network.setup_ssh_port_forward.assert_not_called()
 
     @patch("smolvm.comm.select.platform.system", return_value="Linux")
-    def test_create_firecracker_auto_keeps_ssh_forward_for_fallback(
+    def test_create_firecracker_auto_vsock_defers_ssh_networking(
         self,
         _mock_system: MagicMock,
         smol_vm: SmolVMManager,
         sample_config: VMConfig,
     ) -> None:
-        """Auto channel keeps SSH forwarding so vsock probe fallback still works."""
+        """Auto-selected Firecracker vsock behaves like explicit vsock in alpha builds."""
         mock_network = _attach_mock_network(smol_vm)
         config = sample_config.model_copy(update={"vm_id": "vm-auto", "backend": "firecracker"})
 
         vm_info = smol_vm.create(config)
 
         assert vm_info.network is not None
-        assert vm_info.network.ssh_host_port is not None
-        mock_network.add_route.assert_called_once()
-        mock_network.setup_nat.assert_called_once()
-        mock_network.setup_ssh_port_forward.assert_called_once()
+        assert vm_info.network.ssh_host_port is None
+        mock_network.add_route.assert_not_called()
+        mock_network.setup_nat.assert_not_called()
+        mock_network.setup_ssh_port_forward.assert_not_called()
 
     @patch("smolvm.comm.select.platform.system", return_value="Linux")
     def test_create_firecracker_explicit_ssh_keeps_ssh_forward(
@@ -422,7 +423,7 @@ class TestSmolVMCreate:
         assert smol_vm._should_reserve_ssh_forward(
             config,
             "qemu",
-            resolution=ChannelResolution(kind="vsock", allow_fallback=False),
+            resolution=ChannelResolution(kind="vsock"),
         )
 
     def test_firecracker_workspace_policy_keeps_ssh_forward(
@@ -446,7 +447,7 @@ class TestSmolVMCreate:
         assert smol_vm._should_reserve_ssh_forward(
             config,
             "firecracker",
-            resolution=ChannelResolution(kind="vsock", allow_fallback=False),
+            resolution=ChannelResolution(kind="vsock"),
         )
 
     def test_explicit_vsock_error_uses_recovery_payload(
@@ -1121,7 +1122,8 @@ class TestIPBasedTAPNaming:
         mock_network_class.return_value = mock_network
         smol_vm.network = mock_network
 
-        vm_info = smol_vm.create(sample_config)
+        config = sample_config.model_copy(update={"comm_channel": "ssh"})
+        vm_info = smol_vm.create(config)
 
         import os
 
@@ -1359,7 +1361,7 @@ class TestSmolVMBootArgsAndSSHCommands:
         mock_network_class.return_value = mock_network
         smol_vm.network = mock_network
 
-        smol_vm.create(sample_config)
+        smol_vm.create(sample_config.model_copy(update={"comm_channel": "ssh"}))
         cmds = smol_vm.get_ssh_commands("vm001", public_host="203.0.113.10")
 
         assert cmds["private_ip"] == "ssh root@172.16.0.2"

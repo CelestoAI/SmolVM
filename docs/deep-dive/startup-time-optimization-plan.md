@@ -88,7 +88,8 @@ Keep:
 - Guest-agent startup before network and SSH setup in the published Ubuntu init
   path.
 - SSH setup available after boot for users who explicitly use SSH.
-- Auto-mode SSH fallback behavior unchanged.
+- Auto-selected vsock now requires the Rust guest agent; users can still force
+  SSH with `--comm-channel ssh`.
 
 Next work:
 
@@ -121,7 +122,7 @@ Acceptance:
 
 - QEMU vsock and Firecracker vsock command execution still pass.
 - SSH variants still reach SSH and accept the injected key.
-- Explicit-vsock benchmarks do not wait for SSH readiness unless the requested
+- Vsock benchmarks do not wait for SSH readiness unless the requested
   startup feature needs SSH.
 - Firecracker host-create time stays near the measured TAP/setup cost instead
   of scaling with the apparent raw rootfs size.

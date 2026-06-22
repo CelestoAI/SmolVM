@@ -1396,8 +1396,6 @@ class SmolVMManager:
         resolution = resolution or self._resolve_control_channel_for_config(config, backend)
         if resolution.kind == "ssh":
             return True
-        if resolution.allow_fallback:
-            return True
 
         return backend == BACKEND_QEMU and config.qemu_network == "slirp"
 
@@ -1425,10 +1423,10 @@ class SmolVMManager:
         ):
             return True
 
-        # Explicit Firecracker-vsock command paths do not need host TCP/IP
+        # Firecracker-vsock command paths do not need host TCP/IP
         # connectivity before boot. The TAP still exists for Firecracker's
         # network device, and connectivity is installed lazily if SSH/ports need it.
-        return not (resolution.kind == "vsock" and not resolution.allow_fallback)
+        return resolution.kind != "vsock"
 
     def ensure_network_connectivity(self, vm_info: VMInfo) -> None:
         """Ensure host-side TAP connectivity exists for network-backed operations."""

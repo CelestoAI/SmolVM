@@ -356,7 +356,8 @@ def test_restore_snapshot_rolls_back_new_vm_resources_on_failure(
     tmp_path: Path,
 ) -> None:
     """Failed restores should unwind resources for a newly recreated VM."""
-    smol_vm.create(sample_config)
+    config = sample_config.model_copy(update={"comm_channel": "ssh"})
+    smol_vm.create(config)
     managed_disk = smol_vm.data_dir / "disks" / "vm001.ext4"
     managed_disk.write_text("managed-disk")
     vm_info = smol_vm.get("vm001")

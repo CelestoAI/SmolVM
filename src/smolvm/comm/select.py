@@ -18,14 +18,12 @@ Two layers cooperate:
 
 1. ``resolve_comm_channel`` (here) is the *static* decision: given the user's
    request, the VM config, the backend, the guest OS, and whether the host can
-   do vsock, it returns the channel to attempt first and whether falling back
-   to SSH is allowed. It raises a structured error when the user explicitly
-   asked for vsock somewhere it can't work; callers format the final
-   user-facing recovery message.
+   do vsock, it returns the channel to use. It raises a structured error when
+   the user explicitly asked for vsock somewhere it can't work; callers format
+   the final user-facing recovery message.
 2. The facade then does the *runtime* probe: when vsock is the choice it pings
-   the guest agent; on success it uses vsock, and — only when fallback is
-   allowed (auto-selection, not an explicit request) — it drops to SSH if the
-   agent doesn't answer.
+   the guest agent; if the agent does not answer, vsock readiness fails instead
+   of silently downgrading to SSH.
 
 vsock uses native ``vhost-vsock-pci`` on QEMU/Linux and Firecracker's
 host-side Unix socket bridge on Firecracker/Linux. Windows guests always use
@@ -60,15 +58,10 @@ class ChannelResolution:
     """Outcome of channel selection.
 
     Attributes:
-        kind: The channel to use (or attempt first).
-        allow_fallback: When ``kind == "vsock"``, whether the facade may fall
-            back to SSH if the guest agent does not answer. True only for
-            auto-selection; an explicit ``comm_channel="vsock"`` never silently
-            downgrades.
+        kind: The channel to use.
     """
 
     kind: CommChannelKind
-    allow_fallback: bool
 
 
 class VsockNotSupportedError(SmolVMError):
@@ -128,7 +121,7 @@ def resolve_comm_channel(
     effective = requested if requested is not None else config_channel
 
     if effective == "ssh":
-        return ChannelResolution(kind="ssh", allow_fallback=False)
+        return ChannelResolution(kind="ssh")
 
     if effective == "vsock":
         if is_windows:
@@ -156,10 +149,10 @@ def resolve_comm_channel(
                 {"backend": backend, "host_os": platform.system()},
             )
         # Explicit request: use vsock, never silently downgrade to SSH.
-        return ChannelResolution(kind="vsock", allow_fallback=False)
+        return ChannelResolution(kind="vsock")
 
-    # Auto: prefer vsock where it can work, but fall back to SSH if the agent
-    # isn't reachable (e.g. an older image without the agent baked in).
+    # Auto: prefer vsock where it can work. SmolVM is still alpha, so current
+    # images are required to include the Rust guest agent.
     if vsock_possible:
-        return ChannelResolution(kind="vsock", allow_fallback=True)
-    return ChannelResolution(kind="ssh", allow_fallback=False)
+        return ChannelResolution(kind="vsock")
+    return ChannelResolution(kind="ssh")

@@ -115,14 +115,6 @@ _DEFAULT_RUN_READY_TIMEOUT = 30.0
 # empirically; tune it if startup profiling shows a tighter bound is reliable.
 _DEFAULT_DISPLAY_SANDBOX_BOOT_TIMEOUT = 90.0
 
-# When auto-selecting the channel, how long to wait for the vsock agent before
-# falling back to SSH. Kept short: the agent binds its vsock port early in boot
-# (before sshd, ~0.9s guest uptime on Alpine), so if it hasn't answered by now
-# the image is likely missing the agent or did not start it and SSH is the real
-# path. This is a guardrail: an agent-less image costs ~2.5s of wasted probe.
-# Images SmolVM builds ship the standalone Rust agent and should answer inside
-# this window.
-_VSOCK_AUTO_PROBE_TIMEOUT = 2.5
 _LOCAL_FORWARD_PROBE_TIMEOUT = 2.0
 _LOCAL_FORWARD_PROBE_INTERVAL = 0.2
 _LOCAL_TUNNEL_START_TIMEOUT = 10.0
@@ -3147,29 +3139,21 @@ modprobe 9pnet_virtio""".strip()
     def _wait_for_ready(self, timeout: float) -> None:
         """Wait until the resolved control channel is ready.
 
-        It tries vsock when that is the resolved channel, falling back to SSH
-        only when channel selection was automatic.
+        It tries vsock when that is the resolved channel. Current SmolVM images
+        are required to include the Rust guest agent, so a missing agent is a
+        readiness failure instead of an SSH fallback trigger.
         """
         if self._control_ready:
             return
         resolution = self._resolve_channel()
         if resolution.kind == "vsock":
-            deadline = time.monotonic() + timeout
-            probe = timeout
-            if resolution.allow_fallback:
-                probe = min(timeout, _VSOCK_AUTO_PROBE_TIMEOUT)
-            if self._try_vsock_ready(probe):
+            if self._try_vsock_ready(timeout):
                 return
-            if not resolution.allow_fallback:
-                raise OperationTimeoutError(
-                    "wait_for_ready: the guest vsock agent did not respond", timeout
-                )
-            logger.info("VM %s: vsock agent not reachable, falling back to SSH", self._vm_id)
-            self._wait_for_ssh_over_network(
-                max(1.0, deadline - time.monotonic()),
-                as_control=True,
+            raise OperationTimeoutError(
+                "wait_for_ready: the Rust guest agent did not answer over vsock; "
+                "use a current SmolVM image or start with --comm-channel ssh",
+                timeout,
             )
-            return
         self._wait_for_ssh_over_network(timeout, as_control=True)
 
     def _wait_for_ssh_over_network(self, timeout: float, *, as_control: bool = False) -> None:

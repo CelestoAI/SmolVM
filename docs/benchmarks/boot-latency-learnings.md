@@ -171,6 +171,7 @@ not ~1.9 s. Two independent bugs compounded here:
 1. Default image baked the old Python agent but omitted its Python runtime.
 2. Auto-mode pays an 8 s timeout discovering that, every single boot.
 
-This is now addressed by baking the standalone Rust agent, shortening the auto
-probe, and keeping SSH fallback only for auto-selected channels.
+This is now addressed by baking the standalone Rust agent and requiring it for
+auto-selected vsock channels. Users who need the SSH path can still force it
+with `--comm-channel ssh`.
 ```
