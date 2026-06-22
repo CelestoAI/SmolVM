@@ -208,6 +208,13 @@ class RustHttpVsockChannel:
             stderr=str(resp.get("stderr", "")),
         )
 
+    def sync(self, timeout: float = 10) -> None:
+        if timeout <= 0:
+            raise ValueError("timeout must be > 0")
+        resp = self._request_json("POST", "/sync", timeout=float(timeout + self.connect_timeout))
+        if not resp.get("ok"):
+            raise SmolVMError(f"guest agent error during sync: {resp.get('error', resp)}")
+
     def put_file(self, local_path: str | Path, remote_path: str) -> None:
         if not remote_path:
             raise ValueError("remote_path cannot be empty")

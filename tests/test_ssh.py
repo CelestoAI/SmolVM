@@ -238,6 +238,30 @@ class TestSSHClientRun:
         remote_command = mock_client.exec_command.call_args.args[0]
         assert remote_command == "uname -r"
 
+    @patch.object(SSHClient, "_ensure_connected")
+    def test_sync_uses_raw_sync_command(self, mock_connected: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_client.exec_command.return_value = _mock_exec_result(0, "", "")
+        mock_connected.return_value = mock_client
+
+        client = SSHClient("172.16.0.2")
+        client.sync(timeout=10.1)
+
+        remote_command = mock_client.exec_command.call_args.args[0]
+        timeout = mock_client.exec_command.call_args.kwargs["timeout"]
+        assert remote_command == "sync"
+        assert timeout == 11
+
+    @patch.object(SSHClient, "_ensure_connected")
+    def test_sync_nonzero_raises(self, mock_connected: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_client.exec_command.return_value = _mock_exec_result(1, "", "sync failed")
+        mock_connected.return_value = mock_client
+
+        client = SSHClient("172.16.0.2")
+        with pytest.raises(SmolVMError, match="sync failed"):
+            client.sync()
+
 
 class TestSSHClientWaitForSSH:
     """Tests for SSH readiness polling."""

@@ -144,6 +144,9 @@ pub async fn get_file(query: FileGetQuery) -> FileGetResponse {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static TEMPFILE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
     #[tokio::test]
     async fn put_and_get_file_preserves_mode() {
@@ -257,10 +260,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!(
             "smolvm-agent-test-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
+            TEMPFILE_COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir(&path).unwrap();
         path

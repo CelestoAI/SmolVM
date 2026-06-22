@@ -1,5 +1,4 @@
 use axum::Router;
-use tracing::info;
 
 pub const DEFAULT_LISTEN: &str = "vsock://1024";
 
@@ -29,7 +28,7 @@ pub async fn serve_vsock(app: Router, port: u32) {
 
     let addr = VsockAddr::new(u32::MAX, port);
     let mut listener = VsockListener::bind(addr).expect("failed to bind vsock");
-    info!("Listening on vsock://{port}");
+    tracing::info!("Listening on vsock://{port}");
 
     loop {
         match listener.accept().await {
@@ -62,7 +61,7 @@ pub async fn serve_vsock(_app: Router, _port: u32) {
 
 #[cfg(feature = "tcp")]
 pub async fn serve_tcp(app: Router, addr: &str) {
-    info!("Listening on tcp://{addr}");
+    tracing::info!("Listening on tcp://{addr}");
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .expect("failed to bind TCP listener");
