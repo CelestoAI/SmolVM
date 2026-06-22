@@ -852,7 +852,8 @@ def run_doctor(
         return 1
 
 def _check_nested_virt() -> DoctorCheck:
-    import platform, subprocess
+    import platform
+    import subprocess
     system = platform.system()
     if system == "Darwin":
         # M3+ only; HVF nested exposed in macOS 15+.
@@ -873,8 +874,9 @@ def _check_nested_virt() -> DoctorCheck:
     for path in ("/sys/module/kvm_intel/parameters/nested",
                  "/sys/module/kvm_amd/parameters/nested"):
         try:
-            if open(path).read().strip() in ("Y", "1"):
-                return DoctorCheck("nested-virt", "pass", path)
+            with open(path) as f:
+                if f.read().strip() in ("Y", "1"):
+                    return DoctorCheck("nested-virt", "pass", path)
         except FileNotFoundError:
             continue
     return DoctorCheck(
