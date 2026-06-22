@@ -34,11 +34,13 @@ from smolvm.presets.codex import CODEX_PRESET
 from smolvm.presets.hermes import HERMES_PRESET
 from smolvm.presets.openclaw import OPENCLAW_PRESET
 from smolvm.presets.pi import PI_PRESET
+from smolvm.presets.smolvm import SMOLVM_PRESET
 
 _BUILTIN_PRESETS: tuple[Preset, ...] = (
     CODEX_PRESET,
     CLAUDE_CODE_PRESET,
     HERMES_PRESET,
+    SMOLVM_PRESET,
     OPENCLAW_PRESET,
     PI_PRESET,
 )
@@ -102,4 +104,5 @@ __all__ = [
     "list_presets",
     "preset_command_names",
     "preset_names",
+    "SMOLVM_PRESET"
 ]

@@ -1239,8 +1239,13 @@ def _run_start_with_published_image(args: SimpleNamespace, preset: object) -> in
     _preset: Preset = preset  # type: ignore[assignment]
     command_name = getattr(args, "command_name", f"{_preset.name}.start")
 
+    # smolvm-in-smolvm always uses QEMU: it needs to pass nested virt
+    # extensions into the outer guest, and only QEMU supports that.
+    # Firecracker doesn't expose CPU virt flags regardless of host OS.
+    nested_virt = _preset.name == "smolvm"
+
     try:
-        vmm = _vmm_for_host()
+        vmm: Vmm = "qemu" if nested_virt else _vmm_for_host()
     except RuntimeError as exc:
         return _emit_cli_error(command_name, 2, exc, json_output=args.json)
 
@@ -1279,6 +1284,7 @@ def _run_start_with_published_image(args: SimpleNamespace, preset: object) -> in
             backend=backend,
             qemu_machine=args.qemu_machine,
             ssh_public_key=public_key_value,
+            nested_virt=nested_virt,
         )
 
         vm: SmolVM | None = None
@@ -1413,6 +1419,26 @@ def _run_start(args: SimpleNamespace) -> int:
         args.disk_size_mib if args.disk_size_mib is not None else preset.default_disk_mib
     )
 
+    # smolvm-in-smolvm needs nested virt extensions forwarded into the outer
+    # guest so /dev/kvm appears inside it. Only meaningful for QEMU backend.
+    needs_nested_virt = preset.name == "smolvm"
+
+    def _make_build_fn(on_download: Any) -> tuple[Any, Any]:
+        cfg, key = _build_auto_config(
+            vm_name=args.name,
+            name_prefix=preset.name,
+            os=requested_os,
+            backend=backend,
+            qemu_machine=args.qemu_machine,
+            memory=memory_mib,
+            disk_size_mib=disk_size_mib,
+            ssh_key_path=None,
+            on_download=on_download,
+        )
+        if needs_nested_virt:
+            cfg = cfg.model_copy(update={"nested_virt": True})
+        return cfg, key
+
     vm: SmolVM | None = None
     success = False
     try:
@@ -1420,17 +1446,7 @@ def _run_start(args: SimpleNamespace) -> int:
             console = console_stdout()
             vm = _build_and_boot_with_progress(
                 console=console,
-                build_fn=lambda on_download: _build_auto_config(
-                    vm_name=args.name,
-                    name_prefix=preset.name,
-                    os=requested_os,
-                    backend=backend,
-                    qemu_machine=args.qemu_machine,
-                    memory=memory_mib,
-                    disk_size_mib=disk_size_mib,
-                    ssh_key_path=None,
-                    on_download=on_download,
-                ),
+                build_fn=_make_build_fn,
                 boot_timeout=args.boot_timeout,
                 mounts=args.mounts,
                 writable_mounts=args.writable_mounts,
@@ -1452,6 +1468,8 @@ def _run_start(args: SimpleNamespace) -> int:
                 disk_size_mib=disk_size_mib,
                 ssh_key_path=None,
             )
+            if needs_nested_virt:
+                config = config.model_copy(update={"nested_virt": True})
             vm = SmolVM(
                 config,
                 ssh_key_path=ssh_key_path,

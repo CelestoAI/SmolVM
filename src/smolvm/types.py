@@ -402,6 +402,7 @@ class VMConfig(BaseModel):
     internet_settings: InternetSettings | None = None
     workspace_mounts: list[WorkspaceMount] = []
     ssh_public_key: str | None = None
+    nested_virt: bool = False
 
     @property
     def effective_rootfs_format(self) -> RootfsFormat:

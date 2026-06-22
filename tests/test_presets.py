@@ -71,7 +71,7 @@ class TestRegistry:
     """Built-in preset registration."""
 
     def test_builtin_presets_registered(self) -> None:
-        assert preset_names() == ["claude-code", "codex", "hermes", "openclaw", "pi"]
+        assert preset_names() == ["claude-code", "codex", "hermes", "openclaw", "pi", "smolvm"]
 
     def test_list_presets_sorted_by_name(self) -> None:
         names = [p.name for p in list_presets()]
@@ -82,6 +82,7 @@ class TestRegistry:
             "hermes",
             "openclaw",
             "pi",
+            "smolvm",
         }
 
     def test_get_preset_returns_codex(self) -> None:
@@ -100,7 +101,9 @@ class TestRegistry:
         assert get_preset("hermes") is HERMES_PRESET
 
     def test_unknown_preset_lists_available(self) -> None:
-        with pytest.raises(KeyError, match="Available: claude-code, codex, hermes, openclaw, pi"):
+        with pytest.raises(
+            KeyError, match="Available: claude-code, codex, hermes, openclaw, pi, smolvm"
+        ):
             get_preset("nonexistent")
 
 

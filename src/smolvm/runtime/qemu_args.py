@@ -386,6 +386,10 @@ def build_qemu_argv(
             machine_base, cpu_base = "q35,accel=hvf", "host"
         else:
             machine_base, cpu_base = "q35,accel=kvm", "host"
+            if vm_info.config.nested_virt:
+                # +vmx (Intel) / +svm (AMD) — QEMU silently ignores the
+                # wrong one, so passing both is fine and avoids a CPUID probe.
+                cpu_base = "host,+vmx,+svm"
         # Per-OS extras are comma-appended to the base. For _LINUX_SPEC
         # both extra tuples are empty → byte-identical to the legacy form.
         machine_str = ",".join((machine_base, *platform_spec.machine_extra_opts))

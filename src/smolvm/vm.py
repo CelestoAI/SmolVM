@@ -828,14 +828,41 @@ class SmolVMManager:
         if grow_filesystem:
             self._grow_raw_ext4_filesystem(disk_path, vm_id)
 
+    @staticmethod
+    def _find_e2fsprogs_tool(name: str) -> Path | None:
+        """Find e2fsck or resize2fs, including Homebrew sbin on macOS."""
+        found = which(name)
+        if found:
+            return found
+        import platform
+
+        if platform.system() == "Darwin":
+            for prefix in (
+                # keg-only install (brew install e2fsprogs on arm64/x86)
+                "/opt/homebrew/opt/e2fsprogs/sbin",
+                "/usr/local/opt/e2fsprogs/sbin",
+                # legacy symlink locations (older Homebrew layouts)
+                "/opt/homebrew/sbin",
+                "/usr/local/sbin",
+            ):
+                candidate = Path(prefix) / name
+                if candidate.exists():
+                    return candidate
+        return None
+
     def _grow_raw_ext4_filesystem(self, disk_path: Path, vm_id: str) -> None:
         """Run e2fsck + resize2fs on a raw ext4 disk file."""
-        e2fsck = which("e2fsck")
-        resize2fs = which("resize2fs")
+        e2fsck = self._find_e2fsprogs_tool("e2fsck")
+        resize2fs = self._find_e2fsprogs_tool("resize2fs")
         if e2fsck is None or resize2fs is None:
+            import platform
+
+            hint = (
+                "brew install e2fsprogs" if platform.system() == "Darwin" else "install e2fsprogs"
+            )
             raise SmolVMError(
                 f"e2fsck and resize2fs are needed to grow the disk for sandbox '{vm_id}'; "
-                f"install e2fsprogs, or run '{self._resize_recovery(vm_id)}'."
+                f"run '{hint}', or run '{self._resize_recovery(vm_id)}'."
             )
         self._run_resize_tool(
             [str(e2fsck), "-fy", str(disk_path)],

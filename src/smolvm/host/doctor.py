@@ -850,3 +850,34 @@ def run_doctor(
         else:
             render_error(f"Error: {exc}")
         return 1
+
+def _check_nested_virt() -> DoctorCheck:
+    import platform, subprocess
+    system = platform.system()
+    if system == "Darwin":
+        # M3+ only; HVF nested exposed in macOS 15+.
+        machine = platform.machine()
+        if machine != "arm64":
+            return DoctorCheck("nested-virt", "fail", "non-arm64 macOS",
+                               fix="Nested SmolVM needs an Apple Silicon M3+ Mac on macOS 15+.")
+        try:
+            out = subprocess.run(["sysctl", "-n", "hw.optional.arm.FEAT_NV"],
+                                 capture_output=True, text=True, timeout=2).stdout.strip()
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            out = ""
+        if out != "1":
+            return DoctorCheck("nested-virt", "fail", "FEAT_NV not present",
+                               fix="Requires M3 or newer + macOS 15+.")
+        return DoctorCheck("nested-virt", "pass", "ARM FEAT_NV available")
+    # Linux
+    for path in ("/sys/module/kvm_intel/parameters/nested",
+                 "/sys/module/kvm_amd/parameters/nested"):
+        try:
+            if open(path).read().strip() in ("Y", "1"):
+                return DoctorCheck("nested-virt", "pass", path)
+        except FileNotFoundError:
+            continue
+    return DoctorCheck(
+        "nested-virt", "fail", "KVM nested not enabled",
+        fix="echo 'options kvm_intel nested=1' | sudo tee /etc/modprobe.d/kvm.conf "
+            "&& sudo modprobe -r kvm_intel && sudo modprobe kvm_intel")
