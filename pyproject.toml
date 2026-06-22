@@ -29,7 +29,7 @@ classifiers = [
 ]
 dependencies = [
     "click>=8.0",
-    "smolvm-core~=0.0.14",
+    "smolvm-core~=0.0.15",
     "paramiko>=3.0",
     "pycdlib>=1.14.0",
     "pydantic>=2.0",

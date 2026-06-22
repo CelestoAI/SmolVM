@@ -17,6 +17,9 @@ from ._smolvm_core import (
     add_route as _native_add_route,
 )
 from ._smolvm_core import (
+    configure_tap as _native_configure_tap,
+)
+from ._smolvm_core import (
     create_tap as _native_create_tap,
 )
 from ._smolvm_core import (
@@ -114,6 +117,12 @@ def add_addr(name: str, ip: str, prefix_len: int) -> None:
     _native_add_addr(name, ip, prefix_len)
 
 
+def configure_tap(name: str, host_ip: str, prefix_len: int) -> None:
+    """Assign an IPv4 address to a TAP link and bring it up."""
+
+    _native_configure_tap(name, host_ip, prefix_len)
+
+
 def add_route(dest: str, prefix_len: int, dev: str) -> None:
     """Add a route for ``dest/prefix_len`` through ``dev``."""
 
@@ -149,6 +158,7 @@ __all__ = [
     "set_link_up",
     "flush_addrs",
     "add_addr",
+    "configure_tap",
     "add_route",
     "get_default_interface",
     "write_sysctl",

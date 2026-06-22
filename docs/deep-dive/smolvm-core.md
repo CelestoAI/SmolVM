@@ -42,10 +42,13 @@ smolvm_core.delete_tap(name: str) -> None
 smolvm_core.flush_addrs(name: str) -> None
 smolvm_core.add_addr(name: str, ip: str, prefix_len: int) -> None
 smolvm_core.set_link_up(name: str) -> None
+smolvm_core.configure_tap(name: str, host_ip: str, prefix_len: int) -> None
 smolvm_core.add_route(dest: str, prefix_len: int, dev: str) -> None
 smolvm_core.get_default_interface() -> str
 smolvm_core.write_sysctl(key: str, value: str) -> None
 ```
+
+Use `configure_tap()` for normal TAP setup. It combines address flush, address assignment, and link-up into one native operation. SmolVM still writes the per-TAP sysctl from Python after this call.
 
 On macOS, the networking helpers raise `OSError("Not available on this platform")`. That is expected. SmolVM uses QEMU user-mode networking on macOS, so it does not need TAP setup there.
 

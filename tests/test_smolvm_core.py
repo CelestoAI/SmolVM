@@ -28,6 +28,14 @@ def test_public_network_functions_have_python_signatures() -> None:
     assert signature.return_annotation is None
     assert "Create a TAP network device" in inspect.getdoc(smolvm_core.create_tap)
 
+    configure_signature = inspect.signature(smolvm_core.configure_tap)
+    assert list(configure_signature.parameters) == ["name", "host_ip", "prefix_len"]
+    assert configure_signature.parameters["name"].annotation is str
+    assert configure_signature.parameters["host_ip"].annotation is str
+    assert configure_signature.parameters["prefix_len"].annotation is int
+    assert configure_signature.return_annotation is None
+    assert "Assign an IPv4 address" in inspect.getdoc(smolvm_core.configure_tap)
+
 
 def test_qmp_native_class_stays_private() -> None:
     """QMP users should go through smolvm.qmp.QMPClient, not smolvm_core."""

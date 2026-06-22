@@ -58,10 +58,13 @@ smolvm_core.delete_tap(name: str) -> None
 smolvm_core.flush_addrs(name: str) -> None
 smolvm_core.add_addr(name: str, ip: str, prefix_len: int) -> None
 smolvm_core.set_link_up(name: str) -> None
+smolvm_core.configure_tap(name: str, host_ip: str, prefix_len: int) -> None
 smolvm_core.add_route(dest: str, prefix_len: int, dev: str) -> None
 smolvm_core.get_default_interface() -> str
 smolvm_core.write_sysctl(key: str, value: str) -> None
 ```
+
+`configure_tap()` is the preferred helper when setting up a TAP for a sandbox. It flushes addresses, assigns the host IP, and brings the link up in one native call. SmolVM still writes per-TAP sysctls from Python so fallback behavior stays the same.
 
 These helpers raise `OSError("Not available on this platform")` when the operation does not exist on the current operating system. SmolVM catches that and uses the portable fallback path where one exists.
 

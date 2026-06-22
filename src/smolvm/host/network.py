@@ -26,7 +26,9 @@ import os
 import re
 import socket
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 from urllib.parse import urlparse
 
 from smolvm.exceptions import NetworkError, SmolVMError
@@ -41,6 +43,9 @@ DEFAULT_NETMASK = "16"
 
 # Matches the native EPERM signal precisely (\b prevents "errno 13" matching).
 _EPERM_RE = re.compile(r"\berrno 1\b|Operation not permitted")
+_NATIVE_DISABLE_ENV = "SMOLVM_DISABLE_NATIVE_NETWORKING"
+_TRUE_ENV_VALUES = {"1", "true", "yes"}
+_T = TypeVar("_T")
 
 
 def _is_eperm(err: str) -> bool:
@@ -55,7 +60,30 @@ _native_unprivileged = False
 
 
 def _native_available() -> bool:
-    return HAS_NETLINK and not _native_unprivileged
+    disabled = os.environ.get(_NATIVE_DISABLE_ENV, "").strip().lower() in _TRUE_ENV_VALUES
+    return HAS_NETLINK and native is not None and not _native_unprivileged and not disabled
+
+
+def _log_native_timing(operation: str, start: float, *, is_async: bool = False) -> None:
+    elapsed_ms = (time.monotonic() - start) * 1000
+    suffix = " (async)" if is_async else ""
+    logger.info("NATIVE %-16s %.1fms%s", operation, elapsed_ms, suffix)
+
+
+def _call_native(operation: str, func: Callable[..., _T], *args: object) -> _T:
+    start = time.monotonic()
+    try:
+        return func(*args)
+    finally:
+        _log_native_timing(operation, start)
+
+
+async def _async_call_native(operation: str, func: Callable[..., _T], *args: object) -> _T:
+    start = time.monotonic()
+    try:
+        return await asyncio.to_thread(func, *args)
+    finally:
+        _log_native_timing(operation, start, is_async=True)
 
 
 def _mark_native_unprivileged() -> None:
@@ -109,12 +137,14 @@ class NetworkManager:
 
     def _detect_outbound_interface(self) -> str:
         """Detect outbound interface from default route."""
-        if HAS_NETLINK:
+        if _native_available():
             try:
-                iface = native.get_default_interface()
+                iface = _call_native("default_iface", native.get_default_interface)
                 logger.info("Detected outbound interface: %s", iface)
                 return iface
             except OSError as e:
+                if _is_eperm(str(e)):
+                    _mark_native_unprivileged()
                 logger.error(
                     "Native get_default_interface failed, falling back to subprocess: %s", e
                 )
@@ -135,6 +165,18 @@ class NetworkManager:
 
     async def _async_detect_outbound_interface(self) -> str:
         """Detect outbound interface from default route (async)."""
+        if _native_available():
+            try:
+                iface = await _async_call_native("default_iface", native.get_default_interface)
+                logger.info("Detected outbound interface: %s", iface)
+                return iface
+            except OSError as e:
+                if _is_eperm(str(e)):
+                    _mark_native_unprivileged()
+                logger.error(
+                    "Native get_default_interface failed, falling back to subprocess: %s", e
+                )
+
         try:
             result = await async_run_command(["ip", "route", "show", "default"], use_sudo=False)
             parts = result.stdout.strip().split()
@@ -173,7 +215,7 @@ class NetworkManager:
             max_busy_retries = 3
             for attempt in range(max_busy_retries + 1):
                 try:
-                    native.create_tap(tap_name, uid)
+                    _call_native("create_tap", native.create_tap, tap_name, uid)
                     return
                 except OSError as e:
                     err = str(e)
@@ -234,6 +276,41 @@ class NetworkManager:
 
         logger.info("Creating TAP device: %s (user: %s)", tap_name, user)
 
+        if _native_available():
+            import pwd
+
+            try:
+                uid = pwd.getpwnam(user).pw_uid
+            except KeyError:
+                uid = os.getuid()
+            max_busy_retries = 3
+            for attempt in range(max_busy_retries + 1):
+                try:
+                    await _async_call_native("create_tap", native.create_tap, tap_name, uid)
+                    return
+                except OSError as e:
+                    err = str(e)
+                    if "File exists" in err:
+                        logger.debug("TAP device %s already exists", tap_name)
+                        return
+                    if "Device or resource busy" in err and attempt < max_busy_retries:
+                        delay = 0.1 * (attempt + 1)
+                        logger.warning(
+                            "TAP %s busy (attempt %d/%d), retrying in %.2fs",
+                            tap_name,
+                            attempt + 1,
+                            max_busy_retries + 1,
+                            delay,
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    if _is_eperm(err):
+                        _mark_native_unprivileged()
+                        break
+                    raise SmolVMError(err) from e
+            else:
+                return
+
         max_busy_retries = 3
         for attempt in range(max_busy_retries + 1):
             try:
@@ -278,9 +355,7 @@ class NetworkManager:
 
         if _native_available():
             try:
-                native.flush_addrs(tap_name)
-                native.add_addr(tap_name, host_ip, int(netmask))
-                native.set_link_up(tap_name)
+                _call_native("configure_tap", native.configure_tap, tap_name, host_ip, int(netmask))
                 self._write_sysctl(f"net/ipv4/conf/{tap_name}/route_localnet", "1")
                 return
             except OSError as e:
@@ -322,6 +397,27 @@ class NetworkManager:
 
         logger.info("Configuring TAP %s with IP %s/%s", tap_name, host_ip, netmask)
 
+        if _native_available():
+            try:
+                await _async_call_native(
+                    "configure_tap",
+                    native.configure_tap,
+                    tap_name,
+                    host_ip,
+                    int(netmask),
+                )
+                await self._async_write_sysctl(f"net/ipv4/conf/{tap_name}/route_localnet", "1")
+                return
+            except OSError as e:
+                err = str(e)
+                if "RTNETLINK answers: File exists" in err or "File exists" in err:
+                    await self._async_write_sysctl(f"net/ipv4/conf/{tap_name}/route_localnet", "1")
+                    return
+                if _is_eperm(err):
+                    _mark_native_unprivileged()
+                else:
+                    raise SmolVMError(err) from e
+
         batch = [
             f"addr flush dev {tap_name}",
             f"addr add {host_ip}/{netmask} dev {tap_name}",
@@ -348,7 +444,7 @@ class NetworkManager:
 
         if _native_available():
             try:
-                native.add_route(ip_address, 32, device)
+                _call_native("add_route", native.add_route, ip_address, 32, device)
                 return
             except OSError as e:
                 err = str(e)
@@ -373,6 +469,19 @@ class NetworkManager:
             raise ValueError("device cannot be empty")
 
         logger.info("Adding route: %s via %s", ip_address, device)
+        if _native_available():
+            try:
+                await _async_call_native("add_route", native.add_route, ip_address, 32, device)
+                return
+            except OSError as e:
+                err = str(e)
+                if "File exists" in err:
+                    return
+                if _is_eperm(err):
+                    _mark_native_unprivileged()
+                else:
+                    raise SmolVMError(err) from e
+
         try:
             await async_run_command(["ip", "route", "add", f"{ip_address}/32", "dev", device])
         except SmolVMError as e:
@@ -388,7 +497,7 @@ class NetworkManager:
 
         if _native_available():
             try:
-                native.delete_tap(tap_name)
+                _call_native("delete_tap", native.delete_tap, tap_name)
                 return
             except OSError as e:
                 err = str(e)
@@ -412,6 +521,20 @@ class NetworkManager:
             raise ValueError("tap_name cannot be empty")
 
         logger.info("Cleaning up TAP device: %s", tap_name)
+        if _native_available():
+            try:
+                await _async_call_native("delete_tap", native.delete_tap, tap_name)
+                return
+            except OSError as e:
+                err = str(e)
+                if "Cannot find device" in err or "No such device" in err:
+                    return
+                if _is_eperm(err):
+                    _mark_native_unprivileged()
+                else:
+                    logger.warning("Failed to delete TAP %s: %s", tap_name, e)
+                    return
+
         try:
             await async_run_command(["ip", "link", "delete", tap_name])
         except SmolVMError as e:
@@ -440,11 +563,13 @@ class NetworkManager:
 
     def _write_sysctl(self, key_path: str, value: str) -> bool:
         """Write /proc/sys key, with sudo sysctl fallback."""
-        if HAS_NETLINK:
+        if _native_available():
             try:
-                native.write_sysctl(key_path.replace("/", "."), value)
+                _call_native("write_sysctl", native.write_sysctl, key_path.replace("/", "."), value)
                 return True
-            except OSError:
+            except OSError as e:
+                if _is_eperm(str(e)):
+                    _mark_native_unprivileged()
                 pass  # Fall through to Python path
 
         path = Path(f"/proc/sys/{key_path}")
@@ -465,6 +590,19 @@ class NetworkManager:
 
     async def _async_write_sysctl(self, key_path: str, value: str) -> bool:
         """Write /proc/sys key, with sudo sysctl fallback (async)."""
+        if _native_available():
+            try:
+                await _async_call_native(
+                    "write_sysctl",
+                    native.write_sysctl,
+                    key_path.replace("/", "."),
+                    value,
+                )
+                return True
+            except OSError as e:
+                if _is_eperm(str(e)):
+                    _mark_native_unprivileged()
+
         path = Path(f"/proc/sys/{key_path}")
 
         try:
@@ -1833,7 +1971,7 @@ def check_network_prerequisites() -> list[str]:
     """Validate required host networking binaries and sudo access."""
     errors: list[str] = []
 
-    for binary in ["ip", "nft"]:
+    for binary in ["ip", "nft", "sysctl"]:
         try:
             run_command(["which", binary], use_sudo=False)
         except SmolVMError:
