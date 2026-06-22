@@ -48,8 +48,14 @@ uv run python scripts/benchmarks/bench.py --backend qemu
 
 ## Linux Networking Stages
 
-Use `networking.py` when comparing native Rust networking helpers with the
-subprocess fallback for TAP setup, routes, sysctls, and nftables-backed NAT:
+Use `networking.py` to decide whether the Rust networking path makes Linux VM
+startup faster on your machine. It records each host networking stage, then
+compares the native path with the subprocess fallback.
+
+The measured stages include TAP setup (the virtual network device used by
+Firecracker), routes (the host paths for guest IPs), sysctls (kernel networking
+settings), and nftables-backed NAT (the firewall rules that give the guest
+network access):
 
 ```bash
 uv run python scripts/benchmarks/networking.py --json
@@ -58,9 +64,10 @@ uv run python scripts/benchmarks/networking.py --include-full-start --output /tm
 
 This benchmark is Linux-only and touches real host networking. It expects the
 same privileges as Firecracker TAP networking. The `native` mode uses Rust
-helpers when available, `forced-off` sets `SMOLVM_DISABLE_NATIVE_NETWORKING=1`,
-and `unprivileged-fallback` is skipped unless native can be attempted without
-root and the existing sudo fallback is available.
+helpers when direct TAP privileges are available, `forced-off` sets
+`SMOLVM_DISABLE_NATIVE_NETWORKING=1`, and `unprivileged-fallback` is skipped
+unless native can be attempted without direct TAP privileges and the existing
+sudo fallback is available.
 
 ## Ubuntu Transport Comparison
 

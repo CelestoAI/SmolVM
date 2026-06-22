@@ -37,6 +37,7 @@ logger = logging.getLogger("smolvm.bench.networking")
 
 MODES = ("native", "forced-off", "unprivileged-fallback")
 NATIVE_DISABLE_ENV = "SMOLVM_DISABLE_NATIVE_NETWORKING"
+CAP_NET_ADMIN = 12
 _NETWORK_MODULE: Any | None = None
 
 
@@ -123,21 +124,58 @@ def _sudo_fallback_available() -> bool:
     from smolvm.exceptions import SmolVMError
     from smolvm.utils import run_command
 
+    checks = [
+        ["ip", "link", "show"],
+        ["sysctl", "net.ipv4.ip_forward"],
+        ["nft", "list", "tables"],
+    ]
+    for cmd in checks:
+        try:
+            run_command(cmd, use_sudo=True)
+        except SmolVMError:
+            return False
+    return True
+
+
+def _has_direct_tap_privileges() -> bool:
     try:
-        run_command(["ip", "link", "show"], use_sudo=True)
-        return True
-    except SmolVMError:
-        return False
+        for line in Path("/proc/self/status").read_text().splitlines():
+            if line.startswith("CapEff:"):
+                effective_caps = int(line.split(":", 1)[1].strip(), 16)
+                return bool(effective_caps & (1 << CAP_NET_ADMIN))
+    except (OSError, ValueError):
+        pass
+    return os.geteuid() == 0
 
 
 def _should_skip_mode(mode: str) -> str | None:
-    if mode != "unprivileged-fallback":
+    if mode == "forced-off":
         return None
     network_module = _load_network_module()
-    if os.geteuid() == 0:
-        return "unprivileged fallback needs a non-root process"
+    if mode == "native":
+        if not network_module.HAS_NETLINK:
+            return "native networking is unavailable"
+        if network_module._native_unprivileged:
+            return (
+                "native networking hit EPERM and fell back; "
+                "use unprivileged-fallback to measure fallback"
+            )
+        if _has_direct_tap_privileges():
+            return None
+        if not _sudo_fallback_available():
+            return "native mode needs direct TAP privileges and sudo fallback is unavailable"
+        return (
+            "native mode needs direct TAP privileges; "
+            "use unprivileged-fallback to measure EPERM fallback"
+        )
+    if mode != "unprivileged-fallback":
+        return None
     if not network_module.HAS_NETLINK:
         return "native networking is unavailable, so EPERM fallback cannot be tested"
+    if _has_direct_tap_privileges():
+        return "unprivileged fallback needs a process without direct TAP privileges"
+    if os.geteuid() == 0:
+        return "unprivileged fallback needs a non-root process"
     if not _sudo_fallback_available():
         return "sudo fallback is unavailable"
     return None
@@ -202,8 +240,18 @@ def _benchmark_network_stages(
         if _tap_exists(tap_name):
             raise RuntimeError(f"TAP {tap_name} still exists after cleanup")
 
+        skip_reason = _should_skip_mode(mode)
+        if skip_reason is not None:
+            record["skipped"] = skip_reason
+            return record
+
         if include_full_start:
-            record["full_start_ms"] = _benchmark_full_start(boot_timeout)
+            full_start_ms = _benchmark_full_start(boot_timeout)
+            skip_reason = _should_skip_mode(mode)
+            if skip_reason is None:
+                record["full_start_ms"] = full_start_ms
+            else:
+                record["full_start_skipped"] = skip_reason
 
     return record
 
