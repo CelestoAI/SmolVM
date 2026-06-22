@@ -407,7 +407,7 @@ def test_missing_ssh_host_port_raises(tmp_path: Path) -> None:
             "network": vm_info.network.model_copy(update={"ssh_host_port": None}),
         }
     )
-    with pytest.raises(SmolVMError, match="ssh_host_port"):
+    with pytest.raises(SmolVMError, match="missing the port needed for SSH"):
         build_qemu_argv(
             vm_info,
             qemu_bin=Path("/usr/bin/qemu-system-x86_64"),

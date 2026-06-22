@@ -187,7 +187,7 @@ def build_qemu_argv(
         and vm_info.network.ssh_host_port is None
     ):
         raise SmolVMError(
-            f"Sandbox '{vm_info.vm_id}' needs an SSH port reserved for SSH control; recreate it with "
+            f"Sandbox '{vm_info.vm_id}' is missing the port needed for SSH; recreate it with "
             f"'smolvm sandbox create --name {vm_info.vm_id} --comm-channel ssh'."
         )
 
