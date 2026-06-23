@@ -1,6 +1,6 @@
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
@@ -95,35 +95,72 @@ fn resolve_put_target(path: &str, name: Option<&str>) -> Result<PathBuf, String>
 }
 
 fn write_file_atomically(target: &Path, mode: Option<u32>, data: &[u8]) -> FilePutResponse {
-    let parent = target.parent().unwrap_or_else(|| Path::new("/"));
-    let tmp_name = format!(
-        ".smolvm-put-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    );
-    let tmp_path = parent.join(tmp_name);
+    match durable_atomic_write(target, mode, data, ".smolvm-put") {
+        Ok(()) => FilePutResponse {
+            ok: true,
+            error: None,
+        },
+        Err(error) => response_error(error),
+    }
+}
 
-    if let Err(error) = fs::write(&tmp_path, data) {
-        return response_error(format!("cannot write file: {error}"));
+fn durable_atomic_write(
+    target: &Path,
+    mode: Option<u32>,
+    data: &[u8],
+    prefix: &str,
+) -> Result<(), String> {
+    let parent = target.parent().unwrap_or_else(|| Path::new("/"));
+    let (mut file, tmp_path) = create_temp_file(parent, prefix)?;
+
+    if let Err(error) = file.write_all(data) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(format!("cannot write file: {error}"));
     }
     if let Some(mode) = mode {
-        if let Err(error) = fs::set_permissions(&tmp_path, fs::Permissions::from_mode(mode)) {
+        if let Err(error) = file.set_permissions(fs::Permissions::from_mode(mode)) {
             let _ = fs::remove_file(&tmp_path);
-            return response_error(format!("cannot set file mode: {error}"));
+            return Err(format!("cannot set file mode: {error}"));
         }
     }
+    if let Err(error) = file.sync_all() {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(format!("cannot sync file: {error}"));
+    }
+    drop(file);
     if let Err(error) = fs::rename(&tmp_path, target) {
         let _ = fs::remove_file(&tmp_path);
-        return response_error(format!("cannot replace file: {error}"));
+        return Err(format!("cannot replace file: {error}"));
     }
+    sync_parent_dir(parent).map_err(|error| format!("cannot sync file directory: {error}"))
+}
 
-    FilePutResponse {
-        ok: true,
-        error: None,
+fn create_temp_file(parent: &Path, prefix: &str) -> Result<(File, PathBuf), String> {
+    for attempt in 0..100 {
+        let tmp_path = parent.join(format!(
+            "{prefix}-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+            attempt
+        ));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)
+        {
+            Ok(file) => return Ok((file, tmp_path)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("cannot create temporary file: {error}")),
+        }
     }
+    Err("cannot create temporary file".to_string())
+}
+
+fn sync_parent_dir(parent: &Path) -> Result<(), std::io::Error> {
+    File::open(parent).and_then(|file| file.sync_all())
 }
 
 pub fn put_file_bytes(
@@ -359,15 +396,12 @@ fn extract_tar_into(root: &Path, archive: &[u8]) -> Result<(), String> {
                     .ok_or_else(|| "tar entry has no parent directory".to_string())?;
                 create_safe_directory(root, parent)?;
                 reject_symlink_path(root, &target)?;
-                let mut file = fs::OpenOptions::new()
-                    .create(true)
-                    .truncate(true)
-                    .write(true)
-                    .open(&target)
-                    .map_err(|error| format!("cannot write tar entry: {error}"))?;
-                file.write_all(&archive[offset..offset + size_usize])
-                    .map_err(|error| format!("cannot write tar entry: {error}"))?;
-                let _ = fs::set_permissions(&target, fs::Permissions::from_mode(mode & 0o777));
+                durable_atomic_write(
+                    &target,
+                    Some(mode & 0o777),
+                    &archive[offset..offset + size_usize],
+                    ".smolvm-tar",
+                )?;
             }
             _ => return Err(format!("unsupported tar entry type: {}", typeflag as char)),
         }

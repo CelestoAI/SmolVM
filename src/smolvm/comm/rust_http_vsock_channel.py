@@ -75,6 +75,12 @@ class ControlCapabilities:
 
     def enabled(self, *names: str) -> bool:
         for name in names:
+            value = self.features.get(name)
+            if value is True:
+                return True
+            if isinstance(value, str) and value.lower() == "true":
+                return True
+
             value: Any = self.features
             for part in name.split("."):
                 if not isinstance(value, dict) or part not in value:

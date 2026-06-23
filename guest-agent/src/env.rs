@@ -1,12 +1,16 @@
 //! Managed Linux environment file endpoints.
 
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 const ENV_FILE: &str = "/etc/profile.d/smolvm_env.sh";
+static ENV_UPDATE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 #[derive(Debug, Serialize)]
 pub struct EnvResponse {
@@ -48,13 +52,21 @@ pub async fn read_managed() -> EnvResponse {
 }
 
 pub async fn put_managed(req: EnvPutRequest) -> EnvResponse {
+    put_managed_at(Path::new(ENV_FILE), req)
+}
+
+fn put_managed_at(path: &Path, req: EnvPutRequest) -> EnvResponse {
     for key in req.vars.keys() {
         if let Err(error) = validate_key(key) {
             return error_response(error);
         }
     }
+    let _guard = match ENV_UPDATE_LOCK.lock() {
+        Ok(guard) => guard,
+        Err(_) => return error_response("environment update lock is unavailable"),
+    };
     let mut vars = if req.merge {
-        match read_env_file(Path::new(ENV_FILE)) {
+        match read_env_file(path) {
             Ok(vars) => vars,
             Err(error) => return error_response(error),
         }
@@ -62,7 +74,7 @@ pub async fn put_managed(req: EnvPutRequest) -> EnvResponse {
         BTreeMap::new()
     };
     vars.extend(req.vars);
-    match atomic_write_env(Path::new(ENV_FILE), &vars) {
+    match atomic_write_env(path, &vars) {
         Ok(()) => EnvResponse {
             ok: true,
             vars,
@@ -73,19 +85,27 @@ pub async fn put_managed(req: EnvPutRequest) -> EnvResponse {
 }
 
 pub async fn delete_managed(req: EnvDeleteRequest) -> EnvResponse {
+    delete_managed_at(Path::new(ENV_FILE), req)
+}
+
+fn delete_managed_at(path: &Path, req: EnvDeleteRequest) -> EnvResponse {
     for key in &req.keys {
         if let Err(error) = validate_key(key) {
             return error_response(error);
         }
     }
-    let mut vars = match read_env_file(Path::new(ENV_FILE)) {
+    let _guard = match ENV_UPDATE_LOCK.lock() {
+        Ok(guard) => guard,
+        Err(_) => return error_response("environment update lock is unavailable"),
+    };
+    let mut vars = match read_env_file(path) {
         Ok(vars) => vars,
         Err(error) => return error_response(error),
     };
     for key in req.keys {
         vars.remove(&key);
     }
-    match atomic_write_env(Path::new(ENV_FILE), &vars) {
+    match atomic_write_env(path, &vars) {
         Ok(()) => EnvResponse {
             ok: true,
             vars,
@@ -179,14 +199,25 @@ fn atomic_write_env(path: &Path, vars: &BTreeMap<String, String>) -> Result<(), 
     let content = build_env_script(vars)?;
     let parent = path.parent().unwrap_or_else(|| Path::new("/"));
     fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    let tmp = tmp_path(parent);
-    fs::write(&tmp, content).map_err(|error| error.to_string())?;
-    fs::set_permissions(&tmp, fs::Permissions::from_mode(0o644))
-        .map_err(|error| error.to_string())?;
+    let (mut file, tmp) = create_temp_file(parent)?;
+    if let Err(error) = file.write_all(content.as_bytes()) {
+        let _ = fs::remove_file(&tmp);
+        return Err(error.to_string());
+    }
+    if let Err(error) = file.set_permissions(fs::Permissions::from_mode(0o644)) {
+        let _ = fs::remove_file(&tmp);
+        return Err(error.to_string());
+    }
+    if let Err(error) = file.sync_all() {
+        let _ = fs::remove_file(&tmp);
+        return Err(error.to_string());
+    }
+    drop(file);
     fs::rename(&tmp, path).map_err(|error| {
         let _ = fs::remove_file(&tmp);
         error.to_string()
-    })
+    })?;
+    sync_parent_dir(parent)
 }
 
 fn build_env_script(vars: &BTreeMap<String, String>) -> Result<String, String> {
@@ -219,20 +250,43 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn tmp_path(parent: &Path) -> PathBuf {
+fn create_temp_file(parent: &Path) -> Result<(File, PathBuf), String> {
+    for attempt in 0..100 {
+        let path = tmp_path(parent, attempt);
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => return Ok((file, path)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Err("cannot create temporary environment file".to_string())
+}
+
+fn sync_parent_dir(parent: &Path) -> Result<(), String> {
+    File::open(parent)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| error.to_string())
+}
+
+fn tmp_path(parent: &Path, attempt: u32) -> PathBuf {
     parent.join(format!(
-        ".smolvm-env-{}-{}",
+        ".smolvm-env-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_nanos()
+            .as_nanos(),
+        attempt
     ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static TEMPFILE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
     #[test]
     fn shell_quote_round_trips_single_quotes_for_reader() {
@@ -251,5 +305,45 @@ mod tests {
         assert!(validate_key("OPENAI_API_KEY").is_ok());
         assert!(validate_key("1_BAD").is_err());
         assert!(validate_key("BAD-DASH").is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_merges_keep_all_variables() {
+        let dir = tempfile_dir();
+        let path = dir.join("env.sh");
+        let mut handles = Vec::new();
+
+        for index in 0..32 {
+            let path = path.clone();
+            handles.push(tokio::spawn(async move {
+                let mut vars = BTreeMap::new();
+                vars.insert(format!("KEY_{index}"), format!("value-{index}"));
+                let response = put_managed_at(&path, EnvPutRequest { vars, merge: true });
+                assert!(response.ok, "{:?}", response.error);
+            }));
+        }
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        let vars = read_env_file(&path).unwrap();
+        assert_eq!(vars.len(), 32);
+        for index in 0..32 {
+            assert_eq!(
+                vars.get(&format!("KEY_{index}")),
+                Some(&format!("value-{index}"))
+            );
+        }
+    }
+
+    fn tempfile_dir() -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "smolvm-env-test-{}-{}",
+            std::process::id(),
+            TEMPFILE_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&path).unwrap();
+        path
     }
 }

@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
@@ -51,6 +52,7 @@ pub fn read_boot_milestones() -> BootMilestonesResponse {
             }
         }
     }
+    let milestones = dedupe_boot_milestones(milestones);
     BootMilestonesResponse {
         ok: true,
         milestones,
@@ -110,6 +112,22 @@ fn parse_smolvm_ts_line(line: &str) -> Option<BootMilestone> {
     })
 }
 
+fn dedupe_boot_milestones(milestones: Vec<BootMilestone>) -> Vec<BootMilestone> {
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::new();
+    for milestone in milestones {
+        let key = (
+            milestone.stage.clone(),
+            milestone.epoch_s.map(f64::to_bits),
+            milestone.uptime_s.map(f64::to_bits),
+        );
+        if seen.insert(key) {
+            deduped.push(milestone);
+        }
+    }
+    deduped
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,5 +146,30 @@ unrelated line
         assert_eq!(milestones[0].uptime_s, Some(0.10));
         assert_eq!(milestones[1].stage, "guest-agent-started");
         assert_eq!(milestones[1].uptime_s, Some(0.24));
+    }
+
+    #[test]
+    fn dedupes_same_stage_and_timestamp_keeping_first_source() {
+        let first = BootMilestone {
+            stage: "guest-agent-started".to_string(),
+            epoch_s: Some(1781280001.0),
+            uptime_s: Some(0.24),
+            raw: "canonical".to_string(),
+        };
+        let duplicate = BootMilestone {
+            raw: "duplicate".to_string(),
+            ..first.clone()
+        };
+        let later_same_stage = BootMilestone {
+            stage: "guest-agent-started".to_string(),
+            epoch_s: Some(1781280002.0),
+            uptime_s: Some(1.24),
+            raw: "later".to_string(),
+        };
+
+        let milestones =
+            dedupe_boot_milestones(vec![first.clone(), duplicate, later_same_stage.clone()]);
+
+        assert_eq!(milestones, vec![first, later_same_stage]);
     }
 }

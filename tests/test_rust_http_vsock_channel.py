@@ -31,10 +31,22 @@ from typing import Any
 import pytest
 
 from smolvm.comm.base import CommChannel
-from smolvm.comm.rust_http_vsock_channel import RustHttpVsockChannel
+from smolvm.comm.rust_http_vsock_channel import ControlCapabilities, RustHttpVsockChannel
 from smolvm.exceptions import OperationTimeoutError, SmolVMError
 
 Handler = Callable[[str, str, bytes], Any]
+
+
+def test_control_capabilities_accept_flat_dotted_features() -> None:
+    capabilities = ControlCapabilities(
+        protocol_version=2,
+        features={"files.stream": True, "ports": {"wait": "true"}},
+        limits={},
+    )
+
+    assert capabilities.enabled("file_raw", "files.stream")
+    assert capabilities.enabled("ports.wait")
+    assert not capabilities.enabled("env.managed")
 
 
 class FakeRustChannel(RustHttpVsockChannel):
