@@ -1289,6 +1289,7 @@ def _run_start_with_published_image(args: SimpleNamespace, preset: object) -> in
                 ssh_key_path=str(private_key),
                 mounts=args.mounts,
                 writable_mounts=args.writable_mounts,
+                comm_channel=getattr(args, "comm_channel", None),
             )
             vm.start(boot_timeout=args.boot_timeout)
             # Wait for the *resolved* control channel, not SSH specifically:

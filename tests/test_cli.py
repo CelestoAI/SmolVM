@@ -3979,6 +3979,53 @@ class TestPublishedImageLaunchPath:
     @patch("smolvm.facade.SmolVM")
     @patch("smolvm.utils.ensure_ssh_key")
     @patch("smolvm.images.published.ensure_published_image")
+    @patch("smolvm.cli.main.platform.machine", return_value="x86_64")
+    @patch("smolvm.cli.main.platform.system", return_value="Linux")
+    def test_published_path_threads_explicit_comm_channel(
+        self,
+        _mock_system: MagicMock,
+        _mock_machine: MagicMock,
+        mock_ensure_image: MagicMock,
+        mock_ensure_ssh_key: MagicMock,
+        mock_vm_cls: MagicMock,
+        _mock_subprocess: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Published images must honor an explicit control-channel choice."""
+        from smolvm.images.manager import LocalImage
+
+        kernel = tmp_path / "vmlinux.bin"
+        rootfs = tmp_path / "rootfs.ext4"
+        priv = tmp_path / "id_ed25519"
+        pub = tmp_path / "id_ed25519.pub"
+        for path in (kernel, rootfs, priv):
+            path.touch()
+        pub.write_text("ssh-ed25519 AAAAExampleKey user@host\n")
+
+        mock_ensure_image.return_value = LocalImage(
+            name="openclaw-v0.0.13-amd64-firecracker",
+            kernel_path=kernel,
+            rootfs_path=rootfs,
+        )
+        mock_ensure_ssh_key.return_value = (priv, pub)
+        mock_vm = MagicMock()
+        mock_vm.vm_id = "sbx-published-1"
+        mock_vm.info.status = VMState.RUNNING
+        mock_vm.info.config.backend = "firecracker"
+        mock_vm.info.network = MagicMock(spec=NetworkConfig)
+        mock_vm.info.network.guest_ip = "172.16.0.2"
+        mock_vm.info.network.ssh_host_port = 2200
+        mock_vm_cls.return_value = mock_vm
+
+        ret = main(["openclaw", "start", "--json", "--comm-channel", "ssh"])
+
+        assert ret == 0
+        assert mock_vm_cls.call_args.kwargs["comm_channel"] == "ssh"
+
+    @patch("smolvm.cli.main.subprocess.run")
+    @patch("smolvm.facade.SmolVM")
+    @patch("smolvm.utils.ensure_ssh_key")
+    @patch("smolvm.images.published.ensure_published_image")
     @patch("smolvm.cli.main.platform.machine", return_value="arm64")
     @patch("smolvm.cli.main.platform.system", return_value="Darwin")
     def test_published_path_reaps_vm_on_failure(
