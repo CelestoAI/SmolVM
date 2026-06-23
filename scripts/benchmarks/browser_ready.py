@@ -31,6 +31,7 @@ try:
     from .reporting import (
         CommandPlan,
         cli_data,
+        expected_cleanup_ok,
         finish_report,
         parse_json_output,
         print_report,
@@ -42,6 +43,7 @@ except ImportError:  # pragma: no cover - script execution path
     from reporting import (  # type: ignore[no-redef]
         CommandPlan,
         cli_data,
+        expected_cleanup_ok,
         finish_report,
         parse_json_output,
         print_report,
@@ -92,7 +94,11 @@ def stop_plan(session_id: str, *, timeout_s: float | None) -> CommandPlan:
 
 def run_iteration(args: argparse.Namespace, iteration: int) -> dict[str, Any]:
     session_id = args.session_id or f"{args.session_prefix}-{uuid.uuid4().hex[:8]}"
-    record: dict[str, Any] = {"iter": iteration, "session_id": session_id}
+    record: dict[str, Any] = {
+        "iter": iteration,
+        "session_id": session_id,
+        "cleanup_expected": not args.keep,
+    }
 
     start_record = run_command(
         CommandPlan(
@@ -125,7 +131,7 @@ def run_iteration(args: argparse.Namespace, iteration: int) -> dict[str, Any]:
     if isinstance(cdp_url, str) and not args.no_cdp_poll:
         record["cdp_probe"] = poll_cdp(cdp_url, timeout_s=args.cdp_timeout)
 
-    if not args.keep and start_record["ok"]:
+    if not args.keep:
         record["cleanup"] = run_command(
             stop_plan(session_id, timeout_s=args.command_timeout),
             dry_run=False,
@@ -260,6 +266,8 @@ def main(argv: list[str] | None = None) -> int:
 def _record_ok(record: dict[str, Any]) -> bool:
     start = record.get("start")
     if not isinstance(start, dict) or not start.get("ok"):
+        return False
+    if not expected_cleanup_ok(record):
         return False
     probe = record.get("cdp_probe")
     return not isinstance(probe, dict) or bool(probe.get("ready"))

@@ -53,3 +53,26 @@ def test_write_json_report_creates_parent_directory(tmp_path: Path) -> None:
     write_json_report(output, report)
 
     assert json.loads(output.read_text())["script"] == "probe"
+
+
+def test_start_report_includes_shared_envelope_fields() -> None:
+    config = {"iterations": 1, "backend": "qemu"}
+
+    report, _started = start_report("probe", config=config, dry_run=True)
+
+    assert report["schema_version"] == 1
+    assert report["benchmark"] == "probe"
+    assert report["parameters"] == config
+    assert report["thresholds"] == {}
+    assert report["variants"] == {}
+    assert set(report) >= {
+        "created_at",
+        "git",
+        "host",
+        "smolvm_version",
+        "smolvm_core",
+    }
+    assert {"commit", "branch", "dirty"} <= set(report["git"])
+    assert {"system", "release", "machine", "python"} <= set(report["host"])
+    assert isinstance(report["smolvm_version"], str)
+    assert isinstance(report["smolvm_core"], str)

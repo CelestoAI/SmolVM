@@ -24,10 +24,24 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from .reporting import CommandPlan, finish_report, print_report, run_command, start_report
+    from .reporting import (
+        CommandPlan,
+        expected_cleanup_ok,
+        finish_report,
+        print_report,
+        run_command,
+        start_report,
+    )
 except ImportError:  # pragma: no cover - script execution path
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from reporting import CommandPlan, finish_report, print_report, run_command, start_report
+    from reporting import (  # type: ignore[no-redef]
+        CommandPlan,
+        expected_cleanup_ok,
+        finish_report,
+        print_report,
+        run_command,
+        start_report,
+    )
 
 OPERATIONS = ("info", "pause", "resume", "stop", "start")
 
@@ -111,7 +125,12 @@ def run_iteration(
     args: argparse.Namespace, iteration: int, operations: list[str]
 ) -> dict[str, Any]:
     sandbox_name = f"{args.name_prefix}-{uuid.uuid4().hex[:8]}"
-    record: dict[str, Any] = {"iter": iteration, "sandbox": sandbox_name, "operations": []}
+    record: dict[str, Any] = {
+        "iter": iteration,
+        "sandbox": sandbox_name,
+        "operations": [],
+        "cleanup_expected": False,
+    }
 
     create = run_command(
         CommandPlan(
@@ -140,7 +159,9 @@ def run_iteration(
             if not args.dry_run and not step["ok"]:
                 break
 
-    if not args.keep and should_run_operations:
+    cleanup_expected = not args.keep and should_run_operations
+    record["cleanup_expected"] = cleanup_expected
+    if cleanup_expected:
         record["cleanup"] = run_command(
             cleanup_plan(sandbox_name, timeout_s=args.command_timeout),
             dry_run=args.dry_run,
@@ -231,6 +252,8 @@ def main(argv: list[str] | None = None) -> int:
 def _record_ok(record: dict[str, Any]) -> bool:
     create = record.get("create")
     if not isinstance(create, dict) or not create.get("ok"):
+        return False
+    if not expected_cleanup_ok(record):
         return False
     operations = record.get("operations", [])
     return all(isinstance(operation, dict) and operation.get("ok") for operation in operations)

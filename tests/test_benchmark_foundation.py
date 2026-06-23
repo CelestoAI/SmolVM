@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from scripts.benchmarks import artifacts, browser_ready, preset_start, runtime_control
 
@@ -104,3 +105,72 @@ def test_runtime_control_dry_run_json_plans_noun_verb_lifecycle(capsys) -> None:
         ["sandbox", "start"],
     ]
     assert record["cleanup"]["command"][:3] == ["smolvm", "sandbox", "delete"]
+
+
+def test_preset_start_attempts_cleanup_after_start_failure(monkeypatch, capsys) -> None:
+    calls: list[str] = []
+
+    def fake_run_command(plan: Any, *, dry_run: bool = False) -> dict[str, Any]:
+        calls.append(plan.label)
+        return {
+            "label": plan.label,
+            "ok": False,
+            "status": "failed",
+            "duration_ms": 1.0,
+            "dry_run": dry_run,
+        }
+
+    monkeypatch.setattr(preset_start, "run_command", fake_run_command)
+
+    rc = preset_start.main(["--json", "--preset", "codex", "--iterations", "1"])
+
+    assert rc == 1
+    report = json.loads(capsys.readouterr().out)
+    record = report["records"][0]
+    assert calls == ["preset_start", "sandbox_delete"]
+    assert record["cleanup_expected"] is True
+    assert record["cleanup"]["label"] == "sandbox_delete"
+
+
+def test_browser_ready_attempts_cleanup_after_start_failure(monkeypatch, capsys) -> None:
+    calls: list[str] = []
+
+    def fake_run_command(plan: Any, *, dry_run: bool = False) -> dict[str, Any]:
+        calls.append(plan.label)
+        return {
+            "label": plan.label,
+            "ok": False,
+            "status": "failed",
+            "duration_ms": 1.0,
+            "dry_run": dry_run,
+        }
+
+    monkeypatch.setattr(browser_ready, "run_command", fake_run_command)
+
+    rc = browser_ready.main(["--json", "--session-id", "browser-bench", "--no-cdp-poll"])
+
+    assert rc == 1
+    report = json.loads(capsys.readouterr().out)
+    record = report["records"][0]
+    assert calls == ["browser_start", "browser_stop"]
+    assert record["cleanup_expected"] is True
+    assert record["cleanup"]["label"] == "browser_stop"
+
+
+def test_expected_cleanup_failure_marks_records_failed() -> None:
+    cleanup_failed = {"ok": False}
+
+    assert not preset_start._record_ok(
+        {"start": {"ok": True}, "cleanup_expected": True, "cleanup": cleanup_failed}
+    )
+    assert not browser_ready._record_ok(
+        {"start": {"ok": True}, "cleanup_expected": True, "cleanup": cleanup_failed}
+    )
+    assert not runtime_control._record_ok(
+        {
+            "create": {"ok": True},
+            "operations": [{"ok": True}],
+            "cleanup_expected": True,
+            "cleanup": cleanup_failed,
+        }
+    )

@@ -27,6 +27,7 @@ try:
     from .reporting import (
         CommandPlan,
         cli_data,
+        expected_cleanup_ok,
         finish_report,
         parse_json_output,
         print_report,
@@ -38,6 +39,7 @@ except ImportError:  # pragma: no cover - script execution path
     from reporting import (  # type: ignore[no-redef]
         CommandPlan,
         cli_data,
+        expected_cleanup_ok,
         finish_report,
         parse_json_output,
         print_report,
@@ -90,6 +92,7 @@ def run_iteration(args: argparse.Namespace, iteration: int) -> dict[str, Any]:
         "iter": iteration,
         "preset": args.preset,
         "sandbox": sandbox_name,
+        "cleanup_expected": not args.keep,
     }
 
     start_plan = CommandPlan(
@@ -120,7 +123,7 @@ def run_iteration(args: argparse.Namespace, iteration: int) -> dict[str, Any]:
         except Exception as exc:  # noqa: BLE001
             record["start_parse_error"] = str(exc)
 
-    if not args.keep and start_record["ok"]:
+    if not args.keep:
         record["cleanup"] = run_command(
             cleanup_plan(vm_name, timeout_s=args.command_timeout),
             dry_run=False,
@@ -202,7 +205,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def _record_ok(record: dict[str, Any]) -> bool:
     start = record.get("start")
-    return isinstance(start, dict) and bool(start.get("ok"))
+    return isinstance(start, dict) and bool(start.get("ok")) and expected_cleanup_ok(record)
 
 
 def _human_lines(report: dict[str, Any]) -> list[str]:
