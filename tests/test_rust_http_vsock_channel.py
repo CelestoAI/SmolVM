@@ -340,6 +340,28 @@ def test_put_file_does_not_fallback_when_raw_endpoint_missing(tmp_path: Path) ->
         channel.put_file(source, "/tmp/source.txt")
 
 
+def test_put_file_rejects_local_size_over_cap_before_upload(tmp_path: Path) -> None:
+    source = tmp_path / "source.txt"
+    source.write_text("payload")
+
+    def _unexpected_put(method: str, path: str, body: bytes) -> dict:
+        raise AssertionError(f"unexpected request: {method} {path} {len(body)} bytes")
+
+    channel = FakeRustChannel(
+        [
+            _capabilities(
+                {"file_raw": True},
+                limits={"max_stream_size_bytes": 4},
+            ),
+            _unexpected_put,
+        ]
+    )
+
+    with pytest.raises(SmolVMError, match="up to 4 bytes"):
+        channel.put_file(source, "/tmp/source.txt")
+    assert [request[:2] for request in channel.requests] == [("GET", "/capabilities")]
+
+
 def test_get_directory_rejects_unsafe_tar_entries(tmp_path: Path) -> None:
     archive = io.BytesIO()
     with tarfile.open(fileobj=archive, mode="w") as tar:

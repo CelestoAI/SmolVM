@@ -499,8 +499,18 @@ class RustHttpVsockChannel:
             raise ValueError(f"local_path does not exist: {source}")
         if not source.is_file():
             raise ValueError(f"local_path is not a file: {source}")
-        mode = stat.S_IMODE(source.stat().st_mode)
+        source_stat = source.stat()
+        mode = stat.S_IMODE(source_stat.st_mode)
         self._require_feature("fast file transfer", "file_raw", "files.stream")
+        max_stream_size = self._limit_bytes(
+            "max_stream_size_bytes",
+            _DEFAULT_MAX_STREAM_SIZE_BYTES,
+        )
+        if source_stat.st_size > max_stream_size:
+            raise SmolVMError(
+                f"File '{source}' is {source_stat.st_size} bytes, "
+                f"but this sandbox accepts files up to {max_stream_size} bytes in one upload."
+            )
         query = urllib.parse.urlencode({"path": remote_path, "name": source.name, "mode": mode})
         _resp, data = self._request_bytes(
             "PUT",
