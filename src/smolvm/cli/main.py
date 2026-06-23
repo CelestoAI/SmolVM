@@ -1637,6 +1637,7 @@ def _preset_control_channel(vm: object, *, timeout: float = 30.0) -> object:
         if not callable(supports) or supports("file_raw", "dir_tar", "env_managed"):
             return channel
     except Exception:
+        # Control-channel setup is an optimization; SSH remains the supported fallback.
         pass
     _vm.wait_for_ssh(timeout=timeout)
     return _vm._ensure_ssh_for_env(timeout=timeout)
