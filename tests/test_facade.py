@@ -2415,6 +2415,52 @@ class TestVMQemuLocalExpose:
         mock_sdk_cls.return_value.network.setup_local_port_forward.assert_not_called()
 
     @patch("smolvm.facade.SmolVMManager")
+    def test_ssh_endpoints_include_tracked_qemu_hostfwd(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        with (
+            patch("smolvm.facade.QMPClient"),
+            patch("smolvm.facade.SmolVM._probe_local_forward", return_value=True),
+        ):
+            vm = self._running_qemu_vm(mock_sdk_cls, sample_config, tmp_path)
+
+            host_port = vm.expose_local(guest_port=22, host_port=18022)
+
+        assert host_port == 18022
+        assert vm._ssh_endpoints()[0] == ("127.0.0.1", 18022)
+
+    @patch("smolvm.facade.SSHClient")
+    @patch("smolvm.facade.SmolVMManager")
+    def test_wait_for_ssh_prepares_qemu_hostfwd_before_port_is_ready(
+        self,
+        mock_sdk_cls: MagicMock,
+        mock_ssh_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        with (
+            patch("smolvm.facade.QMPClient") as mock_qmp_cls,
+            patch("smolvm.facade.SmolVM._allocate_local_port", return_value=18022),
+            patch("smolvm.facade.SmolVM._probe_local_forward") as mock_probe,
+        ):
+            client = self._qmp_client(mock_qmp_cls)
+            vm = self._running_qemu_vm(mock_sdk_cls, sample_config, tmp_path)
+
+            vm.wait_for_ssh(timeout=20.0)
+
+        client.execute.assert_called_once_with(
+            "human-monitor-command",
+            {"command-line": "hostfwd_add net0 tcp:127.0.0.1:18022-:22"},
+        )
+        mock_probe.assert_not_called()
+        mock_ssh_cls.assert_called_once()
+        assert mock_ssh_cls.call_args.kwargs["host"] == "127.0.0.1"
+        assert mock_ssh_cls.call_args.kwargs["port"] == 18022
+
+    @patch("smolvm.facade.SmolVMManager")
     def test_unexpose_local_removes_qemu_hostfwd(
         self,
         mock_sdk_cls: MagicMock,
@@ -3046,6 +3092,8 @@ class TestVMProperties:
             "StrictHostKeyChecking=no",
             "-o",
             "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
             "-p",
             "22",
             "-i",

@@ -2219,6 +2219,8 @@ class SmolVM:
             "StrictHostKeyChecking=no",
             "-o",
             "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
             "-p",
             str(self._ssh.port),
         ]
@@ -2268,6 +2270,8 @@ class SmolVM:
             "StrictHostKeyChecking=no",
             "-o",
             "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
             "-p",
             str(port),
         ]
@@ -3178,6 +3182,9 @@ modprobe 9pnet_virtio""".strip()
         ssh_host_port = self._info.network.ssh_host_port
         if isinstance(ssh_host_port, int):
             endpoints.append(("127.0.0.1", ssh_host_port))
+        for forward in self._local_forwards.values():
+            if forward.guest_port == 22:
+                endpoints.append(("127.0.0.1", forward.host_port))
         endpoints.append((self._info.network.guest_ip, 22))
 
         unique: list[tuple[str, int]] = []
@@ -3186,6 +3193,44 @@ modprobe 9pnet_virtio""".strip()
                 continue
             unique.append(endpoint)
         return unique
+
+    def _ensure_qemu_slirp_ssh_hostfwd(self) -> None:
+        """Create a QEMU slirp SSH host forward before SSH is reachable."""
+        if self._info.network is None:
+            return
+        if isinstance(self._info.network.ssh_host_port, int):
+            return
+        if not self._should_try_qemu_hostfwd_local_forward():
+            return
+        if any(forward.guest_port == 22 for forward in self._local_forwards.values()):
+            return
+
+        errors: list[str] = []
+        for _ in range(_LOCAL_FORWARD_MAX_PORT_ATTEMPTS):
+            host_port = self._allocate_local_port()
+            try:
+                self._add_qemu_hostfwd(host_port=host_port, guest_port=22)
+            except Exception as exc:
+                errors.append(str(exc))
+                continue
+            self._local_forwards[(host_port, 22)] = _LocalForward(
+                host_port=host_port,
+                guest_port=22,
+                transport="qemu_hostfwd",
+            )
+            logger.info(
+                "VM %s exposed localhost:%d -> guest:22 (transport=qemu_hostfwd)",
+                self._vm_id,
+                host_port,
+            )
+            return
+
+        if errors:
+            logger.debug(
+                "VM %s could not prepare QEMU slirp SSH hostfwd: %s",
+                self._vm_id,
+                "; ".join(errors),
+            )
 
     def _attempt_ssh_candidates(
         self,
@@ -3314,6 +3359,7 @@ modprobe 9pnet_virtio""".strip()
     def _wait_for_ssh_over_network(self, timeout: float, *, as_control: bool = False) -> None:
         """Wait for SSH across available network endpoints."""
         self._sdk.ensure_network_connectivity(self._info)
+        self._ensure_qemu_slirp_ssh_hostfwd()
         endpoints = self._ssh_endpoints()
 
         # Prefer the already selected client first, then try remaining candidates.

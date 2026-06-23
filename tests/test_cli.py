@@ -1833,8 +1833,13 @@ class TestCliPort:
 class TestCliShell:
     """Tests for `smolvm sandbox shell`."""
 
+    @patch("smolvm.cli.main.subprocess.run")
     @patch("smolvm.facade.SmolVM")
-    def test_shell_running_vm_uses_control_channel(self, mock_vm_cls: MagicMock) -> None:
+    def test_shell_running_vm_uses_control_channel(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_run: MagicMock,
+    ) -> None:
         vm = MagicMock()
         vm.status = VMState.RUNNING
         vm.attach_shell.return_value = 7
@@ -1848,6 +1853,7 @@ class TestCliShell:
         vm.wait_for_shell.assert_called_once_with(timeout=15.0)
         vm.wait_for_ssh.assert_not_called()
         vm.attach_shell.assert_called_once_with(timeout=15.0)
+        mock_run.assert_not_called()
         vm.close.assert_called_once()
 
     @pytest.mark.parametrize("status", [VMState.CREATED, VMState.STOPPED])
@@ -1871,34 +1877,63 @@ class TestCliShell:
         vm.attach_shell.assert_called_once_with(timeout=30.0)
         vm.close.assert_called_once()
 
+    @patch("smolvm.cli.main.subprocess.run")
     @patch("smolvm.facade.SmolVM")
-    def test_shell_rejects_unsupported_vm_before_starting(
+    def test_shell_falls_back_to_ssh_when_fast_shell_unsupported_after_starting(
         self,
         mock_vm_cls: MagicMock,
-        capsys: pytest.CaptureFixture,
+        mock_run: MagicMock,
     ) -> None:
         from smolvm.exceptions import SmolVMError
 
         vm = MagicMock()
         vm.status = VMState.STOPPED
-        vm.ensure_shell_supported.side_effect = SmolVMError(
+        vm.wait_for_shell.side_effect = SmolVMError(
             "Sandbox 'vm001' cannot use 'smolvm sandbox shell'; "
             "run 'smolvm sandbox ssh vm001' to open an SSH shell."
         )
+        vm._ssh_attach_command.return_value = ["ssh", "vm001"]
+        mock_run.return_value.returncode = 0
         mock_vm_cls.from_id.return_value = vm
 
         ret = main(["sandbox", "shell", "vm001"])
 
-        assert ret == 1
-        vm.start.assert_not_called()
+        assert ret == 0
+        vm.start.assert_called_once_with(boot_timeout=30.0)
         vm.resume.assert_not_called()
-        vm.wait_for_shell.assert_not_called()
-        vm.wait_for_ssh.assert_not_called()
+        vm.wait_for_shell.assert_called_once_with(timeout=30.0)
+        vm.wait_for_ssh.assert_called_once_with(timeout=30.0)
         vm.attach_shell.assert_not_called()
+        mock_run.assert_called_once_with(["ssh", "vm001"], check=False)
         vm.close.assert_called_once()
-        err = capsys.readouterr().err
-        assert "sandbox ssh vm001" in err
-        assert "vm001" in err
+
+    @patch("smolvm.cli.main.subprocess.run")
+    @patch("smolvm.facade.SmolVM")
+    def test_shell_falls_back_to_ssh_when_terminal_feature_missing(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_run: MagicMock,
+    ) -> None:
+        from smolvm.exceptions import SmolVMError
+
+        vm = MagicMock()
+        vm.status = VMState.RUNNING
+        vm.attach_shell.side_effect = SmolVMError(
+            "Sandbox vm001 was created from an older image and cannot use fast shell access."
+        )
+        vm._ssh_attach_command.return_value = ["ssh", "vm001"]
+        mock_run.return_value.returncode = 0
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(["sandbox", "shell", "vm001"])
+
+        assert ret == 0
+        vm.start.assert_not_called()
+        vm.wait_for_shell.assert_called_once_with(timeout=30.0)
+        vm.wait_for_ssh.assert_called_once_with(timeout=30.0)
+        vm.attach_shell.assert_called_once_with(timeout=30.0)
+        mock_run.assert_called_once_with(["ssh", "vm001"], check=False)
+        vm.close.assert_called_once()
 
     @patch("smolvm.facade.SmolVM")
     def test_shell_resumes_paused_vm(self, mock_vm_cls: MagicMock) -> None:

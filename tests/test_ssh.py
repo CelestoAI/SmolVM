@@ -17,6 +17,7 @@
 import base64
 import errno
 import logging
+import warnings
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -135,6 +136,27 @@ class TestSSHClientWarningPolicy:
             "AutoAddPolicy silently accepts any key; WarningPolicy logs the "
             "unknown key, which is safer for ephemeral VMs."
         )
+
+    @patch("smolvm.ssh.paramiko.SSHClient")
+    def test_connect_suppresses_paramiko_unknown_host_key_warning(
+        self,
+        mock_ssh_client_cls: MagicMock,
+    ) -> None:
+        """The policy stays WarningPolicy, but SmolVM should not print probe noise."""
+        mock_client = MagicMock()
+        mock_client.connect.side_effect = lambda **_: warnings.warn(
+            "Unknown ssh-ed25519 host key for [127.0.0.1]:2200: b'abc'",
+            UserWarning,
+            stacklevel=2,
+        )
+        mock_ssh_client_cls.return_value = mock_client
+
+        client = SSHClient("127.0.0.1", port=2200)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            client._connect()
+
+        assert caught == []
 
 
 class TestSSHClientRun:

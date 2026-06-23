@@ -27,6 +27,7 @@ import shlex
 import socket
 import stat
 import time
+import warnings
 from contextlib import suppress
 from pathlib import Path
 from typing import Literal
@@ -205,7 +206,12 @@ class SSHClient:
             connect_kwargs["look_for_keys"] = True
 
         try:
-            client.connect(**connect_kwargs)  # type: ignore[arg-type]
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"Unknown .* host key for .*",
+                )
+                client.connect(**connect_kwargs)  # type: ignore[arg-type]
         except Exception as e:
             client.close()
             raise SmolVMError(f"SSH connection failed: {e}") from e
