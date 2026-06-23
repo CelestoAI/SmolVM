@@ -235,9 +235,7 @@ class TestCodexPreset:
         with tarfile.open(staged_tars[0]) as tf:
             members = tf.getmembers()
         names = {
-            member.name.removeprefix("./")
-            for member in members
-            if member.name not in {".", "./"}
+            member.name.removeprefix("./") for member in members if member.name not in {".", "./"}
         }
 
         assert set(allowed_files).issubset(names)
