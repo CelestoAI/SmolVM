@@ -139,7 +139,7 @@ class BaseKernel(BaseModel):
 # upload step instead of silently swapping bytes under the existing
 # pins. Re-bakes against the same tag must opt in via the
 # ``force_overwrite`` workflow_dispatch input.
-IMAGES_RELEASE_TAG = "images-2026.06.14.0"
+IMAGES_RELEASE_TAG = "images-2026.06.23.0"
 
 
 def _images_release_tag() -> str:
@@ -213,16 +213,16 @@ BASE_KERNELS: dict[Arch, BaseKernel] = {
     "amd64": BaseKernel(
         arch="amd64",
         elf_url=_release_kernel_url("amd64", "elf"),
-        elf_sha256="82089cd92627de8025134aeb8662a35e8575c2428d91b72dd6f074e33dfa2553",
+        elf_sha256="e4981590e6b0f3f24318a7f9ba4b02404f55fcc97ee1c99ffd7b71a623fb2269",
         image_url=_release_kernel_url("amd64", "image"),
-        image_sha256="9c00ac9626d125c896d31324f932a8f3e2861bc391970c56cd81a8b4b7f6f4f3",
+        image_sha256="7730e93d709ec72f5bd13820f7d094fe3891b41c334871e85292069f2e56eec4",
     ),
     "arm64": BaseKernel(
         arch="arm64",
         elf_url=_release_kernel_url("arm64", "elf"),
-        elf_sha256="1a42927c5cba423c0f2af41aecd2acd074558112194a2ac55dd6f140e4e95576",
+        elf_sha256="a01c637b2e4a84dc1935bfdd83ec6a5aa52760f8230ca164fddd152d27de3e3a",
         image_url=_release_kernel_url("arm64", "image"),
-        image_sha256="ef24c0f438a9f8b8e1406f970fa97b5888bc1ac191a92a647bfbfc1c7ed59e72",
+        image_sha256="d5760df79400c85e08c8e1a4a043adcb44675633ae514171426d6fb08513ec6b",
     ),
 }
 
@@ -261,19 +261,29 @@ def _manifest_row(
 # Rootfs SHAs from the Build Published Images run for IMAGES_RELEASE_TAG.
 # Captured by sha256sum'ing each ``<preset>-<arch>-rootfs.ext4.zst`` asset
 # on the release page. Update together when artifacts are rebuilt.
-_OPENCLAW_AMD64_ROOTFS_SHA = "967628d338897ab437ac669e8a151f808e0deb43871f7496abd8345f3c4f395c"
-_OPENCLAW_ARM64_ROOTFS_SHA = "78dfbb8d0b0ca976563a116bdcaca205fa54c9ff31b11acd25dc6ee2bfc09569"
-_CODEX_AMD64_ROOTFS_SHA = "68de627e77fb7d3feb7cc07eef4b986152395cabce38432b2b5752f9899e3edc"
-_CODEX_ARM64_ROOTFS_SHA = "ba4c25010beda18778f890e59f4408526c7631a127509fcf6c3c6c092c5bc837"
-_CLAUDE_CODE_AMD64_ROOTFS_SHA = "d8aaa4a501649427c583f08228c952e8429528f2345e5f84fdf2809262132dc5"
-_CLAUDE_CODE_ARM64_ROOTFS_SHA = "f8a3a12c3b21147774117bec5a709cf4cb1b0b005e40e4c4c2537637c53d7d86"
-_HERMES_AMD64_ROOTFS_SHA = "4c441d250720f7a916e4237d19a07d00f4a38de35572a1849856c78bc1f8a78f"
-_HERMES_ARM64_ROOTFS_SHA = "0513cdbb130a1b4d067613e7d4db3e81a4020c02ed5af4552abc3147d9751f3c"
-_PI_AMD64_ROOTFS_SHA = "9dbe6947da0c7765ac7726622319fbdf0e860033e46276f707f9df0b47cc3db9"
-_PI_ARM64_ROOTFS_SHA = "a5ba023a6015509c5dc92337674aab2c576afe995b58682ef7c89192dd3ff346"
+_OPENCLAW_AMD64_ROOTFS_SHA = "2cd7546fca70db830355aa0d184c1e7b12923ec84b30626ee96681b0f908b32f"
+_OPENCLAW_ARM64_ROOTFS_SHA = "be24b66eda6dda88fc8dcf1c286f941c8fdff9ee58fbd481680ffbbcd09bfb9e"
+_CODEX_AMD64_ROOTFS_SHA = "44b07be5641945a3035acfd54abf0f3837501ddc28c182e11f23cde7b54de18e"
+_CODEX_ARM64_ROOTFS_SHA = "c70ad2e6f47d87c9f6b967a361ff036af8aae5e686f1f81557567b351a5f69aa"
+_CLAUDE_CODE_AMD64_ROOTFS_SHA = "3692a73c3547a434e173cce9a8e6193afa59f43eea47c8d8e1c0cc5d0dc9b0b9"
+_CLAUDE_CODE_ARM64_ROOTFS_SHA = "082032fe057b8979975e609b394d48e1dcd7df1a30bb94badac4f753b61a8160"
+_HERMES_AMD64_ROOTFS_SHA = "b064cd840397604c8dc7643ae233eb67f651ff16292207bbfd85ddc9a54dae49"
+_HERMES_ARM64_ROOTFS_SHA = "346f01959a8440607d895ba61e7d347e21be1397d3ffc327e0eb9feefda0d126"
+_PI_AMD64_ROOTFS_SHA = "54adbbfde98959baf27c3b5ffcc72775795bdf600a06127c758fcd81c6a6d1de"
+_PI_ARM64_ROOTFS_SHA = "35185f815c758334cd501efdc13046fa7fe165187b015e6231d36e7fbc1a6927"
 # Bare Ubuntu base image (no preset install) — raw-ext4, agent baked in.
-_UBUNTU_AMD64_ROOTFS_SHA = "9c0617a33bd86b1ac27d6ccd0814d3e5a49860f553dfbbbc426533b4874030b7"
-_UBUNTU_ARM64_ROOTFS_SHA = "164c13fef8c0277dff7985a5baa5076ee3c533e61eec44543e7e02de455196bb"
+_UBUNTU_AMD64_ROOTFS_SHA = "e2549e348ecee88d35c6294ff061001f23769e77cb05a30d52b5d6c84860ce30"
+_UBUNTU_ARM64_ROOTFS_SHA = "dde9d16333bc6ec57c787b5364aefd684b3c02bbbf5925d67ca23fc5465e4d88"
+_CODEX_AMD64_ALPINE_ROOTFS_SHA = "9293f61ad258bbf98bed572679eaaf8238492387f4bd57a6e8a36af245415f89"
+_CODEX_ARM64_ALPINE_ROOTFS_SHA = "41c48390cdeeac7645d2d3500b2b862376bacc54f16559b69ee90824ee1dbee9"
+_CLAUDE_CODE_AMD64_ALPINE_ROOTFS_SHA = (
+    "ee2eb846b729a33b858bc102f2d871670c50ef99f751b01f428d338288021c38"
+)
+_CLAUDE_CODE_ARM64_ALPINE_ROOTFS_SHA = (
+    "2dec09a47334195562209c91307c86acafc510fc61bae08cd96c8c766328f955"
+)
+_PI_AMD64_ALPINE_ROOTFS_SHA = "694e3da9d09896eaeb66dff04a569d9ae4797579b8e938cbd1eee7a913e204b3"
+_PI_ARM64_ALPINE_ROOTFS_SHA = "ad2ce441fb886dce4b577a706c24301428e230112fa62dfa06a8d9a6aa1b192f"
 
 
 def _preset_rows(
@@ -295,12 +305,9 @@ def _preset_rows(
     return rows
 
 
-# Alpine rootfs SHAs are populated after the first successful run of
-# ``build-published-images.yml`` against this :data:`IMAGES_RELEASE_TAG`.
-# Until then the Alpine ``_preset_rows`` calls below stay commented so the
-# manifest doesn't reference URLs whose SHA we can't verify. Phase 1 of
-# #264 covers codex/claude-code/pi only — hermes is excluded in CI for
-# musllinux compatibility reasons; openclaw uses a separate builder.
+# Alpine rows are published for codex/claude-code/pi in this release. Hermes is
+# excluded in CI for musllinux compatibility reasons; openclaw uses a separate
+# builder.
 
 MANIFEST: dict[ManifestKey, PublishedImage] = {
     # Ubuntu rows — historical default, no naming change in URL.
@@ -313,10 +320,20 @@ MANIFEST: dict[ManifestKey, PublishedImage] = {
     # ``create --os ubuntu`` on every supported VMM. Same rootfs shared
     # across vmms; only the kernel differs.
     **_preset_rows("ubuntu", _UBUNTU_AMD64_ROOTFS_SHA, _UBUNTU_ARM64_ROOTFS_SHA),
-    # Alpine rows — add once CI publishes ``<preset>-<arch>-alpine-rootfs.ext4.zst``
-    # under :data:`IMAGES_RELEASE_TAG` and we have SHAs to pin against.
-    # Until then, ``smolvm <preset> start --os alpine`` falls through to
-    # install-at-boot via the local Docker builder.
+    # Alpine rows — published for the presets whose CI builders support Alpine.
+    **_preset_rows(
+        "codex",
+        _CODEX_AMD64_ALPINE_ROOTFS_SHA,
+        _CODEX_ARM64_ALPINE_ROOTFS_SHA,
+        os="alpine",
+    ),
+    **_preset_rows(
+        "claude-code",
+        _CLAUDE_CODE_AMD64_ALPINE_ROOTFS_SHA,
+        _CLAUDE_CODE_ARM64_ALPINE_ROOTFS_SHA,
+        os="alpine",
+    ),
+    **_preset_rows("pi", _PI_AMD64_ALPINE_ROOTFS_SHA, _PI_ARM64_ALPINE_ROOTFS_SHA, os="alpine"),
 }
 
 
