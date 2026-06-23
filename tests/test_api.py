@@ -141,6 +141,32 @@ def test_native_firecracker_transport_error_falls_back_to_requests(tmp_path: Pat
     client.session.request.assert_called_once()
 
 
+def test_native_firecracker_transport_error_treats_replayed_start_as_success(
+    tmp_path: Path,
+) -> None:
+    """A native start may take effect even when its response read fails."""
+    socket_path = tmp_path / "fc.sock"
+    socket_path.touch()
+    native = MagicMock()
+    native.has_native_firecracker_api.return_value = True
+    native._firecracker_request.side_effect = OSError("connection reset")
+    client = _client(tmp_path)
+    client.session.request.return_value = _Response(
+        status_code=400,
+        payload={
+            "fault_message": (
+                "The requested operation is not supported after starting the microVM."
+            )
+        },
+    )
+
+    with patch("smolvm.api._native", native):
+        client.start_instance()
+
+    native._firecracker_request.assert_called_once()
+    client.session.request.assert_called_once()
+
+
 def test_native_firecracker_request_can_be_disabled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

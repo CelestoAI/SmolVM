@@ -54,6 +54,25 @@ def _native_firecracker_available() -> bool:
         return False
 
 
+def _is_instance_start_request(
+    method: str,
+    path: str,
+    body: dict[str, Any] | None,
+) -> bool:
+    """Return whether a request asks Firecracker to start the microVM."""
+    return (
+        method.upper() == "PUT"
+        and path == "/actions"
+        and body is not None
+        and body.get("action_type") == "InstanceStart"
+    )
+
+
+def _instance_start_already_succeeded(error_msg: str) -> bool:
+    """Return whether a replayed start request found the VM already running."""
+    return "not supported after starting the microVM" in error_msg
+
+
 class FirecrackerClient:
     """Client for the Firecracker HTTP API over Unix socket."""
 
@@ -114,6 +133,7 @@ class FirecrackerClient:
         url = self._socket_url(path)
         logger.debug("%s %s", method, path)
 
+        native_transport_error: OSError | None = None
         if self.socket_path.exists() and _native_firecracker_available():
             body_json = json_module.dumps(json, separators=(",", ":")) if json is not None else None
             try:
@@ -125,6 +145,7 @@ class FirecrackerClient:
                     10.0,
                 )
             except OSError as e:
+                native_transport_error = e
                 logger.debug(
                     "Native Firecracker request failed, falling back to requests-unixsocket: %s",
                     e,
@@ -168,6 +189,17 @@ class FirecrackerClient:
                 error_msg = error_data.get("fault_message", error_msg)
             except Exception:
                 pass
+            if (
+                native_transport_error is not None
+                and _is_instance_start_request(method, path, json)
+                and _instance_start_already_succeeded(error_msg)
+            ):
+                logger.debug(
+                    "Treating replayed InstanceStart as successful after native "
+                    "transport error: %s",
+                    native_transport_error,
+                )
+                return None
             raise FirecrackerAPIError(
                 f"API error: {error_msg}",
                 status_code=response.status_code,
