@@ -1,7 +1,7 @@
 //! Port readiness helper.
 
 use serde::{Deserialize, Serialize};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
 
 const MAX_TIMEOUT_MS: u64 = 300_000;
@@ -50,9 +50,16 @@ pub async fn wait_for_ports(req: PortsWaitRequest) -> PortsWaitResponse {
         };
     }
     let host = req.host.unwrap_or_else(|| "127.0.0.1".to_string());
-    let ip = host
-        .parse::<IpAddr>()
-        .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
+    let ip = match host.parse::<IpAddr>() {
+        Ok(ip) => ip,
+        Err(_) => {
+            return PortsWaitResponse {
+                ok: false,
+                ready_ports: Vec::new(),
+                error: Some(format!("invalid host: {host}")),
+            };
+        }
+    };
     let timeout = Duration::from_millis(req.timeout_ms.max(1));
     let ports = req.ports;
 
@@ -144,5 +151,19 @@ mod tests {
             response.error.as_deref(),
             Some("too many ports; maximum is 256")
         );
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_hosts() {
+        let response = wait_for_ports(PortsWaitRequest {
+            ports: vec![80],
+            timeout_ms: 1,
+            host: Some("not-an-ip".to_string()),
+        })
+        .await;
+
+        assert!(!response.ok);
+        assert_eq!(response.ready_ports, Vec::<u16>::new());
+        assert_eq!(response.error.as_deref(), Some("invalid host: not-an-ip"));
     }
 }

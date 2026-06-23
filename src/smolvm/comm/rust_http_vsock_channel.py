@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import http.client
 import io
+import ipaddress
 import json
 import logging
 import math
@@ -47,6 +48,11 @@ SMOLVM_AGENT_PORT = 1024
 
 _READY_FAST_POLL_WINDOW = 1.0
 _READY_FAST_POLL_INTERVAL = 0.02
+_DEFAULT_MAX_AGENT_RESPONSE_BYTES = 1024 * 1024
+_DEFAULT_MAX_STREAM_SIZE_BYTES = 256 * 1024 * 1024
+_DEFAULT_MAX_TAR_SIZE_BYTES = 512 * 1024 * 1024
+_MAX_PORTS_WAIT = 256
+_MAX_PORT_WAIT_TIMEOUT_SECONDS = 300.0
 
 _LEGACY_CAPABILITIES: dict[str, Any] = {
     "protocol_version": 1,
@@ -115,6 +121,18 @@ def _endpoint_missing(exc: BaseException, method: str, path: str) -> bool:
 def _parse_mode_header(value: str) -> int:
     value = value.strip().removeprefix("0o")
     return int(value, 8)
+
+
+def _parse_size_header(value: str, *, header: str, method: str, path: str) -> int:
+    try:
+        size = int(value.strip())
+    except ValueError as exc:
+        raise SmolVMError(
+            f"guest agent returned invalid {header} for {method} {path}: {value!r}"
+        ) from exc
+    if size < 0:
+        raise SmolVMError(f"guest agent returned negative {header} for {method} {path}")
+    return size
 
 
 def _directory_to_tar(source: Path) -> bytes:
@@ -355,6 +373,7 @@ class RustHttpVsockChannel:
         body: bytes = b"",
         *,
         content_type: str | None = None,
+        max_bytes: int | None = _DEFAULT_MAX_AGENT_RESPONSE_BYTES,
         timeout: float | None = None,
     ) -> tuple[http.client.HTTPResponse, bytes]:
         headers = {"Connection": "close"}
@@ -367,7 +386,28 @@ class RustHttpVsockChannel:
         try:
             conn.request(method, path, body=body, headers=headers)
             resp = conn.getresponse()
-            data = resp.read()
+            if max_bytes is not None:
+                for header in ("Content-Length", "x-smolvm-file-size"):
+                    value = resp.getheader(header)
+                    if value is None:
+                        continue
+                    declared_size = _parse_size_header(
+                        value,
+                        header=header,
+                        method=method,
+                        path=path,
+                    )
+                    if declared_size > max_bytes:
+                        raise SmolVMError(
+                            f"guest agent response for {method} {path} exceeded {max_bytes} bytes"
+                        )
+                data = resp.read(max_bytes + 1)
+                if len(data) > max_bytes:
+                    raise SmolVMError(
+                        f"guest agent response for {method} {path} exceeded {max_bytes} bytes"
+                    )
+            else:
+                data = resp.read()
             if resp.status >= 400:
                 detail = data.decode("utf-8", errors="replace")
                 raise SmolVMError(f"guest agent HTTP {resp.status} for {method} {path}: {detail}")
@@ -400,6 +440,14 @@ class RustHttpVsockChannel:
 
     def supports(self, *features: str) -> bool:
         return self.capabilities.enabled(*features)
+
+    def _limit_bytes(self, name: str, default: int) -> int:
+        value = self.capabilities.limits.get(name)
+        try:
+            limit = int(value)
+        except (TypeError, ValueError):
+            return default
+        return limit if limit > 0 else default
 
     def run(
         self,
@@ -500,7 +548,14 @@ class RustHttpVsockChannel:
         query = urllib.parse.urlencode({"path": remote_path})
         if self.supports("file_raw", "files.stream"):
             try:
-                resp, data = self._request_bytes("GET", f"/files/content?{query}")
+                resp, data = self._request_bytes(
+                    "GET",
+                    f"/files/content?{query}",
+                    max_bytes=self._limit_bytes(
+                        "max_stream_size_bytes",
+                        _DEFAULT_MAX_STREAM_SIZE_BYTES,
+                    ),
+                )
                 expected_size = resp.getheader("x-smolvm-file-size")
                 if expected_size is not None and int(expected_size) != len(data):
                     raise SmolVMError(
@@ -574,7 +629,11 @@ class RustHttpVsockChannel:
         destination.mkdir(parents=True, exist_ok=True)
         query = urllib.parse.urlencode({"path": remote_path})
         try:
-            _resp, data = self._request_bytes("GET", f"/directories/tar?{query}")
+            _resp, data = self._request_bytes(
+                "GET",
+                f"/directories/tar?{query}",
+                max_bytes=self._limit_bytes("max_tar_size_bytes", _DEFAULT_MAX_TAR_SIZE_BYTES),
+            )
         except SmolVMError as exc:
             if not _endpoint_missing(exc, "GET", "/directories/tar"):
                 raise
@@ -582,17 +641,28 @@ class RustHttpVsockChannel:
         _safe_extract_tar(data, destination)
         return destination
 
+    def _remote_temp_archive(self) -> str:
+        result = self.run("mktemp /tmp/smolvm-dir.XXXXXX.tar", timeout=10, shell="raw")
+        remote_tmp = result.stdout.strip()
+        if not result.ok or not remote_tmp:
+            raise SmolVMError(
+                "Failed to create temporary archive path in guest: "
+                f"{result.stderr.strip() or result.stdout}"
+            )
+        return remote_tmp
+
     def _put_directory_legacy(self, source: Path, remote_path: str) -> None:
         data = _directory_to_tar(source)
         local_tmp = _write_temp_tar(data)
-        remote_tmp = f"/tmp/smolvm-dir-{os.getpid()}-{time.monotonic_ns()}.tar"
+        remote_tmp = self._remote_temp_archive()
         try:
             self.put_file(local_tmp, remote_tmp)
             result = self.run(
                 "set -e; "
+                f"remote_tmp={shlex.quote(remote_tmp)}; "
+                "trap 'rm -f -- \"$remote_tmp\"' EXIT; "
                 f"mkdir -p -- {shlex.quote(remote_path)}; "
-                f"tar -xf {shlex.quote(remote_tmp)} -C {shlex.quote(remote_path)}; "
-                f"rm -f -- {shlex.quote(remote_tmp)}",
+                f'tar -xf "$remote_tmp" -C {shlex.quote(remote_path)}',
                 timeout=120,
                 shell="raw",
             )
@@ -603,18 +673,18 @@ class RustHttpVsockChannel:
                 )
         finally:
             local_tmp.unlink(missing_ok=True)
+            with suppress(SmolVMError):
+                self.run(f"rm -f -- {shlex.quote(remote_tmp)}", timeout=10, shell="raw")
 
     def _get_directory_legacy(self, remote_path: str, destination: Path) -> Path:
         destination.mkdir(parents=True, exist_ok=True)
-        remote_tmp = f"/tmp/smolvm-dir-{os.getpid()}-{time.monotonic_ns()}.tar"
+        remote_tmp = self._remote_temp_archive()
         local_fd, local_name = tempfile.mkstemp(prefix="smolvm-dir-", suffix=".tar")
         os.close(local_fd)
         local_tmp = Path(local_name)
         try:
             result = self.run(
-                "set -e; "
-                f"rm -f -- {shlex.quote(remote_tmp)}; "
-                f"tar -cf {shlex.quote(remote_tmp)} -C {shlex.quote(remote_path)} .",
+                f"set -e; tar -cf {shlex.quote(remote_tmp)} -C {shlex.quote(remote_path)} .",
                 timeout=120,
                 shell="raw",
             )
@@ -694,6 +764,23 @@ class RustHttpVsockChannel:
         timeout: float = 30,
         host: str = "127.0.0.1",
     ) -> list[int]:
+        if not ports:
+            raise ValueError("ports cannot be empty")
+        if len(ports) > _MAX_PORTS_WAIT:
+            raise ValueError(f"ports cannot contain more than {_MAX_PORTS_WAIT} entries")
+        invalid_ports = [
+            port for port in ports if not isinstance(port, int) or port < 1 or port > 65535
+        ]
+        if invalid_ports:
+            raise ValueError("ports must be integers between 1 and 65535")
+        if timeout <= 0:
+            raise ValueError("timeout must be > 0")
+        if timeout > _MAX_PORT_WAIT_TIMEOUT_SECONDS:
+            raise ValueError(f"timeout must be <= {_MAX_PORT_WAIT_TIMEOUT_SECONDS:g} seconds")
+        try:
+            ipaddress.ip_address(host)
+        except ValueError as exc:
+            raise ValueError("host must be a valid IP address") from exc
         resp = self._request_json(
             "POST",
             "/ports/wait",
@@ -701,6 +788,9 @@ class RustHttpVsockChannel:
             timeout=timeout + self.connect_timeout,
         )
         if not resp.get("ok"):
+            error = str(resp.get("error") or "")
+            if error and "timed out" not in error.lower() and "timeout" not in error.lower():
+                raise SmolVMError(f"guest agent error during port wait: {error}")
             raise OperationTimeoutError(
                 f"waiting for guest ports {', '.join(map(str, ports))}", timeout
             )

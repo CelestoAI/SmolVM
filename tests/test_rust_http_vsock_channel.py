@@ -33,6 +33,7 @@ import pytest
 from smolvm.comm.base import CommChannel
 from smolvm.comm.rust_http_vsock_channel import ControlCapabilities, RustHttpVsockChannel
 from smolvm.exceptions import OperationTimeoutError, SmolVMError
+from smolvm.types import CommandResult
 
 Handler = Callable[[str, str, bytes], Any]
 
@@ -397,6 +398,95 @@ def test_get_directory_rejects_unsafe_tar_entries(tmp_path: Path) -> None:
     assert not (tmp_path / "escape.txt").exists()
 
 
+def test_raw_file_download_rejects_declared_size_over_cap(tmp_path: Path) -> None:
+    destination = tmp_path / "download.txt"
+
+    def _raw_get(method: str, path: str, body: bytes) -> tuple[int, bytes, dict[str, str]]:
+        assert method == "GET"
+        assert path == "/files/content?path=%2Ftmp%2Fsource.txt"
+        assert body == b""
+        return (200, b"payload", {"x-smolvm-file-size": "7"})
+
+    channel = FakeRustChannel(
+        [
+            _capabilities(
+                {"file_raw": True},
+                limits={"max_stream_size_bytes": 4},
+            ),
+            _raw_get,
+        ]
+    )
+
+    with pytest.raises(SmolVMError, match="exceeded 4 bytes"):
+        channel.get_file("/tmp/source.txt", destination)
+
+
+def test_legacy_directory_fallback_uses_guest_mktemp(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "note.txt").write_text("hello")
+    commands: list[str] = []
+    uploads: list[str] = []
+
+    channel = RustHttpVsockChannel(guest_cid=42)
+
+    def fake_run(command: str, timeout: float = 30, shell: str = "login") -> CommandResult:
+        commands.append(command)
+        if command.startswith("mktemp "):
+            return CommandResult(exit_code=0, stdout="/tmp/smolvm-dir.ABC123.tar\n", stderr="")
+        return CommandResult(exit_code=0, stdout="", stderr="")
+
+    def fake_put_file(local_path: str | Path, remote_path: str) -> None:
+        uploads.append(remote_path)
+
+    channel.run = fake_run  # type: ignore[method-assign]
+    channel.put_file = fake_put_file  # type: ignore[method-assign]
+
+    channel._put_directory_legacy(source, "/tmp/target")
+
+    assert uploads == ["/tmp/smolvm-dir.ABC123.tar"]
+    assert commands[0].startswith("mktemp /tmp/smolvm-dir.")
+    assert "trap" in commands[1]
+    assert 'tar -xf "$remote_tmp"' in commands[1]
+    assert commands[-1] == "rm -f -- /tmp/smolvm-dir.ABC123.tar"
+
+
+def test_legacy_directory_download_uses_guest_mktemp(tmp_path: Path) -> None:
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w") as tar:
+        info = tarfile.TarInfo("note.txt")
+        payload = b"hello"
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+
+    commands: list[str] = []
+    downloads: list[str] = []
+    channel = RustHttpVsockChannel(guest_cid=42)
+
+    def fake_run(command: str, timeout: float = 30, shell: str = "login") -> CommandResult:
+        commands.append(command)
+        if command.startswith("mktemp "):
+            return CommandResult(exit_code=0, stdout="/tmp/smolvm-dir.DEF456.tar\n", stderr="")
+        return CommandResult(exit_code=0, stdout="", stderr="")
+
+    def fake_get_file(remote_path: str, local_path: str | Path) -> Path:
+        downloads.append(remote_path)
+        destination = Path(local_path)
+        destination.write_bytes(archive.getvalue())
+        return destination
+
+    channel.run = fake_run  # type: ignore[method-assign]
+    channel.get_file = fake_get_file  # type: ignore[method-assign]
+
+    destination = channel._get_directory_legacy("/tmp/source", tmp_path / "download")
+
+    assert downloads == ["/tmp/smolvm-dir.DEF456.tar"]
+    assert (destination / "note.txt").read_text() == "hello"
+    assert commands[0].startswith("mktemp /tmp/smolvm-dir.")
+    assert commands[1] == "set -e; tar -cf /tmp/smolvm-dir.DEF456.tar -C /tmp/source ."
+    assert commands[-1] == "rm -f -- /tmp/smolvm-dir.DEF456.tar"
+
+
 def test_env_helpers_use_v2_env_endpoint() -> None:
     def _set(method: str, path: str, body: bytes) -> dict:
         assert method == "PUT"
@@ -443,10 +533,31 @@ def test_wait_for_ports_and_boot_milestones_use_v2_endpoints() -> None:
     assert channel.boot_milestones() == [{"stage": "guest-agent-started", "uptime_s": 0.24}]
 
 
-def _capabilities(features: dict[str, bool]) -> Handler:
+def test_wait_for_ports_validates_inputs_before_request() -> None:
+    channel = FakeRustChannel([])
+
+    with pytest.raises(ValueError, match="ports cannot be empty"):
+        channel.wait_for_ports([])
+    with pytest.raises(ValueError, match="valid IP address"):
+        channel.wait_for_ports([3000], host="localhost")
+
+
+def test_wait_for_ports_preserves_guest_validation_errors() -> None:
+    def _ports(method: str, path: str, body: bytes) -> dict:
+        assert method == "POST"
+        assert path == "/ports/wait"
+        return {"ok": False, "error": "invalid host: not-an-ip"}
+
+    channel = FakeRustChannel([_ports])
+
+    with pytest.raises(SmolVMError, match="invalid host"):
+        channel.wait_for_ports([3000])
+
+
+def _capabilities(features: dict[str, bool], *, limits: dict[str, Any] | None = None) -> Handler:
     def _handler(method: str, path: str, body: bytes) -> dict:
         assert method == "GET"
         assert path == "/capabilities"
-        return {"protocol_version": 2, "features": features, "limits": {}}
+        return {"protocol_version": 2, "features": features, "limits": limits or {}}
 
     return _handler

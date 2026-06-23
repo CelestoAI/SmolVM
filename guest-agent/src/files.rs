@@ -475,18 +475,26 @@ fn create_safe_directory(root: &Path, target: &Path) -> Result<(), String> {
     let mut cursor = root.to_path_buf();
     for component in relative.components() {
         cursor.push(component.as_os_str());
-        if fs::symlink_metadata(&cursor)
-            .map(|metadata| metadata.file_type().is_symlink())
-            .unwrap_or(false)
-        {
-            return Err(format!(
-                "tar entry would write through a symlink: {}",
-                cursor.display()
-            ));
+        match fs::symlink_metadata(&cursor) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() {
+                    return Err(format!(
+                        "tar entry would write through a symlink: {}",
+                        cursor.display()
+                    ));
+                }
+                if !metadata.is_dir() {
+                    return Err(format!(
+                        "tar entry path collides with a non-directory: {}",
+                        cursor.display()
+                    ));
+                }
+                continue;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("cannot inspect directory: {error}")),
         }
-        if let Err(error) = fs::create_dir(&cursor)
-            && error.kind() != std::io::ErrorKind::AlreadyExists
-        {
+        if let Err(error) = fs::create_dir(&cursor) {
             return Err(format!("cannot create directory: {error}"));
         }
     }
@@ -701,6 +709,20 @@ mod tests {
         let extract = extract_directory_tar(target.to_str().unwrap(), &archive);
         assert!(!extract.ok);
         assert!(extract.error.unwrap().contains("symlink"));
+    }
+
+    #[test]
+    fn directory_tar_rejects_directory_collision_with_regular_file() {
+        let target = tempfile_dir();
+        fs::write(target.join("collision"), b"file").unwrap();
+
+        let mut archive = Vec::new();
+        append_tar_header(&mut archive, "collision", 0o755, 0, b'5').unwrap();
+        archive.extend_from_slice(&[0u8; 1024]);
+
+        let extract = extract_directory_tar(target.to_str().unwrap(), &archive);
+        assert!(!extract.ok);
+        assert!(extract.error.unwrap().contains("non-directory"));
     }
 
     fn tempfile_dir() -> PathBuf {
