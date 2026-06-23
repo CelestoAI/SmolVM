@@ -100,13 +100,13 @@ def _feature_required_message(feature: str, sandbox_name: str | None) -> str:
     if sandbox_name:
         sandbox = shlex.quote(sandbox_name)
         return (
-            f"Sandbox {sandbox} is using an older image that does not support {feature}; "
-            f"run `smolvm sandbox delete {sandbox}` and create it again after updating the image."
+            f"Sandbox {sandbox} was created from an older image and cannot use {feature}; "
+            f"run `smolvm sandbox delete {sandbox}`, then run "
+            f"`smolvm sandbox create --name {sandbox}` after updating SmolVM."
         )
     return (
-        f"This sandbox is using an older image that does not support {feature}; "
-        "run `smolvm sandbox list` to find its name, then delete it and create it again "
-        "after updating the image."
+        f"This sandbox was created from an older image and cannot use {feature}; "
+        "run `smolvm sandbox list`, then delete and recreate the sandbox after updating SmolVM."
     )
 
 

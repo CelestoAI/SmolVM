@@ -67,6 +67,23 @@ def test_terminal_frame_helpers_round_trip_payload() -> None:
         guest.close()
 
 
+def test_feature_required_error_names_recreate_commands() -> None:
+    channel = RustHttpVsockChannel.from_cid(42, sandbox_name="sbx-riemann")
+    channel._capabilities = ControlCapabilities(
+        protocol_version=2,
+        features={},
+        limits={},
+    )
+
+    with pytest.raises(SmolVMError) as exc_info:
+        channel.attach_terminal()
+
+    message = str(exc_info.value)
+    assert "Sandbox sbx-riemann was created from an older image" in message
+    assert "smolvm sandbox delete sbx-riemann" in message
+    assert "smolvm sandbox create --name sbx-riemann" in message
+
+
 class FakeRustChannel(RustHttpVsockChannel):
     def __init__(self, handlers: list[Handler]) -> None:
         super().__init__(guest_cid=42)
