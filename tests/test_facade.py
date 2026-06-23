@@ -2254,6 +2254,96 @@ class TestVMRun:
             vm.run("echo test")
 
 
+class TestVMGuestTcpPortWait:
+    """Tests for facade-level guest TCP port waits."""
+
+    @staticmethod
+    def _running_vsock_vm(sample_config: VMConfig, mock_sdk_cls: MagicMock) -> SmolVM:
+        config = sample_config.model_copy(
+            update={
+                "backend": "qemu",
+                "comm_channel": "vsock",
+                "vsock": VsockConfig(guest_cid=42),
+            }
+        )
+        running_info = MagicMock(vm_id="vm001", status=VMState.RUNNING)
+        running_info.config = config
+        running_info.network = None
+
+        mock_sdk = MagicMock()
+        mock_sdk.create.return_value = running_info
+        mock_sdk.get.return_value = running_info
+        mock_sdk_cls.return_value = mock_sdk
+
+        return SmolVM(config)
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_wait_for_guest_tcp_ports_uses_vsock_protocol_wait(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        vm = self._running_vsock_vm(sample_config, mock_sdk_cls)
+        channel = MagicMock()
+        channel.kind = "vsock"
+        channel.supports.return_value = True
+        channel.wait_for_ports.return_value = [9222, 6080]
+        vm._control_channel = channel
+        vm._control_ready = True
+
+        assert vm.wait_for_guest_tcp_ports([9222, 6080], timeout=1.5) is True
+
+        channel.supports.assert_called_once_with("ports_wait", "ports.wait")
+        channel.wait_for_ports.assert_called_once_with(
+            [9222, 6080],
+            timeout=1.5,
+            host="127.0.0.1",
+        )
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_wait_for_guest_tcp_ports_returns_false_after_protocol_timeout(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        vm = self._running_vsock_vm(sample_config, mock_sdk_cls)
+        channel = MagicMock()
+        channel.kind = "vsock"
+        channel.supports.return_value = True
+        channel.wait_for_ports.side_effect = OperationTimeoutError(
+            "waiting for guest ports 9222",
+            1.5,
+        )
+        vm._control_channel = channel
+        vm._control_ready = True
+
+        assert vm.wait_for_guest_tcp_ports([9222], timeout=1.5) is False
+
+        channel.wait_for_ports.assert_called_once_with(
+            [9222],
+            timeout=1.5,
+            host="127.0.0.1",
+        )
+
+    @patch("smolvm.facade.SmolVMManager")
+    def test_wait_for_guest_tcp_ports_returns_none_when_protocol_wait_missing(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+    ) -> None:
+        vm = self._running_vsock_vm(sample_config, mock_sdk_cls)
+        channel = MagicMock()
+        channel.kind = "vsock"
+        channel.supports.return_value = False
+        vm._control_channel = channel
+        vm._control_ready = True
+
+        assert vm.wait_for_guest_tcp_ports([9222], timeout=1.5) is None
+
+        channel.supports.assert_called_once_with("ports_wait", "ports.wait")
+        channel.wait_for_ports.assert_not_called()
+
+
 class TestVMQemuLocalExpose:
     """Tests for QEMU slirp localhost exposure."""
 
@@ -3079,13 +3169,13 @@ class TestVMEnvInjection:
 
     @patch("smolvm.facade.inject_env_vars")
     @patch("smolvm.facade.SmolVMManager")
-    def test_start_raises_if_ssh_not_supported(
+    def test_start_raises_if_guest_commands_not_supported(
         self,
         mock_sdk_cls: MagicMock,
         mock_inject: MagicMock,
         sample_config: VMConfig,
     ) -> None:
-        """Test that start() raises if env_vars set but no SSH support."""
+        """Test that start() raises if env_vars set but guest commands are unavailable."""
         mock_sdk = MagicMock()
         mock_info = MagicMock(vm_id="vm001", status=VMState.CREATED)
         # boot_args missing init=/init
@@ -3100,7 +3190,7 @@ class TestVMEnvInjection:
 
         vm = SmolVM(config)
 
-        with pytest.raises(SmolVMError, match="does not support guest SSH"):
+        with pytest.raises(SmolVMError, match="does not support guest commands"):
             vm.start()
 
         mock_inject.assert_not_called()

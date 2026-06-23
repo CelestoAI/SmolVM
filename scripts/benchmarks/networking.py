@@ -32,6 +32,11 @@ from typing import Any
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "src"))
+try:
+    from .reporting import finish_report, print_report, start_report
+except ImportError:  # pragma: no cover - script execution path
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from reporting import finish_report, print_report, start_report  # type: ignore[no-redef]
 
 logger = logging.getLogger("smolvm.bench.networking")
 
@@ -275,7 +280,7 @@ def _benchmark_full_start(boot_timeout: float) -> float:
             vm.delete()
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--modes",
@@ -290,21 +295,27 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--boot-timeout", type=float, default=180.0)
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON only.")
     parser.add_argument("--output", type=Path, help="Optional JSON output path.")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     if sys.platform != "linux":
         raise SystemExit("This benchmark only runs on Linux.")
 
-    args = _parse_args()
+    args = _parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     modes = [mode.strip() for mode in args.modes.split(",") if mode.strip()]
     unknown = sorted(set(modes) - set(MODES))
     if unknown:
         raise SystemExit(f"Unknown mode(s): {', '.join(unknown)}")
 
-    records = [
+    config = {
+        "modes": modes,
+        "include_full_start": args.include_full_start,
+        "boot_timeout": args.boot_timeout,
+    }
+    report, started = start_report("networking", config=config, dry_run=False)
+    report["records"] = [
         _benchmark_network_stages(
             mode,
             include_full_start=args.include_full_start,
@@ -312,24 +323,27 @@ def main() -> int:
         )
         for mode in modes
     ]
-    report = {
-        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "records": records,
-    }
-    if args.output:
-        args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
-    if args.json:
-        print(json.dumps(report, indent=2, sort_keys=True))
-    else:
-        for record in records:
-            if "skipped" in record:
-                print(f"{record['mode']}: skipped - {record['skipped']}")
-                continue
-            print(f"{record['mode']}:")
-            for key, value in record.items():
-                if key.endswith("_ms"):
-                    print(f"  {key}: {value}")
+    finish_report(report, started)
+    print_report(
+        report,
+        json_output=args.json,
+        output=args.output,
+        human_lines=_human_lines(report),
+    )
     return 0
+
+
+def _human_lines(report: dict[str, Any]) -> list[str]:
+    lines = ["Networking stages:"]
+    for record in report["records"]:
+        if "skipped" in record:
+            lines.append(f"  {record['mode']}: skipped - {record['skipped']}")
+            continue
+        lines.append(f"  {record['mode']}:")
+        for key, value in record.items():
+            if key.endswith("_ms"):
+                lines.append(f"    {key}: {value}")
+    return lines
 
 
 if __name__ == "__main__":

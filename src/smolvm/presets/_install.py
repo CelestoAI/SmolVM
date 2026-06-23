@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Apply a preset to a running, SSH-ready SmolVM guest."""
+"""Apply a preset to a running SmolVM guest over its control channel."""
 
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ def apply_preset(
     on_progress: Callable[[str], None] | None = None,
     install_timeout: int = _DEFAULT_INSTALL_TIMEOUT,
 ) -> dict[str, object]:
-    """Apply *preset* to a guest reachable via *ssh*.
+    """Apply *preset* to a guest reachable through a control channel.
 
     Order: copy host configs, inject env vars, then run the install
     script. Configs are placed before install runs so that the freshly

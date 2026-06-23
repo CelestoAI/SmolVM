@@ -58,7 +58,7 @@ check the command plan before starting any sandbox:
 uv run python scripts/benchmarks/artifacts.py --dry-run --json
 uv run python scripts/benchmarks/disk_io.py --dry-run --json
 uv run python scripts/benchmarks/file_transfer.py --dry-run --json
-uv run python scripts/benchmarks/preset_start.py --preset codex --dry-run --json
+uv run python scripts/benchmarks/preset_start.py --preset codex --comm-channel vsock --dry-run --json
 uv run python scripts/benchmarks/browser_ready.py --dry-run --json
 uv run python scripts/benchmarks/runtime_control.py --operations info,stop,start --dry-run --json
 ```
@@ -72,8 +72,10 @@ file sizes plus a directory tar round trip, meaning pack a folder into one tar
 archive, send it, and unpack or fetch it again, when the selected control
 channel supports it.
 `preset_start.py` times `smolvm <preset> start` and cleans up the sandbox unless
-`--keep` is set. `browser_ready.py` starts a browser sandbox, then polls the CDP
-endpoint, which is the local browser debugging URL, when it is available.
+`--keep` is set. Use `--comm-channel vsock` or `--comm-channel ssh` when you
+want preset startup numbers for a specific control path. `browser_ready.py`
+starts a browser sandbox, then polls the CDP endpoint, which is the local
+browser debugging URL, when it is available.
 `runtime_control.py` measures public lifecycle commands such as
 `smolvm sandbox pause`, `resume`, `stop`, and `start`.
 
@@ -84,7 +86,7 @@ sandboxes and clean them up unless `--keep` is set:
 ```bash
 uv run python scripts/benchmarks/disk_io.py --json --output /tmp/smolvm-disk-io.json
 uv run python scripts/benchmarks/file_transfer.py --backend qemu --comm-channel vsock --json --output /tmp/smolvm-file-transfer.json
-uv run python scripts/benchmarks/preset_start.py --preset codex --backend qemu --json --output /tmp/smolvm-preset-codex.json
+uv run python scripts/benchmarks/preset_start.py --preset codex --backend qemu --comm-channel vsock --json --output /tmp/smolvm-preset-codex.json
 uv run python scripts/benchmarks/browser_ready.py --backend qemu --json --output /tmp/smolvm-browser-ready.json
 ```
 
@@ -92,7 +94,9 @@ uv run python scripts/benchmarks/browser_ready.py --backend qemu --json --output
 
 Use `networking.py` to decide whether the Rust networking path makes Linux VM
 startup faster on your machine. It records each host networking stage, then
-compares the native path with the subprocess fallback.
+compares the native path with the subprocess fallback. Its JSON output uses the
+same benchmark envelope as the other focused probes, including git, host, and
+package-version metadata.
 
 The measured stages include TAP setup (the virtual network device used by
 Firecracker), routes (the host paths for guest IPs), sysctls (kernel networking

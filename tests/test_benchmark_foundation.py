@@ -23,6 +23,7 @@ from scripts.benchmarks import (
     browser_ready,
     disk_io,
     file_transfer,
+    networking,
     preset_start,
     runtime_control,
 )
@@ -56,6 +57,8 @@ def test_preset_start_dry_run_json_plans_preset_start_and_cleanup(capsys) -> Non
             "--json",
             "--preset",
             "codex",
+            "--comm-channel",
+            "vsock",
             "--iterations",
             "1",
             "--name-prefix",
@@ -68,7 +71,33 @@ def test_preset_start_dry_run_json_plans_preset_start_and_cleanup(capsys) -> Non
     record = report["records"][0]
     assert record["start"]["command"][:3] == ["smolvm", "codex", "start"]
     assert "--no-attach" in record["start"]["command"]
+    assert record["start"]["command"][
+        record["start"]["command"].index("--comm-channel") + 1
+    ] == "vsock"
+    assert report["parameters"]["comm_channel"] == "vsock"
     assert record["cleanup"]["command"][:3] == ["smolvm", "sandbox", "delete"]
+
+
+def test_networking_arg_parser_and_human_lines_use_shared_report_shape() -> None:
+    args = networking._parse_args(["--modes", "forced-off", "--boot-timeout", "15"])
+
+    assert args.modes == "forced-off"
+    assert args.boot_timeout == 15
+
+    lines = networking._human_lines(
+        {
+            "records": [
+                {"mode": "native", "skipped": "needs CAP_NET_ADMIN"},
+                {"mode": "forced-off", "create_tap_ms": 1.2},
+            ]
+        }
+    )
+    assert lines == [
+        "Networking stages:",
+        "  native: skipped - needs CAP_NET_ADMIN",
+        "  forced-off:",
+        "    create_tap_ms: 1.2",
+    ]
 
 
 def test_browser_ready_dry_run_json_plans_browser_start_and_stop(capsys) -> None:

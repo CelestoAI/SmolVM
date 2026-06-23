@@ -441,17 +441,10 @@ def test_browser_session_start_persists_ready_state(
     vm.vm_id = "browser-abc123"
     vm.status = VMState.CREATED
     vm.expose_local.side_effect = [39222, 36080, 35900]
+    vm.wait_for_guest_tcp_ports.side_effect = [False, True, True, True, True, True]
 
     def _run_side_effect(command: str, timeout: int = 30, shell: str = "login") -> CommandResult:
-        if command.startswith("/usr/local/bin/smolvm-browser-wait-port 9222 1.0"):
-            return CommandResult(exit_code=1, stdout="", stderr="")
         if command.startswith("/usr/local/bin/smolvm-browser-session start"):
-            return CommandResult(exit_code=0, stdout="", stderr="")
-        if command.startswith("/usr/local/bin/smolvm-browser-wait-port 9222"):
-            return CommandResult(exit_code=0, stdout="", stderr="")
-        if command.startswith("/usr/local/bin/smolvm-browser-wait-port 6080"):
-            return CommandResult(exit_code=0, stdout="", stderr="")
-        if command.startswith("/usr/local/bin/smolvm-browser-wait-port 5900"):
             return CommandResult(exit_code=0, stdout="", stderr="")
         return CommandResult(exit_code=0, stdout="", stderr="")
 
@@ -481,6 +474,11 @@ def test_browser_session_start_persists_ready_state(
     assert persisted.debug_port == 39222
     assert persisted.vnc_port == 35900
     assert persisted.vnc_url == "vnc://127.0.0.1:35900"
+    assert [call.kwargs for call in vm.expose_local.call_args_list] == [
+        {"guest_port": 9222, "guest_loopback": False},
+        {"guest_port": 6080, "guest_loopback": False},
+        {"guest_port": 5900, "guest_loopback": True},
+    ]
     session.close()
 
 
@@ -512,14 +510,11 @@ def test_browser_sandbox_start_uses_configured_qemu_cdp_forward(
     vm.status = VMState.CREATED
     vm.info.config = qemu_vm_config
     vm.expose_local.return_value = 39222
+    vm.wait_for_guest_tcp_ports.side_effect = [False, True]
 
     def _run_side_effect(command: str, timeout: int = 30, shell: str = "login") -> CommandResult:
         del timeout, shell
-        if command.startswith("/usr/local/bin/smolvm-browser-wait-port 9222 1.0"):
-            return CommandResult(exit_code=1, stdout="", stderr="")
         if command.startswith("/usr/local/bin/smolvm-browser-session start"):
-            return CommandResult(exit_code=0, stdout="", stderr="")
-        if command.startswith("/usr/local/bin/smolvm-browser-wait-port 9222"):
             return CommandResult(exit_code=0, stdout="", stderr="")
         return CommandResult(exit_code=0, stdout="", stderr="")
 
@@ -545,6 +540,51 @@ def test_browser_sandbox_start_uses_configured_qemu_cdp_forward(
     session.close()
 
 
+def test_browser_wait_for_guest_port_uses_facade_control_wait() -> None:
+    """Browser orchestration should use the SmolVM facade for protocol port waits."""
+    vm = MagicMock()
+    vm.wait_for_guest_tcp_ports.return_value = True
+    session = object.__new__(_BrowserSandbox)
+    session._vm = vm
+
+    assert session._wait_for_guest_port(9222, timeout=2.5) is True
+
+    vm.wait_for_guest_tcp_ports.assert_called_once_with(
+        [9222],
+        timeout=2.5,
+        host="127.0.0.1",
+    )
+    vm.run.assert_not_called()
+
+
+def test_browser_wait_for_guest_port_falls_back_when_control_wait_unsupported() -> None:
+    """Legacy channels should still use the browser image's wait-port script."""
+    vm = MagicMock()
+    vm.wait_for_guest_tcp_ports.return_value = None
+    vm.run.return_value = CommandResult(exit_code=0, stdout="", stderr="")
+    session = object.__new__(_BrowserSandbox)
+    session._vm = vm
+
+    assert session._wait_for_guest_port(9222, timeout=2.5) is True
+
+    vm.run.assert_called_once_with(
+        "/usr/local/bin/smolvm-browser-wait-port 9222 2.5",
+        timeout=7,
+    )
+
+
+def test_browser_wait_for_guest_port_does_not_fallback_after_control_timeout() -> None:
+    """A real protocol timeout should not spend the deadline again via shell fallback."""
+    vm = MagicMock()
+    vm.wait_for_guest_tcp_ports.return_value = False
+    session = object.__new__(_BrowserSandbox)
+    session._vm = vm
+
+    assert session._wait_for_guest_port(9222, timeout=2.5) is False
+
+    vm.run.assert_not_called()
+
+
 @patch("smolvm.browser.SmolVM")
 @patch("smolvm.browser._build_browser_vm_config")
 def test_desktop_sandbox_start_exposes_viewer_and_display_only(
@@ -560,6 +600,7 @@ def test_desktop_sandbox_start_exposes_viewer_and_display_only(
     vm.vm_id = "desktop-abc123"
     vm.status = VMState.CREATED
     vm.expose_local.side_effect = [36080, 35900]
+    vm.wait_for_guest_tcp_ports.side_effect = [False, True, True]
 
     def _run_side_effect(command: str, timeout: int = 30, shell: str = "login") -> CommandResult:
         del timeout, shell
@@ -588,7 +629,7 @@ def test_desktop_sandbox_start_exposes_viewer_and_display_only(
     assert session.viewer_url == "http://127.0.0.1:36080/vnc.html?autoconnect=1&resize=scale"
     assert session.display_url == "vnc://127.0.0.1:35900"
     assert [call.kwargs for call in vm.expose_local.call_args_list] == [
-        {"guest_port": 6080, "guest_loopback": True},
+        {"guest_port": 6080, "guest_loopback": False},
         {"guest_port": 5900, "guest_loopback": True},
     ]
     session.close()

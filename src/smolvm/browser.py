@@ -420,7 +420,10 @@ class _BrowserSandbox:
                     raise SmolVMError(
                         f"Browser sandbox '{self.session_id}' did not expose a CDP port in time."
                     )
-                debug_host_port = self._resolve_browser_host_port(_BROWSER_DEBUG_PORT)
+                debug_host_port = self._resolve_browser_host_port(
+                    _BROWSER_DEBUG_PORT,
+                    guest_loopback=False,
+                )
                 cdp_url = f"http://127.0.0.1:{debug_host_port}"
                 if not self._wait_for_cdp_http(cdp_url, timeout=boot_timeout):
                     raise SmolVMError(
@@ -440,9 +443,15 @@ class _BrowserSandbox:
                     raise SmolVMError(
                         f"Browser sandbox '{self.session_id}' did not expose a viewer in time."
                     )
-                live_host_port = self._resolve_browser_host_port(_BROWSER_LIVE_PORT)
+                live_host_port = self._resolve_browser_host_port(
+                    _BROWSER_LIVE_PORT,
+                    guest_loopback=False,
+                )
                 live_url = f"http://127.0.0.1:{live_host_port}/vnc.html?autoconnect=1&resize=scale"
-                vnc_host_port = self._resolve_browser_host_port(_BROWSER_VNC_PORT)
+                vnc_host_port = self._resolve_browser_host_port(
+                    _BROWSER_VNC_PORT,
+                    guest_loopback=True,
+                )
                 vnc_url = f"vnc://127.0.0.1:{vnc_host_port}"
 
             self._info = self._state.update_browser_session(
@@ -652,12 +661,12 @@ class _BrowserSandbox:
                 f"Failed to launch guest browser: {result.stderr.strip() or result.stdout}"
             )
 
-    def _resolve_browser_host_port(self, guest_port: int) -> int:
+    def _resolve_browser_host_port(self, guest_port: int, *, guest_loopback: bool) -> int:
         """Return a localhost port that exposes a browser guest port.
 
-        Browser services such as Chromium's DevTools endpoint can bind guest
-        loopback only. Route them through ``expose_local()`` so SmolVM can
-        fall back to an SSH tunnel when direct guest networking is not enough.
+        Prefer QEMU forwards created with the VM. When no configured forward
+        is available, route through ``expose_local()`` using the caller's
+        loopback policy for that browser endpoint.
         """
         if self._vm is None:
             raise SmolVMError("Browser sandbox VM is unavailable.")
@@ -666,19 +675,22 @@ class _BrowserSandbox:
         if configured is not None and self._probe_local_port(configured):
             return configured
 
-        return self._vm.expose_local(guest_port=guest_port, guest_loopback=True)
+        return self._vm.expose_local(
+            guest_port=guest_port,
+            guest_loopback=guest_loopback,
+        )
 
     def _wait_for_guest_port(self, port: int, *, timeout: float) -> bool:
         if self._vm is None:
             raise SmolVMError("Browser sandbox VM is unavailable.")
 
-        wait_for_ports = getattr(self._vm._control_channel, "wait_for_ports", None)
-        if callable(wait_for_ports):
-            try:
-                wait_for_ports([port], timeout=timeout)
-                return True
-            except Exception:
-                pass
+        control_wait_result = self._vm.wait_for_guest_tcp_ports(
+            [port],
+            timeout=timeout,
+            host="127.0.0.1",
+        )
+        if control_wait_result is not None:
+            return control_wait_result
 
         command = f"/usr/local/bin/smolvm-browser-wait-port {port} {timeout}"
         result = self._vm.run(command, timeout=max(5, int(timeout) + 5))

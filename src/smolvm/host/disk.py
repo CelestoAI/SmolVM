@@ -47,7 +47,7 @@ def has_native_disk_io() -> bool:
 
 
 def clone_or_sparse_copy(source_path: Path | str, target_path: Path | str) -> str:
-    """Copy a disk image with native reflink/sparse I/O when available.
+    """Copy a disk image with reflink/sparse I/O when available.
 
     Returns a short method label for logging/tests. Callers that only need the
     copy side effect can ignore the return value.
@@ -57,10 +57,11 @@ def clone_or_sparse_copy(source_path: Path | str, target_path: Path | str) -> st
     target = Path(target_path)
     _ensure_parent_dir(target)
 
+    if method := _cp_clone_or_sparse_copy(source, target):
+        return method
+
     if _native_available():
-        method = str(_native.clone_or_sparse_copy(str(source), str(target)))
-        shutil.copystat(source, target)
-        return f"native:{method}"
+        return _native_clone_or_sparse_copy(source, target)
 
     return _python_clone_or_sparse_copy(source, target)
 
@@ -96,7 +97,7 @@ def _native_available() -> bool:
         return False
 
 
-def _python_clone_or_sparse_copy(source: Path, target: Path) -> str:
+def _cp_clone_or_sparse_copy(source: Path, target: Path) -> str | None:
     try:
         result = subprocess.run(
             ["cp", "--reflink=auto", "--sparse=always", str(source), str(target)],
@@ -105,18 +106,27 @@ def _python_clone_or_sparse_copy(source: Path, target: Path) -> str:
             check=False,
         )
     except OSError as exc:
-        logger.debug("cp --reflink=auto unavailable; using Python sparse copy: %s", exc)
+        logger.debug("cp --reflink=auto unavailable; trying next sparse copy method: %s", exc)
     else:
         if result.returncode == 0:
             shutil.copystat(source, target)
             return "cp"
         logger.debug(
-            "cp --reflink=auto failed for %s -> %s; using Python sparse copy: %s",
+            "cp --reflink=auto failed for %s -> %s; trying next sparse copy method: %s",
             source,
             target,
             (result.stderr or "").strip(),
         )
+    return None
 
+
+def _native_clone_or_sparse_copy(source: Path, target: Path) -> str:
+    method = str(_native.clone_or_sparse_copy(str(source), str(target)))
+    shutil.copystat(source, target)
+    return f"native:{method}"
+
+
+def _python_clone_or_sparse_copy(source: Path, target: Path) -> str:
     _copy_sparse_preserving(source, target)
     return "sparse"
 

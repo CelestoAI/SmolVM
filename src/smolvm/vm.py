@@ -1383,7 +1383,7 @@ class SmolVMManager:
         resolution: ChannelResolution | None = None,
     ) -> bool:
         """Return whether create-time networking must expose guest SSH."""
-        if config.env_vars or config.workspace_mounts:
+        if config.workspace_mounts:
             return True
 
         resolution = resolution or self._resolve_control_channel_for_config(config, backend)

@@ -75,6 +75,8 @@ def build_start_command(args: argparse.Namespace, sandbox_name: str) -> list[str
         command.extend(["--os", args.os])
     if args.backend:
         command.extend(["--backend", args.backend])
+    if args.comm_channel:
+        command.extend(["--comm-channel", args.comm_channel])
     if args.memory_mib is not None:
         command.extend(["--memory", str(args.memory_mib)])
     if args.disk_size_mib is not None:
@@ -150,6 +152,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("auto", "firecracker", "qemu", "libkrun"),
         default=None,
     )
+    parser.add_argument("--comm-channel", choices=("auto", "vsock", "ssh"), default=None)
     parser.add_argument("--memory", dest="memory_mib", type=int, default=None)
     parser.add_argument("--disk-size", dest="disk_size_mib", type=int, default=None)
     parser.add_argument("--mount", dest="mounts", action="append", default=[])
@@ -182,6 +185,7 @@ def main(argv: list[str] | None = None) -> int:
         "name_prefix": args.name_prefix,
         "os": args.os,
         "backend": args.backend,
+        "comm_channel": args.comm_channel,
         "memory_mib": args.memory_mib,
         "disk_size_mib": args.disk_size_mib,
         "mounts": args.mounts,

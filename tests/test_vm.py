@@ -307,13 +307,13 @@ class TestSmolVMCreate:
         mock_network.setup_ssh_port_forward.assert_called_once()
 
     @patch("smolvm.comm.select.platform.system", return_value="Linux")
-    def test_create_firecracker_explicit_vsock_with_env_keeps_ssh_forward(
+    def test_create_firecracker_explicit_vsock_with_env_skips_ssh_forward(
         self,
         _mock_system: MagicMock,
         smol_vm: SmolVMManager,
         sample_config: VMConfig,
     ) -> None:
-        """Env injection is still SSH-backed at startup, so keep forwarding."""
+        """Env-only startup uses managed vsock env and should not expose SSH."""
         mock_network = _attach_mock_network(smol_vm)
         config = sample_config.model_copy(
             update={
@@ -327,10 +327,10 @@ class TestSmolVMCreate:
         vm_info = smol_vm.create(config)
 
         assert vm_info.network is not None
-        assert vm_info.network.ssh_host_port is not None
-        mock_network.add_route.assert_called_once()
-        mock_network.setup_nat.assert_called_once()
-        mock_network.setup_ssh_port_forward.assert_called_once()
+        assert vm_info.network.ssh_host_port is None
+        mock_network.add_route.assert_not_called()
+        mock_network.setup_nat.assert_not_called()
+        mock_network.setup_ssh_port_forward.assert_not_called()
 
     @patch("smolvm.comm.select.platform.system", return_value="Linux")
     @patch("smolvm.vm.resolve_domains_to_ips", return_value=["93.184.216.34"])

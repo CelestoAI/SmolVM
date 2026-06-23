@@ -25,7 +25,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from smolvm.comm.rust_http_vsock_channel import RustHttpVsockChannel
-from smolvm.exceptions import OperationTimeoutError
+from smolvm.exceptions import OperationTimeoutError, SmolVMError
 from smolvm.facade import SmolVM
 from smolvm.types import (
     CommandResult,
@@ -209,3 +209,42 @@ def test_resolve_channel_reads_config_and_request(
     # auto on linux+qemu -> vsock, agent required
     res = vm._resolve_channel()
     assert res.kind == "vsock"
+
+
+def test_explicit_vsock_env_uses_managed_env_not_ssh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("smolvm.comm.select.host_supports_vsock", lambda: True)
+    vm = _vsock_vm(tmp_path, comm_channel="vsock", request="vsock")
+    channel = MagicMock()
+    channel.supports.return_value = True
+    channel.set_managed_env.return_value = {"FOO": "bar"}
+    vm._control_channel = channel
+    vm._control_ready = True
+
+    def _ssh_not_allowed(self, *, timeout: float = 30.0):  # noqa: ANN001
+        raise AssertionError("explicit vsock env must not fall back to SSH")
+
+    monkeypatch.setattr(SmolVM, "_ensure_ssh_for_env", _ssh_not_allowed)
+
+    assert vm.set_env_vars({"FOO": "bar"}) == ["FOO"]
+    channel.set_managed_env.assert_called_once_with({"FOO": "bar"}, merge=True)
+
+
+def test_explicit_vsock_env_requires_managed_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("smolvm.comm.select.host_supports_vsock", lambda: True)
+    vm = _vsock_vm(tmp_path, comm_channel="vsock", request="vsock")
+    channel = MagicMock()
+    channel.supports.return_value = False
+    vm._control_channel = channel
+    vm._control_ready = True
+
+    def _ssh_not_allowed(self, *, timeout: float = 30.0):  # noqa: ANN001
+        raise AssertionError("explicit vsock env must not fall back to SSH")
+
+    monkeypatch.setattr(SmolVM, "_ensure_ssh_for_env", _ssh_not_allowed)
+
+    with pytest.raises(SmolVMError, match="Managed environment variables are not available"):
+        vm.set_env_vars({"FOO": "bar"})

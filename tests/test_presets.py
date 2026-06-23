@@ -606,7 +606,7 @@ class TestCollectHostEnv:
 
 
 class TestApplyPreset:
-    """Integration of file copy + env injection + install over a mocked SSH."""
+    """Integration of file copy + env injection + install over a mocked channel."""
 
     def _make_preset(
         self,

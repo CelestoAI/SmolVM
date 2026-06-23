@@ -46,6 +46,44 @@ Snapshot restore metrics are now instrumented separately by
 restore rows only after running that lane; do not mix them with the fresh-boot
 summary timeline above.
 
+## 2026-06-23 - Rust Migration Follow-up Benchmarks
+
+- Commit: `cbd0d52`
+- Image tag: current published Ubuntu image used by the local benchmark run.
+- Commands:
+  - `uv run python scripts/benchmarks/ubuntu_transport.py --variants qemu-ssh,qemu-vsock --iterations 3 --warm-exec-runs 5 --rootfs-source published --output /tmp/smolvm-post-release-benchmarks/ubuntu-transport-qemu-20260623T175406Z.json -v`
+  - `uv run python scripts/benchmarks/ubuntu_transport.py --variants firecracker-ssh,firecracker-vsock --iterations 3 --warm-exec-runs 5 --rootfs-source published --output /tmp/smolvm-post-release-benchmarks/ubuntu-transport-firecracker-20260623T175406Z.json -v`
+  - `uv run python scripts/benchmarks/disk_io.py --iterations 3 --json --output /tmp/smolvm-post-release-benchmarks/disk-io-20260623T175406Z.json`
+  - `uv run python scripts/benchmarks/networking.py --json --output /tmp/smolvm-post-release-benchmarks/networking-20260623T175406Z.json`
+- Host: Linux x86_64, kernel `7.0.0-15-generic`, KVM available.
+- Method: one warm-up VM per transport variant, then three measured warm-cache iterations per variant.
+- Behavior changed: follow-up measurement after protocol-v2 control paths, native disk helpers, native Firecracker API, and `smolvm-core` `2026.6.23`.
+
+Published Ubuntu medians from this run:
+
+| Backend | Transport | Total ready | First command | Warm exec | Notes |
+|---|---:|---:|---:|---:|---|
+| QEMU | SSH | 1152.2 ms | 12.0 ms | 42.7 ms | Published Ubuntu, local warm-cache run. |
+| QEMU | vsock | 413.1 ms | 1.2 ms | 1.0 ms | 64.1% faster ready than SSH in this run. |
+| Firecracker | SSH | 3506.4 ms | 53.9 ms | 42.9 ms | Host used unprivileged sudo-command networking fallback. |
+| Firecracker | vsock | 2939.8 ms | 1.1 ms | 0.9 ms | 16.2% faster ready than SSH in this run; not a direct native-TAP result. |
+
+Disk helper findings from this run:
+
+| Operation | Size | Native Rust | Forced-off | Result |
+|---|---:|---:|---:|---|
+| zstd decompress | 16 MiB | 13.0 ms | 39.3 ms | 66.9% faster |
+| zstd decompress | 128 MiB | 95.4 ms | 350.1 ms | 72.8% faster |
+| sparse copy | 16 MiB | 12.9 ms | 10.3 ms | 25.2% slower |
+| sparse copy | 128 MiB | 95.7 ms | 64.3 ms | 48.8% slower |
+
+Networking note:
+
+- True native TAP mode was skipped because the benchmark process did not have
+  root or `CAP_NET_ADMIN`. Forced-off and unprivileged-fallback measured the
+  existing sudo-command path, with stage sums of `242.1 ms` and `236.4 ms`.
+  These are fallback-path numbers, not native TAP speedup numbers.
+
 ## Required Entry Format
 
 Add a short section for each PR that changes startup behavior or benchmark

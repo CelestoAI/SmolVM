@@ -1533,7 +1533,7 @@ class SmolVM:
         """Start the VM.
 
         If the VM config contains ``env_vars``, they are injected into
-        the guest via SSH after boot completes.
+        the guest after boot completes.
 
         Args:
             boot_timeout: Maximum seconds to wait for boot.
@@ -1547,7 +1547,8 @@ class SmolVM:
 
         Raises:
             SmolVMError: If ``env_vars`` is set but the image does not
-                support SSH.
+                support guest commands or the selected control channel
+                cannot manage environment variables.
         """
         notify = on_progress or (lambda _msg: None)
 
@@ -1567,9 +1568,8 @@ class SmolVM:
             if not self.can_run_commands():
                 raise SmolVMError(
                     "Cannot inject environment variables: VM image does not "
-                    "support guest SSH. Use an SSH-capable prebuilt image or "
-                    "an image built with ImageBuilder, or bake env vars into "
-                    "the rootfs at build time.",
+                    "support guest commands. Use a command-capable image, or "
+                    "bake env vars into the rootfs at build time.",
                     {"vm_id": self._vm_id},
                 )
             control_env = self._control_env_channel(timeout=boot_timeout)
@@ -2102,6 +2102,52 @@ class SmolVM:
         self._wait_for_ssh_over_network(timeout=timeout)
         return self
 
+    def wait_for_guest_tcp_ports(
+        self,
+        ports: list[int],
+        *,
+        timeout: float = 30.0,
+        host: str = "127.0.0.1",
+    ) -> bool | None:
+        """Wait for guest TCP ports through the control protocol when supported.
+
+        Returns ``True`` when all ports become reachable, ``False`` when the
+        control protocol reports a timeout, and ``None`` when the active
+        control channel does not expose protocol-level port waiting.
+        """
+        if not ports:
+            raise ValueError("ports cannot be empty")
+        invalid_ports = [
+            port for port in ports if isinstance(port, bool) or not isinstance(port, int)
+        ]
+        invalid_ports.extend(port for port in ports if isinstance(port, int) and port < 1)
+        invalid_ports.extend(port for port in ports if isinstance(port, int) and port > 65535)
+        if invalid_ports:
+            raise ValueError("ports must be integers between 1 and 65535")
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
+            raise ValueError("timeout must be greater than 0")
+
+        channel = self._ensure_control_for_operation(
+            action="wait for guest TCP ports",
+            timeout=timeout,
+        )
+        if getattr(channel, "kind", None) != "vsock":
+            return None
+
+        supports = getattr(channel, "supports", None)
+        if callable(supports) and not supports("ports_wait", "ports.wait"):
+            return None
+
+        wait_for_ports = getattr(channel, "wait_for_ports", None)
+        if not callable(wait_for_ports):
+            return None
+
+        try:
+            ready_ports = wait_for_ports(ports, timeout=timeout, host=host)
+        except OperationTimeoutError:
+            return False
+        return set(ready_ports) >= set(ports)
+
     def ssh_commands(
         self,
         *,
@@ -2510,7 +2556,8 @@ class SmolVM:
         if env_vars:
             if not self.can_run_commands():
                 raise SmolVMError(
-                    "Cannot inject environment variables: VM image does not support SSH.",
+                    "Cannot inject environment variables: VM image does not "
+                    "support guest commands.",
                     {"vm_id": self._vm_id},
                 )
             control_env = await asyncio.to_thread(self._control_env_channel, timeout=boot_timeout)
@@ -2905,10 +2952,24 @@ modprobe 9pnet_virtio""".strip()
         return self._ensure_control_for_operation(action="transfer files")
 
     def _ensure_ssh_for_env(self, *, timeout: float = _DEFAULT_RUN_READY_TIMEOUT) -> SSHClient:
-        """Return a ready SSH client for env operations on a running VM."""
+        """Return a ready SSH client for env operations that use SSH."""
         return self._ensure_ssh_for_operation(
             action="manage environment variables",
             timeout=timeout,
+        )
+
+    def _managed_env_required_error(self) -> SmolVMError:
+        """Return the user-facing error for vsock env without managed support."""
+        recovery_command = f"smolvm sandbox create --name {self._vm_id} --comm-channel ssh"
+        return SmolVMError(
+            f"Managed environment variables are not available for sandbox "
+            f"'{self._vm_id}' over vsock; run 'smolvm sandbox delete {self._vm_id}' "
+            f"and then '{recovery_command}' to use SSH.",
+            {
+                "vm_id": self._vm_id,
+                "comm_channel": "vsock",
+                "recovery_command": recovery_command,
+            },
         )
 
     def _control_env_channel(
@@ -2916,19 +2977,24 @@ modprobe 9pnet_virtio""".strip()
         *,
         timeout: float = _DEFAULT_RUN_READY_TIMEOUT,
     ) -> CommChannel | None:
-        """Return a control channel with managed-env support for Linux guests."""
+        """Return a managed-env control channel, or None when SSH fallback is allowed."""
         if self._is_windows_guest():
             return None
+        resolution = self._resolve_channel()
         try:
             channel = self._ensure_control_for_operation(
                 action="manage environment variables",
                 timeout=timeout,
             )
         except Exception:
+            if resolution.kind == "vsock":
+                raise
             return None
         supports = getattr(channel, "supports", None)
         if callable(supports) and supports("env_managed", "env.managed") is True:
             return channel
+        if resolution.kind == "vsock":
+            raise self._managed_env_required_error()
         return None
 
     def _ensure_control_for_operation(
