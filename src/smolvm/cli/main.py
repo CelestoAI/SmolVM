@@ -2342,12 +2342,20 @@ def _fast_shell_unavailable(exc: Exception) -> bool:
     return "fast shell access" in message or "cannot use 'smolvm sandbox shell'" in message
 
 
+def _stop_status(status: Any | None) -> None:
+    """Stop a Rich status before handing the terminal to an interactive child."""
+    stop = getattr(status, "stop", None)
+    if callable(stop):
+        stop()
+
+
 def _attach_shell_or_ssh(vm: Any, args: SimpleNamespace, *, status: Any | None = None) -> int:
     """Prefer the fast shell transport, with SSH as the stable shell fallback."""
     try:
         if status is not None:
             status.update("Opening shell...")
         vm.wait_for_shell(timeout=args.boot_timeout)
+        _stop_status(status)
         return int(vm.attach_shell(timeout=args.boot_timeout))
     except Exception as exc:
         if not _fast_shell_unavailable(exc):
@@ -2356,6 +2364,7 @@ def _attach_shell_or_ssh(vm: Any, args: SimpleNamespace, *, status: Any | None =
     if status is not None:
         status.update("Opening SSH shell...")
     vm.wait_for_ssh(timeout=args.boot_timeout)
+    _stop_status(status)
     completed = subprocess.run(vm._ssh_attach_command(), check=False)
     if completed.returncode != 0:
         _hint_if_vm_crashed(vm)
