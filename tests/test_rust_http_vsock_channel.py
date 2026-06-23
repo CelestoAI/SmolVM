@@ -17,13 +17,16 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import queue
 import socket
+import tarfile
 import tempfile
 import threading
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -31,7 +34,7 @@ from smolvm.comm.base import CommChannel
 from smolvm.comm.rust_http_vsock_channel import RustHttpVsockChannel
 from smolvm.exceptions import OperationTimeoutError, SmolVMError
 
-Handler = Callable[[str, str, bytes], dict | tuple[int, dict | str]]
+Handler = Callable[[str, str, bytes], Any]
 
 
 class FakeRustChannel(RustHttpVsockChannel):
@@ -51,15 +54,27 @@ class FakeRustChannel(RustHttpVsockChannel):
                 self.requests.append(data)
                 result = handler(method, path, body)
                 status = 200
+                headers: dict[str, str] = {}
                 if isinstance(result, tuple):
-                    status, result = result
-                payload = (
-                    result.encode() if isinstance(result, str) else json.dumps(result).encode()
-                )
+                    if len(result) == 3:
+                        status, result, headers = result
+                    else:
+                        status, result = result
+                if isinstance(result, bytes):
+                    payload = result
+                    headers.setdefault("Content-Type", "application/octet-stream")
+                else:
+                    payload = (
+                        result.encode() if isinstance(result, str) else json.dumps(result).encode()
+                    )
+                    headers.setdefault("Content-Type", "application/json")
                 status_text = "OK" if status < 400 else "ERROR"
+                header_bytes = b"".join(
+                    f"{name}: {value}\r\n".encode() for name, value in headers.items()
+                )
                 guest.sendall(
                     f"HTTP/1.1 {status} {status_text}\r\n".encode()
-                    + b"Content-Type: application/json\r\n"
+                    + header_bytes
                     + f"Content-Length: {len(payload)}\r\n".encode()
                     + b"Connection: close\r\n\r\n"
                     + payload
@@ -264,6 +279,7 @@ def test_sync_fallback_exec_failure_maps_to_smolvm_error() -> None:
 def test_put_and_get_file(tmp_path: Path) -> None:
     source = tmp_path / "source.txt"
     source.write_text("payload")
+    source.chmod(0o644)
     destination = tmp_path / "download.txt"
 
     def _put(method: str, path: str, body: bytes) -> dict:
@@ -284,8 +300,141 @@ def test_put_and_get_file(tmp_path: Path) -> None:
             "data_base64": base64.b64encode(b"payload").decode(),
         }
 
-    channel = FakeRustChannel([_put, _get])
+    channel = FakeRustChannel([_capabilities({"file_base64": True}), _put, _get])
     channel.put_file(source, "/tmp/source.txt")
     channel.get_file("/tmp/source.txt", destination)
     assert destination.read_text() == "payload"
     assert destination.stat().st_mode & 0o777 == 0o640
+
+
+def test_put_and_get_file_prefer_raw_streaming_and_cache_capabilities(tmp_path: Path) -> None:
+    source = tmp_path / "source.txt"
+    source.write_text("payload")
+    source.chmod(0o644)
+    destination = tmp_path / "download.txt"
+
+    def _raw_put(method: str, path: str, body: bytes) -> dict:
+        assert method == "PUT"
+        assert path == "/files/content?path=%2Ftmp%2Fsource.txt&name=source.txt&mode=420"
+        assert body == b"payload"
+        return {"ok": True}
+
+    def _raw_get(method: str, path: str, body: bytes) -> tuple[int, bytes, dict[str, str]]:
+        assert method == "GET"
+        assert path == "/files/content?path=%2Ftmp%2Fsource.txt"
+        assert body == b""
+        return (
+            200,
+            b"payload",
+            {"x-smolvm-file-mode": "640", "x-smolvm-file-size": "7"},
+        )
+
+    channel = FakeRustChannel(
+        [_capabilities({"file_base64": True, "file_raw": True}), _raw_put, _raw_get]
+    )
+    channel.put_file(source, "/tmp/source.txt")
+    channel.get_file("/tmp/source.txt", destination)
+
+    assert destination.read_text() == "payload"
+    assert destination.stat().st_mode & 0o777 == 0o640
+    assert [request[:2] for request in channel.requests] == [
+        ("GET", "/capabilities"),
+        ("PUT", "/files/content?path=%2Ftmp%2Fsource.txt&name=source.txt&mode=420"),
+        ("GET", "/files/content?path=%2Ftmp%2Fsource.txt"),
+    ]
+
+
+def test_put_file_falls_back_to_base64_when_raw_endpoint_missing(tmp_path: Path) -> None:
+    source = tmp_path / "source.txt"
+    source.write_text("payload")
+
+    def _missing_raw(method: str, path: str, body: bytes) -> tuple[int, str]:
+        assert method == "PUT"
+        assert path.startswith("/files/content?")
+        return (404, "")
+
+    def _base64_put(method: str, path: str, body: bytes) -> dict:
+        request = json.loads(body)
+        assert method == "POST"
+        assert path == "/files/put"
+        assert base64.b64decode(request["data_base64"]) == b"payload"
+        return {"ok": True}
+
+    channel = FakeRustChannel(
+        [_capabilities({"file_base64": True, "file_raw": True}), _missing_raw, _base64_put]
+    )
+    channel.put_file(source, "/tmp/source.txt")
+
+
+def test_get_directory_rejects_unsafe_tar_entries(tmp_path: Path) -> None:
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w") as tar:
+        info = tarfile.TarInfo("../escape.txt")
+        payload = b"nope"
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+
+    def _tar_get(method: str, path: str, body: bytes) -> tuple[int, bytes, dict[str, str]]:
+        assert method == "GET"
+        assert path == "/directories/tar?path=%2Ftmp%2Fdata"
+        return (200, archive.getvalue(), {"Content-Type": "application/x-tar"})
+
+    channel = FakeRustChannel([_capabilities({"dir_tar": True}), _tar_get])
+    with pytest.raises(SmolVMError, match="outside destination"):
+        channel.get_directory("/tmp/data", tmp_path / "download")
+    assert not (tmp_path / "escape.txt").exists()
+
+
+def test_env_helpers_use_v2_env_endpoint() -> None:
+    def _set(method: str, path: str, body: bytes) -> dict:
+        assert method == "PUT"
+        assert path == "/env"
+        request = json.loads(body)
+        assert request == {"vars": {"FOO": "bar"}, "merge": True}
+        return {"ok": True, "vars": {"FOO": "bar"}}
+
+    def _get(method: str, path: str, body: bytes) -> dict:
+        assert method == "GET"
+        assert path == "/env"
+        return {"ok": True, "vars": {"FOO": "bar"}}
+
+    def _delete(method: str, path: str, body: bytes) -> dict:
+        assert method == "DELETE"
+        assert path == "/env"
+        assert json.loads(body) == {"keys": ["FOO"]}
+        return {"ok": True, "vars": {}}
+
+    channel = FakeRustChannel([_set, _get, _get, _delete])
+    assert channel.set_env_vars({"FOO": "bar"}) == ["FOO"]
+    assert channel.list_env_vars() == {"FOO": "bar"}
+    assert channel.unset_env_vars(["FOO"]) == {"FOO": "bar"}
+
+
+def test_wait_for_ports_and_boot_milestones_use_v2_endpoints() -> None:
+    def _ports(method: str, path: str, body: bytes) -> dict:
+        assert method == "POST"
+        assert path == "/ports/wait"
+        request = json.loads(body)
+        assert request == {"ports": [3000], "timeout_ms": 1000, "host": "127.0.0.1"}
+        return {"ok": True, "ready_ports": [3000]}
+
+    def _milestones(method: str, path: str, body: bytes) -> dict:
+        assert method == "GET"
+        assert path == "/boot/milestones"
+        return {
+            "ok": True,
+            "milestones": [{"stage": "guest-agent-started", "uptime_s": 0.24}],
+        }
+
+    channel = FakeRustChannel([_ports, _milestones])
+    assert channel.wait_for_ports([3000], timeout=1.0) == [3000]
+    assert channel.boot_milestones() == [{"stage": "guest-agent-started", "uptime_s": 0.24}]
+
+
+def _capabilities(features: dict[str, bool]) -> Handler:
+    def _handler(method: str, path: str, body: bytes) -> dict:
+        assert method == "GET"
+        assert path == "/capabilities"
+        return {"protocol_version": 2, "features": features, "limits": {}}
+
+    return _handler

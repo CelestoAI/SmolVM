@@ -1491,7 +1491,20 @@ ts_epoch() {{
 
 log_ts() {{
     STAGE="$1"
-    echo "SMOLVM_TS stage=${{STAGE}} epoch_s=$(ts_epoch) uptime_s=$(ts_uptime)"
+    EPOCH="$(ts_epoch)"
+    UPTIME="$(ts_uptime)"
+    LINE="SMOLVM_TS stage=${{STAGE}} epoch_s=${{EPOCH}} uptime_s=${{UPTIME}}"
+    echo "$LINE"
+    if [ -d /run ]; then
+        mkdir -p /run/smolvm 2>/dev/null || true
+        printf '{{"stage":"%s","epoch_s":%s,"uptime_s":%s}}\n' "$STAGE" "$EPOCH" "$UPTIME" \
+            >> /run/smolvm/milestones.jsonl 2>/dev/null || true
+        printf '{{"stage":"%s","epoch_s":%s,"uptime_s":%s}}\n' "$STAGE" "$EPOCH" "$UPTIME" \
+            >> /run/smolvm/boot-milestones.jsonl 2>/dev/null || true
+    fi
+    if [ -d /var/log ]; then
+        echo "$LINE" >> /var/log/smolvm-boot.log 2>/dev/null || true
+    fi
 }}
 
 log_ts "init-start"

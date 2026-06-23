@@ -18,16 +18,22 @@ from __future__ import annotations
 
 import base64
 import http.client
+import io
 import json
 import logging
 import math
 import os
+import shlex
 import socket
 import stat
+import tarfile
+import tempfile
 import time
 import urllib.parse
 from collections.abc import Callable
-from pathlib import Path
+from contextlib import suppress
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from smolvm.comm.base import CommChannelKind, ShellMode
@@ -41,6 +47,152 @@ SMOLVM_AGENT_PORT = 1024
 
 _READY_FAST_POLL_WINDOW = 1.0
 _READY_FAST_POLL_INTERVAL = 0.02
+
+_LEGACY_CAPABILITIES: dict[str, Any] = {
+    "protocol_version": 1,
+    "features": {
+        "exec": True,
+        "sync": False,
+        "file_base64": True,
+        "file_raw": False,
+        "dir_tar": False,
+        "env_managed": False,
+        "boot_milestones": False,
+        "ports_wait": False,
+    },
+    "limits": {},
+    "endpoints": ["POST /exec", "POST /files/put", "GET /files/get"],
+}
+
+
+@dataclass(frozen=True)
+class ControlCapabilities:
+    """Cached guest-agent capability flags."""
+
+    protocol_version: int
+    features: dict[str, Any]
+    limits: dict[str, Any]
+
+    def enabled(self, *names: str) -> bool:
+        for name in names:
+            value: Any = self.features
+            for part in name.split("."):
+                if not isinstance(value, dict) or part not in value:
+                    value = None
+                    break
+                value = value[part]
+            if value is True:
+                return True
+            if isinstance(value, str) and value.lower() == "true":
+                return True
+        return False
+
+
+def _legacy_control_capabilities() -> ControlCapabilities:
+    features = _LEGACY_CAPABILITIES["features"]
+    limits = _LEGACY_CAPABILITIES["limits"]
+    return ControlCapabilities(
+        protocol_version=1,
+        features=dict(features) if isinstance(features, dict) else {},
+        limits=dict(limits) if isinstance(limits, dict) else {},
+    )
+
+
+def _endpoint_missing(exc: BaseException, method: str, path: str) -> bool:
+    text = str(exc)
+    return (
+        f"guest agent HTTP 404 for {method} {path}" in text
+        or f"guest agent HTTP 405 for {method} {path}" in text
+    )
+
+
+def _parse_mode_header(value: str) -> int:
+    value = value.strip().removeprefix("0o")
+    return int(value, 8)
+
+
+def _directory_to_tar(source: Path) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        for child in sorted(source.iterdir()):
+            _add_tar_path(archive, child, PurePosixPath(child.name))
+    return buffer.getvalue()
+
+
+def _write_temp_tar(data: bytes) -> Path:
+    fd, path = tempfile.mkstemp(prefix="smolvm-dir-", suffix=".tar")
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
+    return Path(path)
+
+
+def _add_tar_path(archive: tarfile.TarFile, path: Path, arcname: PurePosixPath) -> None:
+    if path.is_symlink():
+        return
+    archive.add(path, arcname=str(arcname), recursive=False)
+    if path.is_dir():
+        for child in sorted(path.iterdir()):
+            _add_tar_path(archive, child, arcname / child.name)
+
+
+def _safe_extract_tar(data: bytes, destination: Path) -> None:
+    destination.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as archive:
+        for member in archive.getmembers():
+            relative = _safe_tar_member_path(member.name)
+            if relative is None:
+                continue
+            target = destination / relative
+            if member.isdir():
+                _safe_mkdir(destination, target)
+                if member.mode:
+                    os.chmod(target, stat.S_IMODE(member.mode))
+                continue
+            if not member.isfile():
+                raise SmolVMError(f"Refusing unsupported tar entry: {member.name}")
+            parent = target.parent
+            _safe_mkdir(destination, parent)
+            _reject_symlink_path(destination, target)
+            source = archive.extractfile(member)
+            if source is None:
+                raise SmolVMError(f"Tar entry has no data: {member.name}")
+            target.write_bytes(source.read())
+            if member.mode:
+                os.chmod(target, stat.S_IMODE(member.mode))
+
+
+def _safe_tar_member_path(name: str) -> Path | None:
+    if name.startswith(("/", "\\")):
+        raise SmolVMError(f"Refusing absolute tar entry: {name}")
+    parts: list[str] = []
+    for part in PurePosixPath(name).parts:
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            raise SmolVMError(f"Refusing tar entry outside destination: {name}")
+        parts.append(part)
+    if not parts:
+        return None
+    return Path(*parts)
+
+
+def _safe_mkdir(root: Path, target: Path) -> None:
+    relative = target.relative_to(root)
+    cursor = root
+    for part in relative.parts:
+        cursor = cursor / part
+        if cursor.is_symlink():
+            raise SmolVMError(f"Refusing tar extraction through symlink: {cursor}")
+        cursor.mkdir(exist_ok=True)
+
+
+def _reject_symlink_path(root: Path, target: Path) -> None:
+    relative = target.relative_to(root)
+    cursor = root
+    for part in relative.parts:
+        cursor = cursor / part
+        if cursor.is_symlink():
+            raise SmolVMError(f"Refusing tar extraction through symlink: {cursor}")
 
 
 class _SocketHTTPConnection(http.client.HTTPConnection):
@@ -82,6 +234,7 @@ class RustHttpVsockChannel:
         self.agent_port = agent_port
         self.connect_timeout = connect_timeout
         self._ready = False
+        self._capabilities: ControlCapabilities | None = None
 
     @classmethod
     def from_cid(
@@ -153,18 +306,26 @@ class RustHttpVsockChannel:
         path: str,
         payload: dict[str, Any] | None = None,
         *,
+        body: bytes | None = None,
+        content_type: str | None = None,
         timeout: float | None = None,
     ) -> dict[str, Any]:
-        body = b"" if payload is None else json.dumps(payload).encode("utf-8")
+        if payload is not None and body is not None:
+            raise ValueError("provide payload or body, not both")
+        request_body = b"" if payload is None and body is None else body
+        if payload is not None:
+            request_body = json.dumps(payload).encode("utf-8")
         headers = {"Accept": "application/json", "Connection": "close"}
         if payload is not None:
             headers["Content-Type"] = "application/json"
+        elif content_type is not None:
+            headers["Content-Type"] = content_type
         conn = _SocketHTTPConnection(
             self._open,
             timeout=float(timeout if timeout is not None else self.connect_timeout),
         )
         try:
-            conn.request(method, path, body=body, headers=headers)
+            conn.request(method, path, body=request_body, headers=headers)
             resp = conn.getresponse()
             data = resp.read()
             if resp.status >= 400:
@@ -180,6 +341,59 @@ class RustHttpVsockChannel:
             ) from exc
         finally:
             conn.close()
+
+    def _request_bytes(
+        self,
+        method: str,
+        path: str,
+        body: bytes = b"",
+        *,
+        content_type: str | None = None,
+        timeout: float | None = None,
+    ) -> tuple[http.client.HTTPResponse, bytes]:
+        headers = {"Connection": "close"}
+        if content_type:
+            headers["Content-Type"] = content_type
+        conn = _SocketHTTPConnection(
+            self._open,
+            timeout=float(timeout if timeout is not None else self.connect_timeout),
+        )
+        try:
+            conn.request(method, path, body=body, headers=headers)
+            resp = conn.getresponse()
+            data = resp.read()
+            if resp.status >= 400:
+                detail = data.decode("utf-8", errors="replace")
+                raise SmolVMError(f"guest agent HTTP {resp.status} for {method} {path}: {detail}")
+            return resp, data
+        except TimeoutError as exc:
+            raise OperationTimeoutError(
+                f"guest agent request: {method} {path}", timeout or 0
+            ) from exc
+        finally:
+            conn.close()
+
+    @property
+    def capabilities(self) -> ControlCapabilities:
+        if self._capabilities is None:
+            try:
+                resp = self._request_json("GET", "/capabilities")
+                features = resp.get("features") if isinstance(resp.get("features"), dict) else {}
+                limits = resp.get("limits") if isinstance(resp.get("limits"), dict) else {}
+                protocol_version = int(resp.get("protocol_version", 1))
+                if protocol_version < 2 and not features:
+                    features = _LEGACY_CAPABILITIES["features"]
+                self._capabilities = ControlCapabilities(
+                    protocol_version=protocol_version,
+                    features=dict(features),
+                    limits=dict(limits),
+                )
+            except (OSError, SmolVMError, ValueError, OperationTimeoutError):
+                self._capabilities = _legacy_control_capabilities()
+        return self._capabilities
+
+    def supports(self, *features: str) -> bool:
+        return self.capabilities.enabled(*features)
 
     def run(
         self,
@@ -239,6 +453,27 @@ class RustHttpVsockChannel:
         if not source.is_file():
             raise ValueError(f"local_path is not a file: {source}")
         mode = stat.S_IMODE(source.stat().st_mode)
+        if self.supports("file_raw", "files.stream"):
+            try:
+                query = urllib.parse.urlencode(
+                    {"path": remote_path, "name": source.name, "mode": mode}
+                )
+                resp, data = self._request_bytes(
+                    "PUT",
+                    f"/files/content?{query}",
+                    source.read_bytes(),
+                    content_type="application/octet-stream",
+                )
+                decoded = json.loads(data.decode("utf-8")) if data else {}
+                if resp.status >= 400 or not decoded.get("ok"):
+                    raise SmolVMError(
+                        f"Failed to upload file to guest '{remote_path}': {decoded.get('error')}"
+                    )
+                return
+            except SmolVMError as exc:
+                if not _endpoint_missing(exc, "PUT", "/files/content"):
+                    raise
+                self._capabilities = _legacy_control_capabilities()
         payload = {
             "path": remote_path,
             "name": source.name,
@@ -257,6 +492,24 @@ class RustHttpVsockChannel:
         destination = Path(local_path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         query = urllib.parse.urlencode({"path": remote_path})
+        if self.supports("file_raw", "files.stream"):
+            try:
+                resp, data = self._request_bytes("GET", f"/files/content?{query}")
+                expected_size = resp.getheader("x-smolvm-file-size")
+                if expected_size is not None and int(expected_size) != len(data):
+                    raise SmolVMError(
+                        f"Guest file response for '{remote_path}' had size {expected_size}, "
+                        f"got {len(data)} bytes"
+                    )
+                destination.write_bytes(data)
+                mode = resp.getheader("x-smolvm-file-mode")
+                if mode is not None:
+                    os.chmod(destination, _parse_mode_header(mode))
+                return destination
+            except SmolVMError as exc:
+                if not _endpoint_missing(exc, "GET", "/files/content"):
+                    raise
+                self._capabilities = _legacy_control_capabilities()
         resp = self._request_json("GET", f"/files/get?{query}")
         if not resp.get("ok"):
             raise SmolVMError(f"Failed to download guest file '{remote_path}': {resp.get('error')}")
@@ -274,6 +527,188 @@ class RustHttpVsockChannel:
         if mode is not None:
             os.chmod(destination, int(mode))
         return destination
+
+    def put_directory(self, local_path: str | Path, remote_path: str) -> None:
+        """Upload a directory as a tar stream when the guest supports it."""
+        if not remote_path:
+            raise ValueError("remote_path cannot be empty")
+        source = Path(local_path)
+        if not source.is_dir():
+            raise ValueError(f"local_path is not a directory: {source}")
+        if not self.supports("dir_tar", "files.directory_tar"):
+            self._put_directory_legacy(source, remote_path)
+            return
+        data = _directory_to_tar(source)
+        query = urllib.parse.urlencode({"path": remote_path})
+        try:
+            _resp, response_data = self._request_bytes(
+                "PUT",
+                f"/directories/tar?{query}",
+                data,
+                content_type="application/x-tar",
+            )
+        except SmolVMError as exc:
+            if not _endpoint_missing(exc, "PUT", "/directories/tar"):
+                raise
+            self._put_directory_legacy(source, remote_path)
+            return
+        decoded = json.loads(response_data.decode("utf-8")) if response_data else {}
+        if not decoded.get("ok"):
+            raise SmolVMError(
+                f"Failed to upload directory to guest '{remote_path}': {decoded.get('error')}"
+            )
+
+    def get_directory(self, remote_path: str, local_path: str | Path) -> Path:
+        """Download a directory tar stream when the guest supports it."""
+        if not remote_path:
+            raise ValueError("remote_path cannot be empty")
+        if not self.supports("dir_tar", "files.directory_tar"):
+            return self._get_directory_legacy(remote_path, Path(local_path))
+        destination = Path(local_path)
+        destination.mkdir(parents=True, exist_ok=True)
+        query = urllib.parse.urlencode({"path": remote_path})
+        try:
+            _resp, data = self._request_bytes("GET", f"/directories/tar?{query}")
+        except SmolVMError as exc:
+            if not _endpoint_missing(exc, "GET", "/directories/tar"):
+                raise
+            return self._get_directory_legacy(remote_path, destination)
+        _safe_extract_tar(data, destination)
+        return destination
+
+    def _put_directory_legacy(self, source: Path, remote_path: str) -> None:
+        data = _directory_to_tar(source)
+        local_tmp = _write_temp_tar(data)
+        remote_tmp = f"/tmp/smolvm-dir-{os.getpid()}-{time.monotonic_ns()}.tar"
+        try:
+            self.put_file(local_tmp, remote_tmp)
+            result = self.run(
+                "set -e; "
+                f"mkdir -p -- {shlex.quote(remote_path)}; "
+                f"tar -xf {shlex.quote(remote_tmp)} -C {shlex.quote(remote_path)}; "
+                f"rm -f -- {shlex.quote(remote_tmp)}",
+                timeout=120,
+                shell="raw",
+            )
+            if not result.ok:
+                raise SmolVMError(
+                    "Failed to extract directory in guest: "
+                    f"{result.stderr.strip() or result.stdout}"
+                )
+        finally:
+            local_tmp.unlink(missing_ok=True)
+
+    def _get_directory_legacy(self, remote_path: str, destination: Path) -> Path:
+        destination.mkdir(parents=True, exist_ok=True)
+        remote_tmp = f"/tmp/smolvm-dir-{os.getpid()}-{time.monotonic_ns()}.tar"
+        local_fd, local_name = tempfile.mkstemp(prefix="smolvm-dir-", suffix=".tar")
+        os.close(local_fd)
+        local_tmp = Path(local_name)
+        try:
+            result = self.run(
+                "set -e; "
+                f"rm -f -- {shlex.quote(remote_tmp)}; "
+                f"tar -cf {shlex.quote(remote_tmp)} -C {shlex.quote(remote_path)} .",
+                timeout=120,
+                shell="raw",
+            )
+            if not result.ok:
+                raise SmolVMError(
+                    f"Failed to archive guest directory: {result.stderr.strip() or result.stdout}"
+                )
+            self.get_file(remote_tmp, local_tmp)
+            _safe_extract_tar(local_tmp.read_bytes(), destination)
+            return destination
+        finally:
+            local_tmp.unlink(missing_ok=True)
+            with suppress(SmolVMError):
+                self.run(f"rm -f -- {shlex.quote(remote_tmp)}", timeout=10, shell="raw")
+
+    def set_managed_env(self, env_vars: dict[str, str], *, merge: bool = True) -> dict[str, str]:
+        resp = self._request_json("PUT", "/env", {"vars": env_vars, "merge": merge})
+        if not resp.get("ok"):
+            raise SmolVMError(f"guest agent error during env update: {resp.get('error', resp)}")
+        vars_value = resp.get("vars")
+        return dict(vars_value) if isinstance(vars_value, dict) else {}
+
+    def unset_managed_env(self, keys: list[str]) -> dict[str, str]:
+        resp = self._request_json("DELETE", "/env", {"keys": keys})
+        if not resp.get("ok"):
+            raise SmolVMError(f"guest agent error during env update: {resp.get('error', resp)}")
+        vars_value = resp.get("vars")
+        return dict(vars_value) if isinstance(vars_value, dict) else {}
+
+    def list_managed_env(self) -> dict[str, str]:
+        resp = self._request_json("GET", "/env")
+        if not resp.get("ok"):
+            raise SmolVMError(f"guest agent error during env read: {resp.get('error', resp)}")
+        vars_value = resp.get("vars")
+        return dict(vars_value) if isinstance(vars_value, dict) else {}
+
+    def set_env_vars(self, env_vars: dict[str, str], *, merge: bool = True) -> list[str]:
+        if not env_vars:
+            return []
+        try:
+            return sorted(self.set_managed_env(env_vars, merge=merge))
+        except SmolVMError as exc:
+            if self.supports("env_managed") and not _endpoint_missing(exc, "PUT", "/env"):
+                raise
+            from smolvm.env import inject_env_vars
+
+            return inject_env_vars(self, env_vars, merge=merge)
+
+    def unset_env_vars(self, keys: list[str]) -> dict[str, str]:
+        if not keys:
+            return {}
+        try:
+            before = self.list_managed_env()
+            after = self.unset_managed_env(keys)
+            return {key: before[key] for key in keys if key in before and key not in after}
+        except SmolVMError as exc:
+            if self.supports("env_managed") and not _endpoint_missing(exc, "DELETE", "/env"):
+                raise
+            from smolvm.env import remove_env_vars
+
+            return remove_env_vars(self, keys)
+
+    def list_env_vars(self) -> dict[str, str]:
+        try:
+            return self.list_managed_env()
+        except SmolVMError as exc:
+            if self.supports("env_managed") and not _endpoint_missing(exc, "GET", "/env"):
+                raise
+            from smolvm.env import read_env_vars
+
+            return read_env_vars(self)
+
+    def wait_for_ports(
+        self,
+        ports: list[int],
+        *,
+        timeout: float = 30,
+        host: str = "127.0.0.1",
+    ) -> list[int]:
+        resp = self._request_json(
+            "POST",
+            "/ports/wait",
+            {"ports": ports, "timeout_ms": int(timeout * 1000), "host": host},
+            timeout=timeout + self.connect_timeout,
+        )
+        if not resp.get("ok"):
+            raise OperationTimeoutError(
+                f"waiting for guest ports {', '.join(map(str, ports))}", timeout
+            )
+        ready = resp.get("ready_ports")
+        return [int(port) for port in ready] if isinstance(ready, list) else []
+
+    def boot_milestones(self) -> list[dict[str, Any]]:
+        resp = self._request_json("GET", "/boot/milestones")
+        if not resp.get("ok"):
+            raise SmolVMError(
+                f"guest agent error during boot milestone read: {resp.get('error', resp)}"
+            )
+        milestones = resp.get("milestones")
+        return list(milestones) if isinstance(milestones, list) else []
 
     def wait_ready(self, timeout: float = 60.0, interval: float = 0.1) -> None:
         if timeout <= 0:
@@ -295,6 +730,9 @@ class RustHttpVsockChannel:
                 resp = self._request_json("GET", "/health", timeout=max(1.0, poll_interval))
                 if resp.get("status") == "ok":
                     self._ready = True
+                    with suppress(Exception):
+                        self._capabilities = None
+                        _ = self.capabilities
                     logger.info("Rust guest agent is ready on vsock %s", target)
                     return
                 last_error = str(resp)
@@ -311,6 +749,7 @@ class RustHttpVsockChannel:
 
     def close(self) -> None:
         self._ready = False
+        self._capabilities = None
 
     @property
     def connected(self) -> bool:
