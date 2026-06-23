@@ -394,26 +394,9 @@ def _decompress_zstd(src: Path, dst: Path) -> None:
     not copy gigabytes of zeros before every boot on filesystems without
     reflink support.
     """
-    import zstandard
+    from smolvm.host.disk import decompress_zstd_sparse
 
-    tmp = dst.parent / (dst.name + ".tmp")
-    try:
-        with src.open("rb") as src_f, tmp.open("wb") as dst_f:
-            reader = zstandard.ZstdDecompressor().stream_reader(src_f)
-            size = 0
-            while True:
-                chunk = reader.read(_SPARSE_DECOMPRESS_CHUNK_SIZE)
-                if not chunk:
-                    break
-                size += len(chunk)
-                if chunk.strip(b"\0"):
-                    dst_f.write(chunk)
-                else:
-                    dst_f.seek(len(chunk), os.SEEK_CUR)
-            dst_f.truncate(size)
-        tmp.replace(dst)
-    finally:
-        tmp.unlink(missing_ok=True)
+    decompress_zstd_sparse(src, dst, chunk_size=_SPARSE_DECOMPRESS_CHUNK_SIZE)
 
 
 def ensure_published_image(

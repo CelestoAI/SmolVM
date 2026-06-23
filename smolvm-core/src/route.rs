@@ -55,6 +55,11 @@ fn validate_ipv4_prefix(prefix_len: u8) -> Result<(), NetlinkError> {
     Ok(())
 }
 
+pub(crate) fn validate_tap_config(host_ip: &str, prefix_len: u8) -> Result<(), NetlinkError> {
+    validate_ipv4_prefix(prefix_len)?;
+    parse_ipv4(host_ip, "host IP").map(|_| ())
+}
+
 fn map_netlink_error(context: &str, error: impl std::fmt::Display) -> NetlinkError {
     let message = error.to_string();
     if message.contains("File exists") || message.contains("EEXIST") {

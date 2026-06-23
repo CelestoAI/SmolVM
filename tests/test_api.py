@@ -14,10 +14,14 @@
 
 """Tests for Firecracker snapshot API helpers."""
 
+import json
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from smolvm.api import FirecrackerClient
+from smolvm.exceptions import FirecrackerAPIError
 
 
 class _Response:
@@ -96,3 +100,63 @@ def test_load_snapshot_payload(tmp_path: Path) -> None:
             {"iface_id": "eth0", "host_dev_name": "tap-restored"},
         ],
     }
+
+
+def test_native_firecracker_request_path_is_used_when_available(tmp_path: Path) -> None:
+    """Native Firecracker helper should bypass requests when enabled and socket exists."""
+    socket_path = tmp_path / "fc.sock"
+    socket_path.touch()
+    native = MagicMock()
+    native.has_native_firecracker_api.return_value = True
+    native._firecracker_request.return_value = (204, None)
+    client = _client(tmp_path)
+
+    with patch("smolvm.api._native", native):
+        client.start_instance()
+
+    native._firecracker_request.assert_called_once_with(
+        str(socket_path),
+        "PUT",
+        "/actions",
+        json.dumps({"action_type": "InstanceStart"}, separators=(",", ":")),
+        10.0,
+    )
+    client.session.request.assert_not_called()
+
+
+def test_native_firecracker_request_can_be_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SMOLVM_DISABLE_NATIVE_FIRECRACKER_API should force the requests path."""
+    socket_path = tmp_path / "fc.sock"
+    socket_path.touch()
+    native = MagicMock()
+    native.has_native_firecracker_api.return_value = True
+    client = _client(tmp_path)
+    monkeypatch.setenv("SMOLVM_DISABLE_NATIVE_FIRECRACKER_API", "1")
+
+    with patch("smolvm.api._native", native):
+        client.start_instance()
+
+    native._firecracker_request.assert_not_called()
+    client.session.request.assert_called_once()
+
+
+def test_native_firecracker_api_error_preserves_status_code(tmp_path: Path) -> None:
+    """Native HTTP responses should keep the same error contract as requests."""
+    socket_path = tmp_path / "fc.sock"
+    socket_path.touch()
+    native = MagicMock()
+    native.has_native_firecracker_api.return_value = True
+    native._firecracker_request.return_value = (400, '{"fault_message":"bad request"}')
+    client = _client(tmp_path)
+
+    with (
+        patch("smolvm.api._native", native),
+        pytest.raises(FirecrackerAPIError) as exc_info,
+    ):
+        client.start_instance()
+
+    assert exc_info.value.status_code == 400
+    assert "bad request" in str(exc_info.value)
+    client.session.request.assert_not_called()

@@ -66,6 +66,7 @@ def _attach_mock_network(manager: SmolVMManager) -> MagicMock:
     mock_network = MagicMock()
     mock_network.host_ip = "172.16.0.1"
     mock_network.generate_mac.return_value = "AA:FC:00:00:00:01"
+    mock_network.async_prepare_tap_device = AsyncMock()
     mock_network.async_create_tap = AsyncMock()
     mock_network.async_configure_tap = AsyncMock()
     mock_network.async_add_route = AsyncMock()
@@ -103,8 +104,7 @@ class TestSmolVMCreate:
         assert vm_info.network.guest_ip.startswith("172.16.0.")
 
         # Verify network setup was called
-        mock_network.create_tap.assert_called_once()
-        mock_network.configure_tap.assert_called_once()
+        mock_network.prepare_tap_device.assert_called_once()
         mock_network.setup_nat.assert_called_once()
         mock_network.setup_ssh_port_forward.assert_called_once()
 
@@ -137,7 +137,8 @@ class TestSmolVMCreate:
         """Test that resources are cleaned up on failure."""
         mock_network = MagicMock()
         mock_network.host_ip = "172.16.0.1"
-        mock_network.create_tap.side_effect = Exception("Network error")
+        mock_network.generate_mac.return_value = "AA:FC:00:00:00:01"
+        mock_network.prepare_tap_device.side_effect = Exception("Network error")
         mock_network_class.return_value = mock_network
         smol_vm.network = mock_network
 
@@ -161,7 +162,8 @@ class TestSmolVMCreate:
         retained_disk.write_text("retained")
         mock_network = MagicMock()
         mock_network.host_ip = "172.16.0.1"
-        mock_network.create_tap.side_effect = Exception("Network error")
+        mock_network.generate_mac.return_value = "AA:FC:00:00:00:01"
+        mock_network.prepare_tap_device.side_effect = Exception("Network error")
         mock_network_class.return_value = mock_network
         smol_vm.network = mock_network
 
@@ -233,8 +235,7 @@ class TestSmolVMCreate:
         assert vm_info.network is not None
         assert vm_info.network.ssh_host_port is None
         assert vm_info.config.vsock is not None
-        mock_network.create_tap.assert_called_once()
-        mock_network.configure_tap.assert_called_once()
+        mock_network.prepare_tap_device.assert_called_once()
         mock_network.add_route.assert_not_called()
         mock_network.setup_nat.assert_not_called()
         mock_network.setup_ssh_port_forward.assert_not_called()
@@ -497,6 +498,7 @@ class TestSmolVMCreate:
 
         assert vm_info.network is not None
         assert vm_info.network.ssh_host_port is None
+        mock_network.async_prepare_tap_device.assert_awaited_once()
         mock_network.async_add_route.assert_not_awaited()
         mock_network.async_setup_nat.assert_not_awaited()
         mock_network.async_setup_ssh_port_forward.assert_not_awaited()
@@ -521,33 +523,39 @@ class TestSmolVMDiskLifecycle:
             assert file.read(3) == b"end"
         assert target.stat().st_blocks * 512 < target.stat().st_size
 
-    def test_copy_with_reflink_preserves_sparse_holes(self, tmp_path: Path) -> None:
-        """Raw isolated-disk copies should not inflate sparse rootfs holes."""
+    def test_copy_with_reflink_uses_host_disk_helper(self, tmp_path: Path) -> None:
+        """Raw isolated-disk copies should go through the host disk switchboard."""
         source = tmp_path / "source.ext4"
         target = tmp_path / "target.ext4"
         source.write_bytes(b"rootfs")
 
-        with patch("smolvm.vm.subprocess.run") as mock_run:
-            mock_run.return_value = SimpleNamespace(returncode=0)
+        with patch("smolvm.host.disk.clone_or_sparse_copy") as mock_copy:
             SmolVMManager._copy_with_reflink(source, target)
 
-        mock_run.assert_called_once_with(
-            ["cp", "--reflink=auto", "--sparse=always", str(source), str(target)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        mock_copy.assert_called_once_with(source, target)
 
-    def test_copy_with_reflink_fallback_preserves_sparse_holes(self, tmp_path: Path) -> None:
+    def test_copy_with_reflink_fallback_preserves_sparse_holes(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         """The non-GNU cp fallback should also avoid writing sparse zero ranges."""
         source = tmp_path / "source.ext4"
         target = tmp_path / "target.ext4"
         self._write_sparse_file(source)
+        monkeypatch.setenv("SMOLVM_DISABLE_NATIVE_DISK", "1")
 
         with (
-            patch("smolvm.vm.subprocess.run", return_value=SimpleNamespace(returncode=1)),
-            patch("smolvm.vm.shutil.copy2", side_effect=AssertionError("must stay sparse")),
+            patch(
+                "smolvm.host.disk.subprocess.run",
+                return_value=SimpleNamespace(returncode=1, stderr="cp failed"),
+            ),
+            patch(
+                "smolvm.host.disk._native",
+                create=True,
+            ) as mock_native,
         ):
+            mock_native.clone_or_sparse_copy.side_effect = AssertionError("native disabled")
             SmolVMManager._copy_with_reflink(source, target)
 
         self._assert_sparse_copy(source, target)
@@ -556,17 +564,26 @@ class TestSmolVMDiskLifecycle:
     async def test_async_copy_with_reflink_fallback_preserves_sparse_holes(
         self,
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Async disk materialization should use the same sparse fallback."""
         source = tmp_path / "source.ext4"
         target = tmp_path / "target.ext4"
         self._write_sparse_file(source)
         manager = SmolVMManager(data_dir=tmp_path / "data", socket_dir=tmp_path / "sockets")
+        monkeypatch.setenv("SMOLVM_DISABLE_NATIVE_DISK", "1")
 
         with (
-            patch("smolvm.utils.async_run_command", side_effect=SmolVMError("cp failed")),
-            patch("smolvm.vm.shutil.copy2", side_effect=AssertionError("must stay sparse")),
+            patch(
+                "smolvm.host.disk.subprocess.run",
+                return_value=SimpleNamespace(returncode=1, stderr="cp failed"),
+            ),
+            patch(
+                "smolvm.host.disk._native",
+                create=True,
+            ) as mock_native,
         ):
+            mock_native.clone_or_sparse_copy.side_effect = AssertionError("native disabled")
             await manager._async_copy_with_reflink(source, target)
 
         self._assert_sparse_copy(source, target)
@@ -1134,7 +1151,9 @@ class TestIPBasedTAPNaming:
         assert vm_info.network.tap_device == "tap2"
         assert vm_info.network.guest_ip == "172.16.0.2"
         assert vm_info.network.ssh_host_port == 2200
-        mock_network.create_tap.assert_called_once_with("tap2", expected_user)
+        mock_network.prepare_tap_device.assert_called_once_with(
+            "tap2", user=expected_user, netmask="32"
+        )
 
     @patch("smolvm.vm.NetworkManager")
     def test_sequential_vms_get_unique_taps(

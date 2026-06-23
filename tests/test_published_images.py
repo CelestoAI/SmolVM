@@ -890,6 +890,20 @@ class TestBundledManifest:
 class TestDecompressZstd:
     """Direct tests for the streaming decompressor."""
 
+    def test_decompress_zstd_delegates_to_host_disk_helper(self, tmp_path: Path) -> None:
+        """Published image decompression should go through the disk switchboard."""
+        src = tmp_path / "rootfs.ext4.zst"
+        dst = tmp_path / "rootfs.ext4"
+
+        with patch("smolvm.host.disk.decompress_zstd_sparse") as mock_decompress:
+            _decompress_zstd(src, dst)
+
+        mock_decompress.assert_called_once_with(
+            src,
+            dst,
+            chunk_size=published_module._SPARSE_DECOMPRESS_CHUNK_SIZE,
+        )
+
     def test_decompress_zstd_preserves_sparse_zero_ranges(self, tmp_path: Path) -> None:
         """Published raw ext4 caches should keep large zero regions sparse."""
         import zstandard

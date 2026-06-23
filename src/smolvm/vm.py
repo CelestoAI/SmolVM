@@ -722,16 +722,9 @@ class SmolVMManager:
         file size. On other filesystems it falls back to a sparse-preserving
         Python copy.
         """
-        result = subprocess.run(
-            ["cp", "--reflink=auto", "--sparse=always", str(source_path), str(target_path)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode != 0:
-            # Fallback: --reflink=auto may not be supported on all platforms
-            # (e.g. macOS cp doesn't have this flag).
-            SmolVMManager._copy_sparse_preserving(source_path, target_path)
+        from smolvm.host.disk import clone_or_sparse_copy
+
+        clone_or_sparse_copy(source_path, target_path)
 
     @staticmethod
     def _copy_sparse_preserving(
@@ -1185,9 +1178,9 @@ class SmolVMManager:
     ) -> None:
         """Ensure host-side network resources exist for a restored Firecracker VM."""
         user = os.environ.get("USER", "root")
-        self.network.create_tap(network.tap_device, user)
-        self.network.configure_tap(
+        self.network.prepare_tap_device(
             network.tap_device,
+            user=user,
             host_ip=network.gateway_ip,
             netmask="32",
         )
@@ -1792,10 +1785,8 @@ class SmolVMManager:
 
             # Create and configure TAP device
             user = os.environ.get("USER", "root")
-            self.network.create_tap(tap_name, user)
-
-            # Use /32 mask to avoid subnet conflicts between multiple TAPs
-            self.network.configure_tap(tap_name, netmask="32")
+            # Use /32 mask to avoid subnet conflicts between multiple TAPs.
+            self.network.prepare_tap_device(tap_name, user=user, netmask="32")
 
             if tap_connectivity_required:
                 self.network.add_route(guest_ip, tap_name)
@@ -3168,8 +3159,7 @@ class SmolVMManager:
             )
 
             user = os.environ.get("USER", "root")
-            await self.network.async_create_tap(tap_name, user)
-            await self.network.async_configure_tap(tap_name, netmask="32")
+            await self.network.async_prepare_tap_device(tap_name, user=user, netmask="32")
             if tap_connectivity_required:
                 await self.network.async_add_route(guest_ip, tap_name)
                 await self.network.async_setup_nat(tap_name)
@@ -3387,16 +3377,7 @@ class SmolVMManager:
 
     async def _async_copy_with_reflink(self, source_path: Path, target_path: Path) -> None:
         """Async version of :meth:`_copy_with_reflink`."""
-        from smolvm.utils import async_run_command
-
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            await async_run_command(
-                ["cp", "--reflink=auto", "--sparse=always", str(source_path), str(target_path)],
-                use_sudo=False,
-            )
-        except SmolVMError:
-            await asyncio.to_thread(self._copy_sparse_preserving, source_path, target_path)
+        await asyncio.to_thread(self._copy_with_reflink, source_path, target_path)
 
     async def _async_unlink_socket(self, socket_path: Path) -> None:
         """Async version of :meth:`_unlink_socket`."""

@@ -295,7 +295,7 @@ def test_restore_snapshot_rehydrates_deleted_vm(
     assert restored_vm.status == VMState.PAUSED
     assert managed_disk.read_text() == "snapshotted-disk"
     assert restored_snapshot.restored is True
-    smol_vm.network.create_tap.assert_called_once()
+    smol_vm.network.prepare_tap_device.assert_called_once()
     smol_vm.network.setup_nat.assert_called_once()
     mock_client.wait_for_socket.assert_called_once()
     mock_client.load_snapshot.assert_called_once()

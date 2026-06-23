@@ -15,6 +15,7 @@
 """Tests for SmolVM network module."""
 
 import logging
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -263,6 +264,38 @@ class TestNativeTapManagement:
 
     @patch("smolvm.host.network.run_command")
     @patch("smolvm.host.network.native")
+    def test_prepare_tap_uses_native_composite_helper(
+        self, mock_native: MagicMock, mock_run_command: MagicMock
+    ) -> None:
+        """Sync prepare should collapse create/configure/sysctl into one native call."""
+        with patch("smolvm.host.network.HAS_NETLINK", True):
+            nm = NetworkManager()
+            nm.prepare_tap("tap9", "__missing_user__", host_ip="172.16.0.1", netmask="32")
+
+        mock_native.prepare_tap.assert_called_once_with("tap9", os.getuid(), "172.16.0.1", 32)
+        mock_native.create_tap.assert_not_called()
+        mock_native.configure_tap.assert_not_called()
+        mock_native.write_sysctl.assert_not_called()
+        mock_run_command.assert_not_called()
+
+    @patch("smolvm.host.network.native")
+    def test_prepare_tap_falls_back_when_native_composite_missing(
+        self, mock_native: MagicMock
+    ) -> None:
+        """Older smolvm-core wheels should fall back to the existing Python sequence."""
+        del mock_native.prepare_tap
+
+        with patch("smolvm.host.network.HAS_NETLINK", True):
+            nm = NetworkManager()
+            nm.create_tap = MagicMock()
+            nm.configure_tap = MagicMock()
+            nm.prepare_tap("tap9", "alice", host_ip="172.16.0.1", netmask="32")
+
+        nm.create_tap.assert_called_once_with("tap9", "alice")
+        nm.configure_tap.assert_called_once_with("tap9", host_ip="172.16.0.1", netmask="32")
+
+    @patch("smolvm.host.network.run_command")
+    @patch("smolvm.host.network.native")
     def test_configure_tap_uses_composite_native_helper(
         self, mock_native: MagicMock, mock_run_command: MagicMock
     ) -> None:
@@ -292,6 +325,27 @@ class TestNativeTapManagement:
 
         mock_native.get_default_interface.assert_called_once_with()
         mock_run_command.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("smolvm.host.network.async_run_command", new_callable=AsyncMock)
+    @patch("smolvm.host.network.native")
+    async def test_async_prepare_tap_uses_native_composite_helper(
+        self,
+        mock_native: MagicMock,
+        mock_async_run_command: AsyncMock,
+    ) -> None:
+        """Async prepare should use one native helper through to_thread."""
+        with patch("smolvm.host.network.HAS_NETLINK", True):
+            nm = NetworkManager()
+            await nm.async_prepare_tap(
+                "tap9", "__missing_user__", host_ip="172.16.0.1", netmask="32"
+            )
+
+        mock_native.prepare_tap.assert_called_once_with("tap9", os.getuid(), "172.16.0.1", 32)
+        mock_native.create_tap.assert_not_called()
+        mock_native.configure_tap.assert_not_called()
+        mock_native.write_sysctl.assert_not_called()
+        mock_async_run_command.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("smolvm.host.network.async_run_command", new_callable=AsyncMock)

@@ -52,6 +52,15 @@ def _is_eperm(err: str) -> bool:
     return bool(_EPERM_RE.search(err))
 
 
+def _uid_for_user(user: str) -> int:
+    import pwd
+
+    try:
+        return pwd.getpwnam(user).pw_uid
+    except KeyError:
+        return os.getuid()
+
+
 # Once the native ioctl path returns EPERM, every later call in this process
 # will too — short-circuit straight to the subprocess path and stop emitting
 # duplicate warnings (and stop triggering noisy IFLA_INET6_CONF parse warnings
@@ -196,6 +205,26 @@ class NetworkManager:
     # TAP / routing
     # ------------------------------------------------------------------
 
+    def prepare_tap_device(
+        self,
+        tap_name: str,
+        user: str | None = None,
+        host_ip: str | None = None,
+        netmask: str = DEFAULT_NETMASK,
+    ) -> None:
+        """Create and configure a TAP device."""
+        self.prepare_tap(tap_name, user=user, host_ip=host_ip, netmask=netmask)
+
+    async def async_prepare_tap_device(
+        self,
+        tap_name: str,
+        user: str | None = None,
+        host_ip: str | None = None,
+        netmask: str = DEFAULT_NETMASK,
+    ) -> None:
+        """Create and configure a TAP device (async)."""
+        await self.async_prepare_tap(tap_name, user=user, host_ip=host_ip, netmask=netmask)
+
     def create_tap(self, tap_name: str, user: str | None = None) -> None:
         """Create TAP device if missing."""
         if not tap_name:
@@ -207,12 +236,7 @@ class NetworkManager:
         logger.info("Creating TAP device: %s (user: %s)", tap_name, user)
 
         if _native_available():
-            import pwd
-
-            try:
-                uid = pwd.getpwnam(user).pw_uid
-            except KeyError:
-                uid = os.getuid()
+            uid = _uid_for_user(user)
             max_busy_retries = 3
             for attempt in range(max_busy_retries + 1):
                 try:
@@ -278,12 +302,7 @@ class NetworkManager:
         logger.info("Creating TAP device: %s (user: %s)", tap_name, user)
 
         if _native_available():
-            import pwd
-
-            try:
-                uid = pwd.getpwnam(user).pw_uid
-            except KeyError:
-                uid = os.getuid()
+            uid = _uid_for_user(user)
             max_busy_retries = 3
             for attempt in range(max_busy_retries + 1):
                 try:
@@ -338,6 +357,84 @@ class NetworkManager:
                     await asyncio.sleep(delay)
                     continue
                 raise
+
+    def prepare_tap(
+        self,
+        tap_name: str,
+        user: str | None = None,
+        host_ip: str | None = None,
+        netmask: str = DEFAULT_NETMASK,
+    ) -> None:
+        """Create, configure, and enable localhost routing for a TAP device."""
+        if not tap_name:
+            raise ValueError("tap_name cannot be empty")
+
+        if user is None:
+            user = os.environ.get("USER", "root")
+        if host_ip is None:
+            host_ip = self.host_ip
+
+        logger.info("Preparing TAP %s with IP %s/%s (user: %s)", tap_name, host_ip, netmask, user)
+
+        if _native_available() and hasattr(native, "prepare_tap"):
+            try:
+                _call_native(
+                    "prepare_tap",
+                    native.prepare_tap,
+                    tap_name,
+                    _uid_for_user(user),
+                    host_ip,
+                    int(netmask),
+                )
+                return
+            except OSError as e:
+                err = str(e)
+                if _is_eperm(err):
+                    _mark_native_unprivileged()
+                else:
+                    raise SmolVMError(err) from e
+
+        self.create_tap(tap_name, user)
+        self.configure_tap(tap_name, host_ip=host_ip, netmask=netmask)
+
+    async def async_prepare_tap(
+        self,
+        tap_name: str,
+        user: str | None = None,
+        host_ip: str | None = None,
+        netmask: str = DEFAULT_NETMASK,
+    ) -> None:
+        """Create, configure, and enable localhost routing for a TAP device (async)."""
+        if not tap_name:
+            raise ValueError("tap_name cannot be empty")
+
+        if user is None:
+            user = os.environ.get("USER", "root")
+        if host_ip is None:
+            host_ip = self.host_ip
+
+        logger.info("Preparing TAP %s with IP %s/%s (user: %s)", tap_name, host_ip, netmask, user)
+
+        if _native_available() and hasattr(native, "prepare_tap"):
+            try:
+                await _async_call_native(
+                    "prepare_tap",
+                    native.prepare_tap,
+                    tap_name,
+                    _uid_for_user(user),
+                    host_ip,
+                    int(netmask),
+                )
+                return
+            except OSError as e:
+                err = str(e)
+                if _is_eperm(err):
+                    _mark_native_unprivileged()
+                else:
+                    raise SmolVMError(err) from e
+
+        await self.async_create_tap(tap_name, user)
+        await self.async_configure_tap(tap_name, host_ip=host_ip, netmask=netmask)
 
     def configure_tap(
         self,

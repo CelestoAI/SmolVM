@@ -20,3 +20,8 @@ pub fn write(key: &str, value: &str) -> Result<(), NetlinkError> {
     log::debug!("sysctl {} = {}", key, value);
     Ok(())
 }
+
+/// Allow localhost DNAT traffic to route through a TAP interface.
+pub fn write_tap_route_localnet(name: &str) -> Result<(), NetlinkError> {
+    write(&format!("net/ipv4/conf/{name}/route_localnet"), "1")
+}

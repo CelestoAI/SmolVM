@@ -17,7 +17,9 @@
 Communicates with the Firecracker hypervisor over its Unix socket API.
 """
 
+import json as json_module
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -28,6 +30,28 @@ import requests_unixsocket
 from smolvm.exceptions import FirecrackerAPIError, OperationTimeoutError
 
 logger = logging.getLogger(__name__)
+
+_DISABLE_NATIVE_ENV = "SMOLVM_DISABLE_NATIVE_FIRECRACKER_API"
+_TRUE_ENV_VALUES = {"1", "true", "yes"}
+
+try:
+    import smolvm_core as _native
+except ImportError:  # pragma: no cover - optional wheel
+    _native = None  # type: ignore[assignment]
+
+
+def _native_firecracker_available() -> bool:
+    disabled = os.environ.get(_DISABLE_NATIVE_ENV, "").strip().lower() in _TRUE_ENV_VALUES
+    if disabled or _native is None:
+        return False
+    if not hasattr(_native, "has_native_firecracker_api") or not hasattr(
+        _native, "_firecracker_request"
+    ):
+        return False
+    try:
+        return bool(_native.has_native_firecracker_api())
+    except Exception:
+        return False
 
 
 class FirecrackerClient:
@@ -90,6 +114,37 @@ class FirecrackerClient:
         url = self._socket_url(path)
         logger.debug("%s %s", method, path)
 
+        if self.socket_path.exists() and _native_firecracker_available():
+            body_json = json_module.dumps(json, separators=(",", ":")) if json is not None else None
+            try:
+                status_code, payload = _native._firecracker_request(
+                    str(self.socket_path),
+                    method,
+                    path,
+                    body_json,
+                    10.0,
+                )
+            except OSError as e:
+                raise FirecrackerAPIError(f"Request failed: {e}") from e
+            if int(status_code) not in expected_status:
+                error_msg = payload or ""
+                try:
+                    error_data = json_module.loads(error_msg)
+                    error_msg = error_data.get("fault_message", error_msg)
+                except Exception:
+                    pass
+                raise FirecrackerAPIError(
+                    f"API error: {error_msg}",
+                    status_code=int(status_code),
+                )
+            if payload is None:
+                return None
+            try:
+                decoded = json_module.loads(payload)
+                return decoded if isinstance(decoded, dict) else None
+            except Exception:
+                return None
+
         try:
             response = self.session.request(
                 method,
@@ -130,6 +185,16 @@ class FirecrackerClient:
             OperationTimeoutError: If socket doesn't become available.
         """
         start = time.time()
+        if _native_firecracker_available() and hasattr(_native, "_firecracker_wait_for_socket"):
+            try:
+                _native._firecracker_wait_for_socket(str(self.socket_path), timeout)
+                logger.debug("Socket ready via native Firecracker API: %s", self.socket_path)
+                return
+            except OSError as e:
+                if "timed out" in str(e):
+                    raise OperationTimeoutError("wait_for_socket", timeout) from e
+                logger.debug("Native Firecracker socket wait failed, falling back: %s", e)
+
         while time.time() - start < timeout:
             if self.socket_path.exists():
                 # Try a simple request to verify it's responsive
@@ -151,18 +216,7 @@ class FirecrackerClient:
         """
         import asyncio
 
-        start = time.time()
-        while time.time() - start < timeout:
-            if self.socket_path.exists():
-                try:
-                    await asyncio.to_thread(self._request, "GET", "/", expected_status=(200,))
-                    logger.debug("Socket ready (async): %s", self.socket_path)
-                    return
-                except Exception:
-                    pass
-            await asyncio.sleep(0.1)
-
-        raise OperationTimeoutError("wait_for_socket", timeout)
+        await asyncio.to_thread(self.wait_for_socket, timeout)
 
     def set_boot_source(
         self,

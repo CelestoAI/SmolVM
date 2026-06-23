@@ -41,6 +41,25 @@ pub fn create(name: &str, owner_uid: u32) -> Result<(), NetlinkError> {
     create_once(name, owner_uid)
 }
 
+/// Create, configure, and enable localhost routing for a TAP in one native call.
+pub fn prepare(
+    name: &str,
+    owner_uid: u32,
+    host_ip: &str,
+    prefix_len: u8,
+) -> Result<(), NetlinkError> {
+    crate::route::validate_tap_config(host_ip, prefix_len)?;
+
+    match create(name, owner_uid) {
+        Ok(()) | Err(NetlinkError::AlreadyExists) => {}
+        Err(error) => return Err(error),
+    }
+
+    crate::route::configure_tap(name, host_ip, prefix_len)?;
+    crate::sysctl::write_tap_route_localnet(name)?;
+    Ok(())
+}
+
 fn is_tunsetpersist_busy(error: &NetlinkError) -> bool {
     matches!(
         error,
@@ -167,5 +186,12 @@ mod tests {
         assert!(!is_tunsetpersist_busy(&owner_error));
         assert!(!is_tunsetpersist_busy(&generic_busy));
         assert!(!is_tunsetpersist_busy(&persist_other));
+    }
+
+    #[test]
+    fn validate_prepare_inputs_before_tap_creation() {
+        let error = prepare("tap0", 0, "not-an-ip", 32).unwrap_err();
+
+        assert!(error.to_string().contains("invalid host IP not-an-ip"));
     }
 }
