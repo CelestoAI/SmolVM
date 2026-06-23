@@ -166,7 +166,6 @@ def _build_browser_vm_config(
         port_forwards=port_forwards,
         workspace_mounts=browser_config.workspace_mounts,
         ssh_public_key=public_key.read_text().strip(),
-        comm_channel="ssh",
     )
     return config, resolved_ssh_key_path
 
@@ -377,7 +376,7 @@ class _BrowserSandbox:
         try:
             if self._vm.status in {VMState.CREATED, VMState.STOPPED}:
                 self._vm.start(boot_timeout=boot_timeout, on_progress=on_progress)
-            self._vm.wait_for_ssh(timeout=boot_timeout, on_progress=on_progress)
+            self._vm.wait_for_ready(timeout=boot_timeout)
 
             expects_browser = self._session_config.mode != "desktop"
             expects_display = self._session_config.mode in {"live", "desktop"}
@@ -513,18 +512,16 @@ class _BrowserSandbox:
         return webbrowser.open(self._info.live_url)
 
     def push_file(self, local_path: str | Path, guest_path: str) -> None:
-        """Upload a file into the guest using the sandbox SSH channel."""
+        """Upload a file into the guest using the sandbox control channel."""
         if self._vm is None:
             raise SmolVMError("Browser sandbox VM is unavailable.")
-        ssh = self._vm._ensure_ssh_for_env()
-        ssh.put_file(local_path, guest_path)
+        self._vm.upload_file(local_path, guest_path)
 
     def pull_file(self, guest_path: str, local_path: str | Path) -> Path:
-        """Download a file from the guest using the sandbox SSH channel."""
+        """Download a file from the guest using the sandbox control channel."""
         if self._vm is None:
             raise SmolVMError("Browser sandbox VM is unavailable.")
-        ssh = self._vm._ensure_ssh_for_env()
-        return ssh.get_file(guest_path, local_path)
+        return Path(self._vm.download_file(guest_path, local_path))
 
     def collect_artifacts(self) -> Path | None:
         """Collect guest logs/downloads/recordings into the local artifacts dir."""
@@ -559,8 +556,7 @@ class _BrowserSandbox:
             )
 
         archive_path = artifacts_dir / "guest-artifacts.tar.gz"
-        ssh = self._vm._ensure_ssh_for_env()
-        return ssh.get_file(remote_archive, archive_path)
+        return Path(self._vm.download_file(remote_archive, archive_path))
 
     def logs(self, tail: int = 100) -> str:
         """Return combined host/guest logs for the browser sandbox."""
@@ -642,15 +638,41 @@ class _BrowserSandbox:
         if self._vm is None:
             raise SmolVMError("Browser sandbox VM is unavailable.")
 
+        configured = self._configured_browser_host_port(guest_port)
+        if configured is not None and self._probe_local_port(configured):
+            return configured
+
         return self._vm.expose_local(guest_port=guest_port, guest_loopback=True)
 
     def _wait_for_guest_port(self, port: int, *, timeout: float) -> bool:
         if self._vm is None:
             raise SmolVMError("Browser sandbox VM is unavailable.")
 
+        wait_for_ports = getattr(self._vm._control_channel, "wait_for_ports", None)
+        if callable(wait_for_ports):
+            try:
+                wait_for_ports([port], timeout=timeout)
+                return True
+            except Exception:
+                pass
+
         command = f"/usr/local/bin/smolvm-browser-wait-port {port} {timeout}"
         result = self._vm.run(command, timeout=max(5, int(timeout) + 5))
         return result.ok
+
+    def _configured_browser_host_port(self, guest_port: int) -> int | None:
+        if self._vm is None:
+            return None
+        for forward in self._vm.info.config.port_forwards:
+            if forward.guest_port == guest_port and forward.host_address == "127.0.0.1":
+                return forward.host_port
+        return None
+
+    @staticmethod
+    def _probe_local_port(port: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.25)
+            return sock.connect_ex(("127.0.0.1", port)) == 0
 
     def _session_artifacts_dir(self, session_id: str) -> Path:
         return self._data_dir / "browser-sessions" / session_id

@@ -1572,9 +1572,13 @@ class SmolVM:
                     "the rootfs at build time.",
                     {"vm_id": self._vm_id},
                 )
-            ssh = self._ensure_ssh_for_env(timeout=boot_timeout)
-            injector = inject_env_vars_windows if self._is_windows_guest() else inject_env_vars
-            injected = injector(ssh, env_vars)
+            control_env = self._control_env_channel(timeout=boot_timeout)
+            if control_env is not None:
+                injected = sorted(control_env.set_managed_env(env_vars).keys())  # type: ignore[attr-defined]
+            else:
+                ssh = self._ensure_ssh_for_env(timeout=boot_timeout)
+                injector = inject_env_vars_windows if self._is_windows_guest() else inject_env_vars
+                injected = injector(ssh, env_vars)
             logger.info(
                 "VM %s: injected %d env var(s): %s",
                 self._vm_id,
@@ -1830,9 +1834,13 @@ class SmolVM:
         if not env_vars:
             return []
 
-        ssh = self._ensure_ssh_for_env()
         if self._is_windows_guest():
+            ssh = self._ensure_ssh_for_env()
             return inject_env_vars_windows(ssh, env_vars, merge=merge)
+        control_env = self._control_env_channel()
+        if control_env is not None:
+            return sorted(control_env.set_managed_env(env_vars, merge=merge).keys())  # type: ignore[attr-defined]
+        ssh = self._ensure_ssh_for_env()
         return inject_env_vars(ssh, env_vars, merge=merge)
 
     def unset_env_vars(self, keys: list[str]) -> dict[str, str]:
@@ -1847,16 +1855,26 @@ class SmolVM:
         if not keys:
             return {}
 
-        ssh = self._ensure_ssh_for_env()
         if self._is_windows_guest():
+            ssh = self._ensure_ssh_for_env()
             return remove_env_vars_windows(ssh, keys)
+        control_env = self._control_env_channel()
+        if control_env is not None:
+            before = control_env.list_managed_env()  # type: ignore[attr-defined]
+            control_env.unset_managed_env(keys)  # type: ignore[attr-defined]
+            return {key: before[key] for key in keys if key in before}
+        ssh = self._ensure_ssh_for_env()
         return remove_env_vars(ssh, keys)
 
     def list_env_vars(self) -> dict[str, str]:
         """Return SmolVM-managed environment variables for a running VM."""
-        ssh = self._ensure_ssh_for_env()
         if self._is_windows_guest():
+            ssh = self._ensure_ssh_for_env()
             return read_env_vars_windows(ssh)
+        control_env = self._control_env_channel()
+        if control_env is not None:
+            return control_env.list_managed_env()  # type: ignore[attr-defined]
+        ssh = self._ensure_ssh_for_env()
         return read_env_vars(ssh)
 
     def upload_file(
@@ -2495,9 +2513,13 @@ class SmolVM:
                     "Cannot inject environment variables: VM image does not support SSH.",
                     {"vm_id": self._vm_id},
                 )
-            ssh = await asyncio.to_thread(self._ensure_ssh_for_env, timeout=boot_timeout)
-            injector = inject_env_vars_windows if self._is_windows_guest() else inject_env_vars
-            await asyncio.to_thread(injector, ssh, env_vars)
+            control_env = await asyncio.to_thread(self._control_env_channel, timeout=boot_timeout)
+            if control_env is not None:
+                await asyncio.to_thread(control_env.set_managed_env, env_vars)
+            else:
+                ssh = await asyncio.to_thread(self._ensure_ssh_for_env, timeout=boot_timeout)
+                injector = inject_env_vars_windows if self._is_windows_guest() else inject_env_vars
+                await asyncio.to_thread(injector, ssh, env_vars)
 
         # Mount workspace directories after boot if configured.
         if self._info.config.workspace_mounts:
@@ -2888,6 +2910,26 @@ modprobe 9pnet_virtio""".strip()
             action="manage environment variables",
             timeout=timeout,
         )
+
+    def _control_env_channel(
+        self,
+        *,
+        timeout: float = _DEFAULT_RUN_READY_TIMEOUT,
+    ) -> CommChannel | None:
+        """Return a control channel with managed-env support for Linux guests."""
+        if self._is_windows_guest():
+            return None
+        try:
+            channel = self._ensure_control_for_operation(
+                action="manage environment variables",
+                timeout=timeout,
+            )
+        except Exception:
+            return None
+        supports = getattr(channel, "supports", None)
+        if callable(supports) and supports("env_managed", "env.managed") is True:
+            return channel
+        return None
 
     def _ensure_control_for_operation(
         self,

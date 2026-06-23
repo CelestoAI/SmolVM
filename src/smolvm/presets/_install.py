@@ -89,7 +89,14 @@ def apply_preset(
     injected_keys: list[str] = []
     if env_vars:
         notify(f"Forwarding {len(env_vars)} environment variable(s)...")
-        injected_keys = inject_env_vars(ssh, env_vars)
+        set_managed_env = getattr(ssh, "set_managed_env", None)
+        supports = getattr(ssh, "supports", None)
+        if callable(set_managed_env) and (
+            callable(supports) and supports("env_managed", "env.managed") is True
+        ):
+            injected_keys = sorted(set_managed_env(env_vars).keys())
+        else:
+            injected_keys = inject_env_vars(ssh, env_vars)
 
     # Setup phase (apt + Node toolchain) runs before install_script so
     # the user sees two distinct progress steps instead of one opaque
@@ -245,6 +252,16 @@ def _copy_dir(ssh: CommChannel, local: Path, guest_path: str) -> None:
     sshd would reject the key with "Bad owner or permissions". File
     modes (the 0o600 we care about for SSH keys) are untouched.
     """
+    put_directory = getattr(ssh, "put_directory", None)
+    supports = getattr(ssh, "supports", None)
+    if (
+        callable(put_directory)
+        and callable(supports)
+        and supports("dir_tar", "files.directory_tar") is True
+    ):
+        put_directory(local, guest_path)
+        return
+
     tmp_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tmp:

@@ -1459,8 +1459,7 @@ def _run_start(args: SimpleNamespace) -> int:
                 writable_mounts=args.writable_mounts,
             )
             vm.start(boot_timeout=args.boot_timeout)
-            vm.wait_for_ssh(timeout=args.boot_timeout)
-            ssh = vm._ensure_ssh_for_env()
+            ssh = _preset_control_channel(vm, timeout=args.boot_timeout)
             apply_summary = apply_preset(
                 ssh,
                 preset,
@@ -1602,7 +1601,7 @@ def _apply_preset_with_progress(
     _vm: SmolVM = vm  # type: ignore[assignment]
     _preset: Preset = preset  # type: ignore[assignment]
 
-    ssh = _vm._ensure_ssh_for_env()
+    ssh = _preset_control_channel(_vm)
 
     with Progress(
         SpinnerColumn(),
@@ -1625,6 +1624,22 @@ def _apply_preset_with_progress(
         progress.remove_task(task)
 
     return summary
+
+
+def _preset_control_channel(vm: object, *, timeout: float = 30.0) -> object:
+    """Return the fastest channel that can apply preset setup."""
+    from smolvm.facade import SmolVM
+
+    _vm: SmolVM = vm  # type: ignore[assignment]
+    try:
+        channel = _vm._ensure_control_for_operation(action="apply preset", timeout=timeout)
+        supports = getattr(channel, "supports", None)
+        if not callable(supports) or supports("file_raw", "dir_tar", "env_managed"):
+            return channel
+    except Exception:
+        pass
+    _vm.wait_for_ssh(timeout=timeout)
+    return _vm._ensure_ssh_for_env(timeout=timeout)
 
 
 def _render_vm_lifecycle_result(
