@@ -31,7 +31,11 @@ from typing import Any
 import pytest
 
 from smolvm.comm.base import CommChannel
-from smolvm.comm.rust_http_vsock_channel import ControlCapabilities, RustHttpVsockChannel
+from smolvm.comm.rust_http_vsock_channel import (
+    ControlCapabilities,
+    RustHttpVsockChannel,
+    _directory_to_tar,
+)
 from smolvm.exceptions import OperationTimeoutError, SmolVMError
 from smolvm.types import CommandResult
 
@@ -449,6 +453,25 @@ def test_legacy_directory_fallback_uses_guest_mktemp(tmp_path: Path) -> None:
     assert "trap" in commands[1]
     assert 'tar -xf "$remote_tmp"' in commands[1]
     assert commands[-1] == "rm -f -- /tmp/smolvm-dir.ABC123.tar"
+
+
+def test_directory_tar_strips_owner_metadata(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    private_key = source / "id_ed25519"
+    private_key.write_text("PRIVATE")
+    private_key.chmod(0o600)
+
+    data = _directory_to_tar(source)
+
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as archive:
+        members = archive.getmembers()
+
+    assert members
+    assert all(member.uid == 0 and member.gid == 0 for member in members)
+    assert all(member.uname == "" and member.gname == "" for member in members)
+    key_member = next(member for member in members if member.name == "id_ed25519")
+    assert key_member.mode & 0o777 == 0o600
 
 
 def test_legacy_directory_download_uses_guest_mktemp(tmp_path: Path) -> None:

@@ -143,6 +143,14 @@ def _directory_to_tar(source: Path) -> bytes:
     return buffer.getvalue()
 
 
+def _strip_tar_owner(info: tarfile.TarInfo) -> tarfile.TarInfo:
+    info.uid = 0
+    info.gid = 0
+    info.uname = ""
+    info.gname = ""
+    return info
+
+
 def _write_temp_tar(data: bytes) -> Path:
     fd, path = tempfile.mkstemp(prefix="smolvm-dir-", suffix=".tar")
     with os.fdopen(fd, "wb") as handle:
@@ -153,7 +161,7 @@ def _write_temp_tar(data: bytes) -> Path:
 def _add_tar_path(archive: tarfile.TarFile, path: Path, arcname: PurePosixPath) -> None:
     if path.is_symlink():
         return
-    archive.add(path, arcname=str(arcname), recursive=False)
+    archive.add(path, arcname=str(arcname), recursive=False, filter=_strip_tar_owner)
     if path.is_dir():
         for child in sorted(path.iterdir()):
             _add_tar_path(archive, child, arcname / child.name)
@@ -727,7 +735,9 @@ class RustHttpVsockChannel:
         try:
             return sorted(self.set_managed_env(env_vars, merge=merge))
         except SmolVMError as exc:
-            if self.supports("env_managed") and not _endpoint_missing(exc, "PUT", "/env"):
+            if self.supports("env_managed", "env.managed") and not _endpoint_missing(
+                exc, "PUT", "/env"
+            ):
                 raise
             from smolvm.env import inject_env_vars
 
@@ -741,7 +751,9 @@ class RustHttpVsockChannel:
             after = self.unset_managed_env(keys)
             return {key: before[key] for key in keys if key in before and key not in after}
         except SmolVMError as exc:
-            if self.supports("env_managed") and not _endpoint_missing(exc, "DELETE", "/env"):
+            if self.supports("env_managed", "env.managed") and not _endpoint_missing(
+                exc, "DELETE", "/env"
+            ):
                 raise
             from smolvm.env import remove_env_vars
 
@@ -751,7 +763,9 @@ class RustHttpVsockChannel:
         try:
             return self.list_managed_env()
         except SmolVMError as exc:
-            if self.supports("env_managed") and not _endpoint_missing(exc, "GET", "/env"):
+            if self.supports("env_managed", "env.managed") and not _endpoint_missing(
+                exc, "GET", "/env"
+            ):
                 raise
             from smolvm.env import read_env_vars
 

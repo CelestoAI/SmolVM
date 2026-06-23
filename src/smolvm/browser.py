@@ -687,13 +687,22 @@ class _BrowserSandbox:
         url = cdp_url.rstrip("/") + "/json/version"
         deadline = time.monotonic() + timeout
 
-        while time.monotonic() <= deadline:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             try:
-                request_timeout = min(1.0, max(0.1, deadline - time.monotonic()))
+                request_timeout = min(1.0, max(0.1, remaining))
                 with urllib.request.urlopen(url, timeout=request_timeout) as response:
-                    return 200 <= getattr(response, "status", 200) < 300
+                    if 200 <= getattr(response, "status", 200) < 300:
+                        return True
             except (OSError, urllib.error.URLError):
-                time.sleep(0.2)
+                pass
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.2, remaining))
 
         return False
 

@@ -347,7 +347,9 @@ class TestBrowserImageBuilder:
             helper_script = kwargs["extra_files"]["smolvm-browser-session"]
             assert "127.0.0.1:5900" in helper_script
             assert '"${mode}" = "desktop"' in helper_script
-            assert "--remote-debugging-address=0.0.0.0" in helper_script
+            assert "start_cdp_proxy" in helper_script
+            assert 'ThreadingServer(("0.0.0.0", listen_port)' in helper_script
+            assert "--remote-debugging-address=127.0.0.1" in helper_script
             kernel_path.touch()
             rootfs_path.touch()
 

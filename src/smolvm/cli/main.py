@@ -1634,7 +1634,14 @@ def _preset_control_channel(vm: object, *, timeout: float = 30.0) -> object:
     try:
         channel = _vm._ensure_control_for_operation(action="apply preset", timeout=timeout)
         supports = getattr(channel, "supports", None)
-        if not callable(supports) or supports("file_raw", "dir_tar", "env_managed"):
+        if not callable(supports) or supports(
+            "file_raw",
+            "files.stream",
+            "dir_tar",
+            "files.directory_tar",
+            "env_managed",
+            "env.managed",
+        ):
             return channel
     except Exception:
         # Control-channel setup is an optimization; SSH remains the supported fallback.

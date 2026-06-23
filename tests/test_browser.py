@@ -40,7 +40,8 @@ from smolvm.types import (
 
 
 class _CdpResponse:
-    status = 200
+    def __init__(self, status: int = 200) -> None:
+        self.status = status
 
     def __enter__(self) -> "_CdpResponse":
         return self
@@ -446,17 +447,19 @@ def test_browser_session_start_persists_ready_state(
 
 @patch("smolvm.browser.SmolVM")
 @patch("smolvm.browser._build_browser_vm_config")
+@patch("smolvm.browser._BrowserSandbox._probe_local_port", return_value=True)
 @patch("smolvm.browser.time.sleep")
 @patch("smolvm.browser.urllib.request.urlopen")
-def test_browser_sandbox_start_uses_expose_local_for_qemu_cdp(
+def test_browser_sandbox_start_uses_configured_qemu_cdp_forward(
     mock_urlopen: MagicMock,
     _mock_sleep: MagicMock,
+    mock_probe_local_port: MagicMock,
     mock_build_browser_vm_config: MagicMock,
     mock_vm_cls: MagicMock,
     sample_vm_config: VMConfig,
     tmp_path: Path,
 ) -> None:
-    """QEMU browser sandboxes should expose CDP through the localhost helper path."""
+    """QEMU browser sandboxes should reuse their preconfigured CDP host forward."""
     qemu_vm_config = sample_vm_config.model_copy(
         update={
             "backend": "qemu",
@@ -468,6 +471,7 @@ def test_browser_sandbox_start_uses_expose_local_for_qemu_cdp(
     vm = MagicMock()
     vm.vm_id = "browser-abc123"
     vm.status = VMState.CREATED
+    vm.info.config = qemu_vm_config
     vm.expose_local.return_value = 39222
 
     def _run_side_effect(command: str, timeout: int = 30, shell: str = "login") -> CommandResult:
@@ -482,7 +486,11 @@ def test_browser_sandbox_start_uses_expose_local_for_qemu_cdp(
 
     vm.run.side_effect = _run_side_effect
     mock_vm_cls.return_value = vm
-    mock_urlopen.side_effect = [ConnectionResetError("reset"), _CdpResponse()]
+    mock_urlopen.side_effect = [
+        ConnectionResetError("reset"),
+        _CdpResponse(status=503),
+        _CdpResponse(),
+    ]
 
     session = _BrowserSandbox(
         BrowserSessionConfig(session_id="browser-abc123", backend="qemu"),
@@ -491,9 +499,10 @@ def test_browser_sandbox_start_uses_expose_local_for_qemu_cdp(
 
     session.start()
 
-    assert session.cdp_url == "http://127.0.0.1:39222"
-    assert mock_urlopen.call_count == 2
-    vm.expose_local.assert_called_once_with(guest_port=9222, guest_loopback=True)
+    assert session.cdp_url == "http://127.0.0.1:39001"
+    assert mock_urlopen.call_count == 3
+    mock_probe_local_port.assert_called_once_with(39001)
+    vm.expose_local.assert_not_called()
     session.close()
 
 

@@ -930,6 +930,51 @@ preferences = {
 PY
 }
 
+start_cdp_proxy() {
+    listen_port="$1"
+    target_port="$2"
+
+    python3 - "$listen_port" "$target_port" >"${LOG_DIR}/cdp-proxy.log" 2>&1 <<'PY' &
+import select
+import socket
+import socketserver
+import sys
+
+listen_port = int(sys.argv[1])
+target_port = int(sys.argv[2])
+
+
+class ProxyHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        try:
+            upstream = socket.create_connection(("127.0.0.1", target_port), timeout=5.0)
+        except OSError:
+            return
+        with upstream:
+            sockets = [self.request, upstream]
+            while True:
+                readable, _, _ = select.select(sockets, [], [], 30.0)
+                if not readable:
+                    return
+                for source in readable:
+                    data = source.recv(65536)
+                    if not data:
+                        return
+                    target = upstream if source is self.request else self.request
+                    target.sendall(data)
+
+
+class ThreadingServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+with ThreadingServer(("0.0.0.0", listen_port), ProxyHandler) as server:
+    server.serve_forever()
+PY
+    echo $! >"${RUNTIME_DIR}/cdp-proxy.pid"
+}
+
 start_live_stack() {
     width="$1"
     height="$2"
@@ -970,6 +1015,7 @@ stop_session() {
     stop_pid_file "${RUNTIME_DIR}/x11vnc.pid"
     stop_pid_file "${RUNTIME_DIR}/openbox.pid"
     stop_pid_file "${RUNTIME_DIR}/xvfb.pid"
+    stop_pid_file "${RUNTIME_DIR}/cdp-proxy.pid"
     stop_pid_file "${RUNTIME_DIR}/chromium.pid"
 }
 
@@ -995,6 +1041,11 @@ start_session() {
     write_preferences "$profile_dir" "$download_dir"
     stop_session
 
+    browser_debug_port=$((debug_port + 1))
+    if [ "${mode}" != "desktop" ]; then
+        start_cdp_proxy "$debug_port" "$browser_debug_port"
+    fi
+
     if [ "${mode}" = "live" ] || [ "${mode}" = "desktop" ]; then
         start_live_stack "$width" "$height" "$live_port" "$record_video" "$artifacts_dir"
     fi
@@ -1019,8 +1070,8 @@ start_session() {
             --password-store=basic \
             --use-mock-keychain \
             --remote-allow-origins=* \
-            --remote-debugging-address=0.0.0.0 \
-            --remote-debugging-port="${debug_port}" \
+            --remote-debugging-address=127.0.0.1 \
+            --remote-debugging-port="${browser_debug_port}" \
             --user-data-dir="${profile_dir}" \
             --window-size="${width},${height}" \
             about:blank \
@@ -1038,8 +1089,8 @@ start_session() {
             --password-store=basic \
             --use-mock-keychain \
             --remote-allow-origins=* \
-            --remote-debugging-address=0.0.0.0 \
-            --remote-debugging-port="${debug_port}" \
+            --remote-debugging-address=127.0.0.1 \
+            --remote-debugging-port="${browser_debug_port}" \
             --user-data-dir="${profile_dir}" \
             --window-size="${width},${height}" \
             about:blank \
