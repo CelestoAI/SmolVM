@@ -31,7 +31,7 @@ on:
     inputs:
       release_tag:
         description: >-
-          Release tag to smoke-test (e.g. images-2026.06.14.0). Leave empty
+          Release tag to smoke-test (e.g. images-2026.06.23.0). Leave empty
           to use IMAGES_RELEASE_TAG from published.py.
         type: string
         default: ""
