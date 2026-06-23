@@ -137,9 +137,15 @@ def _parse_size_header(value: str, *, header: str, method: str, path: str) -> in
 
 def _directory_to_tar(source: Path) -> bytes:
     buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w", format=tarfile.USTAR_FORMAT) as archive:
-        for child in sorted(source.iterdir()):
-            _add_tar_path(archive, child, PurePosixPath(child.name))
+    try:
+        with tarfile.open(fileobj=buffer, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+            for child in sorted(source.iterdir()):
+                _add_tar_path(archive, child, PurePosixPath(child.name))
+    except (tarfile.TarError, ValueError) as exc:
+        raise SmolVMError(
+            "Directory cannot be uploaded because a file path is too long "
+            "for the portable tar format."
+        ) from exc
     return buffer.getvalue()
 
 

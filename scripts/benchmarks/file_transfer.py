@@ -279,7 +279,10 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"--{option.replace('_', '-')} must be > 0")
     if args.directory_files < 1:
         parser.error("--directory-files must be >= 1")
-    sizes = [parse_size(raw) for raw in args.sizes.split(",") if raw.strip()]
+    try:
+        sizes = [parse_size(raw) for raw in args.sizes.split(",") if raw.strip()]
+    except argparse.ArgumentTypeError as exc:
+        parser.error(f"invalid --sizes value {args.sizes!r}: {exc}")
     if not sizes:
         parser.error("--sizes must include at least one size")
 

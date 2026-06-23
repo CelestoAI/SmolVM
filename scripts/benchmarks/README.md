@@ -64,10 +64,13 @@ uv run python scripts/benchmarks/runtime_control.py --operations info,stop,start
 ```
 
 `artifacts.py` records metadata for local image and browser files.
-`disk_io.py` measures sparse disk copy and zstd decompression with native Rust
-helpers enabled and forced off. `file_transfer.py` starts one sandbox and times
-upload/download for several file sizes plus a directory tar round trip when the
-selected control channel supports it.
+`disk_io.py` measures sparse disk copy, which keeps long zero-filled regions
+from using real disk space, and zstd decompression, which expands files
+compressed with the zstd format, with native Rust helpers enabled and forced
+off. `file_transfer.py` starts one sandbox and times upload/download for several
+file sizes plus a directory tar round trip, meaning pack a folder into one tar
+archive, send it, and unpack or fetch it again, when the selected control
+channel supports it.
 `preset_start.py` times `smolvm <preset> start` and cleans up the sandbox unless
 `--keep` is set. `browser_ready.py` starts a browser sandbox, then polls the CDP
 endpoint, which is the local browser debugging URL, when it is available.

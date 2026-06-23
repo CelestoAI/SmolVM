@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import math
 import os
 import shutil
 import sys
@@ -83,7 +84,12 @@ def parse_size(raw: str) -> int:
         value = float(number)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f"invalid size {raw!r}") from exc
-    size = int(value * SIZE_SUFFIXES[suffix])
+    if not math.isfinite(value):
+        raise argparse.ArgumentTypeError(f"invalid size {raw!r}")
+    try:
+        size = int(value * SIZE_SUFFIXES[suffix])
+    except OverflowError as exc:
+        raise argparse.ArgumentTypeError(f"size is too large: {raw!r}") from exc
     if size < 1:
         raise argparse.ArgumentTypeError("size must be at least 1 byte")
     return size
@@ -216,6 +222,7 @@ def run_records(args: argparse.Namespace, sizes: list[int], operations: list[str
                                     target,
                                     chunk_size=args.chunk_size,
                                 )
+                            target_hash = sha256_file(target)
                             record.update(
                                 {
                                     "status": "ok",
@@ -223,8 +230,8 @@ def run_records(args: argparse.Namespace, sizes: list[int], operations: list[str
                                     "method": method,
                                     "target_bytes": target.stat().st_size,
                                     "target_allocated_bytes": allocated_bytes(target),
-                                    "target_sha256": sha256_file(target),
-                                    "sha256_match": sha256_file(target) == source_hash,
+                                    "target_sha256": target_hash,
+                                    "sha256_match": target_hash == source_hash,
                                 }
                             )
                             records.append(record)
