@@ -593,7 +593,13 @@ def _build_auto_config(
         vmm = vmm_by_backend[resolved_backend]
         arch = to_published_arch(platform.machine())
         resolved_vm_name = _resolve_vm_name(vm_name, prefix=name_prefix)
-        local_image = ensure_published_image("ubuntu", arch, vmm, "ubuntu")
+        local_image = ensure_published_image(
+            "ubuntu",
+            arch,
+            vmm,
+            "ubuntu",
+            on_download=on_download,
+        )
         base_rootfs_size_mib = _path_size_mib(local_image.rootfs_path)
         required_disk_size_mib = max(default_disk_size_mib, base_rootfs_size_mib)
         if disk_size_mib is None:

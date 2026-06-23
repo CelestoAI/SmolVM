@@ -335,10 +335,18 @@ class TestVMInit:
             name=f"ubuntu-{expected_vmm}", kernel_path=kernel, rootfs_path=rootfs
         )
 
-        config, _ = _build_auto_config(os="ubuntu", backend=backend)
+        def on_download(label: str, chunk: int, total: int | None) -> None:
+            pass
+
+        config, _ = _build_auto_config(
+            os="ubuntu",
+            backend=backend,
+            on_download=on_download,
+        )
 
         preset, _arch, vmm, os_ = mock_ensure_published.call_args.args
         assert (preset, vmm, os_) == ("ubuntu", expected_vmm, "ubuntu")
+        assert mock_ensure_published.call_args.kwargs["on_download"] is on_download
 
         assert config.backend == backend
         assert config.guest_os is GuestOS.UBUNTU

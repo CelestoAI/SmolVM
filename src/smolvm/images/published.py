@@ -37,6 +37,7 @@ is policy-free.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
@@ -439,6 +440,7 @@ def ensure_published_image(
     cache_dir: Path | None = None,
     manifest: dict[ManifestKey, PublishedImage] | None = None,
     version: str = __version__,
+    on_download: Callable[[str, int, int | None], None] | None = None,
 ) -> LocalImage:
     """Download (if needed) and return paths to a published preset image.
 
@@ -453,6 +455,8 @@ def ensure_published_image(
         cache_dir: Override the default cache directory (mainly for tests).
         manifest: Override the bundled manifest (mainly for tests).
         version: Override the CLI version used to compute the cache name.
+        on_download: Optional callback invoked as published image assets
+            are downloaded.
 
     Returns:
         :class:`LocalImage` with paths to the kernel and (decompressed)
@@ -468,7 +472,7 @@ def ensure_published_image(
     entry = lookup(preset, arch, vmm, os, manifest=manifest)
     source = to_image_source(entry, version=version)
     manager = ImageManager(cache_dir=cache_dir, registry={source.name: source})
-    local = manager.ensure_image(source.name)
+    local = manager.ensure_image(source.name, on_download=on_download)
 
     # Wire-format short-circuit: nothing to decompress.
     if not source.rootfs_filename.endswith(".zst"):

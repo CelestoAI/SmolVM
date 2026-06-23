@@ -391,6 +391,45 @@ class TestEnsurePublishedImage:
         assert local.rootfs_path.read_bytes() == b"fake-rootfs"
         assert mock_get.call_count == 2
 
+    @patch("smolvm.images.manager.requests.get")
+    def test_download_progress_callback_receives_asset_labels(
+        self,
+        mock_get: MagicMock,
+        tmp_path: Path,
+        sample_manifest: dict[ManifestKey, PublishedImage],
+    ) -> None:
+        """First-run published downloads should report visible asset progress."""
+        version = "0.0.13"
+        bodies = [b"fake-kernel", b"fake-rootfs"]
+        call = {"i": 0}
+
+        def factory(*_args: object, **_kwargs: object) -> MagicMock:
+            body = bodies[call["i"]]
+            call["i"] += 1
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            resp.headers.get.return_value = str(len(body))
+            resp.iter_content = lambda chunk_size, body=body: iter([body])
+            return resp
+
+        events: list[tuple[str, int, int | None]] = []
+        mock_get.side_effect = factory
+
+        ensure_published_image(
+            "codex",
+            "amd64",
+            "firecracker",
+            cache_dir=tmp_path,
+            manifest=sample_manifest,
+            version=version,
+            on_download=lambda label, chunk, total: events.append((label, chunk, total)),
+        )
+
+        assert events == [
+            ("kernel", len(b"fake-kernel"), len(b"fake-kernel")),
+            ("rootfs", len(b"fake-rootfs"), len(b"fake-rootfs")),
+        ]
+
     def test_unknown_tuple_raises_before_touching_filesystem(
         self,
         tmp_path: Path,

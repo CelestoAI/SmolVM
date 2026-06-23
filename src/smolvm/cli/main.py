@@ -770,6 +770,7 @@ def _build_and_boot_with_progress(
     console: object,
     build_fn: object,
     boot_timeout: int,
+    prepare_message: str = "Preparing sandbox image...",
     comm_channel: str | None = None,
     wait_for_control_channel: bool = False,
     mounts: list[str] | None = None,
@@ -807,7 +808,9 @@ def _build_and_boot_with_progress(
                 download_tasks[label] = progress.add_task(f"Downloading {label}", total=total)
             progress.update(download_tasks[label], advance=chunk)
 
+        prepare_task = progress.add_task(prepare_message, total=None)
         config, ssh_key_path = _build_fn(on_download)
+        progress.remove_task(prepare_task)
 
         # One task that re-labels as the boot pipeline progresses
         # (boot → ready → workspace mount when --mount is set).
@@ -945,6 +948,7 @@ def _run_create(args: SimpleNamespace) -> int:
                         vm_name=args.name,
                     ),
                     boot_timeout=args.boot_timeout,
+                    prepare_message=_create_progress_message(resolved_backend, resolved_guest_os),
                     comm_channel=args.comm_channel,
                     wait_for_control_channel=True,
                     mounts=args.mounts,
@@ -990,6 +994,7 @@ def _run_create(args: SimpleNamespace) -> int:
                         on_download=on_download,
                     ),
                     boot_timeout=args.boot_timeout,
+                    prepare_message=_create_progress_message(resolved_backend, resolved_guest_os),
                     comm_channel=args.comm_channel,
                     wait_for_control_channel=True,
                     mounts=args.mounts,
@@ -1035,6 +1040,7 @@ def _run_create(args: SimpleNamespace) -> int:
                         on_download=on_download,
                     ),
                     boot_timeout=args.boot_timeout,
+                    prepare_message=_create_progress_message(resolved_backend, resolved_guest_os),
                     comm_channel=args.comm_channel,
                     wait_for_control_channel=True,
                     mounts=args.mounts,
