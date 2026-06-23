@@ -135,8 +135,10 @@ class FirecrackerClient:
                     try:
                         error_data = json_module.loads(error_msg)
                         error_msg = error_data.get("fault_message", error_msg)
-                    except Exception:
-                        pass
+                    except (TypeError, ValueError, json_module.JSONDecodeError) as exc:
+                        logger.debug(
+                            "Could not parse Firecracker error payload, using raw message: %s", exc
+                        )
                     raise FirecrackerAPIError(
                         f"API error: {error_msg}",
                         status_code=int(status_code),
