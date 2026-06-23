@@ -71,9 +71,10 @@ def test_preset_start_dry_run_json_plans_preset_start_and_cleanup(capsys) -> Non
     record = report["records"][0]
     assert record["start"]["command"][:3] == ["smolvm", "codex", "start"]
     assert "--no-attach" in record["start"]["command"]
-    assert record["start"]["command"][
-        record["start"]["command"].index("--comm-channel") + 1
-    ] == "vsock"
+    assert (
+        record["start"]["command"][record["start"]["command"].index("--comm-channel") + 1]
+        == "vsock"
+    )
     assert report["parameters"]["comm_channel"] == "vsock"
     assert record["cleanup"]["command"][:3] == ["smolvm", "sandbox", "delete"]
 
