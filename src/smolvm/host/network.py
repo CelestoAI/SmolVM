@@ -385,7 +385,9 @@ class NetworkManager:
                     _uid_for_user(user),
                     host_ip,
                     int(netmask),
+                    False,
                 )
+                self._write_sysctl(f"net/ipv4/conf/{tap_name}/route_localnet", "1")
                 return
             except OSError as e:
                 err = str(e)
@@ -424,7 +426,9 @@ class NetworkManager:
                     _uid_for_user(user),
                     host_ip,
                     int(netmask),
+                    False,
                 )
+                await self._async_write_sysctl(f"net/ipv4/conf/{tap_name}/route_localnet", "1")
                 return
             except OSError as e:
                 err = str(e)

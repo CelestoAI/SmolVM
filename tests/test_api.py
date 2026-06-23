@@ -124,6 +124,23 @@ def test_native_firecracker_request_path_is_used_when_available(tmp_path: Path) 
     client.session.request.assert_not_called()
 
 
+def test_native_firecracker_transport_error_falls_back_to_requests(tmp_path: Path) -> None:
+    """Native transport errors should fall through to requests-unixsocket."""
+    socket_path = tmp_path / "fc.sock"
+    socket_path.touch()
+    native = MagicMock()
+    native.has_native_firecracker_api.return_value = True
+    native._firecracker_request.side_effect = OSError("connection reset")
+    client = _client(tmp_path)
+    client.session.request.return_value = _Response(status_code=200, payload={"ok": True})
+
+    with patch("smolvm.api._native", native):
+        assert client._request("GET", "/", expected_status=(200,)) == {"ok": True}
+
+    native._firecracker_request.assert_called_once()
+    client.session.request.assert_called_once()
+
+
 def test_native_firecracker_request_can_be_disabled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -160,3 +177,20 @@ def test_native_firecracker_api_error_preserves_status_code(tmp_path: Path) -> N
     assert exc_info.value.status_code == 400
     assert "bad request" in str(exc_info.value)
     client.session.request.assert_not_called()
+
+
+def test_wait_for_socket_native_timeout_falls_back_to_polling(tmp_path: Path) -> None:
+    """Native socket wait timeout should still try the Python polling loop."""
+    socket_path = tmp_path / "fc.sock"
+    socket_path.touch()
+    native = MagicMock()
+    native.has_native_firecracker_api.return_value = True
+    native._firecracker_wait_for_socket.side_effect = OSError("timed out")
+    client = FirecrackerClient(socket_path)
+    client._request = MagicMock()
+
+    with patch("smolvm.api._native", native):
+        client.wait_for_socket(timeout=0.5)
+
+    native._firecracker_wait_for_socket.assert_called_once_with(str(socket_path), 0.5)
+    client._request.assert_called_once_with("GET", "/", expected_status=(200,))

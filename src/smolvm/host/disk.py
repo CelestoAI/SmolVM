@@ -58,17 +58,9 @@ def clone_or_sparse_copy(source_path: Path | str, target_path: Path | str) -> st
     _ensure_parent_dir(target)
 
     if _native_available():
-        try:
-            method = str(_native.clone_or_sparse_copy(str(source), str(target)))
-            shutil.copystat(source, target)
-            return f"native:{method}"
-        except OSError as exc:
-            logger.debug(
-                "Native disk copy failed for %s -> %s; falling back to Python: %s",
-                source,
-                target,
-                exc,
-            )
+        method = str(_native.clone_or_sparse_copy(str(source), str(target)))
+        shutil.copystat(source, target)
+        return f"native:{method}"
 
     return _python_clone_or_sparse_copy(source, target)
 
@@ -88,16 +80,8 @@ def decompress_zstd_sparse(
     _ensure_parent_dir(target)
 
     if _native_available():
-        try:
-            method = str(_native.decompress_zstd_sparse(str(source), str(target), chunk_size))
-            return f"native:{method}"
-        except OSError as exc:
-            logger.debug(
-                "Native zstd sparse decompress failed for %s -> %s; falling back to Python: %s",
-                source,
-                target,
-                exc,
-            )
+        method = str(_native.decompress_zstd_sparse(str(source), str(target), chunk_size))
+        return f"native:{method}"
 
     return _python_decompress_zstd_sparse(source, target, chunk_size=chunk_size)
 

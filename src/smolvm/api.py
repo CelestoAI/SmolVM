@@ -125,25 +125,29 @@ class FirecrackerClient:
                     10.0,
                 )
             except OSError as e:
-                raise FirecrackerAPIError(f"Request failed: {e}") from e
-            if int(status_code) not in expected_status:
-                error_msg = payload or ""
-                try:
-                    error_data = json_module.loads(error_msg)
-                    error_msg = error_data.get("fault_message", error_msg)
-                except Exception:
-                    pass
-                raise FirecrackerAPIError(
-                    f"API error: {error_msg}",
-                    status_code=int(status_code),
+                logger.debug(
+                    "Native Firecracker request failed, falling back to requests-unixsocket: %s",
+                    e,
                 )
-            if payload is None:
-                return None
-            try:
-                decoded = json_module.loads(payload)
-                return decoded if isinstance(decoded, dict) else None
-            except Exception:
-                return None
+            else:
+                if int(status_code) not in expected_status:
+                    error_msg = payload or ""
+                    try:
+                        error_data = json_module.loads(error_msg)
+                        error_msg = error_data.get("fault_message", error_msg)
+                    except Exception:
+                        pass
+                    raise FirecrackerAPIError(
+                        f"API error: {error_msg}",
+                        status_code=int(status_code),
+                    )
+                if payload is None:
+                    return None
+                try:
+                    decoded = json_module.loads(payload)
+                    return decoded if isinstance(decoded, dict) else None
+                except Exception:
+                    return None
 
         try:
             response = self.session.request(
@@ -191,8 +195,6 @@ class FirecrackerClient:
                 logger.debug("Socket ready via native Firecracker API: %s", self.socket_path)
                 return
             except OSError as e:
-                if "timed out" in str(e):
-                    raise OperationTimeoutError("wait_for_socket", timeout) from e
                 logger.debug("Native Firecracker socket wait failed, falling back: %s", e)
 
         while time.time() - start < timeout:

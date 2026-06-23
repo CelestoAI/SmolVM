@@ -267,16 +267,44 @@ class TestNativeTapManagement:
     def test_prepare_tap_uses_native_composite_helper(
         self, mock_native: MagicMock, mock_run_command: MagicMock
     ) -> None:
-        """Sync prepare should collapse create/configure/sysctl into one native call."""
+        """Sync prepare should leave route_localnet to the Python sysctl path."""
         with patch("smolvm.host.network.HAS_NETLINK", True):
             nm = NetworkManager()
             nm.prepare_tap("tap9", "__missing_user__", host_ip="172.16.0.1", netmask="32")
 
-        mock_native.prepare_tap.assert_called_once_with("tap9", os.getuid(), "172.16.0.1", 32)
+        mock_native.prepare_tap.assert_called_once_with(
+            "tap9", os.getuid(), "172.16.0.1", 32, False
+        )
         mock_native.create_tap.assert_not_called()
         mock_native.configure_tap.assert_not_called()
-        mock_native.write_sysctl.assert_not_called()
+        mock_native.write_sysctl.assert_called_once_with("net.ipv4.conf.tap9.route_localnet", "1")
         mock_run_command.assert_not_called()
+
+    @patch("smolvm.host.network.run_command", side_effect=SmolVMError("sysctl denied"))
+    @patch("smolvm.host.network.Path.write_text", side_effect=PermissionError)
+    @patch("smolvm.host.network.native")
+    def test_prepare_tap_route_localnet_uses_soft_sysctl_path(
+        self,
+        mock_native: MagicMock,
+        mock_write_text: MagicMock,
+        mock_run_command: MagicMock,
+    ) -> None:
+        """Native prepare sysctl failures should use the existing soft-failure path."""
+        mock_native.write_sysctl.side_effect = OSError("sysctl denied")
+
+        with patch("smolvm.host.network.HAS_NETLINK", True):
+            nm = NetworkManager()
+            nm.prepare_tap("tap9", "__missing_user__", host_ip="172.16.0.1", netmask="32")
+
+        mock_native.prepare_tap.assert_called_once_with(
+            "tap9", os.getuid(), "172.16.0.1", 32, False
+        )
+        mock_native.write_sysctl.assert_called_once_with("net.ipv4.conf.tap9.route_localnet", "1")
+        mock_write_text.assert_called_once_with("1")
+        mock_run_command.assert_called_once_with(
+            ["sysctl", "-w", "net.ipv4.conf.tap9.route_localnet=1"],
+            use_sudo=True,
+        )
 
     @patch("smolvm.host.network.native")
     def test_prepare_tap_falls_back_when_native_composite_missing(
@@ -334,17 +362,19 @@ class TestNativeTapManagement:
         mock_native: MagicMock,
         mock_async_run_command: AsyncMock,
     ) -> None:
-        """Async prepare should use one native helper through to_thread."""
+        """Async prepare should leave route_localnet to the Python sysctl path."""
         with patch("smolvm.host.network.HAS_NETLINK", True):
             nm = NetworkManager()
             await nm.async_prepare_tap(
                 "tap9", "__missing_user__", host_ip="172.16.0.1", netmask="32"
             )
 
-        mock_native.prepare_tap.assert_called_once_with("tap9", os.getuid(), "172.16.0.1", 32)
+        mock_native.prepare_tap.assert_called_once_with(
+            "tap9", os.getuid(), "172.16.0.1", 32, False
+        )
         mock_native.create_tap.assert_not_called()
         mock_native.configure_tap.assert_not_called()
-        mock_native.write_sysctl.assert_not_called()
+        mock_native.write_sysctl.assert_called_once_with("net.ipv4.conf.tap9.route_localnet", "1")
         mock_async_run_command.assert_not_called()
 
     @pytest.mark.asyncio
