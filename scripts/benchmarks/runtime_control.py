@@ -159,7 +159,7 @@ def run_iteration(
             if not args.dry_run and not step["ok"]:
                 break
 
-    cleanup_expected = not args.keep and should_run_operations
+    cleanup_expected = not args.keep
     record["cleanup_expected"] = cleanup_expected
     if cleanup_expected:
         record["cleanup"] = run_command(

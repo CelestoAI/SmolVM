@@ -128,8 +128,17 @@ def run_iteration(args: argparse.Namespace, iteration: int) -> dict[str, Any]:
             record["start_parse_error"] = str(exc)
 
     cdp_url = data.get("cdp_url")
-    if isinstance(cdp_url, str) and not args.no_cdp_poll:
-        record["cdp_probe"] = poll_cdp(cdp_url, timeout_s=args.cdp_timeout)
+    if not args.no_cdp_poll:
+        if isinstance(cdp_url, str) and cdp_url.strip():
+            record["cdp_probe"] = poll_cdp(cdp_url, timeout_s=args.cdp_timeout)
+        else:
+            record["cdp_probe"] = {
+                "url": cdp_url,
+                "ready": False,
+                "attempts": 0,
+                "duration_ms": 0.0,
+                "error": "browser start did not return a CDP URL",
+            }
 
     if not args.keep:
         record["cleanup"] = run_command(

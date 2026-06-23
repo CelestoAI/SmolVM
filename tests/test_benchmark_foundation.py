@@ -157,6 +157,61 @@ def test_browser_ready_attempts_cleanup_after_start_failure(monkeypatch, capsys)
     assert record["cleanup"]["label"] == "browser_stop"
 
 
+def test_browser_ready_fails_when_cdp_poll_has_no_url(monkeypatch, capsys) -> None:
+    def fake_run_command(plan: Any, *, dry_run: bool = False) -> dict[str, Any]:
+        if plan.label == "browser_start":
+            return {
+                "label": plan.label,
+                "ok": True,
+                "status": "ok",
+                "duration_ms": 1.0,
+                "dry_run": dry_run,
+                "stdout": json.dumps({"data": {"id": "browser-bench"}}),
+            }
+        return {
+            "label": plan.label,
+            "ok": True,
+            "status": "ok",
+            "duration_ms": 1.0,
+            "dry_run": dry_run,
+        }
+
+    monkeypatch.setattr(browser_ready, "run_command", fake_run_command)
+
+    rc = browser_ready.main(["--json", "--session-id", "browser-bench"])
+
+    assert rc == 1
+    report = json.loads(capsys.readouterr().out)
+    probe = report["records"][0]["cdp_probe"]
+    assert probe["ready"] is False
+    assert probe["attempts"] == 0
+
+
+def test_runtime_control_attempts_cleanup_after_create_failure(monkeypatch, capsys) -> None:
+    calls: list[str] = []
+
+    def fake_run_command(plan: Any, *, dry_run: bool = False) -> dict[str, Any]:
+        calls.append(plan.label)
+        return {
+            "label": plan.label,
+            "ok": False,
+            "status": "failed",
+            "duration_ms": 1.0,
+            "dry_run": dry_run,
+        }
+
+    monkeypatch.setattr(runtime_control, "run_command", fake_run_command)
+
+    rc = runtime_control.main(["--json", "--iterations", "1"])
+
+    assert rc == 1
+    report = json.loads(capsys.readouterr().out)
+    record = report["records"][0]
+    assert calls == ["sandbox_create", "sandbox_delete"]
+    assert record["cleanup_expected"] is True
+    assert record["cleanup"]["label"] == "sandbox_delete"
+
+
 def test_expected_cleanup_failure_marks_records_failed() -> None:
     cleanup_failed = {"ok": False}
 

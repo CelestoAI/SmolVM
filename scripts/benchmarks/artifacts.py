@@ -56,8 +56,19 @@ def inspect_path(
         record["status"] = "missing"
         return record
 
-    if path.is_file():
-        stat = path.stat()
+    try:
+        is_file = path.is_file()
+        is_dir = path.is_dir()
+    except OSError as exc:
+        record.update({"status": "error", "error": str(exc)})
+        return record
+
+    if is_file:
+        try:
+            stat = path.stat()
+        except OSError as exc:
+            record.update({"status": "error", "kind": "file", "error": str(exc)})
+            return record
         record.update(
             {
                 "status": "ok",
@@ -70,7 +81,7 @@ def inspect_path(
             record.update(_hash_file(path, max_hash_bytes=max_hash_bytes))
         return record
 
-    if not path.is_dir():
+    if not is_dir:
         record.update({"status": "skipped", "kind": "other"})
         return record
 
@@ -200,14 +211,20 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _hash_file(path: Path, *, max_hash_bytes: int) -> dict[str, Any]:
-    size = path.stat().st_size
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        return {"sha256": None, "hash_error": str(exc)}
     if size > max_hash_bytes:
         return {"sha256": None, "hash_skipped": "file exceeds --max-hash-mib"}
 
     hasher = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            hasher.update(chunk)
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                hasher.update(chunk)
+    except OSError as exc:
+        return {"sha256": None, "hash_error": str(exc)}
     return {"sha256": hasher.hexdigest(), "hash_skipped": None}
 
 
