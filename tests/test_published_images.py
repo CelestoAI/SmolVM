@@ -932,3 +932,22 @@ class TestDecompressZstd:
         # Neither the destination nor the .tmp sibling should remain.
         assert not dst.exists()
         assert not (dst.parent / (dst.name + ".tmp")).exists()
+
+    def test_native_decode_error_matches_zstandard_contract(self, tmp_path: Path) -> None:
+        """Rust zstd decode failures should match the Python decompressor API."""
+        import zstandard
+
+        src = tmp_path / "corrupt.ext4.zst"
+        dst = tmp_path / "corrupt.ext4"
+        (dst.parent / (dst.name + ".tmp")).write_bytes(b"partial")
+
+        with (
+            patch(
+                "smolvm.host.disk.decompress_zstd_sparse",
+                side_effect=OSError("Unknown frame descriptor"),
+            ),
+            pytest.raises(zstandard.ZstdError, match="Unknown frame descriptor"),
+        ):
+            _decompress_zstd(src, dst)
+
+        assert not (dst.parent / (dst.name + ".tmp")).exists()

@@ -396,7 +396,21 @@ def _decompress_zstd(src: Path, dst: Path) -> None:
     """
     from smolvm.host.disk import decompress_zstd_sparse
 
-    decompress_zstd_sparse(src, dst, chunk_size=_SPARSE_DECOMPRESS_CHUNK_SIZE)
+    try:
+        decompress_zstd_sparse(src, dst, chunk_size=_SPARSE_DECOMPRESS_CHUNK_SIZE)
+    except OSError as exc:
+        (dst.parent / (dst.name + ".tmp")).unlink(missing_ok=True)
+        if _looks_like_zstd_decode_error(exc):
+            import zstandard
+
+            raise zstandard.ZstdError(str(exc)) from exc
+        raise
+
+
+def _looks_like_zstd_decode_error(error: OSError) -> bool:
+    message = str(error).lower()
+    markers = ("zstd", "frame", "checksum", "corrupt")
+    return any(marker in message for marker in markers)
 
 
 def ensure_published_image(
