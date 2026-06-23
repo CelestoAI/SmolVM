@@ -233,6 +233,24 @@ def test_guest_agent_binary_honors_env_override(
     assert builder_mod._guest_agent_binary() == binary
 
 
+def test_guest_agent_binary_rejects_dynamic_env_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binary = tmp_path / "dynamic-agent"
+    binary.write_bytes(b"\x7fELF" + b"\0" * 128 + b"/lib64/ld-linux-x86-64.so.2")
+    monkeypatch.setenv("SMOLVM_GUEST_AGENT_BINARY", str(binary))
+    monkeypatch.setattr(builder_mod.platform, "machine", lambda: "x86_64")
+
+    with pytest.raises(ImageError) as exc_info:
+        builder_mod._guest_agent_binary()
+
+    message = str(exc_info.value)
+    assert "dynamically linked Linux binary" in message
+    assert "cargo build --release --target x86_64-unknown-linux-musl" in message
+    assert "target/x86_64-unknown-linux-musl/release/smolvm-guest-agent" in message
+
+
 def test_guest_agent_binary_downloads_release_without_source_checkout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

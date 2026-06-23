@@ -171,7 +171,29 @@ def _configured_guest_agent_binary() -> Path | None:
             "run `unset SMOLVM_GUEST_AGENT_BINARY` and retry to use the published "
             "SmolVM guest agent binary."
         )
+    if _guest_agent_binary_uses_dynamic_loader(path):
+        target = _guest_agent_target_triple()
+        raise ImageError(
+            "SMOLVM_GUEST_AGENT_BINARY points to a dynamically linked Linux binary, "
+            "which cannot run in SmolVM's minimal guest image; run "
+            f"`cargo build --release --target {target} -p smolvm-guest-agent`, "
+            f"then set SMOLVM_GUEST_AGENT_BINARY to `target/{target}/release/smolvm-guest-agent`."
+        )
     return path
+
+
+def _guest_agent_binary_uses_dynamic_loader(path: Path) -> bool:
+    """Return whether an ELF binary requests a host-style dynamic loader."""
+    data = path.read_bytes()
+    if not data.startswith(b"\x7fELF"):
+        return False
+    dynamic_loaders = (
+        b"/lib64/ld-linux",
+        b"/lib/ld-linux",
+        b"/lib/ld-musl",
+        b"/lib/ld64",
+    )
+    return any(loader in data for loader in dynamic_loaders)
 
 
 def _guest_agent_release_asset() -> tuple[str, str, str]:
