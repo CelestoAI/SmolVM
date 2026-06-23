@@ -32,9 +32,7 @@ pub fn request(
     stream.write_all(request.as_bytes())?;
     stream.shutdown(std::net::Shutdown::Write).ok();
 
-    let mut response = Vec::new();
-    stream.read_to_end(&mut response)?;
-    let (status, payload) = parse_response(&response)?;
+    let (status, payload) = read_response(&mut stream)?;
     if status == 204 || payload.is_empty() {
         Ok((status, None))
     } else {
@@ -59,12 +57,31 @@ pub fn wait_for_socket(socket_path: &str, timeout_secs: f64) -> Result<(), Firec
     ))
 }
 
-fn parse_response(response: &[u8]) -> Result<(u16, Vec<u8>), FirecrackerError> {
+fn read_response(reader: &mut impl Read) -> Result<(u16, Vec<u8>), FirecrackerError> {
     let marker = b"\r\n\r\n";
-    let split = response
-        .windows(marker.len())
-        .position(|window| window == marker)
-        .ok_or_else(|| FirecrackerError::Other("malformed HTTP response".to_string()))?;
+    let mut response = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    let split = loop {
+        if let Some(split) = response
+            .windows(marker.len())
+            .position(|window| window == marker)
+        {
+            break split;
+        }
+        let read = reader.read(&mut chunk)?;
+        if read == 0 {
+            return Err(FirecrackerError::Other(
+                "malformed HTTP response".to_string(),
+            ));
+        }
+        response.extend_from_slice(&chunk[..read]);
+        if response.len() > 64 * 1024 {
+            return Err(FirecrackerError::Other(
+                "HTTP response headers are too large".to_string(),
+            ));
+        }
+    };
+
     let headers = String::from_utf8_lossy(&response[..split]);
     let status_line = headers
         .lines()
@@ -76,7 +93,35 @@ fn parse_response(response: &[u8]) -> Result<(u16, Vec<u8>), FirecrackerError> {
         .ok_or_else(|| FirecrackerError::Other("missing HTTP status code".to_string()))?
         .parse::<u16>()
         .map_err(|error| FirecrackerError::Other(format!("invalid HTTP status: {error}")))?;
-    Ok((status, response[split + marker.len()..].to_vec()))
+    let content_length = parse_content_length(&headers)?;
+    let mut payload = response[split + marker.len()..].to_vec();
+    if let Some(content_length) = content_length {
+        if payload.len() > content_length {
+            payload.truncate(content_length);
+        } else {
+            let remaining = content_length - payload.len();
+            if remaining > 0 {
+                let start = payload.len();
+                payload.resize(content_length, 0);
+                reader.read_exact(&mut payload[start..])?;
+            }
+        }
+    }
+    Ok((status, payload))
+}
+
+fn parse_content_length(headers: &str) -> Result<Option<usize>, FirecrackerError> {
+    for line in headers.lines().skip(1) {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("content-length") {
+            return value.trim().parse::<usize>().map(Some).map_err(|error| {
+                FirecrackerError::Other(format!("invalid Content-Length: {error}"))
+            });
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -86,7 +131,7 @@ mod tests {
     #[test]
     fn parses_status_and_payload() {
         let response = b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n{\"ok\":true}";
-        let (status, payload) = parse_response(response).unwrap();
+        let (status, payload) = read_response(&mut &response[..]).unwrap();
 
         assert_eq!(status, 200);
         assert_eq!(payload, br#"{"ok":true}"#);
@@ -96,9 +141,19 @@ mod tests {
     fn extracts_fault_message() {
         let response =
             b"HTTP/1.1 400 Bad Request\r\nContent-Length: 31\r\n\r\n{\"fault_message\":\"bad request\"}";
-        let (status, payload) = parse_response(response).unwrap();
+        let (status, payload) = read_response(&mut &response[..]).unwrap();
 
         assert_eq!(status, 400);
         assert_eq!(payload, br#"{"fault_message":"bad request"}"#);
+    }
+
+    #[test]
+    fn reads_only_declared_payload() {
+        let response =
+            b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: keep-alive\r\n\r\n{\"ok\":true}extra";
+        let (status, payload) = read_response(&mut &response[..]).unwrap();
+
+        assert_eq!(status, 200);
+        assert_eq!(payload, br#"{"ok":true}"#);
     }
 }

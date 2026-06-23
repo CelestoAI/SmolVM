@@ -194,3 +194,20 @@ def test_wait_for_socket_native_timeout_falls_back_to_polling(tmp_path: Path) ->
 
     native._firecracker_wait_for_socket.assert_called_once_with(str(socket_path), 0.5)
     client._request.assert_called_once_with("GET", "/", expected_status=(200,))
+
+
+def test_wait_for_socket_caps_native_probe_before_polling(tmp_path: Path) -> None:
+    """A native wait failure should not consume the full boot timeout."""
+    socket_path = tmp_path / "fc.sock"
+    socket_path.touch()
+    native = MagicMock()
+    native.has_native_firecracker_api.return_value = True
+    native._firecracker_wait_for_socket.side_effect = OSError("timed out")
+    client = FirecrackerClient(socket_path)
+    client._request = MagicMock()
+
+    with patch("smolvm.api._native", native):
+        client.wait_for_socket(timeout=180.0)
+
+    native._firecracker_wait_for_socket.assert_called_once_with(str(socket_path), 1.0)
+    client._request.assert_called_once_with("GET", "/", expected_status=(200,))

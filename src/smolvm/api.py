@@ -193,7 +193,7 @@ class FirecrackerClient:
         start = time.time()
         if _native_firecracker_available() and hasattr(_native, "_firecracker_wait_for_socket"):
             try:
-                _native._firecracker_wait_for_socket(str(self.socket_path), timeout)
+                _native._firecracker_wait_for_socket(str(self.socket_path), min(timeout, 1.0))
                 logger.debug("Socket ready via native Firecracker API: %s", self.socket_path)
                 return
             except OSError as e:
