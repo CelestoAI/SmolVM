@@ -7,6 +7,9 @@ import logging
 import platform
 import shlex
 import socket
+import time
+import urllib.error
+import urllib.request
 import uuid
 import webbrowser
 from collections.abc import Callable
@@ -403,6 +406,11 @@ class _BrowserSandbox:
                     )
                 debug_host_port = self._resolve_browser_host_port(_BROWSER_DEBUG_PORT)
                 cdp_url = f"http://127.0.0.1:{debug_host_port}"
+                if not self._wait_for_cdp_http(cdp_url, timeout=boot_timeout):
+                    raise SmolVMError(
+                        f"Browser sandbox '{self.session_id}' did not expose "
+                        "a ready CDP endpoint in time."
+                    )
 
             live_url: str | None = None
             vnc_url: str | None = None
@@ -673,6 +681,21 @@ class _BrowserSandbox:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.settimeout(0.25)
             return sock.connect_ex(("127.0.0.1", port)) == 0
+
+    @staticmethod
+    def _wait_for_cdp_http(cdp_url: str, *, timeout: float) -> bool:
+        url = cdp_url.rstrip("/") + "/json/version"
+        deadline = time.monotonic() + timeout
+
+        while time.monotonic() <= deadline:
+            try:
+                request_timeout = min(1.0, max(0.1, deadline - time.monotonic()))
+                with urllib.request.urlopen(url, timeout=request_timeout) as response:
+                    return 200 <= getattr(response, "status", 200) < 300
+            except (OSError, urllib.error.URLError):
+                time.sleep(0.2)
+
+        return False
 
     def _session_artifacts_dir(self, session_id: str) -> Path:
         return self._data_dir / "browser-sessions" / session_id

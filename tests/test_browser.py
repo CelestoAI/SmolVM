@@ -39,6 +39,16 @@ from smolvm.types import (
 )
 
 
+class _CdpResponse:
+    status = 200
+
+    def __enter__(self) -> "_CdpResponse":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+
 @pytest.fixture
 def sample_vm_config(tmp_path: Path) -> VMConfig:
     """Create a sample VMConfig for browser session tests."""
@@ -376,7 +386,9 @@ def test_build_browser_vm_config_passes_pubkey_to_vmconfig(
 
 @patch("smolvm.browser.SmolVM")
 @patch("smolvm.browser._build_browser_vm_config")
+@patch("smolvm.browser.urllib.request.urlopen", return_value=_CdpResponse())
 def test_browser_session_start_persists_ready_state(
+    mock_urlopen: MagicMock,
     mock_build_browser_vm_config: MagicMock,
     mock_vm_cls: MagicMock,
     sample_vm_config: VMConfig,
@@ -420,6 +432,7 @@ def test_browser_session_start_persists_ready_state(
     assert session.status == BrowserSessionState.READY
     assert session.cdp_url == "http://127.0.0.1:39222"
     assert session.browser_cdp_url == "http://127.0.0.1:39222"
+    mock_urlopen.assert_called_once()
     assert session.viewer_url == "http://127.0.0.1:36080/vnc.html?autoconnect=1&resize=scale"
     assert session.display_url == "vnc://127.0.0.1:35900"
     assert session.vm is vm
@@ -433,7 +446,11 @@ def test_browser_session_start_persists_ready_state(
 
 @patch("smolvm.browser.SmolVM")
 @patch("smolvm.browser._build_browser_vm_config")
+@patch("smolvm.browser.time.sleep")
+@patch("smolvm.browser.urllib.request.urlopen")
 def test_browser_sandbox_start_uses_expose_local_for_qemu_cdp(
+    mock_urlopen: MagicMock,
+    _mock_sleep: MagicMock,
     mock_build_browser_vm_config: MagicMock,
     mock_vm_cls: MagicMock,
     sample_vm_config: VMConfig,
@@ -465,6 +482,7 @@ def test_browser_sandbox_start_uses_expose_local_for_qemu_cdp(
 
     vm.run.side_effect = _run_side_effect
     mock_vm_cls.return_value = vm
+    mock_urlopen.side_effect = [ConnectionResetError("reset"), _CdpResponse()]
 
     session = _BrowserSandbox(
         BrowserSessionConfig(session_id="browser-abc123", backend="qemu"),
@@ -474,6 +492,7 @@ def test_browser_sandbox_start_uses_expose_local_for_qemu_cdp(
     session.start()
 
     assert session.cdp_url == "http://127.0.0.1:39222"
+    assert mock_urlopen.call_count == 2
     vm.expose_local.assert_called_once_with(guest_port=9222, guest_loopback=True)
     session.close()
 
