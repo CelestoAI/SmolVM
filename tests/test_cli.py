@@ -1872,6 +1872,35 @@ class TestCliShell:
         vm.close.assert_called_once()
 
     @patch("smolvm.facade.SmolVM")
+    def test_shell_rejects_unsupported_vm_before_starting(
+        self,
+        mock_vm_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        from smolvm.exceptions import SmolVMError
+
+        vm = MagicMock()
+        vm.status = VMState.STOPPED
+        vm.ensure_shell_supported.side_effect = SmolVMError(
+            "Sandbox 'vm001' cannot use 'smolvm sandbox shell'; "
+            "run 'smolvm sandbox ssh vm001' to open an SSH shell."
+        )
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(["sandbox", "shell", "vm001"])
+
+        assert ret == 1
+        vm.start.assert_not_called()
+        vm.resume.assert_not_called()
+        vm.wait_for_shell.assert_not_called()
+        vm.wait_for_ssh.assert_not_called()
+        vm.attach_shell.assert_not_called()
+        vm.close.assert_called_once()
+        err = capsys.readouterr().err
+        assert "sandbox ssh vm001" in err
+        assert "vm001" in err
+
+    @patch("smolvm.facade.SmolVM")
     def test_shell_resumes_paused_vm(self, mock_vm_cls: MagicMock) -> None:
         vm = MagicMock()
         vm.status = VMState.PAUSED

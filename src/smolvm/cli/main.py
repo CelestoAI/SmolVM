@@ -2344,6 +2344,7 @@ def _run_shell(args: SimpleNamespace) -> int:
     command_name = getattr(args, "command_name", "sandbox.shell")
     try:
         vm = SmolVM.from_id(args.vm_id)
+        vm.ensure_shell_supported()
 
         console = console_stdout()
         if vm.status in {VMState.CREATED, VMState.STOPPED}:

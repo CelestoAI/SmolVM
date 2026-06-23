@@ -2169,14 +2169,22 @@ class SmolVM:
             public_host=public_host,
         )
 
-    def _ensure_shell_control(self, *, timeout: float) -> CommChannel:
+    def _ensure_shell_supported(self) -> None:
         self._refresh_info()
         if self._resolve_channel().kind != "vsock":
             raise SmolVMError(
-                f"Fast shell is not available for sandbox '{self._vm_id}'; "
-                f"run 'smolvm sandbox ssh {self._vm_id}' to use SSH.",
+                f"Sandbox '{self._vm_id}' cannot use 'smolvm sandbox shell'; "
+                f"run 'smolvm sandbox ssh {self._vm_id}' to open an SSH shell.",
                 {"vm_id": self._vm_id},
             )
+
+    def ensure_shell_supported(self) -> SmolVM:
+        """Verify that this sandbox can use ``smolvm sandbox shell``."""
+        self._ensure_shell_supported()
+        return self
+
+    def _ensure_shell_control(self, *, timeout: float) -> CommChannel:
+        self._ensure_shell_supported()
         channel = self._ensure_control_for_operation(action="open a shell", timeout=timeout)
         attach_terminal = getattr(channel, "attach_terminal", None)
         if not callable(attach_terminal):
