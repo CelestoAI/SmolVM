@@ -1947,8 +1947,8 @@ class TestCliShell:
         vm = MagicMock()
         vm.wait_for_shell.side_effect = SmolVMError("fast shell access is unavailable")
         vm._ssh_attach_command.return_value = ["ssh", "vm001"]
-        mock_run.side_effect = lambda *_args, **_kwargs: events.append("run") or SimpleNamespace(
-            returncode=0
+        mock_run.side_effect = lambda *_args, **_kwargs: (
+            events.append("run") or SimpleNamespace(returncode=0)
         )
 
         ret = _attach_shell_or_ssh(
