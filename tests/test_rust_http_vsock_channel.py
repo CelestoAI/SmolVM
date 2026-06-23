@@ -554,6 +554,18 @@ def test_wait_for_ports_preserves_guest_validation_errors() -> None:
         channel.wait_for_ports([3000])
 
 
+def test_wait_for_ports_preserves_guest_timeout_validation_errors() -> None:
+    def _ports(method: str, path: str, body: bytes) -> dict:
+        assert method == "POST"
+        assert path == "/ports/wait"
+        return {"ok": False, "error": "timeout_ms must be at most 300000"}
+
+    channel = FakeRustChannel([_ports])
+
+    with pytest.raises(SmolVMError, match="timeout_ms must be at most"):
+        channel.wait_for_ports([3000])
+
+
 def _capabilities(features: dict[str, bool], *, limits: dict[str, Any] | None = None) -> Handler:
     def _handler(method: str, path: str, body: bytes) -> dict:
         assert method == "GET"

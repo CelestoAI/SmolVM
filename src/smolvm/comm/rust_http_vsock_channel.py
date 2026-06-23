@@ -789,7 +789,7 @@ class RustHttpVsockChannel:
         )
         if not resp.get("ok"):
             error = str(resp.get("error") or "")
-            if error and "timed out" not in error.lower() and "timeout" not in error.lower():
+            if error and "timed out" not in error.lower():
                 raise SmolVMError(f"guest agent error during port wait: {error}")
             raise OperationTimeoutError(
                 f"waiting for guest ports {', '.join(map(str, ports))}", timeout
