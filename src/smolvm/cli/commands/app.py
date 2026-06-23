@@ -905,6 +905,7 @@ def _register_preset_commands() -> None:
             @click.option("--writable-mounts", is_flag=True)
             @click.option("--install-timeout", type=positive_float_type(), default=600.0)
             @click.option("--attach/--no-attach", default=None)
+            @comm_channel_option
             @boot_timeout_option
             @json_option
             def start(
@@ -918,6 +919,7 @@ def _register_preset_commands() -> None:
                 writable_mounts: bool,
                 install_timeout: float,
                 attach: bool | None,
+                comm_channel: str | None,
                 boot_timeout: float,
                 json_output: bool,
             ) -> Any:
@@ -936,6 +938,7 @@ def _register_preset_commands() -> None:
                         writable_mounts=writable_mounts,
                         install_timeout=install_timeout,
                         attach=attach,
+                        comm_channel=comm_channel,
                         boot_timeout=boot_timeout,
                         json=json_output,
                     )

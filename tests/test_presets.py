@@ -643,8 +643,10 @@ class TestApplyPreset:
         assert summary["injected_env_keys"] == ["MY_KEY"]
         assert summary["copied_configs"] == []
         # install command was run
-        commands_run = [call.args[0] for call in ssh.run.call_args_list]
-        assert any("true" in cmd for cmd in commands_run)
+        assert any(
+            call.args == ("bash -lc true",) and call.kwargs["shell"] == "raw"
+            for call in ssh.run.call_args_list
+        )
 
     def test_skips_missing_optional_config(
         self,

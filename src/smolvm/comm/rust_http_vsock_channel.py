@@ -236,6 +236,7 @@ class _SocketHTTPConnection(http.client.HTTPConnection):
 
     def connect(self) -> None:
         self.sock = self._open_socket()
+        self.sock.settimeout(self.timeout)
 
 
 class RustHttpVsockChannel:

@@ -139,7 +139,8 @@ def _run_install_phase(
     *phase* tags the SmolVMError context (``"setup"`` or ``"install"``) so
     JSON consumers can tell which step failed without parsing the message.
     """
-    result = ssh.run(script, timeout=install_timeout)
+    command = f"bash -lc {shlex.quote(script)}"
+    result = ssh.run(command, timeout=install_timeout, shell="raw")
     if not result.ok:
         stderr_tail = (result.stderr or "").strip().splitlines()[-20:]
         raise SmolVMError(

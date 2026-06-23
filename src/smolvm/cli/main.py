@@ -1432,6 +1432,8 @@ def _run_start(args: SimpleNamespace) -> int:
                     on_download=on_download,
                 ),
                 boot_timeout=args.boot_timeout,
+                comm_channel=getattr(args, "comm_channel", None),
+                wait_for_control_channel=True,
                 mounts=args.mounts,
                 writable_mounts=args.writable_mounts,
             )
@@ -1457,6 +1459,11 @@ def _run_start(args: SimpleNamespace) -> int:
                 ssh_key_path=ssh_key_path,
                 mounts=args.mounts,
                 writable_mounts=args.writable_mounts,
+                **(
+                    {"comm_channel": args.comm_channel}
+                    if getattr(args, "comm_channel", None) is not None
+                    else {}
+                ),
             )
             vm.start(boot_timeout=args.boot_timeout)
             ssh = _preset_control_channel(vm, timeout=args.boot_timeout)
@@ -1631,24 +1638,7 @@ def _preset_control_channel(vm: object, *, timeout: float = 30.0) -> object:
     from smolvm.facade import SmolVM
 
     _vm: SmolVM = vm  # type: ignore[assignment]
-    try:
-        channel = _vm._ensure_control_for_operation(action="apply preset", timeout=timeout)
-        supports = getattr(channel, "supports", None)
-        if not callable(supports) or supports(
-            "file_raw",
-            "files.stream",
-            "dir_tar",
-            "files.directory_tar",
-            "env_managed",
-            "env.managed",
-        ):
-            return channel
-    except Exception:
-        # Control-channel setup is an optimization; SSH remains the supported fallback.
-        _vm.wait_for_ssh(timeout=timeout)
-        return _vm._ensure_ssh_for_env(timeout=timeout)
-    _vm.wait_for_ssh(timeout=timeout)
-    return _vm._ensure_ssh_for_env(timeout=timeout)
+    return _vm._ensure_control_for_operation(action="apply preset", timeout=timeout)
 
 
 def _render_vm_lifecycle_result(

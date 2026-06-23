@@ -3283,7 +3283,8 @@ class TestCliStart:
             writable_mounts=False,
         )
         vm.start.assert_called_once_with(boot_timeout=30.0, on_progress=ANY)
-        vm.wait_for_ssh.assert_called_once_with(timeout=30.0, on_progress=ANY)
+        vm.wait_for_ready.assert_called_once_with(timeout=30.0, on_progress=ANY)
+        vm.wait_for_ssh.assert_not_called()
         mock_apply.assert_called_once()
         vm.close.assert_called_once()
 
@@ -3327,6 +3328,54 @@ class TestCliStart:
         assert payload["data"]["preset"]["name"] == "codex"
         assert payload["data"]["preset"]["injected_env_keys"] == ["OPENAI_API_KEY"]
         assert payload["data"]["next"]["ssh_command"] == "smolvm sandbox ssh sbx-1"
+
+    @patch("smolvm.images.published.is_preset_published", return_value=False)
+    @patch("smolvm.presets.apply_preset")
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_start_codex_json_threads_explicit_comm_channel(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        mock_apply_fn: MagicMock,
+        _mock_is_published: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        config = MagicMock(vm_id="sbx-1")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+        vm = self._make_vm_mock("sbx-1")
+        mock_vm_cls.return_value = vm
+        mock_apply_fn.return_value = {
+            "preset": "codex",
+            "copied_configs": [],
+            "injected_env_keys": [],
+        }
+
+        ret = main(["codex", "start", "--name", "sbx-1", "--json", "--comm-channel", "ssh"])
+
+        assert ret == 0
+        mock_vm_cls.assert_called_once_with(
+            config,
+            ssh_key_path="/tmp/id_ed25519",
+            mounts=None,
+            writable_mounts=False,
+            comm_channel="ssh",
+        )
+        json.loads(capsys.readouterr().out)
+
+    def test_preset_control_channel_uses_resolved_control_without_ssh_fallback(self) -> None:
+        from smolvm.cli.main import _preset_control_channel
+
+        channel = object()
+        vm = MagicMock()
+        vm._ensure_control_for_operation.return_value = channel
+
+        assert _preset_control_channel(vm, timeout=12.0) is channel
+        vm._ensure_control_for_operation.assert_called_once_with(
+            action="apply preset",
+            timeout=12.0,
+        )
+        vm.wait_for_ssh.assert_not_called()
 
     @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.cli.main._apply_preset_with_progress")

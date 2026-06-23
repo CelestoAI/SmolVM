@@ -35,6 +35,7 @@ from smolvm.comm.rust_http_vsock_channel import (
     ControlCapabilities,
     RustHttpVsockChannel,
     _directory_to_tar,
+    _SocketHTTPConnection,
 )
 from smolvm.exceptions import OperationTimeoutError, SmolVMError
 from smolvm.types import CommandResult
@@ -192,6 +193,19 @@ def test_from_uds_closes_socket_when_connect_rejected() -> None:
         server.close()
         thread.join(timeout=5)
         sock_dir.cleanup()
+
+
+def test_socket_http_connection_uses_request_timeout_for_reads() -> None:
+    host, guest = socket.socketpair()
+    host.settimeout(1.0)
+    try:
+        conn = _SocketHTTPConnection(lambda: host, timeout=123.0)
+        conn.connect()
+        assert conn.sock is not None
+        assert conn.sock.gettimeout() == 123.0
+    finally:
+        host.close()
+        guest.close()
 
 
 def test_run_maps_command_result() -> None:
