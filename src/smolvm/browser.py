@@ -697,6 +697,7 @@ class _BrowserSandbox:
                     if 200 <= getattr(response, "status", 200) < 300:
                         return True
             except (OSError, urllib.error.URLError):
+                # CDP may not be ready yet; retry until the startup deadline.
                 pass
 
             remaining = deadline - time.monotonic()

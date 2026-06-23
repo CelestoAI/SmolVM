@@ -1645,7 +1645,8 @@ def _preset_control_channel(vm: object, *, timeout: float = 30.0) -> object:
             return channel
     except Exception:
         # Control-channel setup is an optimization; SSH remains the supported fallback.
-        pass
+        _vm.wait_for_ssh(timeout=timeout)
+        return _vm._ensure_ssh_for_env(timeout=timeout)
     _vm.wait_for_ssh(timeout=timeout)
     return _vm._ensure_ssh_for_env(timeout=timeout)
 
