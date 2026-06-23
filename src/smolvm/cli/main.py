@@ -105,6 +105,7 @@ class CreateVmPayload(TypedDict):
 class CreateNextPayload(TypedDict):
     """Suggested follow-up actions for ``smolvm sandbox create``."""
 
+    shell_command: str
     ssh_command: str
     info_command: str
 
@@ -761,8 +762,9 @@ def _render_create_result(data: CreatePayload) -> None:
     details.add_row("OS", str(vm_data["os"]))
     details.add_row("Started", _format_started_at(vm_data["started_at"]))
     console.print(details)
-    console.print(f"Next: [bold]{next_step['ssh_command']}[/bold]")
-    console.print(f"      [bold]{next_step['info_command']}[/bold]")
+    console.print(f"Next: [bold]{next_step['shell_command']}[/bold]")
+    console.print(f"SSH:  [bold]{next_step['ssh_command']}[/bold]")
+    console.print(f"Info: [bold]{next_step['info_command']}[/bold]")
 
 
 def _build_and_boot_with_progress(
@@ -1084,6 +1086,7 @@ def _run_create(args: SimpleNamespace) -> int:
                 "started_at": datetime.now(timezone.utc).isoformat(),
             },
             "next": {
+                "shell_command": f"smolvm sandbox shell {vm.vm_id}",
                 "ssh_command": f"smolvm sandbox ssh {vm.vm_id}",
                 "info_command": f"smolvm sandbox info {vm.vm_id}",
             },
@@ -1142,7 +1145,8 @@ def _render_start_result(data: StartPayload) -> None:
     console.print(details)
     if not preset["injected_env_keys"] and preset.get("no_env_hint"):
         console.print(f"\n[yellow]{preset['no_env_hint']}[/yellow]")
-    console.print(f"Next: [bold]{next_step['ssh_command']}[/bold]")
+    console.print(f"Next: [bold]{next_step['shell_command']}[/bold]")
+    console.print(f"SSH:  [bold]{next_step['ssh_command']}[/bold]")
 
 
 # Boot args for the published-image launch path, keyed by (preset, vmm).
@@ -1343,7 +1347,11 @@ def _run_start_with_published_image(args: SimpleNamespace, preset: object) -> in
                     "injected_env_keys": [],
                     "no_env_hint": _preset.no_env_hint,
                 },
-                "next": {"ssh_command": f"smolvm sandbox ssh {vm.vm_id}"},
+                "next": {
+                    "shell_command": f"smolvm sandbox shell {vm.vm_id}",
+                    "ssh_command": f"smolvm sandbox ssh {vm.vm_id}",
+                    "info_command": f"smolvm sandbox info {vm.vm_id}",
+                },
             }
             if args.json:
                 emit_json(command_name, 0, data=data)
@@ -1501,7 +1509,9 @@ def _run_start(args: SimpleNamespace) -> int:
                 "no_env_hint": preset.no_env_hint,
             },
             "next": {
+                "shell_command": f"smolvm sandbox shell {vm.vm_id}",
                 "ssh_command": f"smolvm sandbox ssh {vm.vm_id}",
+                "info_command": f"smolvm sandbox info {vm.vm_id}",
             },
         }
 
@@ -2319,6 +2329,44 @@ def _run_ssh(args: SimpleNamespace) -> int:
             FileNotFoundError("ssh binary not found. Install openssh-client."),
             json_output=False,
         )
+    except Exception as exc:
+        return _emit_cli_error(command_name, 1, exc, json_output=False)
+    finally:
+        if vm is not None:
+            vm.close()
+
+
+def _run_shell(args: SimpleNamespace) -> int:
+    """Handle ``smolvm sandbox shell``."""
+    from smolvm.facade import SmolVM
+
+    vm: SmolVM | None = None
+    command_name = getattr(args, "command_name", "sandbox.shell")
+    try:
+        vm = SmolVM.from_id(args.vm_id)
+
+        console = console_stdout()
+        if vm.status in {VMState.CREATED, VMState.STOPPED}:
+            with console.status(f"Starting sandbox '{args.vm_id}'...", spinner="dots") as status:
+                vm.start(boot_timeout=args.boot_timeout)
+                status.update("Opening shell...")
+                vm.wait_for_shell(timeout=args.boot_timeout)
+            return vm.attach_shell(timeout=args.boot_timeout)
+        if vm.status == VMState.PAUSED:
+            with console.status(f"Resuming sandbox '{args.vm_id}'...", spinner="dots") as status:
+                vm.resume()
+                status.update("Opening shell...")
+                vm.wait_for_shell(timeout=args.boot_timeout)
+            return vm.attach_shell(timeout=args.boot_timeout)
+        if vm.status == VMState.ERROR:
+            raise RuntimeError(
+                f"VM '{args.vm_id}' is in error state. Recreate it or inspect the VM logs "
+                "before attaching."
+            )
+
+        with console.status("Opening shell...", spinner="dots"):
+            vm.wait_for_shell(timeout=args.boot_timeout)
+        return vm.attach_shell(timeout=args.boot_timeout)
     except Exception as exc:
         return _emit_cli_error(command_name, 1, exc, json_output=False)
     finally:

@@ -1,5 +1,5 @@
 use clap::Parser;
-use smolvm_guest_agent::{handler, server};
+use smolvm_guest_agent::{handler, server, terminal};
 
 #[derive(Parser)]
 #[command(name = "smolvm-guest-agent", about = "SmolVM guest control agent")]
@@ -20,5 +20,12 @@ async fn main() {
 
     let args = Args::parse();
     let app = handler::router();
-    server::serve_listen_addr(app, &args.listen).await;
+    if args.listen.starts_with("vsock://") {
+        tokio::select! {
+            _ = server::serve_listen_addr(app, &args.listen) => {},
+            _ = terminal::serve_vsock_terminal(terminal::DEFAULT_TERMINAL_PORT) => {},
+        }
+    } else {
+        server::serve_listen_addr(app, &args.listen).await;
+    }
 }

@@ -116,6 +116,45 @@ def test_public_vsock_ready_and_run_do_not_require_network(
     assert vm._info.network is None
 
 
+def test_attach_shell_uses_vsock_terminal_not_ssh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("smolvm.comm.select.host_supports_vsock", lambda: True)
+    monkeypatch.setattr(
+        RustHttpVsockChannel,
+        "wait_ready",
+        lambda self, timeout=60.0, interval=0.1: None,
+    )
+    monkeypatch.setattr(RustHttpVsockChannel, "attach_terminal", lambda self: 7)
+
+    def _fail_ssh(self, timeout: float, *, as_control: bool = False) -> None:
+        raise AssertionError("attach_shell must not wait for SSH")
+
+    monkeypatch.setattr(SmolVM, "_wait_for_ssh_over_network", _fail_ssh)
+    vm = _vsock_vm(tmp_path, comm_channel="vsock", request="vsock")
+
+    assert vm.attach_shell(timeout=5) == 7
+    assert vm._control_ready is True
+    assert vm._ssh_ready is False
+
+
+def test_attach_shell_rejects_ssh_channel_without_waiting_for_ssh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vm = _vsock_vm(tmp_path, comm_channel="ssh", request="ssh")
+
+    def _fail_ssh(self, timeout: float, *, as_control: bool = False) -> None:
+        raise AssertionError("attach_shell must not fall back to SSH")
+
+    monkeypatch.setattr(SmolVM, "_wait_for_ssh_over_network", _fail_ssh)
+
+    with pytest.raises(SmolVMError, match="smolvm sandbox ssh vm1"):
+        vm.attach_shell(timeout=5)
+
+    assert vm._control_ready is False
+    assert vm._ssh_ready is False
+
+
 def test_wait_for_ssh_waits_for_ssh_not_vsock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

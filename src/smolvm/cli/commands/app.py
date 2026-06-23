@@ -208,12 +208,27 @@ def sandbox_resume(vm_id: str, json_output: bool) -> Any:
     )
 
 
+@sandbox.command("shell")
+@click.argument("vm_id", metavar="sandbox")
+@boot_timeout_option
+def sandbox_shell(vm_id: str, boot_timeout: float) -> Any:
+    """Open a fast shell in a sandbox."""
+    _before_command()
+    return _handlers()._run_shell(
+        _ns(
+            command_name="sandbox.shell",
+            vm_id=vm_id,
+            boot_timeout=boot_timeout,
+        )
+    )
+
+
 @sandbox.command("ssh")
 @click.argument("vm_id", metavar="sandbox")
 @ssh_auth_options
 @boot_timeout_option
 def sandbox_ssh(vm_id: str, ssh_key: str | None, ssh_user: str, boot_timeout: float) -> Any:
-    """Open a shell in a sandbox."""
+    """Open an SSH shell in a sandbox."""
     _before_command()
     return _handlers()._run_ssh(
         _ns(

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import queue
 import socket
 import tarfile
@@ -31,9 +32,12 @@ import pytest
 
 from smolvm.comm.base import CommChannel
 from smolvm.comm.rust_http_vsock_channel import (
+    SMOLVM_TERMINAL_PORT,
     ControlCapabilities,
     RustHttpVsockChannel,
     _directory_to_tar,
+    _pack_terminal_frame,
+    _read_terminal_frame,
     _SocketHTTPConnection,
 )
 from smolvm.exceptions import OperationTimeoutError, SmolVMError
@@ -51,6 +55,16 @@ def test_control_capabilities_accept_flat_dotted_features() -> None:
     assert capabilities.enabled("file_raw", "files.stream")
     assert capabilities.enabled("ports.wait")
     assert not capabilities.enabled("env.managed")
+
+
+def test_terminal_frame_helpers_round_trip_payload() -> None:
+    host, guest = socket.socketpair()
+    try:
+        host.sendall(_pack_terminal_frame(101, b"hello"))
+        assert _read_terminal_frame(guest) == (101, b"hello")
+    finally:
+        host.close()
+        guest.close()
 
 
 class FakeRustChannel(RustHttpVsockChannel):
@@ -95,6 +109,35 @@ class FakeRustChannel(RustHttpVsockChannel):
                     + b"Connection: close\r\n\r\n"
                     + payload
                 )
+
+        threading.Thread(target=_serve, daemon=True).start()
+        return host
+
+
+class FakeTerminalChannel(FakeRustChannel):
+    def __init__(self, handlers: list[Handler]) -> None:
+        super().__init__(handlers)
+        self.terminal_requests: list[dict[str, Any]] = []
+        self.terminal_stdin: list[bytes] = []
+
+    def _open_port(self, port: int) -> socket.socket:
+        if port != SMOLVM_TERMINAL_PORT:
+            return self._open()
+
+        host, guest = socket.socketpair()
+
+        def _serve() -> None:
+            with guest:
+                line = b""
+                while not line.endswith(b"\n"):
+                    line += guest.recv(1)
+                self.terminal_requests.append(json.loads(line))
+                guest.sendall(json.dumps({"ok": True, "pid": 1234}).encode() + b"\n")
+                frame_type, payload = _read_terminal_frame(guest)
+                assert frame_type == 1
+                self.terminal_stdin.append(payload)
+                guest.sendall(_pack_terminal_frame(101, b"ok\r\n"))
+                guest.sendall(_pack_terminal_frame(102, json.dumps({"exit_code": 7}).encode()))
 
         threading.Thread(target=_serve, daemon=True).start()
         return host
@@ -237,6 +280,48 @@ def test_run_serializes_float_timeout_as_integer_seconds() -> None:
 
     result = FakeRustChannel([_handler(11)]).run("true", timeout=10.1, shell="raw")
     assert result.exit_code == 0
+
+
+def test_attach_terminal_streams_stdin_stdout_and_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b"exit\n")
+    os.close(write_fd)
+
+    class _PipeInput:
+        buffer: _PipeInput
+
+        def __init__(self, fd: int) -> None:
+            self.fd = fd
+            self.buffer = self
+
+        def fileno(self) -> int:
+            return self.fd
+
+    output = io.BytesIO()
+    monkeypatch.setattr("smolvm.comm.rust_http_vsock_channel.sys.stdin", _PipeInput(read_fd))
+    monkeypatch.setattr("smolvm.comm.rust_http_vsock_channel.sys.stdout", output)
+    monkeypatch.setenv("TERM", "xterm-test")
+
+    channel = FakeTerminalChannel([_capabilities({"terminal": True})])
+    try:
+        exit_code = channel.attach_terminal()
+    finally:
+        os.close(read_fd)
+
+    assert exit_code == 7
+    assert output.getvalue() == b"ok\r\n"
+    assert channel.terminal_stdin == [b"exit\n"]
+    assert channel.terminal_requests[0]["version"] == 1
+    assert channel.terminal_requests[0]["term"] == "xterm-test"
+
+
+def test_attach_terminal_requires_terminal_capability() -> None:
+    channel = FakeRustChannel([_capabilities({})])
+
+    with pytest.raises(SmolVMError, match="fast shell access"):
+        channel.attach_terminal()
 
 
 def test_run_timeout_maps_to_operation_timeout() -> None:

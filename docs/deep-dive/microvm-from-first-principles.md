@@ -544,7 +544,8 @@ Back on the host, `cli/main.py` polls TCP port 2200 with a 30-second timeout. As
 │ Started 'codex-davinci' │
 │ with codex preinstalled │
 ╰─────────────────────────╯
-Next: smolvm sandbox ssh codex-davinci
+Next: smolvm sandbox shell codex-davinci
+SSH:  smolvm sandbox ssh codex-davinci
 ```
 
 End-to-end, on a warm cache, this takes 5–10 seconds. On a cold cache (first download), add ~30s for the rootfs zstd download.

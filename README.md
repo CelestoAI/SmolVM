@@ -139,8 +139,10 @@ smolvm sandbox stop my-sandbox
 Open a shell inside a running sandbox:
 
 ```bash
-smolvm sandbox ssh my-sandbox
+smolvm sandbox shell my-sandbox
 ```
+
+Use `smolvm sandbox ssh my-sandbox` when you specifically need an SSH session.
 
 ## Windows sandbox
 
@@ -257,7 +259,7 @@ You can give a sandbox access to a folder on your machine. This is useful when a
 
 ```bash
 smolvm sandbox create --name my-sandbox --mount ~/Projects/my-app
-smolvm sandbox ssh my-sandbox
+smolvm sandbox shell my-sandbox
 ls /workspace   # your host files appear here
 ```
 
@@ -296,7 +298,7 @@ This is useful when an agent needs a config file, script, or small input file.
 smolvm sandbox file upload my-sandbox ./prompt.txt /tmp/prompt.txt
 
 # Open a shell in the sandbox to confirm the file is there.
-smolvm sandbox ssh my-sandbox
+smolvm sandbox shell my-sandbox
 # Then, inside the sandbox shell:
 cat /tmp/prompt.txt
 ```

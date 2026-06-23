@@ -151,7 +151,8 @@ def test_sandbox_help_describes_all_commands(capsys: pytest.CaptureFixture) -> N
         "Manage port forwarding for a sandbox.",
         "Resume a paused sandbox.",
         "Save and restore sandbox state.",
-        "Open a shell in a sandbox.",
+        "Open a fast shell in a sandbox.",
+        "Open an SSH shell in a sandbox.",
         "Start a stopped sandbox.",
         "Stop a running sandbox.",
     ]:
@@ -770,6 +771,7 @@ class TestCliCreate:
         assert "OS" in out
         assert "ubuntu" in out
         assert "Started" in out
+        assert "smolvm sandbox shell vm-a1b2c3d4" in out
         assert "smolvm sandbox ssh vm-a1b2c3d4" in out
         assert "smolvm sandbox info vm-a1b2c3d4" in out
         assert "Backend" not in out
@@ -847,6 +849,7 @@ class TestCliCreate:
         assert "OS" in out
         assert "ubuntu" in out
         assert "Started" in out
+        assert "smolvm sandbox shell project-spacex" in out
         assert "smolvm sandbox ssh project-spacex" in out
         assert "smolvm sandbox info project-spacex" in out
         assert "Backend" not in out
@@ -971,6 +974,7 @@ class TestCliCreate:
         assert payload["data"]["vm"]["name"] == "project-spacex"
         assert payload["data"]["vm"]["os"] == "ubuntu"
         assert payload["data"]["vm"]["started_at"]
+        assert payload["data"]["next"]["shell_command"] == "smolvm sandbox shell project-spacex"
         assert payload["data"]["next"]["ssh_command"] == "smolvm sandbox ssh project-spacex"
         assert payload["data"]["next"]["info_command"] == "smolvm sandbox info project-spacex"
 
@@ -1824,6 +1828,84 @@ class TestCliPort:
         assert args.vm_id == "vm001"
         assert args.command_name == "sandbox.port.list"
         assert args.json is True
+
+
+class TestCliShell:
+    """Tests for `smolvm sandbox shell`."""
+
+    @patch("smolvm.facade.SmolVM")
+    def test_shell_running_vm_uses_control_channel(self, mock_vm_cls: MagicMock) -> None:
+        vm = MagicMock()
+        vm.status = VMState.RUNNING
+        vm.attach_shell.return_value = 7
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(["sandbox", "shell", "vm001", "--boot-timeout", "15"])
+
+        assert ret == 7
+        mock_vm_cls.from_id.assert_called_once_with("vm001")
+        vm.start.assert_not_called()
+        vm.wait_for_shell.assert_called_once_with(timeout=15.0)
+        vm.wait_for_ssh.assert_not_called()
+        vm.attach_shell.assert_called_once_with(timeout=15.0)
+        vm.close.assert_called_once()
+
+    @pytest.mark.parametrize("status", [VMState.CREATED, VMState.STOPPED])
+    @patch("smolvm.facade.SmolVM")
+    def test_shell_auto_starts_created_or_stopped_vm(
+        self,
+        mock_vm_cls: MagicMock,
+        status: VMState,
+    ) -> None:
+        vm = MagicMock()
+        vm.status = status
+        vm.attach_shell.return_value = 0
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(["sandbox", "shell", "vm001"])
+
+        assert ret == 0
+        vm.start.assert_called_once_with(boot_timeout=30.0)
+        vm.wait_for_shell.assert_called_once_with(timeout=30.0)
+        vm.wait_for_ssh.assert_not_called()
+        vm.attach_shell.assert_called_once_with(timeout=30.0)
+        vm.close.assert_called_once()
+
+    @patch("smolvm.facade.SmolVM")
+    def test_shell_resumes_paused_vm(self, mock_vm_cls: MagicMock) -> None:
+        vm = MagicMock()
+        vm.status = VMState.PAUSED
+        vm.attach_shell.return_value = 0
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(["sandbox", "shell", "vm001"])
+
+        assert ret == 0
+        vm.resume.assert_called_once_with()
+        vm.start.assert_not_called()
+        vm.wait_for_shell.assert_called_once_with(timeout=30.0)
+        vm.wait_for_ssh.assert_not_called()
+        vm.attach_shell.assert_called_once_with(timeout=30.0)
+        vm.close.assert_called_once()
+
+    @patch("smolvm.facade.SmolVM")
+    def test_shell_error_state_fails_fast(
+        self,
+        mock_vm_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        vm = MagicMock()
+        vm.status = VMState.ERROR
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(["sandbox", "shell", "vm001"])
+
+        assert ret == 1
+        vm.start.assert_not_called()
+        vm.wait_for_ssh.assert_not_called()
+        vm.attach_shell.assert_not_called()
+        vm.close.assert_called_once()
+        assert "error state" in capsys.readouterr().err
 
 
 class TestCliSSH:
@@ -3292,6 +3374,7 @@ class TestCliStart:
         assert "sbx-codex" in out
         assert "codex" in out
         assert "OPENAI_API_KEY" in out
+        assert "smolvm sandbox shell sbx-codex" in out
         assert "smolvm sandbox ssh sbx-codex" in out
 
     @patch("smolvm.images.published.is_preset_published", return_value=False)
@@ -3327,6 +3410,7 @@ class TestCliStart:
         assert payload["data"]["vm"]["os"] == "ubuntu"
         assert payload["data"]["preset"]["name"] == "codex"
         assert payload["data"]["preset"]["injected_env_keys"] == ["OPENAI_API_KEY"]
+        assert payload["data"]["next"]["shell_command"] == "smolvm sandbox shell sbx-1"
         assert payload["data"]["next"]["ssh_command"] == "smolvm sandbox ssh sbx-1"
 
     @patch("smolvm.images.published.is_preset_published", return_value=False)

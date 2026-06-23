@@ -5,6 +5,7 @@ pub mod files;
 pub mod handler;
 pub mod ports;
 pub mod server;
+pub mod terminal;
 
 pub use handler::router;
 pub use server::{DEFAULT_LISTEN, serve_listen_addr, serve_tcp, serve_vsock};

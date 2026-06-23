@@ -2169,6 +2169,34 @@ class SmolVM:
             public_host=public_host,
         )
 
+    def _ensure_shell_control(self, *, timeout: float) -> CommChannel:
+        self._refresh_info()
+        if self._resolve_channel().kind != "vsock":
+            raise SmolVMError(
+                f"Fast shell is not available for sandbox '{self._vm_id}'; "
+                f"run 'smolvm sandbox ssh {self._vm_id}' to use SSH.",
+                {"vm_id": self._vm_id},
+            )
+        channel = self._ensure_control_for_operation(action="open a shell", timeout=timeout)
+        attach_terminal = getattr(channel, "attach_terminal", None)
+        if not callable(attach_terminal):
+            raise SmolVMError(
+                f"Sandbox '{self._vm_id}' does not support fast shell access; "
+                f"run 'smolvm sandbox ssh {self._vm_id}' to use SSH.",
+                {"vm_id": self._vm_id},
+            )
+        return channel
+
+    def wait_for_shell(self, *, timeout: float = _DEFAULT_RUN_READY_TIMEOUT) -> SmolVM:
+        """Wait until the fast interactive shell transport is ready."""
+        self._ensure_shell_control(timeout=timeout)
+        return self
+
+    def attach_shell(self, *, timeout: float = _DEFAULT_RUN_READY_TIMEOUT) -> int:
+        """Open an interactive shell over the resolved control channel."""
+        channel = self._ensure_shell_control(timeout=timeout)
+        return int(channel.attach_terminal())  # type: ignore[attr-defined]
+
     def _ssh_attach_command(self) -> list[str]:
         """Return an interactive SSH command using the resolved ready endpoint."""
         if not self._ssh_ready or self._ssh is None:

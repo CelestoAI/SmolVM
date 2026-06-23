@@ -23,9 +23,12 @@ import json
 import logging
 import math
 import os
+import select
 import shlex
+import signal
 import socket
 import stat
+import sys
 import tarfile
 import time
 import urllib.parse
@@ -44,13 +47,23 @@ logger = logging.getLogger(__name__)
 SMOLVM_AGENT_PORT = 1024
 """Guest vsock port where the Rust guest agent listens."""
 
+SMOLVM_TERMINAL_PORT = 1025
+"""Guest vsock port where the Rust guest agent accepts terminal streams."""
+
 _READY_FAST_POLL_WINDOW = 1.0
 _READY_FAST_POLL_INTERVAL = 0.02
 _DEFAULT_MAX_AGENT_RESPONSE_BYTES = 1024 * 1024
 _DEFAULT_MAX_STREAM_SIZE_BYTES = 256 * 1024 * 1024
 _DEFAULT_MAX_TAR_SIZE_BYTES = 512 * 1024 * 1024
+_DEFAULT_MAX_TERMINAL_FRAME_BYTES = 1024 * 1024
 _MAX_PORTS_WAIT = 256
 _MAX_PORT_WAIT_TIMEOUT_SECONDS = 300.0
+_TERMINAL_FRAME_STDIN = 1
+_TERMINAL_FRAME_RESIZE = 2
+_TERMINAL_FRAME_CLOSE = 3
+_TERMINAL_FRAME_OUTPUT = 101
+_TERMINAL_FRAME_EXIT = 102
+_TERMINAL_FRAME_ERROR = 103
 
 
 @dataclass(frozen=True)
@@ -60,6 +73,7 @@ class ControlCapabilities:
     protocol_version: int
     features: dict[str, Any]
     limits: dict[str, Any]
+    terminal_port: int = SMOLVM_TERMINAL_PORT
 
     def enabled(self, *names: str) -> bool:
         for name in names:
@@ -115,6 +129,148 @@ def _parse_size_header(value: str, *, header: str, method: str, path: str) -> in
 
 def _feature_required_error(feature: str, *, sandbox_name: str | None = None) -> SmolVMError:
     return SmolVMError(_feature_required_message(feature, sandbox_name))
+
+
+def _pack_terminal_frame(frame_type: int, payload: bytes) -> bytes:
+    if not 0 <= frame_type <= 255:
+        raise ValueError("frame_type must fit in one byte")
+    if len(payload) > _DEFAULT_MAX_TERMINAL_FRAME_BYTES:
+        raise ValueError(
+            f"terminal frame payload exceeds {_DEFAULT_MAX_TERMINAL_FRAME_BYTES} bytes"
+        )
+    return bytes([frame_type]) + len(payload).to_bytes(4, "big") + payload
+
+
+def _recv_exact(sock: socket.socket, size: int) -> bytes:
+    chunks = bytearray()
+    while len(chunks) < size:
+        chunk = sock.recv(size - len(chunks))
+        if not chunk:
+            raise EOFError("terminal stream closed")
+        chunks.extend(chunk)
+    return bytes(chunks)
+
+
+def _read_terminal_frame(
+    sock: socket.socket,
+    *,
+    max_payload: int = _DEFAULT_MAX_TERMINAL_FRAME_BYTES,
+) -> tuple[int, bytes]:
+    header = _recv_exact(sock, 5)
+    frame_type = header[0]
+    size = int.from_bytes(header[1:], "big")
+    if size > max_payload:
+        raise SmolVMError(f"Terminal response exceeded {max_payload} bytes.")
+    return frame_type, _recv_exact(sock, size)
+
+
+def _send_terminal_frame(sock: socket.socket, frame_type: int, payload: bytes = b"") -> None:
+    sock.sendall(_pack_terminal_frame(frame_type, payload))
+
+
+def _read_socket_line(sock: socket.socket, *, max_bytes: int = 16 * 1024) -> str:
+    buf = bytearray()
+    while not buf.endswith(b"\n"):
+        if len(buf) >= max_bytes:
+            raise SmolVMError("Terminal handshake response was too large.")
+        chunk = sock.recv(1)
+        if not chunk:
+            raise EOFError("terminal stream closed during handshake")
+        buf.extend(chunk)
+    return buf.decode("utf-8", errors="replace").strip()
+
+
+def _terminal_size(fd: int) -> tuple[int, int]:
+    try:
+        size = os.get_terminal_size(fd)
+    except OSError:
+        return 24, 80
+    return max(1, size.lines), max(1, size.columns)
+
+
+def _write_terminal_output(stdout: Any, payload: bytes) -> None:
+    try:
+        stdout.write(payload)
+    except TypeError:
+        stdout.write(payload.decode("utf-8", errors="replace"))
+    stdout.flush()
+
+
+def _run_terminal_io(
+    sock: socket.socket,
+    *,
+    stdin_fd: int,
+    stdout: Any,
+    max_frame_bytes: int,
+) -> int:
+    old_attrs: Any = None
+    old_winch: Any = None
+    resize_pending = False
+    stdin_open = True
+
+    def _mark_resize(_signum: int, _frame: object) -> None:
+        nonlocal resize_pending
+        resize_pending = True
+
+    def _send_resize() -> None:
+        rows, cols = _terminal_size(stdin_fd)
+        payload = json.dumps({"rows": rows, "cols": cols}).encode("utf-8")
+        _send_terminal_frame(sock, _TERMINAL_FRAME_RESIZE, payload)
+
+    try:
+        if os.isatty(stdin_fd):
+            import termios
+            import tty
+
+            old_attrs = termios.tcgetattr(stdin_fd)
+            tty.setraw(stdin_fd)
+        try:
+            old_winch = signal.getsignal(signal.SIGWINCH)
+            signal.signal(signal.SIGWINCH, _mark_resize)
+        except ValueError:
+            old_winch = None
+
+        while True:
+            if resize_pending:
+                resize_pending = False
+                _send_resize()
+
+            readers: list[Any] = [sock]
+            if stdin_open:
+                readers.append(stdin_fd)
+            readable, _, _ = select.select(readers, [], [], 0.25)
+
+            if sock in readable:
+                frame_type, payload = _read_terminal_frame(sock, max_payload=max_frame_bytes)
+                if frame_type == _TERMINAL_FRAME_OUTPUT:
+                    _write_terminal_output(stdout, payload)
+                elif frame_type == _TERMINAL_FRAME_EXIT:
+                    response = json.loads(payload.decode("utf-8"))
+                    return int(response.get("exit_code", 0))
+                elif frame_type == _TERMINAL_FRAME_ERROR:
+                    raise SmolVMError(payload.decode("utf-8", errors="replace"))
+                else:
+                    raise SmolVMError(f"Unknown terminal response frame: {frame_type}")
+
+            if stdin_open and stdin_fd in readable:
+                data = os.read(stdin_fd, 65536)
+                if data:
+                    _send_terminal_frame(sock, _TERMINAL_FRAME_STDIN, data)
+                else:
+                    stdin_open = False
+    except EOFError as exc:
+        raise SmolVMError("Shell connection closed before the shell exited.") from exc
+    except KeyboardInterrupt:
+        with suppress(Exception):
+            _send_terminal_frame(sock, _TERMINAL_FRAME_CLOSE)
+        return 130
+    finally:
+        if old_attrs is not None:
+            with suppress(Exception):
+                termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old_attrs)  # type: ignore[name-defined]
+        if old_winch is not None:
+            with suppress(Exception):
+                signal.signal(signal.SIGWINCH, old_winch)
 
 
 def _directory_to_tar(source: Path) -> bytes:
@@ -285,11 +441,15 @@ class RustHttpVsockChannel:
         )
 
     def _open(self) -> socket.socket:
-        if self.uds_path is not None:
-            return self._open_uds()
-        return self._open_vsock()
+        return self._open_port(self.agent_port)
 
-    def _open_vsock(self) -> socket.socket:
+    def _open_port(self, port: int) -> socket.socket:
+        if self.uds_path is not None:
+            return self._open_uds(port)
+        return self._open_vsock(port)
+
+    def _open_vsock(self, port: int | None = None) -> socket.socket:
+        port = self.agent_port if port is None else port
         if not hasattr(socket, "AF_VSOCK"):
             raise SmolVMError(
                 "vsock is not available on this host (no AF_VSOCK). "
@@ -298,18 +458,19 @@ class RustHttpVsockChannel:
         sock = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
         sock.settimeout(float(self.connect_timeout))
         try:
-            sock.connect((self.guest_cid, self.agent_port))
+            sock.connect((self.guest_cid, port))
         except OSError:
             sock.close()
             raise
         return sock
 
-    def _open_uds(self) -> socket.socket:
+    def _open_uds(self, port: int | None = None) -> socket.socket:
+        port = self.agent_port if port is None else port
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(float(self.connect_timeout))
         try:
             sock.connect(self.uds_path)
-            sock.sendall(f"CONNECT {self.agent_port}\n".encode())
+            sock.sendall(f"CONNECT {port}\n".encode())
             ack = self._read_line(sock)
             if not ack.startswith("OK"):
                 raise SmolVMError(f"vsock CONNECT handshake failed: {ack!r}")
@@ -434,6 +595,7 @@ class RustHttpVsockChannel:
                 protocol_version=protocol_version,
                 features=dict(features),
                 limits=dict(limits),
+                terminal_port=int(resp.get("terminal_port", SMOLVM_TERMINAL_PORT)),
             )
         return self._capabilities
 
@@ -478,6 +640,45 @@ class RustHttpVsockChannel:
             stdout=str(resp.get("stdout", "")),
             stderr=str(resp.get("stderr", "")),
         )
+
+    def attach_terminal(self) -> int:
+        self._require_feature("fast shell access", "terminal")
+        max_frame_bytes = self._limit_bytes(
+            "terminal_frame_bytes",
+            _DEFAULT_MAX_TERMINAL_FRAME_BYTES,
+        )
+        sock = self._open_port(self.capabilities.terminal_port)
+        try:
+            stdin = getattr(sys.stdin, "buffer", sys.stdin)
+            stdout = getattr(sys.stdout, "buffer", sys.stdout)
+            try:
+                stdin_fd = stdin.fileno()
+            except (AttributeError, io.UnsupportedOperation) as exc:
+                raise SmolVMError("Shell needs a real terminal or pipe for input.") from exc
+
+            rows, cols = _terminal_size(stdin_fd)
+            request = {
+                "version": 1,
+                "rows": rows,
+                "cols": cols,
+                "term": os.environ.get("TERM") or "xterm-256color",
+                "cwd": None,
+                "env": {},
+            }
+            sock.sendall(json.dumps(request).encode("utf-8") + b"\n")
+            response = json.loads(_read_socket_line(sock))
+            if not response.get("ok"):
+                raise SmolVMError(str(response.get("error") or "Shell could not start."))
+
+            sock.settimeout(None)
+            return _run_terminal_io(
+                sock,
+                stdin_fd=stdin_fd,
+                stdout=stdout,
+                max_frame_bytes=max_frame_bytes,
+            )
+        finally:
+            sock.close()
 
     def sync(self, timeout: float = 10) -> None:
         if timeout <= 0:

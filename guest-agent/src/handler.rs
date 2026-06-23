@@ -15,6 +15,7 @@ use crate::env::{self, EnvDeleteRequest, EnvPutRequest, EnvResponse};
 use crate::exec::{self, ExecRequest, ExecResponse};
 use crate::files::{self, DirectoryTarQuery, FileGetQuery, FilePutResponse, FileRawPutQuery};
 use crate::ports::{self, PortsWaitRequest, PortsWaitResponse};
+use crate::terminal;
 
 pub const PROTOCOL_VERSION: u32 = 2;
 const FILE_RAW_BODY_LIMIT_BYTES: usize = 256 * 1024 * 1024;
@@ -159,6 +160,7 @@ pub struct CapabilitiesResponse {
     pub limits: CapabilityLimits,
     pub tcp_enabled: bool,
     pub terminal_enabled: bool,
+    pub terminal_port: u32,
     pub prod_metrics_enabled: bool,
 }
 
@@ -194,6 +196,8 @@ pub struct CapabilityLimits {
     pub max_stream_size_bytes: usize,
     pub directory_tar_put_bytes: usize,
     pub max_tar_size_bytes: usize,
+    pub terminal_frame_bytes: usize,
+    pub terminal_sessions: usize,
     pub default_operation_timeout_ms: u64,
     pub port_wait_timeout_seconds: u64,
 }
@@ -223,6 +227,7 @@ pub async fn handle_capabilities() -> Json<CapabilitiesResponse> {
             "DELETE /env/managed",
             "GET /boot/milestones",
             "POST /ports/wait",
+            "VSOCK 1025 terminal",
         ],
         features: CapabilityFeatures {
             exec: true,
@@ -239,7 +244,7 @@ pub async fn handle_capabilities() -> Json<CapabilitiesResponse> {
             ports_wait_v2: true,
             browser_status: false,
             tcp_listener: cfg!(feature = "tcp"),
-            terminal: false,
+            terminal: true,
             prod_metrics: false,
         },
         limits: CapabilityLimits {
@@ -247,11 +252,14 @@ pub async fn handle_capabilities() -> Json<CapabilitiesResponse> {
             max_stream_size_bytes: FILE_RAW_BODY_LIMIT_BYTES,
             directory_tar_put_bytes: DIRECTORY_TAR_BODY_LIMIT_BYTES,
             max_tar_size_bytes: DIRECTORY_TAR_BODY_LIMIT_BYTES,
+            terminal_frame_bytes: terminal::MAX_FRAME_PAYLOAD_BYTES,
+            terminal_sessions: terminal::MAX_CONCURRENT_TERMINALS,
             default_operation_timeout_ms: 120_000,
             port_wait_timeout_seconds: 300,
         },
         tcp_enabled: cfg!(feature = "tcp"),
-        terminal_enabled: false,
+        terminal_enabled: true,
+        terminal_port: terminal::DEFAULT_TERMINAL_PORT,
         prod_metrics_enabled: false,
     })
 }
@@ -399,7 +407,11 @@ mod tests {
         assert_eq!(capabilities.status, StatusCode::OK);
         assert_eq!(capabilities.body["protocol_version"], PROTOCOL_VERSION);
         assert_eq!(capabilities.body["tcp_enabled"], cfg!(feature = "tcp"));
-        assert_eq!(capabilities.body["terminal_enabled"], false);
+        assert_eq!(capabilities.body["terminal_enabled"], true);
+        assert_eq!(
+            capabilities.body["terminal_port"],
+            terminal::DEFAULT_TERMINAL_PORT
+        );
         assert_eq!(capabilities.body["prod_metrics_enabled"], false);
         assert!(capabilities.body["features"].get("file_base64").is_none());
         assert_eq!(capabilities.body["features"]["file_raw"], true);
@@ -413,6 +425,7 @@ mod tests {
         assert_eq!(capabilities.body["features"]["ports_wait"], true);
         assert_eq!(capabilities.body["features"]["ports.wait"], true);
         assert_eq!(capabilities.body["features"]["browser.status"], false);
+        assert_eq!(capabilities.body["features"]["terminal"], true);
         assert!(
             capabilities.body["limits"]
                 .get("file_put_json_bytes")
@@ -426,8 +439,17 @@ mod tests {
             capabilities.body["limits"]["max_tar_size_bytes"],
             DIRECTORY_TAR_BODY_LIMIT_BYTES
         );
+        assert_eq!(
+            capabilities.body["limits"]["terminal_frame_bytes"],
+            terminal::MAX_FRAME_PAYLOAD_BYTES
+        );
+        assert_eq!(
+            capabilities.body["limits"]["terminal_sessions"],
+            terminal::MAX_CONCURRENT_TERMINALS
+        );
         let endpoints = capabilities.body["endpoints"].as_array().unwrap();
         assert!(endpoints.contains(&json!("POST /exec")));
+        assert!(endpoints.contains(&json!("VSOCK 1025 terminal")));
         assert!(endpoints.contains(&json!("POST /sync")));
         assert!(!endpoints.contains(&json!("POST /files/put")));
         assert!(!endpoints.contains(&json!("GET /files/get")));
