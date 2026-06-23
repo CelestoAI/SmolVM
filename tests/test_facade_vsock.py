@@ -85,6 +85,7 @@ def test_wait_for_ready_uses_rust_vsock_when_agent_answers(
     assert vm._control_ready is True
     assert isinstance(vm._control_channel, RustHttpVsockChannel)
     assert vm._control_channel.guest_cid == 5
+    assert vm._control_channel.sandbox_name == "vm1"
     assert vm._ssh is None
 
 

@@ -3231,9 +3231,12 @@ modprobe 9pnet_virtio""".strip()
             uds_path = vsock.uds_path or getattr(self._info, "vsock_uds_path", None)
             if not uds_path:
                 return False
-            channel: CommChannel = RustHttpVsockChannel.from_uds(uds_path)
+            channel: CommChannel = RustHttpVsockChannel.from_uds(
+                uds_path,
+                sandbox_name=self._vm_id,
+            )
         else:
-            channel = RustHttpVsockChannel.from_cid(vsock.guest_cid)
+            channel = RustHttpVsockChannel.from_cid(vsock.guest_cid, sandbox_name=self._vm_id)
 
         try:
             channel.wait_ready(timeout=timeout)

@@ -86,18 +86,23 @@ Networking note:
 
 ## 2026-06-23 - Current PR: Alpha Cleanup And Transfer Validation
 
+This benchmark confirms the disk-image speedup and shows that current
+published Ubuntu images must be republished before the new fast file-transfer
+path can be measured.
+
 - Commit: current PR branch, based on `0818286`.
 - Image tag: current published Ubuntu image used by the local benchmark run.
 - Commands:
   - `UV_CACHE_DIR=/tmp/uv-cache uv run python scripts/benchmarks/disk_io.py --iterations 2 --sizes 16M,128M --json --output /tmp/smolvm-alpha-cleanup-disk-io.json`
-  - `UV_CACHE_DIR=/tmp/uv-cache uv run python scripts/benchmarks/file_transfer.py --backend qemu --comm-channel vsock --os ubuntu --sizes 1K,1M --directory-files 10 --directory-file-size 1K --boot-timeout 120 --ready-timeout 120 --json --output /tmp/smolvm-alpha-cleanup-file-transfer.json`
+  - `UV_CACHE_DIR=/tmp/uv-cache uv run python scripts/benchmarks/file_transfer.py --backend qemu --comm-channel vsock --os ubuntu --sizes 1K --skip-directory --boot-timeout 120 --ready-timeout 120 --json --output /tmp/smolvm-alpha-cleanup-file-transfer-current-published.json`
 - Host: Linux x86_64, kernel `7.0.0-15-generic`, KVM available.
 - Method: two local disk iterations; one QEMU/vsock published-Ubuntu file
   transfer smoke with small payloads.
 - Behavior changed: the new Rust guest-agent build drops the old JSON/base64
-  file endpoints, while the host keeps a warning-backed compatibility path
-  because the active published Ubuntu image still lacks protocol-v2 transfer
-  capabilities.
+  file endpoints, and the host no longer falls back to those older endpoints.
+  The active published Ubuntu image still lacks protocol-v2 transfer
+  capabilities, meaning the newer fast file-transfer protocol is not present
+  until the image is republished from this branch.
 
 Disk helper validation:
 
@@ -110,15 +115,13 @@ Disk helper validation:
 
 File-transfer validation:
 
-| Backend | Transport | Start | Ready | 1 KiB upload/download | 1 MiB upload/download | Directory upload/download | Feature flags |
-|---|---|---:|---:|---:|---:|---:|---|
-| QEMU | vsock | 52.6 ms | 286.4 ms | 2.6 / 0.7 ms | 12.6 / 9.6 ms | 8.6 / 7.5 ms | `files.stream=false`, `files.directory_tar=false` |
+| Backend | Transport | Result | Feature flags |
+|---|---|---|---|
+| QEMU | vsock | failed as expected after 52.7 ms start and 282.9 ms ready | current published image lacks `GET /capabilities`, `files.stream`, and `files.directory_tar` |
 
-Finding: the current published Ubuntu image can boot over vsock but still lacks
-`GET /capabilities`, `files.stream`, and `files.directory_tar`. SmolVM now logs
-a clear compatibility warning instead of silently using the slower path. Rerun
-this file-transfer benchmark after the next published-image release before
-claiming v2 streaming transfer speedups.
+Finding: the current published Ubuntu image can boot over vsock but cannot use
+the new fast file-transfer protocol. Rerun this file-transfer benchmark after
+the next published-image release before claiming streaming transfer speedups.
 
 ## Required Entry Format
 

@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import base64
 import io
 import json
 import queue
@@ -38,7 +37,6 @@ from smolvm.comm.rust_http_vsock_channel import (
     _SocketHTTPConnection,
 )
 from smolvm.exceptions import OperationTimeoutError, SmolVMError
-from smolvm.types import CommandResult
 
 Handler = Callable[[str, str, bytes], Any]
 
@@ -265,77 +263,32 @@ def test_sync_posts_dedicated_endpoint() -> None:
         assert body == b""
         return {"ok": True}
 
-    FakeRustChannel([_handler]).sync(timeout=10)
+    FakeRustChannel([_capabilities({"sync": True}), _handler]).sync(timeout=10)
 
 
 def test_sync_error_maps_to_smolvm_error() -> None:
-    channel = FakeRustChannel([lambda method, path, body: {"ok": False, "error": "busy"}])
+    channel = FakeRustChannel(
+        [_capabilities({"sync": True}), lambda method, path, body: {"ok": False, "error": "busy"}]
+    )
 
     with pytest.raises(SmolVMError, match="busy"):
         channel.sync()
 
 
-def test_sync_falls_back_to_raw_exec_when_endpoint_missing() -> None:
-    def _missing_sync(method: str, path: str, body: bytes) -> tuple[int, str]:
-        assert method == "POST"
-        assert path == "/sync"
-        assert body == b""
-        return (404, "")
+def test_sync_requires_sync_capability() -> None:
+    channel = FakeRustChannel([_capabilities({})])
 
-    def _legacy_exec(method: str, path: str, body: bytes) -> dict:
-        assert method == "POST"
-        assert path == "/exec"
-        request = json.loads(body)
-        assert request["command"] == "sync"
-        assert request["shell"] == "raw"
-        assert request["timeout_seconds"] == 10
-        return {"ok": True, "exit_code": 0, "stdout": "", "stderr": "", "timed_out": False}
-
-    channel = FakeRustChannel([_missing_sync, _legacy_exec])
-    channel.sync(timeout=10)
-
-
-def test_sync_fallback_exec_failure_maps_to_smolvm_error() -> None:
-    def _missing_sync(method: str, path: str, body: bytes) -> tuple[int, str]:
-        return (404, "")
-
-    def _legacy_exec(method: str, path: str, body: bytes) -> dict:
-        return {"ok": True, "exit_code": 1, "stdout": "", "stderr": "nope", "timed_out": False}
-
-    channel = FakeRustChannel([_missing_sync, _legacy_exec])
-    with pytest.raises(SmolVMError, match="legacy sync fallback"):
+    with pytest.raises(SmolVMError, match="saving files before shutdown"):
         channel.sync(timeout=10)
 
 
-def test_put_and_get_file_use_base64_fallback_when_streaming_missing(tmp_path: Path) -> None:
+def test_put_file_requires_streaming_capability(tmp_path: Path) -> None:
     source = tmp_path / "source.txt"
     source.write_text("payload")
-    source.chmod(0o644)
-    destination = tmp_path / "download.txt"
 
-    def _put(method: str, path: str, body: bytes) -> dict:
-        request = json.loads(body)
-        assert method == "POST"
-        assert path == "/files/put"
-        assert request["path"] == "/tmp/source.txt"
-        assert base64.b64decode(request["data_base64"]) == b"payload"
-        return {"ok": True}
-
-    def _get(method: str, path: str, body: bytes) -> dict:
-        assert method == "GET"
-        assert path == "/files/get?path=%2Ftmp%2Fsource.txt"
-        return {
-            "ok": True,
-            "mode": 0o640,
-            "size": 7,
-            "data_base64": base64.b64encode(b"payload").decode(),
-        }
-
-    channel = FakeRustChannel([_capabilities({"file_base64": True}), _put, _get])
-    channel.put_file(source, "/tmp/source.txt")
-    channel.get_file("/tmp/source.txt", destination)
-    assert destination.read_text() == "payload"
-    assert destination.stat().st_mode & 0o777 == 0o640
+    channel = FakeRustChannel([_capabilities({})])
+    with pytest.raises(SmolVMError, match="fast file transfer"):
+        channel.put_file(source, "/tmp/source.txt")
 
 
 def test_put_and_get_file_use_raw_streaming_and_cache_capabilities(tmp_path: Path) -> None:
@@ -373,7 +326,7 @@ def test_put_and_get_file_use_raw_streaming_and_cache_capabilities(tmp_path: Pat
     ]
 
 
-def test_put_file_falls_back_to_base64_when_raw_endpoint_missing(tmp_path: Path) -> None:
+def test_put_file_does_not_fallback_when_raw_endpoint_missing(tmp_path: Path) -> None:
     source = tmp_path / "source.txt"
     source.write_text("payload")
 
@@ -382,15 +335,9 @@ def test_put_file_falls_back_to_base64_when_raw_endpoint_missing(tmp_path: Path)
         assert path.startswith("/files/content?")
         return (404, "")
 
-    def _base64_put(method: str, path: str, body: bytes) -> dict:
-        request = json.loads(body)
-        assert method == "POST"
-        assert path == "/files/put"
-        assert base64.b64decode(request["data_base64"]) == b"payload"
-        return {"ok": True}
-
-    channel = FakeRustChannel([_capabilities({"file_raw": True}), _missing_raw, _base64_put])
-    channel.put_file(source, "/tmp/source.txt")
+    channel = FakeRustChannel([_capabilities({"file_raw": True}), _missing_raw])
+    with pytest.raises(SmolVMError, match="guest agent HTTP 404"):
+        channel.put_file(source, "/tmp/source.txt")
 
 
 def test_get_directory_rejects_unsafe_tar_entries(tmp_path: Path) -> None:
@@ -435,34 +382,14 @@ def test_raw_file_download_rejects_declared_size_over_cap(tmp_path: Path) -> Non
         channel.get_file("/tmp/source.txt", destination)
 
 
-def test_legacy_directory_fallback_uses_guest_mktemp(tmp_path: Path) -> None:
+def test_directory_transfer_requires_tar_capability(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
     (source / "note.txt").write_text("hello")
-    commands: list[str] = []
-    uploads: list[str] = []
+    channel = FakeRustChannel([_capabilities({})])
 
-    channel = RustHttpVsockChannel(guest_cid=42)
-
-    def fake_run(command: str, timeout: float = 30, shell: str = "login") -> CommandResult:
-        commands.append(command)
-        if command.startswith("mktemp "):
-            return CommandResult(exit_code=0, stdout="/tmp/smolvm-dir.ABC123.tar\n", stderr="")
-        return CommandResult(exit_code=0, stdout="", stderr="")
-
-    def fake_put_file(local_path: str | Path, remote_path: str) -> None:
-        uploads.append(remote_path)
-
-    channel.run = fake_run  # type: ignore[method-assign]
-    channel.put_file = fake_put_file  # type: ignore[method-assign]
-
-    channel._put_directory_legacy(source, "/tmp/target")
-
-    assert uploads == ["/tmp/smolvm-dir.ABC123.tar"]
-    assert commands[0].startswith("mktemp /tmp/smolvm-dir.")
-    assert "trap" in commands[1]
-    assert 'tar -xf "$remote_tmp"' in commands[1]
-    assert commands[-1] == "rm -f -- /tmp/smolvm-dir.ABC123.tar"
+    with pytest.raises(SmolVMError, match="directory transfer"):
+        channel.put_directory(source, "/tmp/target")
 
 
 def test_directory_tar_strips_owner_metadata(tmp_path: Path) -> None:
@@ -493,42 +420,6 @@ def test_directory_tar_wraps_ustar_path_limit_errors(tmp_path: Path) -> None:
 
     with pytest.raises(SmolVMError, match="file path is too long"):
         _directory_to_tar(source)
-
-
-def test_legacy_directory_download_uses_guest_mktemp(tmp_path: Path) -> None:
-    archive = io.BytesIO()
-    with tarfile.open(fileobj=archive, mode="w") as tar:
-        info = tarfile.TarInfo("note.txt")
-        payload = b"hello"
-        info.size = len(payload)
-        tar.addfile(info, io.BytesIO(payload))
-
-    commands: list[str] = []
-    downloads: list[str] = []
-    channel = RustHttpVsockChannel(guest_cid=42)
-
-    def fake_run(command: str, timeout: float = 30, shell: str = "login") -> CommandResult:
-        commands.append(command)
-        if command.startswith("mktemp "):
-            return CommandResult(exit_code=0, stdout="/tmp/smolvm-dir.DEF456.tar\n", stderr="")
-        return CommandResult(exit_code=0, stdout="", stderr="")
-
-    def fake_get_file(remote_path: str, local_path: str | Path) -> Path:
-        downloads.append(remote_path)
-        destination = Path(local_path)
-        destination.write_bytes(archive.getvalue())
-        return destination
-
-    channel.run = fake_run  # type: ignore[method-assign]
-    channel.get_file = fake_get_file  # type: ignore[method-assign]
-
-    destination = channel._get_directory_legacy("/tmp/source", tmp_path / "download")
-
-    assert downloads == ["/tmp/smolvm-dir.DEF456.tar"]
-    assert (destination / "note.txt").read_text() == "hello"
-    assert commands[0].startswith("mktemp /tmp/smolvm-dir.")
-    assert commands[1] == "set -e; tar -cf /tmp/smolvm-dir.DEF456.tar -C /tmp/source ."
-    assert commands[-1] == "rm -f -- /tmp/smolvm-dir.DEF456.tar"
 
 
 def test_env_helpers_use_v2_env_endpoint() -> None:
