@@ -307,7 +307,7 @@ def test_sync_fallback_exec_failure_maps_to_smolvm_error() -> None:
         channel.sync(timeout=10)
 
 
-def test_put_and_get_file(tmp_path: Path) -> None:
+def test_put_and_get_file_use_base64_fallback_when_streaming_missing(tmp_path: Path) -> None:
     source = tmp_path / "source.txt"
     source.write_text("payload")
     source.chmod(0o644)
@@ -338,7 +338,7 @@ def test_put_and_get_file(tmp_path: Path) -> None:
     assert destination.stat().st_mode & 0o777 == 0o640
 
 
-def test_put_and_get_file_prefer_raw_streaming_and_cache_capabilities(tmp_path: Path) -> None:
+def test_put_and_get_file_use_raw_streaming_and_cache_capabilities(tmp_path: Path) -> None:
     source = tmp_path / "source.txt"
     source.write_text("payload")
     source.chmod(0o644)
@@ -360,9 +360,7 @@ def test_put_and_get_file_prefer_raw_streaming_and_cache_capabilities(tmp_path: 
             {"x-smolvm-file-mode": "640", "x-smolvm-file-size": "7"},
         )
 
-    channel = FakeRustChannel(
-        [_capabilities({"file_base64": True, "file_raw": True}), _raw_put, _raw_get]
-    )
+    channel = FakeRustChannel([_capabilities({"file_raw": True}), _raw_put, _raw_get])
     channel.put_file(source, "/tmp/source.txt")
     channel.get_file("/tmp/source.txt", destination)
 
@@ -391,9 +389,7 @@ def test_put_file_falls_back_to_base64_when_raw_endpoint_missing(tmp_path: Path)
         assert base64.b64decode(request["data_base64"]) == b"payload"
         return {"ok": True}
 
-    channel = FakeRustChannel(
-        [_capabilities({"file_base64": True, "file_raw": True}), _missing_raw, _base64_put]
-    )
+    channel = FakeRustChannel([_capabilities({"file_raw": True}), _missing_raw, _base64_put])
     channel.put_file(source, "/tmp/source.txt")
 
 
@@ -554,10 +550,17 @@ def test_env_helpers_use_v2_env_endpoint() -> None:
         assert json.loads(body) == {"keys": ["FOO"]}
         return {"ok": True, "vars": {}}
 
-    channel = FakeRustChannel([_set, _get, _get, _delete])
+    channel = FakeRustChannel([_capabilities({"env_managed": True}), _set, _get, _get, _delete])
     assert channel.set_env_vars({"FOO": "bar"}) == ["FOO"]
     assert channel.list_env_vars() == {"FOO": "bar"}
     assert channel.unset_env_vars(["FOO"]) == {"FOO": "bar"}
+
+
+def test_env_helpers_require_managed_env_capability() -> None:
+    channel = FakeRustChannel([_capabilities({})])
+
+    with pytest.raises(SmolVMError, match="managed environment variables"):
+        channel.set_managed_env({"FOO": "bar"})
 
 
 def test_wait_for_ports_and_boot_milestones_use_v2_endpoints() -> None:

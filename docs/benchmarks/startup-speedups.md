@@ -84,6 +84,42 @@ Networking note:
   existing sudo-command path, with stage sums of `242.1 ms` and `236.4 ms`.
   These are fallback-path numbers, not native TAP speedup numbers.
 
+## 2026-06-23 - Current PR: Alpha Cleanup And Transfer Validation
+
+- Commit: current PR branch, based on `0818286`.
+- Image tag: current published Ubuntu image used by the local benchmark run.
+- Commands:
+  - `UV_CACHE_DIR=/tmp/uv-cache uv run python scripts/benchmarks/disk_io.py --iterations 2 --sizes 16M,128M --json --output /tmp/smolvm-alpha-cleanup-disk-io.json`
+  - `UV_CACHE_DIR=/tmp/uv-cache uv run python scripts/benchmarks/file_transfer.py --backend qemu --comm-channel vsock --os ubuntu --sizes 1K,1M --directory-files 10 --directory-file-size 1K --boot-timeout 120 --ready-timeout 120 --json --output /tmp/smolvm-alpha-cleanup-file-transfer.json`
+- Host: Linux x86_64, kernel `7.0.0-15-generic`, KVM available.
+- Method: two local disk iterations; one QEMU/vsock published-Ubuntu file
+  transfer smoke with small payloads.
+- Behavior changed: the new Rust guest-agent build drops the old JSON/base64
+  file endpoints, while the host keeps a warning-backed compatibility path
+  because the active published Ubuntu image still lacks protocol-v2 transfer
+  capabilities.
+
+Disk helper validation:
+
+| Operation | Size | Native path | Forced-off path | Result |
+|---|---:|---:|---:|---|
+| sparse copy | 16 MiB | 10.5 ms (`cp`) | 10.2 ms (`cp`) | unchanged; `cp` remains first |
+| sparse copy | 128 MiB | 64.6 ms (`cp`) | 64.8 ms (`cp`) | unchanged; `cp` remains first |
+| zstd decompress | 16 MiB | 13.5 ms | 40.6 ms | 66.8% faster |
+| zstd decompress | 128 MiB | 96.4 ms | 376.1 ms | 74.4% faster |
+
+File-transfer validation:
+
+| Backend | Transport | Start | Ready | 1 KiB upload/download | 1 MiB upload/download | Directory upload/download | Feature flags |
+|---|---|---:|---:|---:|---:|---:|---|
+| QEMU | vsock | 52.6 ms | 286.4 ms | 2.6 / 0.7 ms | 12.6 / 9.6 ms | 8.6 / 7.5 ms | `files.stream=false`, `files.directory_tar=false` |
+
+Finding: the current published Ubuntu image can boot over vsock but still lacks
+`GET /capabilities`, `files.stream`, and `files.directory_tar`. SmolVM now logs
+a clear compatibility warning instead of silently using the slower path. Rerun
+this file-transfer benchmark after the next published-image release before
+claiming v2 streaming transfer speedups.
+
 ## Required Entry Format
 
 Add a short section for each PR that changes startup behavior or benchmark

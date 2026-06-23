@@ -13,14 +13,10 @@ use std::time::Instant;
 use crate::boot::{self, BootMilestonesResponse};
 use crate::env::{self, EnvDeleteRequest, EnvPutRequest, EnvResponse};
 use crate::exec::{self, ExecRequest, ExecResponse};
-use crate::files::{
-    self, DirectoryTarQuery, FileGetQuery, FileGetResponse, FilePutRequest, FilePutResponse,
-    FileRawPutQuery,
-};
+use crate::files::{self, DirectoryTarQuery, FileGetQuery, FilePutResponse, FileRawPutQuery};
 use crate::ports::{self, PortsWaitRequest, PortsWaitResponse};
 
 pub const PROTOCOL_VERSION: u32 = 2;
-const FILE_PUT_BODY_LIMIT_BYTES: usize = 50 * 1024 * 1024;
 const FILE_RAW_BODY_LIMIT_BYTES: usize = 256 * 1024 * 1024;
 const DIRECTORY_TAR_BODY_LIMIT_BYTES: usize = 512 * 1024 * 1024;
 static START_TIME: Lazy<Instant> = Lazy::new(Instant::now);
@@ -33,11 +29,6 @@ pub fn router() -> Router {
         .route("/capabilities", get(handle_capabilities))
         .route("/exec", post(handle_exec))
         .route("/sync", post(handle_sync))
-        .route(
-            "/files/put",
-            post(handle_file_put).layer(DefaultBodyLimit::max(FILE_PUT_BODY_LIMIT_BYTES)),
-        )
-        .route("/files/get", get(handle_file_get))
         .route(
             "/files/raw",
             get(handle_file_raw_get)
@@ -84,11 +75,6 @@ pub fn extension_router() -> Router {
         .route("/version", get(handle_version))
         .route("/capabilities", get(handle_capabilities))
         .route("/sync", post(handle_sync))
-        .route(
-            "/files/put",
-            post(handle_file_put).layer(DefaultBodyLimit::max(FILE_PUT_BODY_LIMIT_BYTES)),
-        )
-        .route("/files/get", get(handle_file_get))
         .route(
             "/files/raw",
             get(handle_file_raw_get)
@@ -180,7 +166,6 @@ pub struct CapabilitiesResponse {
 pub struct CapabilityFeatures {
     pub exec: bool,
     pub sync: bool,
-    pub file_base64: bool,
     pub file_raw: bool,
     #[serde(rename = "files.stream")]
     pub files_stream: bool,
@@ -205,7 +190,6 @@ pub struct CapabilityFeatures {
 
 #[derive(Serialize)]
 pub struct CapabilityLimits {
-    pub file_put_json_bytes: usize,
     pub file_raw_put_bytes: usize,
     pub max_stream_size_bytes: usize,
     pub directory_tar_put_bytes: usize,
@@ -223,8 +207,6 @@ pub async fn handle_capabilities() -> Json<CapabilitiesResponse> {
             "GET /capabilities",
             "POST /exec",
             "POST /sync",
-            "POST /files/put",
-            "GET /files/get",
             "PUT /files/content",
             "GET /files/content",
             "PUT /directories/tar",
@@ -245,7 +227,6 @@ pub async fn handle_capabilities() -> Json<CapabilitiesResponse> {
         features: CapabilityFeatures {
             exec: true,
             sync: true,
-            file_base64: true,
             file_raw: true,
             files_stream: true,
             dir_tar: true,
@@ -262,7 +243,6 @@ pub async fn handle_capabilities() -> Json<CapabilitiesResponse> {
             prod_metrics: false,
         },
         limits: CapabilityLimits {
-            file_put_json_bytes: FILE_PUT_BODY_LIMIT_BYTES,
             file_raw_put_bytes: FILE_RAW_BODY_LIMIT_BYTES,
             max_stream_size_bytes: FILE_RAW_BODY_LIMIT_BYTES,
             directory_tar_put_bytes: DIRECTORY_TAR_BODY_LIMIT_BYTES,
@@ -299,14 +279,6 @@ pub async fn handle_sync() -> Json<SyncResponse> {
             error: Some(format!("sync task failed: {error}")),
         }),
     }
-}
-
-pub async fn handle_file_put(Json(req): Json<FilePutRequest>) -> Json<FilePutResponse> {
-    Json(files::put_file(req).await)
-}
-
-pub async fn handle_file_get(Query(query): Query<FileGetQuery>) -> Json<FileGetResponse> {
-    Json(files::get_file(query).await)
 }
 
 pub async fn handle_file_raw_put(
@@ -429,7 +401,7 @@ mod tests {
         assert_eq!(capabilities.body["tcp_enabled"], cfg!(feature = "tcp"));
         assert_eq!(capabilities.body["terminal_enabled"], false);
         assert_eq!(capabilities.body["prod_metrics_enabled"], false);
-        assert_eq!(capabilities.body["features"]["file_base64"], true);
+        assert!(capabilities.body["features"].get("file_base64").is_none());
         assert_eq!(capabilities.body["features"]["file_raw"], true);
         assert_eq!(capabilities.body["features"]["files.stream"], true);
         assert_eq!(capabilities.body["features"]["dir_tar"], true);
@@ -441,9 +413,10 @@ mod tests {
         assert_eq!(capabilities.body["features"]["ports_wait"], true);
         assert_eq!(capabilities.body["features"]["ports.wait"], true);
         assert_eq!(capabilities.body["features"]["browser.status"], false);
-        assert_eq!(
-            capabilities.body["limits"]["file_put_json_bytes"],
-            FILE_PUT_BODY_LIMIT_BYTES
+        assert!(
+            capabilities.body["limits"]
+                .get("file_put_json_bytes")
+                .is_none()
         );
         assert_eq!(
             capabilities.body["limits"]["max_stream_size_bytes"],
@@ -456,8 +429,8 @@ mod tests {
         let endpoints = capabilities.body["endpoints"].as_array().unwrap();
         assert!(endpoints.contains(&json!("POST /exec")));
         assert!(endpoints.contains(&json!("POST /sync")));
-        assert!(endpoints.contains(&json!("POST /files/put")));
-        assert!(endpoints.contains(&json!("GET /files/get")));
+        assert!(!endpoints.contains(&json!("POST /files/put")));
+        assert!(!endpoints.contains(&json!("GET /files/get")));
         assert!(endpoints.contains(&json!("PUT /files/content")));
         assert!(endpoints.contains(&json!("GET /files/content")));
         assert!(endpoints.contains(&json!("PUT /directories/tar")));

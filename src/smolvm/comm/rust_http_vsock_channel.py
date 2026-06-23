@@ -69,6 +69,7 @@ _LEGACY_CAPABILITIES: dict[str, Any] = {
     "limits": {},
     "endpoints": ["POST /exec", "POST /files/put", "GET /files/get"],
 }
+_LEGACY_FALLBACK_WARNED: set[str] = set()
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,14 @@ class ControlCapabilities:
         return False
 
 
+def _endpoint_missing(exc: BaseException, method: str, path: str) -> bool:
+    text = str(exc)
+    return (
+        f"guest agent HTTP 404 for {method} {path}" in text
+        or f"guest agent HTTP 405 for {method} {path}" in text
+    )
+
+
 def _legacy_control_capabilities() -> ControlCapabilities:
     features = _LEGACY_CAPABILITIES["features"]
     limits = _LEGACY_CAPABILITIES["limits"]
@@ -110,11 +119,15 @@ def _legacy_control_capabilities() -> ControlCapabilities:
     )
 
 
-def _endpoint_missing(exc: BaseException, method: str, path: str) -> bool:
-    text = str(exc)
-    return (
-        f"guest agent HTTP 404 for {method} {path}" in text
-        or f"guest agent HTTP 405 for {method} {path}" in text
+def _warn_legacy_fallback(feature: str) -> None:
+    if feature in _LEGACY_FALLBACK_WARNED:
+        return
+    _LEGACY_FALLBACK_WARNED.add(feature)
+    logger.warning(
+        "This sandbox image does not support %s; SmolVM is using a slower "
+        "compatibility path. Rebuild or republish the image with the current "
+        "Rust guest agent, or create the sandbox with `--comm-channel ssh`.",
+        feature,
     )
 
 
@@ -133,6 +146,14 @@ def _parse_size_header(value: str, *, header: str, method: str, path: str) -> in
     if size < 0:
         raise SmolVMError(f"guest agent returned negative {header} for {method} {path}")
     return size
+
+
+def _feature_required_error(feature: str) -> SmolVMError:
+    return SmolVMError(
+        f"This sandbox image does not support {feature}; recreate it with "
+        "an image that includes the current Rust guest agent, or create it "
+        "with `--comm-channel ssh`."
+    )
 
 
 def _directory_to_tar(source: Path) -> bytes:
@@ -443,6 +464,7 @@ class RustHttpVsockChannel:
                 limits = resp.get("limits") if isinstance(resp.get("limits"), dict) else {}
                 protocol_version = int(resp.get("protocol_version", 1))
                 if protocol_version < 2 and not features:
+                    _warn_legacy_fallback("the current control protocol")
                     features = _LEGACY_CAPABILITIES["features"]
                 self._capabilities = ControlCapabilities(
                     protocol_version=protocol_version,
@@ -450,11 +472,16 @@ class RustHttpVsockChannel:
                     limits=dict(limits),
                 )
             except (OSError, SmolVMError, ValueError, OperationTimeoutError):
+                _warn_legacy_fallback("the current control protocol")
                 self._capabilities = _legacy_control_capabilities()
         return self._capabilities
 
     def supports(self, *features: str) -> bool:
         return self.capabilities.enabled(*features)
+
+    def _require_feature(self, feature: str, *capability_names: str) -> None:
+        if not self.supports(*capability_names):
+            raise _feature_required_error(feature)
 
     def _limit_bytes(self, name: str, default: int) -> int:
         value = self.capabilities.limits.get(name)
@@ -503,6 +530,7 @@ class RustHttpVsockChannel:
         except SmolVMError as exc:
             if "guest agent HTTP 404 for POST /sync" not in str(exc):
                 raise
+            _warn_legacy_fallback("guest filesystem sync")
             result = self.run("sync", timeout=timeout, shell="raw")
             if result.exit_code != 0:
                 raise SmolVMError(
@@ -523,10 +551,8 @@ class RustHttpVsockChannel:
             raise ValueError(f"local_path is not a file: {source}")
         mode = stat.S_IMODE(source.stat().st_mode)
         if self.supports("file_raw", "files.stream"):
+            query = urllib.parse.urlencode({"path": remote_path, "name": source.name, "mode": mode})
             try:
-                query = urllib.parse.urlencode(
-                    {"path": remote_path, "name": source.name, "mode": mode}
-                )
                 resp, data = self._request_bytes(
                     "PUT",
                     f"/files/content?{query}",
@@ -542,7 +568,10 @@ class RustHttpVsockChannel:
             except SmolVMError as exc:
                 if not _endpoint_missing(exc, "PUT", "/files/content"):
                     raise
+                _warn_legacy_fallback("fast file transfer")
                 self._capabilities = _legacy_control_capabilities()
+        else:
+            _warn_legacy_fallback("fast file transfer")
         payload = {
             "path": remote_path,
             "name": source.name,
@@ -585,7 +614,10 @@ class RustHttpVsockChannel:
             except SmolVMError as exc:
                 if not _endpoint_missing(exc, "GET", "/files/content"):
                     raise
+                _warn_legacy_fallback("fast file transfer")
                 self._capabilities = _legacy_control_capabilities()
+        else:
+            _warn_legacy_fallback("fast file transfer")
         resp = self._request_json("GET", f"/files/get?{query}")
         if not resp.get("ok"):
             raise SmolVMError(f"Failed to download guest file '{remote_path}': {resp.get('error')}")
@@ -612,6 +644,7 @@ class RustHttpVsockChannel:
         if not source.is_dir():
             raise ValueError(f"local_path is not a directory: {source}")
         if not self.supports("dir_tar", "files.directory_tar"):
+            _warn_legacy_fallback("directory transfer")
             self._put_directory_legacy(source, remote_path)
             return
         data = _directory_to_tar(source)
@@ -626,6 +659,7 @@ class RustHttpVsockChannel:
         except SmolVMError as exc:
             if not _endpoint_missing(exc, "PUT", "/directories/tar"):
                 raise
+            _warn_legacy_fallback("directory transfer")
             self._put_directory_legacy(source, remote_path)
             return
         decoded = json.loads(response_data.decode("utf-8")) if response_data else {}
@@ -639,6 +673,7 @@ class RustHttpVsockChannel:
         if not remote_path:
             raise ValueError("remote_path cannot be empty")
         if not self.supports("dir_tar", "files.directory_tar"):
+            _warn_legacy_fallback("directory transfer")
             return self._get_directory_legacy(remote_path, Path(local_path))
         destination = Path(local_path)
         destination.mkdir(parents=True, exist_ok=True)
@@ -652,6 +687,7 @@ class RustHttpVsockChannel:
         except SmolVMError as exc:
             if not _endpoint_missing(exc, "GET", "/directories/tar"):
                 raise
+            _warn_legacy_fallback("directory transfer")
             return self._get_directory_legacy(remote_path, destination)
         _safe_extract_tar(data, destination)
         return destination
@@ -716,6 +752,7 @@ class RustHttpVsockChannel:
                 self.run(f"rm -f -- {shlex.quote(remote_tmp)}", timeout=10, shell="raw")
 
     def set_managed_env(self, env_vars: dict[str, str], *, merge: bool = True) -> dict[str, str]:
+        self._require_feature("managed environment variables", "env_managed", "env.managed")
         resp = self._request_json("PUT", "/env", {"vars": env_vars, "merge": merge})
         if not resp.get("ok"):
             raise SmolVMError(f"guest agent error during env update: {resp.get('error', resp)}")
@@ -723,6 +760,7 @@ class RustHttpVsockChannel:
         return dict(vars_value) if isinstance(vars_value, dict) else {}
 
     def unset_managed_env(self, keys: list[str]) -> dict[str, str]:
+        self._require_feature("managed environment variables", "env_managed", "env.managed")
         resp = self._request_json("DELETE", "/env", {"keys": keys})
         if not resp.get("ok"):
             raise SmolVMError(f"guest agent error during env update: {resp.get('error', resp)}")
@@ -730,6 +768,7 @@ class RustHttpVsockChannel:
         return dict(vars_value) if isinstance(vars_value, dict) else {}
 
     def list_managed_env(self) -> dict[str, str]:
+        self._require_feature("managed environment variables", "env_managed", "env.managed")
         resp = self._request_json("GET", "/env")
         if not resp.get("ok"):
             raise SmolVMError(f"guest agent error during env read: {resp.get('error', resp)}")
@@ -746,6 +785,7 @@ class RustHttpVsockChannel:
                 exc, "PUT", "/env"
             ):
                 raise
+            _warn_legacy_fallback("managed environment variables")
             from smolvm.env import inject_env_vars
 
             return inject_env_vars(self, env_vars, merge=merge)
@@ -762,6 +802,7 @@ class RustHttpVsockChannel:
                 exc, "DELETE", "/env"
             ):
                 raise
+            _warn_legacy_fallback("managed environment variables")
             from smolvm.env import remove_env_vars
 
             return remove_env_vars(self, keys)
@@ -774,6 +815,7 @@ class RustHttpVsockChannel:
                 exc, "GET", "/env"
             ):
                 raise
+            _warn_legacy_fallback("managed environment variables")
             from smolvm.env import read_env_vars
 
             return read_env_vars(self)

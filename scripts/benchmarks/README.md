@@ -90,6 +90,12 @@ uv run python scripts/benchmarks/preset_start.py --preset codex --backend qemu -
 uv run python scripts/benchmarks/browser_ready.py --backend qemu --json --output /tmp/smolvm-browser-ready.json
 ```
 
+If `file_transfer.py` prints a compatibility warning about the current control
+protocol, fast file transfer, or directory transfer, the sandbox image is using
+the older guest-agent path. Treat those numbers as compatibility-path timings,
+then rebuild or republish the image with the current Rust guest agent and rerun
+before claiming protocol-v2 streaming speedups.
+
 ## Linux Networking Stages
 
 Use `networking.py` to decide whether the Rust networking path makes Linux VM
