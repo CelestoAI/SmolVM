@@ -464,6 +464,7 @@ def test_directory_tar_strips_owner_metadata(tmp_path: Path) -> None:
 
     data = _directory_to_tar(source)
 
+    assert b"././@PaxHeader" not in data
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as archive:
         members = archive.getmembers()
 

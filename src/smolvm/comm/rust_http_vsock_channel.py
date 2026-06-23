@@ -137,7 +137,7 @@ def _parse_size_header(value: str, *, header: str, method: str, path: str) -> in
 
 def _directory_to_tar(source: Path) -> bytes:
     buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w") as archive:
+    with tarfile.open(fileobj=buffer, mode="w", format=tarfile.USTAR_FORMAT) as archive:
         for child in sorted(source.iterdir()):
             _add_tar_path(archive, child, PurePosixPath(child.name))
     return buffer.getvalue()

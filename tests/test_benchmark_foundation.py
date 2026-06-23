@@ -18,7 +18,14 @@ import json
 from pathlib import Path
 from typing import Any
 
-from scripts.benchmarks import artifacts, browser_ready, preset_start, runtime_control
+from scripts.benchmarks import (
+    artifacts,
+    browser_ready,
+    disk_io,
+    file_transfer,
+    preset_start,
+    runtime_control,
+)
 
 
 def test_artifacts_dry_run_json_reports_scan_plan(capsys, tmp_path: Path) -> None:
@@ -105,6 +112,67 @@ def test_runtime_control_dry_run_json_plans_noun_verb_lifecycle(capsys) -> None:
         ["sandbox", "start"],
     ]
     assert record["cleanup"]["command"][:3] == ["smolvm", "sandbox", "delete"]
+
+
+def test_disk_io_dry_run_json_reports_variants_and_operations(capsys) -> None:
+    rc = disk_io.main(
+        [
+            "--dry-run",
+            "--json",
+            "--sizes",
+            "1K",
+            "--operations",
+            "copy,decompress",
+            "--variants",
+            "native,forced-off",
+        ]
+    )
+
+    assert rc == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["script"] == "disk_io"
+    assert report["dry_run"] is True
+    assert [record["operation"] for record in report["records"]] == [
+        "copy",
+        "copy",
+        "decompress",
+        "decompress",
+    ]
+    assert {record["variant"] for record in report["records"]} == {"native", "forced-off"}
+    assert {record["size_bytes"] for record in report["records"]} == {1024}
+
+
+def test_file_transfer_dry_run_json_reports_files_and_directory(capsys) -> None:
+    rc = file_transfer.main(
+        [
+            "--dry-run",
+            "--json",
+            "--sizes",
+            "1K,2K",
+            "--directory-files",
+            "3",
+            "--directory-file-size",
+            "4K",
+            "--backend",
+            "qemu",
+            "--comm-channel",
+            "vsock",
+        ]
+    )
+
+    assert rc == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["script"] == "file_transfer"
+    assert report["dry_run"] is True
+    assert [record["operation"] for record in report["records"]] == [
+        "file_round_trip",
+        "file_round_trip",
+        "directory_round_trip",
+    ]
+    assert report["records"][0]["backend"] == "qemu"
+    assert report["records"][0]["comm_channel"] == "vsock"
+    assert report["records"][2]["files"] == 3
+    assert report["records"][2]["file_size_bytes"] == 4096
 
 
 def test_preset_start_attempts_cleanup_after_start_failure(monkeypatch, capsys) -> None:

@@ -56,17 +56,34 @@ check the command plan before starting any sandbox:
 
 ```bash
 uv run python scripts/benchmarks/artifacts.py --dry-run --json
+uv run python scripts/benchmarks/disk_io.py --dry-run --json
+uv run python scripts/benchmarks/file_transfer.py --dry-run --json
 uv run python scripts/benchmarks/preset_start.py --preset codex --dry-run --json
 uv run python scripts/benchmarks/browser_ready.py --dry-run --json
 uv run python scripts/benchmarks/runtime_control.py --operations info,stop,start --dry-run --json
 ```
 
 `artifacts.py` records metadata for local image and browser files.
+`disk_io.py` measures sparse disk copy and zstd decompression with native Rust
+helpers enabled and forced off. `file_transfer.py` starts one sandbox and times
+upload/download for several file sizes plus a directory tar round trip when the
+selected control channel supports it.
 `preset_start.py` times `smolvm <preset> start` and cleans up the sandbox unless
 `--keep` is set. `browser_ready.py` starts a browser sandbox, then polls the CDP
 endpoint, which is the local browser debugging URL, when it is available.
 `runtime_control.py` measures public lifecycle commands such as
 `smolvm sandbox pause`, `resume`, `stop`, and `start`.
+
+Use the benchmark bundle below when validating Rust migration work after a
+merge. The first command does not start a VM. The others create short-lived
+sandboxes and clean them up unless `--keep` is set:
+
+```bash
+uv run python scripts/benchmarks/disk_io.py --json --output /tmp/smolvm-disk-io.json
+uv run python scripts/benchmarks/file_transfer.py --backend qemu --comm-channel vsock --json --output /tmp/smolvm-file-transfer.json
+uv run python scripts/benchmarks/preset_start.py --preset codex --backend qemu --json --output /tmp/smolvm-preset-codex.json
+uv run python scripts/benchmarks/browser_ready.py --backend qemu --json --output /tmp/smolvm-browser-ready.json
+```
 
 ## Linux Networking Stages
 
