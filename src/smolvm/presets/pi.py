@@ -19,6 +19,7 @@ from __future__ import annotations
 from smolvm.presets._scripts import NODE20_BOOTSTRAP, npm_install_global
 from smolvm.presets._types import HostConfigCopy, Preset
 from smolvm.presets.claude_code import CLAUDE_CODE_KEYCHAIN_SECRET, minimize_claude_json
+from smolvm.presets.codex import CODEX_HOST_CONFIGS
 
 # Pi is a meta-harness: its `/login` flow lists "OpenAI ChatGPT Plus/Pro
 # (Codex)" and "Anthropic Claude Pro/Max" as subscription providers, and
@@ -41,7 +42,7 @@ PI_PRESET = Preset(
     host_env_vars=("ANTHROPIC_API_KEY", "OPENAI_API_KEY"),
     host_configs=(
         HostConfigCopy(host_path="~/.pi", guest_path="/root/.pi"),
-        HostConfigCopy(host_path="~/.codex", guest_path="/root/.codex"),
+        *CODEX_HOST_CONFIGS,
         HostConfigCopy(
             host_path="~/.claude.json",
             guest_path="/root/.claude.json",

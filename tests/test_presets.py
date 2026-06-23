@@ -115,9 +115,169 @@ class TestCodexPreset:
             for cfg in CODEX_PRESET.host_configs
         )
 
+    def test_codex_config_copy_is_filtered(self) -> None:
+        from smolvm.presets.codex import (
+            CODEX_CONFIG_EXCLUDE_PATTERNS,
+            CODEX_CONFIG_INCLUDE_PATTERNS,
+        )
+
+        cfg = next(c for c in CODEX_PRESET.host_configs if c.guest_path == "/root/.codex")
+
+        assert cfg.include_patterns == CODEX_CONFIG_INCLUDE_PATTERNS
+        assert {
+            "auth.json",
+            "config.toml",
+            "*.config.toml",
+            "hooks.json",
+            "AGENTS.md",
+            "AGENTS.override.md",
+            "rules/**",
+            "agents/*.toml",
+        }.issubset(cfg.include_patterns)
+        assert cfg.exclude_patterns == CODEX_CONFIG_EXCLUDE_PATTERNS
+        assert {
+            "archived_sessions/**",
+            "attachments/**",
+            "cache/**",
+            "history.jsonl",
+            "logs*",
+            "models_cache.json",
+            "session_index.jsonl",
+            "shell_snapshots/**",
+            "skills/**",
+            "*.sqlite",
+            "*.sqlite-*",
+            "*.db",
+            "*.db-*",
+        }.issubset(cfg.exclude_patterns)
+
     def test_codex_install_runs_npm_install_codex(self) -> None:
         assert "@openai/codex" in CODEX_PRESET.install_script
         assert "npm install -g" in CODEX_PRESET.install_script
+
+    def test_codex_apply_copies_only_auth_and_config_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import tarfile
+        from dataclasses import replace
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+
+        allowed_files = {
+            "auth.json": "{}",
+            "config.toml": "model = 'gpt-5'\n",
+            "daily.config.toml": "approval_policy = 'on-request'\n",
+            "requirements.toml": "[policies]\n",
+            "hooks.json": "[]\n",
+            "AGENTS.md": "Use concise updates.\n",
+            "AGENTS.override.md": "Temporary override.\n",
+            "rules/default.rules": "prefix_rule(pattern = ['gh'], decision = 'allow')\n",
+            "agents/worker.toml": "name = 'worker'\n",
+        }
+        for rel, content in allowed_files.items():
+            path = codex_dir / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+        (codex_dir / "auth.json").chmod(0o600)
+
+        bulky_files = (
+            "history.jsonl",
+            "session_index.jsonl",
+            "models_cache.json",
+            "logs_2.sqlite",
+            "logs_2.sqlite-shm",
+            "logs_2.sqlite-wal",
+            "state_5.sqlite",
+            "state_5.sqlite-wal",
+            "token.db",
+            "token.db-wal",
+            "archived_sessions/rollout.jsonl",
+            "attachments/clip/image.png",
+            "cache/blob.json",
+            "log/codex.log",
+            "shell_snapshots/shell.sh",
+            "tmp/work/file",
+            ".tmp/scratch/file",
+            "app-server-control/app-server.log",
+            "app-server-daemon/daemon.lock",
+            "memories/MEMORY.md",
+            "packages/standalone/releases/codex",
+            "plugins/cache/plugin.json",
+            "plugins/.remote-plugin-install-staging/plugin.json",
+            "skills/example/SKILL.md",
+            "worktrees/repo/file.py",
+        )
+        for rel in bulky_files:
+            path = codex_dir / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("bulk")
+
+        ssh = MagicMock()
+        ssh.run.return_value = _ok()
+        staged_tars: list[Path] = []
+
+        def capture_put(local: object, remote: str) -> None:
+            path = Path(str(local))
+            if remote.endswith(".tar"):
+                snapshot = tmp_path / f"codex-{len(staged_tars)}.tar"
+                snapshot.write_bytes(path.read_bytes())
+                staged_tars.append(snapshot)
+
+        ssh.put_file.side_effect = capture_put
+        preset = replace(CODEX_PRESET, setup_script="", install_script="")
+
+        summary = apply_preset(ssh, preset)
+
+        assert summary["copied_configs"] == ["/root/.codex"]
+        assert len(staged_tars) == 1
+        with tarfile.open(staged_tars[0]) as tf:
+            members = tf.getmembers()
+        names = {
+            member.name.removeprefix("./")
+            for member in members
+            if member.name not in {".", "./"}
+        }
+
+        assert set(allowed_files).issubset(names)
+        assert set(bulky_files).isdisjoint(names)
+        for excluded_root in (
+            ".tmp",
+            "app-server-control",
+            "app-server-daemon",
+            "archived_sessions",
+            "attachments",
+            "cache",
+            "log",
+            "memories",
+            "packages",
+            "plugins",
+            "shell_snapshots",
+            "skills",
+            "tmp",
+            "worktrees",
+        ):
+            assert excluded_root not in names
+            assert not any(name.startswith(f"{excluded_root}/") for name in names)
+
+        auth_member = next(member for member in members if member.name.endswith("auth.json"))
+        assert auth_member.mode & 0o777 == 0o600
+
+    def test_missing_codex_config_dir_skips_silently(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from dataclasses import replace
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        ssh = MagicMock()
+        ssh.run.return_value = _ok()
+        preset = replace(CODEX_PRESET, setup_script="", install_script="")
+
+        summary = apply_preset(ssh, preset)
+
+        assert "/root/.codex" not in summary["copied_configs"]
+        ssh.put_file.assert_not_called()
 
 
 class TestClaudeCodePreset:
@@ -230,6 +390,15 @@ class TestPiPreset:
             ("~/.claude.json", "/root/.claude.json"),
             ("~/.claude/.credentials.json", "/root/.claude/.credentials.json"),
         ]
+
+    def test_pi_reuses_filtered_codex_copy_policy(self) -> None:
+        from smolvm.presets.codex import CODEX_HOST_CONFIGS
+
+        pi_codex_cfg = next(
+            cfg for cfg in PI_PRESET.host_configs if cfg.guest_path == "/root/.codex"
+        )
+
+        assert pi_codex_cfg == CODEX_HOST_CONFIGS[0]
 
     def test_pi_pulls_oauth_from_macos_keychain(self) -> None:
         """Pi delegates Claude Pro/Max auth through Claude Code's

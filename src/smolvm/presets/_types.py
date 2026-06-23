@@ -44,6 +44,14 @@ class HostConfigCopy:
             auth/onboarding subset. Filtering on the host side keeps the
             host's project history off the sandbox disk entirely.
             ``None`` (default) copies the file verbatim.
+        include_patterns: Optional allowlist for directory copies,
+            expressed as POSIX-style paths relative to ``host_path``.
+            When empty, every entry is included unless excluded.
+        exclude_patterns: Optional denylist for directory copies,
+            expressed as POSIX-style paths relative to ``host_path``.
+            Excludes win over includes. Single-file copies reject
+            directory patterns because there is no directory tree to
+            filter.
     """
 
     host_path: str
@@ -51,6 +59,8 @@ class HostConfigCopy:
     required: bool = False
     file_mode: int | None = None
     transform: Callable[[bytes], bytes] | None = None
+    include_patterns: tuple[str, ...] = ()
+    exclude_patterns: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

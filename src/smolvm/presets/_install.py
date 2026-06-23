@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import getpass
 import logging
 import os
@@ -159,15 +160,24 @@ def _copy_to_guest(
     *,
     file_mode: int | None = None,
     transform: Callable[[bytes], bytes] | None = None,
+    include_patterns: tuple[str, ...] = (),
+    exclude_patterns: tuple[str, ...] = (),
 ) -> None:
     """Copy a host file or directory tree to *guest_path* inside the VM.
 
     *file_mode* applies only to single-file copies; directory copies
     inherit per-file modes from the tar archive. *transform*, when set,
     rewrites a single file's bytes before upload (directory copies have
-    no single byte stream and reject a transform).
+    no single byte stream and reject a transform). *include_patterns*
+    and *exclude_patterns* apply only to directory copies and match
+    POSIX paths relative to the copied directory.
     """
     if local.is_file():
+        if include_patterns or exclude_patterns:
+            raise SmolVMError(
+                f"Directory filters cannot be used with a file: {local}",
+                {"host_path": str(local)},
+            )
         _copy_file(ssh, local, guest_path, file_mode=file_mode, transform=transform)
         return
     if local.is_dir():
@@ -176,7 +186,13 @@ def _copy_to_guest(
                 f"transform is not supported for directory copies: {local}",
                 {"host_path": str(local)},
             )
-        _copy_dir(ssh, local, guest_path)
+        _copy_dir(
+            ssh,
+            local,
+            guest_path,
+            include_patterns=include_patterns,
+            exclude_patterns=exclude_patterns,
+        )
         return
     raise SmolVMError(
         f"Unsupported host path type (not file or directory): {local}",
@@ -242,7 +258,14 @@ def _copy_file(
             )
 
 
-def _copy_dir(ssh: CommChannel, local: Path, guest_path: str) -> None:
+def _copy_dir(
+    ssh: CommChannel,
+    local: Path,
+    guest_path: str,
+    *,
+    include_patterns: tuple[str, ...] = (),
+    exclude_patterns: tuple[str, ...] = (),
+) -> None:
     """Tar a host directory tree and untar it into *guest_path* on the guest.
 
     Strips ownership (uid/gid/uname/gname) on every TarInfo so the guest
@@ -252,10 +275,12 @@ def _copy_dir(ssh: CommChannel, local: Path, guest_path: str) -> None:
     sshd would reject the key with "Bad owner or permissions". File
     modes (the 0o600 we care about for SSH keys) are untouched.
     """
+    has_filters = bool(include_patterns or exclude_patterns)
     put_directory = getattr(ssh, "put_directory", None)
     supports = getattr(ssh, "supports", None)
     if (
-        callable(put_directory)
+        not has_filters
+        and callable(put_directory)
         and callable(supports)
         and supports("dir_tar", "files.directory_tar") is True
     ):
@@ -267,7 +292,11 @@ def _copy_dir(ssh: CommChannel, local: Path, guest_path: str) -> None:
         with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tmp:
             tmp_path = Path(tmp.name)
         with tarfile.open(tmp_path, "w") as tf:
-            tf.add(local, arcname=".", filter=_strip_tar_owner)
+            tf.add(
+                local,
+                arcname=".",
+                filter=_make_dir_tar_filter(include_patterns, exclude_patterns),
+            )
 
         guest_tmp = f"/tmp/.smolvm-preset-{uuid4().hex}.tar"
         ssh.put_file(tmp_path, guest_tmp)
@@ -295,6 +324,95 @@ def _strip_tar_owner(ti: tarfile.TarInfo) -> tarfile.TarInfo:
     ti.uname = ""
     ti.gname = ""
     return ti
+
+
+def _make_dir_tar_filter(
+    include_patterns: tuple[str, ...],
+    exclude_patterns: tuple[str, ...],
+) -> Callable[[tarfile.TarInfo], tarfile.TarInfo | None]:
+    """Build a tarfile filter that can include only selected directory entries."""
+    includes = tuple(_normalize_dir_pattern(p) for p in include_patterns if p)
+    excludes = tuple(_normalize_dir_pattern(p) for p in exclude_patterns if p)
+
+    def _filter(ti: tarfile.TarInfo) -> tarfile.TarInfo | None:
+        rel = _tar_member_relative_name(ti.name)
+        if rel and any(_matches_exclude_pattern(rel, pattern) for pattern in excludes):
+            return None
+        if includes and not _matches_include_or_parent(rel, ti.isdir(), includes):
+            return None
+        return _strip_tar_owner(ti)
+
+    return _filter
+
+
+def _tar_member_relative_name(name: str) -> str:
+    """Normalize tar member names from ``./path`` to ``path``."""
+    if name == ".":
+        return ""
+    while name.startswith("./"):
+        name = name[2:]
+    return name.rstrip("/")
+
+
+def _normalize_dir_pattern(pattern: str) -> str:
+    """Normalize directory filter patterns to relative POSIX paths."""
+    pattern = pattern.replace("\\", "/").strip()
+    while pattern.startswith("./"):
+        pattern = pattern[2:]
+    return pattern.lstrip("/")
+
+
+def _matches_exclude_pattern(rel: str, pattern: str) -> bool:
+    """Return True when *pattern* excludes *rel* or one of its parents."""
+    if not pattern:
+        return False
+    if pattern.endswith("/**"):
+        base = pattern[:-3].rstrip("/")
+        return rel == base or rel.startswith(f"{base}/")
+    if "/" not in pattern:
+        first = rel.split("/", 1)[0]
+        basename = rel.rsplit("/", 1)[-1]
+        return fnmatch.fnmatchcase(first, pattern) or fnmatch.fnmatchcase(basename, pattern)
+    return fnmatch.fnmatchcase(rel, pattern)
+
+
+def _matches_include_or_parent(
+    rel: str,
+    is_dir: bool,
+    patterns: tuple[str, ...],
+) -> bool:
+    """Return True when *rel* is explicitly included or needed as a parent."""
+    if not rel:
+        return True
+    if any(_matches_include_pattern(rel, pattern) for pattern in patterns):
+        return True
+    if not is_dir:
+        return False
+    rel_prefix = f"{rel}/"
+    return any(
+        pattern.startswith(rel_prefix) or _literal_pattern_prefix(pattern).startswith(rel_prefix)
+        for pattern in patterns
+    )
+
+
+def _matches_include_pattern(rel: str, pattern: str) -> bool:
+    """Return True when an include pattern selects this relative path."""
+    if not pattern:
+        return False
+    if pattern.endswith("/**"):
+        base = pattern[:-3].rstrip("/")
+        return rel == base or rel.startswith(f"{base}/")
+    if "/" not in pattern and "/" in rel:
+        return False
+    return fnmatch.fnmatchcase(rel, pattern)
+
+
+def _literal_pattern_prefix(pattern: str) -> str:
+    """Return the literal path prefix before the first glob metacharacter."""
+    positions = [idx for marker in ("*", "?", "[") if (idx := pattern.find(marker)) != -1]
+    if not positions:
+        return pattern
+    return pattern[: min(positions)]
 
 
 def _posix_dirname(path: str) -> str:
@@ -432,6 +550,8 @@ def transfer_host_configs(
             cfg.guest_path,
             file_mode=cfg.file_mode,
             transform=cfg.transform,
+            include_patterns=cfg.include_patterns,
+            exclude_patterns=cfg.exclude_patterns,
         )
         copied_configs.append(cfg.guest_path)
     return copied_configs
