@@ -350,6 +350,7 @@ class TestBrowserImageBuilder:
             assert "start_cdp_proxy" in helper_script
             assert 'ThreadingServer(("0.0.0.0", listen_port)' in helper_script
             assert "--remote-debugging-address=127.0.0.1" in helper_script
+            assert "debug_port must be <= 65534" in helper_script
             kernel_path.touch()
             rootfs_path.touch()
 

@@ -1041,6 +1041,10 @@ start_session() {
     write_preferences "$profile_dir" "$download_dir"
     stop_session
 
+    if [ "$debug_port" -gt 65534 ]; then
+        echo "debug_port must be <= 65534" >&2
+        exit 2
+    fi
     browser_debug_port=$((debug_port + 1))
     if [ "${mode}" != "desktop" ]; then
         start_cdp_proxy "$debug_port" "$browser_debug_port"

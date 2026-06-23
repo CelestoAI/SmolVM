@@ -383,13 +383,52 @@ def test_build_browser_vm_config_passes_pubkey_to_vmconfig(
     )
 
     assert vm_config.ssh_public_key == pubkey_value
+    assert mock_builder.build_browser_rootfs.call_args.args[0] == pubkey_value
+
+
+@patch("smolvm.utils.ensure_ssh_key")
+@patch("smolvm.images.builder.ImageBuilder")
+def test_build_browser_vm_config_uses_custom_key_public_half(
+    mock_builder_cls: MagicMock,
+    mock_ensure_ssh_key: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """Custom SSH fallback keys should provision their matching public key."""
+    kernel = tmp_path / "kernel"
+    rootfs = tmp_path / "rootfs.ext4"
+    default_private_key = tmp_path / "default_id_ed25519"
+    default_public_key = tmp_path / "default_id_ed25519.pub"
+    custom_private_key = tmp_path / "custom_id_ed25519"
+    custom_public_key = tmp_path / "custom_id_ed25519.pub"
+    kernel.touch()
+    rootfs.touch()
+    default_private_key.touch()
+    default_public_key.write_text("ssh-ed25519 AAAADefault user@test\n")
+    custom_private_key.touch()
+    custom_pubkey_value = "ssh-ed25519 AAAACustom user@test"
+    custom_public_key.write_text(f"{custom_pubkey_value}\n")
+
+    mock_ensure_ssh_key.return_value = (default_private_key, default_public_key)
+    mock_builder = MagicMock()
+    mock_builder.build_browser_rootfs.return_value = (kernel, rootfs)
+    mock_builder_cls.return_value = mock_builder
+
+    vm_config, ssh_key_path = _build_browser_vm_config(
+        session_id="browser-custom-key",
+        browser_config=BrowserSessionConfig(session_id="browser-custom-key"),
+        ssh_key_path=str(custom_private_key),
+    )
+
+    assert ssh_key_path == str(custom_private_key)
+    assert vm_config.ssh_public_key == custom_pubkey_value
+    assert mock_builder.build_browser_rootfs.call_args.args[0] == custom_pubkey_value
 
 
 @patch("smolvm.browser.SmolVM")
 @patch("smolvm.browser._build_browser_vm_config")
-@patch("smolvm.browser.urllib.request.urlopen", return_value=_CdpResponse())
+@patch("smolvm.browser._LOCAL_HTTP_OPENER.open", return_value=_CdpResponse())
 def test_browser_session_start_persists_ready_state(
-    mock_urlopen: MagicMock,
+    mock_open: MagicMock,
     mock_build_browser_vm_config: MagicMock,
     mock_vm_cls: MagicMock,
     sample_vm_config: VMConfig,
@@ -433,7 +472,7 @@ def test_browser_session_start_persists_ready_state(
     assert session.status == BrowserSessionState.READY
     assert session.cdp_url == "http://127.0.0.1:39222"
     assert session.browser_cdp_url == "http://127.0.0.1:39222"
-    mock_urlopen.assert_called_once()
+    mock_open.assert_called_once()
     assert session.viewer_url == "http://127.0.0.1:36080/vnc.html?autoconnect=1&resize=scale"
     assert session.display_url == "vnc://127.0.0.1:35900"
     assert session.vm is vm
@@ -449,9 +488,9 @@ def test_browser_session_start_persists_ready_state(
 @patch("smolvm.browser._build_browser_vm_config")
 @patch("smolvm.browser._BrowserSandbox._probe_local_port", return_value=True)
 @patch("smolvm.browser.time.sleep")
-@patch("smolvm.browser.urllib.request.urlopen")
+@patch("smolvm.browser._LOCAL_HTTP_OPENER.open")
 def test_browser_sandbox_start_uses_configured_qemu_cdp_forward(
-    mock_urlopen: MagicMock,
+    mock_open: MagicMock,
     _mock_sleep: MagicMock,
     mock_probe_local_port: MagicMock,
     mock_build_browser_vm_config: MagicMock,
@@ -486,7 +525,7 @@ def test_browser_sandbox_start_uses_configured_qemu_cdp_forward(
 
     vm.run.side_effect = _run_side_effect
     mock_vm_cls.return_value = vm
-    mock_urlopen.side_effect = [
+    mock_open.side_effect = [
         ConnectionResetError("reset"),
         _CdpResponse(status=503),
         _CdpResponse(),
@@ -500,7 +539,7 @@ def test_browser_sandbox_start_uses_configured_qemu_cdp_forward(
     session.start()
 
     assert session.cdp_url == "http://127.0.0.1:39001"
-    assert mock_urlopen.call_count == 3
+    assert mock_open.call_count == 3
     mock_probe_local_port.assert_called_once_with(39001)
     vm.expose_local.assert_not_called()
     session.close()

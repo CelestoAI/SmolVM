@@ -48,6 +48,7 @@ _BROWSER_GUEST_DOWNLOAD_ROOT = f"{_BROWSER_GUEST_ROOT}/downloads"
 _BROWSER_GUEST_ARTIFACT_ROOT = f"{_BROWSER_GUEST_ROOT}/artifacts"
 _BROWSER_GUEST_LOG_ROOT = "/var/log/smolvm-browser"
 _BROWSER_KERNEL_PROFILE = KernelBootProfile.MICROVM_DIRECT
+_LOCAL_HTTP_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def _generate_browser_session_id() -> str:
@@ -131,8 +132,23 @@ def _build_browser_vm_config(
         else browser_config.backend
     )
     resolved_backend = resolve_backend(requested_backend)
-    private_key, public_key = ensure_ssh_key()
-    resolved_ssh_key_path = ssh_key_path or str(private_key)
+    private_key, default_public_key = ensure_ssh_key()
+    if ssh_key_path is None:
+        resolved_ssh_key_path = str(private_key)
+        resolved_public_key = default_public_key
+    else:
+        resolved_ssh_key_path = ssh_key_path
+        resolved_public_key = Path(f"{ssh_key_path}.pub")
+    try:
+        public_key_text = resolved_public_key.read_text().strip()
+    except OSError as exc:
+        private_arg = shlex.quote(resolved_ssh_key_path)
+        public_arg = shlex.quote(str(resolved_public_key))
+        raise SmolVMError(
+            "Browser SSH key is missing its matching public key at "
+            f"'{resolved_public_key}'; create it with "
+            f"`ssh-keygen -y -f {private_arg} > {public_arg}`."
+        ) from exc
 
     builder = ImageBuilder()
     kernel_url = builder.qemu_kernel_url_for_host() if resolved_backend == BACKEND_QEMU else None
@@ -149,7 +165,7 @@ def _build_browser_vm_config(
         image_name = f"{image_name}-{browser_config.disk_size_mib}m"
 
     kernel, rootfs = builder.build_browser_rootfs(
-        public_key,
+        public_key_text,
         name=image_name,
         rootfs_size_mb=browser_config.disk_size_mib,
         kernel_profile=_BROWSER_KERNEL_PROFILE,
@@ -168,7 +184,7 @@ def _build_browser_vm_config(
         env_vars=browser_config.env_vars,
         port_forwards=port_forwards,
         workspace_mounts=browser_config.workspace_mounts,
-        ssh_public_key=public_key.read_text().strip(),
+        ssh_public_key=public_key_text,
     )
     return config, resolved_ssh_key_path
 
@@ -408,8 +424,8 @@ class _BrowserSandbox:
                 cdp_url = f"http://127.0.0.1:{debug_host_port}"
                 if not self._wait_for_cdp_http(cdp_url, timeout=boot_timeout):
                     raise SmolVMError(
-                        f"Browser sandbox '{self.session_id}' did not expose "
-                        "a ready CDP endpoint in time."
+                        f"Browser sandbox '{self.session_id}' did not start in time; "
+                        f"to inspect logs, run: smolvm browser logs {self.session_id}."
                     )
 
             live_url: str | None = None
@@ -693,7 +709,7 @@ class _BrowserSandbox:
                 break
             try:
                 request_timeout = min(1.0, max(0.1, remaining))
-                with urllib.request.urlopen(url, timeout=request_timeout) as response:
+                with _LOCAL_HTTP_OPENER.open(url, timeout=request_timeout) as response:
                     if 200 <= getattr(response, "status", 200) < 300:
                         return True
             except (OSError, urllib.error.URLError):
