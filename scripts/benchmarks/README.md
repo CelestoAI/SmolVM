@@ -46,6 +46,25 @@ uv run python scripts/benchmarks/bench.py --backend qemu
 
 `-v` enables per-iteration progress logging.
 
+## Foundation Scripts
+
+These scripts provide small, composable probes for benchmark setup work. Each
+one supports `--help`, `--dry-run`, `--json`, and optional `--output` so you can
+check the command plan before starting any sandbox:
+
+```bash
+uv run python scripts/benchmarks/artifacts.py --dry-run --json
+uv run python scripts/benchmarks/preset_start.py --preset codex --dry-run --json
+uv run python scripts/benchmarks/browser_ready.py --dry-run --json
+uv run python scripts/benchmarks/runtime_control.py --operations info,stop,start --dry-run --json
+```
+
+`artifacts.py` records metadata for local artifact paths. `preset_start.py`
+times `smolvm <preset> start` and cleans up the sandbox unless `--keep` is set.
+`browser_ready.py` starts a browser sandbox, then polls the CDP endpoint when it
+is available. `runtime_control.py` measures public lifecycle commands such as
+`smolvm sandbox pause`, `resume`, `stop`, and `start`.
+
 ## Linux Networking Stages
 
 Use `networking.py` to decide whether the Rust networking path makes Linux VM
