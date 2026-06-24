@@ -30,7 +30,6 @@ pub fn request(
         body.len()
     );
     stream.write_all(request.as_bytes())?;
-    stream.shutdown(std::net::Shutdown::Write).ok();
 
     let (status, payload) = read_response(&mut stream)?;
     if status == 204 || payload.is_empty() {
@@ -127,6 +126,14 @@ fn parse_content_length(headers: &str) -> Result<Option<usize>, FirecrackerError
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::io::{ErrorKind, Write};
+    #[cfg(unix)]
+    use std::os::unix::net::UnixListener;
+    #[cfg(unix)]
+    use std::sync::mpsc;
+    #[cfg(unix)]
+    use std::thread;
 
     #[test]
     fn parses_status_and_payload() {
@@ -155,5 +162,64 @@ mod tests {
 
         assert_eq!(status, 200);
         assert_eq!(payload, br#"{"ok":true}"#);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn request_does_not_half_close_before_reading_response() {
+        let socket_path = std::env::temp_dir().join(format!(
+            "smolvm-firecracker-test-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&socket_path);
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let (tx, rx) = mpsc::channel();
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+
+            let mut request = Vec::new();
+            let mut buf = [0_u8; 128];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut buf).unwrap();
+                assert_ne!(read, 0, "client closed before sending HTTP headers");
+                request.extend_from_slice(&buf[..read]);
+            }
+
+            stream
+                .set_read_timeout(Some(Duration::from_millis(25)))
+                .unwrap();
+            let saw_early_eof = match stream.read(&mut buf[..1]) {
+                Ok(0) => true,
+                Ok(_) => false,
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                {
+                    false
+                }
+                Err(error) => panic!("unexpected socket read error: {error}"),
+            };
+
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n{\"ok\":true}")
+                .unwrap();
+            tx.send(saw_early_eof).unwrap();
+        });
+
+        let (status, payload) = request(socket_path.to_str().unwrap(), "GET", "/", None, 1.0)
+            .expect("request should read the response");
+        assert_eq!(status, 200);
+        assert_eq!(payload.as_deref(), Some(r#"{"ok":true}"#));
+        assert!(!rx.recv().unwrap(), "client half-closed before response");
+
+        server.join().unwrap();
+        let _ = std::fs::remove_file(socket_path);
     }
 }
