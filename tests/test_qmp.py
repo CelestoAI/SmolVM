@@ -204,14 +204,14 @@ def test_qmp_wait_for_job_raises_on_job_error(qmp_socket_path: Path) -> None:
     ]
 
 
-def test_qmp_connect_raises_read_timeout_above_connect_probe_timeout(
+def test_qmp_connect_accepts_read_timeout_above_connect_probe_timeout(
     qmp_socket_path: Path,
 ) -> None:
-    """After connecting, the socket read timeout must be the generous read_timeout.
+    """Native QMP should accept a generous read_timeout after the connect probe.
 
     Regression guard for the snapshot-save read TimeoutError: the connect probe
     used a ≤1s socket timeout that previously persisted for every command read,
-    cutting off replies to slow commands. Once connected we raise it.
+    cutting off replies to slow commands.
     """
     socket_path = qmp_socket_path
     requests: list[dict[str, object]] = []
@@ -222,10 +222,6 @@ def test_qmp_connect_raises_read_timeout_above_connect_probe_timeout(
 
     with QMPClient(socket_path) as client:
         client.connect(timeout=5.0, read_timeout=30.0)
-        if client._socket is not None:
-            assert client._socket.gettimeout() == 30.0
-        else:
-            assert client._native is not None
 
     thread.join(timeout=2.0)
     if socket_path.exists():
@@ -312,8 +308,7 @@ def test_qmp_connect_can_retry_after_capabilities_handshake_failure(
 
 def test_native_qmp_client_smoke_exercises_socket_protocol(qmp_socket_path: Path) -> None:
     """Native QMP should work on every platform that ships smolvm-core."""
-    if qmp_module._NativeQMPClient is None:
-        pytest.skip("native QMP binding is unavailable")
+    assert qmp_module._NativeQMPClient is not None
 
     socket_path = qmp_socket_path
     requests: list[dict[str, object]] = []
@@ -380,34 +375,18 @@ def test_native_qmp_client_smoke_exercises_socket_protocol(qmp_socket_path: Path
     ]
 
 
-def test_qmp_python_fallback_still_executes(
+def test_qmp_client_requires_native_binding(
     monkeypatch: pytest.MonkeyPatch,
     qmp_socket_path: Path,
 ) -> None:
-    """The public QMPClient should keep working when the Rust binding is absent."""
+    """The public QMPClient should fail clearly when the Rust binding is absent."""
     monkeypatch.setattr(qmp_module, "_NativeQMPClient", None)
     socket_path = qmp_socket_path
-    requests: list[dict[str, object]] = []
-    responses: dict[str, list[dict[str, object] | list[dict[str, object]]]] = {
-        "qmp_capabilities": [{"return": {}}],
-        "query-status": [{"return": {"running": False, "status": "paused"}}],
-    }
-    thread = _start_qmp_server(socket_path, responses, requests)
 
-    with qmp_module.QMPClient(socket_path) as client:
-        client.connect()
-        assert client._socket is not None
-        status = client.query_status()
+    with pytest.raises(SmolVMError, match="QEMU control support is missing") as exc_info:
+        qmp_module.QMPClient(socket_path)
 
-    thread.join(timeout=2.0)
-    if socket_path.exists():
-        socket_path.unlink()
-
-    assert status["status"] == "paused"
-    assert [request["execute"] for request in requests] == [
-        "qmp_capabilities",
-        "query-status",
-    ]
+    assert exc_info.value.details == {"socket_path": str(socket_path)}
 
 
 def test_qmp_native_errors_become_smolvm_errors(monkeypatch: pytest.MonkeyPatch) -> None:
