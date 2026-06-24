@@ -35,7 +35,6 @@ dependencies = [
     "pydantic>=2.0",
     "rich>=13.0",
     "requests>=2.28",
-    "requests-unixsocket>=0.3",
     # Decompresses zstd-compressed published images (downloaded via
     # ensure_published_image). Pure C extension, ~200 KB wheel, no system deps.
     "zstandard>=0.22",

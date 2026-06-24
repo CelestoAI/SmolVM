@@ -20,12 +20,8 @@ Communicates with the Firecracker hypervisor over its Unix socket API.
 import json as json_module
 import logging
 import os
-import time
 from pathlib import Path
 from typing import Any
-
-import requests
-import requests_unixsocket
 
 from smolvm.exceptions import FirecrackerAPIError, OperationTimeoutError
 
@@ -40,18 +36,39 @@ except ImportError:  # pragma: no cover - optional wheel
     _native = None  # type: ignore[assignment]
 
 
-def _native_firecracker_available() -> bool:
-    disabled = os.environ.get(_DISABLE_NATIVE_ENV, "").strip().lower() in _TRUE_ENV_VALUES
-    if disabled or _native is None:
-        return False
+def _native_firecracker_unavailable_reason() -> str | None:
+    if os.environ.get(_DISABLE_NATIVE_ENV, "").strip().lower() in _TRUE_ENV_VALUES:
+        return (
+            f"Firecracker control support is disabled; unset `{_DISABLE_NATIVE_ENV}` and try again."
+        )
+    if _native is None:
+        return (
+            "Firecracker control support is missing; "
+            "run `uv sync --reinstall-package smolvm-core` and try again."
+        )
     if not hasattr(_native, "has_native_firecracker_api") or not hasattr(
         _native, "_firecracker_request"
     ):
-        return False
+        return (
+            "Firecracker control support is missing; "
+            "run `uv sync --reinstall-package smolvm-core` and try again."
+        )
     try:
-        return bool(_native.has_native_firecracker_api())
-    except Exception:
-        return False
+        if bool(_native.has_native_firecracker_api()):
+            return None
+    except Exception as exc:
+        logger.debug("Firecracker native availability check failed: %s", exc)
+    return (
+        "Firecracker control support is missing; "
+        "run `uv sync --reinstall-package smolvm-core` and try again."
+    )
+
+
+def _require_native_firecracker() -> Any:
+    reason = _native_firecracker_unavailable_reason()
+    if reason is not None:
+        raise FirecrackerAPIError(reason)
+    return _native
 
 
 def _is_instance_start_request(
@@ -73,6 +90,28 @@ def _instance_start_already_succeeded(error_msg: str) -> bool:
     return "not supported after starting the microVM" in error_msg
 
 
+def _decode_firecracker_error(payload: str | None) -> str:
+    error_msg = payload or ""
+    try:
+        error_data = json_module.loads(error_msg)
+    except (TypeError, ValueError, json_module.JSONDecodeError) as exc:
+        logger.debug("Could not parse Firecracker error payload, using raw message: %s", exc)
+        return error_msg
+    if isinstance(error_data, dict):
+        return str(error_data.get("fault_message", error_msg))
+    return error_msg
+
+
+def _decode_firecracker_success(payload: str | None) -> dict[str, Any] | None:
+    if payload is None:
+        return None
+    try:
+        decoded = json_module.loads(payload)
+    except Exception:
+        return None
+    return decoded if isinstance(decoded, dict) else None
+
+
 class FirecrackerClient:
     """Client for the Firecracker HTTP API over Unix socket."""
 
@@ -86,27 +125,6 @@ class FirecrackerClient:
             raise ValueError("socket_path cannot be None")
 
         self.socket_path = socket_path
-        self._session: requests_unixsocket.Session | None = None
-
-    @property
-    def session(self) -> requests_unixsocket.Session:
-        """Get or create the requests session."""
-        if self._session is None:
-            self._session = requests_unixsocket.Session()
-        return self._session
-
-    def _socket_url(self, path: str) -> str:
-        """Build the URL for the Unix socket.
-
-        Args:
-            path: API path (e.g., "/boot-source").
-
-        Returns:
-            Full URL with socket encoding.
-        """
-        # requests-unixsocket uses http+unix:// scheme
-        socket_encoded = str(self.socket_path).replace("/", "%2F")
-        return f"http+unix://{socket_encoded}{path}"
 
     def _request(
         self,
@@ -130,88 +148,81 @@ class FirecrackerClient:
         Raises:
             FirecrackerAPIError: If request fails.
         """
-        url = self._socket_url(path)
         logger.debug("%s %s", method, path)
-
-        native_transport_error: OSError | None = None
-        if self.socket_path.exists() and _native_firecracker_available():
-            body_json = json_module.dumps(json, separators=(",", ":")) if json is not None else None
-            try:
-                status_code, payload = _native._firecracker_request(
-                    str(self.socket_path),
+        try:
+            status_code, payload = self._native_request(
+                method,
+                path,
+                body=json,
+            )
+        except OSError as error:
+            if _is_instance_start_request(method, path, json):
+                return self._handle_instance_start_transport_error(
+                    error,
                     method,
                     path,
-                    body_json,
-                    10.0,
+                    json,
+                    expected_status,
                 )
-            except OSError as e:
-                native_transport_error = e
-                logger.debug(
-                    "Native Firecracker request failed, falling back to requests-unixsocket: %s",
-                    e,
-                )
-            else:
-                if int(status_code) not in expected_status:
-                    error_msg = payload or ""
-                    try:
-                        error_data = json_module.loads(error_msg)
-                        error_msg = error_data.get("fault_message", error_msg)
-                    except (TypeError, ValueError, json_module.JSONDecodeError) as exc:
-                        logger.debug(
-                            "Could not parse Firecracker error payload, using raw message: %s", exc
-                        )
-                    raise FirecrackerAPIError(
-                        f"API error: {error_msg}",
-                        status_code=int(status_code),
-                    )
-                if payload is None:
-                    return None
-                try:
-                    decoded = json_module.loads(payload)
-                    return decoded if isinstance(decoded, dict) else None
-                except Exception:
-                    return None
+            raise FirecrackerAPIError(f"Request failed: {error}") from error
 
+        return self._handle_response(status_code, payload, expected_status)
+
+    def _native_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: dict[str, Any] | None,
+    ) -> tuple[int, str | None]:
+        body_json = json_module.dumps(body, separators=(",", ":")) if body is not None else None
+        native = _require_native_firecracker()
+        status_code, payload = native._firecracker_request(
+            str(self.socket_path),
+            method,
+            path,
+            body_json,
+            10.0,
+        )
+        return int(status_code), payload
+
+    def _handle_instance_start_transport_error(
+        self,
+        native_error: OSError,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None,
+        expected_status: tuple[int, ...],
+    ) -> dict[str, Any] | None:
         try:
-            response = self.session.request(
-                method,
-                url,
-                json=json,
-                timeout=10,
-            )
-        except requests.RequestException as e:
-            raise FirecrackerAPIError(f"Request failed: {e}") from e
+            status_code, payload = self._native_request(method, path, body=body)
+        except OSError:
+            raise FirecrackerAPIError(f"Request failed: {native_error}") from native_error
 
-        if response.status_code not in expected_status:
-            error_msg = response.text
-            try:
-                error_data = response.json()
-                error_msg = error_data.get("fault_message", error_msg)
-            except Exception:
-                pass
-            if (
-                native_transport_error is not None
-                and _is_instance_start_request(method, path, json)
-                and _instance_start_already_succeeded(error_msg)
-            ):
+        if int(status_code) not in expected_status:
+            error_msg = _decode_firecracker_error(payload)
+            if _instance_start_already_succeeded(error_msg):
                 logger.debug(
                     "Treating replayed InstanceStart as successful after native "
                     "transport error: %s",
-                    native_transport_error,
+                    native_error,
                 )
                 return None
+        return self._handle_response(status_code, payload, expected_status)
+
+    def _handle_response(
+        self,
+        status_code: int,
+        payload: str | None,
+        expected_status: tuple[int, ...],
+    ) -> dict[str, Any] | None:
+        if int(status_code) not in expected_status:
+            error_msg = _decode_firecracker_error(payload)
             raise FirecrackerAPIError(
                 f"API error: {error_msg}",
-                status_code=response.status_code,
+                status_code=int(status_code),
             )
-
-        if response.status_code == 204:
-            return None
-
-        try:
-            return response.json()
-        except Exception:
-            return None
+        return _decode_firecracker_success(payload)
 
     def wait_for_socket(self, timeout: float = 10.0) -> None:
         """Wait for the Firecracker socket to become available.
@@ -222,27 +233,17 @@ class FirecrackerClient:
         Raises:
             OperationTimeoutError: If socket doesn't become available.
         """
-        start = time.time()
-        if _native_firecracker_available() and hasattr(_native, "_firecracker_wait_for_socket"):
-            try:
-                _native._firecracker_wait_for_socket(str(self.socket_path), min(timeout, 1.0))
-                logger.debug("Socket ready via native Firecracker API: %s", self.socket_path)
-                return
-            except OSError as e:
-                logger.debug("Native Firecracker socket wait failed, falling back: %s", e)
-
-        while time.time() - start < timeout:
-            if self.socket_path.exists():
-                # Try a simple request to verify it's responsive
-                try:
-                    self._request("GET", "/", expected_status=(200,))
-                    logger.debug("Socket ready: %s", self.socket_path)
-                    return
-                except Exception:
-                    pass
-            time.sleep(0.1)
-
-        raise OperationTimeoutError("wait_for_socket", timeout)
+        native = _require_native_firecracker()
+        if not hasattr(native, "_firecracker_wait_for_socket"):
+            raise FirecrackerAPIError(
+                "Firecracker control support is missing; "
+                "run `uv sync --reinstall-package smolvm-core` and try again."
+            )
+        try:
+            native._firecracker_wait_for_socket(str(self.socket_path), timeout)
+        except OSError as exc:
+            raise OperationTimeoutError("wait_for_socket", timeout) from exc
+        logger.debug("Socket ready via native Firecracker API: %s", self.socket_path)
 
     async def async_wait_for_socket(self, timeout: float = 10.0) -> None:
         """Async version of :meth:`wait_for_socket`.
@@ -485,7 +486,5 @@ class FirecrackerClient:
         logger.info("Sent Ctrl+Alt+Del")
 
     def close(self) -> None:
-        """Close the session."""
-        if self._session is not None:
-            self._session.close()
-            self._session = None
+        """Close the client."""
+        return None
