@@ -13,6 +13,21 @@ SmolVM is specifically designed to provide a secure "sandbox" for AI agents to e
 - **Testing:** `pytest` (runs the suite in `tests/`)
 - **Linting & Formatting:** `uv run ruff check .` or `uv run ruff format .`
 
+### Release checklist
+
+- For guest-agent or published-image changes, build and smoke the new image
+  release before tagging the SmolVM package release.
+- Update `src/smolvm/images/published.py` with the new `IMAGES_RELEASE_TAG`
+  and rootfs SHA pins before the PyPI tag is pushed.
+- Also update `src/smolvm/images/builder.py::_GUEST_AGENT_RELEASE_SHA256`
+  from the `smolvm-guest-agent-linux-<arch>.sha256` release assets. This is a
+  separate pin from the rootfs manifest.
+- Verify both paths: `uv run smolvm ...` from a source checkout may build or use
+  the local guest-agent binary, while `smolvm ...` from `uv tool` uses the
+  installed wheel and downloads the standalone guest-agent release binary.
+- Only tag the SmolVM package release after the image manifest, guest-agent
+  binary SHA pins, image smoke, and focused tests are complete.
+
 ### CLI design
 
 - New CLI commands follow a **NOUN-VERB** structure: `smolvm <noun> <verb>`,
