@@ -30,6 +30,7 @@ from typing import Any
 
 import pytest
 
+import smolvm.comm.rust_http_vsock_channel as vsock_channel
 from smolvm.comm.base import CommChannel
 from smolvm.comm.rust_http_vsock_channel import (
     SMOLVM_TERMINAL_PORT,
@@ -39,6 +40,7 @@ from smolvm.comm.rust_http_vsock_channel import (
     _pack_terminal_frame,
     _read_terminal_frame,
     _SocketHTTPConnection,
+    _vsock_family,
 )
 from smolvm.exceptions import OperationTimeoutError, SmolVMError
 
@@ -187,6 +189,57 @@ def test_rust_http_channel_satisfies_comm_channel() -> None:
     channel = RustHttpVsockChannel.from_cid(42)
     assert isinstance(channel, CommChannel)
     assert channel.kind == "vsock"
+
+
+def test_vsock_family_falls_back_to_linux_abi_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delattr(socket, "AF_VSOCK", raising=False)
+    monkeypatch.setattr("smolvm.comm.rust_http_vsock_channel.sys.platform", "linux")
+
+    assert _vsock_family() == 40
+
+
+def test_open_vsock_uses_raw_connect_when_python_lacks_af_vsock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, Any] = {}
+
+    class FakeSocket:
+        def settimeout(self, timeout: float) -> None:
+            calls["timeout"] = timeout
+
+        def close(self) -> None:
+            calls["closed"] = True
+
+    fake = FakeSocket()
+    monkeypatch.delattr(socket, "AF_VSOCK", raising=False)
+    monkeypatch.setattr("smolvm.comm.rust_http_vsock_channel.sys.platform", "linux")
+    monkeypatch.setattr(
+        socket,
+        "socket",
+        lambda family, kind: calls.update(family=family, kind=kind) or fake,
+    )
+    monkeypatch.setattr(
+        vsock_channel,
+        "_connect_vsock_raw",
+        lambda sock, cid, port, timeout: calls.update(
+            raw_sock=sock,
+            raw_cid=cid,
+            raw_port=port,
+            raw_timeout=timeout,
+        ),
+    )
+
+    channel = RustHttpVsockChannel.from_cid(123, connect_timeout=4)
+
+    assert channel._open_vsock(1029) is fake
+    assert calls["family"] == 40
+    assert calls["kind"] == socket.SOCK_STREAM
+    assert calls["timeout"] == 4.0
+    assert calls["raw_sock"] is fake
+    assert calls["raw_cid"] == 123
+    assert calls["raw_port"] == 1029
+    assert calls["raw_timeout"] == 4.0
+    assert "closed" not in calls
 
 
 def test_wait_ready_uses_health() -> None:
