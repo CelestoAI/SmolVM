@@ -41,6 +41,7 @@ from smolvm.comm.rust_http_vsock_channel import (
     _read_terminal_frame,
     _SocketHTTPConnection,
     _vsock_family,
+    _vsock_unavailable_message,
 )
 from smolvm.exceptions import OperationTimeoutError, SmolVMError
 
@@ -240,6 +241,15 @@ def test_open_vsock_uses_raw_connect_when_python_lacks_af_vsock(
     assert calls["raw_port"] == 1029
     assert calls["raw_timeout"] == 4.0
     assert "closed" not in calls
+
+
+def test_vsock_unavailable_message_names_ssh_recovery_command() -> None:
+    message = _vsock_unavailable_message("sbx-pauling")
+
+    assert "AF_VSOCK" not in message
+    assert "vhost_vsock" not in message
+    assert "smolvm sandbox delete sbx-pauling" in message
+    assert "smolvm sandbox create --name sbx-pauling --comm-channel ssh" in message
 
 
 def test_wait_ready_uses_health() -> None:

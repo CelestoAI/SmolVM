@@ -163,6 +163,20 @@ def _feature_required_message(feature: str, sandbox_name: str | None) -> str:
     )
 
 
+def _vsock_unavailable_message(sandbox_name: str | None) -> str:
+    if sandbox_name:
+        sandbox = shlex.quote(sandbox_name)
+        return (
+            f"This computer cannot open fast sandbox connections for {sandbox}; "
+            f"run `smolvm sandbox delete {sandbox}` and then "
+            f"`smolvm sandbox create --name {sandbox} --comm-channel ssh`."
+        )
+    return (
+        "This computer cannot open fast sandbox connections; run "
+        "`smolvm sandbox create --comm-channel ssh` to create a sandbox with the compatible path."
+    )
+
+
 def _parse_mode_header(value: str) -> int:
     value = value.strip().removeprefix("0o")
     return int(value, 8)
@@ -505,10 +519,7 @@ class RustHttpVsockChannel:
         port = self.agent_port if port is None else port
         family = _vsock_family()
         if family is None:
-            raise SmolVMError(
-                "vsock is not available on this host (no AF_VSOCK). "
-                "Use the SSH channel, or run on a Linux host with vhost_vsock loaded."
-            )
+            raise SmolVMError(_vsock_unavailable_message(self.sandbox_name))
         sock = socket.socket(family, socket.SOCK_STREAM)
         sock.settimeout(float(self.connect_timeout))
         try:
