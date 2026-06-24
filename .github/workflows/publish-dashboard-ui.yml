@@ -41,4 +41,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REF_NAME: ${{ github.ref_name }}
-        run: gh release upload "${REF_NAME}" "smolvm-dashboard-ui-${REF_NAME}.tar.gz"
+        run: |
+          if ! gh release view "${REF_NAME}" >/dev/null 2>&1; then
+            gh release create "${REF_NAME}" \
+              --verify-tag \
+              --title "${REF_NAME}" \
+              --generate-notes
+          fi
+          gh release upload "${REF_NAME}" "smolvm-dashboard-ui-${REF_NAME}.tar.gz" --clobber
