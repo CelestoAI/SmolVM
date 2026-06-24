@@ -25,6 +25,7 @@ from typing import Any
 
 from smolvm.api import FirecrackerClient
 from smolvm.exceptions import SmolVMError
+from smolvm.host.disk import clone_or_sparse_copy
 from smolvm.runtime.backends import BACKEND_FIRECRACKER
 from smolvm.runtime.base import (
     RuntimeAdapter,
@@ -35,7 +36,6 @@ from smolvm.runtime.base import (
     SnapshotRestoreRequest,
 )
 from smolvm.types import SnapshotArtifacts, SnapshotType, VMInfo, VMState
-from smolvm.utils import copy_with_reflink
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +193,7 @@ class FirecrackerRuntimeAdapter(RuntimeAdapter):
 
             client.create_snapshot(state_path, memory_path, snapshot_type="Full")
             if request.snapshot_type == SnapshotType.DIFF:
-                copy_with_reflink(request.managed_disk_path, disk_path)
+                clone_or_sparse_copy(request.managed_disk_path, disk_path)
             else:
                 shutil.copy2(request.managed_disk_path, disk_path)
             return SnapshotCreateResult(

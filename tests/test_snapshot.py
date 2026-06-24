@@ -569,9 +569,9 @@ def test_create_diff_snapshot_records_type_and_copies_disk(
     with (
         patch("smolvm.runtime.firecracker.FirecrackerClient") as mock_client_cls,
         patch(
-            "smolvm.runtime.firecracker.copy_with_reflink",
+            "smolvm.runtime.firecracker.clone_or_sparse_copy",
             side_effect=lambda source, dest: dest.write_text(Path(source).read_text()),
-        ) as mock_reflink,
+        ) as mock_copy,
     ):
         mock_client = MagicMock()
         mock_client.create_snapshot.side_effect = _stub_fc_snapshot
@@ -580,7 +580,7 @@ def test_create_diff_snapshot_records_type_and_copies_disk(
             "vm001", snapshot_id="snap-diff", snapshot_type=SnapshotType.DIFF
         )
 
-    mock_reflink.assert_called_once()
+    mock_copy.assert_called_once()
     persisted = smol_vm.state.get_snapshot("snap-diff")
     assert snapshot.snapshot_type is SnapshotType.DIFF
     assert persisted.snapshot_type is SnapshotType.DIFF
