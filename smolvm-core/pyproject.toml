@@ -34,4 +34,4 @@ Documentation = "https://docs.celesto.ai"
 [tool.maturin]
 features = ["extension-module"]
 python-source = "python"
-module-name = "smolvm_core._smolvm_core"
+module-name = "smolvm_core._ffi"

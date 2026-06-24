@@ -32,7 +32,7 @@ from typing import TypeVar
 from urllib.parse import urlparse
 
 from smolvm.exceptions import NetworkError, SmolVMError
-from smolvm.host._accel import HAS_NETLINK, native
+from smolvm.host._accel import HAS_NETLINK, network_native
 from smolvm.utils import async_run_command, run_command
 
 logger = logging.getLogger(__name__)
@@ -70,7 +70,7 @@ _native_unprivileged = False
 
 def _native_available() -> bool:
     disabled = os.environ.get(_NATIVE_DISABLE_ENV, "").strip().lower() in _TRUE_ENV_VALUES
-    return HAS_NETLINK and native is not None and not _native_unprivileged and not disabled
+    return HAS_NETLINK and network_native is not None and not _native_unprivileged and not disabled
 
 
 def _log_native_timing(operation: str, start: float, *, is_async: bool = False) -> None:
@@ -149,7 +149,7 @@ class NetworkManager:
         """Detect outbound interface from default route."""
         if _native_available():
             try:
-                iface = _call_native("default_iface", native.get_default_interface)
+                iface = _call_native("default_iface", network_native.get_default_interface)
                 logger.info("Detected outbound interface: %s", iface)
                 return iface
             except OSError as e:
@@ -177,7 +177,10 @@ class NetworkManager:
         """Detect outbound interface from default route (async)."""
         if _native_available():
             try:
-                iface = await _async_call_native("default_iface", native.get_default_interface)
+                iface = await _async_call_native(
+                    "default_iface",
+                    network_native.get_default_interface,
+                )
                 logger.info("Detected outbound interface: %s", iface)
                 return iface
             except OSError as e:
@@ -240,7 +243,7 @@ class NetworkManager:
             max_busy_retries = 3
             for attempt in range(max_busy_retries + 1):
                 try:
-                    _call_native("create_tap", native.create_tap, tap_name, uid)
+                    _call_native("create_tap", network_native.create_tap, tap_name, uid)
                     return
                 except OSError as e:
                     err = str(e)
@@ -306,7 +309,7 @@ class NetworkManager:
             max_busy_retries = 3
             for attempt in range(max_busy_retries + 1):
                 try:
-                    await _async_call_native("create_tap", native.create_tap, tap_name, uid)
+                    await _async_call_native("create_tap", network_native.create_tap, tap_name, uid)
                     return
                 except OSError as e:
                     err = str(e)
@@ -376,11 +379,11 @@ class NetworkManager:
 
         logger.info("Preparing TAP %s with IP %s/%s (user: %s)", tap_name, host_ip, netmask, user)
 
-        if _native_available() and hasattr(native, "prepare_tap"):
+        if _native_available() and hasattr(network_native, "prepare_tap"):
             try:
                 _call_native(
                     "prepare_tap",
-                    native.prepare_tap,
+                    network_native.prepare_tap,
                     tap_name,
                     _uid_for_user(user),
                     host_ip,
@@ -417,11 +420,11 @@ class NetworkManager:
 
         logger.info("Preparing TAP %s with IP %s/%s (user: %s)", tap_name, host_ip, netmask, user)
 
-        if _native_available() and hasattr(native, "prepare_tap"):
+        if _native_available() and hasattr(network_native, "prepare_tap"):
             try:
                 await _async_call_native(
                     "prepare_tap",
-                    native.prepare_tap,
+                    network_native.prepare_tap,
                     tap_name,
                     _uid_for_user(user),
                     host_ip,
@@ -457,7 +460,13 @@ class NetworkManager:
 
         if _native_available():
             try:
-                _call_native("configure_tap", native.configure_tap, tap_name, host_ip, int(netmask))
+                _call_native(
+                    "configure_tap",
+                    network_native.configure_tap,
+                    tap_name,
+                    host_ip,
+                    int(netmask),
+                )
                 self._write_sysctl(f"net/ipv4/conf/{tap_name}/route_localnet", "1")
                 return
             except OSError as e:
@@ -503,7 +512,7 @@ class NetworkManager:
             try:
                 await _async_call_native(
                     "configure_tap",
-                    native.configure_tap,
+                    network_native.configure_tap,
                     tap_name,
                     host_ip,
                     int(netmask),
@@ -546,7 +555,7 @@ class NetworkManager:
 
         if _native_available():
             try:
-                _call_native("add_route", native.add_route, ip_address, 32, device)
+                _call_native("add_route", network_native.add_route, ip_address, 32, device)
                 return
             except OSError as e:
                 err = str(e)
@@ -573,7 +582,13 @@ class NetworkManager:
         logger.info("Adding route: %s via %s", ip_address, device)
         if _native_available():
             try:
-                await _async_call_native("add_route", native.add_route, ip_address, 32, device)
+                await _async_call_native(
+                    "add_route",
+                    network_native.add_route,
+                    ip_address,
+                    32,
+                    device,
+                )
                 return
             except OSError as e:
                 err = str(e)
@@ -599,7 +614,7 @@ class NetworkManager:
 
         if _native_available():
             try:
-                _call_native("delete_tap", native.delete_tap, tap_name)
+                _call_native("delete_tap", network_native.delete_tap, tap_name)
                 return
             except OSError as e:
                 err = str(e)
@@ -625,7 +640,7 @@ class NetworkManager:
         logger.info("Cleaning up TAP device: %s", tap_name)
         if _native_available():
             try:
-                await _async_call_native("delete_tap", native.delete_tap, tap_name)
+                await _async_call_native("delete_tap", network_native.delete_tap, tap_name)
                 return
             except OSError as e:
                 err = str(e)
@@ -667,7 +682,12 @@ class NetworkManager:
         """Write /proc/sys key, with sudo sysctl fallback."""
         if _native_available():
             try:
-                _call_native("write_sysctl", native.write_sysctl, key_path.replace("/", "."), value)
+                _call_native(
+                    "write_sysctl",
+                    network_native.write_sysctl,
+                    key_path.replace("/", "."),
+                    value,
+                )
                 return True
             except OSError as e:
                 if _is_eperm(str(e)):
@@ -696,7 +716,7 @@ class NetworkManager:
             try:
                 await _async_call_native(
                     "write_sysctl",
-                    native.write_sysctl,
+                    network_native.write_sysctl,
                     key_path.replace("/", "."),
                     value,
                 )

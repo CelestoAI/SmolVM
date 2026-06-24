@@ -31,30 +31,30 @@ _DISABLE_NATIVE_ENV = "SMOLVM_DISABLE_NATIVE_FIRECRACKER_API"
 _TRUE_ENV_VALUES = {"1", "true", "yes"}
 
 try:
-    import smolvm_core as _native
+    from smolvm_core import firecracker as core_firecracker
 except ImportError:  # pragma: no cover - optional wheel
-    _native = None  # type: ignore[assignment]
+    core_firecracker = None  # type: ignore[assignment]
 
 
-def _native_firecracker_unavailable_reason() -> str | None:
+def _core_firecracker_unavailable_reason() -> str | None:
     if os.environ.get(_DISABLE_NATIVE_ENV, "").strip().lower() in _TRUE_ENV_VALUES:
         return (
             f"Firecracker control support is disabled; unset `{_DISABLE_NATIVE_ENV}` and try again."
         )
-    if _native is None:
+    if core_firecracker is None:
         return (
             "Firecracker control support is missing; "
             "run `uv sync --reinstall-package smolvm-core` and try again."
         )
-    if not hasattr(_native, "has_native_firecracker_api") or not hasattr(
-        _native, "_firecracker_request"
+    if not hasattr(core_firecracker, "available") or not hasattr(
+        core_firecracker, "FirecrackerClient"
     ):
         return (
             "Firecracker control support is missing; "
             "run `uv sync --reinstall-package smolvm-core` and try again."
         )
     try:
-        if bool(_native.has_native_firecracker_api()):
+        if bool(core_firecracker.available()):
             return None
     except Exception as exc:
         logger.debug("Firecracker native availability check failed: %s", exc)
@@ -64,11 +64,14 @@ def _native_firecracker_unavailable_reason() -> str | None:
     )
 
 
-def _require_native_firecracker() -> Any:
-    reason = _native_firecracker_unavailable_reason()
+def _require_core_firecracker(socket_path: Path) -> Any:
+    reason = _core_firecracker_unavailable_reason()
     if reason is not None:
         raise FirecrackerAPIError(reason)
-    return _native
+    try:
+        return core_firecracker.FirecrackerClient(socket_path)
+    except Exception as exc:
+        raise FirecrackerAPIError(str(exc)) from exc
 
 
 def _is_instance_start_request(
@@ -150,7 +153,7 @@ class FirecrackerClient:
         """
         logger.debug("%s %s", method, path)
         try:
-            status_code, payload = self._native_request(
+            status_code, payload = self._core_request(
                 method,
                 path,
                 body=json,
@@ -168,7 +171,7 @@ class FirecrackerClient:
 
         return self._handle_response(status_code, payload, expected_status)
 
-    def _native_request(
+    def _core_request(
         self,
         method: str,
         path: str,
@@ -176,13 +179,12 @@ class FirecrackerClient:
         body: dict[str, Any] | None,
     ) -> tuple[int, str | None]:
         body_json = json_module.dumps(body, separators=(",", ":")) if body is not None else None
-        native = _require_native_firecracker()
-        status_code, payload = native._firecracker_request(
-            str(self.socket_path),
+        client = _require_core_firecracker(self.socket_path)
+        status_code, payload = client.request_raw(
             method,
             path,
-            body_json,
-            10.0,
+            body_json=body_json,
+            timeout=10.0,
         )
         return int(status_code), payload
 
@@ -195,7 +197,7 @@ class FirecrackerClient:
         expected_status: tuple[int, ...],
     ) -> dict[str, Any] | None:
         try:
-            status_code, payload = self._native_request(method, path, body=body)
+            status_code, payload = self._core_request(method, path, body=body)
         except OSError:
             raise FirecrackerAPIError(f"Request failed: {native_error}") from native_error
 
@@ -233,14 +235,9 @@ class FirecrackerClient:
         Raises:
             OperationTimeoutError: If socket doesn't become available.
         """
-        native = _require_native_firecracker()
-        if not hasattr(native, "_firecracker_wait_for_socket"):
-            raise FirecrackerAPIError(
-                "Firecracker control support is missing; "
-                "run `uv sync --reinstall-package smolvm-core` and try again."
-            )
+        client = _require_core_firecracker(self.socket_path)
         try:
-            native._firecracker_wait_for_socket(str(self.socket_path), timeout)
+            client.wait_for_socket(timeout)
         except OSError as exc:
             raise OperationTimeoutError("wait_for_socket", timeout) from exc
         logger.debug("Socket ready via native Firecracker API: %s", self.socket_path)

@@ -25,6 +25,8 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from smolvm_core import errors as core_errors
+from smolvm_core import qmp as core_qmp
 
 import smolvm.qmp as qmp_module
 from smolvm.exceptions import SmolVMError
@@ -307,8 +309,8 @@ def test_qmp_connect_can_retry_after_capabilities_handshake_failure(
 
 
 def test_native_qmp_client_smoke_exercises_socket_protocol(qmp_socket_path: Path) -> None:
-    """Native QMP should work on every platform that ships smolvm-core."""
-    assert qmp_module._NativeQMPClient is not None
+    """The public smolvm-core QMP client should exercise the native socket protocol."""
+    assert core_qmp.available()
 
     socket_path = qmp_socket_path
     requests: list[dict[str, object]] = []
@@ -348,13 +350,13 @@ def test_native_qmp_client_smoke_exercises_socket_protocol(qmp_socket_path: Path
         "job-dismiss": [{"return": {}}],
     }
     thread = _start_qmp_server(socket_path, responses, requests)
-    client = qmp_module._NativeQMPClient(str(socket_path))
+    client = core_qmp.QMPClient(socket_path)
 
     try:
         client.connect(5.0, 30.0)
-        status = json.loads(client.execute("query-status", None))
+        status = client.execute("query-status", None)
         client.snapshot_save("job0", "snap0", "disk0", ["disk0"])
-        job = json.loads(client.wait_for_job("job0", 1.0, 0.01))
+        job = client.wait_for_job("job0", timeout=1.0, poll_interval=0.01)
     finally:
         client.close()
 
@@ -363,8 +365,8 @@ def test_native_qmp_client_smoke_exercises_socket_protocol(qmp_socket_path: Path
         socket_path.unlink()
 
     assert status["status"] == "paused"
-    assert job["job_id"] == "job0"
-    assert job["status"] == "concluded"
+    assert job.job_id == "job0"
+    assert job.status == "concluded"
     assert [request["execute"] for request in requests] == [
         "qmp_capabilities",
         "query-status",
@@ -380,7 +382,13 @@ def test_qmp_client_requires_native_binding(
     qmp_socket_path: Path,
 ) -> None:
     """The public QMPClient should fail clearly when the Rust binding is absent."""
-    monkeypatch.setattr(qmp_module, "_NativeQMPClient", None)
+    monkeypatch.setattr(
+        qmp_module.core_qmp,
+        "QMPClient",
+        lambda _socket_path: (_ for _ in ()).throw(
+            core_errors.CoreUnavailableError("missing core")
+        ),
+    )
     socket_path = qmp_socket_path
 
     with pytest.raises(SmolVMError, match="QEMU control support is missing") as exc_info:
@@ -390,24 +398,20 @@ def test_qmp_client_requires_native_binding(
 
 
 def test_qmp_native_errors_become_smolvm_errors(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Private native exceptions should not leak past the public Python wrapper."""
+    """Core QMP exceptions should not leak past the public SmolVM wrapper."""
 
-    class BrokenNativeClient:
-        def __init__(self, socket_path: str) -> None:
+    class BrokenCoreClient:
+        def __init__(self, socket_path: Path) -> None:
             self.socket_path = socket_path
 
         def connect(self, _timeout: float, _read_timeout: float) -> None:
-            raise RuntimeError(
-                json.dumps(
-                    {
-                        "message": "Timed out waiting for QMP socket",
-                        "context": {"socket_path": self.socket_path},
-                    }
-                )
+            raise core_errors.QMPError(
+                "Timed out waiting for QMP socket",
+                {"socket_path": str(self.socket_path)},
             )
 
     socket_path = Path("/tmp/qmp-missing.sock")
-    monkeypatch.setattr(qmp_module, "_NativeQMPClient", BrokenNativeClient)
+    monkeypatch.setattr(qmp_module.core_qmp, "QMPClient", BrokenCoreClient)
     client = qmp_module.QMPClient(socket_path)
 
     with pytest.raises(SmolVMError, match="Timed out waiting for QMP socket") as exc_info:

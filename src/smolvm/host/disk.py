@@ -35,9 +35,9 @@ _TRUE_ENV_VALUES = {"1", "true", "yes"}
 _SPARSE_CHUNK_SIZE = 1024 * 1024
 
 try:
-    import smolvm_core as _native
+    from smolvm_core import disk as core_disk
 except ImportError:  # pragma: no cover - depends on optional wheel availability
-    _native = None  # type: ignore[assignment]
+    core_disk = None  # type: ignore[assignment]
 
 
 def has_native_disk_io() -> bool:
@@ -81,7 +81,7 @@ def decompress_zstd_sparse(
     _ensure_parent_dir(target)
 
     if _native_available():
-        method = str(_native.decompress_zstd_sparse(str(source), str(target), chunk_size))
+        method = str(core_disk.decompress_zstd_sparse(str(source), str(target), chunk_size))
         return f"native:{method}"
 
     return _python_decompress_zstd_sparse(source, target, chunk_size=chunk_size)
@@ -89,10 +89,10 @@ def decompress_zstd_sparse(
 
 def _native_available() -> bool:
     disabled = os.environ.get(_NATIVE_DISABLE_ENV, "").strip().lower() in _TRUE_ENV_VALUES
-    if disabled or _native is None or not hasattr(_native, "has_native_disk_io"):
+    if disabled or core_disk is None:
         return False
     try:
-        return bool(_native.has_native_disk_io())
+        return bool(core_disk.available())
     except OSError:
         return False
 
@@ -121,7 +121,7 @@ def _cp_clone_or_sparse_copy(source: Path, target: Path) -> str | None:
 
 
 def _native_clone_or_sparse_copy(source: Path, target: Path) -> str:
-    method = str(_native.clone_or_sparse_copy(str(source), str(target)))
+    method = str(core_disk.clone_or_sparse_copy(str(source), str(target)))
     shutil.copystat(source, target)
     return f"native:{method}"
 

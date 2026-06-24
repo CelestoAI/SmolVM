@@ -551,11 +551,11 @@ class TestSmolVMDiskLifecycle:
                 return_value=SimpleNamespace(returncode=1, stderr="cp failed"),
             ),
             patch(
-                "smolvm.host.disk._native",
+                "smolvm.host.disk.core_disk",
                 create=True,
-            ) as mock_native,
+            ) as mock_core_disk,
         ):
-            mock_native.clone_or_sparse_copy.side_effect = AssertionError("native disabled")
+            mock_core_disk.clone_or_sparse_copy.side_effect = AssertionError("core disabled")
             SmolVMManager._copy_with_reflink(source, target)
 
         self._assert_sparse_copy(source, target)
@@ -579,11 +579,11 @@ class TestSmolVMDiskLifecycle:
                 return_value=SimpleNamespace(returncode=1, stderr="cp failed"),
             ),
             patch(
-                "smolvm.host.disk._native",
+                "smolvm.host.disk.core_disk",
                 create=True,
-            ) as mock_native,
+            ) as mock_core_disk,
         ):
-            mock_native.clone_or_sparse_copy.side_effect = AssertionError("native disabled")
+            mock_core_disk.clone_or_sparse_copy.side_effect = AssertionError("core disabled")
             await manager._async_copy_with_reflink(source, target)
 
         self._assert_sparse_copy(source, target)

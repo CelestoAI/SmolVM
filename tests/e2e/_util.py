@@ -26,9 +26,9 @@ from typing import Literal
 import pytest
 
 try:
-    from smolvm_core import has_native_networking as _core_available
+    from smolvm_core import network as _core_network
 except (ImportError, OSError):  # pragma: no cover - native extension missing entirely
-    _core_available = None
+    _core_network = None
 
 from smolvm.host.manager import HostManager
 from smolvm.runtime.backends import BACKEND_FIRECRACKER, BACKEND_QEMU
@@ -64,7 +64,7 @@ BOOT_TIMEOUT = 180.0
 
 def kvm_ready() -> bool:
     """True when this host can actually run a hardware-accelerated VM."""
-    return Path("/dev/kvm").exists() and _core_available is not None and _core_available()
+    return Path("/dev/kvm").exists() and _core_network is not None and _core_network.available()
 
 
 def _kvm_accessible() -> bool:

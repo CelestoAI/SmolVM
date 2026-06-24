@@ -1,70 +1,119 @@
 # smolvm-core
 
-`smolvm-core` helps SmolVM prepare sandbox networking and control local virtual machines efficiently on supported hosts. Most application developers use it through `smolvm`; direct imports are only for people working on this helper package or checking which native features are available.
+`smolvm-core` is the Rust package that gives SmolVM faster local VM setup and control.
+Most users do not import it directly; they get it automatically when they install `smolvm`.
 
-## What It Does
+## What It Speeds Up
 
-`smolvm-core` is a Rust extension loaded by the Python package. It handles two jobs:
+`smolvm-core` helps with host-side work that is slow or awkward in Python:
 
-- Linux networking helpers for TAP devices, routes, and sysctls.
-- A private QMP accelerator for QEMU monitor commands.
+- Linux networking setup for TAP devices, routes, and sysctls.
+- Sparse disk image copy and zstd decompression.
+- QEMU monitor control through QMP, QEMU's JSON control protocol.
+- Firecracker API control through Firecracker's Unix socket API.
 
-QMP means QEMU Machine Protocol. It is the JSON protocol SmolVM uses to pause, resume, snapshot, and inspect QEMU sandboxes.
+The Linux networking helpers still need permission to change host networking directly. If SmolVM lacks that permission, the main package falls back to subprocess commands for networking so the sandbox can still run.
 
-## What To Import
+## Check The Installed Wheel
 
-Application code should use the main package:
+Run this command before debugging native behavior:
 
-```python
-from smolvm import SmolVM
+```bash
+python -m smolvm_core
 ```
 
-Native-extension contributors can import `smolvm_core` directly for capability checks:
+It prints a JSON capability report. A contributor can also inspect capabilities from Python:
 
 ```python
-import smolvm_core
+from smolvm_core import capabilities
 
-print(smolvm_core.has_native_networking())
-print(smolvm_core.has_native_qmp())
+caps = capabilities.detect()
+print(caps.as_dict())
 ```
 
-Use `has_native_networking()` when you need to know whether the Linux networking helpers are active. Use `has_native_qmp()` when you need to know whether the private native QMP accelerator was built into the wheel.
+## Public Python API
 
-`is_available()` is still available for older callers, but it only means native Linux networking is available.
-
-## Public Functions
-
-These direct functions are supported for native networking work:
+Use module imports. Do not import the private compiled extension.
 
 ```python
-smolvm_core.create_tap(name: str, owner_uid: int) -> None
-smolvm_core.delete_tap(name: str) -> None
-smolvm_core.flush_addrs(name: str) -> None
-smolvm_core.add_addr(name: str, ip: str, prefix_len: int) -> None
-smolvm_core.set_link_up(name: str) -> None
-smolvm_core.configure_tap(name: str, host_ip: str, prefix_len: int) -> None
-smolvm_core.add_route(dest: str, prefix_len: int, dev: str) -> None
-smolvm_core.get_default_interface() -> str
-smolvm_core.write_sysctl(key: str, value: str) -> None
+from smolvm_core import disk, firecracker, network, qmp
 ```
 
-Use `configure_tap()` for normal TAP setup. It combines address flush, address assignment, and link-up into one native operation. SmolVM still writes the per-TAP sysctl from Python after this call.
+### Networking
 
-On macOS, the networking helpers raise `OSError("Not available on this platform")`. That is expected. SmolVM uses QEMU user-mode networking on macOS, so it does not need TAP setup there.
+Use `network` when setting up Linux TAP networking:
 
-## QMP Is Private
+```python
+from smolvm_core import network
 
-Do not import `_QmpClient` from `smolvm_core._smolvm_core`. It is an implementation detail.
+network.create_tap("tap0", owner_uid=1000)
+network.configure_tap("tap0", "172.16.0.1", 32)
+network.add_route("172.16.0.2", 32, "tap0")
+```
 
-Use the stable Python wrapper instead:
+For normal sandbox setup, prefer `prepare_tap()` because it creates the TAP device and configures its address in one native call:
+
+```python
+network.prepare_tap("tap0", 1000, "172.16.0.1", 32)
+```
+
+### Disk Images
+
+Use `disk` when copying or decompressing raw disk images:
+
+```python
+from smolvm_core import disk
+
+method = disk.decompress_zstd_sparse("rootfs.ext4.zst", "rootfs.ext4")
+print(method)
+```
+
+These helpers preserve sparse zero-filled regions so SmolVM does not waste time writing unused blocks.
+
+### QEMU Control
+
+Use `qmp.QMPClient` for QEMU monitor commands:
 
 ```python
 from pathlib import Path
-from smolvm.qmp import QMPClient
+from smolvm_core import qmp
 
-with QMPClient(Path("/tmp/qmp.sock")) as qmp:
-    qmp.connect()
-    print(qmp.query_status())
+with qmp.QMPClient(Path("/tmp/qmp.sock")) as client:
+    client.connect()
+    print(client.query_status())
 ```
 
-`QMPClient` uses the Rust implementation when it is installed and falls back to the pure-Python implementation when it is not. It also converts native failures into `SmolVMError`, so callers do not need separate error handling for the two paths.
+The main `smolvm.qmp.QMPClient` wraps this core client and converts core errors into `SmolVMError`.
+
+### Firecracker Control
+
+Use `firecracker.FirecrackerClient` for Firecracker API requests:
+
+```python
+from pathlib import Path
+from smolvm_core import firecracker
+
+client = firecracker.FirecrackerClient(Path("/tmp/firecracker.socket"))
+client.wait_for_socket(timeout=10.0)
+```
+
+The main `smolvm.api.FirecrackerClient` wraps this core client and keeps SmolVM's public error contract.
+
+## Private Extension Boundary
+
+The compiled module is `smolvm_core._ffi`. Only files inside the `smolvm_core` Python package should import it.
+
+SmolVM production code should use public modules such as `smolvm_core.network` and `smolvm_core.qmp`. Tests enforce that production code does not import `smolvm_core._ffi`, `smolvm_core._smolvm_core`, `_QmpClient`, or raw Firecracker helper functions.
+
+## Rust Layout
+
+The Rust crate is organized like a library first:
+
+- `disk.rs` contains sparse file copy and zstd decompression.
+- `network.rs` exposes the public Linux networking facade.
+- `route.rs`, `tap.rs`, and `sysctl.rs` contain Linux networking internals.
+- `qmp.rs` contains the QEMU monitor client.
+- `firecracker.rs` contains the Firecracker socket client.
+- `python.rs` registers the private PyO3 extension module.
+
+This keeps the Python binding layer separate from the Rust modules that are useful to test and read on their own.

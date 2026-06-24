@@ -1,6 +1,6 @@
 [package]
 name = "smolvm-core"
-version = "2026.6.23"
+version = "2026.6.24"
 description = "Rust-native core package for SmolVM"
 documentation = "https://docs.rs/smolvm-core"
 readme = "README.md"
@@ -14,7 +14,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [lib]
-name = "_smolvm_core"
+name = "smolvm_core"
 crate-type = ["cdylib", "rlib"]
 
 [features]

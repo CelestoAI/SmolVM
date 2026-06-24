@@ -26,30 +26,30 @@ def test_clone_or_sparse_copy_prefers_cp_before_native(tmp_path: Path) -> None:
     """GNU cp should stay the production default for raw disk clones."""
     source = tmp_path / "source.ext4"
     target = tmp_path / "target.ext4"
-    native = MagicMock()
+    core_disk = MagicMock()
 
     with (
         patch.object(disk, "_cp_clone_or_sparse_copy", return_value="cp") as mock_cp,
         patch.object(disk, "_native_available", side_effect=AssertionError("native skipped")),
-        patch.object(disk, "_native", native),
+        patch.object(disk, "core_disk", core_disk),
     ):
         assert disk.clone_or_sparse_copy(source, target) == "cp"
 
     mock_cp.assert_called_once_with(source, target)
-    native.clone_or_sparse_copy.assert_not_called()
+    core_disk.clone_or_sparse_copy.assert_not_called()
 
 
 def test_clone_or_sparse_copy_uses_native_after_cp_failure(tmp_path: Path) -> None:
     """Native copy remains available after cp cannot handle the clone."""
     source = tmp_path / "source.ext4"
     target = tmp_path / "target.ext4"
-    native = MagicMock()
-    native.clone_or_sparse_copy.return_value = "sparse"
+    core_disk = MagicMock()
+    core_disk.clone_or_sparse_copy.return_value = "sparse"
 
     with (
         patch.object(disk, "_cp_clone_or_sparse_copy", return_value=None) as mock_cp,
         patch.object(disk, "_native_available", return_value=True),
-        patch.object(disk, "_native", native),
+        patch.object(disk, "core_disk", core_disk),
         patch.object(disk.shutil, "copystat") as mock_copystat,
         patch.object(
             disk,
@@ -60,7 +60,7 @@ def test_clone_or_sparse_copy_uses_native_after_cp_failure(tmp_path: Path) -> No
         assert disk.clone_or_sparse_copy(source, target) == "native:sparse"
 
     mock_cp.assert_called_once_with(source, target)
-    native.clone_or_sparse_copy.assert_called_once_with(str(source), str(target))
+    core_disk.clone_or_sparse_copy.assert_called_once_with(str(source), str(target))
     mock_copystat.assert_called_once_with(source, target)
 
 
@@ -82,13 +82,13 @@ def test_clone_or_sparse_copy_uses_python_when_cp_and_native_unavailable(tmp_pat
 
 def test_clone_or_sparse_copy_propagates_native_oserror(tmp_path: Path) -> None:
     """Native copy failures after invocation must not silently recopy in Python."""
-    native = MagicMock()
-    native.clone_or_sparse_copy.side_effect = OSError("No space left on device")
+    core_disk = MagicMock()
+    core_disk.clone_or_sparse_copy.side_effect = OSError("No space left on device")
 
     with (
         patch.object(disk, "_cp_clone_or_sparse_copy", return_value=None),
         patch.object(disk, "_native_available", return_value=True),
-        patch.object(disk, "_native", native),
+        patch.object(disk, "core_disk", core_disk),
         patch.object(
             disk,
             "_python_clone_or_sparse_copy",
@@ -101,12 +101,12 @@ def test_clone_or_sparse_copy_propagates_native_oserror(tmp_path: Path) -> None:
 
 def test_decompress_zstd_sparse_propagates_native_oserror(tmp_path: Path) -> None:
     """Native decompression failures after invocation must remain visible."""
-    native = MagicMock()
-    native.decompress_zstd_sparse.side_effect = OSError("corrupt zstd stream")
+    core_disk = MagicMock()
+    core_disk.decompress_zstd_sparse.side_effect = OSError("corrupt zstd stream")
 
     with (
         patch.object(disk, "_native_available", return_value=True),
-        patch.object(disk, "_native", native),
+        patch.object(disk, "core_disk", core_disk),
         patch.object(
             disk,
             "_python_decompress_zstd_sparse",
