@@ -31,6 +31,26 @@ caps = capabilities.detect()
 print(caps.as_dict())
 ```
 
+## Work On The Native Package
+
+When you change `smolvm-core`, rebuild the local extension before judging the behavior:
+
+```bash
+uv sync --extra dev
+uv sync --reinstall-package smolvm-core
+uv run python -m smolvm_core
+```
+
+The final command confirms that Python can import the local extension and shows which helpers are available.
+
+For Rust-only validation, run:
+
+```bash
+cargo test -p smolvm-core
+```
+
+If Rust cannot link against Python, install the Python development package for your interpreter. Some local Python installs also need `LIBRARY_PATH` pointed at the directory that contains the unversioned `libpythonX.Y.so` file.
+
 ## Public Python API
 
 Use module imports. Do not import the private compiled extension.
@@ -98,6 +118,21 @@ client.wait_for_socket(timeout=10.0)
 ```
 
 The main `smolvm.api.FirecrackerClient` wraps this core client and keeps SmolVM's public error contract.
+
+## Migrate Old Imports
+
+This refactor intentionally removes the old flat helper imports during the alpha period. Move callers to the public module that owns the operation:
+
+| Old form | New form |
+| --- | --- |
+| `smolvm_core.has_native_networking()` | `smolvm_core.network.available()` |
+| `smolvm_core.has_native_disk_io()` | `smolvm_core.disk.available()` |
+| `smolvm_core.has_native_qmp()` | `smolvm_core.qmp.available()` |
+| `smolvm_core.has_native_firecracker_api()` | `smolvm_core.firecracker.available()` |
+| `smolvm_core.configure_tap(...)` | `smolvm_core.network.configure_tap(...)` |
+| `smolvm_core.create_tap(...)`, `delete_tap(...)`, `add_route(...)`, `write_sysctl(...)` | `smolvm_core.network.<function>(...)` |
+| `smolvm_core._QmpClient` | `smolvm_core.qmp.QMPClient` |
+| raw `_firecracker_*` helpers | `smolvm_core.firecracker.FirecrackerClient` |
 
 ## Private Extension Boundary
 

@@ -9,6 +9,26 @@ pip install smolvm
 
 Install `smolvm-core` directly only when you are developing the native helper package or testing a package release.
 
+## Work On smolvm-core From Source
+
+Use the source checkout when you are changing the Rust helpers or their Python wrappers:
+
+```bash
+uv sync --extra dev
+uv sync --reinstall-package smolvm-core
+uv run python -m smolvm_core
+```
+
+The last command should print the capability report for the extension you just built. Run it again after changing Rust or wrapper code so you know Python is loading the current local build.
+
+For Rust-only checks, run:
+
+```bash
+cargo test -p smolvm-core
+```
+
+If that command cannot find `libpython`, install the Python development package for the interpreter you are using, then rerun the test. Local Python installs that ship only a versioned shared library may also need `LIBRARY_PATH` pointed at the directory containing `libpythonX.Y.so`.
+
 ## Check What Is Available
 
 Run this command to see which native helpers your current wheel can use:
@@ -80,6 +100,21 @@ from smolvm_core import firecracker
 client = firecracker.FirecrackerClient(Path("/tmp/firecracker.socket"))
 print(client.request("GET", "/"))
 ```
+
+## Migrate From The Old Flat API
+
+This alpha refactor removes the old top-level helper aliases. Import the module for the area you need instead:
+
+| Old form | New form |
+| --- | --- |
+| `smolvm_core.has_native_networking()` | `smolvm_core.network.available()` |
+| `smolvm_core.has_native_disk_io()` | `smolvm_core.disk.available()` |
+| `smolvm_core.has_native_qmp()` | `smolvm_core.qmp.available()` |
+| `smolvm_core.has_native_firecracker_api()` | `smolvm_core.firecracker.available()` |
+| `smolvm_core.configure_tap(...)` | `smolvm_core.network.configure_tap(...)` |
+| `smolvm_core.create_tap(...)`, `delete_tap(...)`, `add_route(...)`, `write_sysctl(...)` | `smolvm_core.network.<function>(...)` |
+| `smolvm_core._QmpClient` | `smolvm_core.qmp.QMPClient` |
+| raw `_firecracker_*` helpers | `smolvm_core.firecracker.FirecrackerClient` |
 
 ## Private Extension Boundary
 

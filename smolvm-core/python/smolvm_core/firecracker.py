@@ -81,12 +81,17 @@ class FirecrackerClient:
         """Send one API request and raise when Firecracker returns an error."""
 
         body_json = json_module.dumps(body, separators=(",", ":")) if body is not None else None
-        status_code, payload = self.request_raw(
-            method,
-            path,
-            body_json=body_json,
-            timeout=timeout,
-        )
+        try:
+            status_code, payload = self.request_raw(
+                method,
+                path,
+                body_json=body_json,
+                timeout=timeout,
+            )
+        except OSError as exc:
+            raise FirecrackerAPIError(
+                f"Could not reach Firecracker API socket at {self.socket_path}: {exc}"
+            ) from exc
         if status_code not in expected_statuses:
             raise FirecrackerAPIError(
                 f"API error: {_decode_error(payload)}",

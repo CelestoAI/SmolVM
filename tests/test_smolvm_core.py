@@ -129,6 +129,20 @@ def test_qmp_and_firecracker_are_public_modules() -> None:
     assert inspect.isclass(smolvm_core.firecracker.FirecrackerClient)
 
 
+def test_firecracker_request_wraps_socket_errors(tmp_path: Path) -> None:
+    """Standalone Firecracker requests should raise the public core error type."""
+    if not smolvm_core.firecracker.available():
+        pytest.skip("native Firecracker API support is unavailable")
+
+    client = smolvm_core.firecracker.FirecrackerClient(tmp_path / "missing.sock")
+
+    with pytest.raises(
+        smolvm_core.errors.FirecrackerAPIError,
+        match="Could not reach Firecracker API socket",
+    ):
+        client.request("GET", "/")
+
+
 def test_production_code_does_not_import_private_core_extension() -> None:
     """SmolVM production code should use public smolvm_core modules only."""
     repo_root = Path(__file__).resolve().parents[1]

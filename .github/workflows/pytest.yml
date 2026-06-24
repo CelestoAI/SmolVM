@@ -49,8 +49,8 @@ jobs:
           uv run python -c "
           from smolvm.host._accel import HAS_NETLINK
           assert HAS_NETLINK, 'smolvm-core not loaded'
-          from smolvm_core import has_native_networking
-          assert has_native_networking(), 'Native extension reports native networking unavailable on Linux'
+          from smolvm_core import network
+          assert network.available(), 'Native extension reports native networking unavailable on Linux'
           print('smolvm-core: OK')
           "
 
