@@ -25,7 +25,6 @@ import pytest
 from smolvm.exceptions import ImageError
 from smolvm.images import builder as builder_mod
 from smolvm.images.builder import ImageBuilder
-from smolvm.images.published import IMAGES_RELEASE_TAG
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -158,7 +157,7 @@ def test_e2e_uses_image_release_fallback_until_pinned_release_is_public() -> Non
 def test_smoke_published_images_uses_pinned_image_release_tag() -> None:
     """The smoke workflow should read the same image tag as build workflows."""
     workflow = (_REPO_ROOT / ".github" / "workflows" / "smoke-published-images.yml").read_text()
-    assert IMAGES_RELEASE_TAG in workflow
+    assert "src/smolvm/images/published.py" in workflow
     assert "IMAGES_RELEASE_TAG" in workflow
     assert "pyproject.toml" not in workflow
     assert "images-v${version}" not in workflow
