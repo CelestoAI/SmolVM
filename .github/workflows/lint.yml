@@ -23,6 +23,19 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'smolvm-core/Cargo.toml', 'guest-agent/Cargo.toml') }}
+          restore-keys: rust-${{ runner.os }}-
+
       - name: Install uv
         uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39
 
