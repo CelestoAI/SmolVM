@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import cast
 
 from smolvm.exceptions import SmolVMError
+from smolvm.runtime.backends import _running_inside_smolvm_guest
 from smolvm.runtime.guest_platforms import GuestPlatformSpec
 from smolvm.runtime.qemu import QEMU_ROOT_NODE_NAME
 from smolvm.types import GuestOS, QemuMachine, VMInfo
@@ -50,9 +51,10 @@ QEMU_SLIRP_DNS = "10.0.2.3"
 _Q35_AHCI_PORTS = 6
 
 _QEMU_MACHINE_ENV = "SMOLVM_QEMU_MACHINE"
-_QEMU_MICROVM_MACHINE = "microvm,accel=kvm,acpi=on,pcie=off,pic=off,pit=off,rtc=on"
+_QEMU_MICROVM_MACHINE_BASE = "microvm,acpi=on,pcie=off,pic=off,pit=off,rtc=on"
 _QEMU_MACHINE_VALUES: set[QemuMachine] = {"auto", "q35", "microvm"}
-
+_QEMU_ACCEL_ENV = "SMOLVM_QEMU_ACCEL"
+_KVM_DEV = Path("/dev/kvm")
 
 # Candidate UEFI firmware locations for aarch64 QEMU firmware-boot.
 # Searched in order; the first existing file wins. macOS Homebrew ships
@@ -66,6 +68,28 @@ _AARCH64_EDK2_FIRMWARE_CANDIDATES: tuple[str, ...] = (
     "/usr/share/edk2/aarch64/QEMU_EFI.fd",
     "/usr/share/edk2-armvirt/aarch64/QEMU_EFI.fd",
 )
+
+
+def _resolve_qemu_accel(host_system: str) -> tuple[str, str]:
+    """Return (accel, cpu) for QEMU based on host + env."""
+    raw = os.environ.get(_QEMU_ACCEL_ENV, "").strip().lower()
+    if raw in {"kvm", "hvf", "tcg"}:
+        accel = raw
+    else:
+        # Inside a SmolVM guest there is no KVM or HVF — always use TCG.
+        # We only apply this guard when the effective host_system is Linux
+        # (i.e. not when tests override host_system to exercise Linux code
+        # paths from a Darwin test runner).
+        if host_system == "Linux" and _running_inside_smolvm_guest():
+            accel = "tcg"
+        elif host_system == "Darwin":
+            accel = "hvf"
+        else:
+            accel = "kvm" if _KVM_DEV.exists() and os.access(_KVM_DEV, os.R_OK | os.W_OK) else "tcg"
+
+    # TCG needs a generic CPU model; "host" is only valid for KVM/HVF.
+    cpu = "host" if accel in {"kvm", "hvf"} else "max"
+    return accel, cpu
 
 
 def _find_aarch64_uefi_firmware() -> Path | None:
@@ -337,10 +361,12 @@ def build_qemu_argv(
         # macOS → Hypervisor.framework; Linux → KVM (if /dev/kvm is
         # missing the user couldn't run firecracker either, so requiring
         # KVM here is consistent).
-        if system == "Darwin":
-            machine, cpu = "virt,accel=hvf", "host"
-        else:
-            machine, cpu = "virt,accel=kvm", "host"
+        # if system == "Darwin":
+        #     machine, cpu = "virt,accel=hvf", "host"
+        # else:
+        #     machine, cpu = "virt,accel=kvm", "host"
+        accel, cpu = _resolve_qemu_accel(system)
+        machine = f"virt,accel={accel}"
         cmd.extend(["-machine", machine, "-cpu", cpu])
         if vm_info.config.boot_mode == "firmware":
             firmware_path = _find_aarch64_uefi_firmware()
@@ -373,7 +399,9 @@ def build_qemu_argv(
             ]
         )
     elif use_qemu_microvm:
-        cmd.extend(["-machine", _QEMU_MICROVM_MACHINE, "-cpu", "host"])
+        accel, cpu = _resolve_qemu_accel(system)
+        machine = f"microvm,accel={accel},{_QEMU_MICROVM_MACHINE_BASE.split(',', 1)[1]}"
+        cmd.extend(["-machine", machine, "-cpu", cpu])
         for drive_id in extra_drive_ids:
             cmd.extend(["-device", f"virtio-blk-device,drive={drive_id}"])
         for fsdev_id, tag in workspace_fsdev_ids:
@@ -390,10 +418,12 @@ def build_qemu_argv(
         # See accel comment on the aarch64 branch above. Without
         # accel=kvm on Linux, QEMU runs TCG and Ubuntu cloud-init blows
         # past wait_for_ssh in seconds vs minutes.
-        if system == "Darwin":
-            machine_base, cpu_base = "q35,accel=hvf", "host"
-        else:
-            machine_base, cpu_base = "q35,accel=kvm", "host"
+        # if system == "Darwin":
+        #     machine_base, cpu_base = "q35,accel=hvf", "host"
+        # else:
+        #     machine_base, cpu_base = "q35,accel=kvm", "host"
+        accel, cpu = _resolve_qemu_accel(system)
+        machine_base, cpu_base = f"q35,accel={accel}", cpu
         # Per-OS extras are comma-appended to the base. For _LINUX_SPEC
         # both extra tuples are empty → byte-identical to the legacy form.
         machine_str = ",".join((machine_base, *platform_spec.machine_extra_opts))

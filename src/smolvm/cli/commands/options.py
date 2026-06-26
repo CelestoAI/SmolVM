@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+import os
 import platform
 from collections.abc import Callable, Mapping
 from functools import wraps
@@ -85,7 +87,7 @@ def boot_timeout_option(fn: F) -> F:
         "--boot-timeout",
         type=float,
         callback=_positive_number,
-        default=30.0,
+        default=_boot_timeout_default(),
         show_default=True,
         help="Seconds to wait for the sandbox to be ready.",
     )(fn)
@@ -107,3 +109,14 @@ def positive_int_type() -> click.IntRange:
 
 def positive_float_type() -> click.FloatRange:
     return click.FloatRange(min=0, min_open=True)
+
+
+def _boot_timeout_default() -> float:
+    raw = os.environ.get("SMOLVM_BOOT_TIMEOUT", "").strip()
+    if not raw:
+        return 30.0
+    try:
+        value = float(raw)
+    except ValueError:
+        return 30.0
+    return value if math.isfinite(value) and value > 0 else 30.0

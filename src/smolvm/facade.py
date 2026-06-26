@@ -79,6 +79,7 @@ from smolvm.runtime.backends import (
     BACKEND_FIRECRACKER,
     BACKEND_LIBKRUN,
     BACKEND_QEMU,
+    _running_inside_smolvm_guest,
     resolve_backend,
 )
 from smolvm.runtime.boot_profiles import (
@@ -575,6 +576,11 @@ def _build_auto_config(
     public_key_value = public_key_path.read_text().strip()
 
     resolved_memory = _AUTO_CONFIG_DEFAULT_MEM_SIZE_MIB[resolved_os]
+    # Inside a nested SmolVM guest, TCG (software emulation) is used because
+    # KVM is unavailable. Use a smaller default so the inner VM fits within
+    # the outer sandbox's memory without the user needing to specify --memory.
+    if memory is None and _running_inside_smolvm_guest():
+        resolved_memory = min(resolved_memory, 512)
     if memory is not None:
         resolved_memory = memory
     default_disk_size_mib = _AUTO_CONFIG_DEFAULT_DISK_SIZE_MIB[resolved_os]

@@ -38,7 +38,7 @@ from pathlib import Path
 
 from smolvm.comm.base import CommChannelKind
 from smolvm.exceptions import SmolVMError
-from smolvm.runtime.backends import BACKEND_FIRECRACKER, BACKEND_QEMU
+from smolvm.runtime.backends import BACKEND_FIRECRACKER, BACKEND_QEMU, _running_inside_smolvm_guest
 from smolvm.types import GuestOS
 
 _VHOST_VSOCK_DEV = Path("/dev/vhost-vsock")
@@ -49,7 +49,13 @@ def host_supports_vsock() -> bool:
 
     True only on Linux with the ``vhost_vsock`` driver loaded (its device node
     present). macOS/HVF has no equivalent, so this returns False there.
+
+    Also returns False inside a nested SmolVM sandbox: the guest kernel exposes
+    no ``/dev/vhost-vsock`` in that context, and the sandbox always uses SSH as
+    its control channel.
     """
+    if _running_inside_smolvm_guest():
+        return False
     return platform.system() == "Linux" and _VHOST_VSOCK_DEV.exists()
 
 
