@@ -32,6 +32,7 @@ CONFIG_ISO9660_FS=y             # why: cloud-init NoCloud seed disk is an iso966
 CONFIG_TMPFS=y                  # why: tmpfs-backed /run during /init bootstrap
 CONFIG_DEVTMPFS=y               # why: /dev populated by kernel at mount
 CONFIG_DEVTMPFS_MOUNT=y         # why: auto-mount /dev at boot
+CONFIG_FUSE_FS=y                # why: guest-mounted FUSE filesystems such as JuiceFS need /dev/fuse
 
 # ── Networking baseline ──────────────────────────────────────────────
 CONFIG_NET=y                    # why: required for virtio-net + sshd
