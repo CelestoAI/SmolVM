@@ -62,6 +62,7 @@ the runtimes SmolVM uses today:
 | **Vsock (host↔guest)** | `CONFIG_VSOCKETS`, `CONFIG_VIRTIO_VSOCKETS` | – | – | – | required (libkrun init protocol) |
 | **Filesystems** (no-initrd boot of guest rootfs) | `CONFIG_EXT4_FS` | required (rootfs) | required | required | required |
 |                        | `CONFIG_ISO9660_FS`             | – | required (cloud-init NoCloud seed disk on `/dev/vdb`) | required | – |
+|                        | `CONFIG_FUSE_FS`                | required (guest FUSE filesystems such as JuiceFS) | required | required | required |
 | **Workspace mounts**   | `CONFIG_NET_9P`, `CONFIG_NET_9P_VIRTIO`, `CONFIG_9P_FS` | – | required (`smolvm <preset> start --mount …`) | required | – |
 |                        | `CONFIG_OVERLAY_FS`             | – | required (read-only mount = 9p+overlay) | required | – |
 | **No modules**         | `# CONFIG_MODULES is not set`   | required (no initrd to load modules from) | required | required | required |
@@ -225,6 +226,9 @@ task.
   initrd, which keeps the image set simple. Cost: any future preset that
   needs a kernel module (zfs, btrfs, NFS, etc.) requires adding the symbol
   to `config.fragment` (or the per-arch fragment) as `=y`.
+- **FUSE is built in.** Guest filesystems such as JuiceFS still need userspace
+  packages in the rootfs, but the kernel must provide `/dev/fuse` because
+  there is no initrd or module tree to load it later.
 - **Maintenance burden.** Bumping Linux means re-running `build.sh` once
   to verify the fragment still applies, then committing. CI cache by input
   hash means the rebuild is free until inputs change.

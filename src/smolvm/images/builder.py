@@ -66,8 +66,8 @@ _GUEST_AGENT_CRATE_DIR = _REPO_ROOT / "guest-agent"
 _GUEST_AGENT_BUILD_FILE = "smolvm-guest-agent"
 _GUEST_AGENT_GUEST_PATH = "/usr/local/bin/smolvm-guest-agent"
 _GUEST_AGENT_RELEASE_SHA256: dict[str, str] = {
-    "amd64": "61ead9a6b13f9a5f63211cd8873ff000e17a98bb40b450d57b5d6332fdb90232",
-    "arm64": "d7a04d2c7502dcbd0ae38dfdae1fbb3a98845be0f48ed1451c3b82de1eccbcbb",
+    "amd64": "c7d002907efbeaa90b88c59e32619fae074276b1c4dc6de4ef029081813f4c01",
+    "arm64": "e9ad9d199b93ff40f6e3b57140e3f7ed66f7ef0976d11b8e29c7ed4210e1b609",
 }
 
 
