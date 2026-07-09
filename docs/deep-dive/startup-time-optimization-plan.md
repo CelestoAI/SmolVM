@@ -103,9 +103,9 @@ Current status:
 
 - Guest-agent startup already happens before network and SSH in the current
   published Ubuntu init script.
-- Firecracker explicit-vsock now creates/configures the TAP needed by
-  Firecracker, but defers route/NAT/egress setup until SSH or port forwarding
-  needs host TCP/IP connectivity.
+- Firecracker explicit-vsock now creates/configures the TAP and route/NAT
+  egress during create so guests have internet immediately. SSH forwarding
+  still stays off unless an SSH-backed path needs it.
 - Published zstd rootfs decompression preserves sparse zero regions, and raw
   isolated-disk copies preserve those holes. This removes the accidental
   4 GiB copy from the Firecracker critical path on non-reflink filesystems.

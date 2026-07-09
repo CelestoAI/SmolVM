@@ -247,6 +247,8 @@ Notes:
 - Host: Linux with KVM; Firecracker networking used the unprivileged fallback path.
 - Method: one warm-up VM per variant, then three measured warm-cache iterations per variant.
 - Behavior changed: explicit Firecracker-vsock creates/configures the TAP for Firecracker, but defers route/NAT/egress setup until a network-backed operation needs it.
+- Follow-up: route/NAT deferral was later removed because guests need internet
+  immediately after create; vsock still avoids SSH port forwarding.
 
 | Backend | Transport | Before total ready | After total ready | Delta | Improvement |
 |---|---:|---:|---:|---:|---:|

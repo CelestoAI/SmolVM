@@ -218,13 +218,13 @@ class TestSmolVMCreate:
             assert smol_vm.check_prerequisites() == []
 
     @patch("smolvm.comm.select.platform.system", return_value="Linux")
-    def test_create_firecracker_explicit_vsock_skips_ssh_forward(
+    def test_create_firecracker_explicit_vsock_sets_up_egress_without_ssh_forward(
         self,
         _mock_system: MagicMock,
         smol_vm: SmolVMManager,
         sample_config: VMConfig,
     ) -> None:
-        """Explicit Firecracker vsock without SSH-backed startup should not add DNAT."""
+        """Explicit Firecracker vsock should keep internet egress without SSH DNAT."""
         mock_network = _attach_mock_network(smol_vm)
         config = sample_config.model_copy(
             update={"vm_id": "vm-vsock", "backend": "firecracker", "comm_channel": "vsock"}
@@ -236,29 +236,6 @@ class TestSmolVMCreate:
         assert vm_info.network.ssh_host_port is None
         assert vm_info.config.vsock is not None
         mock_network.prepare_tap_device.assert_called_once()
-        mock_network.add_route.assert_not_called()
-        mock_network.setup_nat.assert_not_called()
-        mock_network.setup_ssh_port_forward.assert_not_called()
-
-    @patch("smolvm.comm.select.platform.system", return_value="Linux")
-    def test_create_firecracker_explicit_vsock_lazy_network_can_be_activated(
-        self,
-        _mock_system: MagicMock,
-        smol_vm: SmolVMManager,
-        sample_config: VMConfig,
-    ) -> None:
-        """Deferred Firecracker network connectivity is installed before network use."""
-        mock_network = _attach_mock_network(smol_vm)
-        config = sample_config.model_copy(
-            update={"vm_id": "vm-vsock-lazy", "backend": "firecracker", "comm_channel": "vsock"}
-        )
-        vm_info = smol_vm.create(config)
-
-        mock_network.add_route.assert_not_called()
-        mock_network.setup_nat.assert_not_called()
-
-        smol_vm.ensure_network_connectivity(vm_info)
-
         mock_network.add_route.assert_called_once_with(
             vm_info.network.guest_ip,
             vm_info.network.tap_device,
@@ -267,13 +244,41 @@ class TestSmolVMCreate:
         mock_network.setup_ssh_port_forward.assert_not_called()
 
     @patch("smolvm.comm.select.platform.system", return_value="Linux")
-    def test_create_firecracker_auto_vsock_defers_ssh_networking(
+    def test_create_firecracker_explicit_vsock_network_connectivity_stays_idempotent(
         self,
         _mock_system: MagicMock,
         smol_vm: SmolVMManager,
         sample_config: VMConfig,
     ) -> None:
-        """Auto-selected Firecracker vsock behaves like explicit vsock in alpha builds."""
+        """Later network-backed operations can still re-apply idempotent egress setup."""
+        mock_network = _attach_mock_network(smol_vm)
+        config = sample_config.model_copy(
+            update={"vm_id": "vm-vsock-lazy", "backend": "firecracker", "comm_channel": "vsock"}
+        )
+        vm_info = smol_vm.create(config)
+
+        mock_network.add_route.assert_called_once()
+        mock_network.setup_nat.assert_called_once()
+
+        smol_vm.ensure_network_connectivity(vm_info)
+
+        assert mock_network.add_route.call_count == 2
+        mock_network.add_route.assert_called_with(
+            vm_info.network.guest_ip,
+            vm_info.network.tap_device,
+        )
+        assert mock_network.setup_nat.call_count == 2
+        mock_network.setup_nat.assert_called_with(vm_info.network.tap_device)
+        mock_network.setup_ssh_port_forward.assert_not_called()
+
+    @patch("smolvm.comm.select.platform.system", return_value="Linux")
+    def test_create_firecracker_auto_vsock_sets_up_egress_without_ssh_forward(
+        self,
+        _mock_system: MagicMock,
+        smol_vm: SmolVMManager,
+        sample_config: VMConfig,
+    ) -> None:
+        """Auto-selected Firecracker vsock should still provision guest internet."""
         mock_network = _attach_mock_network(smol_vm)
         config = sample_config.model_copy(update={"vm_id": "vm-auto", "backend": "firecracker"})
 
@@ -281,8 +286,11 @@ class TestSmolVMCreate:
 
         assert vm_info.network is not None
         assert vm_info.network.ssh_host_port is None
-        mock_network.add_route.assert_not_called()
-        mock_network.setup_nat.assert_not_called()
+        mock_network.add_route.assert_called_once_with(
+            vm_info.network.guest_ip,
+            vm_info.network.tap_device,
+        )
+        mock_network.setup_nat.assert_called_once_with(vm_info.network.tap_device)
         mock_network.setup_ssh_port_forward.assert_not_called()
 
     @patch("smolvm.comm.select.platform.system", return_value="Linux")
@@ -307,13 +315,13 @@ class TestSmolVMCreate:
         mock_network.setup_ssh_port_forward.assert_called_once()
 
     @patch("smolvm.comm.select.platform.system", return_value="Linux")
-    def test_create_firecracker_explicit_vsock_with_env_skips_ssh_forward(
+    def test_create_firecracker_explicit_vsock_with_env_sets_up_egress_without_ssh_forward(
         self,
         _mock_system: MagicMock,
         smol_vm: SmolVMManager,
         sample_config: VMConfig,
     ) -> None:
-        """Env-only startup uses managed vsock env and should not expose SSH."""
+        """Env-only startup uses managed vsock env, but guest egress still needs NAT."""
         mock_network = _attach_mock_network(smol_vm)
         config = sample_config.model_copy(
             update={
@@ -328,8 +336,11 @@ class TestSmolVMCreate:
 
         assert vm_info.network is not None
         assert vm_info.network.ssh_host_port is None
-        mock_network.add_route.assert_not_called()
-        mock_network.setup_nat.assert_not_called()
+        mock_network.add_route.assert_called_once_with(
+            vm_info.network.guest_ip,
+            vm_info.network.tap_device,
+        )
+        mock_network.setup_nat.assert_called_once_with(vm_info.network.tap_device)
         mock_network.setup_ssh_port_forward.assert_not_called()
 
     @patch("smolvm.comm.select.platform.system", return_value="Linux")
@@ -477,13 +488,13 @@ class TestSmolVMCreate:
 
     @pytest.mark.asyncio
     @patch("smolvm.comm.select.platform.system", return_value="Linux")
-    async def test_async_create_firecracker_explicit_vsock_skips_ssh_forward(
+    async def test_async_create_firecracker_explicit_vsock_sets_up_egress_without_ssh_forward(
         self,
         _mock_system: MagicMock,
         tmp_path: Path,
         sample_config: VMConfig,
     ) -> None:
-        """Async create should mirror the Firecracker explicit-vsock no-forward policy."""
+        """Async create should mirror Firecracker vsock egress without SSH forwarding."""
         smol_vm = SmolVMManager(
             data_dir=tmp_path / "data-async-vsock",
             socket_dir=tmp_path / "sockets-async-vsock",
@@ -499,8 +510,11 @@ class TestSmolVMCreate:
         assert vm_info.network is not None
         assert vm_info.network.ssh_host_port is None
         mock_network.async_prepare_tap_device.assert_awaited_once()
-        mock_network.async_add_route.assert_not_awaited()
-        mock_network.async_setup_nat.assert_not_awaited()
+        mock_network.async_add_route.assert_awaited_once_with(
+            vm_info.network.guest_ip,
+            vm_info.network.tap_device,
+        )
+        mock_network.async_setup_nat.assert_awaited_once_with(vm_info.network.tap_device)
         mock_network.async_setup_ssh_port_forward.assert_not_awaited()
 
 
