@@ -119,11 +119,23 @@ class FirecrackerAPIError(SmolVMError):
 class OperationTimeoutError(SmolVMError):
     """Raised when an operation times out."""
 
-    def __init__(self, operation: str, timeout_seconds: float) -> None:
-        super().__init__(
-            f"Operation '{operation}' timed out after {timeout_seconds}s",
-            {"operation": operation, "timeout_seconds": timeout_seconds},
-        )
+    def __init__(
+        self,
+        operation: str,
+        timeout_seconds: float,
+        *,
+        recovery_command: str | None = None,
+    ) -> None:
+        details = {"operation": operation, "timeout_seconds": timeout_seconds}
+        if recovery_command is None:
+            message = f"Operation '{operation}' timed out after {timeout_seconds}s"
+        else:
+            message = (
+                f"{operation} timed out after {timeout_seconds}s; retry with "
+                f"'{recovery_command}' to allow a brief pause."
+            )
+            details["recovery_command"] = recovery_command
+        super().__init__(message, details)
         self.operation = operation
         self.timeout_seconds = timeout_seconds
 

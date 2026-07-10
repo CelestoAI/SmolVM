@@ -25,7 +25,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from smolvm.exceptions import SmolVMError, VMNotFoundError
+from smolvm.exceptions import OperationTimeoutError, SmolVMError, VMNotFoundError
 from smolvm.runtime.qemu import (
     _QEMU_BLOCK_NODE_NAME_MAX,
     QemuRuntimeAdapter,
@@ -1038,10 +1038,13 @@ def test_qemu_live_disk_snapshot_timeout_cancels_without_resuming(
 
         client.query_jobs.side_effect = jobs
         client.query_named_block_nodes.side_effect = nodes
-        client.wait_for_job.side_effect = [SmolVMError("backup timed out"), MagicMock()]
+        client.wait_for_job.side_effect = [
+            SmolVMError("Timed out waiting for QMP job"),
+            MagicMock(),
+        ]
         mock_client_cls.return_value = client
 
-        with pytest.raises(SmolVMError, match="backup timed out"):
+        with pytest.raises(OperationTimeoutError, match="--snapshot-type disk --resume-source"):
             qemu_smol_vm.create_snapshot(
                 "vm001",
                 snapshot_id="snap-timeout",
@@ -1057,6 +1060,93 @@ def test_qemu_live_disk_snapshot_timeout_cancels_without_resuming(
     client.cont.assert_not_called()
     assert qemu_smol_vm.get("vm001").status == VMState.RUNNING
     assert not (qemu_smol_vm.snapshot_dir / "snap-timeout").exists()
+
+
+def test_qemu_live_snapshot_shares_timeout_across_qemu_img_phases(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """Preparation, job waiting, and validation should consume one deadline."""
+    _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
+    subprocess_timeouts: list[float] = []
+
+    def run_qemu_img(command: list[str], **kwargs: object) -> SimpleNamespace:
+        subprocess_timeouts.append(float(kwargs["timeout"]))
+        action = command[1]
+        stdout = ""
+        if action == "info":
+            stdout = '{"virtual-size": 10485760}' if "-U" in command else "{}"
+        elif action == "measure":
+            stdout = '{"required": 1}'
+        elif action == "create":
+            Path(command[-2]).touch()
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    with (
+        patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls,
+        patch("smolvm.runtime.qemu.which", return_value=Path("/usr/bin/qemu-img")),
+        patch("smolvm.runtime.qemu.subprocess.run", side_effect=run_qemu_img),
+        patch(
+            "smolvm.runtime.qemu.shutil.disk_usage",
+            return_value=SimpleNamespace(free=1 << 40),
+        ),
+        patch("smolvm.runtime.qemu.time.monotonic", side_effect=range(20)),
+    ):
+        client = _mock_qmp_client()
+        client.query_commands.return_value = _live_backup_commands()
+        client.query_jobs.return_value = []
+        client.query_named_block_nodes.return_value = []
+        mock_client_cls.return_value = client
+
+        qemu_smol_vm.create_snapshot(
+            "vm001",
+            snapshot_id="snap-deadline",
+            snapshot_type=SnapshotType.DISK,
+            resume_source=True,
+            capture_policy=SnapshotCapturePolicy.LIVE_ONLY,
+            timeout_seconds=10.0,
+        )
+
+    assert subprocess_timeouts == [9.0, 8.0, 7.0, 5.0, 4.0]
+    assert client.wait_for_job.call_args.kwargs["timeout"] == 6.0
+
+
+def test_qemu_live_snapshot_subprocess_timeout_names_fallback_command(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """A hung qemu-img phase should consume the shared budget and name recovery."""
+    _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
+
+    with (
+        patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls,
+        patch("smolvm.runtime.qemu.which", return_value=Path("/usr/bin/qemu-img")),
+        patch(
+            "smolvm.runtime.qemu.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(["qemu-img", "info"], 0.1),
+        ),
+    ):
+        client = _mock_qmp_client()
+        client.query_commands.return_value = _live_backup_commands()
+        mock_client_cls.return_value = client
+
+        with pytest.raises(OperationTimeoutError) as exc_info:
+            qemu_smol_vm.create_snapshot(
+                "vm001",
+                snapshot_id="snap-prep-timeout",
+                snapshot_type=SnapshotType.DISK,
+                resume_source=True,
+                capture_policy=SnapshotCapturePolicy.LIVE_ONLY,
+                timeout_seconds=0.1,
+            )
+
+    assert exc_info.value.details["recovery_command"] == (
+        "smolvm sandbox snapshot create vm001 --snapshot-id snap-prep-timeout "
+        "--snapshot-type disk --resume-source"
+    )
+    assert not (qemu_smol_vm.snapshot_dir / "snap-prep-timeout").exists()
 
 
 def test_qemu_live_only_rejects_conflicting_final_state_before_qmp(
@@ -1145,6 +1235,110 @@ def test_qemu_live_snapshot_reconciles_interrupted_backup(
     assert old_job not in jobs
     assert old_node not in nodes
     client.cancel_job.assert_any_call(old_job)
+
+
+def test_qemu_live_snapshot_removes_corrupt_same_id_journal(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """A corrupt journal must not permanently block retries of that snapshot ID."""
+    _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
+    snapshot_root = qemu_smol_vm.snapshot_dir / "snap-corrupt"
+    snapshot_root.mkdir()
+    manifest_path = snapshot_root / "live-backup.json"
+    manifest_path.write_text("{not-json")
+
+    with (
+        patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls,
+        patch.object(
+            QemuRuntimeAdapter,
+            "_qemu_img_virtual_size",
+            return_value=(Path("/usr/bin/qemu-img"), 10 * 1024 * 1024),
+        ),
+        patch.object(QemuRuntimeAdapter, "_require_live_backup_space"),
+        patch.object(QemuRuntimeAdapter, "_validate_live_backup_artifact"),
+        patch("smolvm.runtime.qemu.subprocess.run", side_effect=_fake_qemu_img_create),
+    ):
+        client = _mock_qmp_client()
+        client.query_commands.return_value = _live_backup_commands()
+        client.query_jobs.return_value = []
+        client.query_named_block_nodes.return_value = []
+        mock_client_cls.return_value = client
+
+        snapshot = qemu_smol_vm.create_snapshot(
+            "vm001",
+            snapshot_id="snap-corrupt",
+            snapshot_type=SnapshotType.DISK,
+            resume_source=True,
+            capture_policy=SnapshotCapturePolicy.LIVE_ONLY,
+        )
+
+    assert snapshot.artifacts.disk_path == snapshot_root / "disk.qcow2"
+    assert snapshot.artifacts.disk_path.exists()
+    assert not manifest_path.exists()
+
+
+def test_qemu_live_snapshot_rejects_untrusted_journal_cleanup_targets(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """Journal fields must not select files or QMP resources for cleanup."""
+    _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
+    snapshot_root = qemu_smol_vm.snapshot_dir / "snap-hostile"
+    snapshot_root.mkdir()
+    external_partial = tmp_path / "keep-partial.qcow2"
+    external_final = tmp_path / "keep-final.qcow2"
+    external_partial.write_text("keep-partial")
+    external_final.write_text("keep-final")
+    manifest_path = snapshot_root / "live-backup.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "vm_id": "vm001",
+                "snapshot_id": "snap-hostile",
+                "job_id": "victim-job",
+                "target_node": "rootdisk0",
+                "partial_path": str(external_partial),
+                "final_path": str(external_final),
+                "phase": "job-running",
+            }
+        )
+    )
+
+    with (
+        patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls,
+        patch.object(
+            QemuRuntimeAdapter,
+            "_qemu_img_virtual_size",
+            return_value=(Path("/usr/bin/qemu-img"), 10 * 1024 * 1024),
+        ),
+        patch.object(QemuRuntimeAdapter, "_require_live_backup_space"),
+        patch.object(QemuRuntimeAdapter, "_validate_live_backup_artifact"),
+        patch("smolvm.runtime.qemu.subprocess.run", side_effect=_fake_qemu_img_create),
+    ):
+        client = _mock_qmp_client()
+        client.query_commands.return_value = _live_backup_commands()
+        client.query_jobs.return_value = [SimpleNamespace(job_id="victim-job")]
+        client.query_named_block_nodes.return_value = [{"node-name": "rootdisk0"}]
+        mock_client_cls.return_value = client
+
+        snapshot = qemu_smol_vm.create_snapshot(
+            "vm001",
+            snapshot_id="snap-hostile",
+            snapshot_type=SnapshotType.DISK,
+            resume_source=True,
+            capture_policy=SnapshotCapturePolicy.LIVE_ONLY,
+        )
+
+    assert snapshot.artifacts.disk_path == snapshot_root / "disk.qcow2"
+    assert external_partial.read_text() == "keep-partial"
+    assert external_final.read_text() == "keep-final"
+    assert not manifest_path.exists()
+    client.cancel_job.assert_not_called()
+    assert all(call.args != ("rootdisk0",) for call in client.blockdev_del.call_args_list)
 
 
 def test_qemu_live_snapshot_reclaims_unpersisted_published_artifact(

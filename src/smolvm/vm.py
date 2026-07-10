@@ -2125,6 +2125,7 @@ class SmolVMManager:
             adapter.reconcile_live_backups(
                 vm_info,
                 snapshot_dir=self.snapshot_dir,
+                locked_snapshot_id=snapshot_id,
                 persisted_snapshot_ids={
                     snapshot.snapshot_id for snapshot in self.state.list_snapshots(vm_id=vm_id)
                 },
@@ -2196,8 +2197,17 @@ class SmolVMManager:
                 and original_status == VMState.RUNNING
                 and resume_source
             ):
-                adapter.resume(vm_info)
-                source_status = VMState.RUNNING
+                try:
+                    adapter.resume(vm_info)
+                except Exception:
+                    logger.exception(
+                        "Snapshot %s was created, but sandbox %s could not be resumed; "
+                        "leaving it paused",
+                        snapshot_id,
+                        vm_id,
+                    )
+                else:
+                    source_status = VMState.RUNNING
             self.state.update_vm(vm_id, status=source_status)
             return snapshot_info
         except Exception as original_error:

@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from smolvm.exceptions import SmolVMError, SnapshotNotFoundError, VMNotFoundError
+from smolvm.exceptions import SmolVMError, VMNotFoundError
 from smolvm.types import (
     SnapshotArtifacts,
     SnapshotInfo,
@@ -168,12 +168,13 @@ def test_create_snapshot_pauses_vm_and_persists_metadata(
     mock_client.create_snapshot.assert_called_once()
 
 
-def test_create_snapshot_rolls_back_metadata_on_resume_failure(
+def test_create_snapshot_preserves_metadata_on_resume_failure(
     smol_vm: SmolVMManager,
     sample_config: VMConfig,
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Snapshot rollback should remove persisted metadata after a late failure."""
+    """A durable snapshot should survive a post-capture resume failure."""
     _running_vm(smol_vm, sample_config, tmp_path)
     managed_disk = smol_vm.data_dir / "disks" / "vm001.ext4"
     managed_disk.write_text("managed-disk")
@@ -185,16 +186,17 @@ def test_create_snapshot_rolls_back_metadata_on_resume_failure(
     with patch("smolvm.runtime.firecracker.FirecrackerClient") as mock_client_cls:
         mock_client = MagicMock()
         mock_client.create_snapshot.side_effect = _write_snapshot
-        mock_client.resume_vm.side_effect = [SmolVMError("resume failed"), None]
+        mock_client.resume_vm.side_effect = SmolVMError("resume failed")
         mock_client_cls.return_value = mock_client
 
-        with pytest.raises(SmolVMError, match="resume failed"):
-            smol_vm.create_snapshot("vm001", snapshot_id="snap-001", resume_source=True)
+        snapshot = smol_vm.create_snapshot("vm001", snapshot_id="snap-001", resume_source=True)
 
-    with pytest.raises(SnapshotNotFoundError):
-        smol_vm.state.get_snapshot("snap-001")
-    assert not (smol_vm.snapshot_dir / "snap-001").exists()
-    assert smol_vm.get("vm001").status == VMState.RUNNING
+    assert snapshot.snapshot_id == "snap-001"
+    assert smol_vm.state.get_snapshot("snap-001").snapshot_id == "snap-001"
+    assert (smol_vm.snapshot_dir / "snap-001").exists()
+    assert smol_vm.get("vm001").status == VMState.PAUSED
+    assert "could not be resumed" in caplog.text
+    mock_client.resume_vm.assert_called_once()
 
 
 def test_create_snapshot_does_not_create_dir_when_client_lookup_fails(
@@ -212,12 +214,12 @@ def test_create_snapshot_does_not_create_dir_when_client_lookup_fails(
     assert not (smol_vm.snapshot_dir / "snap-001").exists()
 
 
-def test_create_snapshot_preserves_metadata_when_rollback_dir_cleanup_fails(
+def test_resume_failure_does_not_enter_snapshot_rollback(
     smol_vm: SmolVMManager,
     sample_config: VMConfig,
     tmp_path: Path,
 ) -> None:
-    """Rollback should not delete metadata if the snapshot directory cannot be removed."""
+    """A resume error after persistence must not invoke snapshot rollback."""
     _running_vm(smol_vm, sample_config, tmp_path)
     managed_disk = smol_vm.data_dir / "disks" / "vm001.ext4"
     managed_disk.write_text("managed-disk")
@@ -229,18 +231,17 @@ def test_create_snapshot_preserves_metadata_when_rollback_dir_cleanup_fails(
     with patch("smolvm.runtime.firecracker.FirecrackerClient") as mock_client_cls:
         mock_client = MagicMock()
         mock_client.create_snapshot.side_effect = _write_snapshot
-        mock_client.resume_vm.side_effect = [SmolVMError("resume failed"), None]
+        mock_client.resume_vm.side_effect = SmolVMError("resume failed")
         mock_client_cls.return_value = mock_client
 
-        with (
-            patch("smolvm.vm.shutil.rmtree", side_effect=PermissionError("cleanup denied")),
-            pytest.raises(PermissionError, match="cleanup denied"),
-        ):
-            smol_vm.create_snapshot("vm001", snapshot_id="snap-001", resume_source=True)
+        with patch("smolvm.vm.shutil.rmtree") as mock_rmtree:
+            snapshot = smol_vm.create_snapshot("vm001", snapshot_id="snap-001", resume_source=True)
 
+    assert snapshot.snapshot_id == "snap-001"
+    mock_rmtree.assert_not_called()
     assert smol_vm.state.get_snapshot("snap-001").snapshot_id == "snap-001"
     assert (smol_vm.snapshot_dir / "snap-001").exists()
-    assert smol_vm.get("vm001").status == VMState.RUNNING
+    assert smol_vm.get("vm001").status == VMState.PAUSED
 
 
 @pytest.mark.parametrize("snapshot_id", ["/tmp/escape", "../escape", r"..\escape", "snap/001"])
