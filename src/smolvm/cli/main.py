@@ -2344,41 +2344,6 @@ def _run_ssh(args: SimpleNamespace) -> int:
             vm.close()
 
 
-def _fast_shell_unavailable(exc: Exception) -> bool:
-    """Return whether ``sandbox shell`` should use SSH for this sandbox."""
-    message = str(exc).lower()
-    return "fast shell access" in message or "cannot use 'smolvm sandbox shell'" in message
-
-
-def _stop_status(status: Any | None) -> None:
-    """Stop a Rich status before handing the terminal to an interactive child."""
-    stop = getattr(status, "stop", None)
-    if callable(stop):
-        stop()
-
-
-def _attach_shell_or_ssh(vm: Any, args: SimpleNamespace, *, status: Any | None = None) -> int:
-    """Prefer the fast shell transport, with SSH as the stable shell fallback."""
-    try:
-        if status is not None:
-            status.update("Opening shell...")
-        vm.wait_for_shell(timeout=args.boot_timeout)
-        _stop_status(status)
-        return int(vm.attach_shell(timeout=args.boot_timeout))
-    except Exception as exc:
-        if not _fast_shell_unavailable(exc):
-            raise
-
-    if status is not None:
-        status.update("Opening SSH shell...")
-    vm.wait_for_ssh(timeout=args.boot_timeout)
-    _stop_status(status)
-    completed = subprocess.run(vm._ssh_attach_command(), check=False)
-    if completed.returncode != 0:
-        _hint_if_vm_crashed(vm)
-    return completed.returncode
-
-
 def _run_shell(args: SimpleNamespace) -> int:
     """Handle ``smolvm sandbox shell``."""
     from smolvm.facade import SmolVM
@@ -2387,24 +2352,30 @@ def _run_shell(args: SimpleNamespace) -> int:
     command_name = getattr(args, "command_name", "sandbox.shell")
     try:
         vm = SmolVM.from_id(args.vm_id)
+        vm.ensure_shell_supported()
 
         console = console_stdout()
         if vm.status in {VMState.CREATED, VMState.STOPPED}:
             with console.status(f"Starting sandbox '{args.vm_id}'...", spinner="dots") as status:
                 vm.start(boot_timeout=args.boot_timeout)
-                return _attach_shell_or_ssh(vm, args, status=status)
+                status.update("Opening shell...")
+                vm.wait_for_shell(timeout=args.boot_timeout)
+            return vm.attach_shell(timeout=args.boot_timeout)
         if vm.status == VMState.PAUSED:
             with console.status(f"Resuming sandbox '{args.vm_id}'...", spinner="dots") as status:
                 vm.resume()
-                return _attach_shell_or_ssh(vm, args, status=status)
+                status.update("Opening shell...")
+                vm.wait_for_shell(timeout=args.boot_timeout)
+            return vm.attach_shell(timeout=args.boot_timeout)
         if vm.status == VMState.ERROR:
             raise RuntimeError(
                 f"VM '{args.vm_id}' is in error state. Recreate it or inspect the VM logs "
                 "before attaching."
             )
 
-        with console.status("Opening shell...", spinner="dots") as status:
-            return _attach_shell_or_ssh(vm, args, status=status)
+        with console.status("Opening shell...", spinner="dots"):
+            vm.wait_for_shell(timeout=args.boot_timeout)
+        return vm.attach_shell(timeout=args.boot_timeout)
     except Exception as exc:
         return _emit_cli_error(command_name, 1, exc, json_output=False)
     finally:
