@@ -36,7 +36,6 @@ import sys
 import time
 from collections.abc import Iterator
 from contextlib import asynccontextmanager, contextmanager, suppress
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 from uuid import uuid4
@@ -76,6 +75,7 @@ from smolvm.types import (
     GuestOS,
     NetworkConfig,
     RootfsFormat,
+    SnapshotCapturePolicy,
     SnapshotInfo,
     SnapshotType,
     VMConfig,
@@ -2039,6 +2039,9 @@ class SmolVMManager:
         *,
         snapshot_type: SnapshotType = SnapshotType.FULL,
         resume_source: bool = False,
+        capture_policy: SnapshotCapturePolicy = SnapshotCapturePolicy.ALLOW_PAUSE,
+        timeout_seconds: float = 600.0,
+        max_bytes_per_second: int | None = None,
     ) -> SnapshotInfo:
         """Create a snapshot for a paused or running VM.
 
@@ -2071,6 +2074,28 @@ class SmolVMManager:
 
         original_status = vm_info.status
         backend = self._backend_for_vm(vm_info)
+        if capture_policy == SnapshotCapturePolicy.LIVE_ONLY:
+            if original_status != VMState.RUNNING:
+                raise SmolVMError(
+                    f"Live-only snapshots require sandbox '{vm_id}' to be running.",
+                    {"vm_id": vm_id, "current_status": original_status.value},
+                )
+            if backend != BACKEND_QEMU or snapshot_type != SnapshotType.DISK:
+                raise SmolVMError(
+                    f"Sandbox '{vm_id}' cannot use a live-only {snapshot_type.value} "
+                    "snapshot on this backend; use a QEMU disk snapshot instead.",
+                    {
+                        "vm_id": vm_id,
+                        "backend": backend,
+                        "snapshot_type": snapshot_type.value,
+                    },
+                )
+            if not resume_source:
+                raise SmolVMError(
+                    "A live-only snapshot cannot leave the source paused; set "
+                    "resume_source=True.",
+                    {"vm_id": vm_id},
+                )
         managed_disk_path = self._managed_disk_for_vm(vm_info)
         if managed_disk_path is None:
             raise SmolVMError("Snapshotting requires a managed isolated disk", {"vm_id": vm_id})
@@ -2090,6 +2115,9 @@ class SmolVMManager:
                     resume_source=resume_source,
                     original_status=original_status,
                     snapshot_type=snapshot_type,
+                    capture_policy=capture_policy,
+                    timeout_seconds=timeout_seconds,
+                    max_bytes_per_second=max_bytes_per_second,
                 )
             )
 
@@ -2100,13 +2128,20 @@ class SmolVMManager:
                 artifacts=result.artifacts,
                 vm_config=vm_info.config,
                 network_config=vm_info.network,
-                created_at=datetime.now(timezone.utc),
+                created_at=result.captured_at,
                 snapshot_type=snapshot_type,
             )
             self.state.create_snapshot(snapshot_info)
             snapshot_persisted = True
-            source_status = VMState.PAUSED
-            if original_status == VMState.RUNNING and resume_source:
+            if result.operation_manifest_path is not None:
+                with suppress(OSError):
+                    result.operation_manifest_path.unlink()
+            source_status = result.source_status
+            if (
+                source_status == VMState.PAUSED
+                and original_status == VMState.RUNNING
+                and resume_source
+            ):
                 adapter.resume(vm_info)
                 source_status = VMState.RUNNING
             self.state.update_vm(vm_id, status=source_status)
@@ -2114,22 +2149,29 @@ class SmolVMManager:
         except Exception as original_error:
             snapshot_dir_removed = False
             rollback_error: Exception | None = None
-            try:
-                shutil.rmtree(snapshot_root)
-                snapshot_dir_removed = True
-            except FileNotFoundError:
-                snapshot_dir_removed = True
-            except Exception as cleanup_error:
-                logger.warning(
-                    "Failed to remove snapshot directory during rollback for %s: %s",
-                    snapshot_id,
-                    cleanup_error,
-                )
-                rollback_error = cleanup_error
+            cleanup_pending = bool(
+                getattr(original_error, "details", {}).get("cleanup_pending", False)
+            )
+            if not cleanup_pending:
+                try:
+                    shutil.rmtree(snapshot_root)
+                    snapshot_dir_removed = True
+                except FileNotFoundError:
+                    snapshot_dir_removed = True
+                except Exception as cleanup_error:
+                    logger.warning(
+                        "Failed to remove snapshot directory during rollback for %s: %s",
+                        snapshot_id,
+                        cleanup_error,
+                    )
+                    rollback_error = cleanup_error
             if snapshot_persisted and snapshot_dir_removed:
                 with suppress(Exception):
                     self.state.delete_snapshot(snapshot_id)
-            if original_status == VMState.RUNNING:
+            if (
+                original_status == VMState.RUNNING
+                and capture_policy == SnapshotCapturePolicy.ALLOW_PAUSE
+            ):
                 with suppress(Exception):
                     adapter.resume(vm_info)
                     self.state.update_vm(vm_id, status=VMState.RUNNING)

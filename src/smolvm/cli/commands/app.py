@@ -21,7 +21,7 @@ from smolvm.cli.commands.options import (
 )
 from smolvm.cli.version_check import maybe_print_update_notice
 from smolvm.host.doctor import run_doctor
-from smolvm.types import BrowserSessionState, GuestOS, SnapshotType, VMState
+from smolvm.types import BrowserSessionState, GuestFlushPolicy, GuestOS, SnapshotType, VMState
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
 
@@ -404,12 +404,25 @@ def snapshot() -> None:
     show_default=True,
 )
 @click.option("--resume-source", is_flag=True)
+@click.option(
+    "--live-only",
+    is_flag=True,
+    help="Keep a running QEMU sandbox available during a disk snapshot, or fail.",
+)
+@click.option(
+    "--flush-policy",
+    type=click.Choice([policy.value for policy in GuestFlushPolicy]),
+    default=GuestFlushPolicy.REQUIRED.value,
+    show_default=True,
+)
 @json_option
 def snapshot_create(
     vm_id: str,
     snapshot_id: str | None,
     snapshot_type: str,
     resume_source: bool,
+    live_only: bool,
+    flush_policy: str,
     json_output: bool,
 ) -> Any:
     """Save a sandbox snapshot."""
@@ -421,6 +434,8 @@ def snapshot_create(
             snapshot_id=snapshot_id,
             snapshot_type=snapshot_type,
             resume_source=resume_source,
+            live_only=live_only,
+            flush_policy=flush_policy,
             command_name="sandbox.snapshot.create",
             json=json_output,
         )

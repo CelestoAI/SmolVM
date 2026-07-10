@@ -19,10 +19,18 @@ from __future__ import annotations
 import asyncio
 import subprocess
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, TextIO
+from typing import TYPE_CHECKING, Literal, Protocol, TextIO
 
-from smolvm.types import SnapshotArtifacts, SnapshotInfo, SnapshotType, VMInfo, VMState
+from smolvm.types import (
+    SnapshotArtifacts,
+    SnapshotCapturePolicy,
+    SnapshotInfo,
+    SnapshotType,
+    VMInfo,
+    VMState,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -49,6 +57,9 @@ class SnapshotCreateRequest:
     resume_source: bool
     original_status: VMState
     snapshot_type: SnapshotType = SnapshotType.FULL
+    capture_policy: SnapshotCapturePolicy = SnapshotCapturePolicy.ALLOW_PAUSE
+    timeout_seconds: float = 600.0
+    max_bytes_per_second: int | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -57,6 +68,9 @@ class SnapshotCreateResult:
 
     artifacts: SnapshotArtifacts
     source_status: VMState
+    captured_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    capture_method: Literal["paused", "live"] = "paused"
+    operation_manifest_path: Path | None = None
 
 
 @dataclass(slots=True, frozen=True)

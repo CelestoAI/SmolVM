@@ -28,8 +28,10 @@ from smolvm.exceptions import (
 from smolvm.facade import SmolVM, _build_auto_config
 from smolvm.images import BootImage, DirectKernelBoot, FirmwareBoot
 from smolvm.types import (
+    GuestFlushPolicy,
     GuestOS,
     PortForwardConfig,
+    SnapshotCapturePolicy,
     SnapshotType,
     VMConfig,
     VMState,
@@ -664,6 +666,9 @@ class TestSnapshot:
                 snapshot_id=None,
                 snapshot_type=SnapshotType.DISK,
                 resume_source=False,
+                capture_policy=SnapshotCapturePolicy.ALLOW_PAUSE,
+                timeout_seconds=600.0,
+                max_bytes_per_second=None,
             ),
         ]
 
@@ -700,6 +705,30 @@ class TestSnapshot:
 
         with pytest.raises(OperationTimeoutError, match=r"POST /sync"):
             vm._sync_guest_for_disk_snapshot()
+
+    def test_disk_snapshot_best_effort_flush_continues_after_sync_failure(self) -> None:
+        """Continuity snapshots may proceed crash-consistently when sync is unavailable."""
+        vm = SmolVM.__new__(SmolVM)
+        vm._vm_id = "vm001"
+        vm._info = MagicMock(status=VMState.RUNNING)
+        vm._refresh_info = MagicMock()
+        vm._reset_runtime_state = MagicMock()
+        vm._ensure_control_for_operation = MagicMock()
+        vm._ensure_control_for_operation.return_value.sync.side_effect = SmolVMError(
+            "sync unavailable"
+        )
+        vm._sdk = MagicMock()
+        expected = MagicMock()
+        vm._sdk.create_snapshot.return_value = expected
+
+        assert (
+            vm.snapshot(
+                snapshot_type=SnapshotType.DISK,
+                flush_policy=GuestFlushPolicy.BEST_EFFORT,
+            )
+            is expected
+        )
+        vm._sdk.create_snapshot.assert_called_once()
 
 
 class TestFromBootImage:

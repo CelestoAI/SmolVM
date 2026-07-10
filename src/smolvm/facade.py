@@ -92,10 +92,12 @@ from smolvm.types import (
     BrowserViewport,
     CommandResult,
     DisplaySandboxProtocol,
+    GuestFlushPolicy,
     GuestOS,
     InternetSettings,
     PortForwardConfig,
     QemuMachine,
+    SnapshotCapturePolicy,
     SnapshotInfo,
     SnapshotType,
     VMConfig,
@@ -1646,6 +1648,10 @@ class SmolVM:
         *,
         snapshot_type: SnapshotType | str = SnapshotType.FULL,
         resume_source: bool = False,
+        capture_policy: SnapshotCapturePolicy | str = SnapshotCapturePolicy.ALLOW_PAUSE,
+        flush_policy: GuestFlushPolicy | str = GuestFlushPolicy.REQUIRED,
+        timeout_seconds: float = 600.0,
+        max_bytes_per_second: int | None = None,
     ) -> SnapshotInfo:
         """Create a snapshot for the VM.
 
@@ -1656,7 +1662,15 @@ class SmolVM:
                 changed since the base image to save space, or ``"disk"`` for a
                 self-contained disk-only copy that skips the guest RAM dump
                 (much faster/lighter; restores as a fresh boot, not a resume).
-            resume_source: Keep this VM running after the snapshot is taken.
+            resume_source: Leave this VM running after the snapshot is taken.
+                This controls the final state, not whether capture may pause it.
+            capture_policy: ``"live-only"`` fails rather than explicitly pausing
+                a running guest. The default preserves the existing pause-based
+                snapshot behavior.
+            flush_policy: Whether a disk snapshot requires the guest filesystem
+                flush to succeed, treats it as best-effort, or skips it.
+            timeout_seconds: Maximum time for live disk capture.
+            max_bytes_per_second: Optional generic bandwidth limit for live capture.
         """
         try:
             resolved_snapshot_type = SnapshotType(snapshot_type)
@@ -1665,13 +1679,55 @@ class SmolVM:
             raise ValueError(
                 f"snapshot_type must be one of {allowed}; got {snapshot_type!r}"
             ) from exc
-        if resolved_snapshot_type == SnapshotType.DISK:
-            self._sync_guest_for_disk_snapshot()
+        try:
+            resolved_capture_policy = SnapshotCapturePolicy(capture_policy)
+        except ValueError as exc:
+            allowed = ", ".join(repr(policy.value) for policy in SnapshotCapturePolicy)
+            raise ValueError(
+                f"capture_policy must be one of {allowed}; got {capture_policy!r}"
+            ) from exc
+        try:
+            resolved_flush_policy = GuestFlushPolicy(flush_policy)
+        except ValueError as exc:
+            allowed = ", ".join(repr(policy.value) for policy in GuestFlushPolicy)
+            raise ValueError(
+                f"flush_policy must be one of {allowed}; got {flush_policy!r}"
+            ) from exc
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be greater than zero")
+        if max_bytes_per_second is not None and max_bytes_per_second <= 0:
+            raise ValueError("max_bytes_per_second must be greater than zero when set")
+        if resolved_capture_policy == SnapshotCapturePolicy.LIVE_ONLY:
+            if resolved_snapshot_type != SnapshotType.DISK:
+                raise SmolVMError("Live-only capture requires a disk snapshot.")
+            if not resume_source:
+                raise SmolVMError(
+                    "A live-only snapshot cannot leave the source paused; set "
+                    "resume_source=True."
+                )
+        if (
+            resolved_snapshot_type == SnapshotType.DISK
+            and resolved_flush_policy != GuestFlushPolicy.SKIP
+        ):
+            try:
+                self._sync_guest_for_disk_snapshot()
+            except Exception:
+                if resolved_flush_policy == GuestFlushPolicy.REQUIRED:
+                    raise
+                logger.warning(
+                    "Guest filesystem flush failed before disk snapshot for %s; "
+                    "continuing with crash-consistent capture",
+                    self._vm_id,
+                    exc_info=True,
+                )
         snapshot_info = self._sdk.create_snapshot(
             self._vm_id,
             snapshot_id=snapshot_id,
             snapshot_type=resolved_snapshot_type,
             resume_source=resume_source,
+            capture_policy=resolved_capture_policy,
+            timeout_seconds=timeout_seconds,
+            max_bytes_per_second=max_bytes_per_second,
         )
         self._refresh_info()
         self._reset_runtime_state()

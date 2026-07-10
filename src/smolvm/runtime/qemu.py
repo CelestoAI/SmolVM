@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -26,8 +27,10 @@ import signal
 import subprocess
 import time
 from contextlib import suppress
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from smolvm.exceptions import SmolVMError
 from smolvm.qmp import QMPClient
@@ -41,12 +44,29 @@ from smolvm.runtime.base import (
     SnapshotRestoreRequest,
 )
 from smolvm.runtime.guest_platforms import GuestPlatformSpec, get_guest_platform
-from smolvm.types import GuestOS, SnapshotArtifacts, SnapshotType, VMInfo, VMState
+from smolvm.types import (
+    GuestOS,
+    SnapshotArtifacts,
+    SnapshotCapturePolicy,
+    SnapshotType,
+    VMInfo,
+    VMState,
+)
 from smolvm.utils import which
 
 logger = logging.getLogger(__name__)
 
 QEMU_ROOT_NODE_NAME = "rootdisk0"
+_LIVE_BACKUP_MANIFEST = "live-backup.json"
+_LIVE_BACKUP_REQUIRED_COMMANDS = {
+    "blockdev-add",
+    "blockdev-backup",
+    "blockdev-del",
+    "job-cancel",
+    "job-dismiss",
+    "query-jobs",
+    "query-named-block-nodes",
+}
 
 
 def _qemu_img_install_hint() -> str:
@@ -331,7 +351,11 @@ class QemuRuntimeAdapter(RuntimeAdapter):
         # instead of the heavyweight ``snapshot-save`` job that dumps memory.
         disk_only = request.snapshot_type == SnapshotType.DISK
         snapshot_saved = False
+        captured_at: datetime | None = None
         with self._client(vm_info.control_socket_path) as client:
+            if request.capture_policy == SnapshotCapturePolicy.LIVE_ONLY:
+                return self._create_live_disk_snapshot(request, client)
+
             if request.original_status == VMState.RUNNING:
                 client.stop_vm()
 
@@ -348,6 +372,7 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                     )
                     client.wait_for_job(save_job_id)
                 snapshot_saved = True
+                captured_at = datetime.now(timezone.utc)
 
                 disk_path = request.snapshot_root / "disk.qcow2"
                 if request.snapshot_type == SnapshotType.DIFF:
@@ -366,9 +391,11 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                     )
                     client.wait_for_job(delete_job_id)
 
+                assert captured_at is not None
                 return SnapshotCreateResult(
                     artifacts=SnapshotArtifacts(disk_path=disk_path),
                     source_status=VMState.PAUSED,
+                    captured_at=captured_at,
                 )
             except Exception:
                 if snapshot_saved:
@@ -389,6 +416,363 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                     with suppress(Exception):
                         client.cont()
                 raise
+
+    @staticmethod
+    def _write_live_backup_manifest(path: Path, payload: dict[str, Any]) -> None:
+        """Atomically persist live-backup recovery state."""
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, sort_keys=True))
+        os.replace(tmp, path)
+
+    @staticmethod
+    def _qemu_img_virtual_size(disk: Path) -> tuple[Path, int]:
+        """Return the qemu-img binary and virtual size for an active disk."""
+        qemu_img = which("qemu-img")
+        if qemu_img is None:
+            raise SmolVMError(
+                f"Live QEMU snapshots need qemu-img. {_qemu_img_install_hint()}"
+            )
+        info = subprocess.run(
+            [str(qemu_img), "info", "-U", "--output=json", str(disk)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if info.returncode != 0:
+            raise SmolVMError(
+                "qemu-img could not inspect the running sandbox disk.",
+                {"disk_path": str(disk), "stderr": info.stderr.strip()},
+            )
+        try:
+            virtual_size = int(json.loads(info.stdout)["virtual-size"])
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise SmolVMError(
+                "qemu-img returned invalid disk size information.",
+                {"disk_path": str(disk)},
+            ) from exc
+        return Path(qemu_img), virtual_size
+
+    @staticmethod
+    def _validate_live_backup_artifact(qemu_img: Path, disk: Path) -> None:
+        """Verify that a detached backup is valid and self-contained."""
+        check = subprocess.run(
+            [str(qemu_img), "check", str(disk)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if check.returncode != 0:
+            raise SmolVMError(
+                "QEMU finished the backup, but the snapshot disk is invalid.",
+                {"disk_path": str(disk), "stderr": check.stderr.strip()},
+            )
+        info = subprocess.run(
+            [str(qemu_img), "info", "--output=json", str(disk)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if info.returncode != 0:
+            raise SmolVMError(
+                "qemu-img could not verify the completed snapshot disk.",
+                {"disk_path": str(disk), "stderr": info.stderr.strip()},
+            )
+        try:
+            backing = json.loads(info.stdout).get("backing-filename")
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise SmolVMError(
+                "qemu-img returned invalid snapshot disk information.",
+                {"disk_path": str(disk)},
+            ) from exc
+        if backing:
+            raise SmolVMError(
+                "The completed snapshot still depends on another disk; refusing to publish it.",
+                {"disk_path": str(disk), "backing_file": str(backing)},
+            )
+
+    @staticmethod
+    def _require_live_backup_space(qemu_img: Path, source: Path, target_dir: Path) -> None:
+        """Reject a backup that is already likely to exhaust local storage."""
+        measure = subprocess.run(
+            [
+                str(qemu_img),
+                "measure",
+                "--output=json",
+                "--force-share",
+                "-O",
+                "qcow2",
+                str(source),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if measure.returncode != 0:
+            raise SmolVMError(
+                "qemu-img could not estimate the live snapshot size.",
+                {"disk_path": str(source), "stderr": measure.stderr.strip()},
+            )
+        try:
+            required = int(json.loads(measure.stdout)["required"])
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise SmolVMError(
+                "qemu-img returned an invalid live snapshot size estimate.",
+                {"disk_path": str(source)},
+            ) from exc
+        headroom = max(256 * 1024 * 1024, required // 10)
+        free = shutil.disk_usage(target_dir).free
+        if free < required + headroom:
+            raise SmolVMError(
+                "There is not enough local space for a live snapshot.",
+                {
+                    "disk_path": str(source),
+                    "free_bytes": free,
+                    "required_bytes": required,
+                    "headroom_bytes": headroom,
+                },
+            )
+
+    @staticmethod
+    def _job_ids(client: QMPClient) -> set[str]:
+        return {job.job_id for job in client.query_jobs()}
+
+    @staticmethod
+    def _node_names(client: QMPClient) -> set[str]:
+        return {
+            str(row["node-name"])
+            for row in client.query_named_block_nodes()
+            if isinstance(row.get("node-name"), str)
+        }
+
+    def _cleanup_live_backup(
+        self,
+        client: QMPClient,
+        *,
+        job_id: str,
+        target_node: str,
+        artifact_paths: tuple[Path, ...] = (),
+    ) -> bool:
+        """Stop and detach a live backup, returning whether files are safe to remove."""
+        try:
+            if job_id in self._job_ids(client):
+                with suppress(Exception):
+                    client.cancel_job(job_id)
+                try:
+                    client.wait_for_job(job_id, timeout=10.0)
+                except Exception:
+                    with suppress(Exception):
+                        client.cancel_job(job_id, force=True)
+                    with suppress(Exception):
+                        client.wait_for_job(job_id, timeout=5.0)
+                with suppress(Exception):
+                    client.dismiss_job(job_id)
+            if target_node in self._node_names(client):
+                client.blockdev_del(target_node)
+        except Exception:
+            logger.exception(
+                "Live QEMU backup cleanup is still pending for job=%s node=%s",
+                job_id,
+                target_node,
+            )
+            return False
+
+        for path in artifact_paths:
+            with suppress(FileNotFoundError):
+                path.unlink()
+        return True
+
+    def _reconcile_live_backups(
+        self,
+        request: SnapshotCreateRequest,
+        client: QMPClient,
+        *,
+        vm_token: str,
+    ) -> None:
+        """Clean stale jobs and nodes left by an interrupted Python process."""
+        job_prefix = f"smolvm-backup-{vm_token}-"
+        node_prefix = f"smolvm-backup-target-{vm_token}-"
+        manifests = request.snapshot_root.parent.glob(f"*/{_LIVE_BACKUP_MANIFEST}")
+        for manifest_path in manifests:
+            try:
+                payload = json.loads(manifest_path.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if payload.get("vm_id") != request.vm_info.vm_id:
+                continue
+            if payload.get("phase") == "artifact-published":
+                continue
+            partial = Path(str(payload.get("partial_path", "")))
+            final = Path(str(payload.get("final_path", "")))
+            cleaned = self._cleanup_live_backup(
+                client,
+                job_id=str(payload.get("job_id", "")),
+                target_node=str(payload.get("target_node", "")),
+                artifact_paths=tuple(path for path in (partial, final) if str(path) != "."),
+            )
+            if cleaned:
+                with suppress(OSError):
+                    manifest_path.unlink()
+                with suppress(OSError):
+                    manifest_path.parent.rmdir()
+
+        known_jobs = [job_id for job_id in self._job_ids(client) if job_id.startswith(job_prefix)]
+        known_nodes = [name for name in self._node_names(client) if name.startswith(node_prefix)]
+        for job_id in known_jobs:
+            suffix = job_id.removeprefix(job_prefix)
+            self._cleanup_live_backup(
+                client,
+                job_id=job_id,
+                target_node=f"{node_prefix}{suffix}",
+            )
+        for node_name in known_nodes:
+            if node_name in self._node_names(client):
+                client.blockdev_del(node_name)
+
+    def _create_live_disk_snapshot(
+        self,
+        request: SnapshotCreateRequest,
+        client: QMPClient,
+    ) -> SnapshotCreateResult:
+        """Create a standalone QEMU disk backup without stopping guest execution."""
+        if request.snapshot_type != SnapshotType.DISK or request.original_status != VMState.RUNNING:
+            raise SmolVMError(
+                "Live-only capture requires a running QEMU disk snapshot.",
+                {"vm_id": request.vm_info.vm_id},
+            )
+
+        commands = client.query_commands()
+        missing = sorted(_LIVE_BACKUP_REQUIRED_COMMANDS - commands)
+        if missing:
+            raise SmolVMError(
+                f"This QEMU version cannot snapshot sandbox '{request.vm_info.vm_id}' "
+                "while it stays running. Stop it with 'smolvm sandbox stop "
+                f"{request.vm_info.vm_id}', or retry without '--live-only'.",
+                {"vm_id": request.vm_info.vm_id, "missing_qmp_commands": missing},
+            )
+
+        vm_token = hashlib.sha256(request.vm_info.vm_id.encode()).hexdigest()[:10]
+        self._reconcile_live_backups(request, client, vm_token=vm_token)
+
+        qemu_img, virtual_size = self._qemu_img_virtual_size(request.managed_disk_path)
+        self._require_live_backup_space(
+            qemu_img,
+            request.managed_disk_path,
+            request.snapshot_root,
+        )
+        partial_path = request.snapshot_root / "disk.qcow2.partial"
+        final_path = request.snapshot_root / "disk.qcow2"
+        create = subprocess.run(
+            [str(qemu_img), "create", "-f", "qcow2", str(partial_path), str(virtual_size)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if create.returncode != 0:
+            raise SmolVMError(
+                "qemu-img could not create the live snapshot target.",
+                {"disk_path": str(partial_path), "stderr": create.stderr.strip()},
+            )
+
+        operation_id = uuid4().hex[:12]
+        job_id = f"smolvm-backup-{vm_token}-{operation_id}"
+        target_node = f"smolvm-backup-target-{vm_token}-{operation_id}"
+        manifest_path = request.snapshot_root / _LIVE_BACKUP_MANIFEST
+        manifest: dict[str, Any] = {
+            "schema_version": 1,
+            "vm_id": request.vm_info.vm_id,
+            "snapshot_id": request.snapshot_id,
+            "job_id": job_id,
+            "target_node": target_node,
+            "partial_path": str(partial_path),
+            "final_path": str(final_path),
+            "phase": "target-created",
+        }
+        self._write_live_backup_manifest(manifest_path, manifest)
+
+        backup_started = time.monotonic()
+        try:
+            client.blockdev_add(target_node, partial_path)
+            manifest["phase"] = "node-attached"
+            self._write_live_backup_manifest(manifest_path, manifest)
+
+            client.blockdev_backup(
+                job_id=job_id,
+                source_node=QEMU_ROOT_NODE_NAME,
+                target_node=target_node,
+                max_bytes_per_second=request.max_bytes_per_second,
+            )
+            captured_at = datetime.now(timezone.utc)
+            logger.info(
+                "Live QEMU backup started vm_id=%s snapshot_id=%s job_id=%s "
+                "virtual_bytes=%d max_bytes_per_second=%s",
+                request.vm_info.vm_id,
+                request.snapshot_id,
+                job_id,
+                virtual_size,
+                request.max_bytes_per_second,
+            )
+            manifest["phase"] = "job-running"
+            manifest["captured_at"] = captured_at.isoformat()
+            self._write_live_backup_manifest(manifest_path, manifest)
+
+            client.wait_for_job(job_id, timeout=request.timeout_seconds)
+            manifest["phase"] = "job-concluded"
+            self._write_live_backup_manifest(manifest_path, manifest)
+
+            client.blockdev_del(target_node)
+            manifest["phase"] = "node-detached"
+            self._write_live_backup_manifest(manifest_path, manifest)
+
+            self._validate_live_backup_artifact(qemu_img, partial_path)
+            os.replace(partial_path, final_path)
+            manifest["phase"] = "artifact-published"
+            self._write_live_backup_manifest(manifest_path, manifest)
+            logger.info(
+                "Live QEMU backup complete vm_id=%s snapshot_id=%s job_id=%s "
+                "duration_seconds=%.3f allocated_bytes=%d source_status=running",
+                request.vm_info.vm_id,
+                request.snapshot_id,
+                job_id,
+                time.monotonic() - backup_started,
+                final_path.stat().st_size,
+            )
+            return SnapshotCreateResult(
+                artifacts=SnapshotArtifacts(disk_path=final_path),
+                source_status=VMState.RUNNING,
+                captured_at=captured_at,
+                capture_method="live",
+                operation_manifest_path=manifest_path,
+            )
+        except Exception as original_error:
+            logger.warning(
+                "Live QEMU backup failed vm_id=%s snapshot_id=%s job_id=%s "
+                "duration_seconds=%.3f error=%s",
+                request.vm_info.vm_id,
+                request.snapshot_id,
+                job_id,
+                time.monotonic() - backup_started,
+                original_error,
+            )
+            cleanup_safe = self._cleanup_live_backup(
+                client,
+                job_id=job_id,
+                target_node=target_node,
+                artifact_paths=(partial_path, final_path),
+            )
+            if cleanup_safe:
+                with suppress(OSError):
+                    manifest_path.unlink()
+                raise
+            raise SmolVMError(
+                "The live snapshot failed and QEMU is still releasing its temporary disk; "
+                "retry after cleanup completes.",
+                {
+                    "vm_id": request.vm_info.vm_id,
+                    "job_id": job_id,
+                    "target_node": target_node,
+                    "cleanup_pending": True,
+                },
+            ) from original_error
 
     def restore_snapshot(self, request: SnapshotRestoreRequest) -> RuntimeLaunch:
         """Restore a QEMU snapshot from a copied managed qcow2 disk."""

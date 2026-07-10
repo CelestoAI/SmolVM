@@ -17,7 +17,9 @@
 from __future__ import annotations
 
 import json
+import shutil
 import socket
+import subprocess
 import tempfile
 import threading
 import time
@@ -257,6 +259,129 @@ def test_qmp_blockdev_internal_snapshot_round_trips(qmp_socket_path: Path) -> No
     ]
     create_req = requests[1]
     assert create_req["arguments"] == {"device": "rootdisk0", "name": "snap0"}
+
+
+def test_qmp_live_block_backup_commands_round_trip(qmp_socket_path: Path) -> None:
+    """Live backup helpers should emit the documented generic QMP payloads."""
+    socket_path = qmp_socket_path
+    requests: list[dict[str, object]] = []
+    responses: dict[str, list[dict[str, object] | list[dict[str, object]]]] = {
+        "qmp_capabilities": [{"return": {}}],
+        "query-commands": [{"return": [{"name": "blockdev-backup"}]}],
+        "blockdev-add": [{"return": {}}],
+        "blockdev-backup": [{"return": {}}],
+        "query-block-jobs": [{"return": [{"device": "job-live", "offset": 5, "len": 10}]}],
+        "job-cancel": [{"return": {}}],
+        "query-named-block-nodes": [{"return": [{"node-name": "target-live"}]}],
+        "blockdev-del": [{"return": {}}],
+    }
+    thread = _start_qmp_server(socket_path, responses, requests)
+
+    target = Path("/tmp/disk.qcow2.partial")
+    with QMPClient(socket_path) as client:
+        client.connect()
+        assert client.query_commands() == {"blockdev-backup"}
+        client.blockdev_add("target-live", target)
+        client.blockdev_backup(
+            job_id="job-live",
+            source_node="rootdisk0",
+            target_node="target-live",
+            max_bytes_per_second=1024,
+        )
+        assert client.query_block_jobs()[0]["offset"] == 5
+        client.cancel_job("job-live", force=True)
+        assert client.query_named_block_nodes()[0]["node-name"] == "target-live"
+        client.blockdev_del("target-live")
+
+    thread.join(timeout=2.0)
+    if socket_path.exists():
+        socket_path.unlink()
+
+    backup = next(request for request in requests if request["execute"] == "blockdev-backup")
+    assert backup["arguments"] == {
+        "job-id": "job-live",
+        "device": "rootdisk0",
+        "target": "target-live",
+        "sync": "full",
+        "auto-finalize": True,
+        "auto-dismiss": False,
+        "speed": 1024,
+    }
+    cancel = next(request for request in requests if request["execute"] == "job-cancel")
+    assert cancel["arguments"] == {"id": "job-live", "force": True}
+
+
+def test_live_block_backup_against_installed_qemu(tmp_path: Path) -> None:
+    """Smoke the live-backup command sequence against a real local QEMU."""
+    qemu_img = shutil.which("qemu-img")
+    qemu_system = shutil.which("qemu-system-x86_64") or shutil.which(
+        "qemu-system-aarch64"
+    )
+    if qemu_img is None or qemu_system is None:
+        pytest.skip("qemu-system and qemu-img are required")
+
+    source = tmp_path / "source.qcow2"
+    target = tmp_path / "target.qcow2"
+    socket_dir = Path(tempfile.mkdtemp(prefix="smolvm-qmp-"))
+    socket_path = socket_dir / "qmp.sock"
+    subprocess.run([qemu_img, "create", "-f", "qcow2", str(source), "16M"], check=True)
+    subprocess.run([qemu_img, "create", "-f", "qcow2", str(target), "16M"], check=True)
+    process = subprocess.Popen(
+        [
+            qemu_system,
+            "-machine",
+            "none",
+            "-nodefaults",
+            "-display",
+            "none",
+            "-S",
+            "-qmp",
+            f"unix:{socket_path},server=on,wait=off",
+            "-blockdev",
+            f"driver=qcow2,node-name=rootdisk0,file.driver=file,file.filename={source}",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while not socket_path.exists() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if not socket_path.exists():
+            stderr = process.stderr.read() if process.stderr else ""
+            pytest.fail(f"QEMU did not create its QMP socket: {stderr}")
+
+        with QMPClient(socket_path) as client:
+            client.connect()
+            commands = client.query_commands()
+            required = {"blockdev-add", "blockdev-backup", "blockdev-del"}
+            assert required <= commands
+            client.blockdev_add("target-live", target)
+            client.blockdev_backup(
+                job_id="job-live",
+                source_node="rootdisk0",
+                target_node="target-live",
+            )
+            client.wait_for_job("job-live", timeout=10.0)
+            client.blockdev_del("target-live")
+            client.execute("quit")
+        process.wait(timeout=5)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=5)
+        shutil.rmtree(socket_dir, ignore_errors=True)
+
+    info = json.loads(
+        subprocess.run(
+            [qemu_img, "info", "--output=json", str(target)],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    )
+    assert not info.get("backing-filename")
 
 
 def test_qmp_connect_can_retry_after_capabilities_handshake_failure(

@@ -14,11 +14,13 @@
 
 """QEMU snapshot lifecycle regression tests."""
 
+import hashlib
 import json
 import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -29,6 +31,7 @@ from smolvm.types import (
     GuestOS,
     NetworkConfig,
     SnapshotArtifacts,
+    SnapshotCapturePolicy,
     SnapshotInfo,
     SnapshotType,
     VMConfig,
@@ -918,6 +921,213 @@ def test_create_qemu_disk_snapshot_uses_internal_sync_not_vmstate(
     # Self-contained standalone copy (like FULL), not an overlay.
     assert persisted.artifacts.disk_path.read_text() == "managed-qcow2"
     assert qemu_smol_vm.get("vm001").status == VMState.PAUSED
+
+
+def _live_backup_commands() -> set[str]:
+    return {
+        "blockdev-add",
+        "blockdev-backup",
+        "blockdev-del",
+        "job-cancel",
+        "job-dismiss",
+        "query-jobs",
+        "query-named-block-nodes",
+    }
+
+
+def _fake_qemu_img_create(command, **_kwargs):
+    result = MagicMock(returncode=0, stdout="{}", stderr="")
+    if len(command) > 1 and command[1] == "create":
+        Path(command[-2]).touch()
+    return result
+
+
+def test_qemu_live_disk_snapshot_never_pauses_and_publishes_atomically(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """LIVE_ONLY should use block backup and preserve the running source state."""
+    _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
+
+    with (
+        patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls,
+        patch.object(
+            QemuRuntimeAdapter,
+            "_qemu_img_virtual_size",
+            return_value=(Path("/usr/bin/qemu-img"), 10 * 1024 * 1024),
+        ),
+        patch.object(QemuRuntimeAdapter, "_require_live_backup_space"),
+        patch.object(QemuRuntimeAdapter, "_validate_live_backup_artifact"),
+        patch("smolvm.runtime.qemu.subprocess.run", side_effect=_fake_qemu_img_create),
+    ):
+        client = _mock_qmp_client()
+        client.query_commands.return_value = _live_backup_commands()
+        client.query_jobs.return_value = []
+        client.query_named_block_nodes.return_value = []
+        mock_client_cls.return_value = client
+
+        snapshot = qemu_smol_vm.create_snapshot(
+            "vm001",
+            snapshot_id="snap-live",
+            snapshot_type=SnapshotType.DISK,
+            resume_source=True,
+            capture_policy=SnapshotCapturePolicy.LIVE_ONLY,
+        )
+
+    client.stop_vm.assert_not_called()
+    client.cont.assert_not_called()
+    client.blockdev_snapshot_internal_sync.assert_not_called()
+    client.blockdev_snapshot_delete_internal_sync.assert_not_called()
+    client.blockdev_backup.assert_called_once()
+    client.blockdev_del.assert_called_once()
+    assert snapshot.artifacts.disk_path.name == "disk.qcow2"
+    assert snapshot.artifacts.disk_path.exists()
+    assert not (snapshot.artifacts.disk_path.parent / "disk.qcow2.partial").exists()
+    assert qemu_smol_vm.get("vm001").status == VMState.RUNNING
+
+
+def test_qemu_live_disk_snapshot_timeout_cancels_without_resuming(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """A timed-out live backup should cancel and detach without sending cont."""
+    _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
+
+    with (
+        patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls,
+        patch.object(
+            QemuRuntimeAdapter,
+            "_qemu_img_virtual_size",
+            return_value=(Path("/usr/bin/qemu-img"), 10 * 1024 * 1024),
+        ),
+        patch.object(QemuRuntimeAdapter, "_require_live_backup_space"),
+        patch("smolvm.runtime.qemu.subprocess.run", side_effect=_fake_qemu_img_create),
+    ):
+        client = _mock_qmp_client()
+        client.query_commands.return_value = _live_backup_commands()
+
+        def jobs():
+            if not client.blockdev_backup.called:
+                return []
+            return [SimpleNamespace(job_id=client.blockdev_backup.call_args.kwargs["job_id"])]
+
+        def nodes():
+            if not client.blockdev_add.called:
+                return []
+            return [{"node-name": client.blockdev_add.call_args.args[0]}]
+
+        client.query_jobs.side_effect = jobs
+        client.query_named_block_nodes.side_effect = nodes
+        client.wait_for_job.side_effect = [SmolVMError("backup timed out"), MagicMock()]
+        mock_client_cls.return_value = client
+
+        with pytest.raises(SmolVMError, match="backup timed out"):
+            qemu_smol_vm.create_snapshot(
+                "vm001",
+                snapshot_id="snap-timeout",
+                snapshot_type=SnapshotType.DISK,
+                resume_source=True,
+                capture_policy=SnapshotCapturePolicy.LIVE_ONLY,
+                timeout_seconds=0.01,
+            )
+
+    client.cancel_job.assert_called()
+    client.dismiss_job.assert_called()
+    client.blockdev_del.assert_called()
+    client.cont.assert_not_called()
+    assert qemu_smol_vm.get("vm001").status == VMState.RUNNING
+    assert not (qemu_smol_vm.snapshot_dir / "snap-timeout").exists()
+
+
+def test_qemu_live_only_rejects_conflicting_final_state_before_qmp(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """LIVE_ONLY cannot also request that a running source end paused."""
+    _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
+
+    with pytest.raises(SmolVMError, match="cannot leave the source paused"):
+        qemu_smol_vm.create_snapshot(
+            "vm001",
+            snapshot_id="snap-conflict",
+            snapshot_type=SnapshotType.DISK,
+            capture_policy=SnapshotCapturePolicy.LIVE_ONLY,
+        )
+
+    assert not (qemu_smol_vm.snapshot_dir / "snap-conflict").exists()
+
+
+def test_qemu_live_snapshot_reconciles_interrupted_backup(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """A later live snapshot should cancel and detach stale QMP resources."""
+    _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
+    token = hashlib.sha256(b"vm001").hexdigest()[:10]
+    old_job = f"smolvm-backup-{token}-old"
+    old_node = f"smolvm-backup-target-{token}-old"
+    old_root = qemu_smol_vm.snapshot_dir / "snap-interrupted"
+    old_root.mkdir()
+    old_partial = old_root / "disk.qcow2.partial"
+    old_partial.touch()
+    (old_root / "live-backup.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "vm_id": "vm001",
+                "snapshot_id": "snap-interrupted",
+                "job_id": old_job,
+                "target_node": old_node,
+                "partial_path": str(old_partial),
+                "final_path": str(old_root / "disk.qcow2"),
+                "phase": "job-running",
+            }
+        )
+    )
+
+    with (
+        patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls,
+        patch.object(
+            QemuRuntimeAdapter,
+            "_qemu_img_virtual_size",
+            return_value=(Path("/usr/bin/qemu-img"), 10 * 1024 * 1024),
+        ),
+        patch.object(QemuRuntimeAdapter, "_require_live_backup_space"),
+        patch.object(QemuRuntimeAdapter, "_validate_live_backup_artifact"),
+        patch("smolvm.runtime.qemu.subprocess.run", side_effect=_fake_qemu_img_create),
+    ):
+        client = _mock_qmp_client()
+        jobs = {old_job}
+        nodes = {old_node}
+        client.query_commands.return_value = _live_backup_commands()
+        client.query_jobs.side_effect = lambda: [
+            SimpleNamespace(job_id=job_id) for job_id in jobs
+        ]
+        client.query_named_block_nodes.side_effect = lambda: [
+            {"node-name": node_name} for node_name in nodes
+        ]
+        client.blockdev_add.side_effect = lambda node_name, _path: nodes.add(node_name)
+        client.blockdev_backup.side_effect = lambda **kwargs: jobs.add(kwargs["job_id"])
+        client.wait_for_job.side_effect = lambda job_id, **_kwargs: jobs.discard(job_id)
+        client.blockdev_del.side_effect = lambda node_name: nodes.discard(node_name)
+        mock_client_cls.return_value = client
+
+        qemu_smol_vm.create_snapshot(
+            "vm001",
+            snapshot_id="snap-after-recovery",
+            snapshot_type=SnapshotType.DISK,
+            resume_source=True,
+            capture_policy=SnapshotCapturePolicy.LIVE_ONLY,
+        )
+
+    assert not old_root.exists()
+    assert old_job not in jobs
+    assert old_node not in nodes
+    client.cancel_job.assert_any_call(old_job)
 
 
 def test_restore_qemu_disk_snapshot_boots_fresh_without_loading_vmstate(

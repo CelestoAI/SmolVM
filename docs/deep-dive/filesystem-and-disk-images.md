@@ -72,14 +72,45 @@ Firecracker attaches them as `data_drive`, `data_drive_1`, etc. QEMU uses additi
 | **Memory file** | `mem.bin` | included in QEMU snapshot |
 | **Disk file** | `disk.ext4` | `disk.qcow2` |
 
-### Snapshot types: full vs diff
+### Snapshot types
 
 When you create a snapshot you can choose how much of the disk to store with `--snapshot-type` (CLI) or `snapshot_type=` (SDK):
 
 - **`full`** (default): a complete, self-contained copy of the disk. It restores on its own even if the original base image is gone — the safest, most portable choice, and the right default for everyday use.
 - **`diff`**: stores only what changed since the shared base image, so it takes far less space. On QEMU the snapshot keeps the thin qcow2 overlay; on Firecracker the disk is cloned with a copy-on-write reflink on filesystems that support it (btrfs, XFS, ZFS, APFS), falling back to a full copy elsewhere. The trade-off: a diff snapshot needs its base image to still be present to restore. Best for production systems that take many snapshots and keep their base images in place.
+- **`disk`**: stores a self-contained disk without guest memory. Restoring it boots the guest fresh instead of resuming the exact running state.
 
 On Firecracker the VM state and memory files are always captured in full; `diff` only changes how the disk is stored.
+
+### Keep a running QEMU sandbox available
+
+A normal snapshot may briefly pause a running sandbox. For a QEMU disk snapshot,
+`--live-only` creates the standalone disk copy while the sandbox keeps running.
+If the installed QEMU version cannot do that, the command fails instead of
+silently falling back to a pause.
+
+```bash
+smolvm sandbox snapshot create my-sandbox \
+  --snapshot-type disk \
+  --resume-source \
+  --live-only
+# Created snapshot 'snap-my-sandbox-...' from VM 'my-sandbox'.
+```
+
+The equivalent Python call is:
+
+```python
+from smolvm import SnapshotCapturePolicy, SnapshotType
+
+snapshot = vm.snapshot(
+    snapshot_type=SnapshotType.DISK,
+    resume_source=True,
+    capture_policy=SnapshotCapturePolicy.LIVE_ONLY,
+)
+```
+
+Live capture avoids an explicit pause, but it still reads and writes the host
+disk. Use `max_bytes_per_second=` when the backup I/O needs a bandwidth limit.
 
 ---
 

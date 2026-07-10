@@ -20,6 +20,7 @@ import asyncio
 import logging
 import shutil
 from contextlib import suppress
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -183,12 +184,14 @@ class FirecrackerRuntimeAdapter(RuntimeAdapter):
 
             if request.original_status == VMState.RUNNING:
                 client.pause_vm()
+            captured_at = datetime.now(timezone.utc)
 
             if request.snapshot_type == SnapshotType.DISK:
                 shutil.copy2(request.managed_disk_path, disk_path)
                 return SnapshotCreateResult(
                     artifacts=SnapshotArtifacts(disk_path=disk_path),
                     source_status=VMState.PAUSED,
+                    captured_at=captured_at,
                 )
 
             client.create_snapshot(state_path, memory_path, snapshot_type="Full")
@@ -203,6 +206,7 @@ class FirecrackerRuntimeAdapter(RuntimeAdapter):
                     disk_path=disk_path,
                 ),
                 source_status=VMState.PAUSED,
+                captured_at=captured_at,
             )
         finally:
             with suppress(Exception):

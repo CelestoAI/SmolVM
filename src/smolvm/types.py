@@ -81,14 +81,28 @@ class SnapshotType(str, Enum):
     it does not save the guest's RAM (vmstate). Restoring a ``DISK`` snapshot
     boots the guest fresh from that disk rather than resuming the exact running
     state. Because it skips the RAM dump, taking a ``DISK`` snapshot is far
-    faster, never blocks the QEMU monitor, and uses far less disk — the right
-    choice when you only need the filesystem state and restore-as-cold-boot is
-    acceptable (e.g. sandbox suspend/restore across hosts).
+    faster and uses far less disk. Whether the guest must pause while the disk
+    is captured is controlled separately by :class:`SnapshotCapturePolicy`.
     """
 
     FULL = "full"
     DIFF = "diff"
     DISK = "disk"
+
+
+class SnapshotCapturePolicy(str, Enum):
+    """Whether snapshot capture may explicitly pause a running guest."""
+
+    ALLOW_PAUSE = "allow-pause"
+    LIVE_ONLY = "live-only"
+
+
+class GuestFlushPolicy(str, Enum):
+    """How disk snapshots handle the guest filesystem flush step."""
+
+    REQUIRED = "required"
+    BEST_EFFORT = "best-effort"
+    SKIP = "skip"
 
 
 def _generate_vm_id() -> str:

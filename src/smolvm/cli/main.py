@@ -1915,11 +1915,19 @@ def _run_snapshot(args: SimpleNamespace) -> int:
     if args.snapshot_action == "create":
         vm: SmolVM | None = None
         try:
+            from smolvm.types import SnapshotCapturePolicy
+
             vm = SmolVM.from_id(args.vm_id)
             snapshot = vm.snapshot(
                 snapshot_id=args.snapshot_id,
                 snapshot_type=args.snapshot_type,
                 resume_source=args.resume_source,
+                capture_policy=(
+                    SnapshotCapturePolicy.LIVE_ONLY
+                    if getattr(args, "live_only", False)
+                    else SnapshotCapturePolicy.ALLOW_PAUSE
+                ),
+                flush_policy=getattr(args, "flush_policy", "required"),
             )
             row = _snapshot_row(snapshot)
             data: SnapshotPayload = {"snapshot": row}

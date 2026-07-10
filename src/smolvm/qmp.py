@@ -86,6 +86,20 @@ class QMPClient:
         """Query the runtime QEMU version."""
         return self._call("query_version")
 
+    def query_commands(self) -> set[str]:
+        """Return the QMP command names supported by this QEMU process."""
+        rows = self.execute("query-commands")
+        if not isinstance(rows, list):
+            raise SmolVMError(
+                "QEMU returned an invalid command list.",
+                {"socket_path": str(self.socket_path), "result": rows},
+            )
+        return {
+            str(row["name"])
+            for row in rows
+            if isinstance(row, dict) and isinstance(row.get("name"), str)
+        }
+
     def stop_vm(self) -> None:
         """Pause guest execution."""
         self._call("stop_vm")
@@ -113,6 +127,66 @@ class QMPClient:
     def blockdev_snapshot_delete_internal_sync(self, device: str, name: str) -> None:
         """Delete a disk-only internal qcow2 snapshot, synchronously."""
         self._call("blockdev_snapshot_delete_internal_sync", device, name)
+
+    def blockdev_add(self, node_name: str, filename: Path) -> None:
+        """Attach a qcow2 file as a named QEMU block node."""
+        self.execute(
+            "blockdev-add",
+            {
+                "driver": "qcow2",
+                "node-name": node_name,
+                "file": {"driver": "file", "filename": str(filename)},
+            },
+        )
+
+    def blockdev_backup(
+        self,
+        *,
+        job_id: str,
+        source_node: str,
+        target_node: str,
+        max_bytes_per_second: int | None = None,
+    ) -> None:
+        """Start a full point-in-time block backup."""
+        arguments: dict[str, Any] = {
+            "job-id": job_id,
+            "device": source_node,
+            "target": target_node,
+            "sync": "full",
+            "auto-finalize": True,
+            "auto-dismiss": False,
+        }
+        if max_bytes_per_second is not None:
+            arguments["speed"] = max_bytes_per_second
+        self.execute("blockdev-backup", arguments)
+
+    def query_block_jobs(self) -> list[dict[str, Any]]:
+        """Return active block jobs for progress reporting."""
+        rows = self.execute("query-block-jobs")
+        if not isinstance(rows, list):
+            raise SmolVMError(
+                "QEMU returned an invalid block-job list.",
+                {"socket_path": str(self.socket_path), "result": rows},
+            )
+        return [row for row in rows if isinstance(row, dict)]
+
+    def cancel_job(self, job_id: str, *, force: bool = False) -> None:
+        """Cancel a generic QMP job."""
+        self.execute("job-cancel", {"id": job_id, "force": force})
+
+    def blockdev_del(self, node_name: str) -> None:
+        """Detach a named QEMU block node."""
+        self.execute("blockdev-del", {"node-name": node_name})
+
+    def query_named_block_nodes(self) -> list[dict[str, Any]]:
+        """Return named block graph nodes."""
+        rows = self.execute("query-named-block-nodes")
+        if not isinstance(rows, list):
+            raise SmolVMError(
+                "QEMU returned an invalid block-node list.",
+                {"socket_path": str(self.socket_path), "result": rows},
+            )
+        return [row for row in rows if isinstance(row, dict)]
 
     def query_jobs(self) -> list[QMPJob]:
         """Return normalized job status rows."""

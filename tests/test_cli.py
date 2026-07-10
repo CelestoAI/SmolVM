@@ -35,6 +35,7 @@ from smolvm.types import (
     BrowserSessionState,
     GuestOS,
     NetworkConfig,
+    SnapshotCapturePolicy,
     SnapshotType,
     VMConfig,
     VMState,
@@ -1679,11 +1680,49 @@ class TestCliSnapshot:
         assert ret == 0
         mock_vm_cls.from_id.assert_called_once_with("vm001")
         vm.snapshot.assert_called_once_with(
-            snapshot_id="snap-001", snapshot_type="full", resume_source=False
+            snapshot_id="snap-001",
+            snapshot_type="full",
+            resume_source=False,
+            capture_policy=SnapshotCapturePolicy.ALLOW_PAUSE,
+            flush_policy="required",
         )
         vm.close.assert_called_once()
         out = capsys.readouterr().out
         assert "Created snapshot 'snap-001'" in out
+
+    @patch("smolvm.facade.SmolVM")
+    def test_snapshot_create_live_only_forwards_policy(
+        self,
+        mock_vm_cls: MagicMock,
+    ) -> None:
+        """The CLI should expose the fail-closed running snapshot contract."""
+        vm = MagicMock()
+        vm.snapshot.return_value = _make_snapshot_info()
+        mock_vm_cls.from_id.return_value = vm
+
+        ret = main(
+            [
+                "sandbox",
+                "snapshot",
+                "create",
+                "vm001",
+                "--snapshot-type",
+                "disk",
+                "--resume-source",
+                "--live-only",
+                "--flush-policy",
+                "best-effort",
+            ]
+        )
+
+        assert ret == 0
+        vm.snapshot.assert_called_once_with(
+            snapshot_id=None,
+            snapshot_type="disk",
+            resume_source=True,
+            capture_policy=SnapshotCapturePolicy.LIVE_ONLY,
+            flush_policy="best-effort",
+        )
 
     @patch("smolvm.facade.SmolVM")
     def test_snapshot_create_json(
