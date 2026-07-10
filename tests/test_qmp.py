@@ -33,6 +33,7 @@ from smolvm_core import qmp as core_qmp
 import smolvm.qmp as qmp_module
 from smolvm.exceptions import SmolVMError
 from smolvm.qmp import QMPClient
+from smolvm.runtime.qemu import _live_backup_identifiers
 
 
 @pytest.fixture
@@ -311,6 +312,31 @@ def test_qmp_live_block_backup_commands_round_trip(qmp_socket_path: Path) -> Non
     assert cancel["arguments"] == {"id": "job-live", "force": True}
 
 
+def test_qmp_command_error_includes_qemu_description(qmp_socket_path: Path) -> None:
+    """QMP command failures should expose QEMU's actionable description."""
+    requests: list[dict[str, object]] = []
+    responses: dict[str, list[dict[str, object] | list[dict[str, object]]]] = {
+        "qmp_capabilities": [{"return": {}}],
+        "blockdev-add": [
+            {
+                "error": {
+                    "class": "GenericError",
+                    "desc": "Node name too long",
+                }
+            }
+        ],
+    }
+    thread = _start_qmp_server(qmp_socket_path, responses, requests)
+
+    with QMPClient(qmp_socket_path) as client:
+        client.connect()
+        with pytest.raises(SmolVMError, match="Node name too long") as exc_info:
+            client.blockdev_add("x" * 44, Path("/tmp/target.qcow2"))
+
+    thread.join(timeout=2.0)
+    assert exc_info.value.details["desc"] == "Node name too long"
+
+
 def test_live_block_backup_against_installed_qemu(tmp_path: Path) -> None:
     """Smoke the live-backup command sequence against a real local QEMU."""
     qemu_img = shutil.which("qemu-img")
@@ -357,14 +383,15 @@ def test_live_block_backup_against_installed_qemu(tmp_path: Path) -> None:
             commands = client.query_commands()
             required = {"blockdev-add", "blockdev-backup", "blockdev-del"}
             assert required <= commands
-            client.blockdev_add("target-live", target)
+            job_id, target_node = _live_backup_identifiers("0123456789abcdef")
+            client.blockdev_add(target_node, target)
             client.blockdev_backup(
-                job_id="job-live",
+                job_id=job_id,
                 source_node="rootdisk0",
-                target_node="target-live",
+                target_node=target_node,
             )
-            client.wait_for_job("job-live", timeout=10.0)
-            client.blockdev_del("target-live")
+            client.wait_for_job(job_id, timeout=10.0)
+            client.blockdev_del(target_node)
             client.execute("quit")
         process.wait(timeout=5)
     finally:

@@ -31,7 +31,11 @@ def _core_error_to_smolvm(exc: Exception, socket_path: Path) -> SmolVMError:
     if isinstance(exc, core_errors.QMPError):
         details = dict(exc.details)
         details.setdefault("socket_path", str(socket_path))
-        return SmolVMError(str(exc), details)
+        message = str(exc)
+        description = details.get("desc")
+        if description and str(description) not in message:
+            message = f"{message}: {description}"
+        return SmolVMError(message, details)
     return SmolVMError(str(exc), {"socket_path": str(socket_path)})
 
 

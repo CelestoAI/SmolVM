@@ -14,7 +14,6 @@
 
 """QEMU snapshot lifecycle regression tests."""
 
-import hashlib
 import json
 import shutil
 import subprocess
@@ -26,7 +25,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from smolvm.exceptions import SmolVMError, VMNotFoundError
-from smolvm.runtime.qemu import QemuRuntimeAdapter
+from smolvm.runtime.qemu import (
+    _QEMU_BLOCK_NODE_NAME_MAX,
+    QemuRuntimeAdapter,
+    _live_backup_identifiers,
+)
 from smolvm.types import (
     GuestOS,
     NetworkConfig,
@@ -942,6 +945,16 @@ def _fake_qemu_img_create(command, **_kwargs):
     return result
 
 
+def test_live_backup_identifiers_fit_qemu_block_node_limit() -> None:
+    """Production QMP identifiers must fit QEMU's 31-character node-name cap."""
+    job_id, target_node = _live_backup_identifiers("0123456789abcdef")
+
+    assert job_id == "svmbj-0123456789abcdef"
+    assert target_node == "svmbn-0123456789abcdef"
+    assert len(job_id) <= _QEMU_BLOCK_NODE_NAME_MAX
+    assert len(target_node) <= _QEMU_BLOCK_NODE_NAME_MAX
+
+
 def test_qemu_live_disk_snapshot_never_pauses_and_publishes_atomically(
     qemu_smol_vm: SmolVMManager,
     qemu_config: VMConfig,
@@ -981,6 +994,10 @@ def test_qemu_live_disk_snapshot_never_pauses_and_publishes_atomically(
     client.blockdev_snapshot_delete_internal_sync.assert_not_called()
     client.blockdev_backup.assert_called_once()
     client.blockdev_del.assert_called_once()
+    job_id = client.blockdev_backup.call_args.kwargs["job_id"]
+    target_node = client.blockdev_backup.call_args.kwargs["target_node"]
+    assert len(job_id) <= _QEMU_BLOCK_NODE_NAME_MAX
+    assert len(target_node) <= _QEMU_BLOCK_NODE_NAME_MAX
     assert snapshot.artifacts.disk_path.name == "disk.qcow2"
     assert snapshot.artifacts.disk_path.exists()
     assert not (snapshot.artifacts.disk_path.parent / "disk.qcow2.partial").exists()
@@ -1067,9 +1084,7 @@ def test_qemu_live_snapshot_reconciles_interrupted_backup(
 ) -> None:
     """A later live snapshot should cancel and detach stale QMP resources."""
     _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
-    token = hashlib.sha256(b"vm001").hexdigest()[:10]
-    old_job = f"smolvm-backup-{token}-old"
-    old_node = f"smolvm-backup-target-{token}-old"
+    old_job, old_node = _live_backup_identifiers("deadbeefdeadbeef")
     old_root = qemu_smol_vm.snapshot_dir / "snap-interrupted"
     old_root.mkdir()
     old_partial = old_root / "disk.qcow2.partial"

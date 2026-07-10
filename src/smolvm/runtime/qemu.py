@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import os
@@ -58,6 +57,9 @@ logger = logging.getLogger(__name__)
 
 QEMU_ROOT_NODE_NAME = "rootdisk0"
 _LIVE_BACKUP_MANIFEST = "live-backup.json"
+_LIVE_BACKUP_JOB_PREFIX = "svmbj-"
+_LIVE_BACKUP_NODE_PREFIX = "svmbn-"
+_QEMU_BLOCK_NODE_NAME_MAX = 31
 _LIVE_BACKUP_REQUIRED_COMMANDS = {
     "blockdev-add",
     "blockdev-backup",
@@ -67,6 +69,17 @@ _LIVE_BACKUP_REQUIRED_COMMANDS = {
     "query-jobs",
     "query-named-block-nodes",
 }
+
+
+def _live_backup_identifiers(operation_id: str) -> tuple[str, str]:
+    """Return compact QMP identifiers that fit QEMU's block-node limit."""
+    job_id = f"{_LIVE_BACKUP_JOB_PREFIX}{operation_id}"
+    target_node = f"{_LIVE_BACKUP_NODE_PREFIX}{operation_id}"
+    if len(target_node) > _QEMU_BLOCK_NODE_NAME_MAX:
+        raise ValueError(
+            f"QEMU block node name exceeds {_QEMU_BLOCK_NODE_NAME_MAX} characters"
+        )
+    return job_id, target_node
 
 
 def _qemu_img_install_hint() -> str:
@@ -585,12 +598,8 @@ class QemuRuntimeAdapter(RuntimeAdapter):
         self,
         request: SnapshotCreateRequest,
         client: QMPClient,
-        *,
-        vm_token: str,
     ) -> None:
         """Clean stale jobs and nodes left by an interrupted Python process."""
-        job_prefix = f"smolvm-backup-{vm_token}-"
-        node_prefix = f"smolvm-backup-target-{vm_token}-"
         manifests = request.snapshot_root.parent.glob(f"*/{_LIVE_BACKUP_MANIFEST}")
         for manifest_path in manifests:
             try:
@@ -615,14 +624,22 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                 with suppress(OSError):
                     manifest_path.parent.rmdir()
 
-        known_jobs = [job_id for job_id in self._job_ids(client) if job_id.startswith(job_prefix)]
-        known_nodes = [name for name in self._node_names(client) if name.startswith(node_prefix)]
+        known_jobs = [
+            job_id
+            for job_id in self._job_ids(client)
+            if job_id.startswith(_LIVE_BACKUP_JOB_PREFIX)
+        ]
+        known_nodes = [
+            name
+            for name in self._node_names(client)
+            if name.startswith(_LIVE_BACKUP_NODE_PREFIX)
+        ]
         for job_id in known_jobs:
-            suffix = job_id.removeprefix(job_prefix)
+            suffix = job_id.removeprefix(_LIVE_BACKUP_JOB_PREFIX)
             self._cleanup_live_backup(
                 client,
                 job_id=job_id,
-                target_node=f"{node_prefix}{suffix}",
+                target_node=f"{_LIVE_BACKUP_NODE_PREFIX}{suffix}",
             )
         for node_name in known_nodes:
             if node_name in self._node_names(client):
@@ -650,8 +667,7 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                 {"vm_id": request.vm_info.vm_id, "missing_qmp_commands": missing},
             )
 
-        vm_token = hashlib.sha256(request.vm_info.vm_id.encode()).hexdigest()[:10]
-        self._reconcile_live_backups(request, client, vm_token=vm_token)
+        self._reconcile_live_backups(request, client)
 
         qemu_img, virtual_size = self._qemu_img_virtual_size(request.managed_disk_path)
         self._require_live_backup_space(
@@ -673,9 +689,8 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                 {"disk_path": str(partial_path), "stderr": create.stderr.strip()},
             )
 
-        operation_id = uuid4().hex[:12]
-        job_id = f"smolvm-backup-{vm_token}-{operation_id}"
-        target_node = f"smolvm-backup-target-{vm_token}-{operation_id}"
+        operation_id = uuid4().hex[:16]
+        job_id, target_node = _live_backup_identifiers(operation_id)
         manifest_path = request.snapshot_root / _LIVE_BACKUP_MANIFEST
         manifest: dict[str, Any] = {
             "schema_version": 1,
