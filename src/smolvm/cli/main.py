@@ -2369,8 +2369,9 @@ def _run_shell(args: SimpleNamespace) -> int:
             return vm.attach_shell(timeout=args.boot_timeout)
         if vm.status == VMState.ERROR:
             raise RuntimeError(
-                f"VM '{args.vm_id}' is in error state. Recreate it or inspect the VM logs "
-                "before attaching."
+                f"Sandbox '{args.vm_id}' is in error state; inspect the sandbox logs, or run "
+                f"'smolvm sandbox delete {args.vm_id}' then "
+                f"'smolvm sandbox create --name {args.vm_id}' to recreate it."
             )
 
         with console.status("Opening shell...", spinner="dots"):

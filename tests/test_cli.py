@@ -2019,7 +2019,11 @@ class TestCliShell:
         vm.wait_for_ssh.assert_not_called()
         vm.attach_shell.assert_not_called()
         vm.close.assert_called_once()
-        assert "error state" in capsys.readouterr().err
+        err = " ".join(capsys.readouterr().err.replace("│", "").split())
+        assert "error state" in err
+        assert "inspect the sandbox logs" in err
+        assert "smolvm sandbox delete vm001" in err
+        assert "smolvm sandbox create --name vm001" in err
 
 
 class TestCliSSH:
