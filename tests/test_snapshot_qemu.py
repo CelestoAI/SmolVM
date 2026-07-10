@@ -1247,7 +1247,9 @@ def test_qemu_live_snapshot_removes_corrupt_same_id_journal(
     snapshot_root = qemu_smol_vm.snapshot_dir / "snap-corrupt"
     snapshot_root.mkdir()
     manifest_path = snapshot_root / "live-backup.json"
-    manifest_path.write_text("{not-json")
+    # Invalid UTF-8 exercises the unreadable-journal recovery path (not just
+    # a syntactically malformed JSON document).
+    manifest_path.write_bytes(b"\xff")
 
     with (
         patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls,
