@@ -17,6 +17,7 @@
 import json
 import shutil
 import subprocess
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -1066,7 +1067,7 @@ def test_qemu_live_only_rejects_conflicting_final_state_before_qmp(
     """LIVE_ONLY cannot also request that a running source end paused."""
     _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
 
-    with pytest.raises(SmolVMError, match="cannot leave the source paused"):
+    with pytest.raises(SmolVMError, match="--resume-source"):
         qemu_smol_vm.create_snapshot(
             "vm001",
             snapshot_id="snap-conflict",
@@ -1082,7 +1083,7 @@ def test_qemu_live_snapshot_reconciles_interrupted_backup(
     qemu_config: VMConfig,
     tmp_path: Path,
 ) -> None:
-    """A later live snapshot should cancel and detach stale QMP resources."""
+    """Retrying the same ID should reclaim stale QMP resources and artifacts."""
     _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
     old_job, old_node = _live_backup_identifiers("deadbeefdeadbeef")
     old_root = qemu_smol_vm.snapshot_dir / "snap-interrupted"
@@ -1119,9 +1120,7 @@ def test_qemu_live_snapshot_reconciles_interrupted_backup(
         jobs = {old_job}
         nodes = {old_node}
         client.query_commands.return_value = _live_backup_commands()
-        client.query_jobs.side_effect = lambda: [
-            SimpleNamespace(job_id=job_id) for job_id in jobs
-        ]
+        client.query_jobs.side_effect = lambda: [SimpleNamespace(job_id=job_id) for job_id in jobs]
         client.query_named_block_nodes.side_effect = lambda: [
             {"node-name": node_name} for node_name in nodes
         ]
@@ -1133,16 +1132,167 @@ def test_qemu_live_snapshot_reconciles_interrupted_backup(
 
         qemu_smol_vm.create_snapshot(
             "vm001",
-            snapshot_id="snap-after-recovery",
+            snapshot_id="snap-interrupted",
             snapshot_type=SnapshotType.DISK,
             resume_source=True,
             capture_policy=SnapshotCapturePolicy.LIVE_ONLY,
         )
 
-    assert not old_root.exists()
+    assert old_root.exists()
+    assert not old_partial.exists()
+    assert (old_root / "disk.qcow2").exists()
+    assert not (old_root / "live-backup.json").exists()
     assert old_job not in jobs
     assert old_node not in nodes
     client.cancel_job.assert_any_call(old_job)
+
+
+def test_qemu_live_snapshot_reclaims_unpersisted_published_artifact(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """A crash after publication should not strand an invisible snapshot."""
+    _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
+    old_job, old_node = _live_backup_identifiers("feedfacefeedface")
+    old_root = qemu_smol_vm.snapshot_dir / "snap-published-orphan"
+    old_root.mkdir()
+    old_final = old_root / "disk.qcow2"
+    old_final.write_text("orphaned-published-artifact")
+    (old_root / "live-backup.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "vm_id": "vm001",
+                "snapshot_id": "snap-published-orphan",
+                "job_id": old_job,
+                "target_node": old_node,
+                "partial_path": str(old_root / "disk.qcow2.partial"),
+                "final_path": str(old_final),
+                "phase": "artifact-published",
+            }
+        )
+    )
+
+    with (
+        patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls,
+        patch.object(
+            QemuRuntimeAdapter,
+            "_qemu_img_virtual_size",
+            return_value=(Path("/usr/bin/qemu-img"), 10 * 1024 * 1024),
+        ),
+        patch.object(QemuRuntimeAdapter, "_require_live_backup_space"),
+        patch.object(QemuRuntimeAdapter, "_validate_live_backup_artifact"),
+        patch("smolvm.runtime.qemu.subprocess.run", side_effect=_fake_qemu_img_create),
+    ):
+        client = _mock_qmp_client()
+        client.query_commands.return_value = _live_backup_commands()
+        client.query_jobs.return_value = []
+        client.query_named_block_nodes.return_value = []
+        mock_client_cls.return_value = client
+
+        snapshot = qemu_smol_vm.create_snapshot(
+            "vm001",
+            snapshot_id="snap-published-orphan",
+            snapshot_type=SnapshotType.DISK,
+            resume_source=True,
+            capture_policy=SnapshotCapturePolicy.LIVE_ONLY,
+        )
+
+    assert snapshot.artifacts.disk_path == old_final
+    assert old_final.read_text() == ""
+    assert not (old_root / "live-backup.json").exists()
+
+
+def test_qemu_live_snapshot_preserves_persisted_published_artifact(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """Journal cleanup must not remove a snapshot already recorded in state."""
+    _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
+    old_job, old_node = _live_backup_identifiers("cafebabecafebabe")
+    old_root = qemu_smol_vm.snapshot_dir / "snap-persisted"
+    old_root.mkdir()
+    old_final = old_root / "disk.qcow2"
+    old_final.write_text("persisted-artifact")
+    snapshot = SnapshotInfo(
+        snapshot_id="snap-persisted",
+        vm_id="vm001",
+        backend="qemu",
+        artifacts=SnapshotArtifacts(disk_path=old_final),
+        vm_config=qemu_smol_vm.get("vm001").config,
+        network_config=qemu_smol_vm.get("vm001").network,
+        created_at=datetime.now(timezone.utc),
+        snapshot_type=SnapshotType.DISK,
+    )
+    qemu_smol_vm.state.create_snapshot(snapshot)
+    manifest_path = old_root / "live-backup.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "vm_id": "vm001",
+                "snapshot_id": "snap-persisted",
+                "job_id": old_job,
+                "target_node": old_node,
+                "partial_path": str(old_root / "disk.qcow2.partial"),
+                "final_path": str(old_final),
+                "phase": "artifact-published",
+            }
+        )
+    )
+
+    with patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls:
+        client = _mock_qmp_client()
+        client.query_jobs.return_value = []
+        client.query_named_block_nodes.return_value = []
+        mock_client_cls.return_value = client
+
+        with pytest.raises(SmolVMError, match="already exists"):
+            qemu_smol_vm.create_snapshot(
+                "vm001",
+                snapshot_id="snap-persisted",
+                snapshot_type=SnapshotType.DISK,
+                resume_source=True,
+                capture_policy=SnapshotCapturePolicy.LIVE_ONLY,
+            )
+
+    assert old_final.read_text() == "persisted-artifact"
+    assert not manifest_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("first_vm", "first_snapshot", "second_vm", "second_snapshot"),
+    [
+        ("vm001", "snap-a", "vm001", "snap-b"),
+        ("vm001", "snap-shared", "vm002", "snap-shared"),
+    ],
+)
+def test_snapshot_operation_locks_serialize_vm_and_snapshot_id(
+    tmp_path: Path,
+    first_vm: str,
+    first_snapshot: str,
+    second_vm: str,
+    second_snapshot: str,
+) -> None:
+    """Concurrent requests must not reconcile another active snapshot."""
+    first = SmolVMManager(data_dir=tmp_path / "data", socket_dir=tmp_path / "sockets")
+    second = SmolVMManager(data_dir=tmp_path / "data", socket_dir=tmp_path / "sockets")
+    acquired = threading.Event()
+
+    def acquire_second() -> None:
+        with second._snapshot_operation_locks(second_vm, second_snapshot):
+            acquired.set()
+
+    with first._snapshot_operation_locks(first_vm, first_snapshot):
+        contender = threading.Thread(target=acquire_second)
+        contender.start()
+        assert not acquired.wait(timeout=0.1)
+
+    assert acquired.wait(timeout=2.0)
+    contender.join(timeout=2.0)
+    assert not contender.is_alive()
 
 
 def test_restore_qemu_disk_snapshot_boots_fresh_without_loading_vmstate(

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import platform
 import shlex
 import socket
@@ -1693,17 +1694,25 @@ class SmolVM:
             raise ValueError(
                 f"flush_policy must be one of {allowed}; got {flush_policy!r}"
             ) from exc
-        if timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be greater than zero")
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be a finite number greater than zero")
         if max_bytes_per_second is not None and max_bytes_per_second <= 0:
             raise ValueError("max_bytes_per_second must be greater than zero when set")
         if resolved_capture_policy == SnapshotCapturePolicy.LIVE_ONLY:
+            live_command = (
+                f"smolvm sandbox snapshot create {self._vm_id} --snapshot-type disk "
+                "--resume-source --live-only"
+            )
             if resolved_snapshot_type != SnapshotType.DISK:
-                raise SmolVMError("Live-only capture requires a disk snapshot.")
+                raise SmolVMError(
+                    f"Live snapshots of sandbox '{self._vm_id}' save disk state only; "
+                    f"run '{live_command}'.",
+                    {"vm_id": self._vm_id},
+                )
             if not resume_source:
                 raise SmolVMError(
-                    "A live-only snapshot cannot leave the source paused; set "
-                    "resume_source=True."
+                    f"A live snapshot keeps sandbox '{self._vm_id}' running; run '{live_command}'.",
+                    {"vm_id": self._vm_id},
                 )
         if (
             resolved_snapshot_type == SnapshotType.DISK

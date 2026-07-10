@@ -414,6 +414,10 @@ def snapshot() -> None:
     type=click.Choice([policy.value for policy in GuestFlushPolicy]),
     default=GuestFlushPolicy.REQUIRED.value,
     show_default=True,
+    help=(
+        "How to save pending file writes before a disk snapshot: required fails on "
+        "error, best-effort continues, and skip does not try."
+    ),
 )
 @json_option
 def snapshot_create(

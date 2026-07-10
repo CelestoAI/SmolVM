@@ -635,6 +635,35 @@ class TestVMInit:
 class TestSnapshot:
     """Tests for facade snapshot behavior."""
 
+    @pytest.mark.parametrize(
+        ("snapshot_type", "resume_source"),
+        [
+            (SnapshotType.FULL, True),
+            (SnapshotType.DISK, False),
+        ],
+    )
+    def test_live_snapshot_validation_names_exact_cli_recovery(
+        self,
+        snapshot_type: SnapshotType,
+        resume_source: bool,
+    ) -> None:
+        """Live-only validation should give CLI users a complete retry command."""
+        vm = SmolVM.__new__(SmolVM)
+        vm._vm_id = "vm001"
+
+        with pytest.raises(
+            SmolVMError,
+            match=(
+                r"smolvm sandbox snapshot create vm001 --snapshot-type disk "
+                r"--resume-source --live-only"
+            ),
+        ):
+            vm.snapshot(
+                snapshot_type=snapshot_type,
+                resume_source=resume_source,
+                capture_policy=SnapshotCapturePolicy.LIVE_ONLY,
+            )
+
     def test_disk_snapshot_syncs_guest_before_sdk_snapshot(self) -> None:
         """Disk-only snapshots should flush guest filesystem buffers first."""
         vm = SmolVM.__new__(SmolVM)

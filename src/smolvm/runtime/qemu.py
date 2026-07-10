@@ -76,9 +76,7 @@ def _live_backup_identifiers(operation_id: str) -> tuple[str, str]:
     job_id = f"{_LIVE_BACKUP_JOB_PREFIX}{operation_id}"
     target_node = f"{_LIVE_BACKUP_NODE_PREFIX}{operation_id}"
     if len(target_node) > _QEMU_BLOCK_NODE_NAME_MAX:
-        raise ValueError(
-            f"QEMU block node name exceeds {_QEMU_BLOCK_NODE_NAME_MAX} characters"
-        )
+        raise ValueError(f"QEMU block node name exceeds {_QEMU_BLOCK_NODE_NAME_MAX} characters")
     return job_id, target_node
 
 
@@ -442,9 +440,7 @@ class QemuRuntimeAdapter(RuntimeAdapter):
         """Return the qemu-img binary and virtual size for an active disk."""
         qemu_img = which("qemu-img")
         if qemu_img is None:
-            raise SmolVMError(
-                f"Live QEMU snapshots need qemu-img. {_qemu_img_install_hint()}"
-            )
+            raise SmolVMError(f"Live QEMU snapshots need qemu-img. {_qemu_img_install_hint()}")
         info = subprocess.run(
             [str(qemu_img), "info", "-U", "--output=json", str(disk)],
             capture_output=True,
@@ -594,45 +590,67 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                 path.unlink()
         return True
 
+    def reconcile_live_backups(
+        self,
+        vm_info: VMInfo,
+        *,
+        snapshot_dir: Path,
+        persisted_snapshot_ids: set[str],
+    ) -> None:
+        """Reconcile journals after the caller has locked snapshot creation."""
+        if not any(snapshot_dir.glob(f"*/{_LIVE_BACKUP_MANIFEST}")):
+            return
+        with self._client(vm_info.control_socket_path) as client:
+            self._reconcile_live_backups(
+                vm_id=vm_info.vm_id,
+                snapshot_dir=snapshot_dir,
+                persisted_snapshot_ids=persisted_snapshot_ids,
+                client=client,
+            )
+
     def _reconcile_live_backups(
         self,
-        request: SnapshotCreateRequest,
+        *,
+        vm_id: str,
+        snapshot_dir: Path,
+        persisted_snapshot_ids: set[str],
         client: QMPClient,
     ) -> None:
         """Clean stale jobs and nodes left by an interrupted Python process."""
-        manifests = request.snapshot_root.parent.glob(f"*/{_LIVE_BACKUP_MANIFEST}")
+        manifests = snapshot_dir.glob(f"*/{_LIVE_BACKUP_MANIFEST}")
         for manifest_path in manifests:
             try:
                 payload = json.loads(manifest_path.read_text())
             except (OSError, json.JSONDecodeError):
                 continue
-            if payload.get("vm_id") != request.vm_info.vm_id:
+            if payload.get("vm_id") != vm_id:
                 continue
-            if payload.get("phase") == "artifact-published":
-                continue
+            snapshot_id = str(payload.get("snapshot_id", ""))
+            persisted = snapshot_id in persisted_snapshot_ids
             partial = Path(str(payload.get("partial_path", "")))
             final = Path(str(payload.get("final_path", "")))
             cleaned = self._cleanup_live_backup(
                 client,
                 job_id=str(payload.get("job_id", "")),
                 target_node=str(payload.get("target_node", "")),
-                artifact_paths=tuple(path for path in (partial, final) if str(path) != "."),
+                artifact_paths=(
+                    ()
+                    if persisted
+                    else tuple(path for path in (partial, final) if str(path) != ".")
+                ),
             )
             if cleaned:
                 with suppress(OSError):
                     manifest_path.unlink()
-                with suppress(OSError):
-                    manifest_path.parent.rmdir()
+                if not persisted:
+                    with suppress(OSError):
+                        manifest_path.parent.rmdir()
 
         known_jobs = [
-            job_id
-            for job_id in self._job_ids(client)
-            if job_id.startswith(_LIVE_BACKUP_JOB_PREFIX)
+            job_id for job_id in self._job_ids(client) if job_id.startswith(_LIVE_BACKUP_JOB_PREFIX)
         ]
         known_nodes = [
-            name
-            for name in self._node_names(client)
-            if name.startswith(_LIVE_BACKUP_NODE_PREFIX)
+            name for name in self._node_names(client) if name.startswith(_LIVE_BACKUP_NODE_PREFIX)
         ]
         for job_id in known_jobs:
             suffix = job_id.removeprefix(_LIVE_BACKUP_JOB_PREFIX)
@@ -666,8 +684,6 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                 f"{request.vm_info.vm_id}', or retry without '--live-only'.",
                 {"vm_id": request.vm_info.vm_id, "missing_qmp_commands": missing},
             )
-
-        self._reconcile_live_backups(request, client)
 
         qemu_img, virtual_size = self._qemu_img_virtual_size(request.managed_disk_path)
         self._require_live_backup_space(
@@ -779,8 +795,10 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                     manifest_path.unlink()
                 raise
             raise SmolVMError(
-                "The live snapshot failed and QEMU is still releasing its temporary disk; "
-                "retry after cleanup completes.",
+                f"Live snapshot cleanup for sandbox '{request.vm_info.vm_id}' is still in "
+                "progress; retry with 'smolvm sandbox snapshot create "
+                f"{request.vm_info.vm_id} --snapshot-id {request.snapshot_id} "
+                "--snapshot-type disk --resume-source --live-only'.",
                 {
                     "vm_id": request.vm_info.vm_id,
                     "job_id": job_id,

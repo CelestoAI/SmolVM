@@ -23,6 +23,7 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import os
 import platform
 import pwd
@@ -568,8 +569,8 @@ class SmolVMManager:
             return
         raise VMAlreadyExistsError(vm_id)
 
-    def _acquire_vm_create_lock(self, vm_id: str) -> tuple[Any | None, TextIO | None]:
-        """Acquire the create-time disk lock for one VM ID."""
+    def _acquire_operation_lock(self, lock_name: str) -> tuple[Any | None, TextIO | None]:
+        """Acquire one named cross-process operation lock."""
         try:
             import fcntl
         except ImportError:
@@ -579,9 +580,13 @@ class SmolVMManager:
 
         lock_dir = self.data_dir / "locks"
         lock_dir.mkdir(parents=True, exist_ok=True)
-        lock_file = (lock_dir / f"{vm_id}.create.lock").open("w")
+        lock_file = (lock_dir / lock_name).open("w")
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         return fcntl, lock_file
+
+    def _acquire_vm_create_lock(self, vm_id: str) -> tuple[Any | None, TextIO | None]:
+        """Acquire the create-time disk lock for one VM ID."""
+        return self._acquire_operation_lock(f"{vm_id}.create.lock")
 
     @staticmethod
     def _release_vm_create_lock(lock: tuple[Any | None, TextIO | None]) -> None:
@@ -612,6 +617,18 @@ class SmolVMManager:
             yield
         finally:
             await asyncio.to_thread(self._release_vm_create_lock, lock)
+
+    @contextmanager
+    def _snapshot_operation_locks(self, vm_id: str, snapshot_id: str) -> Iterator[None]:
+        """Serialize snapshots by source VM and globally unique snapshot ID."""
+        locks: list[tuple[Any | None, TextIO | None]] = []
+        try:
+            locks.append(self._acquire_operation_lock(f"{vm_id}.snapshot.lock"))
+            locks.append(self._acquire_operation_lock(f"snapshot-{snapshot_id}.lock"))
+            yield
+        finally:
+            for lock in reversed(locks):
+                self._release_vm_create_lock(lock)
 
     @staticmethod
     def _restore_staging_disk_path(managed_disk_path: Path) -> Path:
@@ -2010,9 +2027,47 @@ class SmolVMManager:
         ``DISK`` is self-contained like ``FULL`` but stores only the disk (no
         guest RAM), so it is much faster and lighter; restoring it boots the
         guest fresh from the disk instead of resuming the running state.
+
+        ``capture_policy=LIVE_ONLY`` fails instead of pausing a running guest.
+        It requires a running QEMU VM, ``snapshot_type=DISK``, and
+        ``resume_source=True``. ``timeout_seconds`` must be positive and bounds
+        live disk capture; ``max_bytes_per_second`` may optionally apply a
+        positive bandwidth limit.
         """
         if not vm_id:
             raise ValueError("vm_id cannot be empty")
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be a finite number greater than zero")
+        if max_bytes_per_second is not None and max_bytes_per_second <= 0:
+            raise ValueError("max_bytes_per_second must be greater than zero when set")
+
+        snapshot_id = snapshot_id or f"snap-{vm_id}-{int(time.time())}"
+        snapshot_root = self._snapshot_root_for_id(snapshot_id)
+        with self._snapshot_operation_locks(vm_id, snapshot_id):
+            return self._create_snapshot_locked(
+                vm_id=vm_id,
+                snapshot_id=snapshot_id,
+                snapshot_root=snapshot_root,
+                snapshot_type=snapshot_type,
+                resume_source=resume_source,
+                capture_policy=capture_policy,
+                timeout_seconds=timeout_seconds,
+                max_bytes_per_second=max_bytes_per_second,
+            )
+
+    def _create_snapshot_locked(
+        self,
+        *,
+        vm_id: str,
+        snapshot_id: str,
+        snapshot_root: Path,
+        snapshot_type: SnapshotType,
+        resume_source: bool,
+        capture_policy: SnapshotCapturePolicy,
+        timeout_seconds: float,
+        max_bytes_per_second: int | None,
+    ) -> SnapshotInfo:
+        """Create one snapshot while its VM and snapshot-ID locks are held."""
 
         vm_info = self.state.get_vm(vm_id)
         self._ensure_snapshot_supported(vm_info)
@@ -2022,26 +2077,34 @@ class SmolVMManager:
                 {"vm_id": vm_id, "current_status": vm_info.status.value},
             )
 
-        snapshot_id = snapshot_id or f"snap-{vm_id}-{int(time.time())}"
-        snapshot_root = self._snapshot_root_for_id(snapshot_id)
-        if snapshot_root.exists():
-            raise SnapshotAlreadyExistsError(snapshot_id)
-        with suppress(SnapshotNotFoundError):
-            self.state.get_snapshot(snapshot_id)
-            raise SnapshotAlreadyExistsError(snapshot_id)
-
         original_status = vm_info.status
         backend = self._backend_for_vm(vm_info)
+        live_command = (
+            f"smolvm sandbox snapshot create {vm_id} --snapshot-id {snapshot_id} "
+            "--snapshot-type disk --resume-source --live-only"
+        )
         if capture_policy == SnapshotCapturePolicy.LIVE_ONLY:
             if original_status != VMState.RUNNING:
                 raise SmolVMError(
-                    f"Live-only snapshots require sandbox '{vm_id}' to be running.",
+                    f"Sandbox '{vm_id}' must be running for a live snapshot; run "
+                    f"'smolvm sandbox start {vm_id}'.",
                     {"vm_id": vm_id, "current_status": original_status.value},
                 )
-            if backend != BACKEND_QEMU or snapshot_type != SnapshotType.DISK:
+            if backend != BACKEND_QEMU:
                 raise SmolVMError(
-                    f"Sandbox '{vm_id}' cannot use a live-only {snapshot_type.value} "
-                    "snapshot on this backend; use a QEMU disk snapshot instead.",
+                    f"Sandbox '{vm_id}' cannot stay available during this snapshot; run "
+                    f"'smolvm sandbox snapshot create {vm_id} --snapshot-id {snapshot_id} "
+                    "--snapshot-type disk --resume-source' to allow a brief pause.",
+                    {
+                        "vm_id": vm_id,
+                        "backend": backend,
+                        "snapshot_type": snapshot_type.value,
+                    },
+                )
+            if snapshot_type != SnapshotType.DISK:
+                raise SmolVMError(
+                    f"Live snapshots of sandbox '{vm_id}' save disk state only; run "
+                    f"'{live_command}'.",
                     {
                         "vm_id": vm_id,
                         "backend": backend,
@@ -2050,8 +2113,7 @@ class SmolVMManager:
                 )
             if not resume_source:
                 raise SmolVMError(
-                    "A live-only snapshot cannot leave the source paused; set "
-                    "resume_source=True.",
+                    f"A live snapshot keeps sandbox '{vm_id}' running; run '{live_command}'.",
                     {"vm_id": vm_id},
                 )
         managed_disk_path = self._managed_disk_for_vm(vm_info)
@@ -2059,6 +2121,40 @@ class SmolVMManager:
             raise SmolVMError("Snapshotting requires a managed isolated disk", {"vm_id": vm_id})
 
         adapter = self._runtime_adapter_for_backend(backend)
+        if isinstance(adapter, QemuRuntimeAdapter):
+            adapter.reconcile_live_backups(
+                vm_info,
+                snapshot_dir=self.snapshot_dir,
+                persisted_snapshot_ids={
+                    snapshot.snapshot_id for snapshot in self.state.list_snapshots(vm_id=vm_id)
+                },
+            )
+
+        with suppress(SnapshotNotFoundError):
+            self.state.get_snapshot(snapshot_id)
+            raise SnapshotAlreadyExistsError(snapshot_id)
+
+        if snapshot_root.exists():
+            manifest_path = snapshot_root / "live-backup.json"
+            if manifest_path.exists():
+                try:
+                    manifest = json.loads(manifest_path.read_text())
+                except (OSError, json.JSONDecodeError):
+                    manifest = {}
+                manifest_vm_id = manifest.get("vm_id")
+                if manifest_vm_id not in (None, vm_id):
+                    raise SnapshotAlreadyExistsError(snapshot_id)
+                raise SmolVMError(
+                    f"A previous live snapshot of sandbox '{vm_id}' is still cleaning up; "
+                    f"retry with '{live_command}'.",
+                    {
+                        "vm_id": vm_id,
+                        "snapshot_id": snapshot_id,
+                        "cleanup_pending": True,
+                    },
+                )
+            shutil.rmtree(snapshot_root)
+
         snapshot_persisted = False
 
         try:

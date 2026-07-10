@@ -340,9 +340,7 @@ def test_qmp_command_error_includes_qemu_description(qmp_socket_path: Path) -> N
 def test_live_block_backup_against_installed_qemu(tmp_path: Path) -> None:
     """Smoke the live-backup command sequence against a real local QEMU."""
     qemu_img = shutil.which("qemu-img")
-    qemu_system = shutil.which("qemu-system-x86_64") or shutil.which(
-        "qemu-system-aarch64"
-    )
+    qemu_system = shutil.which("qemu-system-x86_64") or shutil.which("qemu-system-aarch64")
     if qemu_img is None or qemu_system is None:
         pytest.skip("qemu-system and qemu-img are required")
 
@@ -375,7 +373,9 @@ def test_live_block_backup_against_installed_qemu(tmp_path: Path) -> None:
         while not socket_path.exists() and process.poll() is None and time.monotonic() < deadline:
             time.sleep(0.05)
         if not socket_path.exists():
-            stderr = process.stderr.read() if process.stderr else ""
+            if process.poll() is None:
+                process.terminate()
+            _, stderr = process.communicate(timeout=5)
             pytest.fail(f"QEMU did not create its QMP socket: {stderr}")
 
         with QMPClient(socket_path) as client:
@@ -393,11 +393,15 @@ def test_live_block_backup_against_installed_qemu(tmp_path: Path) -> None:
             client.wait_for_job(job_id, timeout=10.0)
             client.blockdev_del(target_node)
             client.execute("quit")
-        process.wait(timeout=5)
+        process.communicate(timeout=5)
     finally:
         if process.poll() is None:
             process.terminate()
-            process.wait(timeout=5)
+            try:
+                process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate(timeout=5)
         shutil.rmtree(socket_dir, ignore_errors=True)
 
     info = json.loads(

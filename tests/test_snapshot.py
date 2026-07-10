@@ -78,6 +78,22 @@ def _running_vm(smol_vm: SmolVMManager, config: VMConfig, tmp_path: Path) -> Pat
     return socket_path
 
 
+@pytest.mark.parametrize("timeout_seconds", [0.0, -1.0, float("inf"), float("nan")])
+def test_create_snapshot_rejects_invalid_timeout(
+    smol_vm: SmolVMManager,
+    timeout_seconds: float,
+) -> None:
+    """The public manager should reject unusable live-backup timeouts."""
+    with pytest.raises(ValueError, match="finite number greater than zero"):
+        smol_vm.create_snapshot("vm001", timeout_seconds=timeout_seconds)
+
+
+def test_create_snapshot_rejects_invalid_bandwidth_limit(smol_vm: SmolVMManager) -> None:
+    """The public manager should reject non-positive live-backup limits."""
+    with pytest.raises(ValueError, match="max_bytes_per_second"):
+        smol_vm.create_snapshot("vm001", max_bytes_per_second=0)
+
+
 def test_pause_and_resume_firecracker_vm(
     smol_vm: SmolVMManager,
     sample_config: VMConfig,

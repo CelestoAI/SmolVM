@@ -74,13 +74,16 @@ Firecracker attaches them as `data_drive`, `data_drive_1`, etc. QEMU uses additi
 
 ### Snapshot types
 
-When you create a snapshot you can choose how much of the disk to store with `--snapshot-type` (CLI) or `snapshot_type=` (SDK):
+When you create a snapshot, `--snapshot-type` in the CLI or `snapshot_type=` in
+the SDK controls both how the disk is stored and whether the sandbox's memory is
+saved:
 
-- **`full`** (default): a complete, self-contained copy of the disk. It restores on its own even if the original base image is gone — the safest, most portable choice, and the right default for everyday use.
-- **`diff`**: stores only what changed since the shared base image, so it takes far less space. On QEMU the snapshot keeps the thin qcow2 overlay; on Firecracker the disk is cloned with a copy-on-write reflink on filesystems that support it (btrfs, XFS, ZFS, APFS), falling back to a full copy elsewhere. The trade-off: a diff snapshot needs its base image to still be present to restore. Best for production systems that take many snapshots and keep their base images in place.
+- **`full`** (default): saves the sandbox's memory and a complete, self-contained copy of the disk. It restores on its own even if the original base image is gone — the safest, most portable choice, and the right default for everyday use.
+- **`diff`**: saves the sandbox's memory but stores only disk changes since the shared base image, so it takes far less space. On QEMU the snapshot keeps the thin qcow2 overlay; on Firecracker the disk is cloned with a copy-on-write reflink on filesystems that support it (btrfs, XFS, ZFS, APFS), falling back to a full copy elsewhere. The trade-off: a diff snapshot needs its base image to still be present to restore. Best for production systems that take many snapshots and keep their base images in place.
 - **`disk`**: stores a self-contained disk without guest memory. Restoring it boots the guest fresh instead of resuming the exact running state.
 
-On Firecracker the VM state and memory files are always captured in full; `diff` only changes how the disk is stored.
+On Firecracker, `full` and `diff` always save the complete sandbox state and
+memory; `diff` changes only how the disk is stored.
 
 ### Keep a running QEMU sandbox available
 
@@ -88,6 +91,10 @@ A normal snapshot may briefly pause a running sandbox. For a QEMU disk snapshot,
 `--live-only` creates the standalone disk copy while the sandbox keeps running.
 If the installed QEMU version cannot do that, the command fails instead of
 silently falling back to a pause.
+
+`--resume-source` or `resume_source=True` controls the sandbox's state after
+capture. It does not prevent a regular snapshot from pausing. Use `--live-only`
+when the sandbox must remain available throughout capture.
 
 ```bash
 smolvm sandbox snapshot create my-sandbox \
