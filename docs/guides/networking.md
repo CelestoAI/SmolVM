@@ -10,7 +10,7 @@ If a service listens on port 3000 in sandbox `demo`, share it locally:
 smolvm sandbox port expose demo 3000
 ```
 
-Use the returned host port in your browser or tool. `smolvm sandbox port list demo` shows active mappings, and `smolvm sandbox port close demo HOST_PORT:3000` removes one.
+Use the returned host port in your browser or tool. `smolvm sandbox port list demo` shows active mappings. In `smolvm sandbox port close demo HOST_PORT:3000`, replace `HOST_PORT` with the returned host port—for example, `smolvm sandbox port close demo 49152:3000`.
 
 ## Limit outbound domains in Python
 

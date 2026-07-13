@@ -14,6 +14,7 @@
 
 """Tests for SmolVM CLI commands."""
 
+import ast
 import json
 import os
 from datetime import datetime, timezone
@@ -23,6 +24,8 @@ from unittest.mock import ANY, MagicMock, patch
 
 import click
 import pytest
+from rich.panel import Panel
+from rich.text import Text
 
 from smolvm.cli.main import (
     DASHBOARD_ALLOW_BETA_ENV,
@@ -1458,6 +1461,52 @@ class TestCliWindowsBuildImage:
         assert "smolvm sandbox create --os windows" not in out_text
         assert 'ssh_password="<hidden>"' in out_text
         assert 'ssh_password="smolvm"' not in out_text
+
+    @pytest.mark.parametrize("username", [r"DOMAIN\user", 'name"quoted'])
+    @patch("smolvm.cli.main.console_stdout")
+    @patch("smolvm.windows.WindowsImageBuilder")
+    def test_build_image_python_snippet_preserves_username(
+        self,
+        mock_builder_cls: MagicMock,
+        mock_console_stdout: MagicMock,
+        tmp_path: Path,
+        username: str,
+    ) -> None:
+        """The displayed Python snippet must preserve unusual Windows usernames."""
+        win = tmp_path / "Win11.iso"
+        virtio = tmp_path / "virtio-win.iso"
+        output = tmp_path / "out.qcow2"
+        win.touch()
+        virtio.touch()
+        mock_builder_cls.return_value.build.return_value = output
+
+        ret = main(
+            [
+                "windows",
+                "build-image",
+                "--iso",
+                str(win),
+                "--virtio-win-iso",
+                str(virtio),
+                "--output",
+                str(output),
+                "--username",
+                username,
+            ]
+        )
+
+        assert ret == 0
+        panel = mock_console_stdout.return_value.print.call_args.args[0]
+        assert isinstance(panel, Panel)
+        assert isinstance(panel.renderable, str)
+        rendered = Text.from_markup(panel.renderable).plain
+        snippet = next(line.strip() for line in rendered.splitlines() if "SmolVM(" in line)
+        expression = ast.parse(snippet, mode="eval").body
+        assert isinstance(expression, ast.Call)
+        ssh_user = next(
+            keyword.value for keyword in expression.keywords if keyword.arg == "ssh_user"
+        )
+        assert ast.literal_eval(ssh_user) == username
 
     @patch("smolvm.windows.WindowsImageBuilder")
     def test_build_image_json_mode_emits_envelope(
