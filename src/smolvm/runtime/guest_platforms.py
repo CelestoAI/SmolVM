@@ -173,8 +173,8 @@ identical QEMU argv to the pre-refactor ``_start_qemu`` when fed through
 # the VARS file is the NVRAM template with Microsoft Secure Boot keys
 # pre-enrolled (so Windows boot manager passes Secure Boot verification).
 #
-# Sources for paths: docs/deep-dive/windows-guest-qemu.md §4 ("Firmware:
-# split OVMF + Microsoft-keys VARS + SMM") — distro install paths table.
+# Supported workflow: docs/guides/windows.md. The candidate paths below follow
+# the package layouts used by the listed operating systems.
 _X86_64_OVMF_CANDIDATE_PAIRS: tuple[tuple[str, str], ...] = (
     # Debian / Ubuntu — ovmf package, 4 MiB Secure Boot build
     (
@@ -255,8 +255,8 @@ def _x86_64_ovmf_install_hint() -> str:
 #
 # This is the convergent baseline across QEMU upstream, libvirt's
 # <hyperv mode='passthrough'/>, Proxmox's Windows-OS-type default, and
-# Red Hat's RHEL Windows-guest guide. See docs/deep-dive/windows-guest-
-# qemu.md §2 for the per-flag rationale.
+# Red Hat's RHEL Windows-guest guide. The supported SmolVM workflow is
+# documented in docs/guides/windows.md.
 _WINDOWS_HV_FLAGS: tuple[str, ...] = (
     "hv_relaxed",
     "hv_vapic",
@@ -313,7 +313,7 @@ def _build_windows_spec(*, host_system: str, arch: str) -> GuestPlatformSpec:
     Raises:
         NotImplementedError: When the host is non-Linux (macOS host +
             Windows guest requires HVF for x86_64, which doesn't exist —
-            see docs/deep-dive/windows-guest-qemu.md §5 "macOS caveat").
+            see docs/guides/windows.md).
         NotImplementedError: When the host arch isn't x86_64 — Windows
             ARM64 under QEMU on Apple Silicon is theoretically possible
             but out of Phase 1 scope.
@@ -324,7 +324,7 @@ def _build_windows_spec(*, host_system: str, arch: str) -> GuestPlatformSpec:
             "Windows guests are only supported on Linux hosts in this release. "
             "macOS host + Windows guest needs HVF for x86_64 (doesn't exist), "
             "or Windows-on-ARM under HVF (out of scope). "
-            "See docs/deep-dive/windows-guest-qemu.md §5."
+            "See docs/guides/windows.md."
         )
     arch_lower = arch.lower()
     if arch_lower not in {"x86_64", "amd64"}:
