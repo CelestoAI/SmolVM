@@ -5,7 +5,7 @@ A browser sandbox runs Chromium in a disposable sandbox. Use it when an agent ne
 ## Start and open a browser
 
 ```bash
-smolvm browser start --session-id research
+smolvm browser start --session-id research --live
 smolvm browser open research
 ```
 
@@ -34,6 +34,14 @@ smolvm browser start --profile-mode persistent --profile-id work
 Use `--live` when you need the interactive display URLs, and `--record-video` when you need a recording. Browser downloads are enabled unless you pass `--no-downloads`.
 
 ## Use it from Python
+
+Install Playwright on your machine before using the Python browser connection:
+
+```bash
+pip install playwright
+```
+
+Then connect to Chromium running inside the sandbox:
 
 ```python
 from smolvm import SmolVM

@@ -1452,7 +1452,10 @@ class TestCliWindowsBuildImage:
         # Success panel renders with its title.
         out_text = capsys.readouterr().out
         assert "Windows image ready" in out_text
-        # Password is never leaked in the success panel.
+        # The panel shows the working Python path, not the CLI path that cannot
+        # accept Windows login credentials. The password is never leaked.
+        assert 'SmolVM(os="windows"' in out_text
+        assert "smolvm sandbox create --os windows" not in out_text
         assert 'ssh_password="<hidden>"' in out_text
         assert 'ssh_password="smolvm"' not in out_text
 

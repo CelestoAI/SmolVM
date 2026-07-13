@@ -27,6 +27,6 @@ Use `"*"` to allow all domains, which is the default. Entries may be hostnames o
 
 ## Current limits
 
-Outbound-domain controls use Firecracker's host networking rules. They do not apply to QEMU user-mode networking, libkrun, or Windows guests. Treat an allow-list as a network control, not as a complete security boundary for untrusted code.
+Outbound-domain controls require host TAP networking: Firecracker uses it by default, and custom QEMU configurations can opt in with `VMConfig.qemu_network="tap"`. They do not apply to QEMU user-mode networking, libkrun, or Windows guests. Treat an allow-list as a network control, not as a complete security boundary for untrusted code.
 
-**Implementation notes:** the public settings and validation are in [`src/smolvm/types.py`](../../src/smolvm/types.py), host rules are applied in [`src/smolvm/host/network.py`](../../src/smolvm/host/network.py), and behavior is covered by [`tests/test_internet_settings.py`](../../tests/test_internet_settings.py) and [`tests/test_network.py`](../../tests/test_network.py).
+**Implementation notes:** the public settings and validation are in [`src/smolvm/types.py`](../../src/smolvm/types.py), backend networking selection is in [`src/smolvm/vm.py`](../../src/smolvm/vm.py), and host rules are applied in [`src/smolvm/host/network.py`](../../src/smolvm/host/network.py). Behavior is covered by [`tests/test_internet_settings.py`](../../tests/test_internet_settings.py) and [`tests/test_network.py`](../../tests/test_network.py).

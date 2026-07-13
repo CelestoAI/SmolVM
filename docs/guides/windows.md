@@ -18,9 +18,22 @@ The build is unattended and can take a while. The resulting `win11.qcow2` is the
 
 ## Start a Windows sandbox
 
-```bash
-smolvm sandbox create --name windows-demo --os windows --image ./win11.qcow2 --backend qemu
+Use Python so you can provide the username and password chosen while building the image:
+
+```python
+from smolvm import SmolVM
+
+with SmolVM(
+    os="windows",
+    image="./win11.qcow2",
+    ssh_user="smolvm",
+    ssh_password="choose-a-strong-password",
+) as vm:
+    result = vm.run("Get-ComputerInfo | Select-Object WindowsProductName")
+    print(result.stdout)
 ```
+
+The generic `smolvm sandbox create` command does not currently accept Windows login credentials, so it cannot complete the readiness check for this password-based image ([CLI options](../../src/smolvm/cli/commands/app.py), [image configuration](../../src/smolvm/facade.py)).
 
 Windows guests are currently supported on Linux x86_64 hosts and use SSH for host-to-guest control. They do not support workspace mounts, outbound-domain controls, or snapshots.
 
