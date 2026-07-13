@@ -34,4 +34,4 @@ Presets copy only the configuration they need where possible. Review what you pu
 
 ## Implementation notes
 
-The command registry is in [`src/smolvm/presets/__init__.py`](../../src/smolvm/presets/__init__.py). Each preset declares its installer, forwarded environment variables, and copied files: [Codex](../../src/smolvm/presets/codex.py), [Claude Code](../../src/smolvm/presets/claude_code.py), [Pi](../../src/smolvm/presets/pi.py), and [OpenClaw](../../src/smolvm/presets/openclaw.py). Preset behavior is covered by [`tests/test_presets.py`](../../tests/test_presets.py).
+The command registry is in [`src/smolvm/presets/__init__.py`](../../src/smolvm/presets/__init__.py). Each preset declares its installer, forwarded environment variables, and copied files: [Codex](../../src/smolvm/presets/codex.py), [Claude Code](../../src/smolvm/presets/claude_code.py), [Pi](../../src/smolvm/presets/pi.py), [Hermes](../../src/smolvm/presets/hermes.py), and [OpenClaw](../../src/smolvm/presets/openclaw.py). Preset behavior, including [Hermes coverage](../../tests/test_presets.py#L470-L502), is in [`tests/test_presets.py`](../../tests/test_presets.py).

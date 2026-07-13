@@ -27,7 +27,7 @@ This flow is implemented primarily by [`SmolVM`](../../src/smolvm/facade.py) and
 
 ## Backend and control-channel selection
 
-`auto` chooses QEMU on macOS and Firecracker elsewhere. The control-channel resolver chooses supported vsock when available, otherwise SSH; Windows uses SSH. These are current implementation details, so update this document with [`runtime/backends.py`](../../src/smolvm/runtime/backends.py) and [`comm/select.py`](../../src/smolvm/comm/select.py) whenever selection rules change.
+`auto` chooses QEMU on macOS and Firecracker elsewhere. Automatic control-channel selection uses supported vsock when available and SSH otherwise; Windows guests use SSH in automatic mode. An explicit vsock request for Windows is rejected with `VsockNotSupportedError` instead of falling back to SSH. These are current implementation details, so update this document with [`runtime/backends.py`](../../src/smolvm/runtime/backends.py) and [`comm/select.py`](../../src/smolvm/comm/select.py) whenever selection rules change.
 
 ## How to change behavior safely
 

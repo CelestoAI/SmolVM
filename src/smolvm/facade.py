@@ -135,6 +135,10 @@ _AUTO_CONFIG_DEFAULT_DISK_SIZE_MIB = {
     # WINDOWS: not used. The Windows path always supplies a pre-built
     # qcow2 in Phase 1, so we don't size or grow a disk for it.
 }
+_WINDOWS_IMAGE_REQUIRED_MESSAGE = (
+    "Windows guests need a pre-installed disk image; pass "
+    'image="/path/to/win11.qcow2" (see docs/guides/windows.md to build one).'
+)
 
 
 def _vsock_not_supported_message(vm_id: str, error: VsockNotSupportedError) -> str:
@@ -569,11 +573,7 @@ def _build_auto_config(
         # Auto-config builds a Linux SSH-ready VM from a built or downloaded
         # base image; Windows has no equivalent path because we don't ship a
         # base qcow2. The user must supply their own pre-installed image.
-        raise ValueError(
-            "Windows guests need a pre-installed disk image; pass "
-            'image="/path/to/win11.qcow2" (see '
-            "docs/guides/windows.md to build one)."
-        )
+        raise ValueError(_WINDOWS_IMAGE_REQUIRED_MESSAGE)
     resolved_ssh_key_path, public_key_path = _resolve_auto_config_public_key(ssh_key_path)
     public_key_value = public_key_path.read_text().strip()
 
@@ -1001,11 +1001,7 @@ class SmolVM:
         # before we burn time materializing rootfs / firmware.
         if os is not None and _normalize_guest_os(os) is GuestOS.WINDOWS:
             if image is None:
-                raise ValueError(
-                    "Windows guests need a pre-installed disk image; pass "
-                    'image="/path/to/win11.qcow2" (see '
-                    "docs/guides/windows.md to build one)."
-                )
+                raise ValueError(_WINDOWS_IMAGE_REQUIRED_MESSAGE)
             if mounts:
                 raise ValueError(
                     "Workspace mounts (mounts=) are not yet supported for "
