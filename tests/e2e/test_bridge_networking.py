@@ -131,7 +131,7 @@ def _wait_for_guest_network_init(sandbox: SmolVM, *, timeout: float = 30.0) -> N
     """Wait until PID 1 finishes its initial DHCP/static-network attempt."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        result = sandbox.run("grep -q 'stage=net-ready' /var/log/smolvm-boot.log")
+        result = sandbox.run("grep -q 'stage=net-config-done' /var/log/smolvm-boot.log")
         if result.exit_code == 0:
             return
         time.sleep(0.25)

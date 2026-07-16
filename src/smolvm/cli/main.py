@@ -144,6 +144,7 @@ class CreatePayload(TypedDict):
 
     vm: CreateVmPayload
     next: CreateNextPayload
+    warnings: list[str]
 
 
 class StartPresetPayload(TypedDict):
@@ -785,6 +786,8 @@ def _render_create_result(data: CreatePayload) -> None:
     if next_step["ssh_command"] is not None:
         console.print(f"SSH:  [bold]{next_step['ssh_command']}[/bold]")
     console.print(f"Info: [bold]{next_step['info_command']}[/bold]")
+    for warning in data["warnings"]:
+        console.print(f"Warning: {warning}", style="yellow")
 
 
 def _build_and_boot_with_progress(
@@ -1200,6 +1203,14 @@ def _run_create(args: SimpleNamespace) -> int:
                 "ssh_command": (None if is_bridge else f"smolvm sandbox ssh {vm.vm_id}"),
                 "info_command": f"smolvm sandbox info {vm.vm_id}",
             },
+            "warnings": (
+                [
+                    f"The guest manages its own network address; if it did not receive one, "
+                    f"run 'smolvm sandbox shell {vm.vm_id}' to configure it."
+                ]
+                if is_bridge
+                else []
+            ),
         }
 
         if args.json:

@@ -983,6 +983,7 @@ class TestCliCreate:
         assert payload["data"]["next"]["shell_command"] == "smolvm sandbox shell project-spacex"
         assert payload["data"]["next"]["ssh_command"] == "smolvm sandbox ssh project-spacex"
         assert payload["data"]["next"]["info_command"] == "smolvm sandbox info project-spacex"
+        assert payload["data"]["warnings"] == []
 
     @patch("smolvm.facade._build_auto_config")
     @patch("smolvm.facade.SmolVM")
@@ -1018,6 +1019,7 @@ class TestCliCreate:
         payload = json.loads(capsys.readouterr().out)
         assert payload["data"]["next"]["shell_command"] == ("smolvm sandbox shell bridge-demo")
         assert payload["data"]["next"]["ssh_command"] is None
+        assert "smolvm sandbox shell bridge-demo" in payload["data"]["warnings"][0]
 
     @patch("smolvm.facade.platform.machine", return_value="x86_64")
     @patch("smolvm.facade.build_seed_iso")

@@ -1666,7 +1666,7 @@ configure_guest_managed_network() {{
     # inside the image. The interface name is passed as its first argument.
     if [ -x /etc/smolvm/network.sh ]; then
         /etc/smolvm/network.sh eth0
-        return
+        return $?
     fi
 
     # Respect a conventional interfaces file when this image ships ifup.
@@ -1686,13 +1686,17 @@ configure_guest_managed_network() {{
     fi
 
     echo "SmolVM init: eth0 has no guest network configuration; add /etc/smolvm/network.sh" >&2
+    return 1
 }}
 
 if [ -n "$GUEST_MANAGED" ]; then
-    configure_guest_managed_network
+    if configure_guest_managed_network; then
+        log_ts "net-ready"
+    else
+        log_ts "net-config-failed"
+    fi
     hostname {custom_hostname}
     log_ts "net-config-done"
-    log_ts "net-ready"
 else
     if [ -n "$IP_CONFIG" ]; then
         IP_FIELDS=$(echo "$IP_CONFIG" | cut -d= -f2-)

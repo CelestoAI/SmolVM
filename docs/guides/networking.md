@@ -16,7 +16,7 @@ Use the returned host port in your browser or tool. `smolvm sandbox port list de
 
 On Linux, a sandbox can appear as a separate computer on a network you already configured. This advanced mode gives the sandbox its own network identity instead of placing it behind SmolVM's private network.
 
-The host must already have a Linux bridge connected to the target network. The bridge and its member interfaces must have no host addresses, including automatic IPv6 addresses. SmolVM checks this setup but never creates, reconfigures, or deletes the bridge.
+The host must already have a Linux bridge, a host network interface that joins several connections into one network. It must be connected to the target network, and neither the bridge nor its member interfaces may have host addresses, including automatic IPv6 addresses. SmolVM checks this setup but never creates, reconfigures, or deletes the bridge.
 
 Check bridge `br10` before creating a sandbox:
 
@@ -28,10 +28,12 @@ smolvm bridge check br10
 Create a bridged sandbox only after that check passes:
 
 ```bash
-smolvm sandbox create --name demo --network bridge --bridge br10
+smolvm sandbox create --name demo --os alpine --network bridge --bridge br10
 ```
 
-SmolVM-provided images request an address with DHCP from inside the guest. To use a static address instead, add an executable `/etc/smolvm/network.sh` script inside the guest disk. SmolVM passes `eth0` as the script's first argument each time the guest boots. You can open the guest before it has an address because `smolvm sandbox shell demo` uses a direct host-to-guest control channel rather than the network.
+The current SmolVM Alpine image automatically asks the network for an address using DHCP (Dynamic Host Configuration Protocol). To use a static address instead, add an executable `/etc/smolvm/network.sh` script inside the guest disk. SmolVM passes `eth0` as the script's first argument each time the guest boots. You can open the guest before it has an address because `smolvm sandbox shell demo` uses a direct host-to-guest control channel rather than the network.
+
+Custom images must understand the `smolvm.network=guest` boot setting and configure `eth0`. When creating `VMConfig` directly for a compatible image, set `guest_managed_networking=True`. SmolVM rejects older published or custom images instead of starting them without working bridge configuration.
 
 Bridge mode deliberately does not provide SmolVM NAT, port exposure, SSH from the host, workspace mounts, or outbound-domain controls. Connect to guest services from the bridged network, and use `smolvm sandbox shell demo` for host administration.
 

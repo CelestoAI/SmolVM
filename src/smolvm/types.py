@@ -428,6 +428,10 @@ class VMConfig(BaseModel):
             ``smolvm.authorized_key_b64=<base64>`` and read by ``/init``. Use
             this for published pre-built images that don't bake keys at build
             time, so each VM gets the launching user's key without rebuilding.
+        guest_managed_networking: Whether the guest image understands
+            ``smolvm.network=guest`` and can configure its own interface.
+            Required for bridge mode so older cached or custom images cannot
+            silently boot without usable networking.
     """
 
     vm_id: Annotated[
@@ -463,6 +467,7 @@ class VMConfig(BaseModel):
     internet_settings: InternetSettings | None = None
     workspace_mounts: list[WorkspaceMount] = []
     ssh_public_key: str | None = None
+    guest_managed_networking: bool = False
     network_attachment: NetworkAttachmentConfig = Field(default_factory=NetworkAttachmentConfig)
 
     @property
@@ -541,6 +546,12 @@ class VMConfig(BaseModel):
         """Reject feature combinations not supported by bridge mode in v1."""
         if self.network_attachment.mode != "bridge":
             return self
+        if not self.guest_managed_networking:
+            raise ValueError(
+                "Bridge mode requires an image that supports guest-managed networking; "
+                "use a current SmolVM Alpine image or set guest_managed_networking=True "
+                "for a compatible custom image."
+            )
         if self.comm_channel == "ssh":
             raise ValueError(
                 "Bridge mode requires vsock for host-guest communication; "

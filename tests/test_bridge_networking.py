@@ -38,6 +38,8 @@ def _make_vm_config(
     }
     if network_attachment is not None:
         kwargs["network_attachment"] = network_attachment
+        if network_attachment.mode == "bridge":
+            kwargs["guest_managed_networking"] = True
     if comm_channel is not None:
         kwargs["comm_channel"] = comm_channel
     if workspace_mounts is not None:
@@ -69,6 +71,8 @@ def _make_vm_config_skip_paths(
             "mode": network_attachment.mode,
             "bridge": network_attachment.bridge,
         }
+        if network_attachment.mode == "bridge":
+            data["guest_managed_networking"] = True
     if comm_channel is not None:
         data["comm_channel"] = comm_channel
     if workspace_mounts is not None:
@@ -294,11 +298,65 @@ class TestBridgeInspection:
         nm = NetworkManager()
         with (
             patch("platform.system", return_value="Linux"),
-            patch("smolvm.host.network.run_command", side_effect=SmolVMError("not found")),
+            patch(
+                "smolvm.host.network.run_command",
+                side_effect=SmolVMError('Device "br10" does not exist.'),
+            ),
         ):
             result = nm.inspect_bridge("br10")
         assert result.ok is False
         assert "does not exist" in result.reason
+
+    def test_inspect_bridge_propagates_link_probe_failure(self) -> None:
+        from smolvm.exceptions import SmolVMError
+        from smolvm.host.network import NetworkManager
+
+        nm = NetworkManager()
+        with (
+            patch("platform.system", return_value="Linux"),
+            patch(
+                "smolvm.host.network.run_command",
+                side_effect=SmolVMError("ip command timed out"),
+            ),
+            pytest.raises(SmolVMError, match="timed out"),
+        ):
+            nm.inspect_bridge("br10")
+
+    def test_inspect_bridge_propagates_member_probe_failure(self) -> None:
+        from smolvm.exceptions import SmolVMError
+        from smolvm.host.network import NetworkManager
+
+        nm = NetworkManager()
+        bridge = MagicMock()
+        bridge.stdout = json.dumps([{"linkinfo": {"info_kind": "bridge"}, "flags": ["UP"]}])
+        with (
+            patch("platform.system", return_value="Linux"),
+            patch(
+                "smolvm.host.network.run_command",
+                side_effect=[bridge, SmolVMError("member probe failed")],
+            ),
+            pytest.raises(SmolVMError, match="member probe failed"),
+        ):
+            nm.inspect_bridge("br10")
+
+    def test_inspect_bridge_propagates_address_probe_failure(self) -> None:
+        from smolvm.exceptions import SmolVMError
+        from smolvm.host.network import NetworkManager
+
+        nm = NetworkManager()
+        bridge = MagicMock()
+        bridge.stdout = json.dumps([{"linkinfo": {"info_kind": "bridge"}, "flags": ["UP"]}])
+        members = MagicMock()
+        members.stdout = json.dumps([{"ifname": "eno1"}])
+        with (
+            patch("platform.system", return_value="Linux"),
+            patch(
+                "smolvm.host.network.run_command",
+                side_effect=[bridge, members, SmolVMError("address probe failed")],
+            ),
+            pytest.raises(SmolVMError, match="address probe failed"),
+        ):
+            nm.inspect_bridge("br10")
 
     def test_inspect_bridge_wrong_type(self) -> None:
         from smolvm.host.network import NetworkManager
@@ -789,6 +847,30 @@ class TestBridgeLifecycle:
             network_attachment=NetworkAttachmentConfig(mode="bridge", bridge="br10"),
         ).model_copy(update={"backend": "qemu", "disk_mode": "shared"})
 
+    def test_create_rejects_image_without_guest_network_support_before_mutation(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from smolvm.comm.select import ChannelResolution
+        from smolvm.exceptions import SmolVMError
+
+        manager, network = self._manager(tmp_path)
+        config = self._config(tmp_path, comm_channel="vsock").model_copy(
+            update={"guest_managed_networking": False}
+        )
+        with (
+            patch("platform.system", return_value="Linux"),
+            patch.object(
+                manager,
+                "_resolve_control_channel_for_config",
+                return_value=ChannelResolution(kind="vsock"),
+            ),
+            pytest.raises(SmolVMError, match="cannot configure bridged networking"),
+        ):
+            manager.create(config)
+
+        network.prepare_bridged_tap.assert_not_called()
+
     def test_create_requires_resolved_vsock_before_network_mutation(self, tmp_path: Path) -> None:
         from smolvm.comm.select import ChannelResolution
         from smolvm.exceptions import SmolVMError
@@ -926,6 +1008,36 @@ class TestBridgeLifecycle:
         self,
         tmp_path: Path,
     ) -> None:
+        from smolvm.exceptions import BridgeTapOwnershipError
+
+        manager, network = self._manager(tmp_path)
+        config = self._config(tmp_path, comm_channel="vsock")
+        manager.state.create_vm(config)
+        tap_name = manager.state.reserve_tap_name(
+            config.vm_id,
+            mode="bridge",
+            bridge_name="br10",
+        )
+        manager.state.update_vm(
+            config.vm_id,
+            network=NetworkConfig(
+                mode="bridge",
+                bridge="br10",
+                tap_device=tap_name,
+                guest_mac="02:00:00:00:00:01",
+            ),
+        )
+        network.cleanup_bridged_tap.side_effect = BridgeTapOwnershipError("foreign interface")
+
+        manager._cleanup_resources(config.vm_id)
+
+        network.cleanup_bridged_tap.assert_called_once_with(tap_name, config.vm_id)
+        assert manager.state.get_tap_allocation(config.vm_id) is None
+
+    def test_delete_retains_vm_and_reservation_when_owned_tap_cleanup_fails(
+        self,
+        tmp_path: Path,
+    ) -> None:
         from smolvm.exceptions import NetworkError
 
         manager, network = self._manager(tmp_path)
@@ -945,12 +1057,52 @@ class TestBridgeLifecycle:
                 guest_mac="02:00:00:00:00:01",
             ),
         )
-        network.cleanup_bridged_tap.side_effect = NetworkError("foreign interface")
+        network.cleanup_bridged_tap.side_effect = NetworkError("still busy")
 
-        manager._cleanup_resources(config.vm_id)
+        with pytest.raises(NetworkError, match="still busy"):
+            manager.delete(config.vm_id)
 
-        network.cleanup_bridged_tap.assert_called_once_with(tap_name, config.vm_id)
-        assert manager.state.get_tap_allocation(config.vm_id) is None
+        assert manager.state.get_vm(config.vm_id).vm_id == config.vm_id
+        assert manager.state.get_tap_allocation(config.vm_id) == (
+            tap_name,
+            "bridge",
+            "br10",
+        )
+
+    @pytest.mark.asyncio
+    async def test_async_delete_retains_reservation_when_owned_tap_cleanup_fails(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from smolvm.exceptions import NetworkError
+
+        manager, network = self._manager(tmp_path)
+        config = self._config(tmp_path, comm_channel="vsock")
+        manager.state.create_vm(config)
+        tap_name = manager.state.reserve_tap_name(
+            config.vm_id,
+            mode="bridge",
+            bridge_name="br10",
+        )
+        manager.state.update_vm(
+            config.vm_id,
+            network=NetworkConfig(
+                mode="bridge",
+                bridge="br10",
+                tap_device=tap_name,
+                guest_mac="02:00:00:00:00:01",
+            ),
+        )
+        network.async_cleanup_bridged_tap.side_effect = NetworkError("still busy")
+
+        with pytest.raises(NetworkError, match="still busy"):
+            await manager.async_delete(config.vm_id)
+
+        assert manager.state.get_tap_allocation(config.vm_id) == (
+            tap_name,
+            "bridge",
+            "br10",
+        )
 
     def test_manager_rejects_mount_added_after_model_validation(self, tmp_path: Path) -> None:
         from smolvm.comm.select import ChannelResolution

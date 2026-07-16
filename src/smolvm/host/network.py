@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import TypeVar
 from urllib.parse import urlparse
 
-from smolvm.exceptions import NetworkError, SmolVMError
+from smolvm.exceptions import BridgeTapOwnershipError, NetworkError, SmolVMError
 from smolvm.host._accel import HAS_NETLINK, network_native
 from smolvm.utils import async_run_command, run_command
 
@@ -2078,8 +2078,21 @@ class NetworkManager:
     # Bridge inspection and bridged TAP attachment
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _is_missing_interface_error(error: Exception) -> bool:
+        """Return whether iproute2 explicitly reported a missing interface."""
+        message = str(error).lower()
+        return any(
+            marker in message
+            for marker in (
+                "cannot find device",
+                "does not exist",
+                "no such device",
+            )
+        )
+
     def _get_link_info(self, link_name: str) -> dict[str, object] | None:
-        """Return detailed JSON metadata for one Linux network interface."""
+        """Return detailed JSON metadata, or None only for a missing interface."""
         import json
 
         try:
@@ -2087,8 +2100,10 @@ class NetworkManager:
                 ["ip", "-json", "-d", "link", "show", "dev", link_name],
                 use_sudo=False,
             )
-        except SmolVMError:
-            return None
+        except SmolVMError as exc:
+            if self._is_missing_interface_error(exc):
+                return None
+            raise
         links = json.loads(result.stdout)
         return links[0] if links else None
 
@@ -2109,7 +2124,10 @@ class NetworkManager:
             return BridgeInspection(
                 bridge_name=bridge_name,
                 ok=False,
-                reason="Bridged networking is only supported on Linux.",
+                reason=(
+                    "Bridged networking is only supported on Linux; run "
+                    "'smolvm sandbox create --network nat' instead."
+                ),
             )
 
         link_info = self._get_link_info(bridge_name)
@@ -2184,13 +2202,10 @@ class NetworkManager:
         """Return every interface currently attached to a bridge."""
         import json
 
-        try:
-            result = run_command(
-                ["ip", "-json", "link", "show", "master", bridge_name],
-                use_sudo=False,
-            )
-        except SmolVMError:
-            return []
+        result = run_command(
+            ["ip", "-json", "link", "show", "master", bridge_name],
+            use_sudo=False,
+        )
 
         links = json.loads(result.stdout)
         return [str(link["ifname"]) for link in links if link.get("ifname")]
@@ -2212,13 +2227,10 @@ class NetworkManager:
         """Return every IPv4 and IPv6 address, including link-local addresses."""
         import json
 
-        try:
-            result = run_command(
-                ["ip", "-json", "addr", "show", "dev", iface_name],
-                use_sudo=False,
-            )
-        except SmolVMError:
-            return []
+        result = run_command(
+            ["ip", "-json", "addr", "show", "dev", iface_name],
+            use_sudo=False,
+        )
 
         info = json.loads(result.stdout)
         if not info:
@@ -2244,14 +2256,14 @@ class NetworkManager:
         kind = self._link_kind(link_info)
         tap_type = info_data.get("type") if isinstance(info_data, dict) else None
         if kind != "tun" or tap_type != "tap":
-            raise NetworkError(
+            raise BridgeTapOwnershipError(
                 f"Network interface '{tap_name}' already exists and is not a SmolVM TAP; "
                 f"remove the conflicting interface, then retry sandbox '{vm_id}'."
             )
 
         expected_alias = self._bridge_tap_alias(vm_id)
         if link_info.get("ifalias") != expected_alias:
-            raise NetworkError(
+            raise BridgeTapOwnershipError(
                 f"Network interface '{tap_name}' already exists but does not belong to sandbox "
                 f"'{vm_id}'; remove the conflicting interface, then retry."
             )

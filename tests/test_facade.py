@@ -506,6 +506,7 @@ class TestVMInit:
 
         assert config.vm_id == "project-spacex"
         assert ssh_key_path == str(private_key)
+        assert config.guest_managed_networking is True
         assert "init=/init" in config.boot_args
         mock_builder.build_alpine_ssh_key.assert_called_once()
 
@@ -553,6 +554,7 @@ class TestVMInit:
         assert config.guest_os is GuestOS.UBUNTU
         assert config.initrd_path is None
         assert config.ssh_capable is True
+        assert config.guest_managed_networking is False
         assert config.disk_size_mib == 8192
         assert config.grow_filesystem is True
         assert "init=/init" in config.boot_args

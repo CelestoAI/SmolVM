@@ -689,6 +689,7 @@ def _build_auto_config(
         backend=resolved_backend,
         qemu_machine=qemu_machine,
         ssh_public_key=public_key_value,
+        guest_managed_networking=True,
     )
     logger.info(
         "Auto-configured VM: %s (os=%s, backend=%s)",
@@ -2385,8 +2386,9 @@ class SmolVM:
         if self._info.network.mode == "bridge":
             raise SmolVMError(
                 f"Bridged sandbox '{self._vm_id}' is already connected directly to its "
-                "network; connect to the guest's address there, or recreate it with "
-                "'--network nat' to use 'smolvm sandbox port expose'.",
+                f"network; run 'smolvm sandbox delete {self._vm_id}', then "
+                f"'smolvm sandbox create --name {self._vm_id} --network nat' to use port "
+                "exposure.",
                 {"vm_id": self._vm_id, "network_mode": "bridge"},
             )
         if guest_port < 1 or guest_port > 65535:

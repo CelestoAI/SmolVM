@@ -43,6 +43,7 @@ from uuid import uuid4
 
 from smolvm.comm.select import ChannelResolution, VsockNotSupportedError, resolve_comm_channel
 from smolvm.exceptions import (
+    BridgeTapOwnershipError,
     NetworkError,
     SmolVMError,
     SnapshotAlreadyExistsError,
@@ -1598,16 +1599,29 @@ class SmolVMManager:
         """Validate every bridge invariant before changing host networking."""
         import platform
 
+        nat_command = f"smolvm sandbox create --name {config.vm_id} --network nat"
         if platform.system() != "Linux":
             raise SmolVMError(
-                f"Bridged networking is unavailable on {platform.system()}; recreate sandbox "
-                f"'{config.vm_id}' with '--network nat'.",
+                f"Bridged networking is unavailable on {platform.system()}; run '{nat_command}'.",
                 {"vm_id": config.vm_id, "host_os": platform.system()},
             )
         if backend not in (BACKEND_FIRECRACKER, BACKEND_QEMU):
             raise SmolVMError(
-                f"Bridged networking is unavailable with backend '{backend}'; recreate sandbox "
-                f"'{config.vm_id}' with '--network nat'.",
+                f"Bridged networking is unavailable with backend '{backend}'; run '{nat_command}'.",
+                {"vm_id": config.vm_id, "backend": backend},
+            )
+        if config.guest_os is GuestOS.WINDOWS:
+            raise SmolVMError(
+                f"Bridged networking is unavailable for Windows sandbox '{config.vm_id}'; "
+                f"run '{nat_command}'.",
+                {"vm_id": config.vm_id, "guest_os": config.guest_os.value},
+            )
+        if not config.guest_managed_networking:
+            bridge_name = config.network_attachment.bridge
+            raise SmolVMError(
+                f"The image for sandbox '{config.vm_id}' cannot configure bridged networking; "
+                f"run 'smolvm sandbox create --name {config.vm_id} --os alpine --backend "
+                f"{backend} --network bridge --bridge {bridge_name}'.",
                 {"vm_id": config.vm_id, "backend": backend},
             )
 
@@ -1617,25 +1631,19 @@ class SmolVMManager:
             raise SmolVMError(
                 f"Bridged sandbox '{config.vm_id}' needs fast shell support; run "
                 f"'smolvm sandbox create --name {config.vm_id} --network bridge "
-                f"--bridge {bridge_name} --comm-channel vsock', or use '--network nat'.",
+                f"--bridge {bridge_name} --comm-channel vsock', or run '{nat_command}'.",
                 {"vm_id": config.vm_id, "resolved_channel": resolution.kind},
-            )
-        if config.guest_os is GuestOS.WINDOWS:
-            raise SmolVMError(
-                f"Bridged networking is unavailable for Windows sandbox '{config.vm_id}'; "
-                "recreate it with '--network nat'.",
-                {"vm_id": config.vm_id, "guest_os": config.guest_os.value},
             )
         if config.workspace_mounts:
             raise SmolVMError(
-                f"Bridged sandbox '{config.vm_id}' cannot share host folders yet; remove "
-                "'--mount', or recreate it with '--network nat'.",
+                f"Bridged sandbox '{config.vm_id}' cannot share host folders yet; run "
+                f"'{nat_command}'.",
                 {"vm_id": config.vm_id},
             )
         if config.port_forwards:
             raise SmolVMError(
                 f"Bridged sandbox '{config.vm_id}' cannot use launch-time port forwarding; "
-                "remove the forwards and connect to its address on the bridged network.",
+                f"run '{nat_command}'.",
                 {"vm_id": config.vm_id},
             )
         if (
@@ -1643,16 +1651,15 @@ class SmolVMManager:
             and not config.internet_settings.is_allow_all_domains
         ):
             raise SmolVMError(
-                f"Domain controls do not apply to bridged sandbox '{config.vm_id}'; remove the "
-                "domain list, or recreate it with '--network nat'.",
+                f"Domain controls do not apply to bridged sandbox '{config.vm_id}'; run "
+                f"'{nat_command}'.",
                 {"vm_id": config.vm_id},
             )
 
         bridge_name = config.network_attachment.bridge
         if not bridge_name:
             raise SmolVMError(
-                f"Bridged sandbox '{config.vm_id}' has no bridge; recreate it with "
-                f"'smolvm sandbox create --name {config.vm_id} --network bridge --bridge BRIDGE'.",
+                f"Bridged sandbox '{config.vm_id}' has no bridge; run '{nat_command}'.",
                 {"vm_id": config.vm_id},
             )
         inspection = self.network.inspect_bridge(bridge_name)
@@ -2740,8 +2747,18 @@ class SmolVMManager:
         if vm_info.status in (VMState.RUNNING, VMState.PAUSED):
             self.stop(vm_id)
 
-        # Cleanup all resources
-        self._cleanup_resources(vm_id)
+        # Cleanup all resources. Bridge deletion is strict so an owned host
+        # interface never outlives the state needed to retry its cleanup.
+        require_bridge_cleanup = (
+            vm_info.network is not None and vm_info.network.mode == "bridge"
+        ) or (
+            (tap_alloc := self.state.get_tap_allocation(vm_id)) is not None
+            and tap_alloc[1] == "bridge"
+        )
+        self._cleanup_resources(
+            vm_id,
+            require_bridge_cleanup=require_bridge_cleanup,
+        )
 
         # Delete from database
         self.state.delete_vm(vm_id)
@@ -3242,13 +3259,21 @@ class SmolVMManager:
         )
         return f"{args} {ip_arg}".strip()
 
-    def _cleanup_resources(self, vm_id: str, *, preserve_managed_disk: bool = False) -> None:
+    def _cleanup_resources(
+        self,
+        vm_id: str,
+        *,
+        preserve_managed_disk: bool = False,
+        require_bridge_cleanup: bool = False,
+    ) -> None:
         """Clean up resources for a VM.
 
         Args:
             vm_id: The VM identifier.
             preserve_managed_disk: Keep the managed disk during create rollback
                 when it existed before this create attempt.
+            require_bridge_cleanup: Abort deletion and retain state when an owned
+                bridge interface cannot be removed.
         """
         try:
             vm_info = None
@@ -3292,22 +3317,37 @@ class SmolVMManager:
             # Bridge mode: clean up TAP and TAP allocation only.
             # No NAT, route, SSH forward, or egress rules to remove.
             if is_bridge:
-                if tap_alloc:
-                    tap_device = tap_alloc[0]
+                tap_device = tap_alloc[0] if tap_alloc else None
+                if tap_device is None and vm_info is not None and vm_info.network is not None:
+                    tap_device = vm_info.network.tap_device
+                if tap_device:
                     try:
                         self.network.cleanup_bridged_tap(tap_device, vm_id)
-                    except Exception as exc:
-                        # A same-named foreign interface must survive cleanup,
-                        # but it must not prevent the sandbox's other resources
-                        # and persisted reservation from being removed.
+                    except BridgeTapOwnershipError as exc:
+                        # The reservation is stale and the foreign replacement
+                        # must survive. It is safe to forget only this stale name.
                         logger.warning(
-                            "Did not remove bridge interface %s for %s: %s",
+                            "Did not remove foreign bridge interface %s for %s: %s",
                             tap_device,
                             vm_id,
                             exc,
                         )
-                    finally:
-                        self.state.release_tap_name(vm_id)
+                        if tap_alloc:
+                            self.state.release_tap_name(vm_id)
+                    except Exception:
+                        # Keep both the VM row and allocation so a later delete
+                        # can retry ownership-checked cleanup.
+                        if require_bridge_cleanup:
+                            raise
+                        logger.warning(
+                            "Could not remove owned bridge interface %s for %s; "
+                            "retaining its reservation",
+                            tap_device,
+                            vm_id,
+                        )
+                    else:
+                        if tap_alloc:
+                            self.state.release_tap_name(vm_id)
             else:
                 # NAT mode cleanup
                 if uses_tap and ssh_host_port is not None and guest_ip:
@@ -3397,6 +3437,8 @@ class SmolVMManager:
 
         except Exception as e:
             logger.warning("Error during cleanup for %s: %s", vm_id, e)
+            if require_bridge_cleanup:
+                raise
 
     # ==================================================================
     # Async lifecycle methods
@@ -3734,7 +3776,16 @@ class SmolVMManager:
         if vm_info.status in (VMState.RUNNING, VMState.PAUSED):
             await self.async_stop(vm_id)
 
-        await self._async_cleanup_resources(vm_id)
+        require_bridge_cleanup = (
+            vm_info.network is not None and vm_info.network.mode == "bridge"
+        ) or (
+            (tap_alloc := self.state.get_tap_allocation(vm_id)) is not None
+            and tap_alloc[1] == "bridge"
+        )
+        await self._async_cleanup_resources(
+            vm_id,
+            require_bridge_cleanup=require_bridge_cleanup,
+        )
         self.state.delete_vm(vm_id)
         logger.info("VM deleted (async): %s", vm_id)
 
@@ -3876,6 +3927,7 @@ class SmolVMManager:
         vm_id: str,
         *,
         preserve_managed_disk: bool = False,
+        require_bridge_cleanup: bool = False,
     ) -> None:
         """Async version of :meth:`_cleanup_resources`."""
         try:
@@ -3913,19 +3965,33 @@ class SmolVMManager:
                 uses_tap = lease is not None or tap_alloc is not None
 
             if is_bridge:
-                if tap_alloc:
-                    tap_device = tap_alloc[0]
+                tap_device = tap_alloc[0] if tap_alloc else None
+                if tap_device is None and vm_info is not None and vm_info.network is not None:
+                    tap_device = vm_info.network.tap_device
+                if tap_device:
                     try:
                         await self.network.async_cleanup_bridged_tap(tap_device, vm_id)
-                    except Exception as exc:
+                    except BridgeTapOwnershipError as exc:
                         logger.warning(
-                            "Did not remove bridge interface %s for %s: %s",
+                            "Did not remove foreign bridge interface %s for %s: %s",
                             tap_device,
                             vm_id,
                             exc,
                         )
-                    finally:
-                        self.state.release_tap_name(vm_id)
+                        if tap_alloc:
+                            self.state.release_tap_name(vm_id)
+                    except Exception:
+                        if require_bridge_cleanup:
+                            raise
+                        logger.warning(
+                            "Could not remove owned bridge interface %s for %s; "
+                            "retaining its reservation",
+                            tap_device,
+                            vm_id,
+                        )
+                    else:
+                        if tap_alloc:
+                            self.state.release_tap_name(vm_id)
             else:
                 if uses_tap and ssh_host_port is not None and guest_ip:
                     with suppress(Exception):
@@ -4007,3 +4073,5 @@ class SmolVMManager:
 
         except Exception as e:
             logger.warning("Error during async cleanup for %s: %s", vm_id, e)
+            if require_bridge_cleanup:
+                raise

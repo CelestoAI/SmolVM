@@ -96,6 +96,12 @@ class NetworkError(SmolVMError):
     pass
 
 
+class BridgeTapOwnershipError(NetworkError):
+    """Raised when an existing interface is not owned by the expected sandbox."""
+
+    pass
+
+
 class HostError(SmolVMError):
     """Raised when host environment checks fail (KVM, dependencies, Firecracker)."""
 
