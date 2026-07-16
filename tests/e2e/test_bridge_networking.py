@@ -186,6 +186,7 @@ def test_bridge_connectivity_restart_restore_and_delete(
         assert sandbox.run("echo managed-over-vsock").stdout.strip() == "managed-over-vsock"
 
         configure = sandbox.run(
+            "mkdir -p /etc/smolvm\n"
             "cat > /etc/smolvm/network.sh <<'EOF'\n"
             "#!/bin/sh\n"
             'ip addr flush dev "$1"\n'
