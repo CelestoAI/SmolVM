@@ -64,6 +64,8 @@ def _make_vm_info(
         vm.network = MagicMock(spec=NetworkConfig)
         vm.network.guest_ip = guest_ip
         vm.network.ssh_host_port = ssh_host_port
+        vm.network.mode = "nat"
+        vm.network.bridge = None
     else:
         vm.network = None
     return vm
@@ -3156,6 +3158,8 @@ class TestCliInfo:
             vm.network = MagicMock(spec=NetworkConfig)
             vm.network.guest_ip = guest_ip
             vm.network.ssh_host_port = ssh_host_port
+            vm.network.mode = "nat"
+            vm.network.bridge = None
         else:
             vm.network = None
         return vm
@@ -3284,6 +3288,8 @@ class TestCliInfo:
             "memory": 1024,
             "memory_used": None,
             "disk_size": 3,
+            "network_mode": "nat",
+            "bridge": None,
         }
 
     def test_info_not_found(

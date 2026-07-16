@@ -177,7 +177,9 @@ def build_qemu_argv(
     # device managed by NetworkManager, giving the guest a real routable IP
     # and bringing it under the same nftables NAT/isolation rules as the
     # Firecracker backend (egress masquerade, cross-sandbox drop, IMDS block).
-    tap_mode = vm_info.config.qemu_network == "tap"
+    tap_mode = vm_info.config.qemu_network == "tap" or (
+        vm_info.network is not None and vm_info.network.mode == "bridge"
+    )
 
     if vm_info.network is None:
         raise SmolVMError("QEMU backend requires a VM network config")

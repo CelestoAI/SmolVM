@@ -131,6 +131,25 @@ class StateManagerProtocol(Protocol):
         pass
 
     # ------------------------------------------------------------------
+    # TAP allocation (bridge mode)
+    # ------------------------------------------------------------------
+
+    def reserve_tap_name(
+        self,
+        vm_id: str,
+        mode: str,
+        bridge_name: str | None = None,
+        requested_tap: str | None = None,
+    ) -> str:
+        pass
+
+    def get_tap_allocation(self, vm_id: str) -> tuple[str, str, str | None] | None:
+        pass
+
+    def release_tap_name(self, vm_id: str) -> None:
+        pass
+
+    # ------------------------------------------------------------------
     # Snapshots
     # ------------------------------------------------------------------
 

@@ -2594,13 +2594,21 @@ class SmolVM:
         """Return the guest IP address.
 
         Raises:
-            SmolVMError: If the VM has no network configuration.
+            SmolVMError: If the VM has no network configuration, or if the
+                VM uses bridge mode where the address is managed inside the VM.
         """
         self._refresh_info()
         if self._info.network is None:
             raise SmolVMError(
                 "VM has no network configuration",
                 {"vm_id": self._vm_id},
+            )
+        if self._info.network.mode == "bridge":
+            raise SmolVMError(
+                f"Bridged sandbox '{self._vm_id}' has a guest-managed address; "
+                f"use 'smolvm sandbox shell {self._vm_id}', or connect to its "
+                f"address from the bridged network.",
+                {"vm_id": self._vm_id, "network_mode": "bridge"},
             )
         return self._info.network.guest_ip
 

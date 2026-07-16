@@ -23,10 +23,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
 import re
 import socket
 import time
 from collections.abc import Callable
+from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar
 from urllib.parse import urlparse
@@ -123,6 +126,21 @@ _NFT_SET_ALLOWED_TAPS = "allowed_taps"  # TAP interface names
 _NFT_CHAIN_RE = re.compile(r"^chain\s+(?P<chain>[^\s{]+)\s*\{")
 _NFT_RULE_COMMENT_RE = re.compile(r'comment "(?P<comment>[^"]+)"')
 _NFT_RULE_HANDLE_RE = re.compile(r'comment "(?P<comment>[^"]+)".*# handle (?P<handle>\d+)')
+
+
+@dataclass(frozen=True)
+class BridgeInspection:
+    """Result of read-only bridge validation.
+
+    Attributes:
+        bridge_name: The bridge interface name that was checked.
+        ok: Whether the bridge is valid for SmolVM attachment.
+        reason: Human-readable explanation when ok is False.
+    """
+
+    bridge_name: str
+    ok: bool
+    reason: str = ""
 
 
 class NetworkManager:
@@ -2045,6 +2063,281 @@ class NetworkManager:
         if vm_number < 0 or vm_number > 65534:
             raise ValueError("vm_number must be between 0 and 65534")
         return f"AA:FC:00:00:{(vm_number >> 8) & 0xFF:02X}:{vm_number & 0xFF:02X}"
+
+    def generate_bridge_mac(self) -> str:
+        """Generate a random locally-administered unicast MAC for bridge mode.
+
+        Uses the locally-administered bit (second-least-significant of the
+        first octet) and clears the multicast bit. The AA:FC OUI prefix
+        matches :meth:`generate_mac` so all SmolVM MACs share a recognisable
+        family.
+        """
+        suffix = random.randbytes(3)  # noqa: S311
+        return f"AA:FC:00:{suffix[0]:02X}:{suffix[1]:02X}:{suffix[2]:02X}"
+
+    # ------------------------------------------------------------------
+    # Bridge inspection and bridged TAP attachment
+    # ------------------------------------------------------------------
+
+    def inspect_bridge(self, bridge_name: str) -> BridgeInspection:
+        """Read-only validation of a Linux bridge for SmolVM attachment.
+
+        Checks:
+        1. The host is Linux.
+        2. The named interface exists.
+        3. It is a Linux bridge (not a VLAN or physical interface).
+        4. The bridge is up.
+        5. It has at least one non-SmolVM member (the external uplink).
+        6. Neither the bridge nor any existing member has an IPv4 or IPv6 address.
+
+        Never mutates the bridge or any of its members.
+        """
+        import platform
+
+        if platform.system() != "Linux":
+            return BridgeInspection(
+                bridge_name=bridge_name,
+                ok=False,
+                reason="Bridged networking is only supported on Linux.",
+            )
+
+        try:
+            result = run_command(
+                ["ip", "-json", "-d", "link", "show", bridge_name],
+                use_sudo=False,
+            )
+        except SmolVMError:
+            return BridgeInspection(
+                bridge_name=bridge_name,
+                ok=False,
+                reason=f"Interface '{bridge_name}' does not exist. "
+                f"Create a bridge such as 'br10', then rerun "
+                f"'smolvm sandbox create --network bridge --bridge {bridge_name}'.",
+            )
+
+        import json
+
+        links = json.loads(result.stdout)
+        if not links:
+            return BridgeInspection(
+                bridge_name=bridge_name,
+                ok=False,
+                reason=f"Interface '{bridge_name}' does not exist. "
+                f"Create a bridge such as 'br10', then rerun "
+                f"'smolvm sandbox create --network bridge --bridge {bridge_name}'.",
+            )
+
+        link_info = links[0]
+
+        # Check it's a bridge, not a VLAN or physical interface.
+        link_type = link_info.get("link_type", "")
+        if link_type != "bridge":
+            return BridgeInspection(
+                bridge_name=bridge_name,
+                ok=False,
+                reason=f"'{bridge_name}' is a {link_type or 'network interface'}, not a "
+                f"bridge. Create a bridge such as 'br10', then rerun with "
+                f"'--bridge br10'.",
+            )
+
+        # Check the bridge is up.
+        flags = link_info.get("flags", [])
+        if "UP" not in flags and "LOWER_UP" not in flags:
+            return BridgeInspection(
+                bridge_name=bridge_name,
+                ok=False,
+                reason=f"Bridge '{bridge_name}' is not up. Bring it up with "
+                f"'sudo ip link set {bridge_name} up', then rerun "
+                f"'smolvm sandbox create --network bridge --bridge {bridge_name}'.",
+            )
+
+        # Get bridge members.
+        members = self._get_bridge_members(bridge_name)
+        if not members:
+            return BridgeInspection(
+                bridge_name=bridge_name,
+                ok=False,
+                reason=f"Bridge '{bridge_name}' has no member interfaces. "
+                f"Add an upstream interface (e.g. 'sudo ip link set eno1.10 "
+                f"master {bridge_name}'), then rerun "
+                f"'smolvm sandbox create --network bridge --bridge {bridge_name}'.",
+            )
+
+        # Check for host addresses on the bridge and all members.
+        address_errors = self._check_bridge_addresses(bridge_name, members)
+        if address_errors:
+            return BridgeInspection(
+                bridge_name=bridge_name,
+                ok=False,
+                reason=address_errors,
+            )
+
+        return BridgeInspection(bridge_name=bridge_name, ok=True)
+
+    async def async_inspect_bridge(self, bridge_name: str) -> BridgeInspection:
+        """Read-only validation of a Linux bridge (async)."""
+        return await asyncio.to_thread(self.inspect_bridge, bridge_name)
+
+    def _get_bridge_members(self, bridge_name: str) -> list[str]:
+        """Return non-SmolVM member interface names of a bridge."""
+        try:
+            result = run_command(
+                ["ip", "-json", "link", "show", "master", bridge_name],
+                use_sudo=False,
+            )
+        except SmolVMError:
+            return []
+
+        import json
+
+        links = json.loads(result.stdout)
+        members: list[str] = []
+        for link in links:
+            name = link.get("ifname", "")
+            if name and not name.startswith("svmb"):
+                members.append(name)
+        return members
+
+    def _check_bridge_addresses(self, bridge_name: str, members: list[str]) -> str:
+        """Check bridge and members for host IP addresses. Returns error message or empty."""
+        interfaces_to_check = [bridge_name] + members
+        for iface in interfaces_to_check:
+            addrs = self._get_interface_addresses(iface)
+            if addrs:
+                addr_list = ", ".join(addrs)
+                return (
+                    f"Interface '{iface}' gives this machine the address "
+                    f"'{addr_list}'. Remove that address "
+                    f"(e.g. 'sudo ip addr flush dev {iface}'), then rerun "
+                    f"'smolvm sandbox create --network bridge --bridge {bridge_name}'."
+                )
+        return ""
+
+    def _get_interface_addresses(self, iface_name: str) -> list[str]:
+        """Return IPv4 and IPv6 addresses on an interface (excluding link-local)."""
+        addresses: list[str] = []
+        for _family in ["inet", "inet6"]:
+            try:
+                result = run_command(
+                    ["ip", "-json", "addr", "show", "dev", iface_name],
+                    use_sudo=False,
+                )
+            except SmolVMError:
+                continue
+
+            import json
+
+            info = json.loads(result.stdout)
+            if not info:
+                continue
+            for addr_info in info[0].get("addr_info", []):
+                scope = addr_info.get("scope", "")
+                if scope == "link":
+                    continue
+                addr = addr_info.get("local", "")
+                if addr:
+                    addresses.append(addr)
+        return addresses
+
+    def prepare_bridged_tap(
+        self,
+        tap_name: str,
+        bridge_name: str,
+        user: str | None = None,
+    ) -> None:
+        """Create a TAP device and attach it to an existing bridge.
+
+        Steps:
+        1. Re-validate the bridge.
+        2. Create the TAP (idempotent for existing SmolVM-owned TAPs).
+        3. Attach the TAP to the bridge.
+        4. Bring the TAP up without assigning any address.
+        5. Verify the TAP's master is the requested bridge.
+        6. Delete the TAP if attachment fails.
+        """
+        inspection = self.inspect_bridge(bridge_name)
+        if not inspection.ok:
+            raise NetworkError(inspection.reason or "Bridge validation failed")
+
+        if user is None:
+            user = os.environ.get("USER", "root")
+
+        logger.info("Preparing bridged TAP %s on bridge %s (user: %s)", tap_name, bridge_name, user)
+
+        # Create TAP (idempotent — create_tap handles EEXIST).
+        self.create_tap(tap_name, user)
+
+        # Attach TAP to bridge.
+        try:
+            self._set_tap_master(tap_name, bridge_name)
+        except Exception:
+            # Rollback: delete the TAP we just created.
+            with suppress(Exception):
+                self.cleanup_tap(tap_name)
+            raise
+
+        # Bring the TAP up (no address assignment).
+        try:
+            run_command(["ip", "link", "set", tap_name, "up"], use_sudo=True)
+        except SmolVMError as e:
+            logger.error("Failed to bring up bridged TAP %s: %s", tap_name, e)
+            with suppress(Exception):
+                self.cleanup_tap(tap_name)
+            raise SmolVMError(
+                f"Failed to bring up TAP '{tap_name}' on bridge '{bridge_name}': {e}"
+            ) from e
+
+        # Verify the TAP's master is the requested bridge.
+        master = self._get_tap_master(tap_name)
+        if master != bridge_name:
+            with suppress(Exception):
+                self.cleanup_tap(tap_name)
+            raise NetworkError(
+                f"TAP '{tap_name}' is attached to '{master}', not '{bridge_name}'. "
+                f"Run 'smolvm sandbox delete' for any stale sandbox using this TAP, "
+                f"then retry."
+            )
+
+        logger.info("Bridged TAP %s ready on bridge %s", tap_name, bridge_name)
+
+    async def async_prepare_bridged_tap(
+        self,
+        tap_name: str,
+        bridge_name: str,
+        user: str | None = None,
+    ) -> None:
+        """Create a TAP device and attach it to an existing bridge (async)."""
+        await asyncio.to_thread(self.prepare_bridged_tap, tap_name, bridge_name, user)
+
+    def _set_tap_master(self, tap_name: str, bridge_name: str) -> None:
+        """Set the bridge master for a TAP device."""
+        logger.info("Attaching TAP %s to bridge %s", tap_name, bridge_name)
+        try:
+            run_command(
+                ["ip", "link", "set", "dev", tap_name, "master", bridge_name],
+                use_sudo=True,
+            )
+        except SmolVMError as e:
+            raise SmolVMError(
+                f"Failed to attach TAP '{tap_name}' to bridge '{bridge_name}': {e}"
+            ) from e
+
+    def _get_tap_master(self, tap_name: str) -> str | None:
+        """Return the bridge name a TAP is attached to, or None."""
+        try:
+            result = run_command(
+                ["ip", "-json", "-d", "link", "show", tap_name],
+                use_sudo=False,
+            )
+        except SmolVMError:
+            return None
+
+        import json
+
+        links = json.loads(result.stdout)
+        if not links:
+            return None
+        return links[0].get("master")
 
 
 def _extract_hostname(entry: str) -> str:

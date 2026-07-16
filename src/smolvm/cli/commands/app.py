@@ -83,6 +83,20 @@ def sandbox() -> None:
 @comm_channel_option
 @click.option("--mount", "mounts", multiple=True, metavar="HOST_PATH[:GUEST_PATH]")
 @click.option("--writable-mounts", is_flag=True, help="Allow writes to mounted host folders.")
+@click.option(
+    "--network",
+    "network_mode",
+    type=click.Choice(["nat", "bridge"]),
+    default="nat",
+    help="Network mode: 'nat' (default, private network) or 'bridge' (connect to a host bridge).",
+)
+@click.option(
+    "--bridge",
+    "bridge_name",
+    default=None,
+    metavar="BRIDGE",
+    help="Linux bridge to attach to (required with --network bridge).",
+)
 @boot_timeout_option
 @json_option
 def sandbox_create(
@@ -96,6 +110,8 @@ def sandbox_create(
     comm_channel: str | None,
     mounts: tuple[str, ...],
     writable_mounts: bool,
+    network_mode: str,
+    bridge_name: str | None,
     boot_timeout: float,
     json_output: bool,
 ) -> Any:
@@ -114,6 +130,8 @@ def sandbox_create(
             comm_channel=comm_channel,
             mounts=_mounts(mounts),
             writable_mounts=writable_mounts,
+            network_mode=network_mode,
+            bridge_name=bridge_name,
             boot_timeout=boot_timeout,
             json=json_output,
         )
@@ -754,6 +772,26 @@ def port_list(
             ssh_user=ssh_user,
             comm_channel=comm_channel,
             command_name="sandbox.port.list",
+            json=json_output,
+        )
+    )
+
+
+@cli.group(context_settings=CONTEXT_SETTINGS)
+def bridge() -> None:
+    """Check host bridges for bridged networking."""
+
+
+@bridge.command("check")
+@click.argument("bridge_name", metavar="BRIDGE")
+@json_option
+def bridge_check(bridge_name: str, json_output: bool) -> Any:
+    """Check whether a bridge is ready for bridged networking."""
+    _before_command(json_output=json_output)
+    return _handlers()._run_bridge_check(
+        _ns(
+            command_name="bridge.check",
+            bridge_name=bridge_name,
             json=json_output,
         )
     )

@@ -128,35 +128,45 @@ netmask_to_prefix() {
 }
 
 IP_CONFIG=$(cat /proc/cmdline | tr ' ' '\n' | grep '^ip=' | head -1)
-if [ -n "$IP_CONFIG" ]; then
-    IP_FIELDS=$(echo "$IP_CONFIG" | cut -d= -f2-)
-    GUEST_IP=$(echo "$IP_FIELDS" | cut -d: -f1)
-    GATEWAY=$(echo "$IP_FIELDS" | cut -d: -f3)
-    NETMASK=$(echo "$IP_FIELDS" | cut -d: -f4)
+GUEST_MANAGED=$(cat /proc/cmdline | tr ' ' '\n' | grep '^smolvm.network=guest' | head -1)
+if [ -n "$GUEST_MANAGED" ]; then
+    # Bridge mode: bring the link up but let the guest configure its own address.
+    ip link set lo up
+    ip link set eth0 up 2>/dev/null || true
+    hostname smolvm
+    log_ts "net-config-done"
+    log_ts "net-ready"
 else
-    GUEST_IP="172.16.0.2"
-    GATEWAY="172.16.0.1"
-    NETMASK="255.255.255.0"
+    if [ -n "$IP_CONFIG" ]; then
+        IP_FIELDS=$(echo "$IP_CONFIG" | cut -d= -f2-)
+        GUEST_IP=$(echo "$IP_FIELDS" | cut -d: -f1)
+        GATEWAY=$(echo "$IP_FIELDS" | cut -d: -f3)
+        NETMASK=$(echo "$IP_FIELDS" | cut -d: -f4)
+    else
+        GUEST_IP="172.16.0.2"
+        GATEWAY="172.16.0.1"
+        NETMASK="255.255.255.0"
+    fi
+
+    PREFIX=$(netmask_to_prefix "$NETMASK") || PREFIX=24
+    ip link set lo up
+    ip link set eth0 up 2>/dev/null || true
+    ip addr add "${GUEST_IP}/${PREFIX}" dev eth0 2>/dev/null || true
+    ip route add default via "${GATEWAY}" dev eth0 2>/dev/null || true
+
+    if [ -n "$GATEWAY" ]; then
+        echo "nameserver ${GATEWAY}" > /etc/resolv.conf
+        echo "nameserver 8.8.8.8" >> /etc/resolv.conf
+        echo "nameserver 8.8.4.4" >> /etc/resolv.conf
+    else
+        echo "nameserver 8.8.8.8" > /etc/resolv.conf
+        echo "nameserver 8.8.4.4" >> /etc/resolv.conf
+    fi
+
+    hostname smolvm
+    log_ts "net-config-done"
+    log_ts "net-ready"
 fi
-
-PREFIX=$(netmask_to_prefix "$NETMASK") || PREFIX=24
-
-ip link set lo up
-ip link set eth0 up 2>/dev/null || true
-ip addr add "${GUEST_IP}/${PREFIX}" dev eth0 2>/dev/null || true
-ip route add default via "${GATEWAY}" dev eth0 2>/dev/null || true
-
-if [ -n "$GATEWAY" ]; then
-    echo "nameserver ${GATEWAY}" > /etc/resolv.conf
-    echo "nameserver 8.8.8.8" >> /etc/resolv.conf
-    echo "nameserver 8.8.4.4" >> /etc/resolv.conf
-else
-    echo "nameserver 8.8.8.8" > /etc/resolv.conf
-    echo "nameserver 8.8.4.4" >> /etc/resolv.conf
-fi
-
-hostname smolvm
-log_ts "net-ready"
 
 # ── SSH host keys ────────────────────────────────────────────
 log_ts "ssh-hostkey-check-start"
