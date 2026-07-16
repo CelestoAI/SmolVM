@@ -20,6 +20,7 @@ import os
 import platform
 import secrets
 import subprocess
+import time
 from contextlib import suppress
 from dataclasses import dataclass
 from shutil import which
@@ -126,21 +127,29 @@ def bridge_lab() -> _BridgeLab:
         _run_privileged("ip", "link", "del", lab.uplink, check=False)
 
 
-def _assert_namespace_can_ping(lab: _BridgeLab) -> None:
-    result = _run_privileged(
-        "ip",
-        "netns",
-        "exec",
-        lab.namespace,
-        "ping",
-        "-c",
-        "1",
-        "-W",
-        "3",
-        lab.guest_ip,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr or result.stdout
+def _assert_namespace_can_ping(lab: _BridgeLab, *, timeout: float = 15.0) -> None:
+    """Wait for guest init and bridge forwarding to make the guest reachable."""
+    deadline = time.monotonic() + timeout
+    result: subprocess.CompletedProcess[str] | None = None
+    while time.monotonic() < deadline:
+        result = _run_privileged(
+            "ip",
+            "netns",
+            "exec",
+            lab.namespace,
+            "ping",
+            "-c",
+            "1",
+            "-W",
+            "1",
+            lab.guest_ip,
+            check=False,
+        )
+        if result.returncode == 0:
+            return
+        time.sleep(0.5)
+    assert result is not None
+    pytest.fail(result.stderr or result.stdout)
 
 
 @pytest.mark.parametrize("backend", E2E_BACKENDS, ids=str)
@@ -194,7 +203,8 @@ def test_bridge_connectivity_restart_restore_and_delete(
             'ip link set "$1" up\n'
             "EOF\n"
             "chmod +x /etc/smolvm/network.sh\n"
-            "/etc/smolvm/network.sh eth0"
+            "/etc/smolvm/network.sh eth0\n"
+            "sync"
         )
         assert configure.exit_code == 0, configure.stderr
         assert sandbox.run(f"ping -c 1 -W 3 {bridge_lab.peer_ip}").exit_code == 0
