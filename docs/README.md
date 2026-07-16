@@ -13,7 +13,7 @@ SmolVM gives an AI agent a disposable computer for running code, using a browser
 - [Agent presets](guides/agent-presets.md) — start Codex, Claude Code, Pi, Hermes, or OpenClaw in a sandbox.
 - [Browser sandboxes](guides/browser.md) — run Chromium and connect with a browser or Playwright.
 - [Snapshots](guides/snapshots.md) — save and restore supported sandbox state.
-- [Networking](guides/networking.md) — share a local port and limit outbound domains.
+- [Networking](guides/networking.md) — share a local port, limit outbound domains, or connect a sandbox to an existing bridge.
 - [Windows guests](guides/windows.md) — build and use a Windows image.
 
 ## Contributors

@@ -65,6 +65,7 @@ logger = logging.getLogger(__name__)
 _ADVISORY_LOCK_IP = 1
 _ADVISORY_LOCK_SSH = 2
 _ADVISORY_LOCK_VSOCK = 3
+_ADVISORY_LOCK_TAP = 4
 
 
 def _require_psycopg() -> None:
@@ -607,13 +608,31 @@ class PostgresStateManager:
         now = now_iso()
 
         with self._pool.connection() as conn:
-            conn.execute("SELECT pg_advisory_xact_lock(%s)", (_ADVISORY_LOCK_VSOCK + 10,))
+            conn.execute("SELECT pg_advisory_xact_lock(%s)", (_ADVISORY_LOCK_TAP,))
 
             existing = conn.execute(
-                "SELECT tap_device FROM tap_allocations WHERE vm_id = %s", (vm_id,)
+                """
+                SELECT tap_device, mode, bridge_name
+                FROM tap_allocations
+                WHERE vm_id = %s
+                """,
+                (vm_id,),
             ).fetchone()
             if existing:
-                return str(existing["tap_device"])
+                existing_tap = str(existing["tap_device"])
+                existing_mode = str(existing["mode"])
+                existing_bridge = existing["bridge_name"]
+                if (
+                    existing_mode != mode
+                    or existing_bridge != bridge_name
+                    or (requested_tap is not None and requested_tap != existing_tap)
+                ):
+                    raise NetworkError(
+                        f"Sandbox '{vm_id}' already reserves TAP '{existing_tap}' for "
+                        f"{existing_mode} networking; delete the sandbox before changing "
+                        "its network attachment."
+                    )
+                return existing_tap
 
             if requested_tap:
                 clash = conn.execute(
@@ -621,9 +640,7 @@ class PostgresStateManager:
                     (requested_tap,),
                 ).fetchone()
                 if clash:
-                    raise NetworkError(
-                        f"TAP device name '{requested_tap}' is already reserved"
-                    )
+                    raise NetworkError(f"TAP device name '{requested_tap}' is already reserved")
                 tap_name = requested_tap
             else:
                 import secrets

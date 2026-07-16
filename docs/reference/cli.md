@@ -8,6 +8,7 @@ The CLI creates and manages disposable sandboxes. Run `smolvm COMMAND --help` fo
 | --- | --- |
 | `smolvm setup` | Install or check local runtime dependencies. |
 | `smolvm doctor` | Check whether this machine can run sandboxes. |
+| `smolvm bridge check BRIDGE` | Check an existing Linux bridge before connecting a sandbox to it. |
 | `smolvm update` | Upgrade to the latest stable release. |
 | `smolvm prune` | Remove stale cached images. |
 
@@ -17,7 +18,7 @@ Run these in the order you need them:
 
 | Command | Use it to |
 | --- | --- |
-| `smolvm sandbox create` | Create a sandbox. |
+| `smolvm sandbox create` | Create a sandbox. Add `--network bridge --bridge BRIDGE` only when the sandbox should appear as a separate computer on that network. |
 | `smolvm sandbox list` / `info` | Find or inspect sandboxes. |
 | `smolvm sandbox shell` / `ssh` | Open a shell. `shell` uses SmolVM's fast control channel when available; `ssh` explicitly uses SSH. |
 | `smolvm sandbox start` / `stop` | Start or stop a sandbox. |

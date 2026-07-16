@@ -82,6 +82,22 @@ def test_preset_init_script_uses_cmdline_netmask_and_gateway_dns() -> None:
     assert 'ip addr add "${GUEST_IP}/24"' not in script
 
 
+@pytest.mark.parametrize(
+    "script",
+    [
+        ImageBuilder()._default_init_script(),
+        Path("scripts/ci/preset-init.sh").read_text(),
+    ],
+)
+def test_init_script_honors_guest_network_hook_then_dhcp(script: str) -> None:
+    assert "smolvm.network=guest" in script
+    assert "/etc/smolvm/network.sh eth0" in script
+    assert "ifup eth0" in script
+    assert "udhcpc -q -n -t 5 -i eth0" in script
+    assert "dhclient -1 eth0" in script
+    assert script.index("/etc/smolvm/network.sh eth0") < script.index("udhcpc -q -n")
+
+
 def test_base_init_script_keeps_tmp_on_root_disk() -> None:
     script = ImageBuilder()._default_init_script()
 

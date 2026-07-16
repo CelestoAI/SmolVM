@@ -342,9 +342,7 @@ class NetworkAttachmentConfig(BaseModel):
         if not v:
             raise ValueError("bridge name cannot be empty or whitespace")
         if len(v) > 15:
-            raise ValueError(
-                f"bridge name must be 15 bytes or fewer (got {len(v)} bytes: {v!r})"
-            )
+            raise ValueError(f"bridge name must be 15 bytes or fewer (got {len(v)} bytes: {v!r})")
         if not re.match(r"^[a-zA-Z0-9_.-]+$", v):
             raise ValueError(
                 f"bridge name contains characters that are not valid in a Linux "
@@ -549,9 +547,7 @@ class VMConfig(BaseModel):
                 "comm_channel='ssh' is not supported with bridge mode."
             )
         if self.workspace_mounts:
-            raise ValueError(
-                "Workspace mounts are not supported with bridge mode in this release."
-            )
+            raise ValueError("Workspace mounts are not supported with bridge mode in this release.")
         if self.port_forwards:
             raise ValueError(
                 "Port forwards are not supported with bridge mode; "
@@ -776,9 +772,9 @@ class NetworkConfig(BaseModel):
         mode = data.get("mode", "nat")
         if mode == "nat":
             if data.get("gateway_ip") is None:
-                data.setdefault("gateway_ip", "172.16.0.1")
+                data["gateway_ip"] = "172.16.0.1"
             if data.get("netmask") is None:
-                data.setdefault("netmask", "255.255.255.0")
+                data["netmask"] = "255.255.255.0"
         return data
 
     @model_validator(mode="after")

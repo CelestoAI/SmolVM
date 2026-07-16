@@ -1194,16 +1194,19 @@ class SmolVMManager:
         vm_config: VMConfig | None = None,
     ) -> None:
         """Ensure host-side network resources exist for a restored Firecracker VM."""
-        # Bridge mode: validate bridge and repair TAP, no NAT/route/forward.
+        # Bridge mode: reserve, validate, and repair the owned TAP only.
         if network.mode == "bridge":
-            bridge_name = network.bridge or ""
-            inspection = self.network.inspect_bridge(bridge_name)
-            if not inspection.ok:
+            if vm_config is None:
                 raise SmolVMError(
-                    inspection.reason,
-                    {"vm_id": vm_id, "bridge": bridge_name},
+                    f"Snapshot network settings are incomplete for sandbox '{vm_id}'; run "
+                    f"'smolvm sandbox delete {vm_id}' to remove the restore attempt."
                 )
-            self._repair_bridged_tap(vm_id, network.tap_device, bridge_name)
+            self._ensure_bridge_ready(
+                vm_id,
+                network,
+                config=vm_config,
+                backend=self._backend_for_config(vm_config),
+            )
             return
 
         user = os.environ.get("USER", "root")
@@ -1429,16 +1432,14 @@ class SmolVMManager:
 
         network = vm_info.network
 
-        # Bridge mode: just re-validate the bridge and repair the TAP if needed.
+        # Bridge mode has no host route or NAT to repair.
         if network.mode == "bridge":
-            inspection = self.network.inspect_bridge(network.bridge or "")
-            if not inspection.ok:
-                raise SmolVMError(
-                    inspection.reason,
-                    {"vm_id": vm_info.vm_id, "bridge": network.bridge},
-                )
-            # Repair the TAP if it disappeared (e.g. host reboot).
-            self._repair_bridged_tap(vm_info.vm_id, network.tap_device, network.bridge or "")
+            self._ensure_bridge_ready(
+                vm_info.vm_id,
+                network,
+                config=vm_info.config,
+                backend=backend,
+            )
             return
 
         self.network.add_route(network.guest_ip, network.tap_device)
@@ -1588,58 +1589,106 @@ class SmolVMManager:
         """Whether a VM uses NAT-mode networking (the default)."""
         return config.network_attachment.mode == "nat"
 
-    def _validate_bridge_mode(self, config: VMConfig, backend: str) -> None:
-        """Validate platform, backend, and feature combinations for bridge mode."""
+    def _validate_bridge_mode(
+        self,
+        config: VMConfig,
+        backend: str,
+        resolution: ChannelResolution | None = None,
+    ) -> None:
+        """Validate every bridge invariant before changing host networking."""
         import platform
 
         if platform.system() != "Linux":
             raise SmolVMError(
-                "Bridged networking is only supported on Linux.",
+                f"Bridged networking is unavailable on {platform.system()}; recreate sandbox "
+                f"'{config.vm_id}' with '--network nat'.",
                 {"vm_id": config.vm_id, "host_os": platform.system()},
             )
         if backend not in (BACKEND_FIRECRACKER, BACKEND_QEMU):
             raise SmolVMError(
-                f"Bridged networking is only supported with Firecracker and QEMU "
-                f"(got backend={backend!r}).",
+                f"Bridged networking is unavailable with backend '{backend}'; recreate sandbox "
+                f"'{config.vm_id}' with '--network nat'.",
                 {"vm_id": config.vm_id, "backend": backend},
             )
-        if config.comm_channel == "ssh":
+
+        resolution = resolution or self._resolve_control_channel_for_config(config, backend)
+        if resolution.kind != "vsock":
+            bridge_name = config.network_attachment.bridge
             raise SmolVMError(
-                "Bridged networking requires vsock for host-guest communication; "
-                "comm_channel='ssh' is not supported. Use --comm-channel vsock "
-                "or omit the flag to let SmolVM auto-select vsock.",
+                f"Bridged sandbox '{config.vm_id}' needs fast shell support; run "
+                f"'smolvm sandbox create --name {config.vm_id} --network bridge "
+                f"--bridge {bridge_name} --comm-channel vsock', or use '--network nat'.",
+                {"vm_id": config.vm_id, "resolved_channel": resolution.kind},
+            )
+        if config.guest_os is GuestOS.WINDOWS:
+            raise SmolVMError(
+                f"Bridged networking is unavailable for Windows sandbox '{config.vm_id}'; "
+                "recreate it with '--network nat'.",
+                {"vm_id": config.vm_id, "guest_os": config.guest_os.value},
+            )
+        if config.workspace_mounts:
+            raise SmolVMError(
+                f"Bridged sandbox '{config.vm_id}' cannot share host folders yet; remove "
+                "'--mount', or recreate it with '--network nat'.",
                 {"vm_id": config.vm_id},
             )
+        if config.port_forwards:
+            raise SmolVMError(
+                f"Bridged sandbox '{config.vm_id}' cannot use launch-time port forwarding; "
+                "remove the forwards and connect to its address on the bridged network.",
+                {"vm_id": config.vm_id},
+            )
+        if (
+            config.internet_settings is not None
+            and not config.internet_settings.is_allow_all_domains
+        ):
+            raise SmolVMError(
+                f"Domain controls do not apply to bridged sandbox '{config.vm_id}'; remove the "
+                "domain list, or recreate it with '--network nat'.",
+                {"vm_id": config.vm_id},
+            )
+
         bridge_name = config.network_attachment.bridge
         if not bridge_name:
             raise SmolVMError(
-                "Bridged networking requires a bridge name; "
-                f"run 'smolvm sandbox create --name {config.vm_id} "
-                "--network bridge --bridge <bridge_name>'.",
+                f"Bridged sandbox '{config.vm_id}' has no bridge; recreate it with "
+                f"'smolvm sandbox create --name {config.vm_id} --network bridge --bridge BRIDGE'.",
                 {"vm_id": config.vm_id},
             )
         inspection = self.network.inspect_bridge(bridge_name)
         if not inspection.ok:
             raise SmolVMError(inspection.reason, {"vm_id": config.vm_id, "bridge": bridge_name})
 
+    def _ensure_bridge_ready(
+        self,
+        vm_id: str,
+        network: NetworkConfig,
+        *,
+        config: VMConfig,
+        backend: str,
+    ) -> None:
+        """Validate persisted bridge settings and repair this sandbox's owned TAP."""
+        bridge_name = network.bridge or ""
+        if bridge_name != config.network_attachment.bridge:
+            raise SmolVMError(
+                f"Sandbox '{vm_id}' has inconsistent bridge settings; run "
+                f"'smolvm sandbox delete {vm_id}' to remove it.",
+                {"vm_id": vm_id},
+            )
+        self._validate_bridge_mode(config, backend)
+        self.state.reserve_tap_name(
+            vm_id,
+            mode="bridge",
+            bridge_name=bridge_name,
+            requested_tap=network.tap_device,
+        )
+        self._repair_bridged_tap(vm_id, network.tap_device, bridge_name)
+
     def _repair_bridged_tap(self, vm_id: str, tap_name: str, bridge_name: str) -> None:
-        """Recreate the bridged TAP if it disappeared (e.g. after host reboot)."""
-        from smolvm.utils import run_command
-
-        try:
-            run_command(["ip", "link", "show", tap_name], use_sudo=False)
-            # TAP exists — verify it's on the right bridge.
-            master = self.network._get_tap_master(tap_name)
-            if master == bridge_name:
-                return
-            # Wrong master — delete and recreate.
-            self.network.cleanup_tap(tap_name)
-        except SmolVMError:
-            pass  # TAP doesn't exist — create it below.
-
+        """Create or reattach this sandbox's owned bridge TAP."""
         user = os.environ.get("USER", "root")
-        self.network.prepare_bridged_tap(tap_name, bridge_name, user=user)
-        logger.info("Repaired bridged TAP %s on bridge %s for VM %s", tap_name, bridge_name, vm_id)
+        self.network.prepare_bridged_tap(tap_name, bridge_name, vm_id, user=user)
+        logger.info("Ensured bridged TAP %s on bridge %s for VM %s", tap_name, bridge_name, vm_id)
 
     @staticmethod
     def _local_tcp_port_is_available(host: str, port: int) -> bool:
@@ -1736,6 +1785,12 @@ class SmolVMManager:
         effective_config = config
         if effective_config.backend != backend:
             effective_config = effective_config.model_copy(update={"backend": backend})
+        if (
+            effective_config.network_attachment.mode == "bridge"
+            and backend == BACKEND_QEMU
+            and effective_config.qemu_network != "tap"
+        ):
+            effective_config = effective_config.model_copy(update={"qemu_network": "tap"})
 
         if effective_config.workspace_mounts and backend != BACKEND_QEMU:
             raise SmolVMError(
@@ -1745,6 +1800,9 @@ class SmolVMManager:
                 "used) or pass --backend qemu explicitly.",
                 {"vm_id": effective_config.vm_id, "backend": backend},
             )
+        if self._is_bridge_attachment(effective_config):
+            resolution = self._resolve_control_channel_for_config(effective_config, backend)
+            self._validate_bridge_mode(effective_config, backend, resolution)
 
         with self._vm_create_lock(effective_config.vm_id):
             self._ensure_vm_id_available(effective_config.vm_id)
@@ -1796,6 +1854,42 @@ class SmolVMManager:
 
         try:
             channel_resolution = self._resolve_control_channel_for_config(effective_config, backend)
+
+            if self._is_bridge_attachment(effective_config):
+                self._validate_bridge_mode(effective_config, backend, channel_resolution)
+                bridge_name = effective_config.network_attachment.bridge
+                assert bridge_name is not None
+                tap_name = self.state.reserve_tap_name(
+                    effective_config.vm_id,
+                    mode="bridge",
+                    bridge_name=bridge_name,
+                )
+                network_config = NetworkConfig(
+                    mode="bridge",
+                    bridge=bridge_name,
+                    tap_device=tap_name,
+                    guest_mac=self.network.generate_bridge_mac(tap_name),
+                )
+                vm_info = self.state.update_vm(
+                    effective_config.vm_id,
+                    network=network_config,
+                )
+                vm_info = self._maybe_enable_vsock(effective_config, backend, vm_info)
+                user = os.environ.get("USER", "root")
+                self.network.prepare_bridged_tap(
+                    tap_name,
+                    bridge_name,
+                    effective_config.vm_id,
+                    user=user,
+                )
+                logger.info(
+                    "VM created (bridge): %s (bridge=%s, TAP=%s)",
+                    effective_config.vm_id,
+                    bridge_name,
+                    tap_name,
+                )
+                return vm_info
+
             ssh_forward_required = self._should_reserve_ssh_forward(
                 effective_config,
                 backend,
@@ -1844,38 +1938,6 @@ class SmolVMManager:
                         effective_config.vm_id,
                         backend,
                     )
-                return vm_info
-
-            # --- Bridge mode ---
-            if self._is_bridge_attachment(effective_config):
-                self._validate_bridge_mode(effective_config, backend)
-
-                # Reserve TAP name and generate MAC without IP allocation.
-                bridge_name = effective_config.network_attachment.bridge
-                tap_name = self.state.reserve_tap_name(
-                    effective_config.vm_id,
-                    mode="bridge",
-                    bridge_name=bridge_name,
-                )
-                guest_mac = self.network.generate_bridge_mac()
-
-                user = os.environ.get("USER", "root")
-                self.network.prepare_bridged_tap(tap_name, bridge_name, user=user)
-
-                network_config = NetworkConfig(
-                    mode="bridge",
-                    bridge=bridge_name,
-                    tap_device=tap_name,
-                    guest_mac=guest_mac,
-                )
-                vm_info = self.state.update_vm(effective_config.vm_id, network=network_config)
-                vm_info = self._maybe_enable_vsock(effective_config, backend, vm_info)
-                logger.info(
-                    "VM created (bridge): %s (bridge=%s, TAP=%s)",
-                    effective_config.vm_id,
-                    bridge_name,
-                    tap_name,
-                )
                 return vm_info
 
             # --- NAT TAP mode (Firecracker or QEMU tap) ---
@@ -1993,16 +2055,14 @@ class SmolVMManager:
 
         backend = self._backend_for_vm(vm_info)
 
-        # Bridge mode: revalidate bridge and repair TAP before starting.
+        # Bridge mode: revalidate every dependency and repair the owned TAP.
         if vm_info.network is not None and vm_info.network.mode == "bridge":
-            bridge_name = vm_info.network.bridge or ""
-            inspection = self.network.inspect_bridge(bridge_name)
-            if not inspection.ok:
-                raise SmolVMError(
-                    inspection.reason,
-                    {"vm_id": vm_id, "bridge": bridge_name},
-                )
-            self._repair_bridged_tap(vm_id, vm_info.network.tap_device, bridge_name)
+            self._ensure_bridge_ready(
+                vm_id,
+                vm_info.network,
+                config=vm_info.config,
+                backend=backend,
+            )
 
         if backend == BACKEND_QEMU:
             self._check_qemu_slirp_host_forward_ports(vm_info)
@@ -2475,6 +2535,24 @@ class SmolVMManager:
             )
         effective_snapshot = snapshot.model_copy(update={"vm_config": restore_vm_config})
         adapter = self._runtime_adapter_for_snapshot(effective_snapshot)
+        if effective_snapshot.network_config.mode == "bridge":
+            configured_bridge = effective_snapshot.vm_config.network_attachment.bridge
+            restored_bridge = effective_snapshot.network_config.bridge
+            if configured_bridge != restored_bridge:
+                raise SmolVMError(
+                    f"Snapshot '{snapshot_id}' has inconsistent bridge settings; delete the "
+                    f"snapshot with 'smolvm sandbox snapshot delete {snapshot_id}'.",
+                    {"snapshot_id": snapshot_id, "vm_id": restore_vm_id},
+                )
+            resolution = self._resolve_control_channel_for_config(
+                effective_snapshot.vm_config,
+                effective_snapshot.backend,
+            )
+            self._validate_bridge_mode(
+                effective_snapshot.vm_config,
+                effective_snapshot.backend,
+                resolution,
+            )
         created_vm_record = False
         existing_disk_backup_path: Path | None = None
         existing_disk_sidecars: list[Path] = []
@@ -2498,7 +2576,17 @@ class SmolVMManager:
             if existing_vm is None:
                 self.state.create_vm(persisted_vm_config)
                 created_vm_record = True
-            if effective_snapshot.backend == BACKEND_FIRECRACKER:
+            bridge_restore = effective_snapshot.network_config.mode == "bridge"
+            if bridge_restore:
+                bridge_name = effective_snapshot.network_config.bridge
+                assert bridge_name is not None
+                self.state.reserve_tap_name(
+                    restore_vm_id,
+                    mode="bridge",
+                    bridge_name=bridge_name,
+                    requested_tap=effective_snapshot.network_config.tap_device,
+                )
+            elif effective_snapshot.backend == BACKEND_FIRECRACKER:
                 self.state.allocate_ip(
                     restore_vm_id,
                     effective_snapshot.network_config.tap_device,
@@ -2523,7 +2611,7 @@ class SmolVMManager:
                         "to remove this restore attempt."
                     ) from exc
             self.state.update_vm(restore_vm_id, network=effective_snapshot.network_config)
-            if effective_snapshot.backend == BACKEND_FIRECRACKER:
+            if bridge_restore or effective_snapshot.backend == BACKEND_FIRECRACKER:
                 self._ensure_firecracker_network_for_restore(
                     restore_vm_id,
                     effective_snapshot.network_config,
@@ -2758,6 +2846,12 @@ class SmolVMManager:
         vm_info = self.state.get_vm(vm_id)
         if vm_info.network is None:
             raise SmolVMError("VM has no network configuration", {"vm_id": vm_id})
+        if vm_info.network.mode == "bridge":
+            raise SmolVMError(
+                f"The host has no SSH path to bridged sandbox '{vm_id}'; use "
+                f"'smolvm sandbox shell {vm_id}', or connect from its bridged network.",
+                {"vm_id": vm_id, "network_mode": "bridge"},
+            )
 
         key_opt = ""
         if key_path is not None:
@@ -3184,11 +3278,7 @@ class SmolVMManager:
                 vm_info is not None
                 and vm_info.network is not None
                 and vm_info.network.mode == "bridge"
-            ) or (
-                vm_info is None
-                and tap_alloc is not None
-                and tap_alloc[1] == "bridge"
-            )
+            ) or (tap_alloc is not None and tap_alloc[1] == "bridge")
 
             # Firecracker and QEMU-on-TAP both provision host TAP/NAT/ssh-forward
             # resources; slirp-mode QEMU and libkrun do not. When vm_info is gone
@@ -3204,9 +3294,20 @@ class SmolVMManager:
             if is_bridge:
                 if tap_alloc:
                     tap_device = tap_alloc[0]
-                    with suppress(Exception):
-                        self.network.cleanup_tap(tap_device)
-                    self.state.release_tap_name(vm_id)
+                    try:
+                        self.network.cleanup_bridged_tap(tap_device, vm_id)
+                    except Exception as exc:
+                        # A same-named foreign interface must survive cleanup,
+                        # but it must not prevent the sandbox's other resources
+                        # and persisted reservation from being removed.
+                        logger.warning(
+                            "Did not remove bridge interface %s for %s: %s",
+                            tap_device,
+                            vm_id,
+                            exc,
+                        )
+                    finally:
+                        self.state.release_tap_name(vm_id)
             else:
                 # NAT mode cleanup
                 if uses_tap and ssh_host_port is not None and guest_ip:
@@ -3313,6 +3414,12 @@ class SmolVMManager:
         effective_config = config
         if effective_config.backend != backend:
             effective_config = effective_config.model_copy(update={"backend": backend})
+        if (
+            effective_config.network_attachment.mode == "bridge"
+            and backend == BACKEND_QEMU
+            and effective_config.qemu_network != "tap"
+        ):
+            effective_config = effective_config.model_copy(update={"qemu_network": "tap"})
 
         if effective_config.workspace_mounts and backend != BACKEND_QEMU:
             raise SmolVMError(
@@ -3321,6 +3428,14 @@ class SmolVMManager:
                 "--backend (SmolVM will auto-select QEMU when --mount is "
                 "used) or pass --backend qemu explicitly.",
                 {"vm_id": effective_config.vm_id, "backend": backend},
+            )
+        if self._is_bridge_attachment(effective_config):
+            resolution = self._resolve_control_channel_for_config(effective_config, backend)
+            await asyncio.to_thread(
+                self._validate_bridge_mode,
+                effective_config,
+                backend,
+                resolution,
             )
 
         async with self._async_vm_create_lock(effective_config.vm_id):
@@ -3382,6 +3497,47 @@ class SmolVMManager:
 
         try:
             channel_resolution = self._resolve_control_channel_for_config(effective_config, backend)
+
+            if self._is_bridge_attachment(effective_config):
+                await asyncio.to_thread(
+                    self._validate_bridge_mode,
+                    effective_config,
+                    backend,
+                    channel_resolution,
+                )
+                bridge_name = effective_config.network_attachment.bridge
+                assert bridge_name is not None
+                tap_name = self.state.reserve_tap_name(
+                    effective_config.vm_id,
+                    mode="bridge",
+                    bridge_name=bridge_name,
+                )
+                network_config = NetworkConfig(
+                    mode="bridge",
+                    bridge=bridge_name,
+                    tap_device=tap_name,
+                    guest_mac=self.network.generate_bridge_mac(tap_name),
+                )
+                vm_info = self.state.update_vm(
+                    effective_config.vm_id,
+                    network=network_config,
+                )
+                vm_info = self._maybe_enable_vsock(effective_config, backend, vm_info)
+                user = os.environ.get("USER", "root")
+                await self.network.async_prepare_bridged_tap(
+                    tap_name,
+                    bridge_name,
+                    effective_config.vm_id,
+                    user=user,
+                )
+                logger.info(
+                    "VM created (bridge, async): %s (bridge=%s, TAP=%s)",
+                    effective_config.vm_id,
+                    bridge_name,
+                    tap_name,
+                )
+                return vm_info
+
             ssh_forward_required = self._should_reserve_ssh_forward(
                 effective_config,
                 backend,
@@ -3415,37 +3571,6 @@ class SmolVMManager:
                 )
                 vm_info = self.state.update_vm(effective_config.vm_id, network=network_config)
                 vm_info = self._maybe_enable_vsock(effective_config, backend, vm_info)
-                return vm_info
-
-            # --- Bridge mode (async) ---
-            if self._is_bridge_attachment(effective_config):
-                await asyncio.to_thread(self._validate_bridge_mode, effective_config, backend)
-
-                bridge_name = effective_config.network_attachment.bridge
-                tap_name = self.state.reserve_tap_name(
-                    effective_config.vm_id,
-                    mode="bridge",
-                    bridge_name=bridge_name,
-                )
-                guest_mac = self.network.generate_bridge_mac()
-
-                user = os.environ.get("USER", "root")
-                await self.network.async_prepare_bridged_tap(tap_name, bridge_name, user=user)
-
-                network_config = NetworkConfig(
-                    mode="bridge",
-                    bridge=bridge_name,
-                    tap_device=tap_name,
-                    guest_mac=guest_mac,
-                )
-                vm_info = self.state.update_vm(effective_config.vm_id, network=network_config)
-                vm_info = self._maybe_enable_vsock(effective_config, backend, vm_info)
-                logger.info(
-                    "VM created (bridge, async): %s (bridge=%s, TAP=%s)",
-                    effective_config.vm_id,
-                    bridge_name,
-                    tap_name,
-                )
                 return vm_info
 
             # --- NAT TAP mode (async) ---
@@ -3526,20 +3651,14 @@ class SmolVMManager:
 
         backend = self._backend_for_vm(vm_info)
 
-        # Bridge mode: revalidate bridge and repair TAP before starting.
+        # Bridge mode: revalidate every dependency and repair the owned TAP.
         if vm_info.network is not None and vm_info.network.mode == "bridge":
-            bridge_name = vm_info.network.bridge or ""
-            inspection = await self.network.async_inspect_bridge(bridge_name)
-            if not inspection.ok:
-                raise SmolVMError(
-                    inspection.reason,
-                    {"vm_id": vm_id, "bridge": bridge_name},
-                )
             await asyncio.to_thread(
-                self._repair_bridged_tap,
+                self._ensure_bridge_ready,
                 vm_id,
-                vm_info.network.tap_device,
-                bridge_name,
+                vm_info.network,
+                config=vm_info.config,
+                backend=backend,
             )
 
         if backend == BACKEND_QEMU:
@@ -3785,11 +3904,7 @@ class SmolVMManager:
                 vm_info is not None
                 and vm_info.network is not None
                 and vm_info.network.mode == "bridge"
-            ) or (
-                vm_info is None
-                and tap_alloc is not None
-                and tap_alloc[1] == "bridge"
-            )
+            ) or (tap_alloc is not None and tap_alloc[1] == "bridge")
 
             # See the sync cleanup path for the TAP-vs-slirp rationale.
             if vm_info is not None:
@@ -3800,9 +3915,17 @@ class SmolVMManager:
             if is_bridge:
                 if tap_alloc:
                     tap_device = tap_alloc[0]
-                    with suppress(Exception):
-                        await self.network.async_cleanup_tap(tap_device)
-                    self.state.release_tap_name(vm_id)
+                    try:
+                        await self.network.async_cleanup_bridged_tap(tap_device, vm_id)
+                    except Exception as exc:
+                        logger.warning(
+                            "Did not remove bridge interface %s for %s: %s",
+                            tap_device,
+                            vm_id,
+                            exc,
+                        )
+                    finally:
+                        self.state.release_tap_name(vm_id)
             else:
                 if uses_tap and ssh_host_port is not None and guest_ip:
                     with suppress(Exception):

@@ -107,7 +107,7 @@ class CreateNextPayload(TypedDict):
     """Suggested follow-up actions for ``smolvm sandbox create``."""
 
     shell_command: str
-    ssh_command: str
+    ssh_command: str | None
     info_command: str
 
 
@@ -391,8 +391,6 @@ def _vm_rows(vms: Sequence[VMInfo]) -> list[VmRow]:
     for vm in vms:
         network = vm.network
         ip_address = network.guest_ip if network else None
-        if network is not None and network.mode == "bridge":
-            ip_address = "guest-managed"
         rows.append(
             {
                 "name": vm.vm_id,
@@ -665,8 +663,6 @@ def _info_payload(vm: VMInfo, *, live_data: dict[str, object] | None = None) -> 
     memory_used = live.get("memory_used")
 
     ip_address = network.guest_ip if network else None
-    if network is not None and network.mode == "bridge":
-        ip_address = "guest-managed"
 
     return {
         "vm": {
@@ -709,7 +705,15 @@ def _render_info_result(data: InfoPayload) -> None:
     )
     details.add_row("OS", str(vm_data["os"] or "-"))
     details.add_row("Backend", str(vm_data["backend"]))
-    details.add_row("IP Address", str(vm_data["ip_address"] or "-"))
+    details.add_row("Network Mode", str(vm_data["network_mode"]))
+    if vm_data["bridge"]:
+        details.add_row("Bridge", str(vm_data["bridge"]))
+    ip_value = (
+        "Managed inside guest"
+        if vm_data["network_mode"] == "bridge"
+        else str(vm_data["ip_address"] or "-")
+    )
+    details.add_row("IP Address", ip_value)
     details.add_row(
         "SSH Port",
         str(vm_data["ssh_port"]) if vm_data["ssh_port"] is not None else "-",
@@ -778,7 +782,8 @@ def _render_create_result(data: CreatePayload) -> None:
     details.add_row("Started", _format_started_at(vm_data["started_at"]))
     console.print(details)
     console.print(f"Next: [bold]{next_step['shell_command']}[/bold]")
-    console.print(f"SSH:  [bold]{next_step['ssh_command']}[/bold]")
+    if next_step["ssh_command"] is not None:
+        console.print(f"SSH:  [bold]{next_step['ssh_command']}[/bold]")
     console.print(f"Info: [bold]{next_step['info_command']}[/bold]")
 
 
@@ -924,17 +929,14 @@ def _run_bridge_check(args: SimpleNamespace) -> int:
         nm = NetworkManager()
         inspection = nm.inspect_bridge(bridge_name)
         if json_output:
-            import json
-
-            click.echo(
-                json.dumps(
-                    {
-                        "bridge": bridge_name,
-                        "ok": inspection.ok,
-                        "reason": inspection.reason or None,
-                    },
-                    indent=2,
-                )
+            emit_json(
+                "bridge.check",
+                0 if inspection.ok else 1,
+                data={
+                    "bridge": bridge_name,
+                    "ok": inspection.ok,
+                    "reason": inspection.reason or None,
+                },
             )
         else:
             if inspection.ok:
@@ -1093,6 +1095,8 @@ def _run_create(args: SimpleNamespace) -> int:
                     wait_for_control_channel=True,
                     mounts=args.mounts,
                     writable_mounts=args.writable_mounts,
+                    network_mode=getattr(args, "network_mode", None),
+                    bridge_name=getattr(args, "bridge_name", None),
                 )
             else:
                 config, ssh_key_path = _build_s3_image_config(
@@ -1178,6 +1182,8 @@ def _run_create(args: SimpleNamespace) -> int:
                 )
 
         os_label = "s3-image" if use_s3_image else resolved_guest_os.value
+        network = vm.info.network
+        is_bridge = network is not None and getattr(network, "mode", "nat") == "bridge"
         data: CreatePayload = {
             "vm": {
                 "name": vm.vm_id,
@@ -1191,7 +1197,7 @@ def _run_create(args: SimpleNamespace) -> int:
             },
             "next": {
                 "shell_command": f"smolvm sandbox shell {vm.vm_id}",
-                "ssh_command": f"smolvm sandbox ssh {vm.vm_id}",
+                "ssh_command": (None if is_bridge else f"smolvm sandbox ssh {vm.vm_id}"),
                 "info_command": f"smolvm sandbox info {vm.vm_id}",
             },
         }
