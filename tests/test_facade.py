@@ -25,7 +25,7 @@ from smolvm.exceptions import (
     OperationTimeoutError,
     SmolVMError,
 )
-from smolvm.facade import SmolVM, _build_auto_config
+from smolvm.facade import SmolVM, _build_auto_config, _qcow2_virtual_size_mib
 from smolvm.images import BootImage, DirectKernelBoot, FirmwareBoot
 from smolvm.types import (
     GuestFlushPolicy,
@@ -55,6 +55,24 @@ def sample_config(tmp_path: Path) -> VMConfig:
         kernel_path=kernel,
         rootfs_path=rootfs,
     )
+
+
+class TestDiskSizeHelpers:
+    """Tests for guest-visible disk size inspection."""
+
+    @patch("smolvm.facade.subprocess.run")
+    def test_qcow2_virtual_size_allows_concurrent_access(self, mock_run: MagicMock) -> None:
+        """A running QEMU process must not prevent virtual size inspection."""
+        disk = Path("/tmp/running.qcow2")
+        mock_run.return_value.stdout = '{"virtual-size": 4294967296}'
+
+        assert _qcow2_virtual_size_mib(disk) == 4096
+        mock_run.assert_called_once_with(
+            ["qemu-img", "info", "-U", "--output=json", str(disk)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
 
 
 class TestVMInit:
