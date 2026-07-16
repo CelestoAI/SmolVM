@@ -46,6 +46,7 @@ from pydantic import BaseModel, ConfigDict
 from smolvm import __version__
 from smolvm.exceptions import ImageError
 from smolvm.images.manager import ImageManager, ImageSource, LocalImage
+from uuid import uuid4
 
 Arch = Literal["amd64", "arm64"]
 Preset = Literal["codex", "claude-code", "openclaw", "hermes", "pi", "ubuntu"]
@@ -413,11 +414,13 @@ def _decompress_zstd(src: Path, dst: Path) -> None:
     reflink support.
     """
     from smolvm.host.disk import decompress_zstd_sparse
-
+    staging = dst.with_name(f".{dst.name}.{uuid4().hex}.partial")
     try:
-        decompress_zstd_sparse(src, dst, chunk_size=_SPARSE_DECOMPRESS_CHUNK_SIZE)
+        decompress_zstd_sparse(src, staging, chunk_size=_SPARSE_DECOMPRESS_CHUNK_SIZE)
+        staging.replace(dst)
     except OSError as exc:
-        (dst.parent / (dst.name + ".tmp")).unlink(missing_ok=True)
+        (staging.parent / (staging.name + ".tmp")).unlink(missing_ok=True)
+        staging.unlink(missing_ok=True)
         if _looks_like_zstd_decode_error(exc):
             import zstandard
 
