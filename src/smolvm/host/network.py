@@ -2352,10 +2352,23 @@ class NetworkManager:
 
     def cleanup_bridged_tap(self, tap_name: str, vm_id: str) -> None:
         """Delete a bridge TAP only after proving this sandbox owns it."""
-        if self._get_link_info(tap_name) is None:
-            return
-        self._require_owned_bridge_tap(tap_name, vm_id)
-        self.cleanup_tap(tap_name)
+        max_attempts = 4
+        for attempt in range(max_attempts):
+            if self._get_link_info(tap_name) is None:
+                return
+            # Recheck ownership before every retry so a same-named foreign
+            # replacement can never be deleted.
+            self._require_owned_bridge_tap(tap_name, vm_id)
+            self.cleanup_tap(tap_name)
+            if self._get_link_info(tap_name) is None:
+                return
+            if attempt < max_attempts - 1:
+                time.sleep(0.1 * (attempt + 1))
+
+        raise NetworkError(
+            f"Could not remove the network interface for sandbox '{vm_id}'; run "
+            f"'smolvm sandbox delete {vm_id}' again."
+        )
 
     async def async_cleanup_bridged_tap(self, tap_name: str, vm_id: str) -> None:
         """Delete an owned bridge TAP asynchronously."""

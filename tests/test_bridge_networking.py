@@ -597,6 +597,25 @@ class TestBridgedTapOwnership:
         create_tap.assert_not_called()
         set_master.assert_called_once_with("svmb1234", "br10")
 
+    def test_cleanup_retries_until_owned_tap_disappears(self) -> None:
+        from smolvm.host.network import NetworkManager
+
+        nm = NetworkManager()
+        owned = self._tap_info(alias="smolvm-bridge:vm001")
+        with (
+            patch.object(
+                nm,
+                "_get_link_info",
+                side_effect=[owned, owned, owned, owned, owned, None],
+            ),
+            patch.object(nm, "cleanup_tap") as cleanup_tap,
+            patch("smolvm.host.network.time.sleep") as sleep,
+        ):
+            nm.cleanup_bridged_tap("svmb1234", "vm001")
+
+        assert cleanup_tap.call_count == 2
+        sleep.assert_called_once()
+
     def test_cleanup_refuses_foreign_interface(self) -> None:
         from smolvm.exceptions import NetworkError
         from smolvm.host.network import NetworkManager

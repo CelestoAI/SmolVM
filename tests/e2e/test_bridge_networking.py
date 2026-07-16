@@ -200,6 +200,7 @@ def test_bridge_connectivity_restart_restore_and_delete(
     sandbox = SmolVM(config, ssh_key_path=ssh_key_path, comm_channel="vsock")
     restored: SmolVM | None = None
     tap_name: str | None = None
+    deleted = False
     try:
         sandbox.start(boot_timeout=BOOT_TIMEOUT)
         assert sandbox.status == VMState.RUNNING
@@ -243,12 +244,16 @@ def test_bridge_connectivity_restart_restore_and_delete(
         restored = SmolVM.from_snapshot(snapshot.snapshot_id, backend=backend, resume_vm=True)
         assert restored.run("echo restored-over-vsock").stdout.strip() == "restored-over-vsock"
         _assert_namespace_can_ping(bridge_lab)
+        restored.stop()
+        restored.delete()
+        deleted = True
     finally:
-        target = restored or sandbox
-        with suppress(Exception):
-            target.stop()
-        with suppress(Exception):
-            target.delete()
+        if not deleted:
+            target = restored or sandbox
+            with suppress(Exception):
+                target.stop()
+            with suppress(Exception):
+                target.delete()
 
     if tap_name is not None:
         assert _run_privileged("ip", "link", "show", tap_name, check=False).returncode != 0
