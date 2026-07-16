@@ -177,7 +177,7 @@ def _default_guest_os_for_backend(backend: str) -> GuestOS:
 def _qcow2_virtual_size_mib(qcow2_path: Path) -> int:
     """Return the guest-visible virtual size of a qcow2 image in MiB."""
     result = subprocess.run(
-        ["qemu-img", "info", "--output=json", str(qcow2_path)],
+        ["qemu-img", "info", "-U", "--output=json", str(qcow2_path)],
         check=True,
         capture_output=True,
         text=True,
