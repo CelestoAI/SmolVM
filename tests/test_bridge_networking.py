@@ -528,6 +528,7 @@ class TestBridgedTapOwnership:
                 nm,
                 "_get_link_info",
                 side_effect=[
+                    None,
                     self._tap_info(alias=""),
                     self._tap_info(alias="smolvm-bridge:vm001", master="br10"),
                 ],
@@ -559,7 +560,7 @@ class TestBridgedTapOwnership:
                 "inspect_bridge",
                 return_value=BridgeInspection("br10", True),
             ),
-            patch.object(nm, "create_tap", return_value=False),
+            patch.object(nm, "create_tap", return_value=False) as create_tap,
             patch.object(
                 nm,
                 "_get_link_info",
@@ -571,8 +572,30 @@ class TestBridgedTapOwnership:
         ):
             nm.prepare_bridged_tap("svmb1234", "br10", "vm001")
 
+        create_tap.assert_not_called()
         set_master.assert_not_called()
         cleanup_tap.assert_not_called()
+
+    def test_prepare_reuses_existing_owned_tap_without_recreating(self) -> None:
+        from smolvm.host.network import BridgeInspection, NetworkManager
+
+        nm = NetworkManager()
+        owned = self._tap_info(alias="smolvm-bridge:vm001", master="br10")
+        with (
+            patch.object(
+                nm,
+                "inspect_bridge",
+                return_value=BridgeInspection("br10", True),
+            ),
+            patch.object(nm, "create_tap") as create_tap,
+            patch.object(nm, "_get_link_info", return_value=owned),
+            patch.object(nm, "_set_tap_master") as set_master,
+            patch("smolvm.host.network.run_command"),
+        ):
+            nm.prepare_bridged_tap("svmb1234", "br10", "vm001", user="alice")
+
+        create_tap.assert_not_called()
+        set_master.assert_called_once_with("svmb1234", "br10")
 
     def test_cleanup_refuses_foreign_interface(self) -> None:
         from smolvm.exceptions import NetworkError

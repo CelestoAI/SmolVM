@@ -2279,7 +2279,24 @@ class NetworkManager:
             vm_id,
             user,
         )
-        created = self.create_tap(tap_name, user)
+        created = False
+        validated_existing = False
+        existing_link = self._get_link_info(tap_name)
+        if existing_link is not None:
+            self._require_owned_bridge_tap(tap_name, vm_id)
+            validated_existing = True
+        else:
+            try:
+                created = self.create_tap(tap_name, user)
+            except SmolVMError:
+                # Another lifecycle call may have created the reserved TAP
+                # after our read. Reuse it only if the ownership marker proves
+                # it belongs to this sandbox; otherwise preserve the failure.
+                if self._get_link_info(tap_name) is None:
+                    raise
+                self._require_owned_bridge_tap(tap_name, vm_id)
+                validated_existing = True
+
         try:
             if created:
                 link_info = self._get_link_info(tap_name)
@@ -2304,7 +2321,7 @@ class NetworkManager:
                     ],
                     use_sudo=True,
                 )
-            else:
+            elif not validated_existing:
                 self._require_owned_bridge_tap(tap_name, vm_id)
 
             self._set_tap_master(tap_name, bridge_name)
