@@ -127,6 +127,17 @@ def bridge_lab() -> _BridgeLab:
         _run_privileged("ip", "link", "del", lab.uplink, check=False)
 
 
+def _wait_for_guest_network_init(sandbox: SmolVM, *, timeout: float = 30.0) -> None:
+    """Wait until PID 1 finishes its initial DHCP/static-network attempt."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = sandbox.run("grep -q 'stage=net-ready' /var/log/smolvm-boot.log")
+        if result.exit_code == 0:
+            return
+        time.sleep(0.25)
+    pytest.fail("Guest init did not finish its network setup before the timeout.")
+
+
 def _assert_namespace_can_ping(lab: _BridgeLab, *, timeout: float = 15.0) -> None:
     """Wait for guest init and bridge forwarding to make the guest reachable."""
     deadline = time.monotonic() + timeout
@@ -193,18 +204,21 @@ def test_bridge_connectivity_restart_restore_and_delete(
         sandbox.start(boot_timeout=BOOT_TIMEOUT)
         assert sandbox.status == VMState.RUNNING
         assert sandbox.run("echo managed-over-vsock").stdout.strip() == "managed-over-vsock"
+        # The guest agent intentionally starts before networking. Wait for the
+        # no-DHCP-server attempt to finish before replacing it with static setup.
+        _wait_for_guest_network_init(sandbox)
 
         configure = sandbox.run(
             "mkdir -p /etc/smolvm\n"
             "cat > /etc/smolvm/network.sh <<'EOF'\n"
             "#!/bin/sh\n"
+            "set -e\n"
             'ip addr flush dev "$1"\n'
             f'ip addr add {bridge_lab.guest_ip}/24 dev "$1"\n'
             'ip link set "$1" up\n'
             "EOF\n"
             "chmod +x /etc/smolvm/network.sh\n"
-            "/etc/smolvm/network.sh eth0\n"
-            "sync"
+            "/etc/smolvm/network.sh eth0 && sync"
         )
         assert configure.exit_code == 0, configure.stderr
         assert sandbox.run(f"ping -c 1 -W 3 {bridge_lab.peer_ip}").exit_code == 0
