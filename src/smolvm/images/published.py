@@ -406,7 +406,7 @@ def _decompressed_rootfs_sidecar_value(rootfs_sha256: str) -> str:
 
 
 def _decompress_zstd(src: Path, dst: Path) -> None:
-    """Stream-decompress a zstd file. Writes to a sibling ``.tmp`` then renames.
+    """Stream-decompress a zstd file through a unique sibling staging path.
 
     Published raw ext4 images contain large zeroed regions. Keep those regions
     sparse in the local cache so Firecracker isolated-disk materialization does

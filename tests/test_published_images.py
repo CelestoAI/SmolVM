@@ -17,7 +17,9 @@
 import hashlib
 import re
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -933,15 +935,53 @@ class TestDecompressZstd:
         """Published image decompression should go through the disk switchboard."""
         src = tmp_path / "rootfs.ext4.zst"
         dst = tmp_path / "rootfs.ext4"
+        staging = tmp_path / ".rootfs.ext4.test-uuid.partial"
 
-        with patch("smolvm.host.disk.decompress_zstd_sparse") as mock_decompress:
+        def write_staging(_src: Path, target: Path, *, chunk_size: int) -> None:
+            assert chunk_size == published_module._SPARSE_DECOMPRESS_CHUNK_SIZE
+            target.write_bytes(b"decompressed")
+
+        with (
+            patch("smolvm.images.published.uuid4") as mock_uuid4,
+            patch(
+                "smolvm.host.disk.decompress_zstd_sparse",
+                side_effect=write_staging,
+            ) as mock_decompress,
+        ):
+            mock_uuid4.return_value.hex = "test-uuid"
             _decompress_zstd(src, dst)
 
         mock_decompress.assert_called_once_with(
             src,
-            dst,
+            staging,
             chunk_size=published_module._SPARSE_DECOMPRESS_CHUNK_SIZE,
         )
+        assert dst.read_bytes() == b"decompressed"
+        assert not staging.exists()
+
+    def test_concurrent_decompression_uses_independent_staging_files(self, tmp_path: Path) -> None:
+        """Concurrent cold-cache callers must not share helper temp files."""
+        src = tmp_path / "rootfs.ext4.zst"
+        dst = tmp_path / "rootfs.ext4"
+        callers = 4
+        ready = Barrier(callers)
+
+        def decompress(_src: Path, target: Path, *, chunk_size: int) -> None:
+            assert chunk_size == published_module._SPARSE_DECOMPRESS_CHUNK_SIZE
+            helper_tmp = target.with_name(target.name + ".tmp")
+            helper_tmp.write_bytes(target.name.encode())
+            ready.wait(timeout=5)
+            helper_tmp.replace(target)
+
+        with (
+            patch("smolvm.host.disk.decompress_zstd_sparse", side_effect=decompress),
+            ThreadPoolExecutor(max_workers=callers) as executor,
+        ):
+            list(executor.map(lambda _: _decompress_zstd(src, dst), range(callers)))
+
+        assert dst.exists()
+        assert not list(tmp_path.glob("*.partial"))
+        assert not list(tmp_path.glob("*.partial.tmp"))
 
     def test_decompress_zstd_preserves_sparse_zero_ranges(self, tmp_path: Path) -> None:
         """Published raw ext4 caches should keep large zero regions sparse."""
@@ -978,15 +1018,21 @@ class TestDecompressZstd:
 
         src = tmp_path / "corrupt.ext4.zst"
         dst = tmp_path / "corrupt.ext4"
-        (dst.parent / (dst.name + ".tmp")).write_bytes(b"partial")
+        staging = tmp_path / ".corrupt.ext4.test-uuid.partial"
+        helper_tmp = staging.with_name(staging.name + ".tmp")
+        helper_tmp.write_bytes(b"partial")
 
         with (
+            patch("smolvm.images.published.uuid4") as mock_uuid4,
             patch(
                 "smolvm.host.disk.decompress_zstd_sparse",
                 side_effect=OSError("Unknown frame descriptor"),
             ),
             pytest.raises(zstandard.ZstdError, match="Unknown frame descriptor"),
         ):
+            mock_uuid4.return_value.hex = "test-uuid"
             _decompress_zstd(src, dst)
 
-        assert not (dst.parent / (dst.name + ".tmp")).exists()
+        assert not dst.exists()
+        assert not staging.exists()
+        assert not helper_tmp.exists()
