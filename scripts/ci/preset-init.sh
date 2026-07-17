@@ -82,6 +82,39 @@ chmod 1777 /tmp
 
 log_ts "root-ready"
 
+# ── Nested SmolVM guest identity ─────────────────────────────
+# Mark this as a SmolVM guest so nested smolvm invocations auto-select
+# QEMU+TCG instead of Firecracker, and skip vsock (no /dev/vhost-vsock).
+# /run is tmpfs and is cleared on reboot, but preset-init.sh runs as PID 1
+# on every boot, so this touch recreates the marker on every startup.
+touch /run/smolvm-guest
+
+# ── pip system-wide config ───────────────────────────────────
+# Allow pip to install into the system Python without --break-system-packages.
+# This makes `pip install smolvm` work out of the box inside a sandbox.
+if [ ! -f /etc/pip.conf ]; then
+    printf '[global]\nbreak-system-packages = true\n' > /etc/pip.conf
+fi
+
+# ── Nested SmolVM environment ────────────────────────────────
+# Write key env vars to /etc/environment so they apply to all sessions
+# (SSH non-login, subprocesses, etc.) without requiring profile.d sourcing.
+# Each key is upserted individually so partial state from a previous boot
+# or a hand-edited file gets corrected rather than silently skipped.
+_upsert_env() {
+    local key="$1" value="$2"
+    if grep -q "^${key}=" /etc/environment 2>/dev/null; then
+        sed -i "s|^${key}=.*|${key}=${value}|" /etc/environment
+    else
+        echo "${key}=${value}" >> /etc/environment
+    fi
+}
+_upsert_env SMOLVM_NESTED 1
+_upsert_env SMOLVM_BACKEND qemu
+_upsert_env SMOLVM_QEMU_ACCEL tcg
+_upsert_env SMOLVM_BOOT_TIMEOUT 300
+_upsert_env PIP_BREAK_SYSTEM_PACKAGES 1
+
 # ── Guest agent (vsock control plane) ────────────────────────
 # Started before networking and sshd, so explicit-vsock sandboxes can become
 # ready without waiting for SSH host-key generation or network setup. SSH-only

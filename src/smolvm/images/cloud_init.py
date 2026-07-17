@@ -37,8 +37,14 @@ users:
     shell: /bin/bash
     ssh_authorized_keys:
       - {ssh_public_key}
+package_update: true
+packages:
+  - python3-pip
+  - python3-venv
+  - openssh-client
 bootcmd:
   - mkdir -p /etc/systemd/resolved.conf.d
+  - touch /run/smolvm-guest
   - ['sh', '-c', '{dns_cmd}']
   - ['systemctl', 'restart', 'systemd-resolved']
   - ['systemctl', 'restart', 'systemd-timesyncd']
@@ -53,8 +59,31 @@ write_files:
     content: |
       #!/bin/sh
       printf '\\n  SmolVM Sandbox — powered by Celesto AI\\n  https://celesto.ai\\n\\n'
+  - path: /etc/pip.conf
+    permissions: "0644"
+    content: |
+      [global]
+      break-system-packages = true
+  - path: /etc/environment
+    permissions: "0644"
+    append: true
+    content: |
+      SMOLVM_NESTED=1
+      SMOLVM_BACKEND=qemu
+      SMOLVM_QEMU_ACCEL=tcg
+      SMOLVM_BOOT_TIMEOUT=300
+      PIP_BREAK_SYSTEM_PACKAGES=1
+  - path: /etc/profile.d/smolvm_nested.sh
+    permissions: "0644"
+    content: |
+      export SMOLVM_NESTED=1
+      export SMOLVM_BACKEND=qemu
+      export SMOLVM_QEMU_ACCEL=tcg
+      export SMOLVM_BOOT_TIMEOUT=300
+      export PIP_BREAK_SYSTEM_PACKAGES=1
 runcmd:
   - rm -f /etc/update-motd.d/10-help-text /etc/update-motd.d/60-unminimize
+  - ['sh', '-lc', 'command -v pip >/dev/null || ln -sf /usr/bin/pip3 /usr/local/bin/pip']
   - >
     systemctl restart ssh || systemctl restart sshd ||
     service ssh restart || service sshd restart || true

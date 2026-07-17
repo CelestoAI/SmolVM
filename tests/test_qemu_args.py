@@ -40,8 +40,21 @@ from smolvm.types import (
 
 
 @pytest.fixture(autouse=True)
-def _clear_qemu_machine_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def _clear_qemu_machine_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("SMOLVM_QEMU_MACHINE", raising=False)
+    # Simulate a Linux host with KVM and no nested-guest marker.
+    # Tests that need different behaviour (Darwin, TCG, nested) override these.
+    monkeypatch.delenv("SMOLVM_NESTED", raising=False)
+    monkeypatch.delenv("SMOLVM_QEMU_ACCEL", raising=False)
+    import smolvm.runtime.backends as _be
+    import smolvm.runtime.qemu_args as _qa
+
+    # Make _KVM_DEV point to a real file so "Linux" tests see KVM as available.
+    kvm_fake = tmp_path / "kvm"
+    kvm_fake.touch()
+    monkeypatch.setattr(_qa, "_KVM_DEV", kvm_fake)
+    # Make the nested-guest marker point to a non-existent path.
+    monkeypatch.setattr(_be, "_SMOLVM_GUEST_MARKER", tmp_path / "no-smolvm-guest")
 
 
 def _qemu_vm_info(
