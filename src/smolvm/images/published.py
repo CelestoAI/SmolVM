@@ -40,13 +40,13 @@ import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
 
 from smolvm import __version__
 from smolvm.exceptions import ImageError
 from smolvm.images.manager import ImageManager, ImageSource, LocalImage
-from uuid import uuid4
 
 Arch = Literal["amd64", "arm64"]
 Preset = Literal["codex", "claude-code", "openclaw", "hermes", "pi", "ubuntu"]
