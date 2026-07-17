@@ -414,6 +414,7 @@ def _decompress_zstd(src: Path, dst: Path) -> None:
     reflink support.
     """
     from smolvm.host.disk import decompress_zstd_sparse
+
     staging = dst.with_name(f".{dst.name}.{uuid4().hex}.partial")
     try:
         decompress_zstd_sparse(src, staging, chunk_size=_SPARSE_DECOMPRESS_CHUNK_SIZE)
