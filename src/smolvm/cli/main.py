@@ -107,7 +107,7 @@ class CreateNextPayload(TypedDict):
     """Suggested follow-up actions for ``smolvm sandbox create``."""
 
     shell_command: str
-    ssh_command: str
+    ssh_command: str | None
     info_command: str
 
 
@@ -129,6 +129,8 @@ class InfoVmPayload(TypedDict):
     memory: int
     memory_used: int | None
     disk_size: int | None
+    network_mode: str
+    bridge: str | None
 
 
 class InfoPayload(TypedDict):
@@ -142,6 +144,7 @@ class CreatePayload(TypedDict):
 
     vm: CreateVmPayload
     next: CreateNextPayload
+    warnings: list[str]
 
 
 class StartPresetPayload(TypedDict):
@@ -388,12 +391,13 @@ def _vm_rows(vms: Sequence[VMInfo]) -> list[VmRow]:
     rows: list[VmRow] = []
     for vm in vms:
         network = vm.network
+        ip_address = network.guest_ip if network else None
         rows.append(
             {
                 "name": vm.vm_id,
                 "status": vm.status.value,
                 "pid": vm.pid,
-                "ip_address": network.guest_ip if network else None,
+                "ip_address": ip_address,
                 "ssh_port": network.ssh_host_port if network else None,
                 "warnings": _vm_warnings(vm),
             }
@@ -584,6 +588,9 @@ def _query_live_vm_info(vm: VMInfo) -> dict[str, object]:
     if network is None:
         return {}
 
+    if network.mode == "bridge":
+        return {}
+
     if network.ssh_host_port is not None:
         host, port = "127.0.0.1", network.ssh_host_port
     else:
@@ -656,19 +663,23 @@ def _info_payload(vm: VMInfo, *, live_data: dict[str, object] | None = None) -> 
     os_value = live.get("os") or _guess_os_from_paths(vm)
     memory_used = live.get("memory_used")
 
+    ip_address = network.guest_ip if network else None
+
     return {
         "vm": {
             "name": vm.vm_id,
             "status": vm.status.value,
             "os": str(os_value) if os_value else None,
             "backend": config.backend or "auto",
-            "ip_address": network.guest_ip if network else None,
+            "ip_address": ip_address,
             "ssh_port": network.ssh_host_port if network else None,
             "pid": vm.pid,
             "vcpus": config.vcpu_count,
             "memory": config.memory,
             "memory_used": memory_used if isinstance(memory_used, int) else None,
             "disk_size": disk_size,
+            "network_mode": network.mode if network else "nat",
+            "bridge": network.bridge if network else None,
         }
     }
 
@@ -695,7 +706,15 @@ def _render_info_result(data: InfoPayload) -> None:
     )
     details.add_row("OS", str(vm_data["os"] or "-"))
     details.add_row("Backend", str(vm_data["backend"]))
-    details.add_row("IP Address", str(vm_data["ip_address"] or "-"))
+    details.add_row("Network Mode", str(vm_data["network_mode"]))
+    if vm_data["bridge"]:
+        details.add_row("Bridge", str(vm_data["bridge"]))
+    ip_value = (
+        "Managed inside guest"
+        if vm_data["network_mode"] == "bridge"
+        else str(vm_data["ip_address"] or "-")
+    )
+    details.add_row("IP Address", ip_value)
     details.add_row(
         "SSH Port",
         str(vm_data["ssh_port"]) if vm_data["ssh_port"] is not None else "-",
@@ -764,8 +783,11 @@ def _render_create_result(data: CreatePayload) -> None:
     details.add_row("Started", _format_started_at(vm_data["started_at"]))
     console.print(details)
     console.print(f"Next: [bold]{next_step['shell_command']}[/bold]")
-    console.print(f"SSH:  [bold]{next_step['ssh_command']}[/bold]")
+    if next_step["ssh_command"] is not None:
+        console.print(f"SSH:  [bold]{next_step['ssh_command']}[/bold]")
     console.print(f"Info: [bold]{next_step['info_command']}[/bold]")
+    for warning in data["warnings"]:
+        console.print(f"Warning: {warning}", style="yellow")
 
 
 def _build_and_boot_with_progress(
@@ -778,6 +800,8 @@ def _build_and_boot_with_progress(
     wait_for_control_channel: bool = False,
     mounts: list[str] | None = None,
     writable_mounts: bool = False,
+    network_mode: str | None = None,
+    bridge_name: str | None = None,
 ) -> object:
     """Build a VM config and boot it, showing a Rich progress bar.
 
@@ -813,6 +837,9 @@ def _build_and_boot_with_progress(
 
         prepare_task = progress.add_task(prepare_message, total=None)
         config, ssh_key_path = _build_fn(on_download)
+        config = _apply_network_attachment(
+            config, network_mode=network_mode, bridge_name=bridge_name
+        )
         progress.remove_task(prepare_task)
 
         # One task that re-labels as the boot pipeline progresses
@@ -860,6 +887,68 @@ def _wait_after_create(
         vm.wait_for_ssh(timeout=boot_timeout, on_progress=on_progress)
         return
     vm.wait_for_ready(timeout=boot_timeout, on_progress=on_progress)
+
+
+def _apply_network_attachment(
+    config: Any,
+    *,
+    network_mode: str | None,
+    bridge_name: str | None,
+) -> Any:
+    """Apply --network/--bridge options to a VMConfig."""
+    if network_mode is None or network_mode == "nat":
+        if bridge_name is not None:
+            raise ValueError(
+                "--bridge requires --network bridge; drop --bridge or pass --network bridge."
+            )
+        return config
+    if network_mode == "bridge":
+        if not bridge_name:
+            raise ValueError(
+                "--network bridge requires --bridge <bridge_name>; "
+                "e.g. --network bridge --bridge br10."
+            )
+        from smolvm.types import NetworkAttachmentConfig
+
+        return config.model_copy(
+            update={
+                "network_attachment": NetworkAttachmentConfig(
+                    mode="bridge",
+                    bridge=bridge_name,
+                )
+            }
+        )
+    return config
+
+
+def _run_bridge_check(args: SimpleNamespace) -> int:
+    """Handle ``smolvm bridge check``."""
+    from smolvm.host.network import NetworkManager
+
+    bridge_name = args.bridge_name
+    json_output = getattr(args, "json", False)
+
+    try:
+        nm = NetworkManager()
+        inspection = nm.inspect_bridge(bridge_name)
+        if json_output:
+            emit_json(
+                "bridge.check",
+                0 if inspection.ok else 1,
+                data={
+                    "bridge": bridge_name,
+                    "ok": inspection.ok,
+                    "reason": inspection.reason or None,
+                },
+            )
+        else:
+            if inspection.ok:
+                click.echo(f"Bridge '{bridge_name}' is ready for bridged networking.")
+            else:
+                click.echo(f"Bridge '{bridge_name}' is not ready: {inspection.reason}")
+        return 0 if inspection.ok else 1
+    except Exception as exc:
+        return _emit_cli_error("bridge.check", 1, exc, json_output=json_output)
 
 
 def _run_create(args: SimpleNamespace) -> int:
@@ -956,6 +1045,8 @@ def _run_create(args: SimpleNamespace) -> int:
                     wait_for_control_channel=True,
                     mounts=args.mounts,
                     writable_mounts=args.writable_mounts,
+                    network_mode=getattr(args, "network_mode", None),
+                    bridge_name=getattr(args, "bridge_name", None),
                 )
             else:
                 config, ssh_key_path = _build_local_image_config(
@@ -966,6 +1057,11 @@ def _run_create(args: SimpleNamespace) -> int:
                     memory=args.memory_mib,
                     ssh_key_path=None,
                     vm_name=args.name,
+                )
+                config = _apply_network_attachment(
+                    config,
+                    network_mode=getattr(args, "network_mode", None),
+                    bridge_name=getattr(args, "bridge_name", None),
                 )
                 vm_kwargs: dict[str, Any] = {
                     "ssh_key_path": ssh_key_path,
@@ -1002,6 +1098,8 @@ def _run_create(args: SimpleNamespace) -> int:
                     wait_for_control_channel=True,
                     mounts=args.mounts,
                     writable_mounts=args.writable_mounts,
+                    network_mode=getattr(args, "network_mode", None),
+                    bridge_name=getattr(args, "bridge_name", None),
                 )
             else:
                 config, ssh_key_path = _build_s3_image_config(
@@ -1011,6 +1109,11 @@ def _run_create(args: SimpleNamespace) -> int:
                     qemu_machine=args.qemu_machine,
                     memory=args.memory_mib,
                     ssh_key_path=None,
+                )
+                config = _apply_network_attachment(
+                    config,
+                    network_mode=getattr(args, "network_mode", None),
+                    bridge_name=getattr(args, "bridge_name", None),
                 )
                 vm_kwargs = {
                     "ssh_key_path": ssh_key_path,
@@ -1048,6 +1151,8 @@ def _run_create(args: SimpleNamespace) -> int:
                     wait_for_control_channel=True,
                     mounts=args.mounts,
                     writable_mounts=args.writable_mounts,
+                    network_mode=getattr(args, "network_mode", None),
+                    bridge_name=getattr(args, "bridge_name", None),
                 )
             else:
                 config, ssh_key_path = _build_auto_config(
@@ -1058,6 +1163,11 @@ def _run_create(args: SimpleNamespace) -> int:
                     memory=args.memory_mib,
                     disk_size_mib=args.disk_size_mib,
                     ssh_key_path=None,
+                )
+                config = _apply_network_attachment(
+                    config,
+                    network_mode=getattr(args, "network_mode", None),
+                    bridge_name=getattr(args, "bridge_name", None),
                 )
                 vm_kwargs = {
                     "ssh_key_path": ssh_key_path,
@@ -1075,6 +1185,8 @@ def _run_create(args: SimpleNamespace) -> int:
                 )
 
         os_label = "s3-image" if use_s3_image else resolved_guest_os.value
+        network = vm.info.network
+        is_bridge = network is not None and getattr(network, "mode", "nat") == "bridge"
         data: CreatePayload = {
             "vm": {
                 "name": vm.vm_id,
@@ -1088,9 +1200,17 @@ def _run_create(args: SimpleNamespace) -> int:
             },
             "next": {
                 "shell_command": f"smolvm sandbox shell {vm.vm_id}",
-                "ssh_command": f"smolvm sandbox ssh {vm.vm_id}",
+                "ssh_command": (None if is_bridge else f"smolvm sandbox ssh {vm.vm_id}"),
                 "info_command": f"smolvm sandbox info {vm.vm_id}",
             },
+            "warnings": (
+                [
+                    f"The guest manages its own network address; if it did not receive one, "
+                    f"run 'smolvm sandbox shell {vm.vm_id}' to configure it."
+                ]
+                if is_bridge
+                else []
+            ),
         }
 
         if args.json:
@@ -1452,6 +1572,8 @@ def _run_start(args: SimpleNamespace) -> int:
                 wait_for_control_channel=True,
                 mounts=args.mounts,
                 writable_mounts=args.writable_mounts,
+                network_mode=getattr(args, "network_mode", None),
+                bridge_name=getattr(args, "bridge_name", None),
             )
             apply_summary = _apply_preset_with_progress(
                 console=console,
@@ -1469,6 +1591,11 @@ def _run_start(args: SimpleNamespace) -> int:
                 memory=memory_mib,
                 disk_size_mib=disk_size_mib,
                 ssh_key_path=None,
+            )
+            config = _apply_network_attachment(
+                config,
+                network_mode=getattr(args, "network_mode", None),
+                bridge_name=getattr(args, "bridge_name", None),
             )
             vm = SmolVM(
                 config,

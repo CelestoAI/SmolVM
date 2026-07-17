@@ -3,8 +3,8 @@
 # Unlike the unit suite (which mocks the hypervisor) and smoke-published-images
 # (which shells out to raw qemu), this boots actual micro-VMs *through the
 # SmolVM Python API* and walks their lifecycle — start, exec, file
-# upload/download, pause/resume, snapshot/restore, stop/cleanup. QEMU and
-# Firecracker are both exercised over SSH and vsock.
+# upload/download, pause/resume, snapshot/restore, stop/cleanup, and direct
+# bridge connectivity. QEMU and Firecracker are both exercised over SSH and vsock.
 #
 # GH-hosted ubuntu-latest (x86) exposes /dev/kvm, so this runs with hardware
 # acceleration. The suite gates review-ready PRs and pushes to main; the
@@ -124,6 +124,11 @@ jobs:
           sudo bash scripts/system-setup.sh \
             --configure-runtime \
             --runtime-user "$USER"
+
+      - name: Install bridge test tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends iproute2 iputils-ping
 
       - name: Enable KVM and optional vsock
         run: |

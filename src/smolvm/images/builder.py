@@ -1657,36 +1657,79 @@ netmask_to_prefix() {{
 }}
 
 IP_CONFIG=$(cat /proc/cmdline | tr ' ' '\n' | grep '^ip=' | head -1)
-if [ -n "$IP_CONFIG" ]; then
-    IP_FIELDS=$(echo "$IP_CONFIG" | cut -d= -f2-)
-    GUEST_IP=$(echo "$IP_FIELDS" | cut -d: -f1)
-    GATEWAY=$(echo "$IP_FIELDS" | cut -d: -f3)
-    NETMASK=$(echo "$IP_FIELDS" | cut -d: -f4)
+GUEST_MANAGED=$(cat /proc/cmdline | tr ' ' '\n' | grep '^smolvm.network=guest' | head -1)
+
+configure_guest_managed_network() {{
+    ip link set lo up
+
+    # A custom hook is the authoritative static/DHCP configuration supplied
+    # inside the image. The interface name is passed as its first argument.
+    if [ -x /etc/smolvm/network.sh ]; then
+        /etc/smolvm/network.sh eth0
+        return $?
+    fi
+
+    # Respect a conventional interfaces file when this image ships ifup.
+    if command -v ifup >/dev/null 2>&1 \
+        && grep -Eq '^[[:space:]]*iface[[:space:]]+eth0' /etc/network/interfaces 2>/dev/null \
+        && ifup eth0; then
+        return
+    fi
+
+    # SmolVM-provided images use guest-side DHCP when no static hook exists.
+    ip link set eth0 up 2>/dev/null || true
+    if command -v udhcpc >/dev/null 2>&1 && udhcpc -q -n -t 5 -i eth0; then
+        return
+    fi
+    if command -v dhclient >/dev/null 2>&1 && dhclient -1 eth0; then
+        return
+    fi
+
+    echo "SmolVM init: eth0 has no guest network configuration; add /etc/smolvm/network.sh" >&2
+    return 1
+}}
+
+if [ -n "$GUEST_MANAGED" ]; then
+    if configure_guest_managed_network; then
+        log_ts "net-ready"
+    else
+        log_ts "net-config-failed"
+    fi
+    hostname {custom_hostname}
+    log_ts "net-config-done"
 else
-    GUEST_IP="172.16.0.2"
-    GATEWAY="172.16.0.1"
-    NETMASK="255.255.255.0"
+    if [ -n "$IP_CONFIG" ]; then
+        IP_FIELDS=$(echo "$IP_CONFIG" | cut -d= -f2-)
+        GUEST_IP=$(echo "$IP_FIELDS" | cut -d: -f1)
+        GATEWAY=$(echo "$IP_FIELDS" | cut -d: -f3)
+        NETMASK=$(echo "$IP_FIELDS" | cut -d: -f4)
+    else
+        GUEST_IP="172.16.0.2"
+        GATEWAY="172.16.0.1"
+        NETMASK="255.255.255.0"
+    fi
+
+    PREFIX=$(netmask_to_prefix "$NETMASK") || PREFIX=24
+
+    ip link set lo up
+    ip link set eth0 up 2>/dev/null || true
+    ip addr add "${{GUEST_IP}}/${{PREFIX}}" dev eth0 2>/dev/null || true
+    ip route add default via "${{GATEWAY}}" dev eth0 2>/dev/null || true
+
+    # DNS
+    if [ -n "$GATEWAY" ]; then
+        echo "nameserver ${{GATEWAY}}" > /etc/resolv.conf
+        echo "nameserver 8.8.8.8" >> /etc/resolv.conf
+        echo "nameserver 8.8.4.4" >> /etc/resolv.conf
+    else
+        echo "nameserver 8.8.8.8" > /etc/resolv.conf
+        echo "nameserver 8.8.4.4" >> /etc/resolv.conf
+    fi
+
+    hostname {custom_hostname}
+    log_ts "net-config-done"
+    log_ts "net-ready"
 fi
-
-PREFIX=$(netmask_to_prefix "$NETMASK") || PREFIX=24
-
-ip link set lo up
-ip link set eth0 up
-ip addr add "${{GUEST_IP}}/${{PREFIX}}" dev eth0 2>/dev/null || true
-ip route add default via "${{GATEWAY}}" dev eth0 2>/dev/null || true
-
-# DNS
-if [ -n "$GATEWAY" ]; then
-    echo "nameserver ${{GATEWAY}}" > /etc/resolv.conf
-    echo "nameserver 8.8.8.8" >> /etc/resolv.conf
-    echo "nameserver 8.8.4.4" >> /etc/resolv.conf
-else
-    echo "nameserver 8.8.8.8" > /etc/resolv.conf
-    echo "nameserver 8.8.4.4" >> /etc/resolv.conf
-fi
-
-hostname {custom_hostname}
-log_ts "net-ready"
 
 # ── Clock sync (host-sleep drift) ────────────────────────────
 # The guest tracks time with its own clocksource (the TSC under

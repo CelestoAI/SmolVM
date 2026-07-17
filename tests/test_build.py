@@ -82,6 +82,54 @@ def test_preset_init_script_uses_cmdline_netmask_and_gateway_dns() -> None:
     assert 'ip addr add "${GUEST_IP}/24"' not in script
 
 
+@pytest.mark.parametrize(
+    "script",
+    [
+        ImageBuilder()._default_init_script(),
+        Path("scripts/ci/preset-init.sh").read_text(),
+    ],
+)
+def test_init_script_honors_guest_network_hook_then_dhcp(script: str) -> None:
+    assert "smolvm.network=guest" in script
+    assert "/etc/smolvm/network.sh eth0" in script
+    assert "ifup eth0" in script
+    assert "udhcpc -q -n -t 5 -i eth0" in script
+    assert "dhclient -1 eth0" in script
+    assert 'log_ts "net-config-failed"' in script
+    assert "if configure_guest_managed_network; then" in script
+    assert script.index("/etc/smolvm/network.sh eth0") < script.index("udhcpc -q -n")
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        ImageBuilder()._default_init_script(),
+        Path("scripts/ci/preset-init.sh").read_text(),
+    ],
+)
+def test_guest_network_setup_returns_failure_when_no_configuration_works(
+    script: str,
+    tmp_path: Path,
+) -> None:
+    start = script.index("configure_guest_managed_network()")
+    end = script.index('\n}\n\nif [ -n "$GUEST_MANAGED" ]', start) + 3
+    function = script[start:end]
+    fake_ip = tmp_path / "ip"
+    fake_ip.write_text("#!/bin/sh\nexit 0\n")
+    fake_ip.chmod(0o755)
+
+    result = subprocess.run(
+        ["/bin/sh", "-c", f"{function}\nconfigure_guest_managed_network"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={"PATH": str(tmp_path)},
+    )
+
+    assert result.returncode == 1
+    assert "no guest network configuration" in result.stderr
+
+
 def test_base_init_script_keeps_tmp_on_root_disk() -> None:
     script = ImageBuilder()._default_init_script()
 

@@ -14,6 +14,7 @@
 
 """Core types and Pydantic models for SmolVM SDK."""
 
+import re
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -317,6 +318,52 @@ class InternetSettings(BaseModel):
     model_config = {"frozen": True}
 
 
+class NetworkAttachmentConfig(BaseModel):
+    """Product-level network attachment mode for a VM.
+
+    Attributes:
+        mode: ``"nat"`` (default) keeps the current SmolVM private network
+            with NAT, port forwarding, and domain controls. ``"bridge"``
+            connects the VM directly to an existing host bridge so it
+            appears as a regular machine on that network.
+        bridge: Name of the Linux bridge to attach to. Required when
+            ``mode="bridge"``; rejected when ``mode="nat"``.
+    """
+
+    mode: Literal["nat", "bridge"] = "nat"
+    bridge: str | None = None
+
+    @field_validator("bridge")
+    @classmethod
+    def validate_bridge_name(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            raise ValueError("bridge name cannot be empty or whitespace")
+        if len(v) > 15:
+            raise ValueError(f"bridge name must be 15 bytes or fewer (got {len(v)} bytes: {v!r})")
+        if not re.match(r"^[a-zA-Z0-9_.-]+$", v):
+            raise ValueError(
+                f"bridge name contains characters that are not valid in a Linux "
+                f"interface name: {v!r}"
+            )
+        return v
+
+    @model_validator(mode="after")
+    def _check_mode_bridge_consistency(self) -> "NetworkAttachmentConfig":
+        if self.mode == "bridge" and self.bridge is None:
+            raise ValueError("mode='bridge' requires a bridge name")
+        if self.mode == "nat" and self.bridge is not None:
+            raise ValueError(
+                "mode='nat' does not accept a bridge name; "
+                "use mode='bridge' with --bridge to connect to a host bridge"
+            )
+        return self
+
+    model_config = {"frozen": True}
+
+
 class VMConfig(BaseModel):
     """Configuration for creating a microVM.
 
@@ -381,6 +428,10 @@ class VMConfig(BaseModel):
             ``smolvm.authorized_key_b64=<base64>`` and read by ``/init``. Use
             this for published pre-built images that don't bake keys at build
             time, so each VM gets the launching user's key without rebuilding.
+        guest_managed_networking: Whether the guest image understands
+            ``smolvm.network=guest`` and can configure its own interface.
+            Required for bridge mode so older cached or custom images cannot
+            silently boot without usable networking.
     """
 
     vm_id: Annotated[
@@ -416,6 +467,8 @@ class VMConfig(BaseModel):
     internet_settings: InternetSettings | None = None
     workspace_mounts: list[WorkspaceMount] = []
     ssh_public_key: str | None = None
+    guest_managed_networking: bool = False
+    network_attachment: NetworkAttachmentConfig = Field(default_factory=NetworkAttachmentConfig)
 
     @property
     def effective_rootfs_format(self) -> RootfsFormat:
@@ -487,6 +540,36 @@ class VMConfig(BaseModel):
         if not _should_validate_paths(info):
             return v
         return cls._validate_file_path(v)
+
+    @model_validator(mode="after")
+    def _check_bridge_mode_constraints(self) -> "VMConfig":
+        """Reject feature combinations not supported by bridge mode in v1."""
+        if self.network_attachment.mode != "bridge":
+            return self
+        if not self.guest_managed_networking:
+            raise ValueError(
+                "Bridge mode requires an image that supports guest-managed networking; "
+                "use a current SmolVM Alpine image or set guest_managed_networking=True "
+                "for a compatible custom image."
+            )
+        if self.comm_channel == "ssh":
+            raise ValueError(
+                "Bridge mode requires vsock for host-guest communication; "
+                "comm_channel='ssh' is not supported with bridge mode."
+            )
+        if self.workspace_mounts:
+            raise ValueError("Workspace mounts are not supported with bridge mode in this release.")
+        if self.port_forwards:
+            raise ValueError(
+                "Port forwards are not supported with bridge mode; "
+                "the VM is directly reachable on the bridged network."
+            )
+        if self.internet_settings is not None and not self.internet_settings.is_allow_all_domains:
+            raise ValueError(
+                "Domain allow-lists are not enforced in bridge mode; "
+                "remove internet_settings or use NAT mode."
+            )
+        return self
 
     @field_validator("extra_drives")
     @classmethod
@@ -671,20 +754,72 @@ class NetworkConfig(BaseModel):
     """Network configuration for a VM.
 
     Attributes:
-        guest_ip: IP address assigned to the guest.
-        gateway_ip: Gateway IP (host side of TAP).
-        netmask: Network mask.
+        guest_ip: IP address assigned to the guest (None in bridge mode).
+        gateway_ip: Gateway IP, host side of TAP (None in bridge mode).
+        netmask: Network mask (None in bridge mode).
         tap_device: Name of the TAP device.
         guest_mac: MAC address for the guest interface.
         ssh_host_port: Optional host TCP port forwarded to guest SSH (22).
+            None in bridge mode.
+        mode: Network mode — ``"nat"`` (default) or ``"bridge"``.
+        bridge: Bridge name when mode is ``"bridge"``; None for NAT.
     """
 
-    guest_ip: str
-    gateway_ip: str = "172.16.0.1"
-    netmask: str = "255.255.255.0"
+    guest_ip: str | None = None
+    gateway_ip: str | None = None
+    netmask: str | None = None
     tap_device: str
     guest_mac: str
     ssh_host_port: int | None = None
+    mode: Literal["nat", "bridge"] = "nat"
+    bridge: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_nat_defaults(cls, data: Any) -> Any:
+        """Fill NAT defaults for backward compatibility."""
+        if not isinstance(data, dict):
+            return data
+        mode = data.get("mode", "nat")
+        if mode == "nat":
+            if data.get("gateway_ip") is None:
+                data["gateway_ip"] = "172.16.0.1"
+            if data.get("netmask") is None:
+                data["netmask"] = "255.255.255.0"
+        return data
+
+    @model_validator(mode="after")
+    def _check_nat_bridge_consistency(self) -> "NetworkConfig":
+        if self.mode == "bridge":
+            if self.bridge is None:
+                raise ValueError("mode='bridge' requires a bridge name")
+            if self.guest_ip is not None:
+                raise ValueError(
+                    "mode='bridge' must not set guest_ip; the guest manages its own address"
+                )
+            if self.gateway_ip is not None:
+                raise ValueError(
+                    "mode='bridge' must not set gateway_ip; the guest manages its own gateway"
+                )
+            if self.netmask is not None:
+                raise ValueError(
+                    "mode='bridge' must not set netmask; the guest manages its own netmask"
+                )
+            if self.ssh_host_port is not None:
+                raise ValueError(
+                    "mode='bridge' must not set ssh_host_port; "
+                    "use vsock (smolvm sandbox shell) instead"
+                )
+        elif self.mode == "nat":
+            if self.bridge is not None:
+                raise ValueError("mode='nat' must not set bridge")
+            if self.guest_ip is None:
+                raise ValueError("mode='nat' requires guest_ip")
+            if self.gateway_ip is None:
+                raise ValueError("mode='nat' requires gateway_ip")
+            if self.netmask is None:
+                raise ValueError("mode='nat' requires netmask")
+        return self
 
     model_config = {"frozen": True}
 

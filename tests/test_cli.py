@@ -62,6 +62,8 @@ def _make_vm_info(
         vm.network = MagicMock(spec=NetworkConfig)
         vm.network.guest_ip = guest_ip
         vm.network.ssh_host_port = ssh_host_port
+        vm.network.mode = "nat"
+        vm.network.bridge = None
     else:
         vm.network = None
     return vm
@@ -981,6 +983,43 @@ class TestCliCreate:
         assert payload["data"]["next"]["shell_command"] == "smolvm sandbox shell project-spacex"
         assert payload["data"]["next"]["ssh_command"] == "smolvm sandbox ssh project-spacex"
         assert payload["data"]["next"]["info_command"] == "smolvm sandbox info project-spacex"
+        assert payload["data"]["warnings"] == []
+
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_create_bridge_does_not_recommend_unsupported_ssh(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        config = MagicMock(vm_id="bridge-demo")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+        vm = MagicMock(vm_id="bridge-demo")
+        vm.info.status = VMState.RUNNING
+        vm.info.network = MagicMock(spec=NetworkConfig)
+        vm.info.network.mode = "bridge"
+        mock_vm_cls.return_value = vm
+
+        ret = main(
+            [
+                "sandbox",
+                "create",
+                "--name",
+                "bridge-demo",
+                "--network",
+                "bridge",
+                "--bridge",
+                "br10",
+                "--json",
+            ]
+        )
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["data"]["next"]["shell_command"] == ("smolvm sandbox shell bridge-demo")
+        assert payload["data"]["next"]["ssh_command"] is None
+        assert "smolvm sandbox shell bridge-demo" in payload["data"]["warnings"][0]
 
     @patch("smolvm.facade.platform.machine", return_value="x86_64")
     @patch("smolvm.facade.build_seed_iso")
@@ -1142,8 +1181,55 @@ class TestCliCreate:
         assert "Invalid value for '--os'" in capsys.readouterr().err
 
 
+class TestCliBridgeCheck:
+    """Tests for the read-only bridge preflight command."""
+
+    @patch("smolvm.host.network.NetworkManager.inspect_bridge")
+    def test_bridge_check_json_uses_shared_envelope(
+        self,
+        inspect_bridge: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from smolvm.host.network import BridgeInspection
+
+        inspect_bridge.return_value = BridgeInspection("br10", True)
+
+        assert main(["bridge", "check", "br10", "--json"]) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["command"] == "bridge.check"
+        assert payload["exit_code"] == 0
+        assert payload["data"] == {"bridge": "br10", "ok": True, "reason": None}
+
+
 class TestCliCreateImage:
     """Tests for `smolvm sandbox create --image`."""
+
+    @patch("smolvm.cli.main._build_and_boot_with_progress")
+    def test_s3_human_create_propagates_bridge_options(
+        self,
+        mock_build_and_boot: MagicMock,
+    ) -> None:
+        vm = _make_vm_info(vm_id="bridge-s3", status=VMState.RUNNING)
+        facade = MagicMock(vm_id="bridge-s3", info=vm)
+        mock_build_and_boot.return_value = facade
+
+        ret = main(
+            [
+                "sandbox",
+                "create",
+                "--image",
+                "s3://bucket/images/test/",
+                "--network",
+                "bridge",
+                "--bridge",
+                "br10",
+            ]
+        )
+
+        assert ret == 0
+        assert mock_build_and_boot.call_args.kwargs["network_mode"] == "bridge"
+        assert mock_build_and_boot.call_args.kwargs["bridge_name"] == "br10"
+        facade.close.assert_called_once()
 
     @patch("smolvm.cli.main._run_create", return_value=0)
     def test_image_flag_parsed(self, mock_run_create: MagicMock) -> None:
@@ -3145,6 +3231,8 @@ class TestCliInfo:
             vm.network = MagicMock(spec=NetworkConfig)
             vm.network.guest_ip = guest_ip
             vm.network.ssh_host_port = ssh_host_port
+            vm.network.mode = "nat"
+            vm.network.bridge = None
         else:
             vm.network = None
         return vm
@@ -3273,7 +3361,34 @@ class TestCliInfo:
             "memory": 1024,
             "memory_used": None,
             "disk_size": 3,
+            "network_mode": "nat",
+            "bridge": None,
         }
+
+    def test_info_bridge_uses_human_copy_but_json_ip_is_null(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        vm = self._make_info_vm(status=VMState.STOPPED)
+        vm.network.guest_ip = None
+        vm.network.ssh_host_port = None
+        vm.network.mode = "bridge"
+        vm.network.bridge = "br10"
+        mock_sdk_cls.return_value.state.get_vm.return_value = vm
+
+        assert main(["sandbox", "info", "sbx-pauling"]) == 0
+        human = capsys.readouterr().out
+        assert "Network Mode" in human
+        assert "bridge" in human
+        assert "br10" in human
+        assert "Managed inside guest" in human
+
+        assert main(["sandbox", "info", "sbx-pauling", "--json"]) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["data"]["vm"]["ip_address"] is None
+        assert payload["data"]["vm"]["network_mode"] == "bridge"
+        assert payload["data"]["vm"]["bridge"] == "br10"
 
     def test_info_not_found(
         self,

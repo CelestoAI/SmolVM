@@ -334,7 +334,9 @@ def _build_auto_config_image_name(
     disk_size_mib: int,
 ) -> str:
     """Build an OS-aware cache key for auto-configured images."""
-    image_name = f"{guest_os.value}-ssh-key"
+    # Bump when /init behavior changes so an older cached rootfs cannot ignore
+    # a new host-side boot contract such as smolvm.network=guest.
+    image_name = f"{guest_os.value}-ssh-key-guestnet-v1"
     if backend == BACKEND_QEMU:
         arch = platform.machine().lower()
         image_arch = "aarch64" if arch in {"arm64", "aarch64"} else "x86_64"
@@ -687,6 +689,7 @@ def _build_auto_config(
         backend=resolved_backend,
         qemu_machine=qemu_machine,
         ssh_public_key=public_key_value,
+        guest_managed_networking=True,
     )
     logger.info(
         "Auto-configured VM: %s (os=%s, backend=%s)",
@@ -2380,6 +2383,14 @@ class SmolVM:
                 "Cannot expose port: VM has no network configuration",
                 {"vm_id": self._vm_id},
             )
+        if self._info.network.mode == "bridge":
+            raise SmolVMError(
+                f"Bridged sandbox '{self._vm_id}' is already connected directly to its "
+                f"network; run 'smolvm sandbox delete {self._vm_id}', then "
+                f"'smolvm sandbox create --name {self._vm_id} --network nat' to use port "
+                "exposure.",
+                {"vm_id": self._vm_id, "network_mode": "bridge"},
+            )
         if guest_port < 1 or guest_port > 65535:
             raise ValueError("guest_port must be 1-65535")
 
@@ -2594,13 +2605,21 @@ class SmolVM:
         """Return the guest IP address.
 
         Raises:
-            SmolVMError: If the VM has no network configuration.
+            SmolVMError: If the VM has no network configuration, or if the
+                VM uses bridge mode where the address is managed inside the VM.
         """
         self._refresh_info()
         if self._info.network is None:
             raise SmolVMError(
                 "VM has no network configuration",
                 {"vm_id": self._vm_id},
+            )
+        if self._info.network.mode == "bridge":
+            raise SmolVMError(
+                f"Bridged sandbox '{self._vm_id}' has a guest-managed address; "
+                f"use 'smolvm sandbox shell {self._vm_id}', or connect to its "
+                f"address from the bridged network.",
+                {"vm_id": self._vm_id, "network_mode": "bridge"},
             )
         return self._info.network.guest_ip
 
@@ -3238,6 +3257,12 @@ modprobe 9pnet_virtio""".strip()
                 "VM has no network configuration",
                 {"vm_id": self._vm_id},
             )
+        if self._info.network.mode == "bridge":
+            raise SmolVMError(
+                f"The host has no SSH path to bridged sandbox '{self._vm_id}'; use "
+                f"'smolvm sandbox shell {self._vm_id}', or connect from its bridged network.",
+                {"vm_id": self._vm_id, "network_mode": "bridge"},
+            )
 
         endpoints: list[tuple[str, int]] = []
         ssh_host_port = self._info.network.ssh_host_port
@@ -3503,12 +3528,18 @@ modprobe 9pnet_virtio""".strip()
 
     def _should_try_nftables_local_forward(self) -> bool:
         """Return whether localhost exposure should attempt host nftables first."""
+        network = getattr(self._info, "network", None)
+        if getattr(network, "mode", None) == "bridge":
+            return False
         config = getattr(self._info, "config", None)
         backend = getattr(config, "backend", None)
         return backend not in {BACKEND_QEMU, BACKEND_LIBKRUN}
 
     def _should_try_qemu_hostfwd_local_forward(self) -> bool:
         """Return whether localhost exposure should use QEMU's slirp hostfwd."""
+        network = getattr(self._info, "network", None)
+        if getattr(network, "mode", None) == "bridge":
+            return False
         config = getattr(self._info, "config", None)
         backend = getattr(config, "backend", None)
         qemu_network = getattr(config, "qemu_network", None)

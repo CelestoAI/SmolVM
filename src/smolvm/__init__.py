@@ -49,6 +49,7 @@ from smolvm.types import (
     GuestFlushPolicy,
     GuestOS,
     InternetSettings,
+    NetworkAttachmentConfig,
     NetworkConfig,
     QemuMachine,
     SnapshotArtifacts,
@@ -91,6 +92,7 @@ __all__ = [
     "SSHClient",
     # Data models
     "InternetSettings",
+    "NetworkAttachmentConfig",
     "VMConfig",
     "VMInfo",
     "VMState",

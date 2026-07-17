@@ -27,11 +27,13 @@ import re
 import socket
 import time
 from collections.abc import Callable
+from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar
 from urllib.parse import urlparse
 
-from smolvm.exceptions import NetworkError, SmolVMError
+from smolvm.exceptions import BridgeTapOwnershipError, NetworkError, SmolVMError
 from smolvm.host._accel import HAS_NETLINK, network_native
 from smolvm.utils import async_run_command, run_command
 
@@ -123,6 +125,21 @@ _NFT_SET_ALLOWED_TAPS = "allowed_taps"  # TAP interface names
 _NFT_CHAIN_RE = re.compile(r"^chain\s+(?P<chain>[^\s{]+)\s*\{")
 _NFT_RULE_COMMENT_RE = re.compile(r'comment "(?P<comment>[^"]+)"')
 _NFT_RULE_HANDLE_RE = re.compile(r'comment "(?P<comment>[^"]+)".*# handle (?P<handle>\d+)')
+
+
+@dataclass(frozen=True)
+class BridgeInspection:
+    """Result of read-only bridge validation.
+
+    Attributes:
+        bridge_name: The bridge interface name that was checked.
+        ok: Whether the bridge is valid for SmolVM attachment.
+        reason: Human-readable explanation when ok is False.
+    """
+
+    bridge_name: str
+    ok: bool
+    reason: str = ""
 
 
 class NetworkManager:
@@ -228,8 +245,8 @@ class NetworkManager:
         """Create and configure a TAP device (async)."""
         await self.async_prepare_tap(tap_name, user=user, host_ip=host_ip, netmask=netmask)
 
-    def create_tap(self, tap_name: str, user: str | None = None) -> None:
-        """Create TAP device if missing."""
+    def create_tap(self, tap_name: str, user: str | None = None) -> bool:
+        """Create a TAP device and return whether this call created it."""
         if not tap_name:
             raise ValueError("tap_name cannot be empty")
 
@@ -244,12 +261,12 @@ class NetworkManager:
             for attempt in range(max_busy_retries + 1):
                 try:
                     _call_native("create_tap", network_native.create_tap, tap_name, uid)
-                    return
+                    return True
                 except OSError as e:
                     err = str(e)
                     if "File exists" in err:
                         logger.debug("TAP device %s already exists", tap_name)
-                        return
+                        return False
                     if "Device or resource busy" in err and attempt < max_busy_retries:
                         delay = 0.1 * (attempt + 1)
                         logger.warning(
@@ -265,19 +282,17 @@ class NetworkManager:
                         _mark_native_unprivileged()
                         break
                     raise SmolVMError(err) from e
-            else:
-                return
 
         max_busy_retries = 3
         for attempt in range(max_busy_retries + 1):
             try:
                 run_command(["ip", "tuntap", "add", tap_name, "mode", "tap", "user", user])
-                return
+                return True
             except SmolVMError as e:
                 err = str(e)
                 if "File exists" in err or "EEXIST" in err:
                     logger.debug("TAP device %s already exists", tap_name)
-                    return
+                    return False
 
                 is_busy = "Device or resource busy" in err or "EBUSY" in err
                 if is_busy and attempt < max_busy_retries:
@@ -293,9 +308,10 @@ class NetworkManager:
                     time.sleep(delay)
                     continue
                 raise
+        raise SmolVMError(f"Failed to create TAP device '{tap_name}'")
 
-    async def async_create_tap(self, tap_name: str, user: str | None = None) -> None:
-        """Create TAP device if missing (async)."""
+    async def async_create_tap(self, tap_name: str, user: str | None = None) -> bool:
+        """Create a TAP asynchronously and return whether this call created it."""
         if not tap_name:
             raise ValueError("tap_name cannot be empty")
 
@@ -310,12 +326,12 @@ class NetworkManager:
             for attempt in range(max_busy_retries + 1):
                 try:
                     await _async_call_native("create_tap", network_native.create_tap, tap_name, uid)
-                    return
+                    return True
                 except OSError as e:
                     err = str(e)
                     if "File exists" in err:
                         logger.debug("TAP device %s already exists", tap_name)
-                        return
+                        return False
                     if "Device or resource busy" in err and attempt < max_busy_retries:
                         delay = 0.1 * (attempt + 1)
                         logger.warning(
@@ -331,8 +347,6 @@ class NetworkManager:
                         _mark_native_unprivileged()
                         break
                     raise SmolVMError(err) from e
-            else:
-                return
 
         max_busy_retries = 3
         for attempt in range(max_busy_retries + 1):
@@ -340,12 +354,12 @@ class NetworkManager:
                 await async_run_command(
                     ["ip", "tuntap", "add", tap_name, "mode", "tap", "user", user]
                 )
-                return
+                return True
             except SmolVMError as e:
                 err = str(e)
                 if "File exists" in err or "EEXIST" in err:
                     logger.debug("TAP device %s already exists", tap_name)
-                    return
+                    return False
 
                 is_busy = "Device or resource busy" in err or "EBUSY" in err
                 if is_busy and attempt < max_busy_retries:
@@ -360,6 +374,7 @@ class NetworkManager:
                     await asyncio.sleep(delay)
                     continue
                 raise
+        raise SmolVMError(f"Failed to create TAP device '{tap_name}'")
 
     def prepare_tap(
         self,
@@ -2045,6 +2060,351 @@ class NetworkManager:
         if vm_number < 0 or vm_number > 65534:
             raise ValueError("vm_number must be between 0 and 65534")
         return f"AA:FC:00:00:{(vm_number >> 8) & 0xFF:02X}:{vm_number & 0xFF:02X}"
+
+    def generate_bridge_mac(self, tap_name: str | None = None) -> str:
+        """Generate a locally administered unicast MAC for bridge mode.
+
+        Newly allocated bridge TAP names carry a unique 32-bit suffix. Encoding
+        that suffix directly makes MAC allocation unique under the same atomic
+        state reservation. The random fallback supports callers without a TAP.
+        """
+        if tap_name is not None and re.fullmatch(r"svmb[0-9a-fA-F]{8}", tap_name):
+            suffix = bytes.fromhex(tap_name[4:])
+            return "02:53:" + ":".join(f"{octet:02X}" for octet in suffix)
+        suffix = os.urandom(5)
+        return "02:" + ":".join(f"{octet:02X}" for octet in suffix)
+
+    # ------------------------------------------------------------------
+    # Bridge inspection and bridged TAP attachment
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_missing_interface_error(error: Exception) -> bool:
+        """Return whether iproute2 explicitly reported a missing interface."""
+        message = str(error).lower()
+        return any(
+            marker in message
+            for marker in (
+                "cannot find device",
+                "does not exist",
+                "no such device",
+            )
+        )
+
+    def _get_link_info(self, link_name: str) -> dict[str, object] | None:
+        """Return detailed JSON metadata, or None only for a missing interface."""
+        import json
+
+        try:
+            result = run_command(
+                ["ip", "-json", "-d", "link", "show", "dev", link_name],
+                use_sudo=False,
+            )
+        except SmolVMError as exc:
+            if self._is_missing_interface_error(exc):
+                return None
+            raise
+        links = json.loads(result.stdout)
+        return links[0] if links else None
+
+    @staticmethod
+    def _link_kind(link_info: dict[str, object]) -> str:
+        """Return iproute2's detailed interface kind."""
+        linkinfo = link_info.get("linkinfo")
+        if not isinstance(linkinfo, dict):
+            return ""
+        kind = linkinfo.get("info_kind")
+        return str(kind) if kind is not None else ""
+
+    def inspect_bridge(self, bridge_name: str) -> BridgeInspection:
+        """Read-only validation of a Linux bridge for SmolVM attachment."""
+        import platform
+
+        if platform.system() != "Linux":
+            return BridgeInspection(
+                bridge_name=bridge_name,
+                ok=False,
+                reason=(
+                    "Bridged networking is only supported on Linux; run "
+                    "'smolvm sandbox create --network nat' instead."
+                ),
+            )
+
+        link_info = self._get_link_info(bridge_name)
+        if link_info is None:
+            return BridgeInspection(
+                bridge_name=bridge_name,
+                ok=False,
+                reason=f"Interface '{bridge_name}' does not exist; create it, then run "
+                f"'smolvm bridge check {bridge_name}'.",
+            )
+
+        kind = self._link_kind(link_info)
+        if kind != "bridge":
+            display_kind = kind or str(link_info.get("link_type") or "network interface")
+            return BridgeInspection(
+                bridge_name=bridge_name,
+                ok=False,
+                reason=f"'{bridge_name}' is a {display_kind}, not a bridge; create a Linux "
+                f"bridge, then run 'smolvm bridge check {bridge_name}'.",
+            )
+
+        flags = link_info.get("flags")
+        if not isinstance(flags, list) or "UP" not in flags:
+            return BridgeInspection(
+                bridge_name=bridge_name,
+                ok=False,
+                reason=f"Bridge '{bridge_name}' is not active; run "
+                f"'sudo ip link set {bridge_name} up', then run "
+                f"'smolvm bridge check {bridge_name}'.",
+            )
+
+        members = self._get_bridge_members(bridge_name)
+        external_members = [name for name in members if not self._is_smolvm_bridge_tap_member(name)]
+        if not external_members:
+            return BridgeInspection(
+                bridge_name=bridge_name,
+                ok=False,
+                reason=f"Bridge '{bridge_name}' is not connected to another interface; connect "
+                f"its VLAN or physical interface, then run 'smolvm bridge check {bridge_name}'.",
+            )
+
+        address_error = self._check_bridge_addresses(bridge_name, members)
+        if address_error:
+            return BridgeInspection(
+                bridge_name=bridge_name,
+                ok=False,
+                reason=address_error,
+            )
+
+        return BridgeInspection(bridge_name=bridge_name, ok=True)
+
+    async def async_inspect_bridge(self, bridge_name: str) -> BridgeInspection:
+        """Read-only validation of a Linux bridge (async)."""
+        return await asyncio.to_thread(self.inspect_bridge, bridge_name)
+
+    def _is_smolvm_bridge_tap_member(self, interface_name: str) -> bool:
+        """Return whether a bridge member carries SmolVM's TAP ownership marker."""
+        if not interface_name.startswith("svmb"):
+            return False
+        link_info = self._get_link_info(interface_name)
+        if link_info is None or self._link_kind(link_info) != "tun":
+            return False
+        linkinfo = link_info.get("linkinfo")
+        info_data = linkinfo.get("info_data") if isinstance(linkinfo, dict) else None
+        return (
+            isinstance(info_data, dict)
+            and info_data.get("type") == "tap"
+            and str(link_info.get("ifalias") or "").startswith("smolvm-bridge:")
+        )
+
+    def _get_bridge_members(self, bridge_name: str) -> list[str]:
+        """Return every interface currently attached to a bridge."""
+        import json
+
+        result = run_command(
+            ["ip", "-json", "link", "show", "master", bridge_name],
+            use_sudo=False,
+        )
+
+        links = json.loads(result.stdout)
+        return [str(link["ifname"]) for link in links if link.get("ifname")]
+
+    def _check_bridge_addresses(self, bridge_name: str, members: list[str]) -> str:
+        """Return an actionable error when the host has an address on this network."""
+        for iface in [bridge_name, *members]:
+            addresses = self._get_interface_addresses(iface)
+            if addresses:
+                address_list = ", ".join(addresses)
+                return (
+                    f"Interface '{iface}' gives this machine the address '{address_list}'; "
+                    f"remove it with your host network manager, then run "
+                    f"'smolvm bridge check {bridge_name}'."
+                )
+        return ""
+
+    def _get_interface_addresses(self, iface_name: str) -> list[str]:
+        """Return every IPv4 and IPv6 address, including link-local addresses."""
+        import json
+
+        result = run_command(
+            ["ip", "-json", "addr", "show", "dev", iface_name],
+            use_sudo=False,
+        )
+
+        info = json.loads(result.stdout)
+        if not info:
+            return []
+        return [
+            str(address["local"])
+            for address in info[0].get("addr_info", [])
+            if address.get("local")
+        ]
+
+    @staticmethod
+    def _bridge_tap_alias(vm_id: str) -> str:
+        return f"smolvm-bridge:{vm_id}"
+
+    def _require_owned_bridge_tap(self, tap_name: str, vm_id: str) -> dict[str, object]:
+        """Return link metadata only when a TAP is demonstrably owned by this VM."""
+        link_info = self._get_link_info(tap_name)
+        if link_info is None:
+            raise NetworkError(f"TAP '{tap_name}' does not exist")
+
+        linkinfo = link_info.get("linkinfo")
+        info_data = linkinfo.get("info_data") if isinstance(linkinfo, dict) else None
+        kind = self._link_kind(link_info)
+        tap_type = info_data.get("type") if isinstance(info_data, dict) else None
+        if kind != "tun" or tap_type != "tap":
+            raise BridgeTapOwnershipError(
+                f"Network interface '{tap_name}' already exists and is not a SmolVM TAP; "
+                f"remove the conflicting interface, then retry sandbox '{vm_id}'."
+            )
+
+        expected_alias = self._bridge_tap_alias(vm_id)
+        if link_info.get("ifalias") != expected_alias:
+            raise BridgeTapOwnershipError(
+                f"Network interface '{tap_name}' already exists but does not belong to sandbox "
+                f"'{vm_id}'; remove the conflicting interface, then retry."
+            )
+        return link_info
+
+    def prepare_bridged_tap(
+        self,
+        tap_name: str,
+        bridge_name: str,
+        vm_id: str,
+        user: str | None = None,
+    ) -> None:
+        """Create an owned TAP and attach it to an existing host bridge."""
+        inspection = self.inspect_bridge(bridge_name)
+        if not inspection.ok:
+            raise NetworkError(inspection.reason or "Bridge validation failed")
+
+        if user is None:
+            user = os.environ.get("USER", "root")
+
+        logger.info(
+            "Preparing bridged TAP %s on bridge %s for %s (user: %s)",
+            tap_name,
+            bridge_name,
+            vm_id,
+            user,
+        )
+        created = False
+        validated_existing = False
+        existing_link = self._get_link_info(tap_name)
+        if existing_link is not None:
+            self._require_owned_bridge_tap(tap_name, vm_id)
+            validated_existing = True
+        else:
+            try:
+                created = self.create_tap(tap_name, user)
+            except SmolVMError:
+                # Another lifecycle call may have created the reserved TAP
+                # after our read. Reuse it only if the ownership marker proves
+                # it belongs to this sandbox; otherwise preserve the failure.
+                if self._get_link_info(tap_name) is None:
+                    raise
+                self._require_owned_bridge_tap(tap_name, vm_id)
+                validated_existing = True
+
+        try:
+            if created:
+                link_info = self._get_link_info(tap_name)
+                linkinfo = link_info.get("linkinfo") if link_info is not None else None
+                info_data = linkinfo.get("info_data") if isinstance(linkinfo, dict) else None
+                if (
+                    link_info is None
+                    or self._link_kind(link_info) != "tun"
+                    or not isinstance(info_data, dict)
+                    or info_data.get("type") != "tap"
+                ):
+                    raise NetworkError(f"Created interface '{tap_name}' is not a TAP device")
+                run_command(
+                    [
+                        "ip",
+                        "link",
+                        "set",
+                        "dev",
+                        tap_name,
+                        "alias",
+                        self._bridge_tap_alias(vm_id),
+                    ],
+                    use_sudo=True,
+                )
+            elif not validated_existing:
+                self._require_owned_bridge_tap(tap_name, vm_id)
+
+            self._set_tap_master(tap_name, bridge_name)
+            run_command(["ip", "link", "set", "dev", tap_name, "up"], use_sudo=True)
+            master = self._get_tap_master(tap_name)
+            if master != bridge_name:
+                raise NetworkError(
+                    f"TAP '{tap_name}' is attached to '{master}', not '{bridge_name}'; "
+                    f"run 'smolvm sandbox delete {vm_id}', then retry."
+                )
+        except Exception:
+            if created:
+                with suppress(Exception):
+                    self.cleanup_tap(tap_name)
+            raise
+
+        logger.info("Bridged TAP %s ready on bridge %s", tap_name, bridge_name)
+
+    async def async_prepare_bridged_tap(
+        self,
+        tap_name: str,
+        bridge_name: str,
+        vm_id: str,
+        user: str | None = None,
+    ) -> None:
+        """Create and attach an owned bridged TAP asynchronously."""
+        await asyncio.to_thread(self.prepare_bridged_tap, tap_name, bridge_name, vm_id, user)
+
+    def cleanup_bridged_tap(self, tap_name: str, vm_id: str) -> None:
+        """Delete a bridge TAP only after proving this sandbox owns it."""
+        max_attempts = 4
+        for attempt in range(max_attempts):
+            if self._get_link_info(tap_name) is None:
+                return
+            # Recheck ownership before every retry so a same-named foreign
+            # replacement can never be deleted.
+            self._require_owned_bridge_tap(tap_name, vm_id)
+            self.cleanup_tap(tap_name)
+            if self._get_link_info(tap_name) is None:
+                return
+            if attempt < max_attempts - 1:
+                time.sleep(0.1 * (attempt + 1))
+
+        raise NetworkError(
+            f"Could not remove the network interface for sandbox '{vm_id}'; run "
+            f"'smolvm sandbox delete {vm_id}' again."
+        )
+
+    async def async_cleanup_bridged_tap(self, tap_name: str, vm_id: str) -> None:
+        """Delete an owned bridge TAP asynchronously."""
+        await asyncio.to_thread(self.cleanup_bridged_tap, tap_name, vm_id)
+
+    def _set_tap_master(self, tap_name: str, bridge_name: str) -> None:
+        """Set the bridge master for a TAP device."""
+        logger.info("Attaching TAP %s to bridge %s", tap_name, bridge_name)
+        try:
+            run_command(
+                ["ip", "link", "set", "dev", tap_name, "master", bridge_name],
+                use_sudo=True,
+            )
+        except SmolVMError as e:
+            raise SmolVMError(
+                f"Failed to attach TAP '{tap_name}' to bridge '{bridge_name}': {e}"
+            ) from e
+
+    def _get_tap_master(self, tap_name: str) -> str | None:
+        """Return the bridge name a TAP is attached to, or None."""
+        link_info = self._get_link_info(tap_name)
+        if link_info is None or not link_info.get("master"):
+            return None
+        return str(link_info["master"])
 
 
 def _extract_hostname(entry: str) -> str:

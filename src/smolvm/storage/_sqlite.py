@@ -146,6 +146,18 @@ class SQLiteStateManager:
 
                 CREATE INDEX IF NOT EXISTS idx_vsock_cids_vm_id ON vsock_cids(vm_id);
 
+                CREATE TABLE IF NOT EXISTS tap_allocations (
+                    vm_id TEXT PRIMARY KEY,
+                    tap_device TEXT NOT NULL UNIQUE,
+                    mode TEXT NOT NULL,
+                    bridge_name TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (vm_id) REFERENCES vms(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_tap_allocations_tap_device
+                    ON tap_allocations(tap_device);
+
                 CREATE TABLE IF NOT EXISTS browser_sessions (
                     session_id TEXT PRIMARY KEY,
                     vm_id TEXT NOT NULL UNIQUE,
@@ -581,6 +593,113 @@ class SQLiteStateManager:
             result = conn.execute("DELETE FROM vsock_cids WHERE vm_id = ?", (vm_id,))
             if result.rowcount > 0:
                 logger.info("Released vsock CID for VM: %s", vm_id)
+
+    # ------------------------------------------------------------------
+    # TAP allocation (bridge mode)
+    # ------------------------------------------------------------------
+
+    def reserve_tap_name(
+        self,
+        vm_id: str,
+        mode: str,
+        bridge_name: str | None = None,
+        requested_tap: str | None = None,
+    ) -> str:
+        """Reserve a unique TAP device name for a VM (idempotent).
+
+        Returns the existing reservation if the VM already has one.
+        Otherwise allocates a Linux-safe name (<=15 bytes) prefixed with
+        ``svmb`` followed by a random hex suffix, or the requested name if
+        provided and available.
+        """
+        if not vm_id:
+            raise ValueError("vm_id cannot be empty")
+        if mode not in ("nat", "bridge"):
+            raise ValueError(f"mode must be 'nat' or 'bridge', got {mode!r}")
+
+        now = now_iso()
+
+        with self._get_connection(exclusive=True) as conn:
+            existing = conn.execute(
+                """
+                SELECT tap_device, mode, bridge_name
+                FROM tap_allocations
+                WHERE vm_id = ?
+                """,
+                (vm_id,),
+            ).fetchone()
+            if existing:
+                existing_tap = str(existing["tap_device"])
+                existing_mode = str(existing["mode"])
+                existing_bridge = existing["bridge_name"]
+                if (
+                    existing_mode != mode
+                    or existing_bridge != bridge_name
+                    or (requested_tap is not None and requested_tap != existing_tap)
+                ):
+                    raise NetworkError(
+                        f"Sandbox '{vm_id}' already reserves TAP '{existing_tap}' for "
+                        f"{existing_mode} networking; delete the sandbox before changing "
+                        "its network attachment."
+                    )
+                return existing_tap
+
+            if requested_tap:
+                clash = conn.execute(
+                    "SELECT 1 FROM tap_allocations WHERE tap_device = ?",
+                    (requested_tap,),
+                ).fetchone()
+                if clash:
+                    raise NetworkError(f"TAP device name '{requested_tap}' is already reserved")
+                tap_name = requested_tap
+            else:
+                import secrets
+
+                for _ in range(100):
+                    suffix = secrets.token_hex(4)
+                    tap_name = f"svmb{suffix}"
+                    clash = conn.execute(
+                        "SELECT 1 FROM tap_allocations WHERE tap_device = ?",
+                        (tap_name,),
+                    ).fetchone()
+                    if not clash:
+                        break
+                else:
+                    raise NetworkError("Could not find a free TAP device name")
+
+            conn.execute(
+                """
+                INSERT INTO tap_allocations (vm_id, tap_device, mode, bridge_name, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (vm_id, tap_name, mode, bridge_name, now),
+            )
+            logger.info("Reserved TAP %s for VM %s (mode=%s)", tap_name, vm_id, mode)
+            return tap_name
+
+    def get_tap_allocation(self, vm_id: str) -> tuple[str, str, str | None] | None:
+        """Return (tap_device, mode, bridge_name) or None."""
+        if not vm_id:
+            raise ValueError("vm_id cannot be empty")
+
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT tap_device, mode, bridge_name FROM tap_allocations WHERE vm_id = ?",
+                (vm_id,),
+            ).fetchone()
+
+        if row:
+            return (str(row["tap_device"]), str(row["mode"]), row["bridge_name"])
+        return None
+
+    def release_tap_name(self, vm_id: str) -> None:
+        if not vm_id:
+            raise ValueError("vm_id cannot be empty")
+
+        with self._get_connection(exclusive=True) as conn:
+            result = conn.execute("DELETE FROM tap_allocations WHERE vm_id = ?", (vm_id,))
+            if result.rowcount > 0:
+                logger.info("Released TAP allocation for VM: %s", vm_id)
 
     # ------------------------------------------------------------------
     # Snapshots
