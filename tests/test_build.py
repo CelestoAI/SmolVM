@@ -43,6 +43,20 @@ def _fake_guest_agent_binary(tmp_path: Path) -> Path:
     return binary
 
 
+def test_check_docker_retries_one_transient_failure(tmp_path: Path) -> None:
+    docker = tmp_path / "docker"
+    first_failure = subprocess.CalledProcessError(1, [str(docker), "info"])
+    success = subprocess.CompletedProcess([str(docker), "info"], 0)
+
+    with (
+        patch("smolvm.images.builder.shutil.which", return_value=str(docker)),
+        patch("smolvm.images.builder.subprocess.run", side_effect=[first_failure, success]) as run,
+    ):
+        assert ImageBuilder(cache_dir=tmp_path / "images").check_docker() is True
+
+    assert run.call_count == 2
+
+
 def test_cargo_binary_uses_cargo_home_when_path_is_reset(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

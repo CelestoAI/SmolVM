@@ -50,9 +50,12 @@ def test_macos_image_build_recovery_quotes_ipsw_path(tmp_path: Path, capsys) -> 
     ipsw_path = tmp_path / "Apple Restore.ipsw"
     ipsw_path.touch()
     ipsw = str(ipsw_path)
-    with patch(
-        "smolvm.macos.images.MacOSImageManager",
-        side_effect=RuntimeError("build failed"),
+    with (
+        patch("smolvm.runtime.backends.ensure_backend_available"),
+        patch(
+            "smolvm.macos.images.MacOSImageManager",
+            side_effect=RuntimeError("build failed"),
+        ),
     ):
         result = run_macos_image_build(
             tag="macos-latest",

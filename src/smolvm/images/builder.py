@@ -440,17 +440,19 @@ class ImageBuilder:
         if docker_bin is None:
             return False
 
-        try:
-            subprocess.run(
-                [docker_bin, "info"],
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=10,
-            )
-            return True
-        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-            return False
+        for _attempt in range(2):
+            try:
+                subprocess.run(
+                    [docker_bin, "info"],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                )
+                return True
+            except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+                continue
+        return False
 
     def docker_requirement_error(self) -> ImageError:
         """Create a helpful Docker availability error."""

