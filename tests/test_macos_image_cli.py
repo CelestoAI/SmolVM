@@ -7,9 +7,16 @@
 # http://www.apache.org/licenses/LICENSE-2.0
 
 import json
+import shlex
 from pathlib import Path
+from unittest.mock import patch
 
-from smolvm.cli.image import run_image_inspect, run_image_list, run_image_rm
+from smolvm.cli.image import (
+    run_image_inspect,
+    run_image_list,
+    run_image_rm,
+    run_macos_image_build,
+)
 from smolvm.cli.image_transfer import run_image_save
 
 
@@ -37,6 +44,27 @@ def _image(root: Path) -> Path:
         )
     )
     return image
+
+
+def test_macos_image_build_recovery_quotes_ipsw_path(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+    ipsw_path = tmp_path / "Apple Restore.ipsw"
+    ipsw_path.touch()
+    ipsw = str(ipsw_path)
+    with patch(
+        "smolvm.macos.images.MacOSImageManager",
+        side_effect=RuntimeError("build failed"),
+    ):
+        result = run_macos_image_build(
+            tag="macos-latest",
+            ipsw=ipsw,
+            image_dir=str(tmp_path),
+            json_output=True,
+        )
+
+    assert result == 1
+    payload = json.loads(capsys.readouterr().out)
+    resolved_ipsw = str(ipsw_path.resolve())
+    assert f"--ipsw {shlex.quote(resolved_ipsw)} -t macos-latest" in payload["error"]["recovery"]
 
 
 def test_image_list_and_inspect_classify_local_macos_image(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]

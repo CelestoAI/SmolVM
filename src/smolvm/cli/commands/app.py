@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+import shlex
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -702,7 +703,9 @@ def image_rm(name: str, dry_run: bool, image_dir: str | None, json_output: bool)
 @click.option("--init", default="/init", show_default=True, help="Program the image starts with.")
 @image_dir_option
 @json_option
+@click.pass_context
 def image_build(
+    ctx: click.Context,
     context_path: str,
     tag: str,
     os_name: str | None,
@@ -722,6 +725,21 @@ def image_build(
         if dockerfile is not None or build_args or arch is not None or init != "/init":
             raise click.UsageError(
                 "--file, --build-arg, --arch, and --init only apply to Dockerfile images."
+            )
+        unsupported = [
+            option
+            for option, parameter in (("--size-mb", "size_mb"), ("--backend", "backend"))
+            if ctx.get_parameter_source(parameter) is click.core.ParameterSource.COMMANDLINE
+        ]
+        if unsupported:
+            options = " and ".join(unsupported)
+            retry = (
+                "smolvm image build --os macos "
+                f"--ipsw {shlex.quote(ipsw or 'latest')} -t {shlex.quote(tag)}"
+            )
+            raise click.UsageError(
+                f"{options} {'is' if len(unsupported) == 1 else 'are'} not available for macOS "
+                f"images; run '{retry}' without {'it' if len(unsupported) == 1 else 'them'}."
             )
         from smolvm.cli.image import run_macos_image_build
 

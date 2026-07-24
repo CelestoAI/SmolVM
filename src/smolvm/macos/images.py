@@ -251,6 +251,7 @@ class MacOSImageManager:
         on_progress: Callable[[MacOSInstallProgress], None] | None = None,
     ) -> MacOSImageManifest:
         """Build one base image while serializing concurrent installers."""
+        self.bundle_path(name)
         with _exclusive_lock(self.image_dir / f".{name}.build.lock"):
             return self._build_unlocked(
                 name=name,

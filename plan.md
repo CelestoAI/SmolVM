@@ -2,7 +2,7 @@
 
 **Status:** Implementation in progress; stable release blocked on the real-hardware spike and secure guest credential provisioning documented in [`docs/contributing/macos-spike.md`](docs/contributing/macos-spike.md).  
 **Initial release:** Experimental local preview  
-**Primary user:** A developer on an Apple Silicon Mac who wants a clean macOS desktop, shares or uploads an application build, installs it normally, and deletes the sandbox afterward.
+**Primary user:** A developer on an Apple Silicon Mac who wants a clean macOS desktop, shares an application build, installs it normally, and deletes the sandbox afterward.
 
 ## Outcome
 
@@ -30,7 +30,7 @@ The feature is a **general disposable Mac desktop**. The runtime, CLI, and API m
 7. **Desktop is first-class.** Every macOS sandbox starts with a loopback-only VNC display. `smolvm sandbox desktop` opens that display with the host's VNC client. Closing the viewer does not stop the sandbox.
 8. **Ordinary macOS security remains enabled.** Do not disable SIP, Gatekeeper, notarization checks, or normal permission prompts.
 9. **Shares are general and safe by default.** Map existing `--mount` inputs to VirtioFS. Keep host directories read-only unless `--writable-mounts` is explicit.
-10. **SSH is secondary but supported.** Use SSH for existing shell, exec, file upload/download, and port-tunnel operations. Do not make SSH readiness a prerequisite for opening the desktop.
+10. **Guest commands are deferred.** Shell, exec, file upload/download, and port tunnels remain unavailable until SmolVM can provision secure per-sandbox credentials. Desktop readiness never depends on SSH.
 11. **No false feature parity.** Reject unsupported snapshots, restricted internet settings, bridge networking, and vsock with short recovery messages.
 12. **Maximum two running macOS guests.** Enforce the limit among SmolVM-managed macOS sandboxes and handle the framework's limit cleanly if another application already consumes a slot.
 
@@ -50,7 +50,7 @@ The feature is a **general disposable Mac desktop**. The runtime, CLI, and API m
 - Loopback-only VNC desktop
 - `smolvm sandbox desktop SANDBOX`
 - Read-only and explicitly writable VirtioFS shares
-- Existing SSH shell, exec, and file transfer after SSH becomes ready
+- Desktop interaction and Finder-based shared-folder access
 - Normal NAT internet access
 - CLI, Python SDK, local HTTP API, and dashboard visibility
 - Human-readable and JSON progress/errors
@@ -119,11 +119,7 @@ Preferred visual path:
 smolvm sandbox create --os macos --name test-mac --mount "$PWD"
 ```
 
-Finder shows the share under a stable `SmolVM Shared` location. Existing general transfer commands also work:
-
-```bash
-smolvm sandbox file upload test-mac ./build/MyApp.dmg /Users/smolvm/Downloads/MyApp.dmg
-```
+Finder shows the share under a stable `SmolVM Shared` location. Shell, exec, and file-transfer commands are deferred until secure guest credential provisioning is available.
 
 ### Reuse or discard
 
@@ -300,15 +296,15 @@ Apple's NAT assigns the address after startup. Extend `NetworkConfig` with a bac
 - Network state may be absent while the VM is created/stopped.
 - The adapter discovers and persists the guest IP after startup.
 - Gateway/netmask and TAP device are not required.
-- Existing direct-IP SSH and SSH-tunnel code may use the discovered IP.
+- Guest IP discovery may be recorded for diagnostics, but public SSH and tunnel operations remain disabled in the preview.
 
 Audit every branch that currently assumes a non-TAP backend is QEMU/libkrun and every direct access to `network.guest_ip`.
 
-### SSH identity
+### Guest credentials
 
-Persist the default guest SSH user in VM configuration instead of assuming `root`. macOS uses a dedicated local administrative test user. Existing explicit `--ssh-user` overrides continue to win.
+Shell, exec, file transfer, and port tunnels are deferred until SmolVM can provision secure per-sandbox credentials. The preview does not expose Lume's fixed guest account through those public operations.
 
-Before preview release, provisioning must:
+Before enabling guest commands, provisioning must:
 
 - Generate per-image or per-instance credentials rather than ship Lume's fixed defaults.
 - Install the user's SmolVM public key.
@@ -316,7 +312,7 @@ Before preview release, provisioning must:
 - Keep VNC bound to loopback and use a random VNC password if the selected driver supports it.
 - Avoid printing secrets in logs or JSON output.
 
-If secure randomized credentials cannot be achieved with the pinned Lume release, this is a release blocker and the project must either patch the MIT-licensed helper or move the necessary provisioning code into `smolvm-vz`.
+If secure randomized credentials cannot be achieved with the pinned Lume release, the project must either patch the MIT-licensed helper or move the necessary provisioning code into `smolvm-vz` before enabling guest commands.
 
 ---
 
@@ -335,8 +331,8 @@ Build an isolated prototype before changing public types.
 - [ ] Prove a host directory appears in Finder through VirtioFS in read-only and writable modes.
 - [ ] Prove a DMG can be opened from the read-only share and its app copied into guest Applications.
 - [ ] Prove stop/start preserves the installed app and delete removes the clone.
-- [ ] Prove the guest IP can be discovered and SSH file upload works.
-- [ ] Determine how to generate secure credentials without breaking automatic desktop login.
+- [ ] Record guest IP discovery for diagnostics without exposing SSH operations.
+- [ ] Determine how to generate secure credentials before enabling guest commands.
 - [ ] Run two macOS guests and capture the exact error from a third.
 - [ ] Verify behavior after closing the viewer, host sleep/wake, and an interrupted backend process.
 - [ ] Record logical versus allocated storage on default APFS and an external non-APFS data directory.
@@ -353,7 +349,7 @@ Deliver the spike findings in `docs/contributing/macos-spike.md`, including the 
 - [ ] Make rootfs-only manager helpers explicitly reject or skip macOS rather than dereferencing `rootfs_path`.
 - [ ] Add managed-NAT state and audit networking assumptions.
 - [ ] Add display persistence to SQLite/Postgres with additive migrations.
-- [ ] Add the default SSH user to persisted configuration.
+- [ ] Keep command-channel configuration disabled for macOS until secure credentials are available.
 - [ ] Add focused unit tests in `tests/test_types.py`, `tests/test_backends.py`, `tests/test_storage.py`, and a new `tests/test_macos_models.py`.
 
 **Exit criteria:** old persisted VMs round-trip unchanged; macOS configs validate only on supported host/backend combinations; Linux/Windows tests remain green.
@@ -371,7 +367,7 @@ Deliver the spike findings in `docs/contributing/macos-spike.md`, including the 
   - Pinned driver version
   - APFS image/data storage
   - Available memory and disk space
-  - SSH and Screen Sharing URL handler
+  - Screen Sharing URL handler
 - [ ] Extend `scripts/system-setup-macos.sh` without making QEMU mandatory for users who only request `vz`.
 - [ ] Update `tests/test_setup.py`, `tests/test_doctor.py`, and `tests/test_backends.py`.
 
@@ -402,7 +398,7 @@ Deliver the spike findings in `docs/contributing/macos-spike.md`, including the 
 - [ ] Add APFS clone materialization and unique instance identity before persisting create success.
 - [ ] Allocate loopback VNC ports without races; release allocations on failed create/delete.
 - [ ] Launch the VM headlessly with VNC and configured VirtioFS shares.
-- [ ] Mark start ready when VNC responds; discover IP/SSH afterward without blocking desktop availability.
+- [ ] Mark start ready when VNC responds; record any later guest IP discovery only for diagnostics.
 - [ ] Persist PID, display endpoint, dynamic network state, and backend logs.
 - [ ] Implement graceful stop, forced cleanup, stale-process reconciliation, restart, and delete.
 - [ ] Count running SmolVM macOS guests before launch and return a clear two-guest-limit message.
@@ -420,12 +416,12 @@ Deliver the spike findings in `docs/contributing/macos-spike.md`, including the 
 - [ ] Open `vnc://...` through the host only after checking the sandbox and endpoint state.
 - [ ] Map each `WorkspaceMount` to a uniquely named VirtioFS share. Sanitize names and reject collisions.
 - [ ] Make shares visible in Finder under a stable `SmolVM Shared` naming convention.
-- [ ] Preserve `guest_path` where feasible by creating guest symlinks after SSH becomes ready; document the Finder volume path as the always-available path.
+- [ ] Document the Finder volume path as the supported shared-folder location; defer guest-path symlinks until guest commands are enabled.
 - [ ] Verify read-only means guest writes fail and writable means changes reach the host.
-- [ ] Select the persisted macOS SSH user automatically for shell, exec, upload/download, and SSH tunnels.
+- [ ] Reject shell, exec, upload/download, and SSH tunnels for macOS with short recovery messages until secure credentials are available.
 - [ ] Add a macOS environment-variable implementation only if existing `sandbox env` is advertised for macOS; otherwise reject it in the preview rather than writing Linux `/etc/profile.d` files.
 - [ ] Ensure `sandbox info --json` includes a sanitized display endpoint but no credentials or host bundle paths.
-- [ ] Add tests in `tests/test_cli.py`, `tests/test_facade.py`, `tests/test_workspace.py`, `tests/test_ssh.py`, and new desktop-specific tests.
+- [ ] Add tests in `tests/test_cli.py`, `tests/test_facade.py`, `tests/test_workspace.py`, and new desktop-specific tests.
 
 **Exit criteria:** the primary user journey works without DMG-specific code, and a read-only shared host folder cannot be modified from the guest.
 
@@ -450,7 +446,7 @@ Deliver the spike findings in `docs/contributing/macos-spike.md`, including the 
   - clone/create
   - VNC readiness
   - shared-folder marker visible in the guest
-  - SSH upload/download
+  - Finder access to read-only and writable shares
   - stop/start persistence
   - delete cleanup
   - two-guest limit
@@ -507,7 +503,7 @@ JSON `error` and `warnings` values must carry the same complete message as human
 - [ ] Bind VNC and control APIs only to loopback.
 - [ ] Validate all ports and URLs before passing them to `open` or clients.
 - [ ] Never persist or print plaintext passwords unless an explicit first-login workflow absolutely requires it; if so, store with restrictive permissions and document removal.
-- [ ] Keep SSH key-only where possible and reject unsafe host share paths/symlinks using the same standards as current mounts.
+- [ ] Keep guest commands disabled until key-only SSH is provisioned; reject unsafe host share paths/symlinks using the same standards as current mounts.
 - [ ] Do not silently downgrade a read-only share to writable.
 - [ ] Do not claim domain restrictions, snapshots, or hardware isolation features that are not implemented.
 - [ ] Link Apple's current macOS software license and state that users must run on Apple hardware they own or control for permitted development/testing use.

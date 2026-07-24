@@ -1000,12 +1000,12 @@ class SmolVMManager:
                 f"'smolvm sandbox delete {config.vm_id}' and create it again."
             )
         managed_root = (self.data_dir / "macos-vms").resolve()
-        machine.bundle_path.parent.mkdir(parents=True, exist_ok=True)
         if machine.bundle_path.parent.resolve() != managed_root:
             raise SmolVMError(
                 f"macOS sandbox files must stay in '{managed_root}'; create sandbox "
                 f"'{config.vm_id}' again without a custom bundle path."
             )
+        machine.bundle_path.parent.mkdir(parents=True, exist_ok=True)
         if machine.bundle_path.is_symlink():
             raise SmolVMError(
                 f"macOS sandbox path '{machine.bundle_path}' is a link; remove it, then retry "
@@ -1134,6 +1134,8 @@ class SmolVMManager:
     def _managed_disk_for_vm(self, vm_info: VMInfo | None) -> Path | None:
         """Return the managed isolated disk path for a VM if applicable."""
         if vm_info is None:
+            return None
+        if vm_info.config.guest_os is GuestOS.MACOS or vm_info.config.rootfs_path is None:
             return None
         if vm_info.config.disk_mode != "isolated":
             return None

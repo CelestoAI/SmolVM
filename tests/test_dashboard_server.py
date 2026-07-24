@@ -258,6 +258,17 @@ def test_open_vm_desktop_keeps_password_on_host(
     assert opened == [(DesktopEndpoint(port=5901), "private-secret")]
 
 
+def test_open_vm_desktop_not_found_names_recovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(server, "_get_state_manager", lambda _app: _VMStateManagerStub())
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(server.open_vm_desktop("missing-mac"))
+
+    assert exc_info.value.status_code == 404
+    assert "Sandbox 'missing-mac'" in exc_info.value.detail
+    assert "smolvm sandbox list --all" in exc_info.value.detail
+
+
 # ── Tests for GET /api/vms/{vm_id}/processes ──
 
 

@@ -19,6 +19,12 @@ from pydantic import BaseModel, Field
 from smolvm.types import DesktopEndpoint, WorkspaceMount
 
 
+def _validate_lume_name(name: str) -> None:
+    """Reject names Lume could interpret as command options."""
+    if name.startswith("-"):
+        raise ValueError("macOS runtime names cannot begin with '-'")
+
+
 class LumeDiskSize(BaseModel):
     """Allocated and logical disk sizes reported by Lume."""
 
@@ -76,6 +82,9 @@ class MacOSInstallRequest:
     display_width: int = 1440
     display_height: int = 900
 
+    def __post_init__(self) -> None:
+        _validate_lume_name(self.name)
+
 
 @dataclass(frozen=True, slots=True)
 class MacOSRunRequest:
@@ -84,6 +93,9 @@ class MacOSRunRequest:
     name: str
     storage_path: Path
     workspace_mounts: tuple[WorkspaceMount, ...] = ()
+
+    def __post_init__(self) -> None:
+        _validate_lume_name(self.name)
 
 
 @dataclass(frozen=True, slots=True)

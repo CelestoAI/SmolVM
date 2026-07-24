@@ -158,14 +158,12 @@ def libkrun_status() -> BackendStatus:
 
 def vz_status() -> BackendStatus:
     """Probe the Apple Virtualization.framework macOS guest backend."""
-    if platform.system() != "Darwin" or platform.machine().lower() not in {"arm64", "aarch64"}:
+    from smolvm.host.lume import macos_host_capabilities
+
+    capabilities = macos_host_capabilities()
+    if not capabilities.is_apple_silicon:
         return BackendStatus(False, False, _vz_unsupported_host_message())
-    version = platform.mac_ver()[0]
-    try:
-        major = int(version.split(".", 1)[0])
-    except (ValueError, IndexError):
-        major = 0
-    if major < 14:
+    if not capabilities.supported_version:
         return BackendStatus(
             False,
             False,

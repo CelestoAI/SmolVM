@@ -18,6 +18,7 @@ from smolvm.types import (
     GuestOS,
     MacOSMachineConfig,
     VMConfig,
+    VMInfo,
     VMState,
     WorkspaceMount,
 )
@@ -62,6 +63,29 @@ def test_manager_create_macos_skips_linux_disk_and_network(tmp_path: Path) -> No
     assert info.status is VMState.CREATED
     assert info.network is None
     assert info.config.macos_machine == config.macos_machine
+
+
+def test_manager_rejects_unmanaged_macos_parent_before_creating_it(tmp_path: Path) -> None:
+    manager = SmolVMManager(
+        data_dir=tmp_path / "data",
+        socket_dir=tmp_path / "sockets",
+        backend="vz",
+    )
+    config = _config(tmp_path)
+    assert config.macos_machine is not None
+    outside = tmp_path / "outside"
+    config = config.model_copy(
+        update={
+            "macos_machine": config.macos_machine.model_copy(
+                update={"bundle_path": outside / "mac-test"}
+            )
+        }
+    )
+
+    with pytest.raises(SmolVMError, match="must stay"):
+        manager._materialize_macos_bundle(config)
+
+    assert not outside.exists()
 
 
 def test_manager_materializes_macos_bundle_with_driver_clone(tmp_path: Path) -> None:
@@ -158,6 +182,17 @@ def test_manager_refuses_third_running_macos_guest(tmp_path: Path) -> None:
 
     with pytest.raises(SmolVMError, match="sandbox stop mac-one"):
         manager.start("mac-three")
+
+
+def test_managed_disk_helper_skips_macos_without_rootfs(tmp_path: Path) -> None:
+    manager = SmolVMManager(
+        data_dir=tmp_path / "data",
+        socket_dir=tmp_path / "sockets",
+        backend="vz",
+    )
+    info = VMInfo(vm_id="mac-test", status=VMState.CREATED, config=_config(tmp_path))
+
+    assert manager._managed_disk_for_vm(info) is None
 
 
 def test_manager_delete_removes_macos_bundle(tmp_path: Path) -> None:

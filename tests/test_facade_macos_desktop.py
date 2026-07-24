@@ -8,7 +8,7 @@
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -21,6 +21,7 @@ from smolvm.types import (
     VMConfig,
     VMInfo,
     VMState,
+    WorkspaceMount,
 )
 
 
@@ -106,8 +107,43 @@ def test_open_desktop_uses_private_password_without_returning_it(tmp_path: Path)
     opener.assert_called_once_with(endpoint, password="secret")
 
 
+def test_open_desktop_password_read_error_names_recovery(tmp_path: Path) -> None:
+    vm = _facade(_info(tmp_path))
+    assert vm.info.config.macos_machine is not None
+    (vm.info.config.macos_machine.bundle_path / ".smolvm-vnc-password").unlink()
+
+    with pytest.raises(SmolVMError, match="smolvm sandbox desktop mac-test"):
+        vm.open_desktop()
+
+
 def test_open_desktop_stopped_error_names_recovery(tmp_path: Path) -> None:
     vm = _facade(_info(tmp_path, status=VMState.STOPPED))
 
     with pytest.raises(SmolVMError, match="smolvm sandbox start mac-test"):
         vm.open_desktop()
+
+
+@pytest.mark.asyncio
+async def test_async_start_skips_ssh_workspace_flow_for_macos(tmp_path: Path) -> None:
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    created = _info(tmp_path, status=VMState.CREATED)
+    config = created.config.model_copy(
+        update={"workspace_mounts": [WorkspaceMount(host_path=shared)]}
+    )
+    created = created.model_copy(update={"config": config})
+    running = created.model_copy(
+        update={"status": VMState.RUNNING, "display": DesktopEndpoint(port=5901)}
+    )
+    vm = _facade(created)
+    vm._sdk.async_start = AsyncMock(return_value=running)
+
+    with (
+        patch.object(vm, "_reset_runtime_state"),
+        patch.object(vm, "can_run_commands") as can_run,
+        patch.object(vm, "_mount_workspaces") as mount_workspaces,
+    ):
+        await vm.async_start()
+
+    can_run.assert_not_called()
+    mount_workspaces.assert_not_called()

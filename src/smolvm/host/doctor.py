@@ -721,13 +721,12 @@ def generate_doctor_report(backend: str | None = None) -> DoctorReport:
             LUME_VERSION,
             find_lume_binary,
             lume_version,
+            macos_host_capabilities,
             pinned_lume_ready,
         )
 
-        is_apple_silicon = platform.system() == "Darwin" and platform.machine().lower() in {
-            "arm64",
-            "aarch64",
-        }
+        capabilities = macos_host_capabilities()
+        is_apple_silicon = capabilities.is_apple_silicon
         checks.append(
             DoctorCheck(
                 name="apple-silicon",
@@ -742,12 +741,8 @@ def generate_doctor_report(backend: str | None = None) -> DoctorReport:
                 else "Run 'smolvm sandbox create --os alpine' on this machine instead.",
             )
         )
-        macos_version = platform.mac_ver()[0]
-        try:
-            macos_major = int(macos_version.split(".", 1)[0])
-        except (ValueError, IndexError):
-            macos_major = 0
-        version_ok = macos_major >= 14
+        macos_version = capabilities.version
+        version_ok = capabilities.supported_version
         checks.append(
             DoctorCheck(
                 name="macos-version",

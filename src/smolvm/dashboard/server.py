@@ -615,7 +615,13 @@ async def open_vm_desktop(vm_id: str) -> dict[str, str]:
     try:
         vm = await asyncio.to_thread(sm.get_vm, vm_id)
     except VMNotFoundError:
-        raise HTTPException(status_code=404, detail=f"VM not found: {vm_id}") from None
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Sandbox '{vm_id}' was not found; run 'smolvm sandbox list --all' to choose "
+                "an existing sandbox."
+            ),
+        ) from None
     if vm.display is None or vm.config.macos_machine is None:
         raise HTTPException(
             status_code=409,

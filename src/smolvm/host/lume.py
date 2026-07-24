@@ -20,6 +20,7 @@ import tarfile
 import tempfile
 import urllib.request
 from pathlib import Path
+from typing import NamedTuple
 
 from smolvm.exceptions import HostError
 
@@ -36,9 +37,42 @@ LUME_INSTALL_ROOT = Path.home() / ".smolvm" / "lib" / f"lume-{LUME_VERSION}"
 _VERSION_LINE_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$")
 
 
+class MacOSHostCapabilities(NamedTuple):
+    """Apple Silicon and host-version capabilities needed by the VZ backend."""
+
+    is_apple_silicon: bool
+    version: str
+    major_version: int
+
+    @property
+    def supported_version(self) -> bool:
+        return self.major_version >= 14
+
+
+def macos_major_version(version: str | None = None) -> int:
+    """Return a macOS major version, or zero when the value is unreadable."""
+    value = platform.mac_ver()[0] if version is None else version
+    try:
+        return int(value.split(".", 1)[0])
+    except (ValueError, IndexError):
+        return 0
+
+
+def macos_host_capabilities() -> MacOSHostCapabilities:
+    """Return the shared host gates for local macOS desktop sandboxes."""
+    version = platform.mac_ver()[0]
+    return MacOSHostCapabilities(
+        is_apple_silicon=(
+            platform.system() == "Darwin" and platform.machine().lower() in {"arm64", "aarch64"}
+        ),
+        version=version,
+        major_version=macos_major_version(version),
+    )
+
+
 def supported_lume_host() -> bool:
     """Return whether this host can run the pinned Lume build."""
-    return platform.system() == "Darwin" and platform.machine().lower() in {"arm64", "aarch64"}
+    return macos_host_capabilities().is_apple_silicon
 
 
 def find_lume_binary() -> Path | None:
@@ -165,17 +199,13 @@ def _extract_lume_bundle(archive: Path, destination: Path) -> None:
 
 def install_pinned_lume(*, destination: Path = LUME_MANAGED_PATH) -> Path:
     """Download, verify, and atomically install the tested Lume app bundle."""
-    if not supported_lume_host():
+    capabilities = macos_host_capabilities()
+    if not capabilities.is_apple_silicon:
         raise HostError(
             "macOS sandboxes need an Apple Silicon Mac. Run "
             "'smolvm sandbox create --os alpine' on this machine instead."
         )
-    version = platform.mac_ver()[0]
-    try:
-        major = int(version.split(".", 1)[0])
-    except (ValueError, IndexError):
-        major = 0
-    if major < 14:
+    if not capabilities.supported_version:
         raise HostError(
             "macOS desktop sandboxes need macOS 14 or newer. Update this Mac, then run "
             "'smolvm setup --macos' again."

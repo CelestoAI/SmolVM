@@ -56,6 +56,30 @@ def test_image_build_routes_macos_to_local_ipsw_builder() -> None:
     assert build.call_args.kwargs["ipsw"] == "latest"
 
 
+def test_macos_image_build_rejects_explicit_linux_options() -> None:
+    for option in (["--size-mb", "512"], ["--size-mb", "1024"], ["--backend", "auto"]):
+        with patch("smolvm.cli.image.run_macos_image_build", return_value=0) as build:
+            result = CliRunner().invoke(
+                build_cli(),
+                [
+                    "image",
+                    "build",
+                    "--os",
+                    "macos",
+                    "--ipsw",
+                    "latest",
+                    "-t",
+                    "macos-latest",
+                    *option,
+                ],
+            )
+
+        assert result.exit_code == 2
+        assert option[0] in result.output
+        assert "smolvm image build --os macos" in result.output
+        build.assert_not_called()
+
+
 def test_macos_image_progress_renders_each_phase(capsys) -> None:  # type: ignore[no-untyped-def]
     manager = MagicMock()
     result_marker = object()

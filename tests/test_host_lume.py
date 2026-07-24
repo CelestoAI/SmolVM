@@ -43,6 +43,12 @@ def test_verify_lume_app_requires_virtualization_entitlement(tmp_path: Path) -> 
         lume._verify_lume_app(app)
 
 
+def test_macos_major_version_falls_back_for_invalid_values() -> None:
+    assert lume.macos_major_version("14.6") == 14
+    assert lume.macos_major_version("") == 0
+    assert lume.macos_major_version("unknown") == 0
+
+
 def test_install_requires_macos_14_or_newer(tmp_path: Path) -> None:
     with (
         patch("smolvm.host.lume.platform.system", return_value="Darwin"),

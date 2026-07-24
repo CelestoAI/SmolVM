@@ -141,6 +141,16 @@ def test_image_name_cannot_escape_managed_folder(tmp_path: Path) -> None:
         manager.get("../outside")
 
 
+def test_build_rejects_unsafe_name_before_locking(tmp_path: Path) -> None:
+    image_dir = tmp_path / "images"
+    manager = MacOSImageManager(image_dir=image_dir, driver=MagicMock())
+
+    with pytest.raises(ImageError, match="not a valid macOS image name"):
+        manager.build(name="../outside")
+
+    assert not image_dir.exists()
+
+
 def test_local_ipsw_must_be_an_existing_apple_restore_file(tmp_path: Path) -> None:
     manager = MacOSImageManager(image_dir=tmp_path / "images", driver=MagicMock())
     manager._check_storage = MagicMock()  # type: ignore[method-assign]

@@ -84,11 +84,11 @@ export default function VMDetailCard({ vm, onClose }) {
 
         try {
             const vmId = encodeURIComponent(vm.id)
-            const endpoint = kind === 'desktop'
-                ? `/api/vms/${vmId}/desktop`
-                : kind === 'stop'
-                    ? `/api/vms/${vmId}/stop`
-                    : `/api/vms/${vmId}`
+            const endpoints = {
+                desktop: `/api/vms/${vmId}/desktop`,
+                stop: `/api/vms/${vmId}/stop`,
+            }
+            const endpoint = endpoints[kind] ?? `/api/vms/${vmId}`
             const method = kind === 'delete' ? 'DELETE' : 'POST'
             const response = await fetch(`${apiBase}${endpoint}`, {
                 method,

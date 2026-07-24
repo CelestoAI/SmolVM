@@ -1432,7 +1432,10 @@ def run_macos_image_build(
             command_name,
             str(exc),
             json_output=json_output,
-            recovery=f"Run 'smolvm image build --os macos --ipsw {ipsw} -t {tag}' again.",
+            recovery=(
+                "Run 'smolvm image build --os macos "
+                f"--ipsw {shlex.quote(ipsw)} -t {shlex.quote(tag)}' again."
+            ),
         )
 
 

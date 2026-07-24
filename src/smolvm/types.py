@@ -438,12 +438,16 @@ class VMConfig(BaseModel):
               lives inside ``rootfs_path`` (e.g. a Debian or Ubuntu cloud
               image). ``kernel_path`` must be ``None`` in this mode, and the
               backend must be ``"qemu"``.
+            - ``"platform"``: the platform backend boots a native machine
+              bundle instead of a kernel or rootfs image. This mode is only
+              available for macOS guests using the ``"vz"`` backend.
 
         kernel_path: Path to the kernel image. Required when
             ``boot_mode == "direct_kernel"``; must be ``None`` when
             ``boot_mode == "firmware"``.
         initrd_path: Optional path to the initrd image.
-        rootfs_path: Path to the root filesystem image.
+        rootfs_path: Optional path to the root filesystem image. This is
+            ``None`` for macOS guests that boot from a platform machine bundle.
         rootfs_format: Declared root filesystem image format. New configs
             should set this to ``"raw-ext4"`` or ``"qcow2"``; legacy configs
             that omit it fall back to the filename suffix.
@@ -451,7 +455,8 @@ class VMConfig(BaseModel):
         boot_args: Kernel boot arguments (ignored in firmware mode).
         ssh_capable: Whether this boot path is expected to start guest SSH
             without relying on ``init=/init``.
-        backend: Optional runtime backend override ("firecracker", "qemu", or "libkrun").
+        backend: Optional runtime backend override (``"firecracker"``,
+            ``"qemu"``, ``"libkrun"``, or macOS-only ``"vz"``).
         qemu_network: QEMU backend networking mode — ``"slirp"`` (default,
             userspace NAT + host port forwards) or ``"tap"`` (host TAP device
             under the shared nftables NAT/isolation rules). Ignored by non-QEMU
@@ -591,6 +596,8 @@ class VMConfig(BaseModel):
                 )
             return self
 
+        if self.backend == "vz":
+            raise ValueError("backend='vz' is only valid for guest_os='macos'")
         if self.macos_machine is not None:
             raise ValueError("macos_machine is only valid for guest_os='macos'")
         if self.rootfs_path is None:

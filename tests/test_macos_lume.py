@@ -7,8 +7,10 @@
 # http://www.apache.org/licenses/LICENSE-2.0
 
 import io
+import subprocess
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -205,8 +207,82 @@ def test_lume_driver_starts_until_loopback_display_is_ready(
 
 def test_lume_share_arguments_are_read_only_by_default(tmp_path: Path) -> None:
     path = tmp_path / "shared"
-    assert LumeDriver._share_argument(path, writable=False).endswith(":ro")
-    assert LumeDriver._share_argument(path, writable=True).endswith(":rw")
+    assert LumeDriver._share_argument(path, writable=False, sandbox_name="mac-test").endswith(":ro")
+    assert LumeDriver._share_argument(path, writable=True, sandbox_name="mac-test").endswith(":rw")
+
+
+def test_lume_share_error_names_pasteable_create_command() -> None:
+    with pytest.raises(SmolVMError) as exc_info:
+        LumeDriver._share_argument(
+            Path("/tmp/shared:folder"),
+            writable=False,
+            sandbox_name="mac-test",
+        )
+
+    assert "smolvm sandbox create --os macos --name mac-test" in str(exc_info.value)
+    assert "--mount /tmp/shared-folder" in str(exc_info.value)
+
+
+def test_lume_display_rejects_malformed_port() -> None:
+    details = SimpleNamespace(vnc_url="vnc://127.0.0.1:99999")
+
+    assert LumeDriver._display_from_details(details) is None
+
+
+def test_lume_poll_timeout_includes_last_inspect_error(tmp_path: Path) -> None:
+    driver = LumeDriver(tmp_path / "lume")
+    process = MagicMock()
+    process.stdout = io.BytesIO(b"")
+    process.poll.return_value = None
+    process.wait.return_value = 0
+
+    with (
+        patch("smolvm.macos.lume.subprocess.Popen", return_value=process),
+        patch.object(driver, "inspect", side_effect=SmolVMError("inspect failed")),
+        patch("smolvm.macos.lume.time.monotonic", side_effect=[0.0, 0.0, 2.0]),
+        patch("smolvm.macos.lume.time.sleep"),
+        pytest.raises(SmolVMError, match="Last runtime error: inspect failed"),
+    ):
+        driver.start(
+            MacOSRunRequest(name="mac-test", storage_path=tmp_path),
+            log_path=tmp_path / "vm.log",
+            timeout=1,
+        )
+
+    process.terminate.assert_called_once()
+
+
+def test_lume_start_interrupt_terminates_process(tmp_path: Path) -> None:
+    driver = LumeDriver(tmp_path / "lume")
+    process = MagicMock()
+    process.stdout = io.BytesIO(b"")
+    process.poll.return_value = None
+    process.wait.return_value = 0
+
+    with (
+        patch("smolvm.macos.lume.subprocess.Popen", return_value=process),
+        patch.object(driver, "inspect", side_effect=KeyboardInterrupt),
+        patch("smolvm.macos.lume.time.monotonic", side_effect=[0.0, 0.0]),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        driver.start(
+            MacOSRunRequest(name="mac-test", storage_path=tmp_path),
+            log_path=tmp_path / "vm.log",
+            timeout=1,
+        )
+
+    process.terminate.assert_called_once()
+
+
+def test_lume_run_timeout_names_sandbox_logs(tmp_path: Path) -> None:
+    with (
+        patch(
+            "smolvm.macos.lume.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(["lume"], 15),
+        ),
+        pytest.raises(SmolVMError, match="smolvm sandbox logs mac-test"),
+    ):
+        LumeDriver(tmp_path / "lume").inspect("mac-test", storage_path=tmp_path)
 
 
 def test_lume_driver_redacts_vnc_password_from_errors(tmp_path: Path) -> None:

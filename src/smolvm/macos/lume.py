@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import threading
 import time
@@ -61,8 +62,13 @@ class LumeDriver:
             )
 
     def _run(
-        self, arguments: list[str], *, timeout: float = 60.0
+        self,
+        arguments: list[str],
+        *,
+        sandbox_name: str,
+        timeout: float = 60.0,
     ) -> subprocess.CompletedProcess[str]:
+        logs_command = f"smolvm sandbox logs {shlex.quote(sandbox_name)}"
         try:
             result = subprocess.run(
                 [str(self.binary), *arguments],
@@ -74,8 +80,8 @@ class LumeDriver:
             )
         except subprocess.TimeoutExpired as exc:
             raise SmolVMError(
-                "The macOS sandbox runtime did not finish in time; run "
-                "'smolvm sandbox logs' for details."
+                f"The macOS sandbox runtime did not finish in time; run '{logs_command}' "
+                "for details."
             ) from exc
         except OSError as exc:
             raise SmolVMError(
@@ -89,8 +95,8 @@ class LumeDriver:
                 detail = f"{detail[:497]}..."
             suffix = f" Runtime detail: {detail}" if detail else ""
             raise SmolVMError(
-                "The macOS sandbox runtime failed. Run 'smolvm doctor --backend vz' "
-                f"to check this Mac.{suffix}"
+                f"The macOS sandbox runtime failed; run '{logs_command}' for details, then "
+                f"'smolvm doctor --backend vz' to check this Mac.{suffix}"
             )
         return result
 
@@ -212,6 +218,7 @@ class LumeDriver:
     def inspect(self, name: str, *, storage_path: Path) -> LumeVMDetails:
         result = self._run(
             ["get", name, "--format", "json", "--storage", str(storage_path)],
+            sandbox_name=name,
             timeout=15,
         )
         try:
@@ -243,16 +250,23 @@ class LumeDriver:
                 "--dest-storage",
                 str(destination_storage),
             ],
+            sandbox_name=destination,
             timeout=15 * 60,
         )
 
     @staticmethod
-    def _share_argument(path: Path, *, writable: bool) -> str:
+    def _share_argument(path: Path, *, writable: bool, sandbox_name: str) -> str:
         value = str(path)
         if ":" in value:
+            safe_path = value.replace(":", "-")
+            writable_option = " --writable-mounts" if writable else ""
+            retry = (
+                f"smolvm sandbox create --os macos --name {shlex.quote(sandbox_name)} "
+                f"--mount {shlex.quote(safe_path)}{writable_option}"
+            )
             raise SmolVMError(
-                f"Shared folder path contains ':': '{value}'. Move it to a path without ':' and "
-                "run the sandbox create command again."
+                f"Shared folder path contains ':': '{value}'. Move it to '{safe_path}', then run "
+                f"'{retry}'."
             )
         return f"{value}:{'rw' if writable else 'ro'}"
 
@@ -261,10 +275,16 @@ class LumeDriver:
         if details.vnc_url is None:
             return None
         parsed = urlparse(details.vnc_url)
-        if parsed.scheme != "vnc" or parsed.hostname is None or parsed.port is None:
+        if parsed.scheme != "vnc" or parsed.hostname is None:
             return None
         try:
-            return DesktopEndpoint(host=parsed.hostname, port=parsed.port)
+            port = parsed.port
+        except ValueError:
+            return None
+        if port is None:
+            return None
+        try:
+            return DesktopEndpoint(host=parsed.hostname, port=port)
         except ValidationError:
             return None
 
@@ -304,7 +324,11 @@ class LumeDriver:
             arguments.extend(
                 [
                     "--shared-dir",
-                    self._share_argument(mount.host_path, writable=mount.writable),
+                    self._share_argument(
+                        mount.host_path,
+                        writable=mount.writable,
+                        sandbox_name=request.name,
+                    ),
                 ]
             )
 
@@ -332,18 +356,21 @@ class LumeDriver:
                 "'smolvm doctor --backend vz' to check this Mac."
             ) from exc
 
+        logs_command = f"smolvm sandbox logs {shlex.quote(request.name)}"
         deadline = time.monotonic() + timeout
+        last_inspect_error: SmolVMError | None = None
         try:
             while time.monotonic() < deadline:
                 return_code = process.poll()
                 if return_code is not None:
                     raise SmolVMError(
                         f"The macOS sandbox runtime exited with code {return_code}; run "
-                        f"'smolvm sandbox logs {request.name}' for details."
+                        f"'{logs_command}' for details."
                     )
                 try:
                     details = self.inspect(request.name, storage_path=request.storage_path)
-                except SmolVMError:
+                except SmolVMError as exc:
+                    last_inspect_error = exc
                     time.sleep(0.25)
                     continue
                 display = self._display_from_details(details)
@@ -358,11 +385,14 @@ class LumeDriver:
                         vnc_password=password,
                     )
                 time.sleep(0.25)
+            inspect_detail = (
+                f" Last runtime error: {last_inspect_error}" if last_inspect_error else ""
+            )
             raise SmolVMError(
                 f"The macOS desktop did not become ready in {timeout:g} seconds; run "
-                f"'smolvm sandbox logs {request.name}' for details."
+                f"'{logs_command}' for details.{inspect_detail}"
             )
-        except Exception:
+        except (Exception, KeyboardInterrupt):
             self._protect_runtime_secrets(request.storage_path, request.name)
             process.terminate()
             try:
@@ -373,10 +403,15 @@ class LumeDriver:
             raise
 
     def stop(self, name: str, *, storage_path: Path, timeout: float) -> None:
-        self._run(["stop", name, "--storage", str(storage_path)], timeout=timeout + 15)
+        self._run(
+            ["stop", name, "--storage", str(storage_path)],
+            sandbox_name=name,
+            timeout=timeout + 15,
+        )
 
     def delete(self, name: str, *, storage_path: Path) -> None:
         self._run(
             ["delete", name, "--force", "--storage", str(storage_path)],
+            sandbox_name=name,
             timeout=15 * 60,
         )

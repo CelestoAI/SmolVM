@@ -2694,8 +2694,11 @@ class SmolVM:
             password_path = machine.bundle_path / ".smolvm-vnc-password"
             try:
                 password = password_path.read_text(encoding="utf-8").strip() or None
-            except OSError:
-                password = None
+            except OSError as exc:
+                raise SmolVMError(
+                    f"Sandbox '{self._vm_id}' desktop could not open; run "
+                    f"'smolvm sandbox desktop {self._vm_id}' to retry."
+                ) from exc
 
         from smolvm.macos.desktop import open_desktop
 
@@ -2795,8 +2798,9 @@ class SmolVM:
                 injector = inject_env_vars_windows if self._is_windows_guest() else inject_env_vars
                 await asyncio.to_thread(injector, ssh, env_vars)
 
-        # Mount workspace directories after boot if configured.
-        if self._info.config.workspace_mounts:
+        # macOS shares are attached by the runtime before boot; other guests
+        # still need the SSH-based workspace mounting flow.
+        if self._info.config.guest_os is not GuestOS.MACOS and self._info.config.workspace_mounts:
             if not self.can_run_commands():
                 raise SmolVMError(
                     "Cannot mount workspaces: VM image does not support SSH.",
