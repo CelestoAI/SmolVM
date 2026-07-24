@@ -1305,7 +1305,7 @@ def _build_macos_image_with_progress(
     """Render one continuous bar across download, install, and desktop setup."""
     from smolvm.macos.models import MacOSInstallProgress
 
-    downloads_ipsw = ipsw == "latest"
+    download_started = False
     with Progress(
         SpinnerColumn(),
         TextColumn("{task.description}"),
@@ -1316,13 +1316,15 @@ def _build_macos_image_with_progress(
         task = progress.add_task("Starting macOS image preparation…", total=100)
 
         def update(event: MacOSInstallProgress) -> None:
+            nonlocal download_started
             percent = event.percent or 0
             if event.phase == "download":
+                download_started = True
                 completed = percent * 0.35
                 description = f"Downloading macOS… {percent}%"
             elif event.phase == "install":
-                base = 35 if downloads_ipsw else 0
-                span = 50 if downloads_ipsw else 85
+                base = 35 if download_started else 0
+                span = 50 if download_started else 85
                 completed = base + percent * span / 100
                 description = f"Installing macOS… {percent}%"
             elif event.phase == "setup":
@@ -1385,13 +1387,18 @@ def run_macos_image_build(
         )
 
     root = resolve_image_dir(image_dir) / "macos"
-    if not json_output:
-        console_stdout().print(
-            "Preparing macOS from Apple. This can take 20–40 minutes the first time; "
-            f"build logs are stored in '{root / f'{tag}.build.log'}'."
-        )
     try:
         manager = MacOSImageManager(image_dir=root)
+        if not json_output:
+            reuse = ipsw == "latest" and manager.find_cached_latest_ipsw() is not None
+            preparation = (
+                "Reusing the downloaded Apple restore file."
+                if reuse
+                else "Preparing macOS from Apple. This can take 20–40 minutes the first time."
+            )
+            console_stdout().print(
+                f"{preparation} Build logs are stored in '{root / f'{tag}.build.log'}'."
+            )
         manifest = (
             manager.build(name=tag, ipsw=ipsw_value)
             if json_output

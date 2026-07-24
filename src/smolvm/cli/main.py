@@ -1079,15 +1079,26 @@ def _run_create(args: SimpleNamespace) -> int:
             except ImageError as exc:
                 vm_name = args.name or "test-mac"
                 retry = f"smolvm sandbox create --os macos --name {shlex.quote(vm_name)} --yes"
+                cached_ipsw = image_manager.find_cached_latest_ipsw()
+                if cached_ipsw is not None:
+                    preparation_summary = (
+                        "SmolVM found the downloaded Apple restore file and will reuse it to "
+                        "finish creating the local image; installation can take 15–30 minutes."
+                    )
+                    approval_reason = "finish image preparation with the downloaded restore file"
+                else:
+                    preparation_summary = (
+                        "SmolVM will download macOS from Apple and create a reusable local image; "
+                        "this needs about 50 GB and can take 20–40 minutes."
+                    )
+                    approval_reason = "approve the one-time Apple download"
                 if args.json and not getattr(args, "yes", False):
                     raise ValueError(
                         "A local macOS image must be prepared before this sandbox; "
-                        f"run '{retry}' to approve the one-time Apple download."
+                        f"run '{retry}' to {approval_reason}."
                     ) from exc
                 approved = getattr(args, "yes", False) or click.confirm(
-                    "No local macOS image is ready. SmolVM will download macOS from Apple "
-                    "and create a reusable local image; this needs about 50 GB and can take "
-                    "20–40 minutes. Continue?",
+                    f"No local macOS image is ready. {preparation_summary} Continue?",
                     default=False,
                 )
                 if not approved:
@@ -1099,9 +1110,13 @@ def _run_create(args: SimpleNamespace) -> int:
                 else:
                     from smolvm.cli.image import _build_macos_image_with_progress
 
+                    source_message = (
+                        "Preparing macOS with the downloaded Apple restore file."
+                        if cached_ipsw is not None
+                        else "Preparing macOS from Apple."
+                    )
                     console_stdout().print(
-                        "Preparing macOS from Apple. Build logs are stored under "
-                        "'~/.smolvm/images/macos'."
+                        f"{source_message} Build logs are stored under '~/.smolvm/images/macos'."
                     )
                     _build_macos_image_with_progress(
                         image_manager,

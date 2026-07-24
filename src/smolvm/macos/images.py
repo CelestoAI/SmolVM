@@ -12,13 +12,16 @@ from __future__ import annotations
 
 import fcntl
 import json
+import os
 import platform
 import plistlib
 import re
 import shutil
 import subprocess
+import tempfile
+import zipfile
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -35,6 +38,8 @@ from smolvm.types import MacOSMachineConfig
 MACOS_DEFAULT_IMAGE = "macos-latest"
 MACOS_MANIFEST_NAME = "smolvm-manifest.json"
 _MINIMUM_FREE_BYTES = 50 * 1024**3
+_MINIMUM_INSTALL_FREE_BYTES = 25 * 1024**3
+_MINIMUM_IPSW_BYTES = 1024**3
 _SAFE_IMAGE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
@@ -100,6 +105,54 @@ class MacOSImageManager:
             )
         return bundle / MACOS_MANIFEST_NAME
 
+    @property
+    def cached_latest_ipsw_path(self) -> Path:
+        """SmolVM-owned retry cache for Apple's latest restore file."""
+        return self.image_dir / ".downloads" / "latest.ipsw"
+
+    @staticmethod
+    def _is_complete_ipsw(path: Path) -> bool:
+        try:
+            return (
+                path.is_file()
+                and path.stat().st_size >= _MINIMUM_IPSW_BYTES
+                and zipfile.is_zipfile(path)
+            )
+        except OSError:
+            return False
+
+    def find_cached_latest_ipsw(self) -> Path | None:
+        """Find a complete SmolVM or Lume restore download that can be reused."""
+        managed = self.cached_latest_ipsw_path
+        if self._is_complete_ipsw(managed):
+            return managed
+        lume_temporary = Path(tempfile.gettempdir()) / "latest.ipsw"
+        if self._is_complete_ipsw(lume_temporary):
+            return lume_temporary
+        return None
+
+    def _adopt_latest_ipsw(self) -> Path | None:
+        """Move Lume's completed temporary download into SmolVM's retry cache."""
+        existing = self.find_cached_latest_ipsw()
+        if existing is None or existing == self.cached_latest_ipsw_path:
+            return existing
+        destination = self.cached_latest_ipsw_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.parent.chmod(0o700)
+        try:
+            os.replace(existing, destination)
+        except OSError:
+            return existing
+        destination.chmod(0o600)
+        return destination
+
+    @staticmethod
+    def _discard_retry_ipsw(path: Path | None) -> None:
+        if path is not None:
+            path.unlink(missing_ok=True)
+            with suppress(OSError):
+                path.parent.rmdir()
+
     def get(self, name: str = MACOS_DEFAULT_IMAGE) -> MacOSImageManifest:
         path = self.manifest_path(name)
         try:
@@ -121,7 +174,7 @@ class MacOSImageManager:
             )
         return manifest
 
-    def _check_storage(self) -> None:
+    def _check_storage(self, *, minimum_free_bytes: int = _MINIMUM_FREE_BYTES) -> None:
         """Require APFS and enough room before starting Apple's large install."""
         self.image_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -152,11 +205,12 @@ class MacOSImageManager:
                 "then run 'smolvm image build --os macos --ipsw latest -t macos-latest'."
             )
         free = shutil.disk_usage(self.image_dir).free
-        if free < _MINIMUM_FREE_BYTES:
+        if free < minimum_free_bytes:
             free_gib = free // 1024**3
+            required_gib = minimum_free_bytes // 1024**3
             raise ImageError(
-                f"macOS image preparation needs 50 GiB free, but this folder has {free_gib} GiB; "
-                "free some space, then retry the image build."
+                f"macOS image preparation needs {required_gib} GiB free, but this folder has "
+                f"{free_gib} GiB; free some space, then retry the image build."
             )
 
     def build(
@@ -195,15 +249,23 @@ class MacOSImageManager:
             )
         if bundle.is_dir():
             shutil.rmtree(bundle)
+        requested_latest = ipsw == "latest"
         resolved_ipsw: str | Path = "latest"
-        if ipsw != "latest":
+        if requested_latest:
+            cached_ipsw = self._adopt_latest_ipsw()
+            if cached_ipsw is not None:
+                resolved_ipsw = cached_ipsw
+        else:
             resolved_ipsw = Path(ipsw).expanduser().resolve()
             if resolved_ipsw.suffix.lower() != ".ipsw" or not resolved_ipsw.is_file():
                 raise ImageError(
                     f"macOS restore file was not found at '{resolved_ipsw}'; choose an .ipsw "
                     "file from Apple, or use '--ipsw latest'."
                 )
-        self._check_storage()
+        minimum_free = (
+            _MINIMUM_FREE_BYTES if resolved_ipsw == "latest" else _MINIMUM_INSTALL_FREE_BYTES
+        )
+        self._check_storage(minimum_free_bytes=minimum_free)
         resolved_log = log_path or (self.image_dir / f"{name}.build.log")
         request = MacOSInstallRequest(
             name=name,
@@ -221,7 +283,7 @@ class MacOSImageManager:
             manifest = MacOSImageManifest(
                 name=name,
                 guest_version=details.os,
-                source_ipsw=str(resolved_ipsw),
+                source_ipsw="latest" if requested_latest else str(resolved_ipsw),
                 cpu_count=details.cpu_count,
                 memory_mib=details.memory_size // (1024 * 1024),
                 disk_size_bytes=details.disk_size.total,
@@ -237,8 +299,12 @@ class MacOSImageManager:
                 encoding="utf-8",
             )
             temporary.replace(manifest_path)
+            if requested_latest:
+                self._discard_retry_ipsw(self.find_cached_latest_ipsw())
             return manifest
-        except Exception:
+        except (Exception, KeyboardInterrupt):
+            if requested_latest:
+                self._adopt_latest_ipsw()
             manifest_path.unlink(missing_ok=True)
             bundle = self.bundle_path(name)
             if bundle.is_dir():

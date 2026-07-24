@@ -188,13 +188,15 @@ class LumeDriver:
         reader.start()
         try:
             return_code = process.wait(timeout=90 * 60)
-        except subprocess.TimeoutExpired as exc:
+        except (subprocess.TimeoutExpired, KeyboardInterrupt) as exc:
             process.terminate()
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=5)
+            if isinstance(exc, KeyboardInterrupt):
+                raise
             raise SmolVMError(
                 "macOS image preparation did not finish; run "
                 f"'smolvm image build --os macos --ipsw {ipsw} -t {request.name}' to try again."

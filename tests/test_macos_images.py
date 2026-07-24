@@ -6,8 +6,9 @@
 #
 # http://www.apache.org/licenses/LICENSE-2.0
 
+import zipfile
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -59,6 +60,57 @@ def test_build_and_resolve_local_macos_image(tmp_path: Path) -> None:
     assert machine.base_image == "macos-latest"
     assert machine.bundle_path == tmp_path / "data" / "macos-vms" / "mac-test"
     driver.install_base_image.assert_called_once()
+
+
+def test_latest_build_reuses_completed_lume_download(tmp_path: Path) -> None:
+    image_dir = tmp_path / "images" / "macos"
+    lume_temp = tmp_path / "latest.ipsw"
+    with zipfile.ZipFile(lume_temp, "w") as archive:
+        archive.writestr("BuildManifest.plist", "test")
+    driver = MagicMock()
+    driver.inspect.return_value = _details()
+    driver.version.return_value = "0.4.0"
+    used_ipsw: list[Path] = []
+
+    def install(request, **kwargs):  # type: ignore[no-untyped-def]
+        used_ipsw.append(Path(request.ipsw))
+        (image_dir / "macos-latest").mkdir(parents=True)
+
+    driver.install_base_image.side_effect = install
+    manager = MacOSImageManager(image_dir=image_dir, driver=driver)
+    manager._check_storage = MagicMock()  # type: ignore[method-assign]
+
+    with (
+        patch("smolvm.macos.images.tempfile.gettempdir", return_value=str(tmp_path)),
+        patch("smolvm.macos.images._MINIMUM_IPSW_BYTES", 1),
+    ):
+        manifest = manager.build(ipsw="latest")
+
+    assert used_ipsw == [image_dir / ".downloads" / "latest.ipsw"]
+    assert manifest.source_ipsw == "latest"
+    assert not lume_temp.exists()
+    assert not manager.cached_latest_ipsw_path.exists()
+
+
+def test_failed_install_keeps_completed_download_for_retry(tmp_path: Path) -> None:
+    image_dir = tmp_path / "images" / "macos"
+    lume_temp = tmp_path / "latest.ipsw"
+    with zipfile.ZipFile(lume_temp, "w") as archive:
+        archive.writestr("BuildManifest.plist", "test")
+    driver = MagicMock()
+    driver.install_base_image.side_effect = RuntimeError("install failed")
+    manager = MacOSImageManager(image_dir=image_dir, driver=driver)
+    manager._check_storage = MagicMock()  # type: ignore[method-assign]
+
+    with (
+        patch("smolvm.macos.images.tempfile.gettempdir", return_value=str(tmp_path)),
+        patch("smolvm.macos.images._MINIMUM_IPSW_BYTES", 1),
+        pytest.raises(RuntimeError, match="install failed"),
+    ):
+        manager.build(ipsw="latest")
+
+    assert not lume_temp.exists()
+    assert manager.cached_latest_ipsw_path.is_file()
 
 
 def test_image_name_cannot_escape_managed_folder(tmp_path: Path) -> None:
