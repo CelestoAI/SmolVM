@@ -1566,6 +1566,27 @@ class TestProcessLifecycle:
         assert smol_vm._is_process_running(process.pid) is False
         assert process.pid not in smol_vm._process_handles
 
+    def test_is_process_running_rejects_zombie_without_handle(self, smol_vm: SmolVMManager) -> None:
+        """A zombie owned by another process must not be treated as running."""
+        with (
+            patch("smolvm.vm.os.kill"),
+            patch.object(smol_vm, "_is_zombie_process", return_value=True),
+        ):
+            assert smol_vm._is_process_running(12345) is False
+
+    def test_is_zombie_process_reads_ps_state(self, smol_vm: SmolVMManager) -> None:
+        """The portable fallback should recognize ps's zombie state marker."""
+        result = subprocess.CompletedProcess(args=["ps"], returncode=0, stdout="Z    \n", stderr="")
+        with patch("smolvm.vm.subprocess.run", return_value=result) as mock_run:
+            assert smol_vm._is_zombie_process(12345) is True
+        mock_run.assert_called_once_with(
+            ["ps", "-o", "state=", "-p", "12345"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=1.0,
+        )
+
     def test_kill_process_reaps_handle_so_followup_check_returns_false(
         self, smol_vm: SmolVMManager
     ) -> None:

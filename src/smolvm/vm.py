@@ -3281,6 +3281,21 @@ class SmolVMManager:
                 handle.wait(timeout=0.1)
                 self._process_handles.pop(pid, None)
 
+    @staticmethod
+    def _is_zombie_process(pid: int) -> bool:
+        """Return whether an existing process has exited but is not yet reaped."""
+        try:
+            result = subprocess.run(
+                ["ps", "-o", "state=", "-p", str(pid)],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=1.0,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return result.returncode == 0 and result.stdout.strip().startswith("Z")
+
     def _is_process_running(self, pid: int) -> bool:
         """Check if a process is running.
 
@@ -3298,11 +3313,11 @@ class SmolVMManager:
             return False
         try:
             os.kill(pid, 0)
-            return True
         except ProcessLookupError:
             return False
         except PermissionError:
-            return True  # Can't signal but exists
+            return not self._is_zombie_process(pid)
+        return not self._is_zombie_process(pid)
 
     def _wait_for_process(self, pid: int, timeout: float) -> None:
         """Wait for a process to exit.
