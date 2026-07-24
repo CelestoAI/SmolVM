@@ -53,6 +53,7 @@ from smolvm.types import (
     BrowserSessionConfig,
     BrowserSessionInfo,
     BrowserSessionState,
+    DesktopEndpoint,
     NetworkConfig,
     SnapshotInfo,
     VMConfig,
@@ -110,6 +111,7 @@ class SQLiteStateManager:
                     network TEXT,
                     pid INTEGER,
                     socket_path TEXT,
+                    display TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -199,6 +201,9 @@ class SQLiteStateManager:
                 CREATE INDEX IF NOT EXISTS idx_snapshots_vm_id ON snapshots(vm_id);
             """
             )
+            vm_columns = {row["name"] for row in conn.execute("PRAGMA table_info(vms)").fetchall()}
+            if "display" not in vm_columns:
+                conn.execute("ALTER TABLE vms ADD COLUMN display TEXT")
             snapshot_columns = {
                 row["name"] for row in conn.execute("PRAGMA table_info(snapshots)").fetchall()
             }
@@ -256,6 +261,7 @@ class SQLiteStateManager:
         config = vm_config_from_json(row["config"])
         network = NetworkConfig.model_validate_json(row["network"]) if row["network"] else None
         control_socket_path = Path(row["socket_path"]) if row["socket_path"] else None
+        display = DesktopEndpoint.model_validate_json(row["display"]) if row["display"] else None
 
         return VMInfo(
             vm_id=row["id"],
@@ -264,6 +270,7 @@ class SQLiteStateManager:
             network=network,
             pid=row["pid"],
             control_socket_path=control_socket_path,
+            display=display,
         )
 
     def update_vm(
@@ -275,8 +282,10 @@ class SQLiteStateManager:
         network: NetworkConfig | None = None,
         pid: int | None = None,
         control_socket_path: Path | None = None,
+        display: DesktopEndpoint | None = None,
         clear_pid: bool = False,
         clear_socket_path: bool = False,
+        clear_display: bool = False,
     ) -> VMInfo:
         if not vm_id:
             raise ValueError("vm_id cannot be empty")
@@ -310,6 +319,11 @@ class SQLiteStateManager:
                 params.append(str(control_socket_path))
             elif clear_socket_path:
                 updates.append("socket_path = NULL")
+            if display is not None:
+                updates.append("display = ?")
+                params.append(display.model_dump_json())
+            elif clear_display:
+                updates.append("display = NULL")
 
             params.append(vm_id)
             query = f"UPDATE vms SET {', '.join(updates)} WHERE id = ?"
@@ -345,6 +359,9 @@ class SQLiteStateManager:
             config = vm_config_from_json(row["config"])
             network = NetworkConfig.model_validate_json(row["network"]) if row["network"] else None
             control_socket_path = Path(row["socket_path"]) if row["socket_path"] else None
+            display = (
+                DesktopEndpoint.model_validate_json(row["display"]) if row["display"] else None
+            )
             result.append(
                 VMInfo(
                     vm_id=row["id"],
@@ -353,6 +370,7 @@ class SQLiteStateManager:
                     network=network,
                     pid=row["pid"],
                     control_socket_path=control_socket_path,
+                    display=display,
                 )
             )
         return result

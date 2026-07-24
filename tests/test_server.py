@@ -35,8 +35,13 @@ from fastapi.routing import APIRoute
 from smolvm import server as server_pkg
 from smolvm.exceptions import SmolVMError, VMNotFoundError
 from smolvm.server.app import create_app
-from smolvm.server.models import CreateSandboxRequest, ExecRequest, SandboxResponse
-from smolvm.types import CommandResult, VMState
+from smolvm.server.models import (
+    CreateSandboxRequest,
+    DesktopResponse,
+    ExecRequest,
+    SandboxResponse,
+)
+from smolvm.types import CommandResult, DesktopEndpoint, VMState
 
 
 class FakeSmolVM:
@@ -48,6 +53,7 @@ class FakeSmolVM:
     # the host but are absent from this app's in-memory registry).
     existing_ids: set[str] = set()
     from_id_calls: int = 0
+    desktop_endpoint: DesktopEndpoint | None = None
 
     def __init__(self, **kwargs: object) -> None:
         FakeSmolVM.last_kwargs = kwargs
@@ -116,6 +122,7 @@ def app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     FakeSmolVM.last_run_args = None
     FakeSmolVM.deleted_ids = set()
     FakeSmolVM.delete_error = None
+    FakeSmolVM.desktop_endpoint = None
     monkeypatch.setattr("smolvm.server.app.SmolVM", FakeSmolVM)
     # list_sandboxes enumerates the host directly; back it by the stub's ids.
     monkeypatch.setattr("smolvm.server.app._existing_vm_ids", lambda: set(FakeSmolVM.existing_ids))
@@ -132,6 +139,19 @@ def test_create_sandbox_returns_running_state(app: FastAPI) -> None:
     assert result.status is VMState.RUNNING
     # Only the fields the caller set are forwarded to the facade.
     assert FakeSmolVM.last_kwargs == {"os": "ubuntu", "memory": 1024}
+
+
+def test_get_sandbox_desktop_returns_sanitized_loopback_endpoint(app: FastAPI) -> None:
+    FakeSmolVM.desktop_endpoint = DesktopEndpoint(port=5901)
+    create = _handler(app, "/sandboxes", "POST")
+    desktop = _handler(app, "/sandboxes/{sandbox_id}/desktop", "GET")
+    create(CreateSandboxRequest())
+
+    result = desktop("sbx-test")
+
+    assert isinstance(result, DesktopResponse)
+    assert result.viewer_url == "vnc://127.0.0.1:5901"
+    assert "password" not in result.model_dump_json().lower()
 
 
 def test_create_sandbox_defaults_when_body_empty(app: FastAPI) -> None:

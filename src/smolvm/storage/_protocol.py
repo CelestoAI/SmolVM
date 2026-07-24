@@ -24,6 +24,7 @@ from smolvm.types import (
     BrowserSessionConfig,
     BrowserSessionInfo,
     BrowserSessionState,
+    DesktopEndpoint,
     NetworkConfig,
     SnapshotInfo,
     VMConfig,
@@ -66,8 +67,10 @@ class StateManagerProtocol(Protocol):
         network: NetworkConfig | None = None,
         pid: int | None = None,
         control_socket_path: Path | None = None,
+        display: DesktopEndpoint | None = None,
         clear_pid: bool = False,
         clear_socket_path: bool = False,
+        clear_display: bool = False,
     ) -> VMInfo:
         pass
 

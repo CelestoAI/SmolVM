@@ -187,6 +187,66 @@
         }
       }
     },
+    "/sandboxes/{sandbox_id}/desktop": {
+      "get": {
+        "summary": "Get Sandbox Desktop",
+        "description": "Return a sanitized loopback desktop endpoint without opening it.",
+        "operationId": "getSandboxDesktop",
+        "parameters": [
+          {
+            "name": "sandbox_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Sandbox Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DesktopResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The sandbox was not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No running desktop is available.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/sandboxes/{sandbox_id}/exec": {
       "post": {
         "summary": "Exec Command",
@@ -281,7 +341,8 @@
                 "enum": [
                   "alpine",
                   "ubuntu",
-                  "windows"
+                  "windows",
+                  "macos"
                 ]
               },
               {
@@ -289,7 +350,7 @@
               }
             ],
             "title": "Os",
-            "description": "Guest OS for auto-configured images: 'alpine', 'ubuntu', or 'windows'."
+            "description": "Guest OS for auto-configured images: 'alpine', 'ubuntu', 'windows', or 'macos'."
           },
           "memory": {
             "anyOf": [
@@ -326,7 +387,8 @@
                 "enum": [
                   "firecracker",
                   "qemu",
-                  "libkrun"
+                  "libkrun",
+                  "vz"
                 ]
               },
               {
@@ -334,12 +396,49 @@
               }
             ],
             "title": "Backend",
-            "description": "Runtime backend override: 'firecracker', 'qemu', or 'libkrun'."
+            "description": "Runtime backend override: 'firecracker', 'qemu', 'libkrun', or 'vz'."
           }
         },
         "type": "object",
         "title": "CreateSandboxRequest",
         "description": "Request body for creating (and booting) a sandbox.\n\nMirrors the auto-config arguments of the :class:`smolvm.SmolVM`\nconstructor. All fields are optional; omitting them boots the\ndefault Alpine micro-VM."
+      },
+      "DesktopResponse": {
+        "properties": {
+          "protocol": {
+            "type": "string",
+            "const": "vnc",
+            "title": "Protocol",
+            "default": "vnc"
+          },
+          "host": {
+            "type": "string",
+            "enum": [
+              "127.0.0.1",
+              "localhost",
+              "::1"
+            ],
+            "title": "Host"
+          },
+          "port": {
+            "type": "integer",
+            "maximum": 65535.0,
+            "minimum": 1.0,
+            "title": "Port"
+          },
+          "viewer_url": {
+            "type": "string",
+            "title": "Viewer Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "host",
+          "port",
+          "viewer_url"
+        ],
+        "title": "DesktopResponse",
+        "description": "A sanitized loopback display endpoint for a running sandbox."
       },
       "ErrorResponse": {
         "properties": {

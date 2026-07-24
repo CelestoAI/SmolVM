@@ -12,7 +12,7 @@ import click
 
 F = TypeVar("F", bound=Callable[..., Any])
 
-BACKENDS = ["auto", "firecracker", "qemu", "libkrun"]
+BACKENDS = ["auto", "firecracker", "qemu", "libkrun", "vz"]
 QEMU_MACHINES = ["auto", "q35", "microvm"]
 COMM_CHANNELS = ["ssh", "vsock"]
 

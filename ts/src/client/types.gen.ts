@@ -23,9 +23,9 @@ export type CreateSandboxRequest = {
     /**
      * Os
      *
-     * Guest OS for auto-configured images: 'alpine', 'ubuntu', or 'windows'.
+     * Guest OS for auto-configured images: 'alpine', 'ubuntu', 'windows', or 'macos'.
      */
-    os?: 'alpine' | 'ubuntu' | 'windows' | null;
+    os?: 'alpine' | 'ubuntu' | 'windows' | 'macos' | null;
     /**
      * Memory
      *
@@ -41,9 +41,33 @@ export type CreateSandboxRequest = {
     /**
      * Backend
      *
-     * Runtime backend override: 'firecracker', 'qemu', or 'libkrun'.
+     * Runtime backend override: 'firecracker', 'qemu', 'libkrun', or 'vz'.
      */
-    backend?: 'firecracker' | 'qemu' | 'libkrun' | null;
+    backend?: 'firecracker' | 'qemu' | 'libkrun' | 'vz' | null;
+};
+
+/**
+ * DesktopResponse
+ *
+ * A sanitized loopback display endpoint for a running sandbox.
+ */
+export type DesktopResponse = {
+    /**
+     * Protocol
+     */
+    protocol?: 'vnc';
+    /**
+     * Host
+     */
+    host: '127.0.0.1' | 'localhost' | '::1';
+    /**
+     * Port
+     */
+    port: number;
+    /**
+     * Viewer Url
+     */
+    viewer_url: string;
 };
 
 /**
@@ -305,6 +329,44 @@ export type GetSandboxResponses = {
 };
 
 export type GetSandboxResponse = GetSandboxResponses[keyof GetSandboxResponses];
+
+export type GetSandboxDesktopData = {
+    body?: never;
+    path: {
+        /**
+         * Sandbox Id
+         */
+        sandbox_id: string;
+    };
+    query?: never;
+    url: '/sandboxes/{sandbox_id}/desktop';
+};
+
+export type GetSandboxDesktopErrors = {
+    /**
+     * The sandbox was not found.
+     */
+    404: ErrorResponse;
+    /**
+     * No running desktop is available.
+     */
+    409: ErrorResponse;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetSandboxDesktopError = GetSandboxDesktopErrors[keyof GetSandboxDesktopErrors];
+
+export type GetSandboxDesktopResponses = {
+    /**
+     * Successful Response
+     */
+    200: DesktopResponse;
+};
+
+export type GetSandboxDesktopResponse = GetSandboxDesktopResponses[keyof GetSandboxDesktopResponses];
 
 export type ExecCommandData = {
     body: ExecRequest;

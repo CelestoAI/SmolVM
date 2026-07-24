@@ -31,9 +31,10 @@ logger = logging.getLogger(__name__)
 BACKEND_FIRECRACKER = "firecracker"
 BACKEND_QEMU = "qemu"
 BACKEND_LIBKRUN = "libkrun"
+BACKEND_VZ = "vz"
 BACKEND_AUTO = "auto"
 
-SUPPORTED_BACKENDS = {BACKEND_FIRECRACKER, BACKEND_QEMU, BACKEND_LIBKRUN}
+SUPPORTED_BACKENDS = {BACKEND_FIRECRACKER, BACKEND_QEMU, BACKEND_LIBKRUN, BACKEND_VZ}
 
 # Where ``smolvm`` installs a private Firecracker binary when it isn't on PATH.
 # Kept in sync with ``smolvm.host.manager.HostManager.BIN_DIR``; duplicated here
@@ -106,6 +107,13 @@ def libkrun_available() -> bool:
     return is_available()
 
 
+def _lume_binary_present() -> bool:
+    """Return whether the exact tested preview macOS runtime is installed."""
+    from smolvm.host.lume import pinned_lume_ready
+
+    return pinned_lume_ready()
+
+
 # --- per-backend status ----------------------------------------------------
 
 
@@ -148,6 +156,27 @@ def libkrun_status() -> BackendStatus:
     return BackendStatus(False, False, _libkrun_missing_message())
 
 
+def vz_status() -> BackendStatus:
+    """Probe the Apple Virtualization.framework macOS guest backend."""
+    if platform.system() != "Darwin" or platform.machine().lower() not in {"arm64", "aarch64"}:
+        return BackendStatus(False, False, _vz_unsupported_host_message())
+    version = platform.mac_ver()[0]
+    try:
+        major = int(version.split(".", 1)[0])
+    except (ValueError, IndexError):
+        major = 0
+    if major < 14:
+        return BackendStatus(
+            False,
+            False,
+            "macOS desktop sandboxes need macOS 14 or newer. Update this Mac, then run "
+            "'smolvm doctor --backend vz' again.",
+        )
+    if not _lume_binary_present():
+        return BackendStatus(False, False, _vz_missing_message())
+    return BackendStatus(True, True, None)
+
+
 def firecracker_available() -> bool:
     """Return whether the Firecracker backend is fully runnable here."""
     return firecracker_status().available
@@ -166,6 +195,8 @@ def _backend_status(backend: str) -> BackendStatus | None:
         return qemu_status()
     if backend == BACKEND_LIBKRUN:
         return libkrun_status()
+    if backend == BACKEND_VZ:
+        return vz_status()
     return None
 
 
@@ -262,6 +293,29 @@ def resolve_backend(requested: str | None = None) -> str:
     return resolve_backend_status(requested)[0]
 
 
+def resolve_backend_for_guest(
+    requested: str | None,
+    guest_os: object,
+) -> str:
+    """Resolve a backend while honoring guest-specific runtime requirements.
+
+    The legacy :func:`resolve_backend` remains host-only so existing Linux
+    callers keep selecting QEMU on macOS.  macOS guests use this resolver and
+    select Apple's Virtualization.framework backend instead.
+    """
+    guest_value = getattr(guest_os, "value", guest_os)
+    if str(guest_value).lower() != "macos":
+        return resolve_backend(requested)
+
+    raw = (requested or os.environ.get("SMOLVM_BACKEND") or BACKEND_AUTO).strip().lower()
+    if raw in {BACKEND_AUTO, BACKEND_VZ}:
+        return BACKEND_VZ
+    supported = f"{BACKEND_AUTO}, {BACKEND_VZ}"
+    raise ValueError(
+        f"macOS guests require backend 'vz' (got {raw!r}); supported values: {supported}"
+    )
+
+
 def _create_with_qemu_command(vm_name: str | None) -> str:
     """Return the exact 'create with QEMU instead' recovery command.
 
@@ -329,6 +383,22 @@ def _libkrun_missing_message() -> str:
         "libkrun isn't installed on this machine. Install it with "
         "'brew install libkrun/krun/libkrun' on macOS or 'sudo dnf install "
         "libkrun' on Fedora, then run 'smolvm doctor --backend libkrun' to confirm."
+    )
+
+
+def _vz_unsupported_host_message() -> str:
+    """Recovery for trying to run a macOS guest on unsupported hardware."""
+    return (
+        "macOS sandboxes need an Apple Silicon Mac. Run "
+        "'smolvm sandbox create --os alpine' on this machine instead."
+    )
+
+
+def _vz_missing_message() -> str:
+    """Recovery for a supported host without the preview runtime driver."""
+    return (
+        "The macOS sandbox runtime isn't installed. Run 'smolvm setup --macos', then "
+        "'smolvm doctor --backend vz' to confirm."
     )
 
 

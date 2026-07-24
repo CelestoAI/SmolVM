@@ -57,7 +57,9 @@ from smolvm.runtime.backends import (
     BACKEND_FIRECRACKER,
     BACKEND_LIBKRUN,
     BACKEND_QEMU,
+    BACKEND_VZ,
     resolve_backend,
+    resolve_backend_for_guest,
 )
 from smolvm.runtime.base import RuntimeContext, SnapshotCreateRequest, SnapshotRestoreRequest
 from smolvm.runtime.firecracker import FirecrackerRuntimeAdapter
@@ -65,6 +67,7 @@ from smolvm.runtime.guest_platforms import get_guest_platform
 from smolvm.runtime.libkrun import LibkrunRuntimeAdapter
 from smolvm.runtime.qemu import QEMU_ROOT_NODE_NAME, QemuRuntimeAdapter
 from smolvm.runtime.qemu_args import build_qemu_argv
+from smolvm.runtime.vz import VzRuntimeAdapter
 from smolvm.storage import (
     SSH_PORT_END,
     SSH_PORT_START,
@@ -414,15 +417,15 @@ class SmolVMManager:
 
     def _backend_for_config(self, config: VMConfig) -> str:
         """Return effective backend for the provided VM config."""
-        if config.backend:
-            return self._resolve_vm_backend(config.backend)
-        return self.backend
+        requested = config.backend if config.backend else self.backend
+        try:
+            return resolve_backend_for_guest(requested, config.guest_os)
+        except ValueError as exc:
+            raise SmolVMError(str(exc), {"backend": requested}) from exc
 
     def _backend_for_vm(self, vm_info: VMInfo) -> str:
         """Return effective backend for a persisted VM."""
-        if vm_info.config.backend:
-            return self._resolve_vm_backend(vm_info.config.backend)
-        return self.backend
+        return self._backend_for_config(vm_info.config)
 
     def _runtime_context(self) -> RuntimeContext:
         """Build a shared adapter context from manager-owned helpers."""
@@ -448,7 +451,7 @@ class SmolVMManager:
 
     def _runtime_adapter_for_backend(
         self, backend: str
-    ) -> FirecrackerRuntimeAdapter | QemuRuntimeAdapter | LibkrunRuntimeAdapter:
+    ) -> FirecrackerRuntimeAdapter | QemuRuntimeAdapter | LibkrunRuntimeAdapter | VzRuntimeAdapter:
         """Construct a runtime adapter for the requested backend."""
         context = self._runtime_context()
         if backend == BACKEND_FIRECRACKER:
@@ -457,18 +460,20 @@ class SmolVMManager:
             return QemuRuntimeAdapter(context)
         if backend == BACKEND_LIBKRUN:
             return LibkrunRuntimeAdapter(context)
+        if backend == BACKEND_VZ:
+            return VzRuntimeAdapter(context)
         raise SmolVMError("Unsupported backend", {"backend": backend})
 
     def _runtime_adapter_for_vm(
         self, vm_info: VMInfo
-    ) -> FirecrackerRuntimeAdapter | QemuRuntimeAdapter | LibkrunRuntimeAdapter:
+    ) -> FirecrackerRuntimeAdapter | QemuRuntimeAdapter | LibkrunRuntimeAdapter | VzRuntimeAdapter:
         """Resolve the runtime adapter for a persisted VM."""
         return self._runtime_adapter_for_backend(self._backend_for_vm(vm_info))
 
     def _runtime_adapter_for_snapshot(
         self,
         snapshot: SnapshotInfo,
-    ) -> FirecrackerRuntimeAdapter | QemuRuntimeAdapter | LibkrunRuntimeAdapter:
+    ) -> FirecrackerRuntimeAdapter | QemuRuntimeAdapter | LibkrunRuntimeAdapter | VzRuntimeAdapter:
         """Resolve the runtime adapter for a persisted snapshot."""
         return self._runtime_adapter_for_backend(snapshot.backend)
 
@@ -497,7 +502,7 @@ class SmolVMManager:
 
     def _managed_disk_path_for_create(self, config: VMConfig, backend: str) -> Path | None:
         """Return the deterministic managed disk path a create may materialize."""
-        if config.disk_mode == "shared":
+        if config.guest_os is GuestOS.MACOS or config.disk_mode == "shared":
             return None
         return self._instance_disk_path(
             config.vm_id,
@@ -984,6 +989,91 @@ class SmolVMManager:
             update={"rootfs_path": instance_rootfs, "rootfs_format": materialized_format}
         )
 
+    def _materialize_macos_bundle(self, config: VMConfig) -> None:
+        """Clone a local macOS base into this sandbox's managed storage."""
+        machine = config.macos_machine
+        if config.guest_os is not GuestOS.MACOS or machine is None:
+            return
+        if machine.bundle_path.name != config.vm_id:
+            raise SmolVMError(
+                f"macOS sandbox bundle must end with '{config.vm_id}'; delete the sandbox with "
+                f"'smolvm sandbox delete {config.vm_id}' and create it again."
+            )
+        managed_root = (self.data_dir / "macos-vms").resolve()
+        machine.bundle_path.parent.mkdir(parents=True, exist_ok=True)
+        if machine.bundle_path.parent.resolve() != managed_root:
+            raise SmolVMError(
+                f"macOS sandbox files must stay in '{managed_root}'; create sandbox "
+                f"'{config.vm_id}' again without a custom bundle path."
+            )
+        if machine.bundle_path.is_symlink():
+            raise SmolVMError(
+                f"macOS sandbox path '{machine.bundle_path}' is a link; remove it, then retry "
+                f"'smolvm sandbox create --os macos --name {config.vm_id}'."
+            )
+        if machine.bundle_path.exists():
+            machine.bundle_path.chmod(0o700)
+            logger.info("Reusing macOS bundle for VM %s", config.vm_id)
+            return
+
+        from smolvm.host.lume import find_lume_binary, pinned_lume_ready
+        from smolvm.macos.lume import LumeDriver
+
+        binary = find_lume_binary()
+        if binary is None or not pinned_lume_ready():
+            raise SmolVMError(
+                "The macOS sandbox runtime isn't installed. Run 'smolvm setup --macos', then "
+                "'smolvm doctor --backend vz' to confirm."
+            )
+        source_storage = machine.manifest_path.parent.parent
+        try:
+            LumeDriver(binary).clone(
+                machine.base_image,
+                config.vm_id,
+                source_storage=source_storage,
+                destination_storage=machine.bundle_path.parent,
+            )
+        except Exception:
+            if machine.bundle_path.is_dir():
+                shutil.rmtree(machine.bundle_path, ignore_errors=True)
+            raise
+        if not machine.bundle_path.is_dir():
+            raise SmolVMError(
+                f"The macOS sandbox runtime did not create '{machine.bundle_path}'; run "
+                f"'smolvm sandbox create --name {config.vm_id} --os macos' again."
+            )
+        machine.bundle_path.chmod(0o700)
+
+    def _delete_macos_bundle(self, vm_info: VMInfo) -> None:
+        """Delete one managed macOS instance without touching base images."""
+        machine = vm_info.config.macos_machine
+        if machine is None:
+            return
+        if machine.bundle_path.is_symlink():
+            raise SmolVMError(
+                f"macOS sandbox path '{machine.bundle_path}' is a link; remove the link, then "
+                f"retry 'smolvm sandbox delete {vm_info.vm_id}'."
+            )
+        if not machine.bundle_path.exists():
+            return
+        managed_root = (self.data_dir / "macos-vms").resolve()
+        try:
+            machine.bundle_path.resolve().relative_to(managed_root)
+        except ValueError as exc:
+            raise SmolVMError(
+                f"Refusing to delete macOS files outside '{managed_root}'; remove "
+                f"'{machine.bundle_path}' manually after deleting sandbox '{vm_info.vm_id}'."
+            ) from exc
+
+        from smolvm.host.lume import find_lume_binary, pinned_lume_ready
+        from smolvm.macos.lume import LumeDriver
+
+        binary = find_lume_binary()
+        if binary is not None and pinned_lume_ready():
+            LumeDriver(binary).delete(vm_info.vm_id, storage_path=machine.bundle_path.parent)
+        elif machine.bundle_path.is_dir():
+            shutil.rmtree(machine.bundle_path)
+
     def _materialize_firmware(self, config: VMConfig) -> None:
         """Create the per-VM OVMF NVRAM file for UEFI-firmware guests.
 
@@ -1093,6 +1183,23 @@ class SmolVMManager:
                 return sidecars
             sidecars.append(resolved)
             current = resolved
+
+    def _enforce_macos_concurrency_limit(self, vm_id: str) -> None:
+        """Fail clearly before Apple rejects a third running macOS guest."""
+        running = [
+            vm.vm_id
+            for vm in self.state.list_vms()
+            if vm.vm_id != vm_id
+            and vm.config.guest_os is GuestOS.MACOS
+            and vm.status is VMState.RUNNING
+        ]
+        if len(running) >= 2:
+            first = sorted(running)[0]
+            raise SmolVMError(
+                f"This Mac already has two running macOS sandboxes; run "
+                f"'smolvm sandbox stop {first}', then retry 'smolvm sandbox start {vm_id}'.",
+                {"vm_id": vm_id, "running_macos_sandboxes": sorted(running)},
+            )
 
     def _check_workspace_mounts(self, vm_info: VMInfo) -> None:
         """Verify each workspace mount's host folder is still usable.
@@ -1799,12 +1906,10 @@ class SmolVMManager:
         ):
             effective_config = effective_config.model_copy(update={"qemu_network": "tap"})
 
-        if effective_config.workspace_mounts and backend != BACKEND_QEMU:
+        if effective_config.workspace_mounts and backend not in {BACKEND_QEMU, BACKEND_VZ}:
             raise SmolVMError(
-                "Workspace mounts (virtio-9p) are only supported with the "
-                f"QEMU backend (got backend={backend!r}). Re-run without "
-                "--backend (SmolVM will auto-select QEMU when --mount is "
-                "used) or pass --backend qemu explicitly.",
+                "Shared folders are only supported with the QEMU backend or macOS sandboxes; "
+                "re-run without '--backend' so SmolVM can select a compatible runtime.",
                 {"vm_id": effective_config.vm_id, "backend": backend},
             )
         if self._is_bridge_attachment(effective_config):
@@ -1819,6 +1924,12 @@ class SmolVMManager:
             )
             firmware_state = self.data_dir / "firmware" / effective_config.vm_id
             firmware_existed = firmware_state.exists()
+            macos_bundle = (
+                effective_config.macos_machine.bundle_path
+                if effective_config.macos_machine is not None
+                else None
+            )
+            macos_bundle_existed = macos_bundle.exists() if macos_bundle is not None else False
             vm_record_created = False
             managed_disk_backup: list[tuple[Path, Path]] = []
             if managed_disk_existed and (
@@ -1826,7 +1937,10 @@ class SmolVMManager:
             ):
                 managed_disk_backup = self._backup_existing_managed_disk(managed_disk_path)
             try:
-                effective_config = self._materialize_rootfs(effective_config)
+                if effective_config.guest_os is GuestOS.MACOS:
+                    self._materialize_macos_bundle(effective_config)
+                else:
+                    effective_config = self._materialize_rootfs(effective_config)
 
                 logger.info(
                     "Creating VM: %s (backend=%s, disk_mode=%s)",
@@ -1841,8 +1955,9 @@ class SmolVMManager:
                 # mutate a retained managed disk without a VM row.
                 self.state.create_vm(effective_config)
                 vm_record_created = True
-                effective_config = self._resize_materialized_rootfs(effective_config)
-                self._materialize_firmware(effective_config)
+                if effective_config.guest_os is not GuestOS.MACOS:
+                    effective_config = self._resize_materialized_rootfs(effective_config)
+                    self._materialize_firmware(effective_config)
                 self._discard_existing_managed_disk_backup(managed_disk_backup)
             except Exception:
                 self._restore_existing_managed_disk_backup(managed_disk_backup)
@@ -1857,9 +1972,15 @@ class SmolVMManager:
                     effective_config.vm_id,
                     existed_before=firmware_existed,
                 )
+                if macos_bundle is not None and not macos_bundle_existed and macos_bundle.is_dir():
+                    shutil.rmtree(macos_bundle, ignore_errors=True)
                 raise
 
         try:
+            if backend == BACKEND_VZ:
+                logger.info("VM created: %s (backend=vz)", effective_config.vm_id)
+                return self.state.get_vm(effective_config.vm_id)
+
             channel_resolution = self._resolve_control_channel_for_config(effective_config, backend)
 
             if self._is_bridge_attachment(effective_config):
@@ -2052,7 +2173,7 @@ class SmolVMManager:
                 {"vm_id": vm_id, "current_status": vm_info.status.value},
             )
 
-        if vm_info.network is None:
+        if vm_info.network is None and vm_info.config.guest_os is not GuestOS.MACOS:
             raise SmolVMError(
                 "VM has no network configuration",
                 {"vm_id": vm_id},
@@ -2061,6 +2182,8 @@ class SmolVMManager:
         self._check_workspace_mounts(vm_info)
 
         backend = self._backend_for_vm(vm_info)
+        if backend == BACKEND_VZ:
+            self._enforce_macos_concurrency_limit(vm_id)
 
         # Bridge mode: revalidate every dependency and repair the owned TAP.
         if vm_info.network is not None and vm_info.network.mode == "bridge":
@@ -2082,6 +2205,7 @@ class SmolVMManager:
                 status=launch.status,
                 pid=launch.pid,
                 control_socket_path=launch.control_socket_path,
+                display=launch.display,
             )
             logger.info(
                 "VM started: %s (backend=%s, PID: %d)",
@@ -2097,6 +2221,7 @@ class SmolVMManager:
                 status=VMState.ERROR,
                 clear_pid=True,
                 clear_socket_path=True,
+                clear_display=True,
             )
             self._close_runtime_log(vm_id, backend, vm_info.control_socket_path)
             raise
@@ -2133,6 +2258,7 @@ class SmolVMManager:
             status=VMState.STOPPED,
             clear_pid=True,
             clear_socket_path=True,
+            clear_display=True,
         )
         logger.info("VM stopped: %s (backend=%s)", vm_id, backend)
         return vm_info
@@ -2746,6 +2872,8 @@ class SmolVMManager:
 
         if vm_info.status in (VMState.RUNNING, VMState.PAUSED):
             self.stop(vm_id)
+
+        self._delete_macos_bundle(vm_info)
 
         # Cleanup all resources. Bridge deletion is strict so an owned host
         # interface never outlives the state needed to retry its cleanup.
@@ -3390,6 +3518,7 @@ class SmolVMManager:
             self._close_runtime_log(vm_id, BACKEND_FIRECRACKER)
             self._close_runtime_log(vm_id, BACKEND_QEMU)
             self._close_runtime_log(vm_id, BACKEND_LIBKRUN)
+            self._close_runtime_log(vm_id, BACKEND_VZ)
 
             managed_disk = self._managed_disk_for_vm(vm_info)
             if managed_disk and managed_disk.exists():
@@ -3463,12 +3592,10 @@ class SmolVMManager:
         ):
             effective_config = effective_config.model_copy(update={"qemu_network": "tap"})
 
-        if effective_config.workspace_mounts and backend != BACKEND_QEMU:
+        if effective_config.workspace_mounts and backend not in {BACKEND_QEMU, BACKEND_VZ}:
             raise SmolVMError(
-                "Workspace mounts (virtio-9p) are only supported with the "
-                f"QEMU backend (got backend={backend!r}). Re-run without "
-                "--backend (SmolVM will auto-select QEMU when --mount is "
-                "used) or pass --backend qemu explicitly.",
+                "Shared folders are only supported with the QEMU backend or macOS sandboxes; "
+                "re-run without '--backend' so SmolVM can select a compatible runtime.",
                 {"vm_id": effective_config.vm_id, "backend": backend},
             )
         if self._is_bridge_attachment(effective_config):
@@ -3488,6 +3615,12 @@ class SmolVMManager:
             )
             firmware_state = self.data_dir / "firmware" / effective_config.vm_id
             firmware_existed = firmware_state.exists()
+            macos_bundle = (
+                effective_config.macos_machine.bundle_path
+                if effective_config.macos_machine is not None
+                else None
+            )
+            macos_bundle_existed = macos_bundle.exists() if macos_bundle is not None else False
             vm_record_created = False
             managed_disk_backup: list[tuple[Path, Path]] = []
             if managed_disk_existed and (
@@ -3498,7 +3631,10 @@ class SmolVMManager:
                     managed_disk_path,
                 )
             try:
-                effective_config = await self._async_materialize_rootfs(effective_config)
+                if effective_config.guest_os is GuestOS.MACOS:
+                    await asyncio.to_thread(self._materialize_macos_bundle, effective_config)
+                else:
+                    effective_config = await self._async_materialize_rootfs(effective_config)
 
                 logger.info(
                     "Creating VM (async): %s (backend=%s, disk_mode=%s)",
@@ -3509,12 +3645,13 @@ class SmolVMManager:
 
                 self.state.create_vm(effective_config)
                 vm_record_created = True
-                effective_config = await asyncio.to_thread(
-                    self._resize_materialized_rootfs,
-                    effective_config,
-                )
-                # Firmware materialization is a small file copy — synchronous is fine.
-                self._materialize_firmware(effective_config)
+                if effective_config.guest_os is not GuestOS.MACOS:
+                    effective_config = await asyncio.to_thread(
+                        self._resize_materialized_rootfs,
+                        effective_config,
+                    )
+                    # Firmware materialization is a small file copy — synchronous is fine.
+                    self._materialize_firmware(effective_config)
                 await asyncio.to_thread(
                     self._discard_existing_managed_disk_backup,
                     managed_disk_backup,
@@ -3535,9 +3672,15 @@ class SmolVMManager:
                     effective_config.vm_id,
                     existed_before=firmware_existed,
                 )
+                if macos_bundle is not None and not macos_bundle_existed and macos_bundle.is_dir():
+                    await asyncio.to_thread(shutil.rmtree, macos_bundle, True)
                 raise
 
         try:
+            if backend == BACKEND_VZ:
+                logger.info("VM created (async): %s (backend=vz)", effective_config.vm_id)
+                return self.state.get_vm(effective_config.vm_id)
+
             channel_resolution = self._resolve_control_channel_for_config(effective_config, backend)
 
             if self._is_bridge_attachment(effective_config):
@@ -3686,12 +3829,14 @@ class SmolVMManager:
                 {"vm_id": vm_id, "current_status": vm_info.status.value},
             )
 
-        if vm_info.network is None:
+        if vm_info.network is None and vm_info.config.guest_os is not GuestOS.MACOS:
             raise SmolVMError("VM has no network configuration", {"vm_id": vm_id})
 
         self._check_workspace_mounts(vm_info)
 
         backend = self._backend_for_vm(vm_info)
+        if backend == BACKEND_VZ:
+            self._enforce_macos_concurrency_limit(vm_id)
 
         # Bridge mode: revalidate every dependency and repair the owned TAP.
         if vm_info.network is not None and vm_info.network.mode == "bridge":
@@ -3716,6 +3861,7 @@ class SmolVMManager:
                 status=launch.status,
                 pid=launch.pid,
                 control_socket_path=launch.control_socket_path,
+                display=launch.display,
             )
             logger.info(
                 "VM started (async): %s (backend=%s, PID: %d)",
@@ -3731,6 +3877,7 @@ class SmolVMManager:
                 status=VMState.ERROR,
                 clear_pid=True,
                 clear_socket_path=True,
+                clear_display=True,
             )
             self._close_runtime_log(vm_id, backend, vm_info.control_socket_path)
             raise
@@ -3756,6 +3903,7 @@ class SmolVMManager:
             status=VMState.STOPPED,
             clear_pid=True,
             clear_socket_path=True,
+            clear_display=True,
         )
         logger.info("VM stopped (async): %s (backend=%s)", vm_id, backend)
         return vm_info
@@ -3775,6 +3923,8 @@ class SmolVMManager:
 
         if vm_info.status in (VMState.RUNNING, VMState.PAUSED):
             await self.async_stop(vm_id)
+
+        await asyncio.to_thread(self._delete_macos_bundle, vm_info)
 
         require_bridge_cleanup = (
             vm_info.network is not None and vm_info.network.mode == "bridge"
@@ -4028,6 +4178,7 @@ class SmolVMManager:
             self._close_runtime_log(vm_id, BACKEND_FIRECRACKER)
             self._close_runtime_log(vm_id, BACKEND_QEMU)
             self._close_runtime_log(vm_id, BACKEND_LIBKRUN)
+            self._close_runtime_log(vm_id, BACKEND_VZ)
 
             managed_disk = self._managed_disk_for_vm(vm_info)
             if managed_disk and managed_disk.exists():

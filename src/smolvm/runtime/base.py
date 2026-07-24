@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, TextIO
 
 from smolvm.types import (
+    DesktopEndpoint,
     SnapshotArtifacts,
     SnapshotCapturePolicy,
     SnapshotInfo,
@@ -44,6 +45,7 @@ class RuntimeLaunch:
     control_socket_path: Path | None
     status: VMState
     vsock_uds_path: Path | None = None
+    display: DesktopEndpoint | None = None
 
 
 @dataclass(slots=True, frozen=True)

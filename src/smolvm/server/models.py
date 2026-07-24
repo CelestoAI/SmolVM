@@ -44,9 +44,11 @@ class CreateSandboxRequest(BaseModel):
         description="Image reference to boot (S3 ref, file:// URI, or path). "
         "Omit to use the default built-in image.",
     )
-    os: Literal["alpine", "ubuntu", "windows"] | None = Field(
+    os: Literal["alpine", "ubuntu", "windows", "macos"] | None = Field(
         default=None,
-        description="Guest OS for auto-configured images: 'alpine', 'ubuntu', or 'windows'.",
+        description=(
+            "Guest OS for auto-configured images: 'alpine', 'ubuntu', 'windows', or 'macos'."
+        ),
     )
     memory: int | None = Field(
         default=None,
@@ -60,9 +62,9 @@ class CreateSandboxRequest(BaseModel):
         le=262144,
         description="Guest disk size in MiB.",
     )
-    backend: Literal["firecracker", "qemu", "libkrun"] | None = Field(
+    backend: Literal["firecracker", "qemu", "libkrun", "vz"] | None = Field(
         default=None,
-        description="Runtime backend override: 'firecracker', 'qemu', or 'libkrun'.",
+        description="Runtime backend override: 'firecracker', 'qemu', 'libkrun', or 'vz'.",
     )
 
 
@@ -87,6 +89,15 @@ class SandboxResponse(BaseModel):
 
     id: str = Field(description="Stable sandbox identifier.")
     status: VMState = Field(description="Current lifecycle state.")
+
+
+class DesktopResponse(BaseModel):
+    """A sanitized loopback display endpoint for a running sandbox."""
+
+    protocol: Literal["vnc"] = "vnc"
+    host: Literal["127.0.0.1", "localhost", "::1"]
+    port: int = Field(ge=1, le=65535)
+    viewer_url: str
 
 
 class ExecRequest(BaseModel):

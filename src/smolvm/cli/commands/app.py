@@ -86,6 +86,7 @@ def sandbox() -> None:
 @comm_channel_option
 @click.option("--mount", "mounts", multiple=True, metavar="HOST_PATH[:GUEST_PATH]")
 @click.option("--writable-mounts", is_flag=True, help="Allow writes to mounted host folders.")
+@click.option("--yes", is_flag=True, help="Confirm one-time macOS image preparation.")
 @click.option(
     "--network",
     "network_mode",
@@ -113,6 +114,7 @@ def sandbox_create(
     comm_channel: str | None,
     mounts: tuple[str, ...],
     writable_mounts: bool,
+    yes: bool,
     network_mode: str,
     bridge_name: str | None,
     boot_timeout: float,
@@ -133,6 +135,7 @@ def sandbox_create(
             comm_channel=comm_channel,
             mounts=_mounts(mounts),
             writable_mounts=writable_mounts,
+            yes=yes,
             network_mode=network_mode,
             bridge_name=bridge_name,
             boot_timeout=boot_timeout,
@@ -188,6 +191,30 @@ def sandbox_start(vm_id: str, boot_timeout: float, json_output: bool) -> Any:
     _before_command(json_output=json_output)
     return _handlers()._run_vm_start(
         _ns(command_name="sandbox.start", vm_id=vm_id, boot_timeout=boot_timeout, json=json_output)
+    )
+
+
+@sandbox.command("desktop")
+@click.argument("vm_id", metavar="sandbox", shell_complete=complete_sandbox_names)
+@click.option("--start", "start_if_needed", is_flag=True, help="Start a stopped sandbox first.")
+@boot_timeout_option
+@json_option
+def sandbox_desktop(
+    vm_id: str,
+    start_if_needed: bool,
+    boot_timeout: float,
+    json_output: bool,
+) -> Any:
+    """Open a sandbox desktop."""
+    _before_command(json_output=json_output)
+    return _handlers()._run_desktop(
+        _ns(
+            command_name="sandbox.desktop",
+            vm_id=vm_id,
+            start=start_if_needed,
+            boot_timeout=boot_timeout,
+            json=json_output,
+        )
     )
 
 
@@ -395,6 +422,7 @@ def sandbox_delete(
 @cli.command("setup", help="Install or validate local runtime dependencies.")
 @click.option("--check-only", is_flag=True, help="Check what is needed without installing.")
 @click.option("--with-docker", is_flag=True, help="Also install or check Docker.")
+@click.option("--macos", "macos_runtime", is_flag=True, help="Prepare macOS desktop sandboxes.")
 @click.option("--skip-deps", is_flag=True, help="Skip installing system packages.")
 @click.option("--assets-dir", is_flag=True, help="Print the packaged setup-assets directory.")
 @click.option("--no-configure-runtime", cls=LinuxOnlyOption, is_flag=True)
@@ -407,6 +435,7 @@ def sandbox_delete(
 def setup(
     check_only: bool,
     with_docker: bool,
+    macos_runtime: bool,
     skip_deps: bool,
     assets_dir: bool,
     no_configure_runtime: bool,
@@ -421,6 +450,7 @@ def setup(
     return _handlers()._run_setup(
         check_only=check_only,
         with_docker=with_docker,
+        macos_runtime=macos_runtime,
         configure_runtime=not no_configure_runtime,
         no_configure_runtime=no_configure_runtime,
         skip_deps=skip_deps,
@@ -634,6 +664,19 @@ def image_rm(name: str, dry_run: bool, image_dir: str | None, json_output: bool)
 @image.command("build")
 @click.argument("context_path", metavar="path", default=".")
 @click.option("-t", "--tag", required=True, metavar="NAME", help="Name for the built image.")
+@click.option(
+    "--os",
+    "os_name",
+    type=click.Choice(["macos"]),
+    default=None,
+    help="Build a local macOS desktop image instead of a Dockerfile image.",
+)
+@click.option(
+    "--ipsw",
+    default=None,
+    metavar="latest|PATH",
+    help="Apple restore image for --os macos; defaults to latest.",
+)
 @click.option("-f", "--file", "dockerfile", default=None, metavar="PATH", help="Dockerfile path.")
 @click.option(
     "--size-mb",
@@ -662,6 +705,8 @@ def image_rm(name: str, dry_run: bool, image_dir: str | None, json_output: bool)
 def image_build(
     context_path: str,
     tag: str,
+    os_name: str | None,
+    ipsw: str | None,
     dockerfile: str | None,
     size_mb: int,
     build_args: tuple[str, ...],
@@ -671,8 +716,24 @@ def image_build(
     image_dir: str | None,
     json_output: bool,
 ) -> Any:
-    """Build a custom image from a Dockerfile. Needs Docker installed."""
+    """Build a Linux image from a Dockerfile or a local macOS image."""
     _before_command(json_output=json_output)
+    if os_name == "macos":
+        if dockerfile is not None or build_args or arch is not None or init != "/init":
+            raise click.UsageError(
+                "--file, --build-arg, --arch, and --init only apply to Dockerfile images."
+            )
+        from smolvm.cli.image import run_macos_image_build
+
+        return run_macos_image_build(
+            tag=tag,
+            ipsw=ipsw or "latest",
+            image_dir=image_dir,
+            json_output=json_output,
+        )
+    if ipsw is not None:
+        raise click.UsageError("--ipsw requires --os macos.")
+
     from smolvm.cli.image import run_image_build
 
     return run_image_build(

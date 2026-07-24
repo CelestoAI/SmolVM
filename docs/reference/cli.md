@@ -6,8 +6,8 @@ The CLI creates and manages disposable sandboxes. Run `smolvm COMMAND --help` fo
 
 | Command | Use it to |
 | --- | --- |
-| `smolvm setup` | Install or check local runtime dependencies. |
-| `smolvm doctor` | Check whether this machine can run sandboxes. |
+| `smolvm setup` | Install or check local runtime dependencies. Add `--macos` to prepare the macOS desktop runtime. |
+| `smolvm doctor` | Check whether this machine can run sandboxes. Use `--backend vz` to check macOS desktop support. |
 | `smolvm bridge check BRIDGE` | Check an existing Linux bridge before connecting a sandbox to it. |
 | `smolvm update` | Upgrade to the latest stable release. |
 | `smolvm prune` | Remove stale cached images (alias for `smolvm image prune`). |
@@ -21,6 +21,7 @@ Run these in the order you need them:
 | `smolvm sandbox create` | Create a sandbox. Add `--network bridge --bridge BRIDGE` only when the sandbox should appear as a separate computer on that network. |
 | `smolvm sandbox list` / `info` | Find or inspect sandboxes. |
 | `smolvm sandbox shell` / `ssh` | Open a shell. `shell` uses SmolVM's fast control channel when available; `ssh` explicitly uses SSH. |
+| `smolvm sandbox desktop` | Open a running macOS sandbox in Screen Sharing. Add `--start` to start it first. |
 | `smolvm sandbox exec` | Run one command inside a running sandbox and print its output — handy for scripts and agents. Put the command after `--`, e.g. `smolvm sandbox exec my-sandbox -- ls -la`. Add `--start` to start the sandbox first if it isn't running. |
 | `smolvm sandbox logs` | Show a sandbox's boot and console logs. Add `--follow` to keep printing new lines. |
 | `smolvm sandbox start` / `stop` | Start or stop a sandbox. |
@@ -51,6 +52,7 @@ The first time you start a sandbox or agent, SmolVM downloads the files it boots
 | `smolvm images` (or `image list` / `image ls`) | See which images are downloaded, when, and how much space they use. |
 | `smolvm image inspect <name>` | See one image in detail: files, checksums, and where it came from. |
 | `smolvm image build -t NAME .` | Build a custom image from a Dockerfile (needs Docker installed). |
+| `smolvm image build --os macos --ipsw latest -t NAME` | Prepare a reusable macOS image locally from an Apple restore file. |
 | `smolvm image save <name> -o FILE` / `image load -i FILE` | Copy an image to a machine without internet access. |
 | `smolvm image rm <name>` | Remove a downloaded image to free disk space. |
 | `smolvm image prune` | Remove images left behind by older SmolVM versions. |
@@ -92,6 +94,6 @@ smolvm completion fish > ~/.config/fish/completions/smolvm.fish
 
 ## Common options
 
-`--json` is available on commands that return structured output. `--backend` selects `auto`, `firecracker`, `qemu`, or `libkrun` where the command supports a runtime choice. `--boot-timeout` controls how long an operation waits for a ready sandbox.
+`--json` is available on commands that return structured output. `--backend` selects `auto`, `firecracker`, `qemu`, `libkrun`, or `vz` where the command supports that runtime. The `vz` choice is only for macOS guests on Apple Silicon. `--boot-timeout` controls how long an operation waits for a ready sandbox.
 
 **Implementation notes:** the command definitions are the source of truth in [`src/smolvm/cli/commands/app.py`](../../src/smolvm/cli/commands/app.py), including available flags and help text. The CLI command surface is tested by [`tests/test_cli.py`](../../tests/test_cli.py).

@@ -26,6 +26,7 @@ It exposes the sandbox lifecycle:
 - ``GET    /sandboxes``           — list every sandbox on the host.
 - ``GET    /sandboxes/{id}``      — fetch a sandbox's state.
 - ``DELETE /sandboxes/{id}``      — stop the sandbox and forget it.
+- ``GET    /sandboxes/{id}/desktop`` — get a local desktop endpoint.
 - ``POST   /sandboxes/{id}/exec`` — run a command inside the sandbox.
 """
 
@@ -39,6 +40,7 @@ from smolvm.exceptions import SmolVMError, VMNotFoundError
 from smolvm.facade import SmolVM, _existing_vm_ids
 from smolvm.server.models import (
     CreateSandboxRequest,
+    DesktopResponse,
     ErrorResponse,
     ExecRequest,
     ExecResponse,
@@ -189,6 +191,35 @@ def create_app() -> FastAPI:
                 continue
             responses.append(SandboxResponse(id=vm.vm_id, status=vm.status))
         return responses
+
+    @app.get(
+        "/sandboxes/{sandbox_id}/desktop",
+        response_model=DesktopResponse,
+        operation_id="getSandboxDesktop",
+        responses={
+            404: {"model": ErrorResponse, "description": "The sandbox was not found."},
+            409: {"model": ErrorResponse, "description": "No running desktop is available."},
+        },
+    )
+    def get_sandbox_desktop(sandbox_id: str) -> DesktopResponse:
+        """Return a sanitized loopback desktop endpoint without opening it."""
+        vm = _resolve(sandbox_id)
+        vm.refresh()
+        endpoint = vm.desktop_endpoint
+        if endpoint is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Sandbox '{sandbox_id}' has no running desktop; start it, then GET "
+                    f"/sandboxes/{sandbox_id}/desktop again."
+                ),
+            )
+        return DesktopResponse(
+            protocol=endpoint.protocol,
+            host=endpoint.host,
+            port=endpoint.port,
+            viewer_url=endpoint.viewer_url,
+        )
 
     @app.delete(
         "/sandboxes/{sandbox_id}",

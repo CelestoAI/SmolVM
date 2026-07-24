@@ -1,0 +1,78 @@
+# Copyright 2026 Celesto AI
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+from click.testing import CliRunner
+
+from smolvm.cli.commands.app import build_cli
+from smolvm.cli.main import _run_desktop
+from smolvm.types import DesktopEndpoint, VMState
+
+
+def test_desktop_command_forwards_start_and_json_options() -> None:
+    with patch("smolvm.cli.main._run_desktop", return_value=0) as handler:
+        result = CliRunner().invoke(
+            build_cli(),
+            ["sandbox", "desktop", "mac-test", "--start", "--json"],
+        )
+
+    assert result.exit_code == 0
+    args = handler.call_args.args[0]
+    assert args.vm_id == "mac-test"
+    assert args.start is True
+    assert args.json is True
+    assert args.command_name == "sandbox.desktop"
+
+
+def test_setup_macos_installs_pinned_runtime(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    binary = tmp_path / "lume"
+    with patch("smolvm.host.lume.install_pinned_lume", return_value=binary) as install:
+        result = CliRunner().invoke(build_cli(), ["setup", "--macos"])
+
+    assert result.exit_code == 0
+    assert "Installed macOS sandbox runtime" in result.output
+    install.assert_called_once()
+
+
+def test_image_build_routes_macos_to_local_ipsw_builder() -> None:
+    with patch("smolvm.cli.image.run_macos_image_build", return_value=0) as build:
+        result = CliRunner().invoke(
+            build_cli(),
+            ["image", "build", "--os", "macos", "--ipsw", "latest", "-t", "macos-latest"],
+        )
+
+    assert result.exit_code == 0
+    build.assert_called_once()
+    assert build.call_args.kwargs["tag"] == "macos-latest"
+    assert build.call_args.kwargs["ipsw"] == "latest"
+
+
+def test_desktop_handler_json_returns_sanitized_endpoint(capsys) -> None:  # type: ignore[no-untyped-def]
+    vm = MagicMock()
+    vm.vm_id = "mac-test"
+    vm.status = VMState.RUNNING
+    vm.desktop_endpoint = DesktopEndpoint(port=5901)
+
+    with patch("smolvm.facade.SmolVM.from_id", return_value=vm):
+        result = _run_desktop(
+            SimpleNamespace(
+                command_name="sandbox.desktop",
+                vm_id="mac-test",
+                start=False,
+                boot_timeout=30.0,
+                json=True,
+            )
+        )
+
+    assert result == 0
+    output = capsys.readouterr().out
+    assert '"viewer_url":"vnc://127.0.0.1:5901"' in output.replace(" ", "")
+    assert "password" not in output.lower()
+    vm.open_desktop.assert_not_called()

@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { CreateSandboxData, CreateSandboxErrors, CreateSandboxResponses, DeleteSandboxData, DeleteSandboxErrors, DeleteSandboxResponses, ExecCommandData, ExecCommandErrors, ExecCommandResponses, GetSandboxData, GetSandboxErrors, GetSandboxResponses, ListSandboxesData, ListSandboxesResponses } from './types.gen';
+import type { CreateSandboxData, CreateSandboxErrors, CreateSandboxResponses, DeleteSandboxData, DeleteSandboxErrors, DeleteSandboxResponses, ExecCommandData, ExecCommandErrors, ExecCommandResponses, GetSandboxData, GetSandboxDesktopData, GetSandboxDesktopErrors, GetSandboxDesktopResponses, GetSandboxErrors, GetSandboxResponses, ListSandboxesData, ListSandboxesResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -66,6 +66,13 @@ export const deleteSandbox = <ThrowOnError extends boolean = false>(options: Opt
  * only a sandbox that exists nowhere yields a 404.
  */
 export const getSandbox = <ThrowOnError extends boolean = false>(options: Options<GetSandboxData, ThrowOnError>): RequestResult<GetSandboxResponses, GetSandboxErrors, ThrowOnError> => (options.client ?? client).get<GetSandboxResponses, GetSandboxErrors, ThrowOnError>({ url: '/sandboxes/{sandbox_id}', ...options });
+
+/**
+ * Get Sandbox Desktop
+ *
+ * Return a sanitized loopback desktop endpoint without opening it.
+ */
+export const getSandboxDesktop = <ThrowOnError extends boolean = false>(options: Options<GetSandboxDesktopData, ThrowOnError>): RequestResult<GetSandboxDesktopResponses, GetSandboxDesktopErrors, ThrowOnError> => (options.client ?? client).get<GetSandboxDesktopResponses, GetSandboxDesktopErrors, ThrowOnError>({ url: '/sandboxes/{sandbox_id}/desktop', ...options });
 
 /**
  * Exec Command

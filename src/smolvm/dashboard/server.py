@@ -43,7 +43,7 @@ from pydantic import BaseModel
 from smolvm.dashboard.commands import CommandAction, parse_command
 from smolvm.dashboard.connection_manager import ConnectionManager
 from smolvm.dashboard.poller import poll_vm_state
-from smolvm.exceptions import VMNotFoundError
+from smolvm.exceptions import SmolVMError, VMNotFoundError
 from smolvm.storage import StateManagerProtocol, create_state_manager
 from smolvm.types import VMInfo, VMState
 from smolvm.vm import SmolVMManager, resolve_data_dir
@@ -434,6 +434,8 @@ def _vm_info_to_dict(vm: VMInfo) -> dict[str, Any]:
         "config": {
             "vcpu_count": vm.config.vcpu_count,
             "memory": vm.config.memory,
+            "guest_os": vm.config.guest_os.value,
+            "backend": vm.config.backend,
         },
         "network": (
             {
@@ -443,6 +445,16 @@ def _vm_info_to_dict(vm: VMInfo) -> dict[str, Any]:
                 "ssh_host_port": vm.network.ssh_host_port,
             }
             if vm.network
+            else None
+        ),
+        "display": (
+            {
+                "protocol": vm.display.protocol,
+                "host": vm.display.host,
+                "port": vm.display.port,
+                "viewer_url": vm.display.viewer_url,
+            }
+            if vm.display
             else None
         ),
         "pid": vm.pid,
@@ -594,6 +606,41 @@ async def get_vm_processes(vm_id: str) -> dict[str, Any]:
         ) from None
 
     return {"vm_id": vm_id, "processes": processes}
+
+
+@app.post("/api/vms/{vm_id}/desktop")
+async def open_vm_desktop(vm_id: str) -> dict[str, str]:
+    """Open a running macOS desktop without sending its password to the browser."""
+    sm = _get_state_manager(app)
+    try:
+        vm = await asyncio.to_thread(sm.get_vm, vm_id)
+    except VMNotFoundError:
+        raise HTTPException(status_code=404, detail=f"VM not found: {vm_id}") from None
+    if vm.display is None or vm.config.macos_machine is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Sandbox '{vm_id}' has no running desktop; run "
+                f"'smolvm sandbox start {vm_id}', then retry."
+            ),
+        )
+    password_path = vm.config.macos_machine.bundle_path / ".smolvm-vnc-password"
+    try:
+        password = password_path.read_text(encoding="utf-8").strip()
+        if not password:
+            raise OSError("empty desktop password")
+        from smolvm.macos.desktop import open_desktop
+
+        await asyncio.to_thread(open_desktop, vm.display, password=password)
+    except (OSError, SmolVMError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Sandbox '{vm_id}' desktop could not open; run "
+                f"'smolvm sandbox desktop {vm_id}' to retry."
+            ),
+        ) from exc
+    return {"status": "opened", "vm_id": vm_id}
 
 
 @app.delete("/api/vms/{vm_id}")

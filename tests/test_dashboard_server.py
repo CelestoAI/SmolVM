@@ -16,6 +16,7 @@
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -230,6 +231,31 @@ def test_execute_command_unknown_input_returns_400_json(
 
     assert isinstance(response, JSONResponse)
     assert response.status_code == 400
+
+
+def test_open_vm_desktop_keeps_password_on_host(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from smolvm.types import DesktopEndpoint
+
+    bundle = tmp_path / "mac-test"
+    bundle.mkdir()
+    (bundle / ".smolvm-vnc-password").write_text("private-secret\n")
+    vm = SimpleNamespace(
+        display=DesktopEndpoint(port=5901),
+        config=SimpleNamespace(macos_machine=SimpleNamespace(bundle_path=bundle)),
+    )
+    monkeypatch.setattr(server, "_get_state_manager", lambda _app: _VMStateManagerStub(vm))
+    opened: list[tuple[DesktopEndpoint, str | None]] = []
+    monkeypatch.setattr(
+        "smolvm.macos.desktop.open_desktop",
+        lambda endpoint, *, password=None: opened.append((endpoint, password)),
+    )
+
+    result = asyncio.run(server.open_vm_desktop("mac-test"))
+
+    assert result == {"status": "opened", "vm_id": "mac-test"}
+    assert opened == [(DesktopEndpoint(port=5901), "private-secret")]
 
 
 # ── Tests for GET /api/vms/{vm_id}/processes ──

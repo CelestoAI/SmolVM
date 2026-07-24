@@ -84,8 +84,12 @@ export default function VMDetailCard({ vm, onClose }) {
 
         try {
             const vmId = encodeURIComponent(vm.id)
-            const endpoint = kind === 'stop' ? `/api/vms/${vmId}/stop` : `/api/vms/${vmId}`
-            const method = kind === 'stop' ? 'POST' : 'DELETE'
+            const endpoint = kind === 'desktop'
+                ? `/api/vms/${vmId}/desktop`
+                : kind === 'stop'
+                    ? `/api/vms/${vmId}/stop`
+                    : `/api/vms/${vmId}`
+            const method = kind === 'delete' ? 'DELETE' : 'POST'
             const response = await fetch(`${apiBase}${endpoint}`, {
                 method,
                 headers: { Accept: 'application/json' },
@@ -106,7 +110,7 @@ export default function VMDetailCard({ vm, onClose }) {
                 throw new Error(detail)
             }
 
-            onClose()
+            if (kind !== 'desktop') onClose()
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Action failed'
             setActionError(message)
@@ -283,6 +287,19 @@ export default function VMDetailCard({ vm, onClose }) {
 
                 {/* Actions */}
                 <div className="grid grid-cols-2 gap-2 pt-2">
+                    {vm.desktopUrl && (
+                        <button
+                            onClick={() => runAction('desktop')}
+                            disabled={isBusy || !isActive}
+                            className={`col-span-2 px-3 py-2 rounded text-[10px] font-mono tracking-wider border transition-colors ${
+                                isBusy || !isActive
+                                    ? 'bg-slate-100 dark:bg-white/5 text-slate-400 dark:text-white/30 border-slate-200 dark:border-white/10 cursor-not-allowed'
+                                    : 'bg-sky-50 dark:bg-sky-500/10 hover:bg-sky-100 dark:hover:bg-sky-500/20 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-400/20'
+                            }`}
+                        >
+                            {pendingAction === 'desktop' ? 'OPENING...' : 'OPEN DESKTOP'}
+                        </button>
+                    )}
                     <button
                         onClick={() => runAction('stop')}
                         disabled={isBusy || isStopped}

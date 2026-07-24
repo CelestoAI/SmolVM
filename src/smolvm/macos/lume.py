@@ -1,0 +1,309 @@
+# Copyright 2026 Celesto AI
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+
+"""Pinned Lume 0.4 subprocess adapter for macOS desktop VMs."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import threading
+import time
+from pathlib import Path
+from typing import BinaryIO
+from urllib.parse import urlparse
+
+from pydantic import ValidationError
+
+from smolvm.exceptions import SmolVMError
+from smolvm.host.lume import LUME_VERSION, lume_version
+from smolvm.macos.models import (
+    LumeVMDetails,
+    MacOSInstallRequest,
+    MacOSLaunchResult,
+    MacOSRunRequest,
+)
+from smolvm.types import DesktopEndpoint
+
+
+class LumeDriver:
+    """Translate SmolVM-owned operations into the pinned Lume CLI."""
+
+    def __init__(self, binary: Path) -> None:
+        self.binary = binary
+
+    @staticmethod
+    def _environment() -> dict[str, str]:
+        return {**os.environ, "LUME_LOG_LEVEL": "error"}
+
+    def version(self) -> str:
+        return lume_version(self.binary)
+
+    def ensure_compatible(self) -> None:
+        actual = self.version()
+        if actual != LUME_VERSION:
+            raise SmolVMError(
+                f"The macOS sandbox runtime is version {actual!r}, but this SmolVM release "
+                f"needs {LUME_VERSION!r}. Run 'smolvm setup --macos' to install the tested version."
+            )
+
+    def _run(
+        self, arguments: list[str], *, timeout: float = 60.0
+    ) -> subprocess.CompletedProcess[str]:
+        try:
+            result = subprocess.run(
+                [str(self.binary), *arguments],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout,
+                env=self._environment(),
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise SmolVMError(
+                "The macOS sandbox runtime did not finish in time; run "
+                "'smolvm sandbox logs' for details."
+            ) from exc
+        except OSError as exc:
+            raise SmolVMError(
+                "The macOS sandbox runtime could not start; run "
+                "'smolvm doctor --backend vz' to check this Mac."
+            ) from exc
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            detail = re.sub(r"vnc://[^\s@]*@", "vnc://<redacted>@", detail)
+            if len(detail) > 500:
+                detail = f"{detail[:497]}..."
+            suffix = f" Runtime detail: {detail}" if detail else ""
+            raise SmolVMError(
+                "The macOS sandbox runtime failed. Run 'smolvm doctor --backend vz' "
+                f"to check this Mac.{suffix}"
+            )
+        return result
+
+    def install_base_image(self, request: MacOSInstallRequest, *, log_path: Path) -> None:
+        """Install a local base image; Lume owns progress output in the log."""
+        ipsw = request.ipsw if isinstance(request.ipsw, str) else str(request.ipsw)
+        arguments = [
+            "create",
+            request.name,
+            "--ipsw",
+            ipsw,
+            "--unattended",
+            request.unattended_preset,
+            "--storage",
+            str(request.storage_path),
+            "--cpu",
+            str(request.cpu_count),
+            "--memory",
+            f"{request.memory_mib}MB",
+            "--disk-size",
+            f"{request.disk_size_gib}GB",
+            "--display",
+            f"{request.display_width}x{request.display_height}",
+            "--network",
+            "nat",
+        ]
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.touch(mode=0o600, exist_ok=True)
+        log_path.chmod(0o600)
+        with log_path.open("ab") as log:
+            try:
+                result = subprocess.run(
+                    [str(self.binary), *arguments],
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                    timeout=90 * 60,
+                    env=self._environment(),
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise SmolVMError(
+                    "macOS image preparation did not finish; run "
+                    f"'smolvm image build --os macos --ipsw {ipsw} -t {request.name}' "
+                    "to try again."
+                ) from exc
+        if result.returncode != 0:
+            raise SmolVMError(
+                "macOS image preparation failed; inspect the image build log, then run "
+                f"'smolvm image build --os macos --ipsw {ipsw} -t {request.name}' again."
+            )
+
+    def inspect(self, name: str, *, storage_path: Path) -> LumeVMDetails:
+        result = self._run(
+            ["get", name, "--format", "json", "--storage", str(storage_path)],
+            timeout=15,
+        )
+        try:
+            payload = json.loads(result.stdout)
+            if not isinstance(payload, list) or len(payload) != 1:
+                raise ValueError("expected one VM record")
+            return LumeVMDetails.model_validate(payload[0])
+        except (json.JSONDecodeError, TypeError, ValueError, ValidationError) as exc:
+            raise SmolVMError(
+                "The macOS sandbox runtime returned data SmolVM could not read; run "
+                "'smolvm setup' to install the tested runtime version."
+            ) from exc
+
+    def clone(
+        self,
+        source: str,
+        destination: str,
+        *,
+        source_storage: Path,
+        destination_storage: Path,
+    ) -> None:
+        self._run(
+            [
+                "clone",
+                source,
+                destination,
+                "--source-storage",
+                str(source_storage),
+                "--dest-storage",
+                str(destination_storage),
+            ],
+            timeout=15 * 60,
+        )
+
+    @staticmethod
+    def _share_argument(path: Path, *, writable: bool) -> str:
+        value = str(path)
+        if ":" in value:
+            raise SmolVMError(
+                f"Shared folder path contains ':': '{value}'. Move it to a path without ':' and "
+                "run the sandbox create command again."
+            )
+        return f"{value}:{'rw' if writable else 'ro'}"
+
+    @staticmethod
+    def _display_from_details(details: LumeVMDetails) -> DesktopEndpoint | None:
+        if details.vnc_url is None:
+            return None
+        parsed = urlparse(details.vnc_url)
+        if parsed.scheme != "vnc" or parsed.hostname is None or parsed.port is None:
+            return None
+        try:
+            return DesktopEndpoint(host=parsed.hostname, port=parsed.port)
+        except ValidationError:
+            return None
+
+    @staticmethod
+    def _write_redacted_log(stream: BinaryIO, log_path: Path) -> None:
+        """Drain Lume output while removing credentials from VNC URLs."""
+        with log_path.open("ab") as log:
+            while chunk := stream.readline():
+                log.write(re.sub(rb"vnc://[^\s@]*@", b"vnc://<redacted>@", chunk))
+                log.flush()
+
+    @staticmethod
+    def _protect_runtime_secrets(storage_path: Path, name: str) -> None:
+        for path in (storage_path / name / "sessions.json", storage_path / name / "vnc.env"):
+            if path.exists():
+                path.chmod(0o600)
+
+    def start(
+        self,
+        request: MacOSRunRequest,
+        *,
+        log_path: Path,
+        timeout: float,
+    ) -> tuple[subprocess.Popen[bytes], MacOSLaunchResult]:
+        arguments = [
+            "run",
+            request.name,
+            "--storage",
+            str(request.storage_path),
+            "--no-display",
+            "--vnc-port",
+            "0",
+            "--network",
+            "nat",
+        ]
+        for mount in request.workspace_mounts:
+            arguments.extend(
+                [
+                    "--shared-dir",
+                    self._share_argument(mount.host_path, writable=mount.writable),
+                ]
+            )
+
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.touch(mode=0o600, exist_ok=True)
+        log_path.chmod(0o600)
+        try:
+            process = subprocess.Popen(
+                [str(self.binary), *arguments],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=self._environment(),
+                start_new_session=True,
+            )
+            assert process.stdout is not None
+            threading.Thread(
+                target=self._write_redacted_log,
+                args=(process.stdout, log_path),
+                daemon=True,
+                name=f"smolvm-lume-log-{request.name}",
+            ).start()
+        except OSError as exc:
+            raise SmolVMError(
+                "The macOS sandbox runtime could not start; run "
+                "'smolvm doctor --backend vz' to check this Mac."
+            ) from exc
+
+        deadline = time.monotonic() + timeout
+        try:
+            while time.monotonic() < deadline:
+                return_code = process.poll()
+                if return_code is not None:
+                    raise SmolVMError(
+                        f"The macOS sandbox runtime exited with code {return_code}; run "
+                        f"'smolvm sandbox logs {request.name}' for details."
+                    )
+                try:
+                    details = self.inspect(request.name, storage_path=request.storage_path)
+                except SmolVMError:
+                    time.sleep(0.25)
+                    continue
+                display = self._display_from_details(details)
+                parsed_vnc = urlparse(details.vnc_url) if details.vnc_url else None
+                password = parsed_vnc.password if parsed_vnc is not None else None
+                if details.status == "running" and display is not None and password:
+                    self._protect_runtime_secrets(request.storage_path, request.name)
+                    return process, MacOSLaunchResult(
+                        pid=process.pid,
+                        display=display,
+                        ip_address=details.ip_address,
+                        vnc_password=password,
+                    )
+                time.sleep(0.25)
+            raise SmolVMError(
+                f"The macOS desktop did not become ready in {timeout:g} seconds; run "
+                f"'smolvm sandbox logs {request.name}' for details."
+            )
+        except Exception:
+            self._protect_runtime_secrets(request.storage_path, request.name)
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+            raise
+
+    def stop(self, name: str, *, storage_path: Path, timeout: float) -> None:
+        self._run(["stop", name, "--storage", str(storage_path)], timeout=timeout + 15)
+
+    def delete(self, name: str, *, storage_path: Path) -> None:
+        self._run(
+            ["delete", name, "--force", "--storage", str(storage_path)],
+            timeout=15 * 60,
+        )

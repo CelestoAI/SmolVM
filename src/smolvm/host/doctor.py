@@ -37,6 +37,7 @@ from smolvm.runtime.backends import (
     BACKEND_FIRECRACKER,
     BACKEND_LIBKRUN,
     BACKEND_QEMU,
+    BACKEND_VZ,
     resolve_backend,
 )
 from smolvm.utils import run_command, which
@@ -715,6 +716,80 @@ def generate_doctor_report(backend: str | None = None) -> DoctorReport:
 
         checks.append(_check_command("qemu-img", "qemu"))
         checks.append(_check_command("ssh", "openssh-client"))
+    elif resolved == BACKEND_VZ:
+        from smolvm.host.lume import (
+            LUME_VERSION,
+            find_lume_binary,
+            lume_version,
+            pinned_lume_ready,
+        )
+
+        is_apple_silicon = platform.system() == "Darwin" and platform.machine().lower() in {
+            "arm64",
+            "aarch64",
+        }
+        checks.append(
+            DoctorCheck(
+                name="apple-silicon",
+                status="pass" if is_apple_silicon else "fail",
+                detail=(
+                    "Apple Silicon Mac"
+                    if is_apple_silicon
+                    else "macOS desktop sandboxes require an Apple Silicon Mac"
+                ),
+                fix=None
+                if is_apple_silicon
+                else "Run 'smolvm sandbox create --os alpine' on this machine instead.",
+            )
+        )
+        macos_version = platform.mac_ver()[0]
+        try:
+            macos_major = int(macos_version.split(".", 1)[0])
+        except (ValueError, IndexError):
+            macos_major = 0
+        version_ok = macos_major >= 14
+        checks.append(
+            DoctorCheck(
+                name="macos-version",
+                status="pass" if version_ok else "fail",
+                detail=(
+                    f"macOS {macos_version}" if version_ok else "macOS 14 or newer is required"
+                ),
+                fix=None if version_ok else "Update this Mac, then retry this doctor command.",
+            )
+        )
+        binary = find_lume_binary()
+        if binary is None:
+            checks.append(
+                DoctorCheck(
+                    name="macos-runtime",
+                    status="fail",
+                    detail="tested runtime is not installed",
+                    fix="Run 'smolvm setup --macos'.",
+                )
+            )
+        else:
+            try:
+                actual_version = lume_version(binary)
+                runtime_ok = actual_version == LUME_VERSION and pinned_lume_ready()
+                checks.append(
+                    DoctorCheck(
+                        name="macos-runtime",
+                        status="pass" if runtime_ok else "fail",
+                        detail=f"Lume {actual_version} ({binary})",
+                        fix=None if runtime_ok else "Run 'smolvm setup --macos'.",
+                    )
+                )
+            except Exception as exc:
+                checks.append(
+                    DoctorCheck(
+                        name="macos-runtime",
+                        status="fail",
+                        detail=f"could not run '{binary}': {exc}",
+                        fix="Run 'smolvm setup --macos'.",
+                    )
+                )
+        checks.append(_check_command("ssh", "the macOS built-in SSH client"))
     elif resolved == BACKEND_LIBKRUN:
         from smolvm.runtime._libkrun_ffi import is_available as _libkrun_available
 

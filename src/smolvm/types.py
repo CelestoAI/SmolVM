@@ -53,6 +53,7 @@ class GuestOS(str, Enum):
     ALPINE = "alpine"
     UBUNTU = "ubuntu"
     WINDOWS = "windows"
+    MACOS = "macos"
 
 
 RootfsFormat = Literal["raw-ext4", "qcow2"]
@@ -230,6 +231,60 @@ class WorkspaceMount(BaseModel):
     def resolved_tag(self, index: int) -> str:
         """Return the mount tag, falling back to ``workspace{index}``."""
         return self.mount_tag or f"workspace{index}"
+
+    model_config = {"frozen": True}
+
+
+class MacOSMachineConfig(BaseModel):
+    """Artifacts and desktop settings for one Virtualization.framework VM.
+
+    macOS machines are bundles of coupled platform files rather than a Linux
+    root filesystem.  The base image remains in SmolVM's image cache while
+    ``bundle_path`` points at the isolated per-sandbox clone.
+    """
+
+    base_image: str
+    manifest_path: Path
+    bundle_path: Path
+    guest_version: str
+    guest_build: str | None = None
+    disk_size_mib: Annotated[int, Field(ge=30 * 1024)] = 80 * 1024
+    display_width: Annotated[int, Field(ge=1024, le=7680)] = 1440
+    display_height: Annotated[int, Field(ge=768, le=4320)] = 900
+    ssh_user: str = "lume"
+
+    @field_validator("base_image", "guest_version", "ssh_user")
+    @classmethod
+    def validate_nonempty_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value cannot be empty")
+        return normalized
+
+    model_config = {"frozen": True}
+
+
+class DesktopEndpoint(BaseModel):
+    """A loopback-only endpoint for viewing a sandbox desktop."""
+
+    protocol: Literal["vnc"] = "vnc"
+    host: str = "127.0.0.1"
+    port: Annotated[int, Field(ge=1, le=65535)]
+    width: Annotated[int, Field(ge=1)] | None = None
+    height: Annotated[int, Field(ge=1)] | None = None
+
+    @field_validator("host")
+    @classmethod
+    def validate_loopback_host(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"127.0.0.1", "localhost", "::1"}:
+            raise ValueError("desktop endpoint must use a loopback host")
+        return normalized
+
+    @property
+    def viewer_url(self) -> str:
+        host = f"[{self.host}]" if ":" in self.host else self.host
+        return f"vnc://{host}:{self.port}"
 
     model_config = {"frozen": True}
 
@@ -444,11 +499,12 @@ class VMConfig(BaseModel):
     vcpu_count: Annotated[int, Field(ge=1, le=32)] = 2
     memory: Annotated[int, Field(ge=128, le=16384)] = 512
     guest_os: GuestOS = GuestOS.ALPINE
-    boot_mode: Literal["direct_kernel", "firmware"] = "direct_kernel"
+    boot_mode: Literal["direct_kernel", "firmware", "platform"] = "direct_kernel"
     kernel_path: Path | None = None
     initrd_path: Path | None = None
-    rootfs_path: Path
+    rootfs_path: Path | None = None
     rootfs_format: RootfsFormat | None = None
+    macos_machine: MacOSMachineConfig | None = None
     extra_drives: list[Path] = []
     boot_args: str = "console=ttyS0 reboot=k panic=1 pci=off"
     ssh_capable: bool = False
@@ -473,6 +529,8 @@ class VMConfig(BaseModel):
     @property
     def effective_rootfs_format(self) -> RootfsFormat:
         """Return the declared rootfs format, falling back for legacy configs."""
+        if self.rootfs_path is None:
+            raise ValueError("this guest does not have a Linux-style root filesystem")
         return self.rootfs_format or infer_rootfs_format_from_path(self.rootfs_path)
 
     @property
@@ -500,7 +558,45 @@ class VMConfig(BaseModel):
 
     @model_validator(mode="after")
     def _check_boot_mode_consistency(self) -> "VMConfig":
-        """Enforce boot_mode <-> kernel_path <-> backend invariants."""
+        """Enforce guest platform and boot-artifact invariants."""
+        if self.guest_os is GuestOS.MACOS:
+            if self.backend != "vz":
+                raise ValueError("macOS guests require backend='vz'")
+            if self.boot_mode != "platform":
+                raise ValueError("macOS guests require boot_mode='platform'")
+            if self.macos_machine is None:
+                raise ValueError("macOS guests require macos_machine configuration")
+            if self.kernel_path is not None or self.initrd_path is not None:
+                raise ValueError("macOS guests do not accept kernel_path or initrd_path")
+            if self.rootfs_path is not None or self.rootfs_format is not None:
+                raise ValueError("macOS guests use a machine bundle, not rootfs_path")
+            if self.comm_channel == "vsock":
+                raise ValueError(
+                    "macOS guests do not support vsock in this release; remove comm_channel='vsock'"
+                )
+            if self.env_vars:
+                raise ValueError(
+                    "macOS guests do not support managed environment variables in this release; "
+                    "remove env_vars"
+                )
+            if self.network_attachment.mode == "bridge":
+                raise ValueError("macOS guests use NAT in this release; remove bridge networking")
+            if (
+                self.internet_settings is not None
+                and not self.internet_settings.is_allow_all_domains
+            ):
+                raise ValueError(
+                    "macOS guests do not support domain restrictions in this release; "
+                    "remove internet_settings"
+                )
+            return self
+
+        if self.macos_machine is not None:
+            raise ValueError("macos_machine is only valid for guest_os='macos'")
+        if self.rootfs_path is None:
+            raise ValueError("non-macOS guests require rootfs_path")
+        if self.boot_mode == "platform":
+            raise ValueError("boot_mode='platform' is only valid for macOS guests")
         if self.boot_mode == "firmware":
             if self.kernel_path is not None:
                 raise ValueError(
@@ -514,9 +610,8 @@ class VMConfig(BaseModel):
                     "supported on the QEMU backend, so the caller must set it "
                     "explicitly rather than relying on auto-detection"
                 )
-        else:  # direct_kernel
-            if self.kernel_path is None:
-                raise ValueError("boot_mode='direct_kernel' requires kernel_path to be set")
+        elif self.kernel_path is None:
+            raise ValueError("boot_mode='direct_kernel' requires kernel_path to be set")
         if self.guest_os is GuestOS.WINDOWS and self.boot_mode != "firmware":
             # Windows always boots via OVMF firmware reading the qcow2's UEFI
             # boot manager; there is no direct-kernel path. The firmware-mode
@@ -843,6 +938,7 @@ class VMInfo(BaseModel):
     pid: int | None = None
     control_socket_path: Path | None = None
     vsock_uds_path: Path | None = None
+    display: DesktopEndpoint | None = None
 
     model_config = {"frozen": True}
 

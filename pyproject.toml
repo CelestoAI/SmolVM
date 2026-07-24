@@ -80,6 +80,7 @@ packages = ["src/smolvm"]
 "scripts/internal/install-firecracker.sh" = "smolvm/_setup_assets/internal/install-firecracker.sh"
 "scripts/internal/configure-runtime-sudoers.sh" = "smolvm/_setup_assets/internal/configure-runtime-sudoers.sh"
 "scripts/internal/image-build-loopfs.sh" = "smolvm/_setup_assets/internal/image-build-loopfs.sh"
+"THIRD_PARTY_NOTICES.md" = "smolvm/THIRD_PARTY_NOTICES.md"
 
 [tool.hatch.build]
 exclude = ["/ui", "/smolvm-core"]

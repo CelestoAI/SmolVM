@@ -9,8 +9,10 @@ from smolvm.runtime.backends import (
     BACKEND_FIRECRACKER,
     BACKEND_LIBKRUN,
     BACKEND_QEMU,
+    BACKEND_VZ,
     ensure_backend_available,
     resolve_backend,
+    resolve_backend_for_guest,
     resolve_backend_status,
 )
 
@@ -23,10 +25,19 @@ def _env(
     qemu_system=False,
     qemu_img=False,
     libkrun=False,
+    lume=False,
+    arch="x86_64",
+    mac_version="14.0",
 ):
     """Patch the low-level host probes so backend detection is deterministic."""
     stack = contextlib.ExitStack()
     stack.enter_context(patch("smolvm.runtime.backends.platform.system", return_value=system))
+    stack.enter_context(patch("smolvm.runtime.backends.platform.machine", return_value=arch))
+    stack.enter_context(
+        patch(
+            "smolvm.runtime.backends.platform.mac_ver", return_value=(mac_version, ("", "", ""), "")
+        )
+    )
     stack.enter_context(
         patch("smolvm.runtime.backends._firecracker_binary_present", return_value=fc_binary)
     )
@@ -39,6 +50,7 @@ def _env(
     )
     stack.enter_context(patch("smolvm.runtime.backends._qemu_img_present", return_value=qemu_img))
     stack.enter_context(patch("smolvm.runtime.backends.libkrun_available", return_value=libkrun))
+    stack.enter_context(patch("smolvm.runtime.backends._lume_binary_present", return_value=lume))
     return stack
 
 
@@ -58,6 +70,17 @@ def test_resolve_backend_auto_skips_firecracker_on_macos_even_if_binary_present(
 
 def test_resolve_backend_accepts_libkrun_explicitly() -> None:
     assert resolve_backend(BACKEND_LIBKRUN) == BACKEND_LIBKRUN
+
+
+def test_guest_aware_resolver_selects_vz_only_for_macos() -> None:
+    with _env(system="Darwin", arch="arm64", qemu_system=True, qemu_img=True, lume=True):
+        assert resolve_backend_for_guest("auto", "macos") == BACKEND_VZ
+        assert resolve_backend_for_guest("auto", "alpine") == BACKEND_QEMU
+
+
+def test_macos_guest_rejects_non_vz_backend() -> None:
+    with pytest.raises(ValueError, match="macOS guests require backend 'vz'"):
+        resolve_backend_for_guest(BACKEND_QEMU, "macos")
 
 
 def test_resolve_backend_auto_prefers_firecracker_on_linux() -> None:
@@ -191,6 +214,26 @@ def test_firecracker_recovery_command_omits_name_when_unknown() -> None:
 def test_ensure_backend_available_raises_for_missing_libkrun() -> None:
     with _env(libkrun=False), pytest.raises(SmolVMError, match="libkrun isn't installed"):
         ensure_backend_available(BACKEND_LIBKRUN)
+
+
+def test_vz_backend_requires_apple_silicon_macos_and_lume() -> None:
+    with (
+        _env(system="Linux", arch="x86_64", lume=True),
+        pytest.raises(SmolVMError, match="Apple Silicon Mac"),
+    ):
+        ensure_backend_available(BACKEND_VZ)
+    with (
+        _env(system="Darwin", arch="arm64", lume=False),
+        pytest.raises(SmolVMError, match="smolvm setup --macos"),
+    ):
+        ensure_backend_available(BACKEND_VZ)
+    with (
+        _env(system="Darwin", arch="arm64", mac_version="13.6", lume=True),
+        pytest.raises(SmolVMError, match="macOS 14 or newer"),
+    ):
+        ensure_backend_available(BACKEND_VZ)
+    with _env(system="Darwin", arch="arm64", lume=True):
+        ensure_backend_available(BACKEND_VZ)
 
 
 def test_ensure_backend_available_rejects_unknown_backend() -> None:

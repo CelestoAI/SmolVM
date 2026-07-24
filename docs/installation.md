@@ -27,6 +27,17 @@ smolvm doctor
 
 `smolvm doctor` reports problems and their recovery steps. Add `--strict` when a warning should fail an automated check.
 
+### Prepare macOS desktop support
+
+Apple Silicon Mac users can install the separate local desktop runtime:
+
+```bash
+smolvm setup --macos
+smolvm doctor --backend vz
+```
+
+This is only needed for macOS guests. Linux guests on a Mac continue to use QEMU.
+
 ## Build-machine setup
 
 Use this only when preparing a reusable machine image on a builder that cannot run virtualization itself:

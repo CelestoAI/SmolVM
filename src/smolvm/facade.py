@@ -80,8 +80,10 @@ from smolvm.runtime.backends import (
     BACKEND_FIRECRACKER,
     BACKEND_LIBKRUN,
     BACKEND_QEMU,
+    BACKEND_VZ,
     ensure_backend_available,
     resolve_backend,
+    resolve_backend_for_guest,
     resolve_backend_status,
 )
 from smolvm.runtime.boot_profiles import (
@@ -94,6 +96,7 @@ from smolvm.types import (
     BrowserSessionConfig,
     BrowserViewport,
     CommandResult,
+    DesktopEndpoint,
     DisplaySandboxProtocol,
     GuestFlushPolicy,
     GuestOS,
@@ -130,10 +133,12 @@ _AUTO_CONFIG_DEFAULT_MEM_SIZE_MIB = {
     GuestOS.ALPINE: 512,
     GuestOS.UBUNTU: 1024,
     GuestOS.WINDOWS: 4096,
+    GuestOS.MACOS: 8192,
 }
 _AUTO_CONFIG_DEFAULT_DISK_SIZE_MIB = {
     GuestOS.ALPINE: 512,
     GuestOS.UBUNTU: 2048,
+    GuestOS.MACOS: 80 * 1024,
     # WINDOWS: not used. The Windows path always supplies a pre-built
     # qcow2 in Phase 1, so we don't size or grow a disk for it.
 }
@@ -578,15 +583,54 @@ def _build_auto_config(
     disk_size_mib: int | None = None,
     ssh_key_path: str | None = None,
     on_download: Callable[[str, int, int | None], None] | None = None,
+    data_dir: Path | None = None,
 ) -> tuple[VMConfig, str | None]:
     """Build the default SSH-ready VM config used by zero-config flows."""
-    resolved_backend, backend_status = resolve_backend_status(backend)
-    resolved_os = _normalize_guest_os(os or _default_guest_os_for_backend(resolved_backend))
+    requested_os = _normalize_guest_os(os) if os is not None else None
+    if requested_os is GuestOS.MACOS:
+        resolved_backend = resolve_backend_for_guest(backend, requested_os)
+        backend_status = None
+        resolved_os = requested_os
+    else:
+        resolved_backend, backend_status = resolve_backend_status(backend)
+        resolved_os = requested_os or _default_guest_os_for_backend(resolved_backend)
     if resolved_os is GuestOS.WINDOWS:
         # Auto-config builds a Linux SSH-ready VM from a built or downloaded
         # base image; Windows has no equivalent path because we don't ship a
         # base qcow2. The user must supply their own pre-installed image.
         raise ValueError(_WINDOWS_IMAGE_REQUIRED_MESSAGE)
+    if resolved_os is GuestOS.MACOS:
+        ensure_backend_available(resolved_backend, backend_status, vm_name=vm_name)
+        if disk_size_mib is not None:
+            raise ValueError(
+                "Custom disk sizes are not available for macOS sandboxes in this release; "
+                "remove '--disk-size' and create the sandbox again."
+            )
+        from smolvm.macos.images import MacOSImageManager
+        from smolvm.vm import resolve_data_dir
+
+        resolved_vm_name = _resolve_vm_name(vm_name, prefix=name_prefix)
+        resolved_data_dir = data_dir or resolve_data_dir()
+        image_manager = MacOSImageManager()
+        manifest = image_manager.get()
+        if memory is not None and memory != manifest.memory_mib:
+            raise ValueError(
+                f"This macOS image uses {manifest.memory_mib} MiB of memory; remove the custom "
+                "memory setting and create the sandbox again."
+            )
+        machine = image_manager.machine_config(resolved_vm_name, data_dir=resolved_data_dir)
+        config = VMConfig(
+            vm_id=resolved_vm_name,
+            vcpu_count=manifest.cpu_count,
+            memory=manifest.memory_mib,
+            guest_os=GuestOS.MACOS,
+            boot_mode="platform",
+            backend=BACKEND_VZ,
+            macos_machine=machine,
+            ssh_capable=False,
+        )
+        logger.info("Auto-configured VM: %s (os=macos, backend=vz)", resolved_vm_name)
+        return config, None
     resolved_ssh_key_path, public_key_path = _resolve_auto_config_public_key(ssh_key_path)
     public_key_value = public_key_path.read_text().strip()
 
@@ -1045,6 +1089,7 @@ class SmolVM:
             and wants_mounts
             and vm_id is None
             and (config is None or config.backend is None)
+            and (os is None or _normalize_guest_os(os) is not GuestOS.MACOS)
         ):
             backend = BACKEND_QEMU
 
@@ -1081,6 +1126,7 @@ class SmolVM:
                 memory=memory,
                 disk_size_mib=disk_size,
                 ssh_key_path=ssh_key_path,
+                data_dir=data_dir,
             )
 
         # Normalize and merge internet_settings into the config
@@ -1616,7 +1662,7 @@ class SmolVM:
 
         # Mount workspace directories after boot if configured.
         workspace_mounts = self._info.config.workspace_mounts
-        if workspace_mounts:
+        if workspace_mounts and self._info.config.guest_os is not GuestOS.MACOS:
             if not self.can_run_commands():
                 raise SmolVMError(
                     "Cannot mount workspaces: VM image does not support SSH.",
@@ -2620,6 +2666,41 @@ class SmolVM:
     def data_dir(self) -> Path:
         """Directory backing the VM state DB and logs."""
         return self._sdk.data_dir
+
+    @property
+    def desktop_endpoint(self) -> DesktopEndpoint | None:
+        """Current desktop endpoint, when this running sandbox has one."""
+        return self._info.display
+
+    def open_desktop(self) -> DesktopEndpoint:
+        """Open this sandbox's desktop with the host VNC viewer."""
+        self._refresh_info()
+        if self._info.status is not VMState.RUNNING:
+            raise SmolVMError(
+                f"Sandbox '{self._vm_id}' is {self._info.status.value}; run "
+                f"'smolvm sandbox start {self._vm_id}', then "
+                f"'smolvm sandbox desktop {self._vm_id}'."
+            )
+        endpoint = self._info.display
+        if endpoint is None:
+            raise SmolVMError(
+                f"Sandbox '{self._vm_id}' has no desktop; run "
+                f"'smolvm sandbox shell {self._vm_id}' to use its terminal."
+            )
+
+        password: str | None = None
+        machine = self._info.config.macos_machine
+        if machine is not None:
+            password_path = machine.bundle_path / ".smolvm-vnc-password"
+            try:
+                password = password_path.read_text(encoding="utf-8").strip() or None
+            except OSError:
+                password = None
+
+        from smolvm.macos.desktop import open_desktop
+
+        open_desktop(endpoint, password=password)
+        return endpoint
 
     def get_ip(self) -> str:
         """Return the guest IP address.

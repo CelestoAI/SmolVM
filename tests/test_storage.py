@@ -30,6 +30,7 @@ from smolvm.types import (
     BrowserSessionConfig,
     BrowserSessionInfo,
     BrowserSessionState,
+    DesktopEndpoint,
     NetworkConfig,
     PortForwardConfig,
     SnapshotArtifacts,
@@ -163,6 +164,19 @@ class TestStateManagerVMOperations:
 
         assert vm_info.network is not None
         assert vm_info.network.guest_ip == "172.16.0.2"
+
+    def test_update_and_clear_vm_desktop(
+        self, state_manager: StateManager, sample_config: VMConfig
+    ) -> None:
+        state_manager.create_vm(sample_config)
+        endpoint = DesktopEndpoint(port=5901, width=1440, height=900)
+
+        updated = state_manager.update_vm("vm001", display=endpoint)
+        assert updated.display == endpoint
+        assert state_manager.list_vms()[0].display == endpoint
+
+        cleared = state_manager.update_vm("vm001", clear_display=True)
+        assert cleared.display is None
 
     def test_delete_vm(self, state_manager: StateManager, sample_config: VMConfig) -> None:
         """Test deleting a VM."""

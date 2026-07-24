@@ -158,6 +158,29 @@ smolvm sandbox logs my-sandbox
 
 Tip: turn on tab completion so your shell can finish commands and sandbox names for you — run `smolvm completion bash --install` (or `zsh`, `fish`) once. See the [CLI reference](docs/reference/cli.md#shell-completion) for details.
 
+## macOS desktop sandbox (preview)
+
+On an Apple Silicon Mac, SmolVM can open a temporary macOS desktop for testing apps and installers without changing your everyday system. The first run downloads macOS from Apple and prepares a reusable local image.
+
+```bash
+smolvm setup --macos
+```
+
+Create the desktop sandbox:
+
+```bash
+smolvm sandbox create --os macos --name test-mac
+# Next: smolvm sandbox desktop test-mac
+```
+
+Open it in the built-in Screen Sharing app:
+
+```bash
+smolvm sandbox desktop test-mac
+```
+
+Image preparation needs about 50 GB and 20–40 minutes. macOS images stay on the Mac that created them, and at most two macOS guests can run at once. See the [macOS desktop guide](docs/guides/macos.md) for shared folders, limits, and cleanup.
+
 ## Windows sandbox
 
 SmolVM can boot a Windows 11 guest as well as Linux. Hand it a Windows image and you get the same Python and CLI you use for Linux — run PowerShell, upload files, set environment variables, and run many sandboxes in parallel from one baseline image.

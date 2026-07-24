@@ -21,6 +21,7 @@ import importlib.metadata
 import os
 import platform
 import re
+import shlex
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
@@ -44,6 +45,7 @@ from rich.progress import (
 )
 from rich.table import Table
 from rich.text import Text
+from typing_extensions import NotRequired
 
 from smolvm.cli._kvm_session import maybe_reexec_for_kvm_group
 from smolvm.cli.output import (
@@ -55,7 +57,7 @@ from smolvm.cli.output import (
     render_error,
     status_style,
 )
-from smolvm.types import BrowserSessionState, GuestOS, VMState
+from smolvm.types import BrowserSessionState, DesktopEndpoint, GuestOS, VMState
 
 if TYPE_CHECKING:
     from smolvm.images.published import Arch, Vmm
@@ -107,8 +109,9 @@ class CreateVmPayload(TypedDict):
 class CreateNextPayload(TypedDict):
     """Suggested follow-up actions for ``smolvm sandbox create``."""
 
-    shell_command: str
+    shell_command: str | None
     ssh_command: str | None
+    desktop_command: str | None
     info_command: str
 
 
@@ -130,6 +133,7 @@ class InfoVmPayload(TypedDict):
     memory: int
     memory_used: int | None
     disk_size: int | None
+    desktop_url: NotRequired[str]
     network_mode: str
     bridge: str | None
 
@@ -439,6 +443,7 @@ def _run_setup(
     *,
     check_only: bool,
     with_docker: bool,
+    macos_runtime: bool,
     configure_runtime: bool,
     no_configure_runtime: bool,
     skip_deps: bool,
@@ -456,6 +461,37 @@ def _run_setup(
     if assets_dir:
         print(packaged_asset_root())
         return 0
+
+    if macos_runtime:
+        from smolvm.host.lume import (
+            LUME_VERSION,
+            find_lume_binary,
+            install_pinned_lume,
+            lume_version,
+        )
+
+        try:
+            binary = find_lume_binary()
+            if check_only:
+                from smolvm.runtime.backends import BACKEND_VZ, ensure_backend_available
+
+                ensure_backend_available(BACKEND_VZ)
+                if binary is None or lume_version(binary) != LUME_VERSION:
+                    raise RuntimeError(
+                        "The tested macOS sandbox runtime is missing; run "
+                        "'smolvm setup --macos' to install it."
+                    )
+                console_stdout().print(
+                    f"macOS sandbox runtime {LUME_VERSION} is ready at '{binary}'."
+                )
+                return 0
+            installed = install_pinned_lume()
+            console_stdout().print(
+                f"Installed macOS sandbox runtime {LUME_VERSION} at '{installed}'."
+            )
+            return 0
+        except Exception as exc:
+            return _emit_cli_error("setup", 1, exc, json_output=False)
 
     invalid_remove_runtime_flags: list[str] = []
     if check_only:
@@ -660,29 +696,37 @@ def _info_payload(vm: VMInfo, *, live_data: dict[str, object] | None = None) -> 
     config = vm.config
     live = live_data or {}
 
-    disk_size = _disk_size_mib(config.rootfs_path)
-    os_value = live.get("os") or _guess_os_from_paths(vm)
+    macos_machine = config.macos_machine if config.guest_os is GuestOS.MACOS else None
+    disk_size = (
+        macos_machine.disk_size_mib
+        if macos_machine is not None
+        else _disk_size_mib(config.rootfs_path)
+    )
+    os_value = live.get("os") or (
+        macos_machine.guest_version if macos_machine is not None else _guess_os_from_paths(vm)
+    )
     memory_used = live.get("memory_used")
 
     ip_address = network.guest_ip if network else None
 
-    return {
-        "vm": {
-            "name": vm.vm_id,
-            "status": vm.status.value,
-            "os": str(os_value) if os_value else None,
-            "backend": config.backend or "auto",
-            "ip_address": ip_address,
-            "ssh_port": network.ssh_host_port if network else None,
-            "pid": vm.pid,
-            "vcpus": config.vcpu_count,
-            "memory": config.memory,
-            "memory_used": memory_used if isinstance(memory_used, int) else None,
-            "disk_size": disk_size,
-            "network_mode": network.mode if network else "nat",
-            "bridge": network.bridge if network else None,
-        }
-    }
+    vm_payload = InfoVmPayload(
+        name=vm.vm_id,
+        status=vm.status.value,
+        os=str(os_value) if os_value else None,
+        backend=config.backend or "auto",
+        ip_address=ip_address,
+        ssh_port=network.ssh_host_port if network else None,
+        pid=vm.pid,
+        vcpus=config.vcpu_count,
+        memory=config.memory,
+        memory_used=memory_used if isinstance(memory_used, int) else None,
+        disk_size=disk_size,
+        network_mode=network.mode if network else "nat",
+        bridge=network.bridge if network else None,
+    )
+    if isinstance(vm.display, DesktopEndpoint):
+        vm_payload["desktop_url"] = vm.display.viewer_url
+    return {"vm": vm_payload}
 
 
 def _render_info_result(data: InfoPayload) -> None:
@@ -723,6 +767,8 @@ def _render_info_result(data: InfoPayload) -> None:
     details.add_row("CPUs", str(vm_data["vcpus"]))
     details.add_row("Memory", memory_str)
     details.add_row("Disk Size", disk_str)
+    if vm_data.get("desktop_url"):
+        details.add_row("Desktop", str(vm_data["desktop_url"]))
     details.add_row(
         "PID",
         str(vm_data["pid"]) if vm_data["pid"] is not None else "-",
@@ -783,7 +829,9 @@ def _render_create_result(data: CreatePayload) -> None:
     details.add_row("OS", str(vm_data["os"]))
     details.add_row("Started", _format_started_at(vm_data["started_at"]))
     console.print(details)
-    console.print(f"Next: [bold]{next_step['shell_command']}[/bold]")
+    primary_command = next_step["desktop_command"] or next_step["shell_command"]
+    if primary_command is not None:
+        console.print(f"Next: [bold]{primary_command}[/bold]")
     if next_step["ssh_command"] is not None:
         console.print(f"SSH:  [bold]{next_step['ssh_command']}[/bold]")
     console.print(f"Info: [bold]{next_step['info_command']}[/bold]")
@@ -884,6 +932,10 @@ def _wait_after_create(
     on_progress: Callable[[str], None] | None = None,
 ) -> None:
     """Wait for the channel promised by ``smolvm sandbox create``."""
+    if vm.info.config.guest_os is GuestOS.MACOS:
+        # VZ start readiness is the desktop's VNC endpoint; SSH comes later
+        # and is not required for a person to use Finder and install an app.
+        return
     if comm_channel == "ssh":
         vm.wait_for_ssh(timeout=boot_timeout, on_progress=on_progress)
         return
@@ -962,7 +1014,11 @@ def _run_create(args: SimpleNamespace) -> int:
         _default_guest_os_for_backend,
         _is_local_image,
     )
-    from smolvm.runtime.backends import resolve_backend
+    from smolvm.runtime.backends import (
+        ensure_backend_available,
+        resolve_backend,
+        resolve_backend_for_guest,
+    )
 
     vm: SmolVM | None = None
     command_name = getattr(args, "command_name", "sandbox.create")
@@ -971,7 +1027,7 @@ def _run_create(args: SimpleNamespace) -> int:
         # exposes today. Auto-pick QEMU when the user asked for --mount but did
         # not pin a backend; an explicit --backend other than 'auto' is left
         # alone so the downstream check still catches incompatible combos.
-        if args.mounts and args.backend in (None, "auto"):
+        if args.mounts and args.backend in (None, "auto") and args.os != "macos":
             args.backend = "qemu"
 
         # Windows guests only boot on QEMU (firmware boot + swtpm). Auto-pick
@@ -986,7 +1042,12 @@ def _run_create(args: SimpleNamespace) -> int:
                     f"{args.backend!r}); drop --backend or pass --backend qemu."
                 )
 
-        resolved_backend = resolve_backend(args.backend)
+        if args.os == "macos":
+            resolved_backend = resolve_backend_for_guest(args.backend, GuestOS.MACOS)
+            ensure_backend_available(resolved_backend, vm_name=args.name)
+            args.backend = resolved_backend
+        else:
+            resolved_backend = resolve_backend(args.backend)
         image_uri: str | None = getattr(args, "image", None)
         use_s3_image = image_uri is not None
         use_local_image = use_s3_image and _is_local_image(image_uri)
@@ -1007,6 +1068,37 @@ def _run_create(args: SimpleNamespace) -> int:
             if args.os is not None
             else _default_guest_os_for_backend(resolved_backend)
         )
+
+        if resolved_guest_os is GuestOS.MACOS and not use_s3_image:
+            from smolvm.exceptions import ImageError
+            from smolvm.macos.images import MACOS_DEFAULT_IMAGE, MacOSImageManager
+
+            image_manager = MacOSImageManager()
+            try:
+                image_manager.get(MACOS_DEFAULT_IMAGE)
+            except ImageError as exc:
+                vm_name = args.name or "test-mac"
+                retry = f"smolvm sandbox create --os macos --name {shlex.quote(vm_name)} --yes"
+                if args.json and not getattr(args, "yes", False):
+                    raise ValueError(
+                        "A local macOS image must be prepared before this sandbox; "
+                        f"run '{retry}' to approve the one-time Apple download."
+                    ) from exc
+                approved = getattr(args, "yes", False) or click.confirm(
+                    "No local macOS image is ready. SmolVM will download macOS from Apple "
+                    "and create a reusable local image; this needs about 50 GB and can take "
+                    "20–40 minutes. Continue?",
+                    default=False,
+                )
+                if not approved:
+                    raise ValueError(
+                        f"macOS image preparation was cancelled; run '{retry}' when ready."
+                    ) from exc
+                console_stdout().print(
+                    "Preparing macOS from Apple. Build logs are stored under "
+                    "'~/.smolvm/images/macos'."
+                )
+                image_manager.build(name=MACOS_DEFAULT_IMAGE, ipsw="latest")
 
         # --disk-size has no effect for prebuilt S3 images (the rootfs size
         # is baked into the image). Reject it explicitly so users aren't
@@ -1187,6 +1279,7 @@ def _run_create(args: SimpleNamespace) -> int:
 
         os_label = "s3-image" if use_s3_image else resolved_guest_os.value
         network = vm.info.network
+        is_macos = vm.info.config.guest_os is GuestOS.MACOS
         is_bridge = network is not None and getattr(network, "mode", "nat") == "bridge"
         data: CreatePayload = {
             "vm": {
@@ -1200,8 +1293,11 @@ def _run_create(args: SimpleNamespace) -> int:
                 "started_at": datetime.now(timezone.utc).isoformat(),
             },
             "next": {
-                "shell_command": f"smolvm sandbox shell {vm.vm_id}",
-                "ssh_command": (None if is_bridge else f"smolvm sandbox ssh {vm.vm_id}"),
+                "shell_command": (None if is_macos else f"smolvm sandbox shell {vm.vm_id}"),
+                "ssh_command": (
+                    None if is_bridge or is_macos else f"smolvm sandbox ssh {vm.vm_id}"
+                ),
+                "desktop_command": (f"smolvm sandbox desktop {vm.vm_id}" if is_macos else None),
                 "info_command": f"smolvm sandbox info {vm.vm_id}",
             },
             "warnings": (
@@ -1472,6 +1568,7 @@ def _run_start_with_published_image(args: SimpleNamespace, preset: object) -> in
                 "next": {
                     "shell_command": f"smolvm sandbox shell {vm.vm_id}",
                     "ssh_command": f"smolvm sandbox ssh {vm.vm_id}",
+                    "desktop_command": None,
                     "info_command": f"smolvm sandbox info {vm.vm_id}",
                 },
             }
@@ -1640,6 +1737,7 @@ def _run_start(args: SimpleNamespace) -> int:
             "next": {
                 "shell_command": f"smolvm sandbox shell {vm.vm_id}",
                 "ssh_command": f"smolvm sandbox ssh {vm.vm_id}",
+                "desktop_command": None,
                 "info_command": f"smolvm sandbox info {vm.vm_id}",
             },
         }
@@ -2016,6 +2114,53 @@ def _run_vm_start(args: SimpleNamespace) -> int:
                 title="VM Started",
                 border_style="green",
             )
+        return 0
+    except Exception as exc:
+        return _emit_cli_error(command_name, 1, exc, json_output=args.json)
+    finally:
+        if vm is not None:
+            vm.close()
+
+
+def _run_desktop(args: SimpleNamespace) -> int:
+    """Handle ``smolvm sandbox desktop``."""
+    from smolvm.exceptions import SmolVMError
+    from smolvm.facade import SmolVM
+
+    vm: SmolVM | None = None
+    command_name = getattr(args, "command_name", "sandbox.desktop")
+    try:
+        vm = SmolVM.from_id(args.vm_id)
+        if args.start and vm.status in {VMState.CREATED, VMState.STOPPED}:
+            vm.start(boot_timeout=args.boot_timeout)
+        vm.refresh()
+        endpoint = vm.desktop_endpoint
+        if vm.status is not VMState.RUNNING:
+            raise SmolVMError(
+                f"Sandbox '{vm.vm_id}' is {vm.status.value}; run "
+                f"'smolvm sandbox start {vm.vm_id}', then "
+                f"'smolvm sandbox desktop {vm.vm_id}'."
+            )
+        if endpoint is None:
+            raise SmolVMError(
+                f"Sandbox '{vm.vm_id}' has no desktop; run "
+                f"'smolvm sandbox shell {vm.vm_id}' to use its terminal."
+            )
+
+        data = {
+            "sandbox": {"name": vm.vm_id, "status": vm.status.value},
+            "desktop": {
+                "protocol": endpoint.protocol,
+                "host": endpoint.host,
+                "port": endpoint.port,
+                "viewer_url": endpoint.viewer_url,
+            },
+        }
+        if args.json:
+            emit_json(command_name, 0, data=data)
+        else:
+            vm.open_desktop()
+            print(f"Opened the desktop for sandbox '{vm.vm_id}'.")
         return 0
     except Exception as exc:
         return _emit_cli_error(command_name, 1, exc, json_output=args.json)

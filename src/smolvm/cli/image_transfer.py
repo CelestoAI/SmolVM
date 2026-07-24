@@ -212,6 +212,15 @@ def run_image_save(
 
     entry = matches[0]
     archive_name = entry.relative_to(root).as_posix()
+    if entry.parent == root / "macos":
+        return _fail(
+            command_name,
+            "macOS images stay on the Apple computer where they were installed.",
+            json_output=json_output,
+            code="unsupported_operation",
+            recovery=f"Build it locally with 'smolvm image build --os macos --ipsw latest "
+            f"-t {entry.name}'.",
+        )
 
     zst_path = entry / _ROOTFS_ZST
     # A symlinked wire file is skipped by the archive loop below, so

@@ -52,6 +52,7 @@ from smolvm.types import (
     BrowserSessionConfig,
     BrowserSessionInfo,
     BrowserSessionState,
+    DesktopEndpoint,
     NetworkConfig,
     SnapshotInfo,
     VMConfig,
@@ -116,6 +117,7 @@ class PostgresStateManager:
                     network TEXT,
                     pid INTEGER,
                     socket_path TEXT,
+                    display TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -205,6 +207,7 @@ class PostgresStateManager:
 
                 CREATE INDEX IF NOT EXISTS idx_snapshots_vm_id ON snapshots(vm_id);
 
+                ALTER TABLE vms ADD COLUMN IF NOT EXISTS display TEXT;
                 ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS snapshot_type TEXT;
                 ALTER TABLE browser_sessions ADD COLUMN IF NOT EXISTS vnc_url TEXT;
                 ALTER TABLE browser_sessions ADD COLUMN IF NOT EXISTS vnc_port INTEGER;
@@ -250,6 +253,7 @@ class PostgresStateManager:
         config = vm_config_from_json(row["config"])
         network = NetworkConfig.model_validate_json(row["network"]) if row["network"] else None
         control_socket_path = Path(row["socket_path"]) if row["socket_path"] else None
+        display = DesktopEndpoint.model_validate_json(row["display"]) if row["display"] else None
 
         return VMInfo(
             vm_id=row["id"],
@@ -258,6 +262,7 @@ class PostgresStateManager:
             network=network,
             pid=row["pid"],
             control_socket_path=control_socket_path,
+            display=display,
         )
 
     def update_vm(
@@ -269,8 +274,10 @@ class PostgresStateManager:
         network: NetworkConfig | None = None,
         pid: int | None = None,
         control_socket_path: Path | None = None,
+        display: DesktopEndpoint | None = None,
         clear_pid: bool = False,
         clear_socket_path: bool = False,
+        clear_display: bool = False,
     ) -> VMInfo:
         if not vm_id:
             raise ValueError("vm_id cannot be empty")
@@ -304,6 +311,11 @@ class PostgresStateManager:
                 params.append(str(control_socket_path))
             elif clear_socket_path:
                 updates.append("socket_path = NULL")
+            if display is not None:
+                updates.append("display = %s")
+                params.append(display.model_dump_json())
+            elif clear_display:
+                updates.append("display = NULL")
 
             params.append(vm_id)
             query = f"UPDATE vms SET {', '.join(updates)} WHERE id = %s"
@@ -339,6 +351,9 @@ class PostgresStateManager:
             config = vm_config_from_json(row["config"])
             network = NetworkConfig.model_validate_json(row["network"]) if row["network"] else None
             control_socket_path = Path(row["socket_path"]) if row["socket_path"] else None
+            display = (
+                DesktopEndpoint.model_validate_json(row["display"]) if row["display"] else None
+            )
             result.append(
                 VMInfo(
                     vm_id=row["id"],
@@ -347,6 +362,7 @@ class PostgresStateManager:
                     network=network,
                     pid=row["pid"],
                     control_socket_path=control_socket_path,
+                    display=display,
                 )
             )
         return result

@@ -43,6 +43,7 @@ from rich.progress import (
     TimeElapsedColumn,
     TransferSpeedColumn,
 )
+from typing_extensions import NotRequired
 
 from smolvm import __version__
 from smolvm.cli.output import (
@@ -78,6 +79,8 @@ _SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 # Custom builds live under this subdirectory: custom/<name>/<fingerprint>/.
 _CUSTOM_DIR = "custom"
+_MACOS_DIR = "macos"
+_MACOS_MANIFEST = "smolvm-manifest.json"
 
 
 def _canonical_preset(name: str) -> str:
@@ -146,11 +149,12 @@ def _valid_entry_name(requested: str) -> bool:
     if any(seg in {"", ".", ".."} for seg in segments):
         return False
     if len(segments) == 1:
-        return segments[0] != _CUSTOM_DIR
-    return (
-        segments[0] == _CUSTOM_DIR
-        and len(segments) in {2, 3}
-        and all(_SAFE_SEGMENT_RE.match(seg) and not seg.startswith(".") for seg in segments[1:])
+        return segments[0] not in {_CUSTOM_DIR, _MACOS_DIR}
+    valid_namespaced = (segments[0] == _CUSTOM_DIR and len(segments) in {2, 3}) or (
+        segments[0] == _MACOS_DIR and len(segments) == 2
+    )
+    return valid_namespaced and all(
+        _SAFE_SEGMENT_RE.match(seg) and not seg.startswith(".") for seg in segments[1:]
     )
 
 
@@ -218,10 +222,19 @@ class ImageManifestInfo(TypedDict):
     images_release_tag: str
 
 
+class MacOSImageInfo(TypedDict):
+    guest_version: str
+    source_ipsw: str
+    logical_size_bytes: int
+    allocated_size_bytes: int
+    driver_version: str
+
+
 class ImageInspectEntry(ImageRow):
     files: list[ImageFileEntry]
     rootfs_sidecar: str | None
     manifest: ImageManifestInfo | None
+    macos: NotRequired[MacOSImageInfo]
 
 
 class ImageBuildPayload(TypedDict):
@@ -266,6 +279,8 @@ def _fail(
 
 def _entry_kind(path: Path, root: Path) -> str:
     """The row kind an entry directory would get, without walking it."""
+    if path.parent == root / _MACOS_DIR:
+        return "macos"
     if path.parent != root:
         return "custom"
     if _IMAGE_DIR_NAME_RE.match(path.name):
@@ -362,6 +377,47 @@ def _custom_row(fingerprint_dir: Path, size_bytes: int | None = None) -> ImageRo
     )
 
 
+def _macos_row(path: Path, size_bytes: int | None = None) -> ImageRow:
+    """Build one row for a local-only macOS base image."""
+    version: str | None = None
+    current: bool | None = None
+    manifest = path / _MACOS_MANIFEST
+    if manifest.is_file():
+        try:
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                raw_version = payload.get("guest_version")
+                version = raw_version if isinstance(raw_version, str) else None
+                from smolvm.host.lume import LUME_VERSION
+
+                current = payload.get("driver_version") == LUME_VERSION
+        except (OSError, ValueError):
+            pass
+    return ImageRow(
+        name=f"{_MACOS_DIR}/{path.name}",
+        kind="macos",
+        preset=None,
+        version=version,
+        arch="arm64",
+        vmm="vz",
+        os="macos",
+        current=current,
+        created=_created_iso(path),
+        size_bytes=size_bytes if size_bytes is not None else _total_size(path),
+        path=str(path),
+    )
+
+
+def _macos_rows(macos_root: Path) -> list[ImageRow]:
+    if not macos_root.is_dir():
+        return []
+    return [
+        _macos_row(child)
+        for child in sorted(macos_root.iterdir())
+        if child.is_dir() and not child.name.startswith(".")
+    ]
+
+
 def _custom_rows(custom_root: Path) -> list[ImageRow]:
     """One row per built custom image (``custom/<name>/<fingerprint>``)."""
     rows: list[ImageRow] = []
@@ -390,6 +446,8 @@ def _cached_rows(root: Path) -> list[ImageRow]:
             continue
         if child.name == _CUSTOM_DIR:
             rows.extend(_custom_rows(child))
+        elif child.name == _MACOS_DIR:
+            rows.extend(_macos_rows(child))
         else:
             rows.append(_classify(child))
     return rows
@@ -457,6 +515,9 @@ def _resolve_entries(requested: str, root: Path) -> list[Path]:
     exact = root / requested
     if exact.is_dir() or exact.is_symlink():
         return [exact]
+    macos_exact = root / _MACOS_DIR / requested
+    if macos_exact.is_dir() or macos_exact.is_symlink():
+        return [macos_exact]
     if not root.is_dir():
         return []
     canonical = _canonical_preset(requested)
@@ -963,8 +1024,11 @@ def _inspect_entry(path: Path, root: Path) -> ImageInspectEntry:
     # The files walk already collected on-disk sizes — reuse them for the
     # row instead of walking the tree a second time.
     size_on_disk = sum(f["size_on_disk_bytes"] for f in files)
-    if _entry_kind(path, root) == "custom":
+    entry_kind = _entry_kind(path, root)
+    if entry_kind == "custom":
         row = _custom_row(path, size_bytes=size_on_disk)
+    elif entry_kind == "macos":
+        row = _macos_row(path, size_bytes=size_on_disk)
     else:
         row = _classify(path, size_bytes=size_on_disk)
 
@@ -994,12 +1058,29 @@ def _inspect_entry(path: Path, root: Path) -> ImageInspectEntry:
                 images_release_tag=IMAGES_RELEASE_TAG,
             )
 
-    return ImageInspectEntry(
+    inspected = ImageInspectEntry(
         **row,
         files=files,
         rootfs_sidecar=sidecar,
         manifest=manifest_info,
     )
+    if row["kind"] == "macos":
+        try:
+            from smolvm.macos.images import MacOSImageManifest
+
+            macos_manifest = MacOSImageManifest.model_validate_json(
+                (path / _MACOS_MANIFEST).read_text(encoding="utf-8")
+            )
+            inspected["macos"] = MacOSImageInfo(
+                guest_version=macos_manifest.guest_version,
+                source_ipsw=macos_manifest.source_ipsw,
+                logical_size_bytes=macos_manifest.disk_size_bytes,
+                allocated_size_bytes=macos_manifest.allocated_size_bytes,
+                driver_version=macos_manifest.driver_version,
+            )
+        except (OSError, ValueError):
+            pass
+    return inspected
 
 
 def run_image_inspect(
@@ -1076,6 +1157,12 @@ def run_image_inspect(
         table.add_row("Created", f"{_relative_time(created)} ({created})" if created else "-")
         table.add_row("Size", _format_bytes(entry["size_bytes"]))
         table.add_row("Path", entry["path"])
+        macos = entry.get("macos")
+        if macos is not None:
+            table.add_row("Source IPSW", macos["source_ipsw"])
+            table.add_row("Logical size", _format_bytes(macos["logical_size_bytes"]))
+            table.add_row("Allocated size", _format_bytes(macos["allocated_size_bytes"]))
+            table.add_row("Runtime version", macos["driver_version"])
         manifest = entry["manifest"]
         if manifest is not None:
             table.add_row("Release tag", manifest["images_release_tag"])
@@ -1207,6 +1294,89 @@ def run_image_rm(
     console = console_stdout()
     console.print(f"Removed {len(entries)} image(s), freed {_format_bytes(freed)}.")
     return 0
+
+
+def run_macos_image_build(
+    *,
+    tag: str,
+    ipsw: str,
+    image_dir: str | None = None,
+    json_output: bool = False,
+    command_name: str = "image.build",
+) -> int:
+    """Build one local-only macOS base image through the pinned VZ driver."""
+    if not _SAFE_SEGMENT_RE.fullmatch(tag) or tag.startswith("."):
+        return _fail(
+            command_name,
+            f"'{tag}' is not a valid image name.",
+            json_output=json_output,
+            code="invalid_input",
+            recovery="Use letters, numbers, dots, underscores, or hyphens for -t/--tag.",
+            exit_code=2,
+        )
+    ipsw_value: str | Path = ipsw
+    if ipsw != "latest":
+        ipsw_path = Path(ipsw).expanduser().resolve()
+        if not ipsw_path.is_file():
+            return _fail(
+                command_name,
+                f"macOS restore image was not found: '{ipsw_path}'.",
+                json_output=json_output,
+                code="invalid_input",
+                recovery=f"Restore the file, or run 'smolvm image build --os macos "
+                f"--ipsw latest -t {tag}'.",
+                exit_code=2,
+            )
+        ipsw_value = ipsw_path
+
+    from smolvm.macos.images import MacOSImageManager
+    from smolvm.runtime.backends import BACKEND_VZ, ensure_backend_available
+
+    try:
+        ensure_backend_available(BACKEND_VZ)
+    except Exception as exc:
+        return _fail(
+            command_name,
+            str(exc),
+            json_output=json_output,
+            recovery="Run 'smolvm setup --macos', then 'smolvm doctor --backend vz'.",
+        )
+
+    root = resolve_image_dir(image_dir) / "macos"
+    if not json_output:
+        console_stdout().print(
+            "Preparing macOS from Apple. This can take 20–40 minutes the first time; "
+            f"build logs are stored in '{root / f'{tag}.build.log'}'."
+        )
+    try:
+        manager = MacOSImageManager(image_dir=root)
+        manifest = manager.build(name=tag, ipsw=ipsw_value)
+        payload = {
+            "name": manifest.name,
+            "os": "macos",
+            "guest_version": manifest.guest_version,
+            "source_ipsw": manifest.source_ipsw,
+            "driver": manifest.driver,
+            "driver_version": manifest.driver_version,
+            "disk_size_bytes": manifest.disk_size_bytes,
+            "allocated_size_bytes": manifest.allocated_size_bytes,
+            "path": str(manager.bundle_path(tag)),
+            "local_only": True,
+        }
+        if json_output:
+            return emit_success(command_name, payload)
+        console_stdout().print(
+            f"macOS image '{tag}' is ready. Create a desktop with "
+            f"'smolvm sandbox create --os macos --name test-mac'."
+        )
+        return 0
+    except Exception as exc:
+        return _fail(
+            command_name,
+            str(exc),
+            json_output=json_output,
+            recovery=f"Run 'smolvm image build --os macos --ipsw {ipsw} -t {tag}' again.",
+        )
 
 
 def run_image_build(
