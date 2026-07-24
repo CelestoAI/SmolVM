@@ -1569,10 +1569,11 @@ class TestProcessLifecycle:
     def test_is_process_running_rejects_zombie_without_handle(self, smol_vm: SmolVMManager) -> None:
         """A zombie owned by another process must not be treated as running."""
         with (
-            patch("smolvm.vm.os.kill"),
-            patch.object(smol_vm, "_is_zombie_process", return_value=True),
+            patch("smolvm.vm.os.kill", side_effect=PermissionError),
+            patch.object(smol_vm, "_is_zombie_process", return_value=True) as mock_is_zombie,
         ):
             assert smol_vm._is_process_running(12345) is False
+        mock_is_zombie.assert_called_once_with(12345)
 
     def test_is_zombie_process_reads_ps_state(self, smol_vm: SmolVMManager) -> None:
         """The portable fallback should recognize ps's zombie state marker."""
