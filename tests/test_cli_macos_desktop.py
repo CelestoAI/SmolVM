@@ -6,6 +6,7 @@
 #
 # http://www.apache.org/licenses/LICENSE-2.0
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -78,6 +79,42 @@ def test_macos_image_build_rejects_explicit_linux_options() -> None:
         assert option[0] in result.output
         assert "smolvm image build --os macos" in result.output
         build.assert_not_called()
+
+
+def test_macos_image_build_retry_preserves_supported_options(tmp_path: Path) -> None:
+    ipsw = tmp_path / "Apple Restore.ipsw"
+    image_dir = tmp_path / "image cache"
+    with patch("smolvm.cli.image.run_macos_image_build", return_value=0) as build:
+        result = CliRunner().invoke(
+            build_cli(),
+            [
+                "image",
+                "build",
+                "--os",
+                "macos",
+                "--ipsw",
+                str(ipsw),
+                "-t",
+                "macos-latest",
+                "--image-dir",
+                str(image_dir),
+                "--json",
+                "--size-mb",
+                "512",
+                "--backend",
+                "auto",
+            ],
+            terminal_width=240,
+        )
+
+    assert result.exit_code == 2
+    assert "--size-mb and --backend are not available" in result.output
+    assert (
+        "smolvm image build --os macos "
+        f"--ipsw '{ipsw}' -t macos-latest --image-dir '{image_dir}' --json"
+    ) in result.output
+    assert "without them" in result.output
+    build.assert_not_called()
 
 
 def test_macos_image_progress_renders_each_phase(capsys) -> None:  # type: ignore[no-untyped-def]

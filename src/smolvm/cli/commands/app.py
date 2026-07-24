@@ -733,10 +733,22 @@ def image_build(
         ]
         if unsupported:
             options = " and ".join(unsupported)
-            retry = (
-                "smolvm image build --os macos "
-                f"--ipsw {shlex.quote(ipsw or 'latest')} -t {shlex.quote(tag)}"
-            )
+            retry_arguments = [
+                "smolvm",
+                "image",
+                "build",
+                "--os",
+                "macos",
+                "--ipsw",
+                ipsw or "latest",
+                "-t",
+                tag,
+            ]
+            if image_dir is not None:
+                retry_arguments.extend(["--image-dir", image_dir])
+            if json_output:
+                retry_arguments.append("--json")
+            retry = shlex.join(retry_arguments)
             raise click.UsageError(
                 f"{options} {'is' if len(unsupported) == 1 else 'are'} not available for macOS "
                 f"images; run '{retry}' without {'it' if len(unsupported) == 1 else 'them'}."
