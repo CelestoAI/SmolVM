@@ -6,17 +6,17 @@
 #
 # http://www.apache.org/licenses/LICENSE-2.0
 
-import subprocess
+import io
 import time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from smolvm.exceptions import SmolVMError
 from smolvm.macos.desktop import open_desktop
 from smolvm.macos.lume import LumeDriver
-from smolvm.macos.models import MacOSInstallRequest, MacOSRunRequest
+from smolvm.macos.models import MacOSInstallProgress, MacOSInstallRequest, MacOSRunRequest
 from smolvm.types import DesktopEndpoint, WorkspaceMount
 
 
@@ -50,6 +50,10 @@ elif args and args[0] == "get":
         "networkMode": "nat",
         "downloadProgress": None,
     }]))
+elif args and args[0] == "create":
+    print("INFO: Downloading IPSW Progress: 50%", flush=True)
+    print("INFO: Installing macOS progress=75%", flush=True)
+    print("INFO: Starting offline unattended setup", flush=True)
 elif args and args[0] == "run":
     print("Desktop vnc://:secret@127.0.0.1:5901", flush=True)
     time.sleep(30)
@@ -63,19 +67,72 @@ else:
 
 def test_lume_install_uses_explicit_resource_defaults(fake_lume: Path, tmp_path: Path) -> None:
     driver = LumeDriver(fake_lume)
-    completed = subprocess.CompletedProcess([], 0)
-    with patch("smolvm.macos.lume.subprocess.run", return_value=completed) as run:
+    process = MagicMock()
+    process.stdout = io.BytesIO(b"")
+    process.wait.return_value = 0
+    updates: list[MacOSInstallProgress] = []
+    with patch("smolvm.macos.lume.subprocess.Popen", return_value=process) as popen:
         driver.install_base_image(
             MacOSInstallRequest(name="macos-latest", storage_path=tmp_path),
             log_path=tmp_path / "build.log",
+            on_progress=updates.append,
         )
 
-    command = run.call_args.args[0]
+    command = popen.call_args.args[0]
     assert command[command.index("--cpu") + 1] == "4"
     assert command[command.index("--memory") + 1] == "8192MB"
     assert command[command.index("--disk-size") + 1] == "80GB"
     assert command[command.index("--display") + 1] == "1440x900"
+    assert popen.call_args.kwargs["env"]["LUME_LOG_LEVEL"] == "info"
+    assert updates == [
+        MacOSInstallProgress("download", 0),
+        MacOSInstallProgress("complete", 100),
+    ]
     assert (tmp_path / "build.log").stat().st_mode & 0o777 == 0o600
+
+
+def test_lume_install_streams_subprocess_progress(fake_lume: Path, tmp_path: Path) -> None:
+    updates: list[MacOSInstallProgress] = []
+
+    LumeDriver(fake_lume).install_base_image(
+        MacOSInstallRequest(name="macos-latest", storage_path=tmp_path),
+        log_path=tmp_path / "build.log",
+        on_progress=updates.append,
+    )
+
+    assert updates == [
+        MacOSInstallProgress("download", 0),
+        MacOSInstallProgress("download", 50),
+        MacOSInstallProgress("install", 75),
+        MacOSInstallProgress("setup"),
+        MacOSInstallProgress("complete", 100),
+    ]
+
+
+def test_lume_install_stream_redacts_secrets_and_emits_progress(tmp_path: Path) -> None:
+    log_path = tmp_path / "build.log"
+    updates: list[MacOSInstallProgress] = []
+    stream = io.BytesIO(
+        b"INFO: Downloading IPSW Progress: 42%\nINFO: viewer vnc://:private@127.0.0.1:5901\n"
+    )
+
+    LumeDriver._stream_install_output(stream, log_path, updates.append)
+
+    assert updates == [MacOSInstallProgress("download", 42)]
+    assert "private" not in log_path.read_text()
+    assert "<redacted>" in log_path.read_text()
+
+
+def test_lume_progress_parser_recognizes_download_install_and_setup() -> None:
+    assert LumeDriver._progress_from_line("INFO: Downloading IPSW Progress: 42%") == (
+        MacOSInstallProgress("download", 42)
+    )
+    assert LumeDriver._progress_from_line("INFO: Installing macOS progress=73%") == (
+        MacOSInstallProgress("install", 73)
+    )
+    assert LumeDriver._progress_from_line("INFO: Starting offline unattended setup") == (
+        MacOSInstallProgress("setup")
+    )
 
 
 def test_lume_driver_parses_machine_details(fake_lume: Path, tmp_path: Path) -> None:

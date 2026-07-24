@@ -1094,11 +1094,20 @@ def _run_create(args: SimpleNamespace) -> int:
                     raise ValueError(
                         f"macOS image preparation was cancelled; run '{retry}' when ready."
                     ) from exc
-                console_stdout().print(
-                    "Preparing macOS from Apple. Build logs are stored under "
-                    "'~/.smolvm/images/macos'."
-                )
-                image_manager.build(name=MACOS_DEFAULT_IMAGE, ipsw="latest")
+                if args.json:
+                    image_manager.build(name=MACOS_DEFAULT_IMAGE, ipsw="latest")
+                else:
+                    from smolvm.cli.image import _build_macos_image_with_progress
+
+                    console_stdout().print(
+                        "Preparing macOS from Apple. Build logs are stored under "
+                        "'~/.smolvm/images/macos'."
+                    )
+                    _build_macos_image_with_progress(
+                        image_manager,
+                        name=MACOS_DEFAULT_IMAGE,
+                        ipsw="latest",
+                    )
 
         # --disk-size has no effect for prebuilt S3 images (the rootfs size
         # is baked into the image). Reject it explicitly so users aren't

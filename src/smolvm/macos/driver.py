@@ -11,11 +11,13 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
 from smolvm.macos.models import (
     LumeVMDetails,
+    MacOSInstallProgress,
     MacOSInstallRequest,
     MacOSLaunchResult,
     MacOSRunRequest,
@@ -28,7 +30,13 @@ class MacOSRuntimeDriver(Protocol):
     def version(self) -> str:
         """Return the runtime driver's version."""
 
-    def install_base_image(self, request: MacOSInstallRequest, *, log_path: Path) -> None:
+    def install_base_image(
+        self,
+        request: MacOSInstallRequest,
+        *,
+        log_path: Path,
+        on_progress: Callable[[MacOSInstallProgress], None] | None = None,
+    ) -> None:
         """Install a reusable macOS machine from an Apple IPSW."""
 
     def inspect(self, name: str, *, storage_path: Path) -> LumeVMDetails:

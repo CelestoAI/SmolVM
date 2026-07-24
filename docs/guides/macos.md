@@ -15,7 +15,7 @@ You need an Apple Silicon Mac running macOS 14 or newer. The image folder must b
 
 ## Create and open a desktop
 
-The first sandbox prepares macOS from an Apple restore file. SmolVM asks before downloading it because preparation needs about 50 GB of free space and can take 20–40 minutes.
+The first sandbox prepares macOS from an Apple restore file. SmolVM asks before downloading it because preparation needs about 50 GB of free space and can take 20–40 minutes. A progress bar follows the download, macOS installation, and desktop setup phases.
 
 ```bash
 smolvm sandbox create --os macos --name test-mac

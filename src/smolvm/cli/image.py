@@ -1296,6 +1296,48 @@ def run_image_rm(
     return 0
 
 
+def _build_macos_image_with_progress(
+    manager: Any,
+    *,
+    name: str,
+    ipsw: str | Path,
+) -> Any:
+    """Render one continuous bar across download, install, and desktop setup."""
+    from smolvm.macos.models import MacOSInstallProgress
+
+    downloads_ipsw = ipsw == "latest"
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("{task.description}"),
+        BarColumn(),
+        TimeElapsedColumn(),
+        console=console_stdout(),
+    ) as progress:
+        task = progress.add_task("Starting macOS image preparation…", total=100)
+
+        def update(event: MacOSInstallProgress) -> None:
+            percent = event.percent or 0
+            if event.phase == "download":
+                completed = percent * 0.35
+                description = f"Downloading macOS… {percent}%"
+            elif event.phase == "install":
+                base = 35 if downloads_ipsw else 0
+                span = 50 if downloads_ipsw else 85
+                completed = base + percent * span / 100
+                description = f"Installing macOS… {percent}%"
+            elif event.phase == "setup":
+                completed = 90
+                description = "Setting up the macOS desktop…"
+            else:
+                completed = 100
+                description = "macOS image ready"
+            progress.update(task, completed=completed, description=description)
+
+        result = manager.build(name=name, ipsw=ipsw, on_progress=update)
+        progress.update(task, completed=100, description="macOS image ready")
+        return result
+
+
 def run_macos_image_build(
     *,
     tag: str,
@@ -1350,7 +1392,15 @@ def run_macos_image_build(
         )
     try:
         manager = MacOSImageManager(image_dir=root)
-        manifest = manager.build(name=tag, ipsw=ipsw_value)
+        manifest = (
+            manager.build(name=tag, ipsw=ipsw_value)
+            if json_output
+            else _build_macos_image_with_progress(
+                manager,
+                name=tag,
+                ipsw=ipsw_value,
+            )
+        )
         payload = {
             "name": manifest.name,
             "os": "macos",

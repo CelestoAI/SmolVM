@@ -16,6 +16,8 @@ import re
 import subprocess
 import threading
 import time
+from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 from typing import BinaryIO
 from urllib.parse import urlparse
@@ -26,11 +28,15 @@ from smolvm.exceptions import SmolVMError
 from smolvm.host.lume import LUME_VERSION, lume_version
 from smolvm.macos.models import (
     LumeVMDetails,
+    MacOSInstallProgress,
     MacOSInstallRequest,
     MacOSLaunchResult,
     MacOSRunRequest,
 )
 from smolvm.types import DesktopEndpoint
+
+_DOWNLOAD_PROGRESS_RE = re.compile(r"Downloading IPSW Progress:\s*(\d+)%")
+_INSTALL_PROGRESS_RE = re.compile(r"Installing macOS progress=(\d+)%")
 
 
 class LumeDriver:
@@ -40,8 +46,8 @@ class LumeDriver:
         self.binary = binary
 
     @staticmethod
-    def _environment() -> dict[str, str]:
-        return {**os.environ, "LUME_LOG_LEVEL": "error"}
+    def _environment(*, log_level: str = "error") -> dict[str, str]:
+        return {**os.environ, "LUME_LOG_LEVEL": log_level}
 
     def version(self) -> str:
         return lume_version(self.binary)
@@ -88,8 +94,49 @@ class LumeDriver:
             )
         return result
 
-    def install_base_image(self, request: MacOSInstallRequest, *, log_path: Path) -> None:
-        """Install a local base image; Lume owns progress output in the log."""
+    @staticmethod
+    def _progress_from_line(line: str) -> MacOSInstallProgress | None:
+        if match := _DOWNLOAD_PROGRESS_RE.search(line):
+            return MacOSInstallProgress("download", min(int(match.group(1)), 100))
+        if match := _INSTALL_PROGRESS_RE.search(line):
+            return MacOSInstallProgress("install", min(int(match.group(1)), 100))
+        if "Starting macOS installation" in line:
+            return MacOSInstallProgress("install", 0)
+        if "Starting offline unattended" in line:
+            return MacOSInstallProgress("setup")
+        return None
+
+    @classmethod
+    def _stream_install_output(
+        cls,
+        stream: BinaryIO,
+        log_path: Path,
+        on_progress: Callable[[MacOSInstallProgress], None] | None,
+    ) -> None:
+        try:
+            with log_path.open("ab") as log:
+                while raw_line := stream.readline():
+                    safe_line = re.sub(rb"vnc://[^\s@]*@", b"vnc://<redacted>@", raw_line)
+                    log.write(safe_line)
+                    log.flush()
+                    if on_progress is not None:
+                        update = cls._progress_from_line(
+                            safe_line.decode("utf-8", errors="replace")
+                        )
+                        if update is not None:
+                            with suppress(Exception):
+                                on_progress(update)
+        except OSError:
+            return
+
+    def install_base_image(
+        self,
+        request: MacOSInstallRequest,
+        *,
+        log_path: Path,
+        on_progress: Callable[[MacOSInstallProgress], None] | None = None,
+    ) -> None:
+        """Install a local base image while streaming machine-readable progress."""
         ipsw = request.ipsw if isinstance(request.ipsw, str) else str(request.ipsw)
         arguments = [
             "create",
@@ -114,27 +161,54 @@ class LumeDriver:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.touch(mode=0o600, exist_ok=True)
         log_path.chmod(0o600)
-        with log_path.open("ab") as log:
+        if on_progress is not None:
+            initial_phase = "download" if ipsw == "latest" else "install"
+            with suppress(Exception):
+                on_progress(MacOSInstallProgress(initial_phase, 0))
+        try:
+            process = subprocess.Popen(
+                [str(self.binary), *arguments],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=self._environment(log_level="info"),
+                start_new_session=True,
+            )
+        except OSError as exc:
+            raise SmolVMError(
+                "macOS image preparation did not start; run "
+                f"'smolvm image build --os macos --ipsw {ipsw} -t {request.name}' to try again."
+            ) from exc
+        assert process.stdout is not None
+        reader = threading.Thread(
+            target=self._stream_install_output,
+            args=(process.stdout, log_path, on_progress),
+            daemon=True,
+            name=f"smolvm-lume-install-{request.name}",
+        )
+        reader.start()
+        try:
+            return_code = process.wait(timeout=90 * 60)
+        except subprocess.TimeoutExpired as exc:
+            process.terminate()
             try:
-                result = subprocess.run(
-                    [str(self.binary), *arguments],
-                    stdout=log,
-                    stderr=subprocess.STDOUT,
-                    check=False,
-                    timeout=90 * 60,
-                    env=self._environment(),
-                )
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                raise SmolVMError(
-                    "macOS image preparation did not finish; run "
-                    f"'smolvm image build --os macos --ipsw {ipsw} -t {request.name}' "
-                    "to try again."
-                ) from exc
-        if result.returncode != 0:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+            raise SmolVMError(
+                "macOS image preparation did not finish; run "
+                f"'smolvm image build --os macos --ipsw {ipsw} -t {request.name}' to try again."
+            ) from exc
+        finally:
+            reader.join(timeout=5)
+        if return_code != 0:
             raise SmolVMError(
                 "macOS image preparation failed; inspect the image build log, then run "
                 f"'smolvm image build --os macos --ipsw {ipsw} -t {request.name}' again."
             )
+        if on_progress is not None:
+            with suppress(Exception):
+                on_progress(MacOSInstallProgress("complete", 100))
 
     def inspect(self, name: str, *, storage_path: Path) -> LumeVMDetails:
         result = self._run(

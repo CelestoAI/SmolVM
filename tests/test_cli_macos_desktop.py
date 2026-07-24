@@ -12,7 +12,9 @@ from unittest.mock import MagicMock, patch
 from click.testing import CliRunner
 
 from smolvm.cli.commands.app import build_cli
+from smolvm.cli.image import _build_macos_image_with_progress
 from smolvm.cli.main import _run_desktop
+from smolvm.macos.models import MacOSInstallProgress
 from smolvm.types import DesktopEndpoint, VMState
 
 
@@ -52,6 +54,26 @@ def test_image_build_routes_macos_to_local_ipsw_builder() -> None:
     build.assert_called_once()
     assert build.call_args.kwargs["tag"] == "macos-latest"
     assert build.call_args.kwargs["ipsw"] == "latest"
+
+
+def test_macos_image_progress_renders_each_phase(capsys) -> None:  # type: ignore[no-untyped-def]
+    manager = MagicMock()
+    result_marker = object()
+
+    def build(**kwargs):  # type: ignore[no-untyped-def]
+        callback = kwargs["on_progress"]
+        callback(MacOSInstallProgress("download", 25))
+        callback(MacOSInstallProgress("install", 50))
+        callback(MacOSInstallProgress("setup"))
+        callback(MacOSInstallProgress("complete", 100))
+        return result_marker
+
+    manager.build.side_effect = build
+
+    result = _build_macos_image_with_progress(manager, name="macos-latest", ipsw="latest")
+
+    assert result is result_marker
+    assert "macOS image ready" in capsys.readouterr().out
 
 
 def test_desktop_handler_json_returns_sanitized_endpoint(capsys) -> None:  # type: ignore[no-untyped-def]

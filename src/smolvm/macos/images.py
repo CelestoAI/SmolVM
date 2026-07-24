@@ -17,7 +17,7 @@ import plistlib
 import re
 import shutil
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,7 +29,7 @@ from smolvm.exceptions import ImageError
 from smolvm.host.lume import LUME_VERSION, find_lume_binary, pinned_lume_ready
 from smolvm.images.manager import resolve_image_dir
 from smolvm.macos.lume import LumeDriver
-from smolvm.macos.models import MacOSInstallRequest
+from smolvm.macos.models import MacOSInstallProgress, MacOSInstallRequest
 from smolvm.types import MacOSMachineConfig
 
 MACOS_DEFAULT_IMAGE = "macos-latest"
@@ -165,10 +165,16 @@ class MacOSImageManager:
         name: str = MACOS_DEFAULT_IMAGE,
         ipsw: str | Path = "latest",
         log_path: Path | None = None,
+        on_progress: Callable[[MacOSInstallProgress], None] | None = None,
     ) -> MacOSImageManifest:
         """Build one base image while serializing concurrent installers."""
         with _exclusive_lock(self.image_dir / f".{name}.build.lock"):
-            return self._build_unlocked(name=name, ipsw=ipsw, log_path=log_path)
+            return self._build_unlocked(
+                name=name,
+                ipsw=ipsw,
+                log_path=log_path,
+                on_progress=on_progress,
+            )
 
     def _build_unlocked(
         self,
@@ -176,6 +182,7 @@ class MacOSImageManager:
         name: str,
         ipsw: str | Path,
         log_path: Path | None,
+        on_progress: Callable[[MacOSInstallProgress], None] | None,
     ) -> MacOSImageManifest:
         self.image_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = self.manifest_path(name)
@@ -204,7 +211,11 @@ class MacOSImageManager:
             ipsw=resolved_ipsw,
         )
         try:
-            self.driver.install_base_image(request, log_path=resolved_log)
+            self.driver.install_base_image(
+                request,
+                log_path=resolved_log,
+                on_progress=on_progress,
+            )
             self.bundle_path(name).chmod(0o700)
             details = self.driver.inspect(name, storage_path=self.image_dir)
             manifest = MacOSImageManifest(

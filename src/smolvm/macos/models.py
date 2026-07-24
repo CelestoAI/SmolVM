@@ -55,6 +55,14 @@ class LumeVMDetails(BaseModel):
 
 
 @dataclass(frozen=True, slots=True)
+class MacOSInstallProgress:
+    """One machine-readable image preparation progress update."""
+
+    phase: Literal["download", "install", "setup", "complete"]
+    percent: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class MacOSInstallRequest:
     """Inputs for installing one reusable macOS base machine."""
 
