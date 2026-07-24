@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "smolvm"
-version = "0.0.28"
+version = "0.0.29"
 description = "Open-source AI sandbox infrastructure with unified API for VMMs -- Firecracker, QEMU and libkrun."
 readme = "README.md"
 license = "Apache-2.0"
