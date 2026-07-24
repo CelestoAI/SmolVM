@@ -208,9 +208,6 @@ class LumeDriver:
                 "macOS image preparation failed; inspect the image build log, then run "
                 f"'smolvm image build --os macos --ipsw {ipsw} -t {request.name}' again."
             )
-        if on_progress is not None:
-            with suppress(Exception):
-                on_progress(MacOSInstallProgress("complete", 100))
 
     def inspect(self, name: str, *, storage_path: Path) -> LumeVMDetails:
         result = self._run(
@@ -225,7 +222,7 @@ class LumeDriver:
         except (json.JSONDecodeError, TypeError, ValueError, ValidationError) as exc:
             raise SmolVMError(
                 "The macOS sandbox runtime returned data SmolVM could not read; run "
-                "'smolvm setup' to install the tested runtime version."
+                "'smolvm setup --macos' to install the tested runtime version."
             ) from exc
 
     def clone(

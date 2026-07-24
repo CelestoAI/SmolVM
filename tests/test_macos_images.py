@@ -113,6 +113,27 @@ def test_failed_install_keeps_completed_download_for_retry(tmp_path: Path) -> No
     assert manager.cached_latest_ipsw_path.is_file()
 
 
+def test_completed_bundle_survives_metadata_error_and_recovers(tmp_path: Path) -> None:
+    image_dir = tmp_path / "images" / "macos"
+    driver = MagicMock()
+    driver.version.return_value = "0.4.0"
+    driver.inspect.side_effect = [ValueError("temporary schema mismatch"), _details()]
+    driver.install_base_image.side_effect = lambda *args, **kwargs: (
+        image_dir / "macos-latest"
+    ).mkdir(parents=True)
+    manager = MacOSImageManager(image_dir=image_dir, driver=driver)
+    manager._check_storage = MagicMock()  # type: ignore[method-assign]
+
+    with pytest.raises(ValueError, match="schema mismatch"):
+        manager.build(ipsw="latest")
+
+    assert (image_dir / "macos-latest").is_dir()
+    manifest = manager.build(ipsw="latest")
+
+    assert manifest.guest_version == "macOS 26"
+    assert driver.install_base_image.call_count == 1
+
+
 def test_image_name_cannot_escape_managed_folder(tmp_path: Path) -> None:
     manager = MacOSImageManager(image_dir=tmp_path / "images", driver=MagicMock())
 

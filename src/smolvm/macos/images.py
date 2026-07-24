@@ -32,7 +32,7 @@ from smolvm.exceptions import ImageError
 from smolvm.host.lume import LUME_VERSION, find_lume_binary, pinned_lume_ready
 from smolvm.images.manager import resolve_image_dir
 from smolvm.macos.lume import LumeDriver
-from smolvm.macos.models import MacOSInstallProgress, MacOSInstallRequest
+from smolvm.macos.models import LumeVMDetails, MacOSInstallProgress, MacOSInstallRequest
 from smolvm.types import MacOSMachineConfig
 
 MACOS_DEFAULT_IMAGE = "macos-latest"
@@ -213,6 +213,35 @@ class MacOSImageManager:
                 f"{free_gib} GiB; free some space, then retry the image build."
             )
 
+    def _write_manifest(
+        self,
+        *,
+        name: str,
+        details: LumeVMDetails,
+        source_ipsw: str,
+    ) -> MacOSImageManifest:
+        manifest = MacOSImageManifest(
+            name=name,
+            guest_version=details.os,
+            source_ipsw=source_ipsw,
+            cpu_count=details.cpu_count,
+            memory_mib=details.memory_size // (1024 * 1024),
+            disk_size_bytes=details.disk_size.total,
+            allocated_size_bytes=details.disk_size.allocated,
+            driver_version=self.driver.version(),
+            host_arch=platform.machine(),
+            created_at=datetime.now(timezone.utc),
+        )
+        manifest_path = self.manifest_path(name)
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = manifest_path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(manifest.model_dump(mode="json"), indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(manifest_path)
+        return manifest
+
     def build(
         self,
         *,
@@ -247,9 +276,35 @@ class MacOSImageManager:
             raise ImageError(
                 f"macOS image path '{bundle}' is a link; remove it, then retry the build."
             )
-        if bundle.is_dir():
-            shutil.rmtree(bundle)
         requested_latest = ipsw == "latest"
+        if bundle.is_dir():
+            try:
+                existing_details = self.driver.inspect(name, storage_path=self.image_dir)
+            except Exception as exc:
+                raise ImageError(
+                    f"Existing macOS image files could not be verified; run 'smolvm image rm "
+                    f"{name}', then retry the image build."
+                ) from exc
+            if (
+                existing_details.status.lower() != "stopped"
+                or existing_details.provisioning_operation is not None
+            ):
+                raise ImageError(
+                    f"Existing macOS image preparation is incomplete; run 'smolvm image rm "
+                    f"{name}', then retry the image build."
+                )
+            bundle.chmod(0o700)
+            manifest = self._write_manifest(
+                name=name,
+                details=existing_details,
+                source_ipsw="latest" if requested_latest else str(ipsw),
+            )
+            if requested_latest:
+                self._discard_retry_ipsw(self.find_cached_latest_ipsw())
+            if on_progress is not None:
+                with suppress(Exception):
+                    on_progress(MacOSInstallProgress("complete", 100))
+            return manifest
         resolved_ipsw: str | Path = "latest"
         if requested_latest:
             cached_ipsw = self._adopt_latest_ipsw()
@@ -272,42 +327,33 @@ class MacOSImageManager:
             storage_path=self.image_dir,
             ipsw=resolved_ipsw,
         )
+        install_completed = False
         try:
             self.driver.install_base_image(
                 request,
                 log_path=resolved_log,
                 on_progress=on_progress,
             )
+            install_completed = True
             self.bundle_path(name).chmod(0o700)
             details = self.driver.inspect(name, storage_path=self.image_dir)
-            manifest = MacOSImageManifest(
+            manifest = self._write_manifest(
                 name=name,
-                guest_version=details.os,
+                details=details,
                 source_ipsw="latest" if requested_latest else str(resolved_ipsw),
-                cpu_count=details.cpu_count,
-                memory_mib=details.memory_size // (1024 * 1024),
-                disk_size_bytes=details.disk_size.total,
-                allocated_size_bytes=details.disk_size.allocated,
-                driver_version=self.driver.version(),
-                host_arch=platform.machine(),
-                created_at=datetime.now(timezone.utc),
             )
-            manifest_path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = manifest_path.with_suffix(".tmp")
-            temporary.write_text(
-                json.dumps(manifest.model_dump(mode="json"), indent=2) + "\n",
-                encoding="utf-8",
-            )
-            temporary.replace(manifest_path)
             if requested_latest:
                 self._discard_retry_ipsw(self.find_cached_latest_ipsw())
+            if on_progress is not None:
+                with suppress(Exception):
+                    on_progress(MacOSInstallProgress("complete", 100))
             return manifest
         except (Exception, KeyboardInterrupt):
             if requested_latest:
                 self._adopt_latest_ipsw()
             manifest_path.unlink(missing_ok=True)
             bundle = self.bundle_path(name)
-            if bundle.is_dir():
+            if not install_completed and bundle.is_dir():
                 shutil.rmtree(bundle, ignore_errors=True)
             raise
 

@@ -1080,7 +1080,14 @@ def _run_create(args: SimpleNamespace) -> int:
                 vm_name = args.name or "test-mac"
                 retry = f"smolvm sandbox create --os macos --name {shlex.quote(vm_name)} --yes"
                 cached_ipsw = image_manager.find_cached_latest_ipsw()
-                if cached_ipsw is not None:
+                existing_bundle = image_manager.bundle_path(MACOS_DEFAULT_IMAGE).is_dir()
+                if existing_bundle:
+                    preparation_summary = (
+                        "SmolVM found completed macOS files and will verify them; this should "
+                        "take less than a minute."
+                    )
+                    approval_reason = "finish verifying the existing macOS files"
+                elif cached_ipsw is not None:
                     preparation_summary = (
                         "SmolVM found the downloaded Apple restore file and will reuse it to "
                         "finish creating the local image; installation can take 15–30 minutes."
@@ -1111,9 +1118,13 @@ def _run_create(args: SimpleNamespace) -> int:
                     from smolvm.cli.image import _build_macos_image_with_progress
 
                     source_message = (
-                        "Preparing macOS with the downloaded Apple restore file."
-                        if cached_ipsw is not None
-                        else "Preparing macOS from Apple."
+                        "Verifying the existing macOS files."
+                        if existing_bundle
+                        else (
+                            "Preparing macOS with the downloaded Apple restore file."
+                            if cached_ipsw is not None
+                            else "Preparing macOS from Apple."
+                        )
                     )
                     console_stdout().print(
                         f"{source_message} Build logs are stored under '~/.smolvm/images/macos'."

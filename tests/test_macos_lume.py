@@ -16,7 +16,12 @@ import pytest
 from smolvm.exceptions import SmolVMError
 from smolvm.macos.desktop import open_desktop
 from smolvm.macos.lume import LumeDriver
-from smolvm.macos.models import MacOSInstallProgress, MacOSInstallRequest, MacOSRunRequest
+from smolvm.macos.models import (
+    LumeVMDetails,
+    MacOSInstallProgress,
+    MacOSInstallRequest,
+    MacOSRunRequest,
+)
 from smolvm.types import DesktopEndpoint, WorkspaceMount
 
 
@@ -84,10 +89,7 @@ def test_lume_install_uses_explicit_resource_defaults(fake_lume: Path, tmp_path:
     assert command[command.index("--disk-size") + 1] == "80GB"
     assert command[command.index("--display") + 1] == "1440x900"
     assert popen.call_args.kwargs["env"]["LUME_LOG_LEVEL"] == "info"
-    assert updates == [
-        MacOSInstallProgress("download", 0),
-        MacOSInstallProgress("complete", 100),
-    ]
+    assert updates == [MacOSInstallProgress("download", 0)]
     assert (tmp_path / "build.log").stat().st_mode & 0o777 == 0o600
 
 
@@ -105,7 +107,6 @@ def test_lume_install_streams_subprocess_progress(fake_lume: Path, tmp_path: Pat
         MacOSInstallProgress("download", 50),
         MacOSInstallProgress("install", 75),
         MacOSInstallProgress("setup"),
-        MacOSInstallProgress("complete", 100),
     ]
 
 
@@ -133,6 +134,31 @@ def test_lume_progress_parser_recognizes_download_install_and_setup() -> None:
     assert LumeDriver._progress_from_line("INFO: Starting offline unattended setup") == (
         MacOSInstallProgress("setup")
     )
+
+
+def test_lume_details_accept_null_stopped_vm_fields() -> None:
+    details = LumeVMDetails.model_validate(
+        {
+            "name": "macos-latest",
+            "os": "macOS",
+            "cpuCount": 4,
+            "memorySize": 8 * 1024**3,
+            "diskSize": {"allocated": 1024, "total": 80 * 1024**3},
+            "display": "1440x900",
+            "status": "stopped",
+            "provisioningOperation": None,
+            "vncUrl": None,
+            "ipAddress": None,
+            "sshAvailable": None,
+            "locationName": "/tmp/macos",
+            "sharedDirectories": None,
+            "networkMode": "nat",
+            "downloadProgress": None,
+        }
+    )
+
+    assert details.ssh_available is None
+    assert details.shared_directories is None
 
 
 def test_lume_driver_parses_machine_details(fake_lume: Path, tmp_path: Path) -> None:

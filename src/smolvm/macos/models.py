@@ -47,9 +47,9 @@ class LumeVMDetails(BaseModel):
     provisioning_operation: str | None = Field(alias="provisioningOperation")
     vnc_url: str | None = Field(alias="vncUrl")
     ip_address: str | None = Field(alias="ipAddress")
-    ssh_available: bool = Field(alias="sshAvailable")
+    ssh_available: bool | None = Field(alias="sshAvailable")
     location_name: str = Field(alias="locationName")
-    shared_directories: list[LumeSharedDirectory] = Field(alias="sharedDirectories")
+    shared_directories: list[LumeSharedDirectory] | None = Field(alias="sharedDirectories")
     network_mode: str | None = Field(alias="networkMode")
     download_progress: object | None = Field(alias="downloadProgress")
 
