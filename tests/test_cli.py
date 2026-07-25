@@ -268,6 +268,7 @@ class TestCliEnv:
             ssh_user="root",
             ssh_key_path=None,
             comm_channel=None,
+            state_manager=ANY,
         )
         vm.set_env_vars.assert_called_once_with({"FOO": "bar"})
         vm.close.assert_called_once()
@@ -291,6 +292,7 @@ class TestCliEnv:
             ssh_user="root",
             ssh_key_path=None,
             comm_channel=channel,
+            state_manager=ANY,
         )
 
     def test_env_set_multiple(
@@ -463,6 +465,7 @@ class TestCliEnv:
             ssh_user="custom-user",
             ssh_key_path="/custom/key",
             comm_channel=None,
+            state_manager=ANY,
         )
 
     def test_vm_lookup_failure_prints_error(
@@ -523,6 +526,7 @@ class TestCliFile:
             ssh_user="root",
             ssh_key_path=None,
             comm_channel=None,
+            state_manager=ANY,
         )
         vm.upload_file.assert_called_once_with(
             str(source),
@@ -556,6 +560,7 @@ class TestCliFile:
             ssh_user="root",
             ssh_key_path=None,
             comm_channel=channel,
+            state_manager=ANY,
         )
 
     def test_file_upload_json(
@@ -641,6 +646,7 @@ class TestCliFile:
             ssh_user="root",
             ssh_key_path=None,
             comm_channel=None,
+            state_manager=ANY,
         )
         vm.download_file.assert_called_once_with(
             "/tmp/note.txt",
@@ -767,6 +773,7 @@ class TestCliCreate:
             ssh_key_path="/tmp/id_ed25519",
             mounts=None,
             writable_mounts=False,
+            state_manager=ANY,
         )
         vm.start.assert_called_once_with(boot_timeout=30.0, on_progress=ANY)
         vm.wait_for_ready.assert_called_once_with(timeout=30.0, on_progress=ANY)
@@ -843,6 +850,7 @@ class TestCliCreate:
             ssh_key_path="/tmp/id_ed25519",
             mounts=None,
             writable_mounts=False,
+            state_manager=ANY,
         )
         vm.start.assert_called_once_with(boot_timeout=45.0, on_progress=ANY)
         vm.wait_for_ready.assert_called_once_with(timeout=45.0, on_progress=ANY)
@@ -894,6 +902,7 @@ class TestCliCreate:
             comm_channel="ssh",
             mounts=None,
             writable_mounts=False,
+            state_manager=ANY,
         )
         vm.start.assert_called_once_with(boot_timeout=30.0, on_progress=ANY)
         vm.wait_for_ssh.assert_called_once_with(timeout=30.0, on_progress=ANY)
@@ -940,6 +949,7 @@ class TestCliCreate:
             ssh_key_path="/tmp/id_ed25519",
             mounts=None,
             writable_mounts=False,
+            state_manager=ANY,
         )
         vm.start.assert_called_once_with(boot_timeout=30.0, on_progress=ANY)
         vm.wait_for_ready.assert_called_once_with(timeout=30.0, on_progress=ANY)
@@ -1655,7 +1665,7 @@ class TestCliStop:
         ret = main(["sandbox", "stop", "vm001", "--timeout", "7"])
 
         assert ret == 0
-        mock_vm_cls.from_id.assert_called_once_with("vm001")
+        mock_vm_cls.from_id.assert_called_once_with("vm001", state_manager=ANY)
         vm.stop.assert_called_once_with(timeout=7.0)
         vm.close.assert_called_once()
         out = capsys.readouterr().out
@@ -1714,7 +1724,7 @@ class TestCliPauseResume:
         ret = main(["sandbox", "pause", "vm001"])
 
         assert ret == 0
-        mock_vm_cls.from_id.assert_called_once_with("vm001")
+        mock_vm_cls.from_id.assert_called_once_with("vm001", state_manager=ANY)
         vm.pause.assert_called_once_with()
         vm.close.assert_called_once()
         out = capsys.readouterr().out
@@ -1759,7 +1769,7 @@ class TestCliVmStart:
         ret = main(["sandbox", "start", "vm001"])
 
         assert ret == 0
-        mock_vm_cls.from_id.assert_called_once_with("vm001")
+        mock_vm_cls.from_id.assert_called_once_with("vm001", state_manager=ANY)
         vm.start.assert_called_once_with(boot_timeout=30.0)
         vm.close.assert_called_once()
         out = capsys.readouterr().out
@@ -1820,7 +1830,7 @@ class TestCliSnapshot:
         ret = main(["sandbox", "snapshot", "create", "vm001", "--snapshot-id", "snap-001"])
 
         assert ret == 0
-        mock_vm_cls.from_id.assert_called_once_with("vm001")
+        mock_vm_cls.from_id.assert_called_once_with("vm001", state_manager=ANY)
         vm.snapshot.assert_called_once_with(
             snapshot_id="snap-001",
             snapshot_type="full",
@@ -1914,6 +1924,7 @@ class TestCliSnapshot:
             "snap-001",
             resume_vm=False,
             force=False,
+            state_manager=ANY,
         )
         payload = json.loads(capsys.readouterr().out)
         assert payload["command"] == "sandbox.snapshot.restore"
@@ -2055,7 +2066,7 @@ class TestCliShell:
         ret = main(["sandbox", "shell", "vm001", "--boot-timeout", "15"])
 
         assert ret == 7
-        mock_vm_cls.from_id.assert_called_once_with("vm001")
+        mock_vm_cls.from_id.assert_called_once_with("vm001", state_manager=ANY)
         vm.start.assert_not_called()
         vm.wait_for_shell.assert_called_once_with(timeout=15.0)
         vm.wait_for_ssh.assert_not_called()
@@ -2242,6 +2253,7 @@ class TestCliSSH:
             "vm001",
             ssh_user="custom-user",
             ssh_key_path="/custom/key",
+            state_manager=ANY,
         )
         vm.start.assert_not_called()
         vm.wait_for_ssh.assert_called_once_with(timeout=15.0)
@@ -2674,7 +2686,7 @@ class TestCliBrowser:
 
     @patch("smolvm.browser._BrowserSandbox")
     @patch("smolvm.vm.resolve_data_dir", return_value=Path("/tmp"))
-    @patch("smolvm.storage.create_state_manager")
+    @patch("smolvm.cli.state.create_cli_state_manager")
     def test_browser_stop_all(
         self,
         mock_state_manager_cls: MagicMock,
@@ -2700,6 +2712,8 @@ class TestCliBrowser:
         state_manager.list_browser_sessions.assert_called_once_with()
         assert mock_browser_cls.from_id.call_args_list[0].args == ("browser-001",)
         assert mock_browser_cls.from_id.call_args_list[1].args == ("browser-002",)
+        assert mock_browser_cls.from_id.call_args_list[0].kwargs["state_manager"] is state_manager
+        assert mock_browser_cls.from_id.call_args_list[1].kwargs["state_manager"] is state_manager
         first_session.stop.assert_called_once_with()
         second_session.stop.assert_called_once_with()
         first_session.close.assert_called_once_with()
@@ -2708,7 +2722,7 @@ class TestCliBrowser:
 
     @patch("smolvm.browser._BrowserSandbox")
     @patch("smolvm.vm.resolve_data_dir", return_value=Path("/tmp"))
-    @patch("smolvm.storage.create_state_manager")
+    @patch("smolvm.cli.state.create_cli_state_manager")
     def test_browser_stop_all_failure_names_recovery_command(
         self,
         mock_state_manager_cls: MagicMock,
@@ -2730,6 +2744,7 @@ class TestCliBrowser:
         ret = main(["browser", "stop", "--all"])
 
         assert ret == 1
+        assert mock_browser_cls.from_id.call_args.kwargs["state_manager"] is state_manager
         error = capsys.readouterr().err
         assert "smolvm browser" in error
         assert "stop browser-001" in error
@@ -2755,7 +2770,7 @@ class TestCliBrowser:
         assert "internal failure" not in error
 
     @patch("smolvm.vm.resolve_data_dir", return_value=Path("/tmp"))
-    @patch("smolvm.storage.create_state_manager")
+    @patch("smolvm.cli.state.create_cli_state_manager")
     def test_browser_stop_all_empty(
         self,
         mock_state_manager_cls: MagicMock,
@@ -2774,7 +2789,7 @@ class TestCliBrowser:
         assert "No browser sandboxes found." in capsys.readouterr().out
 
     @patch("smolvm.vm.resolve_data_dir", return_value=Path("/tmp"))
-    @patch("smolvm.storage.create_state_manager")
+    @patch("smolvm.cli.state.create_cli_state_manager")
     def test_browser_list_json(
         self,
         mock_state_manager_cls: MagicMock,
@@ -3679,6 +3694,7 @@ class TestCliStart:
             ssh_key_path="/tmp/id_ed25519",
             mounts=None,
             writable_mounts=False,
+            state_manager=ANY,
         )
         vm.start.assert_called_once_with(boot_timeout=30.0, on_progress=ANY)
         vm.wait_for_ready.assert_called_once_with(timeout=30.0, on_progress=ANY)
@@ -3760,6 +3776,7 @@ class TestCliStart:
             mounts=None,
             writable_mounts=False,
             comm_channel="ssh",
+            state_manager=ANY,
         )
         json.loads(capsys.readouterr().out)
 
@@ -5485,7 +5502,7 @@ class TestCliCompletion:
         state.list_vms.return_value = [_make_vm_info("web-1"), _make_vm_info("api-2")]
 
         with (
-            patch("smolvm.storage.create_state_manager", return_value=state),
+            patch("smolvm.cli.state.create_cli_state_manager", return_value=state),
             patch("smolvm.vm.resolve_data_dir", return_value=Path("/tmp")),
         ):
             items = complete_sandbox_names(MagicMock(), MagicMock(), "web")
@@ -5499,7 +5516,7 @@ class TestCliCompletion:
         """A backend failure yields no suggestions instead of a traceback."""
         from smolvm.cli.commands.options import complete_sandbox_names
 
-        with patch("smolvm.storage.create_state_manager", side_effect=Exception("no db")):
+        with patch("smolvm.cli.state.create_cli_state_manager", side_effect=Exception("no db")):
             items = complete_sandbox_names(MagicMock(), MagicMock(), "")
 
         assert items == []
@@ -5516,7 +5533,7 @@ class TestCliCompletion:
         state.list_browser_sessions.return_value = [session_a, session_b]
 
         with (
-            patch("smolvm.storage.create_state_manager", return_value=state),
+            patch("smolvm.cli.state.create_cli_state_manager", return_value=state),
             patch("smolvm.vm.resolve_data_dir", return_value=Path("/tmp")),
         ):
             items = complete_browser_session_names(MagicMock(), MagicMock(), "brs-a")
@@ -5528,7 +5545,7 @@ class TestCliCompletion:
         """A failure to open the state store yields no suggestions."""
         from smolvm.cli.commands.options import complete_browser_session_names
 
-        with patch("smolvm.storage.create_state_manager", side_effect=Exception("no db")):
+        with patch("smolvm.cli.state.create_cli_state_manager", side_effect=Exception("no db")):
             items = complete_browser_session_names(MagicMock(), MagicMock(), "")
 
         assert items == []

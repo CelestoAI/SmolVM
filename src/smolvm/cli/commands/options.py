@@ -132,10 +132,9 @@ def _complete_from_state(select: Callable[[Any], Any], incomplete: str) -> list[
 
     state = None
     try:
-        from smolvm.storage import create_state_manager
-        from smolvm.vm import resolve_data_dir
+        from smolvm.cli.service import CLIService
 
-        state = create_state_manager(db_path=resolve_data_dir() / "smolvm.db")
+        state = CLIService().state_manager()
         ids = list(select(state))
     except Exception:
         return []

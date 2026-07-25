@@ -93,6 +93,7 @@ from smolvm.runtime.boot_profiles import (
     to_published_arch,
 )
 from smolvm.ssh import ShellKind, SSHClient
+from smolvm.storage import StateManagerProtocol
 from smolvm.types import (
     BrowserSessionConfig,
     BrowserViewport,
@@ -199,34 +200,13 @@ def _path_size_mib(path: Path) -> int:
     return (path.stat().st_size + (1024 * 1024) - 1) // (1024 * 1024)
 
 
-def _existing_vm_ids() -> set[str]:
-    """Best-effort lookup of existing VM IDs for collision-free auto-naming.
-
-    Returns an empty set if the state store cannot be read (e.g. the data dir
-    doesn't exist yet on a fresh install). The downstream ``create`` call still
-    enforces uniqueness via the storage layer, so a stale or empty answer
-    here can never produce a duplicate VM — at worst it triggers one extra
-    retry.
-    """
-    from smolvm.storage import create_state_manager
-    from smolvm.vm import resolve_data_dir
-
-    try:
-        db_path = resolve_data_dir() / "smolvm.db"
-        if not db_path.exists():
-            return set()
-        state = create_state_manager(db_path=db_path)
-        return {info.vm_id for info in state.list_vms()}
-    except Exception as exc:
-        logger.debug("Could not enumerate existing VM IDs for auto-naming: %s", exc)
-        return set()
-
-
 def _resolve_vm_name(vm_name: str | None, *, prefix: str = "sbx") -> str:
-    """Return the user-supplied name or auto-generate one with *prefix*."""
+    """Return the supplied name or generate one without consulting host inventory."""
     if vm_name is not None:
         return vm_name
-    return generate_sandbox_name(_existing_vm_ids(), prefix=prefix)
+    # Generated names include enough entropy that SDK construction should not
+    # need a machine-wide database read merely to choose a friendly name.
+    return generate_sandbox_name(set(), prefix=prefix)
 
 
 def _resolve_auto_config_public_key(ssh_key_path: str | None) -> tuple[str, Path]:
@@ -956,14 +936,15 @@ class _LocalForward:
 class SmolVM:
     """High-level interface for a single microVM.
 
-    Create a VM with a config, reconnect to an existing one by ID,
-    or call ``SmolVM()`` for an auto-configured SSH-ready VM.
+    Create a VM with a config or call ``SmolVM()`` for an
+    auto-configured SSH-ready VM. Keep this object while using the VM.
 
     Args:
         config: VM configuration. Mutually exclusive with *vm_id* and *image*.
             If omitted (and *vm_id* is omitted), SmolVM auto-creates
             a default SSH-capable VM configuration.
-        vm_id: ID of an existing VM to reconnect to.
+        vm_id: Existing VM ID used by integrations that also provide an
+            explicit state manager. Normal SDK callers should keep the original object.
         image: Image URI (e.g. ``s3://bucket/images/alpine/``).
             Mutually exclusive with *config*, *vm_id*, and *os*.
             The image is downloaded and cached locally before VM creation.
@@ -1029,6 +1010,7 @@ class SmolVM:
         mounts: list[str] | None = None,
         writable_mounts: bool = False,
         callbacks: list[Callback] | None = None,
+        state_manager: StateManagerProtocol | None = None,
     ) -> None:
         if config is not None and vm_id is not None:
             raise ValueError("Provide either config or vm_id, not both.")
@@ -1059,6 +1041,11 @@ class SmolVM:
             raise ValueError(
                 "memory, disk_size, and os only apply in auto-config mode; "
                 "drop them or drop config=/vm_id=."
+            )
+        if vm_id is not None and state_manager is None:
+            raise ValueError(
+                "Reconnecting by ID requires an explicit inventory; keep the original "
+                "SmolVM object, or use the SmolVM CLI for persistent sandboxes."
             )
 
         # Phase 1 Windows guest scope locks. Each is intentionally narrow
@@ -1178,6 +1165,8 @@ class SmolVM:
             sdk_kwargs["socket_dir"] = socket_dir
         if backend is not None:
             sdk_kwargs["backend"] = backend
+        if state_manager is not None:
+            sdk_kwargs["state_manager"] = state_manager
 
         # Record the channel preference on the config so create() can reserve a
         # vsock CID and wire the device before boot. Covers both an explicit
@@ -1402,8 +1391,9 @@ class SmolVM:
         ssh_key_path: str | None = None,
         ssh_password: str | None = None,
         comm_channel: CommChannelKind | None = None,
+        state_manager: StateManagerProtocol | None = None,
     ) -> SmolVM:
-        """Reconnect to an existing VM by ID.
+        """Reconnect through an explicitly supplied inventory by ID.
 
         Args:
             vm_id: VM identifier.
@@ -1416,6 +1406,7 @@ class SmolVM:
                 ``~/.smolvm/keys/id_ed25519`` when needed.
             ssh_password: Optional SSH password (for Windows guests with
                 password-auth qcow2s).
+            state_manager: Explicit inventory used by CLI integrations.
 
         Returns:
             A :class:`SmolVM` instance bound to the existing VM.
@@ -1432,6 +1423,7 @@ class SmolVM:
             ssh_key_path=ssh_key_path,
             ssh_password=ssh_password,
             comm_channel=comm_channel,
+            state_manager=state_manager,
         )
 
     @classmethod
@@ -1542,8 +1534,9 @@ class SmolVM:
         ssh_user: str = "root",
         ssh_key_path: str | None = None,
         comm_channel: CommChannelKind | None = None,
+        state_manager: StateManagerProtocol | None = None,
     ) -> SmolVM:
-        """Restore a snapshot and attach a facade to the restored VM."""
+        """Restore a snapshot from an explicitly supplied inventory."""
         requested_backend = None
         if backend not in (None, "auto"):
             requested_backend = resolve_backend(backend)
@@ -1555,8 +1548,13 @@ class SmolVM:
             sdk_kwargs["socket_dir"] = socket_dir
         if backend is not None:
             sdk_kwargs["backend"] = backend
+        if state_manager is not None:
+            sdk_kwargs["state_manager"] = state_manager
 
-        with SmolVMManager(**sdk_kwargs) as sdk:
+        sdk = SmolVMManager(**sdk_kwargs)
+        # Preserve transient state between restore and the returned handle.
+        state_manager = sdk.state
+        with sdk:
             if requested_backend is not None:
                 snapshot = sdk.get_snapshot(snapshot_id)
                 if snapshot.backend != requested_backend:
@@ -1593,6 +1591,7 @@ class SmolVM:
             ssh_user=ssh_user,
             ssh_key_path=ssh_key_path,
             comm_channel=comm_channel,
+            state_manager=state_manager,
         )
 
     # ------------------------------------------------------------------
@@ -3262,6 +3261,10 @@ modprobe 9pnet_virtio""".strip()
                 f"'smolvm sandbox start {self._vm_id}'.",
                 {"vm_id": self._vm_id},
             )
+        self._ensure_control_cache_attrs()
+        if self._control_ready and self._control_channel is not None:
+            return self._control_channel
+
         resolution = self._resolve_channel()
         if not self.can_run_commands():
             raise CommandExecutionUnavailableError(

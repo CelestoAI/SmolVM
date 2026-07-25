@@ -725,7 +725,7 @@ class TestTapAllocation:
     """Tests for TAP name reservation in storage."""
 
     def test_reserve_tap_name_bridge(self, tmp_path: Path) -> None:
-        from smolvm.storage._sqlite import SQLiteStateManager
+        from smolvm.cli._sqlite import SQLiteStateManager
 
         manager = SQLiteStateManager(tmp_path / "test.db")
         config = _make_vm_config(tmp_path, vm_id="test-vm-1")
@@ -735,7 +735,7 @@ class TestTapAllocation:
         assert len(tap) <= 15
 
     def test_reserve_tap_name_idempotent(self, tmp_path: Path) -> None:
-        from smolvm.storage._sqlite import SQLiteStateManager
+        from smolvm.cli._sqlite import SQLiteStateManager
 
         manager = SQLiteStateManager(tmp_path / "test.db")
         config = _make_vm_config(tmp_path, vm_id="test-vm-2")
@@ -745,8 +745,8 @@ class TestTapAllocation:
         assert tap1 == tap2
 
     def test_reserve_tap_name_rejects_changed_attachment(self, tmp_path: Path) -> None:
+        from smolvm.cli._sqlite import SQLiteStateManager
         from smolvm.exceptions import NetworkError
-        from smolvm.storage._sqlite import SQLiteStateManager
 
         manager = SQLiteStateManager(tmp_path / "test.db")
         config = _make_vm_config(tmp_path, vm_id="test-vm-mismatch")
@@ -767,7 +767,7 @@ class TestTapAllocation:
             )
 
     def test_get_tap_allocation(self, tmp_path: Path) -> None:
-        from smolvm.storage._sqlite import SQLiteStateManager
+        from smolvm.cli._sqlite import SQLiteStateManager
 
         manager = SQLiteStateManager(tmp_path / "test.db")
         config = _make_vm_config(tmp_path, vm_id="test-vm-3")
@@ -779,13 +779,13 @@ class TestTapAllocation:
         assert alloc[2] == "br10"
 
     def test_get_tap_allocation_none(self, tmp_path: Path) -> None:
-        from smolvm.storage._sqlite import SQLiteStateManager
+        from smolvm.cli._sqlite import SQLiteStateManager
 
         manager = SQLiteStateManager(tmp_path / "test.db")
         assert manager.get_tap_allocation("nonexistent") is None
 
     def test_release_tap_name(self, tmp_path: Path) -> None:
-        from smolvm.storage._sqlite import SQLiteStateManager
+        from smolvm.cli._sqlite import SQLiteStateManager
 
         manager = SQLiteStateManager(tmp_path / "test.db")
         config = _make_vm_config(tmp_path, vm_id="test-vm-4")
@@ -795,7 +795,7 @@ class TestTapAllocation:
         assert manager.get_tap_allocation("test-vm-4") is None
 
     def test_reserve_tap_name_requested(self, tmp_path: Path) -> None:
-        from smolvm.storage._sqlite import SQLiteStateManager
+        from smolvm.cli._sqlite import SQLiteStateManager
 
         manager = SQLiteStateManager(tmp_path / "test.db")
         config = _make_vm_config(tmp_path, vm_id="test-vm-5")
@@ -806,8 +806,8 @@ class TestTapAllocation:
         assert tap == "svmb9999"
 
     def test_reserve_tap_name_conflict(self, tmp_path: Path) -> None:
+        from smolvm.cli._sqlite import SQLiteStateManager
         from smolvm.exceptions import NetworkError
-        from smolvm.storage._sqlite import SQLiteStateManager
 
         manager = SQLiteStateManager(tmp_path / "test.db")
         config1 = _make_vm_config(tmp_path, vm_id="test-vm-6")

@@ -60,8 +60,11 @@ from smolvm.cli.output import (
 from smolvm.types import BrowserSessionState, DesktopEndpoint, GuestOS, VMState
 
 if TYPE_CHECKING:
+    from smolvm.cli.service import CLIService
+    from smolvm.facade import SmolVM as FacadeVM
     from smolvm.images.published import Arch, Vmm
-    from smolvm.types import BrowserSessionInfo, SnapshotInfo, VMInfo
+    from smolvm.storage import StateManagerProtocol
+    from smolvm.types import BrowserSessionInfo, SnapshotInfo, VMConfig, VMInfo
 
 DASHBOARD_ALLOW_BETA_ENV = "SMOLVM_DASHBOARD_ALLOW_BETA"
 DASHBOARD_URL_ENV = "SMOLVM_DASHBOARD_URL"
@@ -70,6 +73,27 @@ ENV_RELOAD_HINT = "source /etc/profile.d/smolvm_env.sh"
 # Matches PEP 440 pre-release and dev-release version suffixes,
 # e.g. "0.0.5.a1", "0.0.5b2", "0.0.5.dev1", "0.0.5rc1".
 _PRERELEASE_RE = re.compile(r"[._]?(a|b|rc|alpha|beta|dev)\d*", re.IGNORECASE)
+
+
+def _cli_service() -> CLIService:
+    from smolvm.cli.service import CLIService
+
+    return CLIService()
+
+
+def _cli_state_manager() -> StateManagerProtocol:
+    """Open the persistent inventory shared by CLI invocations."""
+    return _cli_service().state_manager()
+
+
+def _cli_vm(config: VMConfig | None = None, **kwargs: Any) -> FacadeVM:
+    """Construct an SDK handle wired to the CLI inventory."""
+    return _cli_service().create_vm(config, **kwargs)
+
+
+def _cli_vm_from_id(vm_id: str, **kwargs: Any) -> FacadeVM:
+    """Reconnect a CLI handle through persistent inventory."""
+    return _cli_service().vm_from_id(vm_id, **kwargs)
 
 
 class VmRow(TypedDict):
@@ -542,9 +566,8 @@ def _run_list(
     command_name: str = "sandbox.list",
 ) -> int:
     """Handle ``smolvm sandbox list``."""
-    from smolvm.vm import SmolVMManager
 
-    with SmolVMManager() as sdk:
+    with _cli_service().manager() as sdk:
         try:
             effective_status = status_filter or (None if include_all else VMState.RUNNING.value)
             state = VMState(effective_status) if effective_status else None
@@ -778,9 +801,8 @@ def _render_info_result(data: InfoPayload) -> None:
 
 def _run_info(*, vm_id: str, json_output: bool, command_name: str = "sandbox.info") -> int:
     """Handle ``smolvm sandbox info``."""
-    from smolvm.vm import SmolVMManager
 
-    with SmolVMManager() as sdk:
+    with _cli_service().manager() as sdk:
         try:
             vm = sdk.state.get_vm(vm_id)
             live_data: dict[str, object] | None = None
@@ -861,8 +883,6 @@ def _build_and_boot_with_progress(
     """
     from rich.console import Console
 
-    from smolvm.facade import SmolVM
-
     _console: Console = console  # type: ignore[assignment]
     _build_fn: Callable[..., Any] = build_fn  # type: ignore[assignment]
 
@@ -908,7 +928,7 @@ def _build_and_boot_with_progress(
         }
         if comm_channel is not None:
             vm_kwargs["comm_channel"] = comm_channel
-        vm = SmolVM(config, **vm_kwargs)
+        vm = _cli_vm(config, **vm_kwargs)
         vm.start(boot_timeout=boot_timeout, on_progress=on_phase)
         if wait_for_control_channel:
             _wait_after_create(
@@ -1198,7 +1218,7 @@ def _run_create(args: SimpleNamespace) -> int:
                 }
                 if args.comm_channel is not None:
                     vm_kwargs["comm_channel"] = args.comm_channel
-                vm = SmolVM(config, **vm_kwargs)
+                vm = _cli_vm(config, **vm_kwargs)
                 vm.start(boot_timeout=args.boot_timeout)
                 _wait_after_create(
                     vm,
@@ -1250,7 +1270,7 @@ def _run_create(args: SimpleNamespace) -> int:
                 }
                 if args.comm_channel is not None:
                     vm_kwargs["comm_channel"] = args.comm_channel
-                vm = SmolVM(config, **vm_kwargs)
+                vm = _cli_vm(config, **vm_kwargs)
                 vm.start(boot_timeout=args.boot_timeout)
                 _wait_after_create(
                     vm,
@@ -1304,7 +1324,7 @@ def _run_create(args: SimpleNamespace) -> int:
                 }
                 if args.comm_channel is not None:
                     vm_kwargs["comm_channel"] = args.comm_channel
-                vm = SmolVM(config, **vm_kwargs)
+                vm = _cli_vm(config, **vm_kwargs)
                 vm.start(boot_timeout=args.boot_timeout)
                 _wait_after_create(
                     vm,
@@ -1547,7 +1567,7 @@ def _run_start_with_published_image(args: SimpleNamespace, preset: object) -> in
         vm: SmolVM | None = None
         success = False
         try:
-            vm = SmolVM(
+            vm = _cli_vm(
                 config,
                 ssh_key_path=str(private_key),
                 mounts=args.mounts,
@@ -1730,7 +1750,7 @@ def _run_start(args: SimpleNamespace) -> int:
                 network_mode=getattr(args, "network_mode", None),
                 bridge_name=getattr(args, "bridge_name", None),
             )
-            vm = SmolVM(
+            vm = _cli_vm(
                 config,
                 ssh_key_path=ssh_key_path,
                 mounts=args.mounts,
@@ -2051,7 +2071,7 @@ def _run_stop(args: SimpleNamespace) -> int:
     vm: SmolVM | None = None
     command_name = getattr(args, "command_name", "sandbox.stop")
     try:
-        vm = SmolVM.from_id(args.vm_id)
+        vm = _cli_vm_from_id(args.vm_id)
         vm.stop(timeout=args.timeout)
 
         data = _vm_lifecycle_payload(vm.vm_id, VMState.STOPPED)
@@ -2080,7 +2100,7 @@ def _run_pause(args: SimpleNamespace) -> int:
     vm: SmolVM | None = None
     command_name = getattr(args, "command_name", "sandbox.pause")
     try:
-        vm = SmolVM.from_id(args.vm_id)
+        vm = _cli_vm_from_id(args.vm_id)
         vm.pause()
 
         data = _vm_lifecycle_payload(vm.vm_id, VMState.PAUSED)
@@ -2108,7 +2128,7 @@ def _run_resume(args: SimpleNamespace) -> int:
     vm: SmolVM | None = None
     command_name = getattr(args, "command_name", "sandbox.resume")
     try:
-        vm = SmolVM.from_id(args.vm_id)
+        vm = _cli_vm_from_id(args.vm_id)
         vm.resume()
 
         data = _vm_lifecycle_payload(vm.vm_id, VMState.RUNNING)
@@ -2136,7 +2156,7 @@ def _run_vm_start(args: SimpleNamespace) -> int:
     vm: SmolVM | None = None
     command_name = getattr(args, "command_name", "sandbox.start")
     try:
-        vm = SmolVM.from_id(args.vm_id)
+        vm = _cli_vm_from_id(args.vm_id)
         vm.start(boot_timeout=args.boot_timeout)
 
         data = _vm_lifecycle_payload(vm.vm_id, VMState.RUNNING)
@@ -2165,7 +2185,7 @@ def _run_desktop(args: SimpleNamespace) -> int:
     vm: SmolVM | None = None
     command_name = getattr(args, "command_name", "sandbox.desktop")
     try:
-        vm = SmolVM.from_id(args.vm_id)
+        vm = _cli_vm_from_id(args.vm_id)
         if args.start and vm.status in {VMState.CREATED, VMState.STOPPED}:
             vm.start(boot_timeout=args.boot_timeout)
         vm.refresh()
@@ -2207,7 +2227,6 @@ def _run_desktop(args: SimpleNamespace) -> int:
 def _run_snapshot(args: SimpleNamespace) -> int:
     """Handle ``smolvm sandbox snapshot`` commands."""
     from smolvm.facade import SmolVM
-    from smolvm.vm import SmolVMManager
 
     json_output = getattr(args, "json", False)
     command_name = getattr(args, "command_name", None) or (
@@ -2226,7 +2245,7 @@ def _run_snapshot(args: SimpleNamespace) -> int:
         try:
             from smolvm.types import SnapshotCapturePolicy
 
-            vm = SmolVM.from_id(args.vm_id)
+            vm = _cli_vm_from_id(args.vm_id)
             snapshot = vm.snapshot(
                 snapshot_id=args.snapshot_id,
                 snapshot_type=args.snapshot_type,
@@ -2258,8 +2277,9 @@ def _run_snapshot(args: SimpleNamespace) -> int:
                 args.snapshot_id,
                 resume_vm=args.resume,
                 force=args.force,
+                state_manager=_cli_state_manager(),
             )
-            with SmolVMManager() as sdk:
+            with _cli_service().manager() as sdk:
                 snapshot = sdk.get_snapshot(args.snapshot_id)
             row = _snapshot_row(snapshot)
             network = vm.info.network
@@ -2288,7 +2308,7 @@ def _run_snapshot(args: SimpleNamespace) -> int:
             from smolvm.exceptions import SnapshotNotFoundError
 
             existing_snapshot: SnapshotInfo | None
-            with SmolVMManager() as sdk:
+            with _cli_service().manager() as sdk:
                 try:
                     existing_snapshot = sdk.get_snapshot(args.snapshot_id)
                 except SnapshotNotFoundError:
@@ -2318,7 +2338,7 @@ def _run_snapshot(args: SimpleNamespace) -> int:
             return _emit_cli_error(command_name, 1, exc, json_output=json_output)
 
     try:
-        with SmolVMManager() as sdk:
+        with _cli_service().manager() as sdk:
             snapshots = sdk.list_snapshots(vm_id=args.vm_id)
         rows = [_snapshot_row(snapshot) for snapshot in snapshots]
         data: SnapshotListPayload = {
@@ -2406,7 +2426,7 @@ def _run_env(args: SimpleNamespace) -> int:
         if args.env_action == "set":
             parsed_env_vars = _parse_env_pairs(args.pairs)
 
-        vm = SmolVM.from_id(
+        vm = _cli_vm_from_id(
             args.vm_id,
             ssh_user=args.ssh_user,
             ssh_key_path=args.ssh_key,
@@ -2540,7 +2560,7 @@ def _run_file(args: SimpleNamespace) -> int:
     command_name = getattr(args, "command_name", f"sandbox.file.{args.file_action}")
     vm: SmolVM | None = None
     try:
-        vm = SmolVM.from_id(
+        vm = _cli_vm_from_id(
             args.vm_id,
             ssh_user=args.ssh_user,
             ssh_key_path=args.ssh_key,
@@ -2619,7 +2639,7 @@ def _run_ssh(args: SimpleNamespace) -> int:
     vm: SmolVM | None = None
     command_name = getattr(args, "command_name", "sandbox.ssh")
     try:
-        vm = SmolVM.from_id(
+        vm = _cli_vm_from_id(
             args.vm_id,
             ssh_user=args.ssh_user,
             ssh_key_path=args.ssh_key,
@@ -2657,7 +2677,7 @@ def _run_shell(args: SimpleNamespace) -> int:
     vm: SmolVM | None = None
     command_name = getattr(args, "command_name", "sandbox.shell")
     try:
-        vm = SmolVM.from_id(args.vm_id)
+        vm = _cli_vm_from_id(args.vm_id)
         vm.ensure_shell_supported()
 
         _bring_sandbox_up(
@@ -2745,7 +2765,7 @@ def _run_exec(args: SimpleNamespace) -> int:
     command_name = getattr(args, "command_name", "sandbox.exec")
     json_output = bool(getattr(args, "json", False))
     try:
-        vm = SmolVM.from_id(args.vm_id)
+        vm = _cli_vm_from_id(args.vm_id)
         # Pull the latest persisted state so the running check below and the
         # --start decision don't act on a status cached at from_id() time.
         with suppress(Exception):
@@ -2824,7 +2844,7 @@ def _run_logs(args: SimpleNamespace) -> int:
     json_output = bool(getattr(args, "json", False))
     vm: SmolVM | None = None
     try:
-        vm = SmolVM.from_id(args.vm_id)
+        vm = _cli_vm_from_id(args.vm_id)
         log_path = vm.data_dir / f"{args.vm_id}.log"
 
         if not log_path.exists():
@@ -2966,7 +2986,7 @@ def _run_port_expose(args: SimpleNamespace) -> int:
             json_output=json_output,
         )
     try:
-        vm = SmolVM.from_id(
+        vm = _cli_vm_from_id(
             args.vm_id,
             ssh_user=args.ssh_user,
             ssh_key_path=args.ssh_key,
@@ -3066,7 +3086,7 @@ def _run_port_close(args: SimpleNamespace) -> int:
                 pass
 
         # Clean up nftables rules via the facade.
-        vm = SmolVM.from_id(
+        vm = _cli_vm_from_id(
             args.vm_id,
             ssh_user=args.ssh_user,
             ssh_key_path=args.ssh_key,
@@ -3376,9 +3396,7 @@ def _run_windows_build_image(args: SimpleNamespace) -> int:
 def _run_browser(args: SimpleNamespace) -> int:
     """Handle ``smolvm browser`` commands."""
     from smolvm.browser import _BrowserSandbox
-    from smolvm.storage import create_state_manager
     from smolvm.types import BrowserSessionConfig
-    from smolvm.vm import resolve_data_dir
 
     json_output = getattr(args, "json", False)
     command_name = f"browser.{args.browser_action}" if args.browser_action else "browser"
@@ -3405,7 +3423,7 @@ def _run_browser(args: SimpleNamespace) -> int:
                 mem_size_mib=args.memory_mib,
                 disk_size_mib=args.disk_size_mib,
             )
-            session = _BrowserSandbox(config)
+            session = _BrowserSandbox(config, state_manager=_cli_state_manager())
             session.start(boot_timeout=args.boot_timeout)
 
             data: BrowserSandboxPayload = {
@@ -3441,7 +3459,7 @@ def _run_browser(args: SimpleNamespace) -> int:
 
     if args.browser_action == "stop":
         if args.all:
-            state = create_state_manager(db_path=resolve_data_dir() / "smolvm.db")
+            state = _cli_state_manager()
             try:
                 sessions = state.list_browser_sessions()
             except Exception as exc:
@@ -3456,7 +3474,7 @@ def _run_browser(args: SimpleNamespace) -> int:
             for session_info in sessions:
                 session: _BrowserSandbox | None = None
                 try:
-                    session = _BrowserSandbox.from_id(session_info.session_id)
+                    session = _BrowserSandbox.from_id(session_info.session_id, state_manager=state)
                     session.stop()
                     stopped_session_ids.append(session_info.session_id)
                 except Exception as exc:
@@ -3483,7 +3501,7 @@ def _run_browser(args: SimpleNamespace) -> int:
         session: _BrowserSandbox | None = None
         try:
             assert args.session_id is not None
-            session = _BrowserSandbox.from_id(args.session_id)
+            session = _BrowserSandbox.from_id(args.session_id, state_manager=_cli_state_manager())
             session.stop()
             print(f"Stopped browser sandbox '{args.session_id}'.")
             return 0
@@ -3500,7 +3518,7 @@ def _run_browser(args: SimpleNamespace) -> int:
     if args.browser_action == "open":
         session: _BrowserSandbox | None = None
         try:
-            session = _BrowserSandbox.from_id(args.session_id)
+            session = _BrowserSandbox.from_id(args.session_id, state_manager=_cli_state_manager())
             if session.viewer_url is None:
                 raise RuntimeError(
                     f"Browser sandbox '{args.session_id}' does not have a viewer_url."
@@ -3520,7 +3538,7 @@ def _run_browser(args: SimpleNamespace) -> int:
     if args.browser_action == "logs":
         session: _BrowserSandbox | None = None
         try:
-            session = _BrowserSandbox.from_id(args.session_id)
+            session = _BrowserSandbox.from_id(args.session_id, state_manager=_cli_state_manager())
             output = session.logs(tail=args.tail)
             if output:
                 print(output)
@@ -3531,7 +3549,7 @@ def _run_browser(args: SimpleNamespace) -> int:
             if session is not None:
                 session.close()
 
-    state = create_state_manager(db_path=resolve_data_dir() / "smolvm.db")
+    state = _cli_state_manager()
     try:
         status = BrowserSessionState(args.status) if args.status else None
         sessions = state.list_browser_sessions(status=status)

@@ -77,8 +77,8 @@ from smolvm.runtime.vz import VzRuntimeAdapter
 from smolvm.storage import (
     SSH_PORT_END,
     SSH_PORT_START,
+    MemoryStateManager,
     StateManagerProtocol,
-    create_state_manager,
     ip_to_pool_index,
 )
 from smolvm.storage._base import VSOCK_CID_END, VSOCK_CID_START
@@ -299,6 +299,7 @@ class SmolVMManager:
         data_dir: Path | None = None,
         socket_dir: Path | None = None,
         backend: str | None = None,
+        state_manager: StateManagerProtocol | None = None,
     ) -> None:
         """Initialize the SmolVM manager.
 
@@ -309,6 +310,8 @@ class SmolVMManager:
             socket_dir: Directory for VM sockets (default: /tmp).
             backend: Runtime backend (``firecracker``, ``qemu``, or ``auto``).
                 Defaults to ``auto`` via :func:`smolvm.runtime.backends.resolve_backend`.
+            state_manager: Optional inventory supplied by CLI integrations. SDK
+                callers default to process-local state with no database.
         """
         self.data_dir = resolve_data_dir(data_dir)
         self.socket_dir = socket_dir or DEFAULT_SOCKET_DIR
@@ -325,11 +328,9 @@ class SmolVMManager:
             self._ensure_path_owner(self.disk_dir, owner.pw_uid, owner.pw_gid)
             self._ensure_path_owner(self.snapshot_dir, owner.pw_uid, owner.pw_gid)
 
-        # Initialize managers
-        db_path = self.data_dir / "smolvm.db"
-        self.state: StateManagerProtocol = create_state_manager(db_path=db_path)
-        if owner is not None:
-            self._ensure_path_owner(db_path, owner.pw_uid, owner.pw_gid)
+        # Core state is process-local by default. Persistent inventory is an
+        # explicit CLI concern and is injected by CLI entry points.
+        self.state: StateManagerProtocol = state_manager or MemoryStateManager(self.data_dir)
         self.network = NetworkManager()
         self.host = HostManager()
 
@@ -411,6 +412,8 @@ class SmolVMManager:
             if not task.done():
                 task.cancel()
         self._background_tasks.clear()
+        with suppress(Exception):
+            self.state.close()
         self._closed = True
         logger.debug("SmolVM resources released")
 
@@ -1302,6 +1305,32 @@ class SmolVMManager:
         except ValueError as exc:
             raise ValueError("snapshot_id must resolve within the snapshot directory") from exc
         return snapshot_root
+
+    def _snapshot_manifest_path(self, snapshot_id: str) -> Path:
+        return self._snapshot_root_for_id(snapshot_id) / "manifest.json"
+
+    def _write_snapshot_manifest(self, snapshot: SnapshotInfo) -> None:
+        """Atomically persist metadata beside snapshot artifacts."""
+        manifest_path = self._snapshot_manifest_path(snapshot.snapshot_id)
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = manifest_path.with_suffix(".json.tmp")
+        temporary.write_text(snapshot.model_dump_json(indent=2), encoding="utf-8")
+        os.replace(temporary, manifest_path)
+
+    def _read_snapshot_manifest(self, snapshot_id: str) -> SnapshotInfo:
+        """Read snapshot metadata without consulting CLI inventory."""
+        manifest_path = self._snapshot_manifest_path(snapshot_id)
+        try:
+            raw = manifest_path.read_text(encoding="utf-8")
+        except OSError:
+            raise SnapshotNotFoundError(snapshot_id) from None
+        try:
+            return SnapshotInfo.model_validate_json(raw, context={"validate_paths": False})
+        except Exception as exc:
+            raise SmolVMError(
+                f"Snapshot '{snapshot_id}' metadata is unreadable; delete and recreate it.",
+                {"snapshot_id": snapshot_id, "manifest_path": str(manifest_path)},
+            ) from exc
 
     def _ensure_firecracker_network_for_restore(
         self,
@@ -2567,13 +2596,16 @@ class SmolVMManager:
 
         adapter = self._runtime_adapter_for_backend(backend)
         if isinstance(adapter, QemuRuntimeAdapter):
+            persisted_snapshots = self.state.list_snapshots(vm_id=vm_id)
+            if not persisted_snapshots:
+                # A fresh in-memory manager may know snapshots only through
+                # artifact manifests left by an earlier process.
+                persisted_snapshots = self.list_snapshots(vm_id=vm_id)
             adapter.reconcile_live_backups(
                 vm_info,
                 snapshot_dir=self.snapshot_dir,
                 locked_snapshot_id=snapshot_id,
-                persisted_snapshot_ids={
-                    snapshot.snapshot_id for snapshot in self.state.list_snapshots(vm_id=vm_id)
-                },
+                persisted_snapshot_ids={snapshot.snapshot_id for snapshot in persisted_snapshots},
                 timeout_seconds=timeout_seconds,
             )
 
@@ -2639,6 +2671,7 @@ class SmolVMManager:
                 bitmap_name=result.bitmap_name,
             )
             self.state.create_snapshot(snapshot_info)
+            self._write_snapshot_manifest(snapshot_info)
             snapshot_persisted = True
             if result.operation_manifest_path is not None:
                 with suppress(OSError):
@@ -2706,7 +2739,7 @@ class SmolVMManager:
         if not snapshot_id:
             raise ValueError("snapshot_id cannot be empty")
 
-        snapshot = self.state.get_snapshot(snapshot_id)
+        snapshot = self.get_snapshot(snapshot_id)
         if snapshot.restored and not force:
             raise SmolVMError("Snapshot already restored", {"snapshot_id": snapshot_id})
 
@@ -2893,7 +2926,8 @@ class SmolVMManager:
             )
             if launch.vsock_uds_path is not None:
                 vm_info = vm_info.model_copy(update={"vsock_uds_path": launch.vsock_uds_path})
-            self.state.mark_snapshot_restored(snapshot_id, restore_vm_id)
+            restored_snapshot = self.state.mark_snapshot_restored(snapshot_id, restore_vm_id)
+            self._write_snapshot_manifest(restored_snapshot)
             if existing_disk_backup_path is not None and existing_disk_backup_path.exists():
                 with suppress(Exception):
                     existing_disk_backup_path.unlink()
@@ -2955,7 +2989,7 @@ class SmolVMManager:
         snapshot_root = self._snapshot_root_for_id(snapshot_id)
 
         try:
-            snapshot = self.state.get_snapshot(snapshot_id)
+            snapshot = self.get_snapshot(snapshot_id)
         except SnapshotNotFoundError as missing_snapshot:
             manifest_path = snapshot_root / "live-backup.json"
             if manifest_path.is_symlink():
@@ -3064,12 +3098,27 @@ class SmolVMManager:
         return self.state.list_vms(status)
 
     def get_snapshot(self, snapshot_id: str) -> SnapshotInfo:
-        """Get snapshot metadata."""
-        return self.state.get_snapshot(snapshot_id)
+        """Get snapshot metadata from memory/CLI inventory or its sidecar."""
+        try:
+            return self.state.get_snapshot(snapshot_id)
+        except SnapshotNotFoundError:
+            snapshot = self._read_snapshot_manifest(snapshot_id)
+            with suppress(SnapshotAlreadyExistsError):
+                self.state.create_snapshot(snapshot)
+            return snapshot
 
     def list_snapshots(self, vm_id: str | None = None) -> list[SnapshotInfo]:
-        """List snapshots, optionally filtered by source VM ID."""
-        return self.state.list_snapshots(vm_id=vm_id)
+        """List snapshots from inventory plus artifact-side manifests."""
+        snapshots = {item.snapshot_id: item for item in self.state.list_snapshots(vm_id=vm_id)}
+        for manifest_path in self.snapshot_dir.glob("*/manifest.json"):
+            snapshot_id = manifest_path.parent.name
+            if snapshot_id in snapshots:
+                continue
+            with suppress(SmolVMError, SnapshotNotFoundError, ValueError):
+                snapshot = self._read_snapshot_manifest(snapshot_id)
+                if vm_id is None or snapshot.vm_id == vm_id:
+                    snapshots[snapshot_id] = snapshot
+        return sorted(snapshots.values(), key=lambda item: item.created_at)
 
     def refresh_status(self, vm_info: VMInfo) -> VMInfo:
         """Detect a dead VM process and demote the DB row to ERROR.

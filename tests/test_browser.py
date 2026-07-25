@@ -74,6 +74,12 @@ def test_browser_vm_id_uses_stable_profile_id() -> None:
     assert vm_id.startswith("browser-prof-acct-1-")
 
 
+def test_browser_reconnect_requires_explicit_state_manager(tmp_path: Path) -> None:
+    """SDK reconnects must not silently consult CLI persistence."""
+    with pytest.raises(ValueError, match="explicit state_manager"):
+        _BrowserSandbox.from_id("browser-abc123", data_dir=tmp_path)
+
+
 @patch("smolvm.browser._BrowserSandbox")
 def test_smolvm_browser_factory_starts_headless_sandbox(mock_sandbox_cls: MagicMock) -> None:
     """SmolVM.browser(headless=True) should start a CDP-only browser sandbox."""

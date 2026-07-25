@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from smolvm.storage import StateManager
+from smolvm.cli.state import SQLiteStateManager as StateManager
 from smolvm.storage._base import VSOCK_CID_START
 from smolvm.types import GuestOS, VMConfig
 

@@ -1139,10 +1139,12 @@ class TestSmolVMDelete:
 class TestIPBasedTAPNaming:
     """Tests for IP-allocation-based TAP naming."""
 
+    @patch.object(SmolVMManager, "_local_ssh_port_is_available", return_value=True)
     @patch("smolvm.vm.NetworkManager")
     def test_create_uses_ip_for_tap_name(
         self,
         mock_network_class: MagicMock,
+        _mock_port_available: MagicMock,
         smol_vm: SmolVMManager,
         sample_config: VMConfig,
     ) -> None:
@@ -1249,6 +1251,7 @@ class TestSmolVMFromId:
             "vm001",
             data_dir=tmp_path / "data",
             socket_dir=tmp_path / "sockets",
+            state_manager=smol_vm.state,
         )
         vm = sdk2.get("vm001")
         assert vm.vm_id == "vm001"
@@ -1380,10 +1383,12 @@ class TestSmolVMBootArgsAndSSHCommands:
             is_read_only=False,
         )
 
+    @patch.object(SmolVMManager, "_local_ssh_port_is_available", return_value=True)
     @patch("smolvm.vm.NetworkManager")
     def test_get_ssh_commands_returns_private_and_forwarded(
         self,
         mock_network_class: MagicMock,
+        _mock_port_available: MagicMock,
         smol_vm: SmolVMManager,
         sample_config: VMConfig,
     ) -> None:
@@ -1433,7 +1438,7 @@ class TestDataDirResolution:
         sdk = SmolVMManager(socket_dir=tmp_path / "sockets", backend="firecracker")
         try:
             assert sdk.data_dir == env_dir
-            assert (env_dir / "smolvm.db").exists()
+            assert not (env_dir / "smolvm.db").exists()
         finally:
             sdk.close()
 
@@ -1451,7 +1456,7 @@ class TestDataDirResolution:
 
         try:
             assert sdk.data_dir == xdg_state_home / "smolvm"
-            assert (sdk.data_dir / "smolvm.db").exists()
+            assert not (sdk.data_dir / "smolvm.db").exists()
         finally:
             sdk.close()
 
@@ -1479,7 +1484,7 @@ class TestDataDirResolution:
 
         try:
             assert sdk.data_dir == sudo_home / ".local" / "state" / "smolvm"
-            assert (sdk.data_dir / "smolvm.db").exists()
+            assert not (sdk.data_dir / "smolvm.db").exists()
         finally:
             sdk.close()
 

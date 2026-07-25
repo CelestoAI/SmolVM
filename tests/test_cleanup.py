@@ -34,10 +34,11 @@ class TestDelete:
 
     @pytest.fixture
     def mock_sdk_cls(self) -> MagicMock:
-        with patch("smolvm.cli.cleanup.SmolVMManager") as mock_cls:
+        with patch("smolvm.cli.cleanup.CLIService") as mock_service_cls:
             sdk = MagicMock()
-            mock_cls.return_value.__enter__.return_value = sdk
-            mock_cls.return_value.__exit__.return_value = None
+            manager = mock_service_cls.return_value.manager.return_value
+            manager.__enter__.return_value = sdk
+            manager.__exit__.return_value = None
             yield sdk
 
     @patch("smolvm.cli.cleanup.os.geteuid", return_value=0)
@@ -149,10 +150,11 @@ class TestCleanup:
 
     @pytest.fixture
     def mock_sdk_cls(self) -> MagicMock:
-        with patch("smolvm.cli.cleanup.SmolVMManager") as mock_cls:
+        with patch("smolvm.cli.cleanup.CLIService") as mock_service_cls:
             sdk = MagicMock()
-            mock_cls.return_value.__enter__.return_value = sdk
-            mock_cls.return_value.__exit__.return_value = None
+            manager = mock_service_cls.return_value.manager.return_value
+            manager.__enter__.return_value = sdk
+            manager.__exit__.return_value = None
             yield sdk
 
     @patch("smolvm.cli.cleanup.os.geteuid", return_value=1000)

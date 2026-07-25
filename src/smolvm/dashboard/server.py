@@ -40,11 +40,12 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from smolvm.cli.service import CLIService
 from smolvm.dashboard.commands import CommandAction, parse_command
 from smolvm.dashboard.connection_manager import ConnectionManager
 from smolvm.dashboard.poller import poll_vm_state
 from smolvm.exceptions import SmolVMError, VMNotFoundError
-from smolvm.storage import StateManagerProtocol, create_state_manager
+from smolvm.storage import StateManagerProtocol
 from smolvm.types import VMInfo, VMState
 from smolvm.vm import SmolVMManager, resolve_data_dir
 
@@ -323,7 +324,6 @@ def _get_conn_manager(app: FastAPI) -> ConnectionManager:
 async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     """Application lifespan: initialize SDK and start background poller."""
     data_dir = resolve_data_dir()
-    db_path = data_dir / "smolvm.db"
 
     allow_beta = _allow_beta_releases()
     if await asyncio.to_thread(
@@ -349,8 +349,9 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
             allow_beta,
         )
 
-    app.state.state_manager = create_state_manager(db_path=db_path)
-    app.state.sdk = SmolVMManager(data_dir=data_dir)
+    cli_service = CLIService(data_dir)
+    app.state.state_manager = cli_service.state_manager()
+    app.state.sdk = cli_service.manager(data_dir=data_dir)
     app.state.conn_manager = ConnectionManager()
 
     # Reconcile stale VMs on startup

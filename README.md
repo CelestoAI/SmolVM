@@ -342,14 +342,14 @@ smolvm sandbox shell my-sandbox
 cat /tmp/prompt.txt
 ```
 
-The same works from Python:
+For a temporary, one-shot sandbox, the same works from Python. The sandbox
+and uploaded file are deleted when the context exits:
 
 ```python
 from smolvm import SmolVM
 
-vm = SmolVM.from_id("my-sandbox")
-vm.upload_file("./prompt.txt", "/tmp/prompt.txt")
-vm.close()
+with SmolVM() as vm:
+    vm.upload_file("./prompt.txt", "/tmp/prompt.txt")
 ```
 
 The destination must be an absolute path inside the sandbox (starting

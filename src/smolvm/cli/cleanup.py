@@ -20,6 +20,7 @@ import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
+from typing import TYPE_CHECKING
 
 from rich.panel import Panel
 from rich.table import Table
@@ -33,7 +34,11 @@ from smolvm.cli.output import (
     render_error,
     status_style,
 )
-from smolvm.vm import SmolVMManager
+from smolvm.cli.service import CLIService
+
+if TYPE_CHECKING:
+    from smolvm.vm import SmolVMManager
+
 
 # ---------------------------------------------------------------------------
 # Shared data types
@@ -219,7 +224,7 @@ def run_delete(
     warn_not_root = sys.platform == "linux" and os.geteuid() != 0
 
     try:
-        with SmolVMManager() as sdk:
+        with CLIService().manager() as sdk:
             deleted: list[str] = []
             failed: list[DeleteFailure] = []
             if not dry_run:
@@ -320,7 +325,7 @@ def run_cleanup(
     warn_not_root = sys.platform == "linux" and os.geteuid() != 0
 
     try:
-        with SmolVMManager() as sdk:
+        with CLIService().manager() as sdk:
             stale_ids = sorted(set(sdk.reconcile()))
             vms = sdk.list_vms()
             target_ids = [vm.vm_id for vm in vms]

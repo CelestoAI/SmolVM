@@ -12,16 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""PostgreSQL-based state management for SmolVM.
+"""SQLite-based state management for SmolVM.
 
-Requires the ``psycopg`` driver (install with ``pip install 'smolvm[postgres]'``).
-Uses advisory locks for atomic IP/port allocation and connection pooling
-for production concurrency.
+Provides persistent storage for VM metadata, lifecycle states, and IP allocations.
+Uses exclusive transactions to prevent race conditions in IP assignment.
 """
 
 from __future__ import annotations
 
 import logging
+import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -29,7 +31,6 @@ from smolvm.exceptions import (
     BrowserSessionAlreadyExistsError,
     BrowserSessionNotFoundError,
     NetworkError,
-    SmolVMError,
     SnapshotAlreadyExistsError,
     SnapshotNotFoundError,
     VMAlreadyExistsError,
@@ -62,53 +63,47 @@ from smolvm.types import (
 
 logger = logging.getLogger(__name__)
 
-# Advisory lock keys (arbitrary constants, must be unique per lock type)
-_ADVISORY_LOCK_IP = 1
-_ADVISORY_LOCK_SSH = 2
-_ADVISORY_LOCK_VSOCK = 3
-_ADVISORY_LOCK_TAP = 4
 
+class SQLiteStateManager:
+    """SQLite-backed state manager for SmolVM.
 
-def _require_psycopg() -> None:
-    """Check that psycopg is installed, raising a helpful error if not."""
-    try:
-        import psycopg  # noqa: F401
-    except ImportError:
-        raise SmolVMError(
-            "PostgreSQL support requires psycopg. Install it with:\n"
-            "  pip install 'smolvm[postgres]'"
-        ) from None
-
-
-class PostgresStateManager:
-    """PostgreSQL-backed state manager for SmolVM.
-
-    Uses connection pooling via ``psycopg_pool`` and advisory locks
-    for atomic resource allocation.
+    Uses exclusive transactions for write operations and deferred
+    isolation for reads.
     """
 
-    def __init__(self, database_url: str) -> None:
-        _require_psycopg()
+    def __init__(self, db_path: Path) -> None:
+        if db_path is None:
+            raise ValueError("db_path cannot be None")
 
-        from psycopg.rows import dict_row
-        from psycopg_pool import ConnectionPool
-
-        self._pool = ConnectionPool(
-            database_url,
-            min_size=2,
-            max_size=10,
-            kwargs={"row_factory": dict_row},
-        )
+        self.db_path = db_path
         self._init_schema()
-        logger.info("PostgresStateManager initialized")
+        logger.info("SQLiteStateManager initialized with database: %s", db_path)
 
     def close(self) -> None:
-        """Close the connection pool."""
-        self._pool.close()
+        """No-op for SQLite (connections are per-operation)."""
+
+    @contextmanager
+    def _get_connection(self, exclusive: bool = False) -> Iterator[sqlite3.Connection]:
+        conn = sqlite3.connect(
+            str(self.db_path),
+            timeout=30.0,
+            isolation_level=None,
+        )
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN EXCLUSIVE" if exclusive else "BEGIN DEFERRED")
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _init_schema(self) -> None:
-        with self._pool.connection() as conn:
-            conn.execute(
+        with self._get_connection() as conn:
+            conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS vms (
                     id TEXT PRIMARY KEY,
@@ -122,8 +117,6 @@ class PostgresStateManager:
                     updated_at TEXT NOT NULL
                 );
 
-                CREATE INDEX IF NOT EXISTS idx_vms_status ON vms(status);
-
                 CREATE TABLE IF NOT EXISTS ip_leases (
                     ip TEXT PRIMARY KEY,
                     vm_id TEXT NOT NULL UNIQUE,
@@ -132,6 +125,7 @@ class PostgresStateManager:
                     FOREIGN KEY (vm_id) REFERENCES vms(id) ON DELETE CASCADE
                 );
 
+                CREATE INDEX IF NOT EXISTS idx_vms_status ON vms(status);
                 CREATE INDEX IF NOT EXISTS idx_ip_leases_vm_id ON ip_leases(vm_id);
 
                 CREATE TABLE IF NOT EXISTS ssh_forwards (
@@ -148,7 +142,7 @@ class PostgresStateManager:
 
                 CREATE TABLE IF NOT EXISTS vsock_cids (
                     vm_id TEXT PRIMARY KEY,
-                    guest_cid BIGINT NOT NULL UNIQUE,
+                    guest_cid INTEGER NOT NULL UNIQUE,
                     created_at TEXT NOT NULL,
                     FOREIGN KEY (vm_id) REFERENCES vms(id) ON DELETE CASCADE
                 );
@@ -202,27 +196,47 @@ class PostgresStateManager:
                     created_at TEXT NOT NULL,
                     snapshot_type TEXT,
                     artifact_kind TEXT,
-                    virtual_size_bytes BIGINT,
-                    changed_bytes BIGINT,
-                    bitmap_granularity_bytes BIGINT,
+                    virtual_size_bytes INTEGER,
+                    changed_bytes INTEGER,
+                    bitmap_granularity_bytes INTEGER,
                     bitmap_name TEXT,
-                    restored BOOLEAN DEFAULT FALSE,
+                    restored INTEGER DEFAULT 0,
                     restored_vm_id TEXT
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_snapshots_vm_id ON snapshots(vm_id);
-
-                ALTER TABLE vms ADD COLUMN IF NOT EXISTS display TEXT;
-                ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS snapshot_type TEXT;
-                ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS artifact_kind TEXT;
-                ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS virtual_size_bytes BIGINT;
-                ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS changed_bytes BIGINT;
-                ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS bitmap_granularity_bytes BIGINT;
-                ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS bitmap_name TEXT;
-                ALTER TABLE browser_sessions ADD COLUMN IF NOT EXISTS vnc_url TEXT;
-                ALTER TABLE browser_sessions ADD COLUMN IF NOT EXISTS vnc_port INTEGER;
-                """
+            """
             )
+            vm_columns = {row["name"] for row in conn.execute("PRAGMA table_info(vms)").fetchall()}
+            if "display" not in vm_columns:
+                conn.execute("ALTER TABLE vms ADD COLUMN display TEXT")
+            snapshot_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(snapshots)").fetchall()
+            }
+            if "backend" not in snapshot_columns:
+                conn.execute("ALTER TABLE snapshots ADD COLUMN backend TEXT")
+            if "artifacts" not in snapshot_columns:
+                conn.execute("ALTER TABLE snapshots ADD COLUMN artifacts TEXT")
+            if "snapshot_type" not in snapshot_columns:
+                conn.execute("ALTER TABLE snapshots ADD COLUMN snapshot_type TEXT")
+            if "artifact_kind" not in snapshot_columns:
+                conn.execute("ALTER TABLE snapshots ADD COLUMN artifact_kind TEXT")
+            if "virtual_size_bytes" not in snapshot_columns:
+                conn.execute("ALTER TABLE snapshots ADD COLUMN virtual_size_bytes INTEGER")
+            if "changed_bytes" not in snapshot_columns:
+                conn.execute("ALTER TABLE snapshots ADD COLUMN changed_bytes INTEGER")
+            if "bitmap_granularity_bytes" not in snapshot_columns:
+                conn.execute("ALTER TABLE snapshots ADD COLUMN bitmap_granularity_bytes INTEGER")
+            if "bitmap_name" not in snapshot_columns:
+                conn.execute("ALTER TABLE snapshots ADD COLUMN bitmap_name TEXT")
+            browser_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(browser_sessions)").fetchall()
+            }
+            if "vnc_url" not in browser_columns:
+                conn.execute("ALTER TABLE browser_sessions ADD COLUMN vnc_url TEXT")
+            if "vnc_port" not in browser_columns:
+                conn.execute("ALTER TABLE browser_sessions ADD COLUMN vnc_port INTEGER")
 
     # ------------------------------------------------------------------
     # VM operations
@@ -234,15 +248,15 @@ class PostgresStateManager:
 
         now = now_iso()
 
-        with self._pool.connection() as conn:
-            row = conn.execute("SELECT id FROM vms WHERE id = %s", (config.vm_id,)).fetchone()
-            if row:
+        with self._get_connection(exclusive=True) as conn:
+            existing = conn.execute("SELECT id FROM vms WHERE id = ?", (config.vm_id,)).fetchone()
+            if existing:
                 raise VMAlreadyExistsError(config.vm_id)
 
             conn.execute(
                 """
                 INSERT INTO vms (id, status, config, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (?, ?, ?, ?, ?)
                 """,
                 (config.vm_id, VMState.CREATED.value, config.model_dump_json(), now, now),
             )
@@ -254,8 +268,8 @@ class PostgresStateManager:
         if not vm_id:
             raise ValueError("vm_id cannot be empty")
 
-        with self._pool.connection() as conn:
-            row = conn.execute("SELECT * FROM vms WHERE id = %s", (vm_id,)).fetchone()
+        with self._get_connection() as conn:
+            row = conn.execute("SELECT * FROM vms WHERE id = ?", (vm_id,)).fetchone()
 
         if not row:
             raise VMNotFoundError(vm_id)
@@ -294,41 +308,41 @@ class PostgresStateManager:
 
         now = now_iso()
 
-        with self._pool.connection() as conn:
-            existing = conn.execute("SELECT id FROM vms WHERE id = %s", (vm_id,)).fetchone()
+        with self._get_connection(exclusive=True) as conn:
+            existing = conn.execute("SELECT id FROM vms WHERE id = ?", (vm_id,)).fetchone()
             if not existing:
                 raise VMNotFoundError(vm_id)
 
-            updates = ["updated_at = %s"]
+            updates = ["updated_at = ?"]
             params: list[object] = [now]
 
             if status is not None:
-                updates.append("status = %s")
+                updates.append("status = ?")
                 params.append(status.value)
             if config is not None:
-                updates.append("config = %s")
+                updates.append("config = ?")
                 params.append(config.model_dump_json())
             if network is not None:
-                updates.append("network = %s")
+                updates.append("network = ?")
                 params.append(network.model_dump_json())
             if pid is not None:
-                updates.append("pid = %s")
+                updates.append("pid = ?")
                 params.append(pid)
             elif clear_pid:
                 updates.append("pid = NULL")
             if control_socket_path is not None:
-                updates.append("socket_path = %s")
+                updates.append("socket_path = ?")
                 params.append(str(control_socket_path))
             elif clear_socket_path:
                 updates.append("socket_path = NULL")
             if display is not None:
-                updates.append("display = %s")
+                updates.append("display = ?")
                 params.append(display.model_dump_json())
             elif clear_display:
                 updates.append("display = NULL")
 
             params.append(vm_id)
-            query = f"UPDATE vms SET {', '.join(updates)} WHERE id = %s"
+            query = f"UPDATE vms SET {', '.join(updates)} WHERE id = ?"
             conn.execute(query, params)
 
         logger.info("Updated VM %s: status=%s, pid=%s", vm_id, status, pid)
@@ -338,19 +352,19 @@ class PostgresStateManager:
         if not vm_id:
             raise ValueError("vm_id cannot be empty")
 
-        with self._pool.connection() as conn:
-            existing = conn.execute("SELECT id FROM vms WHERE id = %s", (vm_id,)).fetchone()
+        with self._get_connection(exclusive=True) as conn:
+            existing = conn.execute("SELECT id FROM vms WHERE id = ?", (vm_id,)).fetchone()
             if not existing:
                 raise VMNotFoundError(vm_id)
-            conn.execute("DELETE FROM vms WHERE id = %s", (vm_id,))
+            conn.execute("DELETE FROM vms WHERE id = ?", (vm_id,))
 
         logger.info("Deleted VM: %s", vm_id)
 
     def list_vms(self, status: VMState | None = None) -> list[VMInfo]:
-        with self._pool.connection() as conn:
+        with self._get_connection() as conn:
             if status:
                 rows = conn.execute(
-                    "SELECT * FROM vms WHERE status = %s ORDER BY created_at",
+                    "SELECT * FROM vms WHERE status = ? ORDER BY created_at",
                     (status.value,),
                 ).fetchall()
             else:
@@ -378,7 +392,7 @@ class PostgresStateManager:
         return result
 
     # ------------------------------------------------------------------
-    # IP allocation (advisory lock)
+    # IP allocation
     # ------------------------------------------------------------------
 
     def allocate_ip(
@@ -394,13 +408,8 @@ class PostgresStateManager:
 
         now = now_iso()
 
-        with self._pool.connection() as conn:
-            # Advisory lock scoped to transaction for IP allocation
-            conn.execute("SELECT pg_advisory_xact_lock(%s)", (_ADVISORY_LOCK_IP,))
-
-            existing = conn.execute(
-                "SELECT ip FROM ip_leases WHERE vm_id = %s", (vm_id,)
-            ).fetchone()
+        with self._get_connection(exclusive=True) as conn:
+            existing = conn.execute("SELECT ip FROM ip_leases WHERE vm_id = ?", (vm_id,)).fetchone()
             if existing:
                 existing_ip = str(existing["ip"])
                 if requested_ip and existing_ip != requested_ip:
@@ -423,7 +432,7 @@ class PostgresStateManager:
                 conn.execute(
                     """
                     INSERT INTO ip_leases (ip, vm_id, tap_device, created_at)
-                    VALUES (%s, %s, %s, %s)
+                    VALUES (?, ?, ?, ?)
                     """,
                     (ip, vm_id, tap_device, now),
                 )
@@ -438,17 +447,18 @@ class PostgresStateManager:
         if not vm_id:
             raise ValueError("vm_id cannot be empty")
 
-        with self._pool.connection() as conn:
-            conn.execute("DELETE FROM ip_leases WHERE vm_id = %s", (vm_id,))
-            logger.info("Released IP for VM: %s", vm_id)
+        with self._get_connection(exclusive=True) as conn:
+            result = conn.execute("DELETE FROM ip_leases WHERE vm_id = ?", (vm_id,))
+            if result.rowcount > 0:
+                logger.info("Released IP for VM: %s", vm_id)
 
     def get_ip_lease(self, vm_id: str) -> tuple[str, str] | None:
         if not vm_id:
             raise ValueError("vm_id cannot be empty")
 
-        with self._pool.connection() as conn:
+        with self._get_connection() as conn:
             row = conn.execute(
-                "SELECT ip, tap_device FROM ip_leases WHERE vm_id = %s", (vm_id,)
+                "SELECT ip, tap_device FROM ip_leases WHERE vm_id = ?", (vm_id,)
             ).fetchone()
 
         if row:
@@ -461,15 +471,15 @@ class PostgresStateManager:
         if not tap_device:
             raise ValueError("tap_device cannot be empty")
 
-        with self._pool.connection() as conn:
+        with self._get_connection(exclusive=True) as conn:
             conn.execute(
-                "UPDATE ip_leases SET tap_device = %s WHERE vm_id = %s",
+                "UPDATE ip_leases SET tap_device = ? WHERE vm_id = ?",
                 (tap_device, vm_id),
             )
             logger.debug("Updated TAP device for VM %s to %s", vm_id, tap_device)
 
     # ------------------------------------------------------------------
-    # SSH port allocation (advisory lock)
+    # SSH port allocation
     # ------------------------------------------------------------------
 
     def reserve_ssh_port(
@@ -486,11 +496,9 @@ class PostgresStateManager:
 
         now = now_iso()
 
-        with self._pool.connection() as conn:
-            conn.execute("SELECT pg_advisory_xact_lock(%s)", (_ADVISORY_LOCK_SSH,))
-
+        with self._get_connection(exclusive=True) as conn:
             existing = conn.execute(
-                "SELECT host_port FROM ssh_forwards WHERE vm_id = %s", (vm_id,)
+                "SELECT host_port FROM ssh_forwards WHERE vm_id = ?", (vm_id,)
             ).fetchone()
             if existing:
                 existing_host_port = int(existing["host_port"])
@@ -514,7 +522,7 @@ class PostgresStateManager:
                 conn.execute(
                     """
                     INSERT INTO ssh_forwards (vm_id, host_port, guest_port, created_at)
-                    VALUES (%s, %s, %s, %s)
+                    VALUES (?, ?, ?, ?)
                     """,
                     (vm_id, candidate_port, guest_port, now),
                 )
@@ -529,9 +537,9 @@ class PostgresStateManager:
         if not vm_id:
             raise ValueError("vm_id cannot be empty")
 
-        with self._pool.connection() as conn:
+        with self._get_connection() as conn:
             row = conn.execute(
-                "SELECT host_port FROM ssh_forwards WHERE vm_id = %s", (vm_id,)
+                "SELECT host_port FROM ssh_forwards WHERE vm_id = ?", (vm_id,)
             ).fetchone()
 
         if row:
@@ -542,15 +550,22 @@ class PostgresStateManager:
         if not vm_id:
             raise ValueError("vm_id cannot be empty")
 
-        with self._pool.connection() as conn:
-            conn.execute("DELETE FROM ssh_forwards WHERE vm_id = %s", (vm_id,))
-            logger.info("Released SSH host port for VM: %s", vm_id)
+        with self._get_connection(exclusive=True) as conn:
+            result = conn.execute("DELETE FROM ssh_forwards WHERE vm_id = ?", (vm_id,))
+            if result.rowcount > 0:
+                logger.info("Released SSH host port for VM: %s", vm_id)
 
     # ------------------------------------------------------------------
-    # vsock CID allocation (advisory lock)
+    # vsock CID allocation
     # ------------------------------------------------------------------
 
     def reserve_vsock_cid(self, vm_id: str, guest_cid: int | None = None) -> int:
+        """Reserve a unique guest vsock CID for *vm_id* (idempotent).
+
+        Mirrors :meth:`reserve_ssh_port`: returns the existing CID if the VM
+        already has one, otherwise allocates the lowest free CID in the pool
+        (or *guest_cid* if explicitly requested, e.g. on snapshot restore).
+        """
         if not vm_id:
             raise ValueError("vm_id cannot be empty")
         if guest_cid is not None and not (VSOCK_CID_START <= guest_cid <= VSOCK_CID_END):
@@ -558,11 +573,9 @@ class PostgresStateManager:
 
         now = now_iso()
 
-        with self._pool.connection() as conn:
-            conn.execute("SELECT pg_advisory_xact_lock(%s)", (_ADVISORY_LOCK_VSOCK,))
-
+        with self._get_connection(exclusive=True) as conn:
             existing = conn.execute(
-                "SELECT guest_cid FROM vsock_cids WHERE vm_id = %s", (vm_id,)
+                "SELECT guest_cid FROM vsock_cids WHERE vm_id = ?", (vm_id,)
             ).fetchone()
             if existing:
                 existing_cid = int(existing["guest_cid"])
@@ -583,7 +596,7 @@ class PostgresStateManager:
                 if candidate_cid in allocated_set:
                     continue
                 conn.execute(
-                    "INSERT INTO vsock_cids (vm_id, guest_cid, created_at) VALUES (%s, %s, %s)",
+                    "INSERT INTO vsock_cids (vm_id, guest_cid, created_at) VALUES (?, ?, ?)",
                     (vm_id, candidate_cid, now),
                 )
                 logger.info("Reserved vsock CID %d for VM %s", candidate_cid, vm_id)
@@ -597,9 +610,9 @@ class PostgresStateManager:
         if not vm_id:
             raise ValueError("vm_id cannot be empty")
 
-        with self._pool.connection() as conn:
+        with self._get_connection() as conn:
             row = conn.execute(
-                "SELECT guest_cid FROM vsock_cids WHERE vm_id = %s", (vm_id,)
+                "SELECT guest_cid FROM vsock_cids WHERE vm_id = ?", (vm_id,)
             ).fetchone()
 
         if row:
@@ -610,9 +623,10 @@ class PostgresStateManager:
         if not vm_id:
             raise ValueError("vm_id cannot be empty")
 
-        with self._pool.connection() as conn:
-            conn.execute("DELETE FROM vsock_cids WHERE vm_id = %s", (vm_id,))
-            logger.info("Released vsock CID for VM: %s", vm_id)
+        with self._get_connection(exclusive=True) as conn:
+            result = conn.execute("DELETE FROM vsock_cids WHERE vm_id = ?", (vm_id,))
+            if result.rowcount > 0:
+                logger.info("Released vsock CID for VM: %s", vm_id)
 
     # ------------------------------------------------------------------
     # TAP allocation (bridge mode)
@@ -625,7 +639,13 @@ class PostgresStateManager:
         bridge_name: str | None = None,
         requested_tap: str | None = None,
     ) -> str:
-        """Reserve a unique TAP device name for a VM (idempotent)."""
+        """Reserve a unique TAP device name for a VM (idempotent).
+
+        Returns the existing reservation if the VM already has one.
+        Otherwise allocates a Linux-safe name (<=15 bytes) prefixed with
+        ``svmb`` followed by a random hex suffix, or the requested name if
+        provided and available.
+        """
         if not vm_id:
             raise ValueError("vm_id cannot be empty")
         if mode not in ("nat", "bridge"):
@@ -633,14 +653,12 @@ class PostgresStateManager:
 
         now = now_iso()
 
-        with self._pool.connection() as conn:
-            conn.execute("SELECT pg_advisory_xact_lock(%s)", (_ADVISORY_LOCK_TAP,))
-
+        with self._get_connection(exclusive=True) as conn:
             existing = conn.execute(
                 """
                 SELECT tap_device, mode, bridge_name
                 FROM tap_allocations
-                WHERE vm_id = %s
+                WHERE vm_id = ?
                 """,
                 (vm_id,),
             ).fetchone()
@@ -655,14 +673,14 @@ class PostgresStateManager:
                 ):
                     raise NetworkError(
                         f"Sandbox '{vm_id}' already reserves TAP '{existing_tap}' for "
-                        f"{existing_mode} networking; delete the sandbox before changing "
-                        "its network attachment."
+                        f"{existing_mode} networking; run 'smolvm sandbox delete {vm_id}' "
+                        "before changing its network attachment."
                     )
                 return existing_tap
 
             if requested_tap:
                 clash = conn.execute(
-                    "SELECT 1 FROM tap_allocations WHERE tap_device = %s",
+                    "SELECT 1 FROM tap_allocations WHERE tap_device = ?",
                     (requested_tap,),
                 ).fetchone()
                 if clash:
@@ -675,7 +693,7 @@ class PostgresStateManager:
                     suffix = secrets.token_hex(4)
                     tap_name = f"svmb{suffix}"
                     clash = conn.execute(
-                        "SELECT 1 FROM tap_allocations WHERE tap_device = %s",
+                        "SELECT 1 FROM tap_allocations WHERE tap_device = ?",
                         (tap_name,),
                     ).fetchone()
                     if not clash:
@@ -686,7 +704,7 @@ class PostgresStateManager:
             conn.execute(
                 """
                 INSERT INTO tap_allocations (vm_id, tap_device, mode, bridge_name, created_at)
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (?, ?, ?, ?, ?)
                 """,
                 (vm_id, tap_name, mode, bridge_name, now),
             )
@@ -697,11 +715,13 @@ class PostgresStateManager:
         """Return (tap_device, mode, bridge_name) or None."""
         if not vm_id:
             raise ValueError("vm_id cannot be empty")
-        with self._pool.connection() as conn:
+
+        with self._get_connection() as conn:
             row = conn.execute(
-                "SELECT tap_device, mode, bridge_name FROM tap_allocations WHERE vm_id = %s",
+                "SELECT tap_device, mode, bridge_name FROM tap_allocations WHERE vm_id = ?",
                 (vm_id,),
             ).fetchone()
+
         if row:
             return (str(row["tap_device"]), str(row["mode"]), row["bridge_name"])
         return None
@@ -709,9 +729,11 @@ class PostgresStateManager:
     def release_tap_name(self, vm_id: str) -> None:
         if not vm_id:
             raise ValueError("vm_id cannot be empty")
-        with self._pool.connection() as conn:
-            conn.execute("DELETE FROM tap_allocations WHERE vm_id = %s", (vm_id,))
-            logger.info("Released TAP allocation for VM: %s", vm_id)
+
+        with self._get_connection(exclusive=True) as conn:
+            result = conn.execute("DELETE FROM tap_allocations WHERE vm_id = ?", (vm_id,))
+            if result.rowcount > 0:
+                logger.info("Released TAP allocation for VM: %s", vm_id)
 
     # ------------------------------------------------------------------
     # Snapshots
@@ -721,9 +743,9 @@ class PostgresStateManager:
         if info is None:
             raise ValueError("info cannot be None")
 
-        with self._pool.connection() as conn:
+        with self._get_connection(exclusive=True) as conn:
             existing = conn.execute(
-                "SELECT snapshot_id FROM snapshots WHERE snapshot_id = %s",
+                "SELECT snapshot_id FROM snapshots WHERE snapshot_id = ?",
                 (info.snapshot_id,),
             ).fetchone()
             if existing:
@@ -738,10 +760,7 @@ class PostgresStateManager:
                     changed_bytes, bitmap_granularity_bytes, bitmap_name,
                     restored, restored_vm_id
                 )
-                VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s
-                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     info.snapshot_id,
@@ -760,7 +779,7 @@ class PostgresStateManager:
                     info.changed_bytes,
                     info.bitmap_granularity_bytes,
                     info.bitmap_name,
-                    info.restored,
+                    int(info.restored),
                     info.restored_vm_id,
                 ),
             )
@@ -772,9 +791,9 @@ class PostgresStateManager:
         if not snapshot_id:
             raise ValueError("snapshot_id cannot be empty")
 
-        with self._pool.connection() as conn:
+        with self._get_connection() as conn:
             row = conn.execute(
-                "SELECT * FROM snapshots WHERE snapshot_id = %s", (snapshot_id,)
+                "SELECT * FROM snapshots WHERE snapshot_id = ?", (snapshot_id,)
             ).fetchone()
 
         if not row:
@@ -783,10 +802,10 @@ class PostgresStateManager:
         return snapshot_info_from_row(row)
 
     def list_snapshots(self, vm_id: str | None = None) -> list[SnapshotInfo]:
-        with self._pool.connection() as conn:
+        with self._get_connection() as conn:
             if vm_id:
                 rows = conn.execute(
-                    "SELECT * FROM snapshots WHERE vm_id = %s ORDER BY created_at",
+                    "SELECT * FROM snapshots WHERE vm_id = ? ORDER BY created_at",
                     (vm_id,),
                 ).fetchall()
             else:
@@ -800,9 +819,9 @@ class PostgresStateManager:
         if not restored_vm_id:
             raise ValueError("restored_vm_id cannot be empty")
 
-        with self._pool.connection() as conn:
+        with self._get_connection(exclusive=True) as conn:
             result = conn.execute(
-                "UPDATE snapshots SET restored = TRUE, restored_vm_id = %s WHERE snapshot_id = %s",
+                "UPDATE snapshots SET restored = 1, restored_vm_id = ? WHERE snapshot_id = ?",
                 (restored_vm_id, snapshot_id),
             )
             if result.rowcount == 0:
@@ -815,8 +834,8 @@ class PostgresStateManager:
         if not snapshot_id:
             raise ValueError("snapshot_id cannot be empty")
 
-        with self._pool.connection() as conn:
-            result = conn.execute("DELETE FROM snapshots WHERE snapshot_id = %s", (snapshot_id,))
+        with self._get_connection(exclusive=True) as conn:
+            result = conn.execute("DELETE FROM snapshots WHERE snapshot_id = ?", (snapshot_id,))
             if result.rowcount == 0:
                 raise SnapshotNotFoundError(snapshot_id)
 
@@ -833,9 +852,9 @@ class PostgresStateManager:
     ) -> BrowserSessionInfo:
         now = now_iso()
 
-        with self._pool.connection() as conn:
+        with self._get_connection(exclusive=True) as conn:
             existing = conn.execute(
-                "SELECT session_id FROM browser_sessions WHERE session_id = %s",
+                "SELECT session_id FROM browser_sessions WHERE session_id = ?",
                 (info.session_id,),
             ).fetchone()
             if existing:
@@ -848,7 +867,7 @@ class PostgresStateManager:
                     vnc_url, debug_port, vnc_port, profile_id, expires_at,
                     artifacts_dir, created_at, updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     info.session_id,
@@ -875,9 +894,9 @@ class PostgresStateManager:
         if not session_id:
             raise ValueError("session_id cannot be empty")
 
-        with self._pool.connection() as conn:
+        with self._get_connection() as conn:
             row = conn.execute(
-                "SELECT * FROM browser_sessions WHERE session_id = %s", (session_id,)
+                "SELECT * FROM browser_sessions WHERE session_id = ?", (session_id,)
             ).fetchone()
 
         if not row:
@@ -889,9 +908,9 @@ class PostgresStateManager:
         if not session_id:
             raise ValueError("session_id cannot be empty")
 
-        with self._pool.connection() as conn:
+        with self._get_connection() as conn:
             row = conn.execute(
-                "SELECT config FROM browser_sessions WHERE session_id = %s", (session_id,)
+                "SELECT config FROM browser_sessions WHERE session_id = ?", (session_id,)
             ).fetchone()
 
         if not row:
@@ -919,51 +938,51 @@ class PostgresStateManager:
 
         now = now_iso()
 
-        with self._pool.connection() as conn:
+        with self._get_connection(exclusive=True) as conn:
             existing = conn.execute(
-                "SELECT session_id FROM browser_sessions WHERE session_id = %s",
+                "SELECT session_id FROM browser_sessions WHERE session_id = ?",
                 (session_id,),
             ).fetchone()
             if not existing:
                 raise BrowserSessionNotFoundError(session_id)
 
-            updates = ["updated_at = %s"]
+            updates = ["updated_at = ?"]
             params: list[object] = [now]
 
             if status is not None:
-                updates.append("status = %s")
+                updates.append("status = ?")
                 params.append(status.value)
             if cdp_url is not None:
-                updates.append("cdp_url = %s")
+                updates.append("cdp_url = ?")
                 params.append(cdp_url)
             if live_url is not None:
-                updates.append("live_url = %s")
+                updates.append("live_url = ?")
                 params.append(live_url)
             if vnc_url is not None:
-                updates.append("vnc_url = %s")
+                updates.append("vnc_url = ?")
                 params.append(vnc_url)
             if debug_port is not None:
-                updates.append("debug_port = %s")
+                updates.append("debug_port = ?")
                 params.append(debug_port)
             if vnc_port is not None:
-                updates.append("vnc_port = %s")
+                updates.append("vnc_port = ?")
                 params.append(vnc_port)
             if profile_id is not None:
-                updates.append("profile_id = %s")
+                updates.append("profile_id = ?")
                 params.append(profile_id)
             if expires_at is not None:
-                updates.append("expires_at = %s")
+                updates.append("expires_at = ?")
                 params.append(expires_at.isoformat())
             if artifacts_dir is not None:
-                updates.append("artifacts_dir = %s")
+                updates.append("artifacts_dir = ?")
                 params.append(str(artifacts_dir))
             if config is not None:
-                updates.append("config = %s")
+                updates.append("config = ?")
                 params.append(config.model_dump_json())
 
             params.append(session_id)
             conn.execute(
-                f"UPDATE browser_sessions SET {', '.join(updates)} WHERE session_id = %s",
+                f"UPDATE browser_sessions SET {', '.join(updates)} WHERE session_id = ?",
                 params,
             )
 
@@ -974,9 +993,9 @@ class PostgresStateManager:
         if not session_id:
             raise ValueError("session_id cannot be empty")
 
-        with self._pool.connection() as conn:
+        with self._get_connection(exclusive=True) as conn:
             result = conn.execute(
-                "DELETE FROM browser_sessions WHERE session_id = %s", (session_id,)
+                "DELETE FROM browser_sessions WHERE session_id = ?", (session_id,)
             )
             if result.rowcount == 0:
                 raise BrowserSessionNotFoundError(session_id)
@@ -986,10 +1005,10 @@ class PostgresStateManager:
     def list_browser_sessions(
         self, status: BrowserSessionState | None = None
     ) -> list[BrowserSessionInfo]:
-        with self._pool.connection() as conn:
+        with self._get_connection() as conn:
             if status is not None:
                 rows = conn.execute(
-                    "SELECT * FROM browser_sessions WHERE status = %s ORDER BY created_at",
+                    "SELECT * FROM browser_sessions WHERE status = ? ORDER BY created_at",
                     (status.value,),
                 ).fetchall()
             else:
@@ -1006,9 +1025,9 @@ class PostgresStateManager:
 
         stale_vms: list[str] = []
 
-        with self._pool.connection() as conn:
+        with self._get_connection(exclusive=True) as conn:
             running = conn.execute(
-                "SELECT id, pid FROM vms WHERE status IN (%s, %s)",
+                "SELECT id, pid FROM vms WHERE status IN (?, ?)",
                 (VMState.RUNNING.value, VMState.PAUSED.value),
             ).fetchall()
 
@@ -1029,7 +1048,7 @@ class PostgresStateManager:
             now = now_iso()
             for vm_id in stale_vms:
                 conn.execute(
-                    "UPDATE vms SET status = %s, pid = NULL, updated_at = %s WHERE id = %s",
+                    "UPDATE vms SET status = ?, pid = NULL, updated_at = ? WHERE id = ?",
                     (VMState.ERROR.value, now, vm_id),
                 )
                 logger.warning("Marked stale VM as ERROR: %s", vm_id)

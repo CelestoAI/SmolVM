@@ -20,13 +20,14 @@ from pathlib import Path
 
 import pytest
 
+from smolvm.cli.state import SQLiteStateManager as StateManager
 from smolvm.exceptions import (
     BrowserSessionNotFoundError,
     SnapshotNotFoundError,
     VMAlreadyExistsError,
     VMNotFoundError,
 )
-from smolvm.storage import SSH_PORT_END, StateManager
+from smolvm.storage import SSH_PORT_END
 from smolvm.types import (
     BrowserSessionConfig,
     BrowserSessionInfo,

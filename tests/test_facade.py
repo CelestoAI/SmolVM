@@ -678,10 +678,12 @@ class TestVMInit:
         mock_sdk.get.return_value = MagicMock(vm_id="vm001", status=VMState.RUNNING)
         mock_sdk_cls.from_id.return_value = mock_sdk
 
-        vm = SmolVM.from_id("vm001")
+        state_manager = MagicMock()
+        vm = SmolVM.from_id("vm001", state_manager=state_manager)
 
         assert vm.vm_id == "vm001"
         mock_sdk_cls.from_id.assert_called_once()
+        assert mock_sdk_cls.from_id.call_args.kwargs["state_manager"] is state_manager
 
     @patch("smolvm.facade.SmolVMManager")
     def test_from_snapshot(self, mock_sdk_cls: MagicMock) -> None:
@@ -3102,9 +3104,12 @@ class TestVMContextManager:
         mock_sdk.stop.return_value = stopped_info
         mock_sdk_cls.from_id.return_value = mock_sdk
 
-        with SmolVM.from_id("vm001") as vm:
+        state_manager = MagicMock()
+        with SmolVM.from_id("vm001", state_manager=state_manager) as vm:
             assert vm.vm_id == "vm001"
 
+        mock_sdk_cls.from_id.assert_called_once()
+        assert mock_sdk_cls.from_id.call_args.kwargs["state_manager"] is state_manager
         mock_sdk.stop.assert_called_once()
         mock_sdk.delete.assert_not_called()
         mock_sdk.close.assert_called_once()

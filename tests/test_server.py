@@ -124,8 +124,6 @@ def app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     FakeSmolVM.delete_error = None
     FakeSmolVM.desktop_endpoint = None
     monkeypatch.setattr("smolvm.server.app.SmolVM", FakeSmolVM)
-    # list_sandboxes enumerates the host directly; back it by the stub's ids.
-    monkeypatch.setattr("smolvm.server.app._existing_vm_ids", lambda: set(FakeSmolVM.existing_ids))
     return create_app()
 
 
@@ -184,42 +182,26 @@ def test_get_sandbox_after_create(app: FastAPI) -> None:
     assert fetched.id == created.id
 
 
-def test_get_sandbox_rehydrates_from_host_on_registry_miss(app: FastAPI) -> None:
-    # A sandbox that exists on the host but not in this app's registry
-    # (e.g. created before this server process started) is reconnected
-    # via SmolVM.from_id rather than 404ing.
+def test_get_sandbox_does_not_read_host_inventory(app: FastAPI) -> None:
     FakeSmolVM.existing_ids = {"sbx-preexisting"}
     get = _handler(app, "/sandboxes/{sandbox_id}", "GET")
 
-    fetched = get("sbx-preexisting")
+    with pytest.raises(HTTPException) as exc_info:
+        get("sbx-preexisting")
 
-    assert fetched.id == "sbx-preexisting"
-    assert FakeSmolVM.from_id_calls == 1
-
-    # The reconnect backfills the registry, so a second GET hits the cache
-    # without calling from_id again — proven by clearing existing_ids
-    # (from_id would now raise VMNotFoundError if it were called).
-    FakeSmolVM.existing_ids.clear()
-    fetched_again = get("sbx-preexisting")
-
-    assert fetched_again.id == "sbx-preexisting"
-    assert FakeSmolVM.from_id_calls == 1
+    assert exc_info.value.status_code == 404
+    assert FakeSmolVM.from_id_calls == 0
 
 
-def test_get_sandbox_maps_reconnect_failure_to_409(app: FastAPI) -> None:
-    # The sandbox exists on the host but reconnecting fails (bad state,
-    # unreachable control channel) -> a state conflict, not a 404.
+def test_get_sandbox_does_not_attempt_reconnect(app: FastAPI) -> None:
     FakeSmolVM.from_id_error = SmolVMError("control channel unreachable")
     get = _handler(app, "/sandboxes/{sandbox_id}", "GET")
 
     with pytest.raises(HTTPException) as exc_info:
         get("sbx-broken")
 
-    assert exc_info.value.status_code == 409
-    # Message names the sandbox and a recovery command, not the raw
-    # internal exception text.
-    assert "sbx-broken" in exc_info.value.detail
-    assert "could not be reconnected" in exc_info.value.detail
+    assert exc_info.value.status_code == 404
+    assert FakeSmolVM.from_id_calls == 0
 
 
 def test_get_unknown_sandbox_returns_404(app: FastAPI) -> None:
@@ -232,19 +214,19 @@ def test_get_unknown_sandbox_returns_404(app: FastAPI) -> None:
     assert "does-not-exist" in exc_info.value.detail
 
 
-def test_list_sandboxes_enumerates_the_host(app: FastAPI) -> None:
-    # list reflects every sandbox on the host, sorted, regardless of
-    # whether it is already in the in-memory registry.
-    FakeSmolVM.existing_ids = {"sbx-b", "sbx-a"}
+def test_list_sandboxes_uses_process_registry(app: FastAPI) -> None:
+    create = _handler(app, "/sandboxes", "POST")
     list_all = _handler(app, "/sandboxes", "GET")
+    create(CreateSandboxRequest())
 
     result = list_all()
 
-    assert [s.id for s in result] == ["sbx-a", "sbx-b"]
-    assert all(isinstance(s, SandboxResponse) for s in result)
+    assert [sandbox.id for sandbox in result] == ["sbx-test"]
+    assert all(isinstance(sandbox, SandboxResponse) for sandbox in result)
 
 
-def test_list_sandboxes_empty_when_no_host_vms(app: FastAPI) -> None:
+def test_list_sandboxes_ignores_host_inventory(app: FastAPI) -> None:
+    FakeSmolVM.existing_ids = {"sbx-host-only"}
     list_all = _handler(app, "/sandboxes", "GET")
     assert list_all() == []
 

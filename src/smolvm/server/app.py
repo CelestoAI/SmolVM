@@ -15,10 +15,9 @@
 """FastAPI application wrapping the SmolVM facade.
 
 The app keeps a process-level registry of live :class:`~smolvm.SmolVM`
-facade instances keyed by sandbox id. HTTP is stateless but the facade
-is stateful (it owns the SSH/control channel to the guest), so the
-registry is what lets a later ``GET`` or ``exec`` find the sandbox a
-prior ``POST`` created. This is the standard local-daemon pattern.
+objects keyed by sandbox id. A later ``GET`` or ``exec`` finds the same
+object created by an earlier ``POST``. The API does not read the CLI's
+persistent sandbox inventory.
 
 It exposes the sandbox lifecycle:
 
@@ -32,12 +31,14 @@ It exposes the sandbox lifecycle:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, HTTPException, Response
 
-from smolvm.exceptions import SmolVMError, VMNotFoundError
-from smolvm.facade import SmolVM, _existing_vm_ids
+from smolvm.exceptions import SmolVMError
+from smolvm.facade import SmolVM
 from smolvm.server.models import (
     CreateSandboxRequest,
     DesktopResponse,
@@ -57,55 +58,47 @@ def create_app() -> FastAPI:
     scoped per-app, which makes the server testable: each test can spin
     up a fresh app with an empty registry.
     """
+    # Live facade instances are the API's complete process-local inventory.
+    # The API deliberately does not read the CLI's SQLite registry.
+    sandboxes: dict[str, SmolVM] = {}
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):  # type: ignore[no-untyped-def]
+        yield
+        # API-owned sandboxes are process-scoped. Graceful server shutdown
+        # tears them down instead of leaving undiscoverable child processes.
+        for sandbox in list(sandboxes.values()):
+            with suppress(Exception):
+                await asyncio.to_thread(sandbox.delete)
+            with suppress(Exception):
+                sandbox.close()
+        sandboxes.clear()
+
     app = FastAPI(
         title="SmolVM",
         summary="Disposable computers for AI agents, over HTTP.",
         version="0.1.0",
+        lifespan=lifespan,
     )
-
-    # Live facade instances, keyed by sandbox id. Acts as a write-through
-    # cache over the host: misses reconnect via SmolVM.from_id and backfill;
-    # DELETE evicts. A facade owns the SSH/control channel, so caching it
-    # also avoids re-handshaking on every exec.
-    sandboxes: dict[str, SmolVM] = {}
 
     def _resolve(sandbox_id: str) -> SmolVM:
         """Return the live facade for ``sandbox_id``, reconnecting on miss.
 
-        The registry is a cache, not the source of truth: on a miss we
-        reconnect to a sandbox that exists on the host (e.g. one created
-        before this server process started) via :meth:`SmolVM.from_id`
-        and backfill the registry so later calls hit the fast path.
+        The registry is the API's source of truth. A sandbox created by
+        another process is intentionally invisible here.
 
         Raises:
-            HTTPException: 404 if no such sandbox exists anywhere on the
-                host; 409 if it exists but cannot be reconnected.
+            HTTPException: 404 if this API process does not own the ID.
         """
         vm = sandboxes.get(sandbox_id)
-        if vm is not None:
-            return vm
-        try:
-            vm = SmolVM.from_id(sandbox_id)
-            # from_id binds vm_id verbatim, so sandbox_id == vm.vm_id here.
-            sandboxes[sandbox_id] = vm
-        except VMNotFoundError:
+        if vm is None:
             raise HTTPException(
                 status_code=404,
                 detail=(
                     f"Sandbox '{sandbox_id}' was not found; run GET /sandboxes "
                     f"to list ids or POST /sandboxes to create one."
                 ),
-            ) from None
-        except (ValueError, SmolVMError) as exc:
-            # The sandbox exists but could not be reconnected (e.g. it is
-            # in a bad state or its control channel is unreachable).
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Sandbox '{sandbox_id}' could not be reconnected; run "
-                    f"DELETE /sandboxes/{sandbox_id} then POST /sandboxes."
-                ),
-            ) from exc
+            )
         return vm
 
     @app.post(
@@ -160,8 +153,7 @@ def create_app() -> FastAPI:
     def get_sandbox(sandbox_id: str) -> SandboxResponse:
         """Return the current state of a sandbox.
 
-        On a registry miss the sandbox is reconnected from the host, so
-        only a sandbox that exists nowhere yields a 404.
+        A sandbox not owned by this API process yields a 404.
         """
         vm = _resolve(sandbox_id)
         vm.refresh()
@@ -175,21 +167,12 @@ def create_app() -> FastAPI:
     def list_sandboxes() -> list[SandboxResponse]:
         """List the sandboxes discoverable on the host.
 
-        Enumerates host VM ids directly rather than the in-memory
-        registry, so sandboxes created before this server started are
-        included. Sandboxes that cannot be reconnected are omitted.
+        Returns only sandboxes owned by this API process.
         """
         responses: list[SandboxResponse] = []
-        for vm_id in sorted(_existing_vm_ids()):
-            try:
-                vm = _resolve(vm_id)
-                vm.refresh()
-            except HTTPException:
-                # A sandbox that vanished or cannot be reconnected between
-                # listing and resolving is skipped rather than failing the
-                # whole list.
-                continue
-            responses.append(SandboxResponse(id=vm.vm_id, status=vm.status))
+        for vm_id, vm in sorted(sandboxes.items()):
+            vm.refresh()
+            responses.append(SandboxResponse(id=vm_id, status=vm.status))
         return responses
 
     @app.get(

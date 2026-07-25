@@ -9,7 +9,7 @@
     "/sandboxes": {
       "get": {
         "summary": "List Sandboxes",
-        "description": "List the sandboxes discoverable on the host.\n\nEnumerates host VM ids directly rather than the in-memory\nregistry, so sandboxes created before this server started are\nincluded. Sandboxes that cannot be reconnected are omitted.",
+        "description": "List the sandboxes discoverable on the host.\n\nReturns only sandboxes owned by this API process.",
         "operationId": "listSandboxes",
         "responses": {
           "200": {
@@ -79,7 +79,7 @@
     "/sandboxes/{sandbox_id}": {
       "get": {
         "summary": "Get Sandbox",
-        "description": "Return the current state of a sandbox.\n\nOn a registry miss the sandbox is reconnected from the host, so\nonly a sandbox that exists nowhere yields a 404.",
+        "description": "Return the current state of a sandbox.\n\nA sandbox not owned by this API process yields a 404.",
         "operationId": "getSandbox",
         "parameters": [
           {
