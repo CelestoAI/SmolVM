@@ -23,9 +23,7 @@ export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends 
  *
  * List the sandboxes discoverable on the host.
  *
- * Enumerates host VM ids directly rather than the in-memory
- * registry, so sandboxes created before this server started are
- * included. Sandboxes that cannot be reconnected are omitted.
+ * Returns only sandboxes owned by this API process.
  */
 export const listSandboxes = <ThrowOnError extends boolean = false>(options?: Options<ListSandboxesData, ThrowOnError>): RequestResult<ListSandboxesResponses, unknown, ThrowOnError> => (options?.client ?? client).get<ListSandboxesResponses, unknown, ThrowOnError>({ url: '/sandboxes', ...options });
 
@@ -62,8 +60,7 @@ export const deleteSandbox = <ThrowOnError extends boolean = false>(options: Opt
  *
  * Return the current state of a sandbox.
  *
- * On a registry miss the sandbox is reconnected from the host, so
- * only a sandbox that exists nowhere yields a 404.
+ * A sandbox not owned by this API process yields a 404.
  */
 export const getSandbox = <ThrowOnError extends boolean = false>(options: Options<GetSandboxData, ThrowOnError>): RequestResult<GetSandboxResponses, GetSandboxErrors, ThrowOnError> => (options.client ?? client).get<GetSandboxResponses, GetSandboxErrors, ThrowOnError>({ url: '/sandboxes/{sandbox_id}', ...options });
 
