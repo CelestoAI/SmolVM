@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from smolvm_core import errors as core_errors
 from smolvm_core import qmp as core_qmp
@@ -26,6 +26,14 @@ from smolvm_core import qmp as core_qmp
 from smolvm.exceptions import SmolVMError
 
 QMPJob = core_qmp.QMPJob
+
+
+class QMPJobFailedError(SmolVMError):
+    """A QMP job reached its terminal state with an error."""
+
+
+class QMPJobTimeoutError(SmolVMError):
+    """A QMP job did not finish before its wait deadline."""
 
 
 @dataclass(frozen=True)
@@ -49,6 +57,10 @@ def _core_error_to_smolvm(exc: Exception, socket_path: Path) -> SmolVMError:
         description = details.get("desc")
         if description and str(description) not in message:
             message = f"{message}: {description}"
+        if all(key in details for key in ("job_id", "job_type", "status", "error")):
+            return QMPJobFailedError(message, details)
+        if "job_id" in details and "last_status" in details:
+            return QMPJobTimeoutError(message, details)
         return SmolVMError(message, details)
     return SmolVMError(str(exc), {"socket_path": str(socket_path)})
 
@@ -157,6 +169,31 @@ class QMPClient:
             },
         )
 
+    @staticmethod
+    def _backup_arguments(
+        *,
+        job_id: str,
+        source_node: str,
+        target_node: str,
+        sync: Literal["full", "incremental"],
+        bitmap_name: str | None = None,
+        max_bytes_per_second: int | None = None,
+    ) -> dict[str, Any]:
+        """Build the shared blockdev-backup arguments."""
+        arguments: dict[str, Any] = {
+            "job-id": job_id,
+            "device": source_node,
+            "target": target_node,
+            "sync": sync,
+            "auto-finalize": True,
+            "auto-dismiss": False,
+        }
+        if bitmap_name is not None:
+            arguments["bitmap"] = bitmap_name
+        if max_bytes_per_second is not None:
+            arguments["speed"] = max_bytes_per_second
+        return arguments
+
     def blockdev_backup(
         self,
         *,
@@ -166,17 +203,16 @@ class QMPClient:
         max_bytes_per_second: int | None = None,
     ) -> None:
         """Start a full point-in-time block backup."""
-        arguments: dict[str, Any] = {
-            "job-id": job_id,
-            "device": source_node,
-            "target": target_node,
-            "sync": "full",
-            "auto-finalize": True,
-            "auto-dismiss": False,
-        }
-        if max_bytes_per_second is not None:
-            arguments["speed"] = max_bytes_per_second
-        self.execute("blockdev-backup", arguments)
+        self.execute(
+            "blockdev-backup",
+            self._backup_arguments(
+                job_id=job_id,
+                source_node=source_node,
+                target_node=target_node,
+                sync="full",
+                max_bytes_per_second=max_bytes_per_second,
+            ),
+        )
 
     def query_block_jobs(self) -> list[dict[str, Any]]:
         """Return active block jobs for progress reporting."""
@@ -191,6 +227,8 @@ class QMPClient:
     def cancel_job(self, job_id: str, *, force: bool = False) -> None:
         """Cancel a block job, forcing immediate cancellation when requested."""
         if force:
+            # Generic job-cancel has no force argument even on QEMU 11;
+            # block-job-cancel is still the supported immediate block-job path.
             self.execute("block-job-cancel", {"device": job_id, "force": True})
             return
         self.execute("job-cancel", {"id": job_id})
@@ -269,13 +307,6 @@ class QMPClient:
             )
         return bitmaps
 
-    def add_dirty_bitmap(self, source_node: str, bitmap_name: str) -> None:
-        """Add an enabled persistent dirty bitmap to a block node."""
-        self.execute(
-            "block-dirty-bitmap-add",
-            {"node": source_node, "name": bitmap_name, "persistent": True},
-        )
-
     def remove_dirty_bitmap(self, source_node: str, bitmap_name: str) -> None:
         """Remove a named dirty bitmap from a block node."""
         self.execute(
@@ -293,16 +324,13 @@ class QMPClient:
         max_bytes_per_second: int | None = None,
     ) -> None:
         """Atomically add a persistent bitmap and start its full base backup."""
-        backup: dict[str, Any] = {
-            "job-id": job_id,
-            "device": source_node,
-            "target": target_node,
-            "sync": "full",
-            "auto-finalize": True,
-            "auto-dismiss": False,
-        }
-        if max_bytes_per_second is not None:
-            backup["speed"] = max_bytes_per_second
+        backup = self._backup_arguments(
+            job_id=job_id,
+            source_node=source_node,
+            target_node=target_node,
+            sync="full",
+            max_bytes_per_second=max_bytes_per_second,
+        )
         self.execute(
             "transaction",
             {
@@ -330,18 +358,17 @@ class QMPClient:
         max_bytes_per_second: int | None = None,
     ) -> None:
         """Start an incremental backup using a named dirty bitmap."""
-        arguments: dict[str, Any] = {
-            "job-id": job_id,
-            "device": source_node,
-            "target": target_node,
-            "sync": "incremental",
-            "bitmap": bitmap_name,
-            "auto-finalize": True,
-            "auto-dismiss": False,
-        }
-        if max_bytes_per_second is not None:
-            arguments["speed"] = max_bytes_per_second
-        self.execute("blockdev-backup", arguments)
+        self.execute(
+            "blockdev-backup",
+            self._backup_arguments(
+                job_id=job_id,
+                source_node=source_node,
+                target_node=target_node,
+                sync="incremental",
+                bitmap_name=bitmap_name,
+                max_bytes_per_second=max_bytes_per_second,
+            ),
+        )
 
     def query_jobs(self) -> list[QMPJob]:
         """Return normalized job status rows."""
@@ -366,4 +393,10 @@ class QMPClient:
         self._core.close()
 
 
-__all__ = ["QMPClient", "QMPDirtyBitmap", "QMPJob"]
+__all__ = [
+    "QMPClient",
+    "QMPDirtyBitmap",
+    "QMPJob",
+    "QMPJobFailedError",
+    "QMPJobTimeoutError",
+]

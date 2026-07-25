@@ -16,9 +16,7 @@
 
 from __future__ import annotations
 
-import json
 import shutil
-import subprocess
 import tempfile
 from contextlib import suppress
 from pathlib import Path
@@ -26,53 +24,9 @@ from pathlib import Path
 import pytest
 
 from smolvm import QemuDirtyBitmapBackup, SmolVM, SnapshotCapturePolicy, SnapshotType, VMConfig
+from tests.qemu_incremental import _materialize
 
 pytestmark = pytest.mark.e2e
-
-
-def _run(*command: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, check=True, capture_output=True, text=True)
-
-
-def _materialize(qemu_img: str, root: Path, name: str, artifacts: list[Path]) -> Path:
-    staging = root / f"staging-{name}"
-    staging.mkdir()
-    local_chain: list[Path] = []
-    for depth, artifact in enumerate(artifacts):
-        local = staging / f"depth-{depth}.qcow2"
-        shutil.copy2(artifact, local)
-        local_chain.append(local)
-        if depth > 0:
-            _run(
-                qemu_img,
-                "rebase",
-                "-u",
-                "-f",
-                "qcow2",
-                "-F",
-                "qcow2",
-                "-b",
-                str(local_chain[depth - 1]),
-                str(local),
-            )
-
-    _run(qemu_img, "check", str(local_chain[-1]))
-    output = root / f"leaf-{name}.qcow2"
-    _run(
-        qemu_img,
-        "convert",
-        "-f",
-        "qcow2",
-        "-O",
-        "qcow2",
-        str(local_chain[-1]),
-        str(output),
-    )
-    info = json.loads(_run(qemu_img, "info", "--output=json", str(output)).stdout)
-    assert info["format"] == "qcow2"
-    assert not info.get("backing-filename")
-    _run(qemu_img, "check", str(output))
-    return output
 
 
 def _boot_and_read_markers(
@@ -101,7 +55,9 @@ def _boot_and_read_markers(
     )
     try:
         vm.start(boot_timeout=180)
-        marker_a = vm.run("cat /root/celesto-marker-a").stdout.strip()
+        marker_a_result = vm.run("cat /root/celesto-marker-a")
+        assert marker_a_result.exit_code == 0, marker_a_result.stderr
+        marker_a = marker_a_result.stdout.strip()
         marker_b_exists = vm.run("test -e /root/celesto-marker-b").exit_code == 0
         return marker_a, marker_b_exists
     finally:
@@ -193,8 +149,7 @@ def test_materialized_incremental_leaves_boot_after_source_state_is_deleted(
         finally:
             with suppress(Exception):
                 source.stop(timeout=10)
-            with suppress(Exception):
-                source.delete()
+            source.delete()
 
     assert source_disk is not None
     assert source_config is not None

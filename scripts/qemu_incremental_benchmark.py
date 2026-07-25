@@ -19,13 +19,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import shutil
 import statistics
 import subprocess
 import tempfile
 import time
-from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +33,8 @@ from smolvm import SmolVM
 from smolvm.qmp import QMPClient
 
 _BITMAP_NAME = "celesto-phase0-benchmark"
+
+logger = logging.getLogger(__name__)
 
 
 def _run(*command: str) -> subprocess.CompletedProcess[str]:
@@ -244,10 +246,14 @@ def benchmark(output_dir: Path, *, intervals: int, write_mib: int) -> dict[str, 
             cpu_seconds = _process_cpu_seconds(pid) - cpu_before
             diskstats = _difference(_root_diskstats(), diskstats_before)
         finally:
-            with suppress(Exception):
+            try:
                 vm.stop(timeout=10)
-            with suppress(Exception):
+            except Exception:
+                logger.exception("Failed to stop benchmark VM %s", vm.vm_id)
+            try:
                 vm.delete()
+            except Exception:
+                logger.exception("Failed to delete benchmark VM %s", vm.vm_id)
 
     incremental_bytes = int(full_captures[0]["file_bytes"]) + sum(
         int(value["file_bytes"]) for value in increments

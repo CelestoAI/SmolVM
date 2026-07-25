@@ -2369,7 +2369,9 @@ class SmolVMManager:
         It requires a running QEMU VM, ``snapshot_type=DISK``, and
         ``resume_source=True``. ``timeout_seconds`` must be positive and bounds
         live disk capture; ``max_bytes_per_second`` may optionally apply a
-        positive bandwidth limit.
+        positive bandwidth limit. ``qemu_dirty_bitmap_backup`` starts a new
+        persistent QEMU bitmap chain or captures its next incremental disk
+        artifact; it requires a live-only running QEMU ``DISK`` snapshot.
         """
         if not vm_id:
             raise ValueError("vm_id cannot be empty")
@@ -2418,10 +2420,11 @@ class SmolVMManager:
 
         original_status = vm_info.status
         backend = self._backend_for_vm(vm_info)
-        live_command = (
+        disk_command = (
             f"smolvm sandbox snapshot create {vm_id} --snapshot-id {snapshot_id} "
-            "--snapshot-type disk --resume-source --live-only"
+            "--snapshot-type disk --resume-source"
         )
+        live_command = f"{disk_command} --live-only"
         if capture_policy == SnapshotCapturePolicy.LIVE_ONLY:
             if original_status != VMState.RUNNING:
                 raise SmolVMError(
@@ -2458,27 +2461,47 @@ class SmolVMManager:
         if qemu_dirty_bitmap_backup is not None:
             if backend != BACKEND_QEMU:
                 raise SmolVMError(
-                    "Dirty-bitmap backups require a running QEMU sandbox.",
-                    {"vm_id": vm_id, "backend": backend},
+                    f"Sandbox '{vm_id}' does not use QEMU; run '{disk_command}' "
+                    "to create a regular disk snapshot.",
+                    {
+                        "vm_id": vm_id,
+                        "backend": backend,
+                        "recovery_command": disk_command,
+                    },
                 )
             if (
                 original_status != VMState.RUNNING
                 or snapshot_type != SnapshotType.DISK
                 or capture_policy != SnapshotCapturePolicy.LIVE_ONLY
             ):
+                if original_status != VMState.RUNNING:
+                    start_command = f"smolvm sandbox start {vm_id}"
+                    fact = (
+                        f"Sandbox '{vm_id}' must be running for this disk capture; run "
+                        f"'{start_command}', then '{live_command}'."
+                    )
+                    recovery_command = start_command
+                else:
+                    fact = (
+                        f"This disk capture for sandbox '{vm_id}' must stay live; run "
+                        f"'{live_command}'."
+                    )
+                    recovery_command = live_command
                 raise SmolVMError(
-                    "Dirty-bitmap backups require a live-only running QEMU disk snapshot.",
+                    fact,
                     {
                         "vm_id": vm_id,
                         "current_status": original_status.value,
                         "snapshot_type": snapshot_type.value,
                         "capture_policy": capture_policy.value,
+                        "recovery_command": recovery_command,
                     },
                 )
             if not resume_source:
                 raise SmolVMError(
-                    "Dirty-bitmap backups must leave the source sandbox running.",
-                    {"vm_id": vm_id},
+                    f"This disk capture must leave sandbox '{vm_id}' running; run "
+                    f"'{live_command}'.",
+                    {"vm_id": vm_id, "recovery_command": live_command},
                 )
             if not qemu_dirty_bitmap_backup.bitmap_name:
                 raise ValueError("bitmap_name cannot be empty")
@@ -2488,8 +2511,13 @@ class SmolVMManager:
             raise SmolVMError("Snapshotting requires a managed isolated disk", {"vm_id": vm_id})
         if qemu_dirty_bitmap_backup is not None and managed_disk_path.suffix != ".qcow2":
             raise SmolVMError(
-                "Dirty-bitmap backups require a managed qcow2 disk.",
-                {"vm_id": vm_id, "disk_path": str(managed_disk_path)},
+                f"Sandbox '{vm_id}' does not use a compatible disk file; run "
+                f"'{disk_command}' to create a regular disk snapshot.",
+                {
+                    "vm_id": vm_id,
+                    "disk_path": str(managed_disk_path),
+                    "recovery_command": disk_command,
+                },
             )
 
         adapter = self._runtime_adapter_for_backend(backend)
@@ -2501,6 +2529,7 @@ class SmolVMManager:
                 persisted_snapshot_ids={
                     snapshot.snapshot_id for snapshot in self.state.list_snapshots(vm_id=vm_id)
                 },
+                timeout_seconds=timeout_seconds,
             )
 
         with suppress(SnapshotNotFoundError):
@@ -2877,10 +2906,32 @@ class SmolVMManager:
             raise
 
     def delete_snapshot(self, snapshot_id: str) -> None:
-        """Delete snapshot files and metadata."""
+        """Delete snapshot files and metadata, including adopted recovery artifacts."""
         snapshot_root = self._snapshot_root_for_id(snapshot_id)
 
-        snapshot = self.state.get_snapshot(snapshot_id)
+        try:
+            snapshot = self.state.get_snapshot(snapshot_id)
+        except SnapshotNotFoundError as missing_snapshot:
+            manifest_path = snapshot_root / "live-backup.json"
+            if manifest_path.is_symlink():
+                raise missing_snapshot
+            try:
+                manifest = json.loads(manifest_path.read_text())
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                raise missing_snapshot from None
+            artifact_filename = (
+                "increment.qcow2" if manifest.get("backup_mode") == "incremental" else "disk.qcow2"
+            )
+            if (
+                manifest.get("schema_version") != 2
+                or manifest.get("snapshot_id") != snapshot_id
+                or manifest.get("phase") != "artifact-published"
+                or manifest.get("final_path") != str(snapshot_root / artifact_filename)
+                or not (snapshot_root / artifact_filename).is_file()
+            ):
+                raise missing_snapshot
+            shutil.rmtree(snapshot_root)
+            return
         if snapshot.restored and snapshot.restored_vm_id:
             with suppress(VMNotFoundError):
                 restored_vm = self.state.get_vm(snapshot.restored_vm_id)

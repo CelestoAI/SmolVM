@@ -105,8 +105,27 @@ def snapshot_info_from_row(row: Any) -> SnapshotInfo:
         except (KeyError, IndexError):
             return None
 
+    def optional_int(name: str, *, positive: bool) -> int | None:
+        value = optional_value(name)
+        if isinstance(value, bool):
+            return None
+        try:
+            normalized = int(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if isinstance(value, float) and not value.is_integer():
+            return None
+        if normalized < (1 if positive else 0):
+            return None
+        return normalized
+
     raw_artifact_kind = optional_value("artifact_kind")
     artifact_kind = raw_artifact_kind if raw_artifact_kind in {"full", "incremental"} else None
+    raw_bitmap_name = optional_value("bitmap_name")
+    bitmap_name = raw_bitmap_name if isinstance(raw_bitmap_name, str) else None
+    virtual_size_bytes = optional_int("virtual_size_bytes", positive=True)
+    changed_bytes = optional_int("changed_bytes", positive=False)
+    bitmap_granularity_bytes = optional_int("bitmap_granularity_bytes", positive=True)
     return SnapshotInfo(
         snapshot_id=row["snapshot_id"],
         vm_id=row["vm_id"],
@@ -117,10 +136,10 @@ def snapshot_info_from_row(row: Any) -> SnapshotInfo:
         created_at=datetime.fromisoformat(row["created_at"]),
         snapshot_type=snapshot_type,
         artifact_kind=artifact_kind,
-        virtual_size_bytes=optional_value("virtual_size_bytes"),
-        changed_bytes=optional_value("changed_bytes"),
-        bitmap_granularity_bytes=optional_value("bitmap_granularity_bytes"),
-        bitmap_name=optional_value("bitmap_name"),
+        virtual_size_bytes=virtual_size_bytes,
+        changed_bytes=changed_bytes,
+        bitmap_granularity_bytes=bitmap_granularity_bytes,
+        bitmap_name=bitmap_name,
         restored=bool(row["restored"]),
         restored_vm_id=row["restored_vm_id"],
     )

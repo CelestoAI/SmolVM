@@ -1942,6 +1942,30 @@ class TestCliSnapshot:
         assert "Deleted snapshot 'snap-001'." in capsys.readouterr().out
 
     @patch("smolvm.vm.SmolVMManager")
+    def test_snapshot_delete_clears_recovered_artifact(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Snapshot delete should expose the recovery-record cleanup action."""
+        from smolvm.exceptions import SnapshotNotFoundError
+
+        sdk = mock_sdk_cls.return_value
+        sdk.__enter__.return_value = sdk
+        sdk.__exit__.side_effect = lambda *args: sdk.close()
+        sdk.get_snapshot.side_effect = SnapshotNotFoundError("snap-recovered")
+
+        ret = main(["sandbox", "snapshot", "delete", "snap-recovered", "--json"])
+
+        assert ret == 0
+        sdk.delete_snapshot.assert_called_once_with("snap-recovered")
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["data"] == {
+            "snapshot_id": "snap-recovered",
+            "recovery_record_cleared": True,
+        }
+
+    @patch("smolvm.vm.SmolVMManager")
     def test_snapshot_list_json(
         self,
         mock_sdk_cls: MagicMock,

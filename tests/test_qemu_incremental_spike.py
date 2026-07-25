@@ -28,6 +28,7 @@ import pytest
 
 from smolvm.exceptions import SmolVMError
 from smolvm.qmp import QMPClient, QMPDirtyBitmap
+from tests.qemu_incremental import _materialize
 
 _VIRTUAL_SIZE = 64 * 1024 * 1024
 _BITMAP_NAME = "celesto-phase0"
@@ -80,9 +81,13 @@ def _stop_qemu(client: QMPClient, process: subprocess.Popen[str]) -> None:
 
 
 def _bitmap(client: QMPClient) -> QMPDirtyBitmap:
-    return next(
-        bitmap for bitmap in client.query_dirty_bitmaps("rootdisk0") if bitmap.name == _BITMAP_NAME
+    bitmap = next(
+        (value for value in client.query_dirty_bitmaps("rootdisk0") if value.name == _BITMAP_NAME),
+        None,
     )
+    if bitmap is None:
+        pytest.fail(f"QEMU did not report dirty bitmap '{_BITMAP_NAME}'")
+    return bitmap
 
 
 def _create_target(qemu_img: str, root: Path, name: str) -> Path:
@@ -112,47 +117,10 @@ def _assert_pattern(qemu_io: str, disk: Path, pattern: str, offset: int, length:
     _run(qemu_io, "-f", "qcow2", "-c", f"read -P {pattern} {offset} {length}", str(disk))
 
 
-def _materialize(
-    qemu_img: str,
-    root: Path,
-    name: str,
-    artifacts: list[Path],
-) -> Path:
-    staging = root / f"materialize-{name}"
-    staging.mkdir()
-    local_artifacts: list[Path] = []
-    for depth, artifact in enumerate(artifacts):
-        local = staging / f"depth-{depth}.qcow2"
-        shutil.copy2(artifact, local)
-        local_artifacts.append(local)
-        if depth > 0:
-            _run(
-                qemu_img,
-                "rebase",
-                "-u",
-                "-f",
-                "qcow2",
-                "-F",
-                "qcow2",
-                "-b",
-                str(local_artifacts[depth - 1]),
-                str(local),
-            )
-
-    _run(qemu_img, "check", str(local_artifacts[-1]))
-    output = root / f"materialized-{name}.qcow2"
-    _run(qemu_img, "convert", "-f", "qcow2", "-O", "qcow2", str(local_artifacts[-1]), str(output))
-    info = json.loads(_run(qemu_img, "info", "--output=json", str(output)).stdout)
-    assert info["format"] == "qcow2"
-    assert info["virtual-size"] == _VIRTUAL_SIZE
-    assert not info.get("backing-filename")
-    _run(qemu_img, "check", str(output))
-    return output
-
-
 def test_incremental_chain_materializes_and_cancelled_backup_retains_dirty_bytes(
     tmp_path: Path,
     short_socket_dir: Path,
+    request: pytest.FixtureRequest,
 ) -> None:
     """Prove base/A/B materialization, persistence, and cancellation safety."""
     qemu_img = shutil.which("qemu-img")
@@ -206,6 +174,7 @@ def test_incremental_chain_materializes_and_cancelled_backup_retains_dirty_bytes
             assert not base_bitmap.busy
             assert not base_bitmap.inconsistent
             assert base_bitmap.dirty_bytes == 0
+            assert base_bitmap.granularity == 64 * 1024
 
             _write_pattern(qemu_io, nbd_socket, "0x41", 1024 * 1024, 65536)
             assert _bitmap(client).dirty_bytes == 65536
@@ -342,4 +311,6 @@ def test_incremental_chain_materializes_and_cancelled_backup_retains_dirty_bytes
             for name, path in artifacts.items()
         },
     }
-    print(json.dumps(evidence, sort_keys=True))
+    serialized_evidence = json.dumps(evidence, sort_keys=True)
+    request.node.user_properties.append(("qemu_incremental_evidence", serialized_evidence))
+    print(serialized_evidence)

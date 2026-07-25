@@ -2285,17 +2285,30 @@ def _run_snapshot(args: SimpleNamespace) -> int:
 
     if args.snapshot_action == "delete":
         try:
+            from smolvm.exceptions import SnapshotNotFoundError
+
+            existing_snapshot: SnapshotInfo | None
             with SmolVMManager() as sdk:
-                snapshot = sdk.get_snapshot(args.snapshot_id)
+                try:
+                    existing_snapshot = sdk.get_snapshot(args.snapshot_id)
+                except SnapshotNotFoundError:
+                    existing_snapshot = None
                 sdk.delete_snapshot(args.snapshot_id)
-            row = _snapshot_row(snapshot)
-            data: SnapshotPayload = {"snapshot": row}
+            if existing_snapshot is None:
+                delete_data: dict[str, object] = {
+                    "snapshot_id": args.snapshot_id,
+                    "recovery_record_cleared": True,
+                }
+                message = f"Cleared recovered snapshot '{args.snapshot_id}'."
+            else:
+                delete_data = {"snapshot": _snapshot_row(existing_snapshot)}
+                message = f"Deleted snapshot '{args.snapshot_id}'."
             if json_output:
-                emit_json(command_name, 0, data=data)
+                emit_json(command_name, 0, data=delete_data)
             else:
                 console_stdout().print(
                     Panel.fit(
-                        f"Deleted snapshot '{args.snapshot_id}'.",
+                        message,
                         title="Snapshot Deleted",
                         border_style="yellow",
                     )

@@ -90,6 +90,7 @@ class SnapshotCreateResult:
     operation_manifest_path: Path | None = None
     artifact_kind: Literal["full", "incremental"] | None = None
     virtual_size_bytes: int | None = None
+    # Estimate sampled from QEMU immediately before an incremental backup starts.
     changed_bytes: int | None = None
     bitmap_granularity_bytes: int | None = None
     bitmap_name: str | None = None

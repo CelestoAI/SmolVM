@@ -976,6 +976,7 @@ class SnapshotInfo(BaseModel):
     snapshot_type: SnapshotType = SnapshotType.FULL
     artifact_kind: Literal["full", "incremental"] | None = None
     virtual_size_bytes: int | None = None
+    # Estimate sampled from QEMU immediately before incremental capture begins.
     changed_bytes: int | None = None
     bitmap_granularity_bytes: int | None = None
     bitmap_name: str | None = None

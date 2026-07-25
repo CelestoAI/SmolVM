@@ -1,6 +1,6 @@
 # QEMU incremental snapshot spike
 
-This spike proves that Celesto can capture small QEMU disk increments and rebuild bootable standalone disks without retaining source-host state. The local and production-image gates pass.
+Instead of copying an entire virtual disk every time, this feature can save only the disk areas that changed since the previous snapshot. These smaller files are called disk increments. To restore one, Celesto combines the original full copy with its ordered increments and produces a self-contained bootable disk, so the original virtual machine and host are not needed. The local and production-image tests passed.
 
 ## Test baseline
 
@@ -8,7 +8,7 @@ This spike proves that Celesto can capture small QEMU disk increments and rebuil
 - Local host: macOS arm64
 - Local QEMU and `qemu-img`: 11.0.0
 - Production image preflight: Ubuntu 24.04, QEMU 8.2.2 (`1:8.2.2+ds-0ubuntu1.17`), Linux 6.17 AWS x86_64
-- Bitmap granularity selected by QEMU: 64 KiB
+- Bitmap granularity (the smallest disk-change unit QEMU tracks): 64 KiB
 
 The production preflight found five running QEMU processes. No disk workload was run on that busy host. A diskless `-machine none` QMP check confirmed that QEMU 8.2.2 exposes every required bitmap, transaction, backup, job, and block-node command.
 
@@ -44,6 +44,16 @@ This idle marker workload demonstrates the artifact shape; the production-image 
 ## Compatibility finding
 
 Forced cancellation previously sent `force` to generic `job-cancel`. QEMU 11 rejects that argument. Forced block-backup cancellation now uses `block-job-cancel` with `device` and `force=true`; normal cancellation still uses generic `job-cancel`.
+
+## Interrupted capture recovery
+
+If SmolVM reports a recovered artifact, first adopt it into the remote snapshot chain using the `artifact_path` and metadata in the error details. Only after that succeeds, clear the retained local file and recovery record:
+
+```bash
+smolvm sandbox snapshot delete <recovered-snapshot-id>
+```
+
+Do not run the delete command before adoption because it removes the recovered artifact. If SmolVM reports that capture state is uncertain, discard that chain and run the fresh full-disk snapshot command included in the error.
 
 ## Commands
 
