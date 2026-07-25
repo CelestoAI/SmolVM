@@ -2338,15 +2338,14 @@ class SmolVMManager:
                 f"Dirty bitmaps require a QEMU sandbox; '{vm_id}' uses {backend}",
                 {"vm_id": vm_id, "backend": backend},
             )
-        managed_disk = self._instance_disk_path(
-            vm_id,
-            BACKEND_QEMU,
-            vm_info.config.rootfs_format,
-        )
-        if managed_disk.suffix != ".qcow2":
+        managed_disk = self._managed_disk_for_vm(vm_info)
+        if managed_disk is None or managed_disk.suffix != ".qcow2":
             raise SmolVMError(
-                f"Dirty bitmaps require a qcow2 root disk for sandbox '{vm_id}'",
-                {"vm_id": vm_id, "disk_path": str(managed_disk)},
+                f"Dirty bitmaps require a managed qcow2 root disk for sandbox '{vm_id}'",
+                {
+                    "vm_id": vm_id,
+                    "disk_path": str(managed_disk) if managed_disk else None,
+                },
             )
         return vm_info, adapter
 

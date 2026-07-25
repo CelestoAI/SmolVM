@@ -210,6 +210,48 @@ def test_qemu_dirty_bitmap_removal_rejects_busy_bitmap(
     client.remove_dirty_bitmap.assert_not_called()
 
 
+def test_qemu_dirty_bitmap_removal_tolerates_already_removed_race(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
+    client = _mock_qmp_client()
+    client.query_dirty_bitmaps.return_value = [
+        QMPDirtyBitmap(
+            name="celesto-chain0",
+            recording=True,
+            busy=False,
+            persistent=True,
+            inconsistent=False,
+            granularity=65536,
+            dirty_bytes=0,
+        )
+    ]
+    client.remove_dirty_bitmap.side_effect = SmolVMError(
+        "bitmap not found",
+        {"desc": "Dirty bitmap 'celesto-chain0' not found"},
+    )
+
+    with patch("smolvm.runtime.qemu.QMPClient", return_value=client):
+        assert qemu_smol_vm.remove_qemu_dirty_bitmap("vm001", "celesto-chain0") is False
+
+
+def test_dirty_bitmap_state_error_preserves_canonical_details_and_recovery() -> None:
+    error = QemuDirtyBitmapStateError(
+        "vm001",
+        "celesto-chain0",
+        "missing",
+        details={"vm_id": "wrong", "reason": "busy"},
+        recovery_command="smolvm sandbox snapshot create vm001 --snapshot-type disk",
+    )
+
+    assert error.details["vm_id"] == "vm001"
+    assert error.details["reason"] == "missing"
+    assert "celesto-chain0" in str(error)
+    assert "smolvm sandbox snapshot create vm001" in str(error)
+
+
 def test_full_snapshot_copy_preserves_internal_snapshot_on_backed_overlay(
     tmp_path: Path,
 ) -> None:

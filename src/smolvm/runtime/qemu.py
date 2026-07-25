@@ -423,7 +423,13 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                 details={"busy": True},
             )
         with self._client(vm_info.control_socket_path) as client:
-            client.remove_dirty_bitmap(QEMU_ROOT_NODE_NAME, bitmap_name)
+            try:
+                client.remove_dirty_bitmap(QEMU_ROOT_NODE_NAME, bitmap_name)
+            except SmolVMError as exc:
+                description = str(exc.details.get("desc", "")).lower()
+                if "dirty bitmap" in description and "not found" in description:
+                    return False
+                raise
         return True
 
     def resume(self, vm_info: VMInfo) -> None:
@@ -1284,6 +1290,7 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                         request.vm_info.vm_id,
                         bitmap_backup.bitmap_name,
                         "exists",
+                        recovery_command=self._live_backup_fallback_command(request),
                     )
                 artifact_kind = "full"
             else:
@@ -1292,6 +1299,7 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                         request.vm_info.vm_id,
                         bitmap_backup.bitmap_name,
                         "missing",
+                        recovery_command=self._live_backup_fallback_command(request),
                     )
                 invalid_reason: (
                     Literal[
@@ -1321,6 +1329,7 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                             "busy": existing_bitmap.busy,
                             "inconsistent": existing_bitmap.inconsistent,
                         },
+                        recovery_command=self._live_backup_fallback_command(request),
                     )
                 artifact_kind = "incremental"
                 artifact_filename = "increment.qcow2"
