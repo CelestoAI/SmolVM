@@ -57,13 +57,15 @@ def _normalize_digest(expected: str | None) -> str | None:
     unverifiable: the download "failed" its checksum every time and the
     cache never converged.
 
-    ``None`` — and a blank string, which every caller has always treated the
-    same way — means "no digest was pinned", so verification is skipped.
+    Only ``None`` means "no digest was pinned". A blank string is left blank
+    so it still fails comparison: callers disagree on whether blank means
+    unpinned (``_download_file`` tests truthiness) or pinned-but-empty
+    (``ensure_rootfs_only`` tests ``is not None``), and collapsing it here
+    would let the stricter caller accept an unverified image.
     """
     if expected is None:
         return None
-    normalized = expected.strip().lower()
-    return normalized or None
+    return expected.strip().lower()
 
 
 def _parse_content_length(raw_length: str | None) -> int | None:
@@ -962,8 +964,15 @@ class ImageManager:
         tmp_fd, tmp_path_str = tempfile.mkstemp(dir=dest.parent, suffix=".tmp")
         tmp_path = Path(tmp_path_str)
 
+        # Same normalization as the HTTP path and the cache check. Without it
+        # an uppercase digest in a ``smolvm-image.json`` failed every download
+        # with a mismatch whose expected and actual were the same digest in
+        # different case, while the cache check accepted it — so the two
+        # disagreed and the image could never be fetched.
+        expected = _normalize_digest(expected_sha256)
+
         try:
-            sha256 = hashlib.sha256() if expected_sha256 else None
+            sha256 = hashlib.sha256() if expected else None
             # Use get_object (single GetObject call) instead of
             # download_fileobj which issues HeadObject first — some
             # S3-compatible stores reject HeadObject.
@@ -977,12 +986,12 @@ class ImageManager:
                     if progress_callback is not None:
                         progress_callback(len(chunk), total)
 
-            if sha256 is not None and expected_sha256 is not None:
+            if sha256 is not None and expected is not None:
                 actual_hash = sha256.hexdigest()
-                if actual_hash != expected_sha256:
+                if actual_hash != expected:
                     raise ImageError(
                         f"SHA-256 mismatch for s3://{bucket}/{key}\n"
-                        f"  expected: {expected_sha256}\n"
+                        f"  expected: {expected}\n"
                         f"  actual:   {actual_hash}"
                     )
 

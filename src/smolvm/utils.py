@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import time
 from collections.abc import Sequence
+from contextlib import suppress
 from pathlib import Path
 
 from smolvm.exceptions import SmolVMError
@@ -268,15 +269,40 @@ def ensure_ssh_key(key_dir: Path | None = None) -> tuple[Path, Path]:
                 pass
         return private_key, public_key
 
-    # Only one half of the pair survived (an interrupted generation, or a
-    # deleted .pub). ssh-keygen would stop at an interactive "Overwrite (y/n)?"
-    # prompt it writes to the stderr we discard: the CLI either blocks forever
-    # on a terminal, or fails with no visible reason. Clear the leftovers so
-    # generation is unattended.
-    for leftover in (private_key, public_key):
-        if leftover.exists():
-            logger.warning("Removing incomplete SSH key file: %s", leftover)
-            leftover.unlink()
+    # The private key is what every existing sandbox trusts — its public half
+    # is already in their authorized_keys. Losing it locks the user out of all
+    # of them, so a missing .pub is repaired from the private key rather than
+    # triggering a silent key rotation.
+    if private_key.exists():
+        logger.info("Public key missing; deriving it from %s", private_key)
+        derived = subprocess.run(
+            ["ssh-keygen", "-y", "-f", str(private_key)],
+            check=False,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+        )
+        if derived.returncode != 0:
+            raise SmolVMError(
+                f"SmolVM's SSH key at '{private_key}' could not be read. Move it "
+                f"somewhere safe and delete '{key_dir}' to start over — sandboxes "
+                "created with the old key will need to be recreated.\n"
+                f"ssh-keygen stderr: {derived.stderr.strip()}"
+            )
+        public_key.write_text(derived.stdout)
+        public_key.chmod(0o644)
+        if sudo_uid is not None and sudo_gid is not None:
+            with suppress(OSError):
+                os.chown(public_key, sudo_uid, sudo_gid)
+        return private_key, public_key
+
+    # Only an orphaned .pub survived. Without its private half it authenticates
+    # nothing, and ssh-keygen would stop at an interactive "Overwrite (y/n)?"
+    # prompt written to the stderr we discard — blocking the CLI on a terminal,
+    # or failing invisibly otherwise. Clear it so generation is unattended.
+    if public_key.exists():
+        logger.warning("Removing orphaned SSH public key with no private half: %s", public_key)
+        public_key.unlink()
 
     logger.info("Generating new SSH key pair at %s...", key_dir)
     subprocess.run(

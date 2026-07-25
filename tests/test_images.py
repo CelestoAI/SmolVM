@@ -443,20 +443,20 @@ class TestVerifySHA256:
         # Normalization must not turn a real mismatch into a pass.
         assert ImageManager._verify_sha256(file_path, "A" * 64) is False
 
-    def test_blank_hash_means_no_pin(self, tmp_path: Path) -> None:
-        """A blank digest reads as "not pinned", matching ``_download_file``.
+    def test_blank_hash_is_not_treated_as_unpinned(self, tmp_path: Path) -> None:
+        """A blank digest must still fail, never silently skip verification.
 
-        ``_download_file`` has always treated a falsy digest as "no pin" and
-        skipped verification, so a blank string never gated what landed in the
-        cache. The verifiers now agree with it instead of reporting a mismatch
-        that would re-download the same file forever.
+        Callers disagree on what blank means: ``_download_file`` tests
+        truthiness (unpinned) while ``ensure_rootfs_only`` tests ``is not
+        None`` (pinned). Normalizing blank to "no digest" would let the
+        stricter caller accept an unverified rootfs.
         """
         file_path = tmp_path / "test.bin"
         file_path.write_bytes(b"hello world")
 
-        assert ImageManager._verify_sha256(file_path, "") is True
-        assert ImageManager._verify_sha256(file_path, "   ") is True
-        assert ImageManager._verify_sha512(file_path, "") is True
+        assert ImageManager._verify_sha256(file_path, "") is False
+        assert ImageManager._verify_sha256(file_path, "   ") is False
+        assert ImageManager._verify_sha512(file_path, "") is False
 
     @patch("smolvm.images.manager.requests.get")
     def test_download_skips_sha_when_none(self, mock_get: MagicMock, tmp_path: Path) -> None:
@@ -600,6 +600,30 @@ class TestEnsureRootfsOnly:
 
         assert result.exists()
         assert result.read_bytes() == content
+
+    @patch("smolvm.images.manager.requests.get")
+    def test_blank_sha512_is_rejected_not_skipped(
+        self, mock_get: MagicMock, tmp_path: Path
+    ) -> None:
+        """A blank sha512 must not downgrade into "unverified, accepted".
+
+        This call site gates on ``sha512 is not None``, so a blank string is a
+        pin it expects to enforce. Treating blank as "no digest" would hand
+        back a rootfs that nothing checked.
+        """
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.headers = {}
+        mock_resp.iter_content = lambda chunk_size: iter([b"rootfs bytes"])
+        mock_get.return_value = mock_resp
+
+        mgr = ImageManager(cache_dir=tmp_path / "images")
+        with pytest.raises(ImageError, match="SHA-512 mismatch"):
+            mgr.ensure_rootfs_only(
+                "blank-pin",
+                url="https://example.com/rootfs.qcow2",
+                sha512="",
+            )
 
 
 class TestImageManagerInit:
@@ -799,6 +823,50 @@ class TestEnsureS3Image:
         assert local.kernel_path.read_bytes() == kernel_content
         assert local.rootfs_path.read_bytes() == rootfs_content
         assert parsed_manifest.name == "test-image"
+
+    def test_uppercase_manifest_digests_are_accepted(self, tmp_path: Path) -> None:
+        """An S3 manifest may write its digests in uppercase.
+
+        The download check compared raw strings while the cache check
+        normalized, so the two disagreed: every fetch failed with a mismatch
+        whose ``expected`` and ``actual`` were the same digest in different
+        case, and the image could never be pulled.
+        """
+        kernel_content = b"fake-kernel"
+        rootfs_content = b"fake-rootfs"
+        manifest = _make_s3_manifest_data(
+            kernel_sha256=hashlib.sha256(kernel_content).hexdigest().upper(),
+            rootfs_sha256=hashlib.sha256(rootfs_content).hexdigest().upper(),
+        )
+        mock_s3 = self._mock_s3_client(
+            manifest,
+            {"vmlinux.bin": kernel_content, "rootfs.ext4": rootfs_content},
+        )
+
+        mgr = ImageManager(cache_dir=tmp_path / "images")
+        with patch("smolvm.images.manager._require_boto3", return_value=mock_s3):
+            local, _ = mgr.ensure_s3_image("s3://bucket/images/test/")
+
+        assert local.kernel_path.read_bytes() == kernel_content
+        assert local.rootfs_path.read_bytes() == rootfs_content
+
+    def test_uppercase_manifest_digest_still_detects_corruption(self, tmp_path: Path) -> None:
+        """Normalizing case must not stop the S3 path catching a bad asset."""
+        manifest = _make_s3_manifest_data(
+            kernel_sha256=("A" * 64),
+            rootfs_sha256=hashlib.sha256(b"fake-rootfs").hexdigest(),
+        )
+        mock_s3 = self._mock_s3_client(
+            manifest,
+            {"vmlinux.bin": b"corrupted", "rootfs.ext4": b"fake-rootfs"},
+        )
+
+        mgr = ImageManager(cache_dir=tmp_path / "images")
+        with (
+            patch("smolvm.images.manager._require_boto3", return_value=mock_s3),
+            pytest.raises(ImageError, match="SHA-256 mismatch"),
+        ):
+            mgr.ensure_s3_image("s3://bucket/images/test/")
 
     def test_cache_hit_skips_download(self, tmp_path: Path) -> None:
         """Second call should use cache and not re-download assets."""
