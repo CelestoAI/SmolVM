@@ -2551,13 +2551,16 @@ class SmolVMManager:
 
         adapter = self._runtime_adapter_for_backend(backend)
         if isinstance(adapter, QemuRuntimeAdapter):
+            persisted_snapshots = self.state.list_snapshots(vm_id=vm_id)
+            if not persisted_snapshots:
+                # A fresh in-memory manager may know snapshots only through
+                # artifact manifests left by an earlier process.
+                persisted_snapshots = self.list_snapshots(vm_id=vm_id)
             adapter.reconcile_live_backups(
                 vm_info,
                 snapshot_dir=self.snapshot_dir,
                 locked_snapshot_id=snapshot_id,
-                persisted_snapshot_ids={
-                    snapshot.snapshot_id for snapshot in self.list_snapshots(vm_id=vm_id)
-                },
+                persisted_snapshot_ids={snapshot.snapshot_id for snapshot in persisted_snapshots},
                 timeout_seconds=timeout_seconds,
             )
 

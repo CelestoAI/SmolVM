@@ -1,5 +1,9 @@
 # Refactor plan: make SQLite CLI-only
 
+This change keeps each SDK and HTTP API sandbox tied to the object that created
+it. The CLI alone saves sandbox information between commands so users can list
+and reconnect to their sandboxes later.
+
 ## Target outcome
 
 - `SmolVM()` and the HTTP API never create, open, or import SQLite.

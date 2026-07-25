@@ -7,7 +7,11 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+import pytest
+
+from smolvm.cli.service import CLIService
 from smolvm.cli.state import create_cli_state_manager
 from smolvm.storage import MemoryStateManager
 
@@ -65,6 +69,23 @@ def test_cli_state_keeps_existing_database_location(tmp_path: Path) -> None:
         assert db_path.exists()
     finally:
         state.close()
+
+
+def test_memory_state_requires_a_secure_lock_directory() -> None:
+    with pytest.raises(ValueError, match="data_dir is required"):
+        MemoryStateManager()
+
+
+def test_cli_service_reuses_one_inventory(tmp_path: Path) -> None:
+    state_manager = MagicMock()
+    with patch(
+        "smolvm.cli.state.create_cli_state_manager", return_value=state_manager
+    ) as create_state:
+        service = CLIService(tmp_path)
+
+    assert service.state_manager() is state_manager
+    assert service.state_manager() is state_manager
+    create_state.assert_called_once_with(tmp_path / "smolvm.db")
 
 
 def test_transient_resource_claims_coordinate_process_local_managers(tmp_path: Path) -> None:

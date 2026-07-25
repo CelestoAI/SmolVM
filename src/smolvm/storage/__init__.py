@@ -5,8 +5,8 @@
 
 """Transient core state interfaces.
 
-The SDK and HTTP API use :class:`MemoryStateManager`, which has no filesystem
-side effects. Persistent SQLite inventory is owned by :mod:`smolvm.cli.state`.
+The SDK and HTTP API use :class:`MemoryStateManager`, which has no database
+dependency. Persistent SQLite inventory is owned by :mod:`smolvm.cli.state`.
 """
 
 from __future__ import annotations

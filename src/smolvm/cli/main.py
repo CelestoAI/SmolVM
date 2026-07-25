@@ -60,8 +60,11 @@ from smolvm.cli.output import (
 from smolvm.types import BrowserSessionState, DesktopEndpoint, GuestOS, VMState
 
 if TYPE_CHECKING:
+    from smolvm.cli.service import CLIService
+    from smolvm.facade import SmolVM as FacadeVM
     from smolvm.images.published import Arch, Vmm
-    from smolvm.types import BrowserSessionInfo, SnapshotInfo, VMInfo
+    from smolvm.storage import StateManagerProtocol
+    from smolvm.types import BrowserSessionInfo, SnapshotInfo, VMConfig, VMInfo
 
 DASHBOARD_ALLOW_BETA_ENV = "SMOLVM_DASHBOARD_ALLOW_BETA"
 DASHBOARD_URL_ENV = "SMOLVM_DASHBOARD_URL"
@@ -72,30 +75,25 @@ ENV_RELOAD_HINT = "source /etc/profile.d/smolvm_env.sh"
 _PRERELEASE_RE = re.compile(r"[._]?(a|b|rc|alpha|beta|dev)\d*", re.IGNORECASE)
 
 
-def _cli_service():  # type: ignore[no-untyped-def]
+def _cli_service() -> CLIService:
     from smolvm.cli.service import CLIService
 
     return CLIService()
 
 
-def _cli_state_manager():  # type: ignore[no-untyped-def]
+def _cli_state_manager() -> StateManagerProtocol:
     """Open the persistent inventory shared by CLI invocations."""
     return _cli_service().state_manager()
 
 
-def _cli_vm(config=None, **kwargs):  # type: ignore[no-untyped-def]
+def _cli_vm(config: VMConfig | None = None, **kwargs: Any) -> FacadeVM:
     """Construct an SDK handle wired to the CLI inventory."""
     return _cli_service().create_vm(config, **kwargs)
 
 
-def _cli_vm_from_id(vm_id: str, **kwargs):  # type: ignore[no-untyped-def]
+def _cli_vm_from_id(vm_id: str, **kwargs: Any) -> FacadeVM:
     """Reconnect a CLI handle through persistent inventory."""
     return _cli_service().vm_from_id(vm_id, **kwargs)
-
-
-def _cli_manager(**kwargs):  # type: ignore[no-untyped-def]
-    """Construct a low-level manager wired to the CLI inventory."""
-    return _cli_service().manager(**kwargs)
 
 
 class VmRow(TypedDict):
@@ -569,7 +567,7 @@ def _run_list(
 ) -> int:
     """Handle ``smolvm sandbox list``."""
 
-    with _cli_manager() as sdk:
+    with _cli_service().manager() as sdk:
         try:
             effective_status = status_filter or (None if include_all else VMState.RUNNING.value)
             state = VMState(effective_status) if effective_status else None
@@ -804,7 +802,7 @@ def _render_info_result(data: InfoPayload) -> None:
 def _run_info(*, vm_id: str, json_output: bool, command_name: str = "sandbox.info") -> int:
     """Handle ``smolvm sandbox info``."""
 
-    with _cli_manager() as sdk:
+    with _cli_service().manager() as sdk:
         try:
             vm = sdk.state.get_vm(vm_id)
             live_data: dict[str, object] | None = None
@@ -2281,7 +2279,7 @@ def _run_snapshot(args: SimpleNamespace) -> int:
                 force=args.force,
                 state_manager=_cli_state_manager(),
             )
-            with _cli_manager() as sdk:
+            with _cli_service().manager() as sdk:
                 snapshot = sdk.get_snapshot(args.snapshot_id)
             row = _snapshot_row(snapshot)
             network = vm.info.network
@@ -2310,7 +2308,7 @@ def _run_snapshot(args: SimpleNamespace) -> int:
             from smolvm.exceptions import SnapshotNotFoundError
 
             existing_snapshot: SnapshotInfo | None
-            with _cli_manager() as sdk:
+            with _cli_service().manager() as sdk:
                 try:
                     existing_snapshot = sdk.get_snapshot(args.snapshot_id)
                 except SnapshotNotFoundError:
@@ -2340,7 +2338,7 @@ def _run_snapshot(args: SimpleNamespace) -> int:
             return _emit_cli_error(command_name, 1, exc, json_output=json_output)
 
     try:
-        with _cli_manager() as sdk:
+        with _cli_service().manager() as sdk:
             snapshots = sdk.list_snapshots(vm_id=args.vm_id)
         rows = [_snapshot_row(snapshot) for snapshot in snapshots]
         data: SnapshotListPayload = {
@@ -3476,9 +3474,7 @@ def _run_browser(args: SimpleNamespace) -> int:
             for session_info in sessions:
                 session: _BrowserSandbox | None = None
                 try:
-                    session = _BrowserSandbox.from_id(
-                        session_info.session_id, state_manager=_cli_state_manager()
-                    )
+                    session = _BrowserSandbox.from_id(session_info.session_id, state_manager=state)
                     session.stop()
                     stopped_session_ids.append(session_info.session_id)
                 except Exception as exc:

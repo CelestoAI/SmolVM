@@ -97,6 +97,7 @@ def _cleanup_vm(vm: SmolVM | None) -> None:
     if vm is None:
         return
     try:
+        vm.stop()
         vm.delete()
     finally:
         vm.close()

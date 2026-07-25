@@ -87,10 +87,11 @@ class SQLiteStateManager:
         conn = sqlite3.connect(
             str(self.db_path),
             timeout=30.0,
-            isolation_level="EXCLUSIVE" if exclusive else "DEFERRED",
+            isolation_level=None,
         )
         conn.execute("PRAGMA foreign_keys = ON")
         conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN EXCLUSIVE" if exclusive else "BEGIN DEFERRED")
         try:
             yield conn
             conn.commit()
@@ -672,8 +673,8 @@ class SQLiteStateManager:
                 ):
                     raise NetworkError(
                         f"Sandbox '{vm_id}' already reserves TAP '{existing_tap}' for "
-                        f"{existing_mode} networking; delete the sandbox before changing "
-                        "its network attachment."
+                        f"{existing_mode} networking; run 'smolvm sandbox delete {vm_id}' "
+                        "before changing its network attachment."
                     )
                 return existing_tap
 

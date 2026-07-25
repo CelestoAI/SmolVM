@@ -5,9 +5,10 @@
 
 """Process-local state used by the Python SDK and HTTP API.
 
-This implementation deliberately has no filesystem side effects. It is a
-migration seam while VM lifecycle state moves fully onto the ``SmolVM``
-handle; persistent inventory belongs to the CLI.
+This implementation deliberately has no database dependency. It is a migration
+seam while VM lifecycle state moves fully onto the ``SmolVM`` handle; persistent
+inventory belongs to the CLI. Advisory resource locks live in the caller's
+SmolVM data directory.
 """
 
 from __future__ import annotations
@@ -55,8 +56,10 @@ class MemoryStateManager:
     """Thread-safe, process-local implementation of the state protocol."""
 
     def __init__(self, data_dir: Path | None = None) -> None:
+        if data_dir is None:
+            raise ValueError("data_dir is required for secure resource locks")
         self._lock = threading.RLock()
-        self._lock_dir = (data_dir or Path("/tmp") / "smolvm") / "locks" / "resources"
+        self._lock_dir = data_dir / "locks" / "resources"
         self._claims: dict[tuple[str, str], BinaryIO] = {}
         self._vms: dict[str, VMInfo] = {}
         self._ip_leases: dict[str, tuple[str, str]] = {}
@@ -467,6 +470,7 @@ class MemoryStateManager:
                 except ProcessLookupError:
                     stale.append(vm_id)
                 except PermissionError:
+                    # The process exists but belongs to another user, so it is not stale.
                     pass
             for vm_id in stale:
                 self._vms[vm_id] = self._vms[vm_id].model_copy(

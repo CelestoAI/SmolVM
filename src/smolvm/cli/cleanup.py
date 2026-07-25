@@ -20,6 +20,7 @@ import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
+from typing import TYPE_CHECKING
 
 from rich.panel import Panel
 from rich.table import Table
@@ -34,12 +35,9 @@ from smolvm.cli.output import (
     status_style,
 )
 from smolvm.cli.service import CLIService
-from smolvm.vm import SmolVMManager
 
-
-def _cli_manager() -> SmolVMManager:
-    """Return a manager backed by the persistent CLI inventory."""
-    return SmolVMManager(state_manager=CLIService().state_manager())
+if TYPE_CHECKING:
+    from smolvm.vm import SmolVMManager
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +224,7 @@ def run_delete(
     warn_not_root = sys.platform == "linux" and os.geteuid() != 0
 
     try:
-        with _cli_manager() as sdk:
+        with CLIService().manager() as sdk:
             deleted: list[str] = []
             failed: list[DeleteFailure] = []
             if not dry_run:
@@ -327,7 +325,7 @@ def run_cleanup(
     warn_not_root = sys.platform == "linux" and os.geteuid() != 0
 
     try:
-        with _cli_manager() as sdk:
+        with CLIService().manager() as sdk:
             stale_ids = sorted(set(sdk.reconcile()))
             vms = sdk.list_vms()
             target_ids = [vm.vm_id for vm in vms]

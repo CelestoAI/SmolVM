@@ -2712,6 +2712,8 @@ class TestCliBrowser:
         state_manager.list_browser_sessions.assert_called_once_with()
         assert mock_browser_cls.from_id.call_args_list[0].args == ("browser-001",)
         assert mock_browser_cls.from_id.call_args_list[1].args == ("browser-002",)
+        assert mock_browser_cls.from_id.call_args_list[0].kwargs["state_manager"] is state_manager
+        assert mock_browser_cls.from_id.call_args_list[1].kwargs["state_manager"] is state_manager
         first_session.stop.assert_called_once_with()
         second_session.stop.assert_called_once_with()
         first_session.close.assert_called_once_with()
@@ -2742,6 +2744,7 @@ class TestCliBrowser:
         ret = main(["browser", "stop", "--all"])
 
         assert ret == 1
+        assert mock_browser_cls.from_id.call_args.kwargs["state_manager"] is state_manager
         error = capsys.readouterr().err
         assert "smolvm browser" in error
         assert "stop browser-001" in error

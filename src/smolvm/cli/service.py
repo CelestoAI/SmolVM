@@ -23,13 +23,14 @@ class CLIService:
     """Wire SDK handles to the CLI-owned SQLite inventory."""
 
     def __init__(self, data_dir: Path | None = None) -> None:
-        self.data_dir = resolve_data_dir(data_dir)
-
-    def state_manager(self) -> StateManagerProtocol:
-        """Open the inventory shared by separate CLI invocations."""
         from smolvm.cli.state import create_cli_state_manager
 
-        return create_cli_state_manager(self.data_dir / "smolvm.db")
+        self.data_dir = resolve_data_dir(data_dir)
+        self._state_manager = create_cli_state_manager(self.data_dir / "smolvm.db")
+
+    def state_manager(self) -> StateManagerProtocol:
+        """Return the inventory shared by this CLI service's handles."""
+        return self._state_manager
 
     def manager(self, **kwargs: Any) -> SmolVMManager:
         """Create a low-level manager backed by CLI inventory."""

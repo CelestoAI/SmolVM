@@ -203,6 +203,11 @@ class _BrowserSandbox:
     ) -> None:
         if config is not None and session_id is not None:
             raise ValueError("Provide either config or session_id, not both.")
+        if session_id is not None and state_manager is None:
+            raise ValueError(
+                "Reconnecting by session_id requires an explicit state_manager; "
+                "retain the original browser sandbox handle for SDK use."
+            )
 
         self._data_dir = resolve_data_dir(data_dir)
         self._socket_dir = socket_dir
