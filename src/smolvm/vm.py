@@ -61,7 +61,12 @@ from smolvm.runtime.backends import (
     resolve_backend,
     resolve_backend_for_guest,
 )
-from smolvm.runtime.base import RuntimeContext, SnapshotCreateRequest, SnapshotRestoreRequest
+from smolvm.runtime.base import (
+    QemuDirtyBitmapBackup,
+    RuntimeContext,
+    SnapshotCreateRequest,
+    SnapshotRestoreRequest,
+)
 from smolvm.runtime.firecracker import FirecrackerRuntimeAdapter
 from smolvm.runtime.guest_platforms import get_guest_platform
 from smolvm.runtime.libkrun import LibkrunRuntimeAdapter
@@ -2348,6 +2353,7 @@ class SmolVMManager:
         capture_policy: SnapshotCapturePolicy = SnapshotCapturePolicy.ALLOW_PAUSE,
         timeout_seconds: float = 600.0,
         max_bytes_per_second: int | None = None,
+        qemu_dirty_bitmap_backup: QemuDirtyBitmapBackup | None = None,
     ) -> SnapshotInfo:
         """Create a snapshot for a paused or running VM.
 
@@ -2384,6 +2390,7 @@ class SmolVMManager:
                 capture_policy=capture_policy,
                 timeout_seconds=timeout_seconds,
                 max_bytes_per_second=max_bytes_per_second,
+                qemu_dirty_bitmap_backup=qemu_dirty_bitmap_backup,
             )
 
     def _create_snapshot_locked(
@@ -2397,6 +2404,7 @@ class SmolVMManager:
         capture_policy: SnapshotCapturePolicy,
         timeout_seconds: float,
         max_bytes_per_second: int | None,
+        qemu_dirty_bitmap_backup: QemuDirtyBitmapBackup | None,
     ) -> SnapshotInfo:
         """Create one snapshot while its VM and snapshot-ID locks are held."""
 
@@ -2447,9 +2455,42 @@ class SmolVMManager:
                     f"A live snapshot keeps sandbox '{vm_id}' running; run '{live_command}'.",
                     {"vm_id": vm_id},
                 )
+        if qemu_dirty_bitmap_backup is not None:
+            if backend != BACKEND_QEMU:
+                raise SmolVMError(
+                    "Dirty-bitmap backups require a running QEMU sandbox.",
+                    {"vm_id": vm_id, "backend": backend},
+                )
+            if (
+                original_status != VMState.RUNNING
+                or snapshot_type != SnapshotType.DISK
+                or capture_policy != SnapshotCapturePolicy.LIVE_ONLY
+            ):
+                raise SmolVMError(
+                    "Dirty-bitmap backups require a live-only running QEMU disk snapshot.",
+                    {
+                        "vm_id": vm_id,
+                        "current_status": original_status.value,
+                        "snapshot_type": snapshot_type.value,
+                        "capture_policy": capture_policy.value,
+                    },
+                )
+            if not resume_source:
+                raise SmolVMError(
+                    "Dirty-bitmap backups must leave the source sandbox running.",
+                    {"vm_id": vm_id},
+                )
+            if not qemu_dirty_bitmap_backup.bitmap_name:
+                raise ValueError("bitmap_name cannot be empty")
+
         managed_disk_path = self._managed_disk_for_vm(vm_info)
         if managed_disk_path is None:
             raise SmolVMError("Snapshotting requires a managed isolated disk", {"vm_id": vm_id})
+        if qemu_dirty_bitmap_backup is not None and managed_disk_path.suffix != ".qcow2":
+            raise SmolVMError(
+                "Dirty-bitmap backups require a managed qcow2 disk.",
+                {"vm_id": vm_id, "disk_path": str(managed_disk_path)},
+            )
 
         adapter = self._runtime_adapter_for_backend(backend)
         if isinstance(adapter, QemuRuntimeAdapter):
@@ -2504,6 +2545,7 @@ class SmolVMManager:
                     capture_policy=capture_policy,
                     timeout_seconds=timeout_seconds,
                     max_bytes_per_second=max_bytes_per_second,
+                    qemu_dirty_bitmap_backup=qemu_dirty_bitmap_backup,
                 )
             )
 
@@ -2516,6 +2558,11 @@ class SmolVMManager:
                 network_config=vm_info.network,
                 created_at=result.captured_at,
                 snapshot_type=snapshot_type,
+                artifact_kind=result.artifact_kind,
+                virtual_size_bytes=result.virtual_size_bytes,
+                changed_bytes=result.changed_bytes,
+                bitmap_granularity_bytes=result.bitmap_granularity_bytes,
+                bitmap_name=result.bitmap_name,
             )
             self.state.create_snapshot(snapshot_info)
             snapshot_persisted = True

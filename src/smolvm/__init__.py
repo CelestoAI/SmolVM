@@ -41,6 +41,7 @@ from smolvm.images.boot import BootImage, DirectKernelBoot, FirmwareBoot
 from smolvm.images.builder import SSH_BOOT_ARGS, DockerRootfsBuilder, ImageBuilder
 from smolvm.images.manager import ImageManager, ImageSource, LocalImage, S3ImageManifest, S3ImageRef
 from smolvm.kernels import ensure_base_kernel_for_backend
+from smolvm.runtime.base import QemuDirtyBitmapBackup
 from smolvm.ssh import SSHClient
 from smolvm.types import (
     BrowserViewport,
@@ -100,6 +101,7 @@ __all__ = [
     "VMState",
     "NetworkConfig",
     "QemuMachine",
+    "QemuDirtyBitmapBackup",
     "SnapshotArtifacts",
     "SnapshotCapturePolicy",
     "SnapshotInfo",

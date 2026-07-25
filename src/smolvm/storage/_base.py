@@ -98,6 +98,15 @@ def snapshot_info_from_row(row: Any) -> SnapshotInfo:
     except ValueError:
         # Unknown value persisted by a newer/other writer — treat as full.
         snapshot_type = SnapshotType.FULL
+
+    def optional_value(name: str) -> Any:
+        try:
+            return row[name]
+        except (KeyError, IndexError):
+            return None
+
+    raw_artifact_kind = optional_value("artifact_kind")
+    artifact_kind = raw_artifact_kind if raw_artifact_kind in {"full", "incremental"} else None
     return SnapshotInfo(
         snapshot_id=row["snapshot_id"],
         vm_id=row["vm_id"],
@@ -107,6 +116,11 @@ def snapshot_info_from_row(row: Any) -> SnapshotInfo:
         network_config=NetworkConfig.model_validate_json(row["network_config"]),
         created_at=datetime.fromisoformat(row["created_at"]),
         snapshot_type=snapshot_type,
+        artifact_kind=artifact_kind,
+        virtual_size_bytes=optional_value("virtual_size_bytes"),
+        changed_bytes=optional_value("changed_bytes"),
+        bitmap_granularity_bytes=optional_value("bitmap_granularity_bytes"),
+        bitmap_name=optional_value("bitmap_name"),
         restored=bool(row["restored"]),
         restored_vm_id=row["restored_vm_id"],
     )

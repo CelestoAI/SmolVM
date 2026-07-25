@@ -26,6 +26,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from smolvm.exceptions import OperationTimeoutError, SmolVMError, VMNotFoundError
+from smolvm.qmp import QMPDirtyBitmap
+from smolvm.runtime.base import QemuDirtyBitmapBackup
 from smolvm.runtime.qemu import (
     _QEMU_BLOCK_NODE_NAME_MAX,
     QemuRuntimeAdapter,
@@ -932,10 +934,14 @@ def _live_backup_commands() -> set[str]:
         "blockdev-add",
         "blockdev-backup",
         "blockdev-del",
+        "block-dirty-bitmap-add",
+        "block-dirty-bitmap-remove",
+        "block-job-cancel",
         "job-cancel",
         "job-dismiss",
         "query-jobs",
         "query-named-block-nodes",
+        "transaction",
     }
 
 
@@ -954,6 +960,31 @@ def test_live_backup_identifiers_fit_qemu_block_node_limit() -> None:
     assert target_node == "svmbn-0123456789abcdef"
     assert len(job_id) <= _QEMU_BLOCK_NODE_NAME_MAX
     assert len(target_node) <= _QEMU_BLOCK_NODE_NAME_MAX
+
+
+def test_qemu_dirty_bitmap_backup_rejects_empty_name() -> None:
+    with pytest.raises(ValueError, match="bitmap_name"):
+        QemuDirtyBitmapBackup(mode="new-base", bitmap_name="")
+
+
+def test_qemu_dirty_bitmap_backup_requires_live_only_capture(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
+
+    with pytest.raises(SmolVMError, match="live-only"):
+        qemu_smol_vm.create_snapshot(
+            "vm001",
+            snapshot_id="snap-bitmap-pausing",
+            snapshot_type=SnapshotType.DISK,
+            resume_source=True,
+            qemu_dirty_bitmap_backup=QemuDirtyBitmapBackup(
+                mode="new-base",
+                bitmap_name="celesto-chain0",
+            ),
+        )
 
 
 def test_qemu_live_disk_snapshot_never_pauses_and_publishes_atomically(
@@ -1003,6 +1034,176 @@ def test_qemu_live_disk_snapshot_never_pauses_and_publishes_atomically(
     assert snapshot.artifacts.disk_path.exists()
     assert not (snapshot.artifacts.disk_path.parent / "disk.qcow2.partial").exists()
     assert qemu_smol_vm.get("vm001").status == VMState.RUNNING
+
+
+def test_qemu_dirty_bitmap_new_base_returns_capture_metadata(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """A new base should atomically create its bitmap and return its metadata."""
+    _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
+    created_bitmap = QMPDirtyBitmap(
+        name="celesto-chain0",
+        recording=True,
+        busy=False,
+        persistent=True,
+        inconsistent=False,
+        granularity=65536,
+        dirty_bytes=0,
+    )
+
+    with (
+        patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls,
+        patch.object(
+            QemuRuntimeAdapter,
+            "_qemu_img_virtual_size",
+            return_value=(Path("/usr/bin/qemu-img"), 10 * 1024 * 1024),
+        ),
+        patch.object(QemuRuntimeAdapter, "_require_live_backup_space"),
+        patch.object(QemuRuntimeAdapter, "_validate_live_backup_artifact"),
+        patch("smolvm.runtime.qemu.subprocess.run", side_effect=_fake_qemu_img_create),
+    ):
+        client = _mock_qmp_client()
+        client.query_commands.return_value = _live_backup_commands()
+        client.query_dirty_bitmaps.side_effect = [[], [created_bitmap]]
+        client.query_jobs.return_value = []
+        client.query_named_block_nodes.return_value = []
+        mock_client_cls.return_value = client
+
+        snapshot = qemu_smol_vm.create_snapshot(
+            "vm001",
+            snapshot_id="snap-bitmap-base",
+            snapshot_type=SnapshotType.DISK,
+            resume_source=True,
+            capture_policy=SnapshotCapturePolicy.LIVE_ONLY,
+            qemu_dirty_bitmap_backup=QemuDirtyBitmapBackup(
+                mode="new-base",
+                bitmap_name="celesto-chain0",
+            ),
+        )
+
+    client.start_full_backup_with_dirty_bitmap.assert_called_once()
+    client.blockdev_backup.assert_not_called()
+    assert snapshot.artifacts.disk_path.name == "disk.qcow2"
+    assert snapshot.artifact_kind == "full"
+    assert snapshot.virtual_size_bytes == 10 * 1024 * 1024
+    assert snapshot.changed_bytes is None
+    assert snapshot.bitmap_granularity_bytes == 65536
+    assert snapshot.bitmap_name == "celesto-chain0"
+
+
+def test_qemu_dirty_bitmap_increment_returns_sparse_capture_metadata(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """An increment should require a usable bitmap and return dirty-byte metadata."""
+    _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
+    bitmap = QMPDirtyBitmap(
+        name="celesto-chain0",
+        recording=True,
+        busy=False,
+        persistent=True,
+        inconsistent=False,
+        granularity=65536,
+        dirty_bytes=131072,
+    )
+
+    with (
+        patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls,
+        patch.object(
+            QemuRuntimeAdapter,
+            "_qemu_img_virtual_size",
+            return_value=(Path("/usr/bin/qemu-img"), 10 * 1024 * 1024),
+        ),
+        patch.object(QemuRuntimeAdapter, "_require_live_backup_space"),
+        patch.object(QemuRuntimeAdapter, "_validate_live_backup_artifact"),
+        patch("smolvm.runtime.qemu.subprocess.run", side_effect=_fake_qemu_img_create),
+    ):
+        client = _mock_qmp_client()
+        client.query_commands.return_value = _live_backup_commands()
+        client.query_dirty_bitmaps.return_value = [bitmap]
+        client.query_jobs.return_value = []
+        client.query_named_block_nodes.return_value = []
+        mock_client_cls.return_value = client
+
+        snapshot = qemu_smol_vm.create_snapshot(
+            "vm001",
+            snapshot_id="snap-bitmap-increment",
+            snapshot_type=SnapshotType.DISK,
+            resume_source=True,
+            capture_policy=SnapshotCapturePolicy.LIVE_ONLY,
+            qemu_dirty_bitmap_backup=QemuDirtyBitmapBackup(
+                mode="incremental",
+                bitmap_name="celesto-chain0",
+            ),
+        )
+
+    client.blockdev_backup_incremental.assert_called_once()
+    client.blockdev_backup.assert_not_called()
+    assert snapshot.artifacts.disk_path.name == "increment.qcow2"
+    assert snapshot.artifact_kind == "incremental"
+    assert snapshot.virtual_size_bytes == 10 * 1024 * 1024
+    assert snapshot.changed_bytes == 131072
+    assert snapshot.bitmap_granularity_bytes == 65536
+    assert snapshot.bitmap_name == "celesto-chain0"
+
+
+def test_qemu_dirty_bitmap_increment_failure_keeps_bitmap(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """A failed increment must not remove or clear its dirty bitmap."""
+    _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
+    bitmap = QMPDirtyBitmap(
+        name="celesto-chain0",
+        recording=True,
+        busy=False,
+        persistent=True,
+        inconsistent=False,
+        granularity=65536,
+        dirty_bytes=131072,
+    )
+
+    with (
+        patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls,
+        patch.object(
+            QemuRuntimeAdapter,
+            "_qemu_img_virtual_size",
+            return_value=(Path("/usr/bin/qemu-img"), 10 * 1024 * 1024),
+        ),
+        patch.object(QemuRuntimeAdapter, "_require_live_backup_space"),
+        patch("smolvm.runtime.qemu.subprocess.run", side_effect=_fake_qemu_img_create),
+    ):
+        client = _mock_qmp_client()
+        client.query_commands.return_value = _live_backup_commands()
+        client.query_dirty_bitmaps.return_value = [bitmap]
+        client.query_jobs.return_value = []
+        client.query_named_block_nodes.side_effect = lambda: (
+            [{"node-name": client.blockdev_add.call_args.args[0]}]
+            if client.blockdev_add.called
+            else []
+        )
+        client.wait_for_job.side_effect = SmolVMError("QMP job failed")
+        mock_client_cls.return_value = client
+
+        with pytest.raises(SmolVMError, match="could not complete"):
+            qemu_smol_vm.create_snapshot(
+                "vm001",
+                snapshot_id="snap-bitmap-failed",
+                snapshot_type=SnapshotType.DISK,
+                resume_source=True,
+                capture_policy=SnapshotCapturePolicy.LIVE_ONLY,
+                qemu_dirty_bitmap_backup=QemuDirtyBitmapBackup(
+                    mode="incremental",
+                    bitmap_name="celesto-chain0",
+                ),
+            )
+
+    client.remove_dirty_bitmap.assert_not_called()
+    assert not (qemu_smol_vm.snapshot_dir / "snap-bitmap-failed").exists()
 
 
 def test_qemu_live_disk_snapshot_timeout_cancels_without_resuming(
@@ -1166,6 +1367,179 @@ def test_qemu_live_only_rejects_conflicting_final_state_before_qmp(
         )
 
     assert not (qemu_smol_vm.snapshot_dir / "snap-conflict").exists()
+
+
+def test_qemu_bitmap_reconciliation_preserves_completed_unpublished_capture(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """A successful bitmap capture must survive a process interruption."""
+    _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
+    job_id, target_node = _live_backup_identifiers("1111111111111111")
+    snapshot_root = qemu_smol_vm.snapshot_dir / "snap-pending-increment"
+    snapshot_root.mkdir()
+    final_path = snapshot_root / "increment.qcow2"
+    final_path.write_text("captured-delta")
+    manifest_path = snapshot_root / "live-backup.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "vm_id": "vm001",
+                "snapshot_id": "snap-pending-increment",
+                "job_id": job_id,
+                "target_node": target_node,
+                "partial_path": str(snapshot_root / "increment.qcow2.partial"),
+                "final_path": str(final_path),
+                "phase": "artifact-published",
+                "backup_mode": "incremental",
+                "bitmap_name": "celesto-chain0",
+                "virtual_size_bytes": 10 * 1024 * 1024,
+            }
+        )
+    )
+
+    with patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls:
+        client = _mock_qmp_client()
+        client.query_jobs.return_value = []
+        client.query_named_block_nodes.return_value = []
+        mock_client_cls.return_value = client
+
+        with pytest.raises(SmolVMError) as exc_info:
+            qemu_smol_vm.create_snapshot(
+                "vm001",
+                snapshot_id="snap-next",
+                snapshot_type=SnapshotType.DISK,
+                resume_source=True,
+                capture_policy=SnapshotCapturePolicy.LIVE_ONLY,
+            )
+
+    assert exc_info.value.details["capture_recovery_pending"] is True
+    assert exc_info.value.details["artifact_path"] == str(final_path)
+    assert final_path.read_text() == "captured-delta"
+    assert manifest_path.exists()
+    client.blockdev_backup.assert_not_called()
+
+
+def test_qemu_bitmap_reconciliation_recovers_concluded_job_before_phase_write(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """A crash after QMP submission must not discard a successful increment."""
+    _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
+    job_id, target_node = _live_backup_identifiers("3333333333333333")
+    snapshot_root = qemu_smol_vm.snapshot_dir / "snap-concluded-increment"
+    snapshot_root.mkdir()
+    partial_path = snapshot_root / "increment.qcow2.partial"
+    partial_path.write_text("completed-delta")
+    final_path = snapshot_root / "increment.qcow2"
+    manifest_path = snapshot_root / "live-backup.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "vm_id": "vm001",
+                "snapshot_id": "snap-concluded-increment",
+                "job_id": job_id,
+                "target_node": target_node,
+                "partial_path": str(partial_path),
+                "final_path": str(final_path),
+                "phase": "node-attached",
+                "backup_mode": "incremental",
+                "bitmap_name": "celesto-chain0",
+                "artifact_kind": "incremental",
+                "virtual_size_bytes": 10 * 1024 * 1024,
+                "changed_bytes": 131072,
+                "bitmap_granularity_bytes": 65536,
+            }
+        )
+    )
+
+    def qemu_img_result(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        stdout = '{"backing-filename": null}' if "info" in command else ""
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    with (
+        patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls,
+        patch("smolvm.runtime.qemu.which", return_value="/usr/bin/qemu-img"),
+        patch("smolvm.runtime.qemu.subprocess.run", side_effect=qemu_img_result),
+    ):
+        client = _mock_qmp_client()
+        client.query_jobs.return_value = [
+            SimpleNamespace(job_id=job_id, status="concluded", error=None)
+        ]
+        client.query_named_block_nodes.return_value = [{"node-name": target_node}]
+        mock_client_cls.return_value = client
+
+        with pytest.raises(SmolVMError) as exc_info:
+            qemu_smol_vm.create_snapshot(
+                "vm001",
+                snapshot_id="snap-next",
+                snapshot_type=SnapshotType.DISK,
+                resume_source=True,
+                capture_policy=SnapshotCapturePolicy.LIVE_ONLY,
+            )
+
+    assert exc_info.value.details["capture_recovery_pending"] is True
+    assert final_path.read_text() == "completed-delta"
+    assert not partial_path.exists()
+    assert json.loads(manifest_path.read_text())["phase"] == "artifact-published"
+    client.dismiss_job.assert_called_once_with(job_id)
+    client.blockdev_del.assert_called_once_with(target_node)
+
+
+def test_qemu_bitmap_reconciliation_rejects_ambiguous_missing_job(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """A missing job at the capture boundary must force a new base instead of guessing."""
+    _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
+    job_id, target_node = _live_backup_identifiers("2222222222222222")
+    snapshot_root = qemu_smol_vm.snapshot_dir / "snap-ambiguous-increment"
+    snapshot_root.mkdir()
+    partial_path = snapshot_root / "increment.qcow2.partial"
+    partial_path.write_text("unknown-delta")
+    manifest_path = snapshot_root / "live-backup.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "vm_id": "vm001",
+                "snapshot_id": "snap-ambiguous-increment",
+                "job_id": job_id,
+                "target_node": target_node,
+                "partial_path": str(partial_path),
+                "final_path": str(snapshot_root / "increment.qcow2"),
+                "phase": "job-running",
+                "backup_mode": "incremental",
+                "bitmap_name": "celesto-chain0",
+                "virtual_size_bytes": 10 * 1024 * 1024,
+            }
+        )
+    )
+
+    with patch("smolvm.runtime.qemu.QMPClient") as mock_client_cls:
+        client = _mock_qmp_client()
+        client.query_jobs.return_value = []
+        client.query_named_block_nodes.return_value = []
+        mock_client_cls.return_value = client
+
+        with pytest.raises(SmolVMError) as exc_info:
+            qemu_smol_vm.create_snapshot(
+                "vm001",
+                snapshot_id="snap-next",
+                snapshot_type=SnapshotType.DISK,
+                resume_source=True,
+                capture_policy=SnapshotCapturePolicy.LIVE_ONLY,
+            )
+
+    assert exc_info.value.details["bitmap_state_ambiguous"] is True
+    assert partial_path.read_text() == "unknown-delta"
+    assert manifest_path.exists()
+    client.blockdev_backup.assert_not_called()
 
 
 def test_qemu_live_snapshot_reconciles_interrupted_backup(

@@ -49,6 +49,20 @@ class RuntimeLaunch:
 
 
 @dataclass(slots=True, frozen=True)
+class QemuDirtyBitmapBackup:
+    """Concrete dirty-bitmap mode for one running QEMU disk backup."""
+
+    mode: Literal["new-base", "incremental"]
+    bitmap_name: str
+
+    def __post_init__(self) -> None:
+        if self.mode not in {"new-base", "incremental"}:
+            raise ValueError("mode must be 'new-base' or 'incremental'")
+        if not self.bitmap_name:
+            raise ValueError("bitmap_name cannot be empty")
+
+
+@dataclass(slots=True, frozen=True)
 class SnapshotCreateRequest:
     """Runtime-specific snapshot creation inputs."""
 
@@ -62,6 +76,7 @@ class SnapshotCreateRequest:
     capture_policy: SnapshotCapturePolicy = SnapshotCapturePolicy.ALLOW_PAUSE
     timeout_seconds: float = 600.0
     max_bytes_per_second: int | None = None
+    qemu_dirty_bitmap_backup: QemuDirtyBitmapBackup | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -73,6 +88,11 @@ class SnapshotCreateResult:
     captured_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     capture_method: Literal["paused", "live"] = "paused"
     operation_manifest_path: Path | None = None
+    artifact_kind: Literal["full", "incremental"] | None = None
+    virtual_size_bytes: int | None = None
+    changed_bytes: int | None = None
+    bitmap_granularity_bytes: int | None = None
+    bitmap_name: str | None = None
 
 
 @dataclass(slots=True, frozen=True)

@@ -789,6 +789,7 @@ class TestSnapshot:
                 capture_policy=SnapshotCapturePolicy.ALLOW_PAUSE,
                 timeout_seconds=600.0,
                 max_bytes_per_second=None,
+                qemu_dirty_bitmap_backup=None,
             ),
         ]
 
