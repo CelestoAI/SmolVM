@@ -14,6 +14,8 @@
 
 """Exception hierarchy for SmolVM SDK."""
 
+from typing import Literal
+
 
 class SmolVMError(Exception):
     """Base exception for all SmolVM errors."""
@@ -66,6 +68,51 @@ class SnapshotNotFoundError(SmolVMError):
             {"snapshot_id": snapshot_id},
         )
         self.snapshot_id = snapshot_id
+
+
+class QemuDirtyBitmapStateError(SmolVMError):
+    """Raised when a named QEMU dirty bitmap cannot serve its requested operation."""
+
+    def __init__(
+        self,
+        vm_id: str,
+        bitmap_name: str,
+        reason: Literal[
+            "missing",
+            "exists",
+            "busy",
+            "disabled",
+            "non-persistent",
+            "inconsistent",
+        ],
+        *,
+        details: dict | None = None,
+        recovery_command: str | None = None,
+    ) -> None:
+        state_details = {
+            **(details or {}),
+            "vm_id": vm_id,
+            "bitmap_name": bitmap_name,
+            "reason": reason,
+        }
+        if recovery_command is not None:
+            state_details["recovery_command"] = recovery_command
+        description = {
+            "missing": "is missing",
+            "exists": "already exists",
+            "busy": "is busy",
+            "disabled": "is disabled",
+            "non-persistent": "is not persistent",
+            "inconsistent": "is inconsistent",
+        }[reason]
+        message = f"The dirty bitmap '{bitmap_name}' for sandbox '{vm_id}' {description}"
+        if recovery_command is not None:
+            message = f"{message}; recover with '{recovery_command}'."
+        super().__init__(message, state_details)
+        self.vm_id = vm_id
+        self.bitmap_name = bitmap_name
+        self.reason = reason
+        self.recovery_command = recovery_command
 
 
 class BrowserSessionAlreadyExistsError(SmolVMError):

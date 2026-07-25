@@ -63,6 +63,7 @@ from smolvm.runtime.backends import (
 )
 from smolvm.runtime.base import (
     QemuDirtyBitmapBackup,
+    QemuDirtyBitmapStatus,
     RuntimeContext,
     SnapshotCreateRequest,
     SnapshotRestoreRequest,
@@ -2332,6 +2333,50 @@ class SmolVMManager:
             self._raise_if_crashed(vm_info)
             raise
         return self.state.update_vm(vm_id, status=VMState.RUNNING)
+
+    def get_qemu_dirty_bitmap(
+        self,
+        vm_id: str,
+        bitmap_name: str,
+    ) -> QemuDirtyBitmapStatus | None:
+        """Inspect one named persistent bitmap on a running QEMU root disk."""
+        vm_info, adapter = self._qemu_bitmap_operation(vm_id, bitmap_name)
+        return adapter.get_dirty_bitmap(vm_info, bitmap_name)
+
+    def remove_qemu_dirty_bitmap(self, vm_id: str, bitmap_name: str) -> bool:
+        """Remove one named persistent bitmap from a running QEMU root disk."""
+        vm_info, adapter = self._qemu_bitmap_operation(vm_id, bitmap_name)
+        return adapter.remove_dirty_bitmap(vm_info, bitmap_name)
+
+    def _qemu_bitmap_operation(
+        self,
+        vm_id: str,
+        bitmap_name: str,
+    ) -> tuple[VMInfo, QemuRuntimeAdapter]:
+        if not vm_id:
+            raise ValueError("vm_id cannot be empty")
+        if not bitmap_name:
+            raise ValueError("bitmap_name cannot be empty")
+        vm_info = self.state.get_vm(vm_id)
+        if vm_info.status != VMState.RUNNING:
+            self._raise_crashed_or_state_error(vm_info, action="manage a dirty bitmap for")
+        adapter = self._runtime_adapter_for_vm(vm_info)
+        if not isinstance(adapter, QemuRuntimeAdapter):
+            backend = self._backend_for_vm(vm_info)
+            raise SmolVMError(
+                f"Dirty bitmaps require a QEMU sandbox; '{vm_id}' uses {backend}",
+                {"vm_id": vm_id, "backend": backend},
+            )
+        managed_disk = self._managed_disk_for_vm(vm_info)
+        if managed_disk is None or managed_disk.suffix != ".qcow2":
+            raise SmolVMError(
+                f"Dirty bitmaps require a managed qcow2 root disk for sandbox '{vm_id}'",
+                {
+                    "vm_id": vm_id,
+                    "disk_path": str(managed_disk) if managed_disk else None,
+                },
+            )
+        return vm_info, adapter
 
     def _raise_crashed_or_state_error(self, vm_info: VMInfo, *, action: str) -> None:
         """Raise the state error, replacing it with a 'crashed' message if stale.

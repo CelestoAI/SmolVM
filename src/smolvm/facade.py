@@ -86,7 +86,7 @@ from smolvm.runtime.backends import (
     resolve_backend_for_guest,
     resolve_backend_status,
 )
-from smolvm.runtime.base import QemuDirtyBitmapBackup
+from smolvm.runtime.base import QemuDirtyBitmapBackup, QemuDirtyBitmapStatus
 from smolvm.runtime.boot_profiles import (
     KernelBootProfile,
     get_boot_profile_spec,
@@ -1707,6 +1707,17 @@ class SmolVM:
         self._reset_runtime_state(close_ssh=False)
         logger.info("VM %s resumed", self._vm_id)
         return self
+
+    def get_qemu_dirty_bitmap(
+        self,
+        bitmap_name: str,
+    ) -> QemuDirtyBitmapStatus | None:
+        """Inspect one named persistent bitmap on this running QEMU disk."""
+        return self._sdk.get_qemu_dirty_bitmap(self._vm_id, bitmap_name)
+
+    def remove_qemu_dirty_bitmap(self, bitmap_name: str) -> bool:
+        """Remove one named persistent bitmap from this running QEMU disk."""
+        return self._sdk.remove_qemu_dirty_bitmap(self._vm_id, bitmap_name)
 
     def snapshot(
         self,
