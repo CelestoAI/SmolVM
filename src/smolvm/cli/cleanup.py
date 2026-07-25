@@ -33,7 +33,14 @@ from smolvm.cli.output import (
     render_error,
     status_style,
 )
+from smolvm.cli.service import CLIService
 from smolvm.vm import SmolVMManager
+
+
+def _cli_manager() -> SmolVMManager:
+    """Return a manager backed by the persistent CLI inventory."""
+    return SmolVMManager(state_manager=CLIService().state_manager())
+
 
 # ---------------------------------------------------------------------------
 # Shared data types
@@ -219,7 +226,7 @@ def run_delete(
     warn_not_root = sys.platform == "linux" and os.geteuid() != 0
 
     try:
-        with SmolVMManager() as sdk:
+        with _cli_manager() as sdk:
             deleted: list[str] = []
             failed: list[DeleteFailure] = []
             if not dry_run:
@@ -320,7 +327,7 @@ def run_cleanup(
     warn_not_root = sys.platform == "linux" and os.geteuid() != 0
 
     try:
-        with SmolVMManager() as sdk:
+        with _cli_manager() as sdk:
             stale_ids = sorted(set(sdk.reconcile()))
             vms = sdk.list_vms()
             target_ids = [vm.vm_id for vm in vms]

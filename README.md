@@ -347,9 +347,8 @@ The same works from Python:
 ```python
 from smolvm import SmolVM
 
-vm = SmolVM.from_id("my-sandbox")
-vm.upload_file("./prompt.txt", "/tmp/prompt.txt")
-vm.close()
+with SmolVM() as vm:
+    vm.upload_file("./prompt.txt", "/tmp/prompt.txt")
 ```
 
 The destination must be an absolute path inside the sandbox (starting

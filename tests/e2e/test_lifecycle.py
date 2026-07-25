@@ -107,14 +107,12 @@ def test_stop_and_cleanup(vm: SmolVM) -> None:
     This is the shared sandbox's final step; the fixture teardown is just a
     safety net for earlier failures.
     """
-    vm_id = vm.vm_id
-
     vm.stop()
     assert vm.status == VMState.STOPPED
 
     vm.delete()
     with pytest.raises(VMNotFoundError):
-        SmolVM.from_id(vm_id)
+        vm.refresh()
 
 
 # ---------------------------------------------------------------------------

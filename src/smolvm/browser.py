@@ -25,7 +25,7 @@ from smolvm.runtime.boot_profiles import (
     KernelBootProfile,
     get_boot_profile_spec,
 )
-from smolvm.storage import StateManagerProtocol, create_state_manager
+from smolvm.storage import MemoryStateManager, StateManagerProtocol
 from smolvm.types import (
     BrowserSessionConfig,
     BrowserSessionInfo,
@@ -56,10 +56,9 @@ def _generate_browser_session_id() -> str:
     return f"browser-{uuid.uuid4().hex[:8]}"
 
 
-def _browser_state_manager(data_dir: Path | None = None) -> StateManagerProtocol:
-    """Return a state manager bound to the resolved SmolVM data dir."""
-    resolved = resolve_data_dir(data_dir)
-    return create_state_manager(db_path=resolved / "smolvm.db")
+def _browser_state_manager(data_dir: Path) -> StateManagerProtocol:
+    """Return process-local browser state with no database side effects."""
+    return MemoryStateManager(data_dir)
 
 
 def _stable_browser_vm_id(profile_id: str) -> str:
@@ -200,6 +199,7 @@ class _BrowserSandbox:
         data_dir: Path | None = None,
         socket_dir: Path | None = None,
         ssh_key_path: str | None = None,
+        state_manager: StateManagerProtocol | None = None,
     ) -> None:
         if config is not None and session_id is not None:
             raise ValueError("Provide either config or session_id, not both.")
@@ -207,7 +207,7 @@ class _BrowserSandbox:
         self._data_dir = resolve_data_dir(data_dir)
         self._socket_dir = socket_dir
         self._ssh_key_path = ssh_key_path
-        self._state = _browser_state_manager(self._data_dir)
+        self._state = state_manager or _browser_state_manager(self._data_dir)
         self._owns_session = False
         self._vm: SmolVM | None = None
         self._playwright_runtime: Any | None = None
@@ -229,6 +229,7 @@ class _BrowserSandbox:
         data_dir: Path | None = None,
         socket_dir: Path | None = None,
         ssh_key_path: str | None = None,
+        state_manager: StateManagerProtocol | None = None,
     ) -> _BrowserSandbox:
         """Reconnect to an existing browser sandbox by ID."""
         return cls(
@@ -236,6 +237,7 @@ class _BrowserSandbox:
             data_dir=data_dir,
             socket_dir=socket_dir,
             ssh_key_path=ssh_key_path,
+            state_manager=state_manager,
         )
 
     def _init_new_session(self, config: BrowserSessionConfig) -> None:
@@ -259,6 +261,7 @@ class _BrowserSandbox:
                 data_dir=self._data_dir,
                 socket_dir=self._socket_dir,
                 ssh_key_path=self._ssh_key_path,
+                state_manager=self._state,
             )
             info = BrowserSessionInfo(
                 session_id=session_id,
@@ -292,6 +295,7 @@ class _BrowserSandbox:
                 data_dir=self._data_dir,
                 socket_dir=self._socket_dir,
                 ssh_key_path=self._ssh_key_path,
+                state_manager=self._state,
             )
         except Exception:
             logger.warning(

@@ -678,7 +678,7 @@ class TestVMInit:
         mock_sdk.get.return_value = MagicMock(vm_id="vm001", status=VMState.RUNNING)
         mock_sdk_cls.from_id.return_value = mock_sdk
 
-        vm = SmolVM.from_id("vm001")
+        vm = SmolVM.from_id("vm001", state_manager=MagicMock())
 
         assert vm.vm_id == "vm001"
         mock_sdk_cls.from_id.assert_called_once()
@@ -3102,7 +3102,7 @@ class TestVMContextManager:
         mock_sdk.stop.return_value = stopped_info
         mock_sdk_cls.from_id.return_value = mock_sdk
 
-        with SmolVM.from_id("vm001") as vm:
+        with SmolVM.from_id("vm001", state_manager=MagicMock()) as vm:
             assert vm.vm_id == "vm001"
 
         mock_sdk.stop.assert_called_once()

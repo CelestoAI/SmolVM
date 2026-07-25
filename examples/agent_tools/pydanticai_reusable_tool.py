@@ -60,7 +60,7 @@ DEFAULT_MODEL = "openai:gpt-4.1"
 class SandboxDeps:
     """Host-side dependency container for a reusable SmolVM instance."""
 
-    vm_id: str | None = None
+    vm: SmolVM | None = None
 
 
 def _require_dependency(import_path: str, install_hint: str) -> Any:
@@ -86,20 +86,16 @@ def _format_command_result(exit_code: int, stdout: str, stderr: str) -> str:
 
 def _connect_vm(deps: SandboxDeps) -> SmolVM:
     """Return the active sandbox, creating it on first use."""
-    if deps.vm_id is None:
-        vm = SmolVM()
-        vm.start()
-        deps.vm_id = vm.vm_id
-        return vm
-    return SmolVM.from_id(deps.vm_id)
+    if deps.vm is None:
+        deps.vm = SmolVM()
+        deps.vm.start()
+    return deps.vm
 
 
-def _cleanup_vm(vm_id: str | None) -> None:
+def _cleanup_vm(vm: SmolVM | None) -> None:
     """Delete the reusable sandbox if one was created."""
-    if vm_id is None:
+    if vm is None:
         return
-
-    vm = SmolVM.from_id(vm_id)
     try:
         vm.delete()
     finally:
@@ -118,11 +114,8 @@ def run_in_reusable_smolvm(
         timeout: Maximum number of seconds to wait for the command.
     """
     vm = _connect_vm(ctx.deps)
-    try:
-        result = vm.run(command, timeout=timeout)
-        return _format_command_result(result.exit_code, result.stdout, result.stderr)
-    finally:
-        vm.close()
+    result = vm.run(command, timeout=timeout)
+    return _format_command_result(result.exit_code, result.stdout, result.stderr)
 
 
 def _build_agent() -> Any:
@@ -155,7 +148,7 @@ def main() -> None:
         first_result = agent.run_sync(first_prompt, deps=deps)
         print("First run:")
         print(first_result.output)
-        print(f"Reusable VM ID: {deps.vm_id}")
+        print(f"Reusable VM ID: {deps.vm.vm_id if deps.vm else '<none>'}")
 
         second_prompt = (
             "Use run_in_reusable_smolvm to run this exact command inside the sandbox: "
@@ -164,9 +157,9 @@ def main() -> None:
         second_result = agent.run_sync(second_prompt, deps=deps)
         print("\nSecond run:")
         print(second_result.output)
-        print(f"Reusable VM ID: {deps.vm_id}")
+        print(f"Reusable VM ID: {deps.vm.vm_id if deps.vm else '<none>'}")
     finally:
-        _cleanup_vm(deps.vm_id)
+        _cleanup_vm(deps.vm)
 
 
 if __name__ == "__main__":
