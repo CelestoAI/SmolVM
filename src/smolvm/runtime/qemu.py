@@ -31,10 +31,15 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
-from smolvm.exceptions import OperationTimeoutError, SmolVMError
+from smolvm.exceptions import (
+    OperationTimeoutError,
+    QemuDirtyBitmapStateError,
+    SmolVMError,
+)
 from smolvm.qmp import QMPClient, QMPJobFailedError, QMPJobTimeoutError
 from smolvm.runtime.backends import BACKEND_QEMU
 from smolvm.runtime.base import (
+    QemuDirtyBitmapStatus,
     RuntimeAdapter,
     RuntimeContext,
     RuntimeLaunch,
@@ -377,6 +382,55 @@ class QemuRuntimeAdapter(RuntimeAdapter):
         """Pause a running QEMU VM."""
         with self._client(vm_info.control_socket_path) as client:
             client.stop_vm()
+
+    def get_dirty_bitmap(
+        self,
+        vm_info: VMInfo,
+        bitmap_name: str,
+    ) -> QemuDirtyBitmapStatus | None:
+        """Return one named root-disk bitmap without changing it."""
+        with self._client(vm_info.control_socket_path) as client:
+            bitmap = next(
+                (
+                    candidate
+                    for candidate in client.query_dirty_bitmaps(QEMU_ROOT_NODE_NAME)
+                    if candidate.name == bitmap_name
+                ),
+                None,
+            )
+        if bitmap is None:
+            return None
+        return QemuDirtyBitmapStatus(
+            name=bitmap.name,
+            recording=bitmap.recording,
+            busy=bitmap.busy,
+            persistent=bitmap.persistent,
+            inconsistent=bitmap.inconsistent,
+            granularity_bytes=bitmap.granularity,
+            dirty_bytes=bitmap.dirty_bytes,
+        )
+
+    def remove_dirty_bitmap(self, vm_info: VMInfo, bitmap_name: str) -> bool:
+        """Remove one named root-disk bitmap, returning whether it existed."""
+        bitmap = self.get_dirty_bitmap(vm_info, bitmap_name)
+        if bitmap is None:
+            return False
+        if bitmap.busy:
+            raise QemuDirtyBitmapStateError(
+                vm_info.vm_id,
+                bitmap_name,
+                "busy",
+                details={"busy": True},
+            )
+        with self._client(vm_info.control_socket_path) as client:
+            try:
+                client.remove_dirty_bitmap(QEMU_ROOT_NODE_NAME, bitmap_name)
+            except SmolVMError as exc:
+                description = str(exc.details.get("desc", "")).lower()
+                if "dirty bitmap" in description and "not found" in description:
+                    return False
+                raise
+        return True
 
     def resume(self, vm_info: VMInfo) -> None:
         """Resume a paused QEMU VM."""
@@ -1232,35 +1286,50 @@ class QemuRuntimeAdapter(RuntimeAdapter):
             )
             if bitmap_backup.mode == "new-base":
                 if existing_bitmap is not None:
-                    raise self._live_backup_error(
-                        request,
-                        f"The dirty bitmap for sandbox '{request.vm_info.vm_id}' already exists",
-                        {"bitmap_name": bitmap_backup.bitmap_name},
+                    raise QemuDirtyBitmapStateError(
+                        request.vm_info.vm_id,
+                        bitmap_backup.bitmap_name,
+                        "exists",
+                        recovery_command=self._live_backup_fallback_command(request),
                     )
                 artifact_kind = "full"
             else:
                 if existing_bitmap is None:
-                    raise self._live_backup_error(
-                        request,
-                        f"The dirty bitmap for sandbox '{request.vm_info.vm_id}' is missing",
-                        {"bitmap_name": bitmap_backup.bitmap_name},
+                    raise QemuDirtyBitmapStateError(
+                        request.vm_info.vm_id,
+                        bitmap_backup.bitmap_name,
+                        "missing",
+                        recovery_command=self._live_backup_fallback_command(request),
                     )
-                if (
-                    not existing_bitmap.recording
-                    or not existing_bitmap.persistent
-                    or existing_bitmap.busy
-                    or existing_bitmap.inconsistent
-                ):
-                    raise self._live_backup_error(
-                        request,
-                        f"The dirty bitmap for sandbox '{request.vm_info.vm_id}' is not usable",
-                        {
-                            "bitmap_name": bitmap_backup.bitmap_name,
+                invalid_reason: (
+                    Literal[
+                        "busy",
+                        "disabled",
+                        "non-persistent",
+                        "inconsistent",
+                    ]
+                    | None
+                ) = None
+                if existing_bitmap.inconsistent:
+                    invalid_reason = "inconsistent"
+                elif existing_bitmap.busy:
+                    invalid_reason = "busy"
+                elif not existing_bitmap.persistent:
+                    invalid_reason = "non-persistent"
+                elif not existing_bitmap.recording:
+                    invalid_reason = "disabled"
+                if invalid_reason is not None:
+                    raise QemuDirtyBitmapStateError(
+                        request.vm_info.vm_id,
+                        bitmap_backup.bitmap_name,
+                        invalid_reason,
+                        details={
                             "recording": existing_bitmap.recording,
                             "persistent": existing_bitmap.persistent,
                             "busy": existing_bitmap.busy,
                             "inconsistent": existing_bitmap.inconsistent,
                         },
+                        recovery_command=self._live_backup_fallback_command(request),
                     )
                 artifact_kind = "incremental"
                 artifact_filename = "increment.qcow2"

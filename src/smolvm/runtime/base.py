@@ -63,6 +63,19 @@ class QemuDirtyBitmapBackup:
 
 
 @dataclass(slots=True, frozen=True)
+class QemuDirtyBitmapStatus:
+    """Public status for one persistent QEMU dirty bitmap."""
+
+    name: str
+    recording: bool
+    busy: bool
+    persistent: bool
+    inconsistent: bool
+    granularity_bytes: int
+    dirty_bytes: int
+
+
+@dataclass(slots=True, frozen=True)
 class SnapshotCreateRequest:
     """Runtime-specific snapshot creation inputs."""
 
