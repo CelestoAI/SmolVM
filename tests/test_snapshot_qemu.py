@@ -25,7 +25,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from smolvm.exceptions import OperationTimeoutError, SmolVMError, VMNotFoundError
+from smolvm.exceptions import (
+    OperationTimeoutError,
+    QemuDirtyBitmapStateError,
+    SmolVMError,
+    VMNotFoundError,
+)
 from smolvm.qmp import QMPDirtyBitmap, QMPJobFailedError, QMPJobTimeoutError
 from smolvm.runtime.base import QemuDirtyBitmapBackup
 from smolvm.runtime.qemu import (
@@ -127,6 +132,82 @@ def _mock_qmp_client() -> MagicMock:
     client.__enter__.return_value = client
     client.__exit__.return_value = False
     return client
+
+
+def test_qemu_dirty_bitmap_lifecycle_is_public_and_idempotent(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
+    client = _mock_qmp_client()
+    client.query_dirty_bitmaps.side_effect = [
+        [
+            QMPDirtyBitmap(
+                name="celesto-chain0",
+                recording=True,
+                busy=False,
+                persistent=True,
+                inconsistent=False,
+                granularity=65536,
+                dirty_bytes=131072,
+            )
+        ],
+        [
+            QMPDirtyBitmap(
+                name="celesto-chain0",
+                recording=True,
+                busy=False,
+                persistent=True,
+                inconsistent=False,
+                granularity=65536,
+                dirty_bytes=131072,
+            )
+        ],
+        [],
+    ]
+
+    with patch("smolvm.runtime.qemu.QMPClient", return_value=client):
+        status = qemu_smol_vm.get_qemu_dirty_bitmap("vm001", "celesto-chain0")
+        removed = qemu_smol_vm.remove_qemu_dirty_bitmap("vm001", "celesto-chain0")
+        missing = qemu_smol_vm.remove_qemu_dirty_bitmap("vm001", "celesto-chain0")
+
+    assert status is not None
+    assert status.name == "celesto-chain0"
+    assert status.granularity_bytes == 65536
+    assert status.dirty_bytes == 131072
+    assert removed is True
+    assert missing is False
+    client.remove_dirty_bitmap.assert_called_once_with("rootdisk0", "celesto-chain0")
+
+
+def test_qemu_dirty_bitmap_removal_rejects_busy_bitmap(
+    qemu_smol_vm: SmolVMManager,
+    qemu_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    _running_qemu_vm(qemu_smol_vm, qemu_config, tmp_path)
+    client = _mock_qmp_client()
+    client.query_dirty_bitmaps.return_value = [
+        QMPDirtyBitmap(
+            name="celesto-chain0",
+            recording=True,
+            busy=True,
+            persistent=True,
+            inconsistent=False,
+            granularity=65536,
+            dirty_bytes=0,
+        )
+    ]
+
+    with (
+        patch("smolvm.runtime.qemu.QMPClient", return_value=client),
+        pytest.raises(QemuDirtyBitmapStateError) as exc_info,
+    ):
+        qemu_smol_vm.remove_qemu_dirty_bitmap("vm001", "celesto-chain0")
+
+    assert exc_info.value.reason == "busy"
+    client.remove_dirty_bitmap.assert_not_called()
 
 
 def test_full_snapshot_copy_preserves_internal_snapshot_on_backed_overlay(
