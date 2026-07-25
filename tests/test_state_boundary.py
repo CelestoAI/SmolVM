@@ -49,12 +49,13 @@ print('ok')
 
 
 def test_http_api_does_not_import_cli_sqlite(tmp_path: Path) -> None:
+    pytest.importorskip("fastapi")
     result = _run_isolated(
         """
 import sys
 from pathlib import Path
 from smolvm.server.app import create_app
-assert callable(create_app)
+create_app()
 assert not (Path(__import__('os').environ['SMOLVM_DATA_DIR']) / 'smolvm.db').exists()
 assert 'smolvm.cli._sqlite' not in sys.modules
 print('ok')
