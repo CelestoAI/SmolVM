@@ -16,8 +16,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from smolvm_core import errors as core_errors
 from smolvm_core import qmp as core_qmp
@@ -25,6 +26,27 @@ from smolvm_core import qmp as core_qmp
 from smolvm.exceptions import SmolVMError
 
 QMPJob = core_qmp.QMPJob
+
+
+class QMPJobFailedError(SmolVMError):
+    """A QMP job reached its terminal state with an error."""
+
+
+class QMPJobTimeoutError(SmolVMError):
+    """A QMP job did not finish before its wait deadline."""
+
+
+@dataclass(frozen=True)
+class QMPDirtyBitmap:
+    """Status for one named QEMU dirty bitmap."""
+
+    name: str
+    recording: bool
+    busy: bool
+    persistent: bool
+    inconsistent: bool
+    granularity: int
+    dirty_bytes: int
 
 
 def _core_error_to_smolvm(exc: Exception, socket_path: Path) -> SmolVMError:
@@ -35,6 +57,10 @@ def _core_error_to_smolvm(exc: Exception, socket_path: Path) -> SmolVMError:
         description = details.get("desc")
         if description and str(description) not in message:
             message = f"{message}: {description}"
+        if all(key in details for key in ("job_id", "job_type", "status", "error")):
+            return QMPJobFailedError(message, details)
+        if "job_id" in details and "last_status" in details:
+            return QMPJobTimeoutError(message, details)
         return SmolVMError(message, details)
     return SmolVMError(str(exc), {"socket_path": str(socket_path)})
 
@@ -143,6 +169,31 @@ class QMPClient:
             },
         )
 
+    @staticmethod
+    def _backup_arguments(
+        *,
+        job_id: str,
+        source_node: str,
+        target_node: str,
+        sync: Literal["full", "incremental"],
+        bitmap_name: str | None = None,
+        max_bytes_per_second: int | None = None,
+    ) -> dict[str, Any]:
+        """Build the shared blockdev-backup arguments."""
+        arguments: dict[str, Any] = {
+            "job-id": job_id,
+            "device": source_node,
+            "target": target_node,
+            "sync": sync,
+            "auto-finalize": True,
+            "auto-dismiss": False,
+        }
+        if bitmap_name is not None:
+            arguments["bitmap"] = bitmap_name
+        if max_bytes_per_second is not None:
+            arguments["speed"] = max_bytes_per_second
+        return arguments
+
     def blockdev_backup(
         self,
         *,
@@ -152,17 +203,16 @@ class QMPClient:
         max_bytes_per_second: int | None = None,
     ) -> None:
         """Start a full point-in-time block backup."""
-        arguments: dict[str, Any] = {
-            "job-id": job_id,
-            "device": source_node,
-            "target": target_node,
-            "sync": "full",
-            "auto-finalize": True,
-            "auto-dismiss": False,
-        }
-        if max_bytes_per_second is not None:
-            arguments["speed"] = max_bytes_per_second
-        self.execute("blockdev-backup", arguments)
+        self.execute(
+            "blockdev-backup",
+            self._backup_arguments(
+                job_id=job_id,
+                source_node=source_node,
+                target_node=target_node,
+                sync="full",
+                max_bytes_per_second=max_bytes_per_second,
+            ),
+        )
 
     def query_block_jobs(self) -> list[dict[str, Any]]:
         """Return active block jobs for progress reporting."""
@@ -175,8 +225,13 @@ class QMPClient:
         return [row for row in rows if isinstance(row, dict)]
 
     def cancel_job(self, job_id: str, *, force: bool = False) -> None:
-        """Cancel a generic QMP job."""
-        self.execute("job-cancel", {"id": job_id, "force": force})
+        """Cancel a block job, forcing immediate cancellation when requested."""
+        if force:
+            # Generic job-cancel has no force argument even on QEMU 11;
+            # block-job-cancel is still the supported immediate block-job path.
+            self.execute("block-job-cancel", {"device": job_id, "force": True})
+            return
+        self.execute("job-cancel", {"id": job_id})
 
     def blockdev_del(self, node_name: str) -> None:
         """Detach a named QEMU block node."""
@@ -191,6 +246,129 @@ class QMPClient:
                 {"socket_path": str(self.socket_path), "result": rows},
             )
         return [row for row in rows if isinstance(row, dict)]
+
+    def query_dirty_bitmaps(self, source_node: str) -> list[QMPDirtyBitmap]:
+        """Return named dirty bitmaps attached to a block node."""
+        nodes = self.query_named_block_nodes()
+        node = next((row for row in nodes if row.get("node-name") == source_node), None)
+        if node is None:
+            raise SmolVMError(
+                "QEMU did not report the source disk block node.",
+                {"socket_path": str(self.socket_path), "source_node": source_node},
+            )
+
+        rows = node.get("dirty-bitmaps", [])
+        if not isinstance(rows, list):
+            raise SmolVMError(
+                "QEMU returned invalid dirty bitmap status.",
+                {"socket_path": str(self.socket_path), "source_node": source_node},
+            )
+
+        bitmaps: list[QMPDirtyBitmap] = []
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("name"), str):
+                continue
+            recording = row.get("recording")
+            busy = row.get("busy")
+            persistent = row.get("persistent")
+            inconsistent = row.get("inconsistent", False)
+            granularity = row.get("granularity")
+            dirty_bytes = row.get("count")
+            if (
+                not isinstance(recording, bool)
+                or not isinstance(busy, bool)
+                or not isinstance(persistent, bool)
+                or not isinstance(inconsistent, bool)
+                or not isinstance(granularity, int)
+                or isinstance(granularity, bool)
+                or granularity < 0
+                or not isinstance(dirty_bytes, int)
+                or isinstance(dirty_bytes, bool)
+                or dirty_bytes < 0
+            ):
+                raise SmolVMError(
+                    "QEMU returned invalid dirty bitmap status.",
+                    {
+                        "socket_path": str(self.socket_path),
+                        "source_node": source_node,
+                        "bitmap": row,
+                    },
+                )
+            bitmaps.append(
+                QMPDirtyBitmap(
+                    name=row["name"],
+                    recording=recording,
+                    busy=busy,
+                    persistent=persistent,
+                    inconsistent=inconsistent,
+                    granularity=granularity,
+                    dirty_bytes=dirty_bytes,
+                )
+            )
+        return bitmaps
+
+    def remove_dirty_bitmap(self, source_node: str, bitmap_name: str) -> None:
+        """Remove a named dirty bitmap from a block node."""
+        self.execute(
+            "block-dirty-bitmap-remove",
+            {"node": source_node, "name": bitmap_name},
+        )
+
+    def start_full_backup_with_dirty_bitmap(
+        self,
+        *,
+        job_id: str,
+        source_node: str,
+        target_node: str,
+        bitmap_name: str,
+        max_bytes_per_second: int | None = None,
+    ) -> None:
+        """Atomically add a persistent bitmap and start its full base backup."""
+        backup = self._backup_arguments(
+            job_id=job_id,
+            source_node=source_node,
+            target_node=target_node,
+            sync="full",
+            max_bytes_per_second=max_bytes_per_second,
+        )
+        self.execute(
+            "transaction",
+            {
+                "actions": [
+                    {
+                        "type": "block-dirty-bitmap-add",
+                        "data": {
+                            "node": source_node,
+                            "name": bitmap_name,
+                            "persistent": True,
+                        },
+                    },
+                    {"type": "blockdev-backup", "data": backup},
+                ]
+            },
+        )
+
+    def blockdev_backup_incremental(
+        self,
+        *,
+        job_id: str,
+        source_node: str,
+        target_node: str,
+        bitmap_name: str,
+        max_bytes_per_second: int | None = None,
+    ) -> None:
+        """Start an incremental backup using a named dirty bitmap."""
+        self.execute(
+            "blockdev-backup",
+            self._backup_arguments(
+                job_id=job_id,
+                source_node=source_node,
+                target_node=target_node,
+                sync="incremental",
+                bitmap_name=bitmap_name,
+                max_bytes_per_second=max_bytes_per_second,
+            ),
+        )
 
     def query_jobs(self) -> list[QMPJob]:
         """Return normalized job status rows."""
@@ -215,4 +393,10 @@ class QMPClient:
         self._core.close()
 
 
-__all__ = ["QMPClient", "QMPJob"]
+__all__ = [
+    "QMPClient",
+    "QMPDirtyBitmap",
+    "QMPJob",
+    "QMPJobFailedError",
+    "QMPJobTimeoutError",
+]

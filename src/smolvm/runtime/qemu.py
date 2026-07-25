@@ -28,11 +28,11 @@ import time
 from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from smolvm.exceptions import OperationTimeoutError, SmolVMError
-from smolvm.qmp import QMPClient
+from smolvm.qmp import QMPClient, QMPJobFailedError, QMPJobTimeoutError
 from smolvm.runtime.backends import BACKEND_QEMU
 from smolvm.runtime.base import (
     RuntimeAdapter,
@@ -77,6 +77,12 @@ _LIVE_BACKUP_REQUIRED_COMMANDS = {
     "job-dismiss",
     "query-jobs",
     "query-named-block-nodes",
+}
+_DIRTY_BITMAP_BACKUP_REQUIRED_COMMANDS = {
+    "block-dirty-bitmap-add",
+    "block-dirty-bitmap-remove",
+    "block-job-cancel",
+    "transaction",
 }
 
 
@@ -466,6 +472,42 @@ class QemuRuntimeAdapter(RuntimeAdapter):
             f"--snapshot-id {request.snapshot_id} --snapshot-type disk --resume-source"
         )
 
+    @staticmethod
+    def _bitmap_snapshot_command(vm_id: str, snapshot_id: str) -> str:
+        """Return the exact command used to retry with a fresh disk capture."""
+        return (
+            f"smolvm sandbox snapshot create {vm_id} --snapshot-id {snapshot_id} "
+            "--snapshot-type disk --resume-source --live-only"
+        )
+
+    @staticmethod
+    def _bitmap_recovery_clear_command(snapshot_id: str) -> str:
+        """Return the command that clears an adopted recovered artifact."""
+        return f"smolvm sandbox snapshot delete {snapshot_id}"
+
+    @classmethod
+    def _bitmap_recovery_error(
+        cls,
+        *,
+        vm_id: str,
+        snapshot_id: str,
+        fact: str,
+        recovery: str,
+        recovery_command: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> SmolVMError:
+        """Build a user-facing bitmap recovery error without a create request."""
+        error_details: dict[str, Any] = {
+            "vm_id": vm_id,
+            "snapshot_id": snapshot_id,
+            "capture_recovery_pending": True,
+        }
+        if recovery_command is not None:
+            error_details["recovery_command"] = recovery_command
+        if details:
+            error_details.update(details)
+        return SmolVMError(f"{fact} {recovery}", error_details)
+
     @classmethod
     def _live_backup_error(
         cls,
@@ -636,36 +678,40 @@ class QemuRuntimeAdapter(RuntimeAdapter):
         *,
         request: SnapshotCreateRequest,
         deadline: float,
+        required_bytes: int | None = None,
     ) -> None:
         """Reject a backup that is already likely to exhaust local storage."""
-        measure = cls._run_live_backup_subprocess(
-            [
-                str(qemu_img),
-                "measure",
-                "--output=json",
-                "--force-share",
-                "-O",
-                "qcow2",
-                str(source),
-            ],
-            request=request,
-            deadline=deadline,
-        )
-        if measure.returncode != 0:
-            raise cls._live_backup_error(
-                request,
-                f"The live snapshot size for sandbox '{request.vm_info.vm_id}' "
-                "could not be estimated",
-                {"disk_path": str(source), "stderr": measure.stderr.strip()},
+        if required_bytes is None:
+            measure = cls._run_live_backup_subprocess(
+                [
+                    str(qemu_img),
+                    "measure",
+                    "--output=json",
+                    "--force-share",
+                    "-O",
+                    "qcow2",
+                    str(source),
+                ],
+                request=request,
+                deadline=deadline,
             )
-        try:
-            required = int(json.loads(measure.stdout)["required"])
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise cls._live_backup_error(
-                request,
-                f"The live snapshot size for sandbox '{request.vm_info.vm_id}' was invalid",
-                {"disk_path": str(source)},
-            ) from exc
+            if measure.returncode != 0:
+                raise cls._live_backup_error(
+                    request,
+                    f"The live snapshot size for sandbox '{request.vm_info.vm_id}' "
+                    "could not be estimated",
+                    {"disk_path": str(source), "stderr": measure.stderr.strip()},
+                )
+            try:
+                required = int(json.loads(measure.stdout)["required"])
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise cls._live_backup_error(
+                    request,
+                    f"The live snapshot size for sandbox '{request.vm_info.vm_id}' was invalid",
+                    {"disk_path": str(source)},
+                ) from exc
+        else:
+            required = required_bytes
         headroom = max(256 * 1024 * 1024, required // 10)
         try:
             free = shutil.disk_usage(target_dir).free
@@ -707,6 +753,7 @@ class QemuRuntimeAdapter(RuntimeAdapter):
         target_node: str,
         artifact_root: Path | None = None,
         trusted_snapshot_dir: Path | None = None,
+        artifact_filename: str = "disk.qcow2",
     ) -> bool:
         """Stop and detach a live backup, returning whether files are safe to remove."""
         # Journal fields must never be passed through to QMP or filesystem
@@ -751,9 +798,12 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                 return False
             # Artifact names are fixed by the live-backup protocol.  In
             # particular, do not unlink paths read from a recovery journal.
+            if artifact_filename not in {"disk.qcow2", "increment.qcow2"}:
+                logger.warning("Refusing cleanup for an unknown live-backup artifact name")
+                return False
             artifact_paths = (
-                resolved_root / "disk.qcow2.partial",
-                resolved_root / "disk.qcow2",
+                resolved_root / f"{artifact_filename}.partial",
+                resolved_root / artifact_filename,
             )
 
         try:
@@ -784,6 +834,99 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                 path.unlink()
         return True
 
+    @classmethod
+    def _publish_recovered_bitmap_artifact(
+        cls,
+        *,
+        vm_id: str,
+        retry_snapshot_id: str,
+        deadline: float,
+        manifest_path: Path,
+        payload: dict[str, Any],
+        partial_path: Path,
+        final_path: Path,
+    ) -> None:
+        """Validate and publish a QMP-successful bitmap artifact after interruption."""
+        snapshot_id = str(payload["snapshot_id"])
+        retry_command = cls._bitmap_snapshot_command(vm_id, retry_snapshot_id)
+        if final_path.exists():
+            payload["phase"] = "artifact-published"
+            cls._write_live_backup_manifest(manifest_path, payload)
+            return
+        if not partial_path.exists():
+            raise cls._bitmap_recovery_error(
+                vm_id=vm_id,
+                snapshot_id=snapshot_id,
+                fact=f"The completed disk capture for sandbox '{vm_id}' has no local file.",
+                recovery=f"Run '{retry_command}' to create a fresh disk capture.",
+                recovery_command=retry_command,
+            )
+        qemu_img = which("qemu-img")
+        if qemu_img is None:
+            raise cls._bitmap_recovery_error(
+                vm_id=vm_id,
+                snapshot_id=snapshot_id,
+                fact=f"The recovered disk capture for sandbox '{vm_id}' cannot be checked.",
+                recovery=_qemu_img_install_hint(),
+            )
+
+        def run_qemu_img(command: list[str]) -> subprocess.CompletedProcess[str]:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise cls._bitmap_recovery_error(
+                    vm_id=vm_id,
+                    snapshot_id=snapshot_id,
+                    fact=f"Checking the recovered disk capture for sandbox '{vm_id}' timed out.",
+                    recovery=f"Retry with '{retry_command}'.",
+                    recovery_command=retry_command,
+                )
+            try:
+                return subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=remaining,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise cls._bitmap_recovery_error(
+                    vm_id=vm_id,
+                    snapshot_id=snapshot_id,
+                    fact=f"Checking the recovered disk capture for sandbox '{vm_id}' timed out.",
+                    recovery=f"Retry with '{retry_command}'.",
+                    recovery_command=retry_command,
+                ) from exc
+            except OSError as exc:
+                raise cls._bitmap_recovery_error(
+                    vm_id=vm_id,
+                    snapshot_id=snapshot_id,
+                    fact=f"The recovered disk capture for sandbox '{vm_id}' could not be checked.",
+                    recovery=_qemu_img_install_hint(),
+                    details={"error": str(exc)},
+                ) from exc
+
+        check = run_qemu_img([str(qemu_img), "check", str(partial_path)])
+        info = run_qemu_img([str(qemu_img), "info", "--output=json", str(partial_path)])
+        try:
+            backing = json.loads(info.stdout).get("backing-filename")
+        except (AttributeError, TypeError, json.JSONDecodeError):
+            backing = "invalid"
+        if check.returncode != 0 or info.returncode != 0 or backing:
+            raise cls._bitmap_recovery_error(
+                vm_id=vm_id,
+                snapshot_id=snapshot_id,
+                fact=f"The recovered disk capture for sandbox '{vm_id}' is invalid.",
+                recovery=f"Run '{retry_command}' to create a fresh disk capture.",
+                recovery_command=retry_command,
+                details={
+                    "check_stderr": check.stderr.strip(),
+                    "info_stderr": info.stderr.strip(),
+                },
+            )
+        os.replace(partial_path, final_path)
+        payload["phase"] = "artifact-published"
+        cls._write_live_backup_manifest(manifest_path, payload)
+
     def reconcile_live_backups(
         self,
         vm_info: VMInfo,
@@ -791,6 +934,7 @@ class QemuRuntimeAdapter(RuntimeAdapter):
         snapshot_dir: Path,
         locked_snapshot_id: str,
         persisted_snapshot_ids: set[str],
+        timeout_seconds: float,
     ) -> None:
         """Reconcile journals after the caller has locked snapshot creation."""
         if not any(snapshot_dir.glob(f"*/{_LIVE_BACKUP_MANIFEST}")):
@@ -801,6 +945,7 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                 snapshot_dir=snapshot_dir,
                 locked_snapshot_id=locked_snapshot_id,
                 persisted_snapshot_ids=persisted_snapshot_ids,
+                deadline=time.monotonic() + timeout_seconds,
                 client=client,
             )
 
@@ -811,6 +956,7 @@ class QemuRuntimeAdapter(RuntimeAdapter):
         snapshot_dir: Path,
         locked_snapshot_id: str,
         persisted_snapshot_ids: set[str],
+        deadline: float,
         client: QMPClient,
     ) -> None:
         """Clean stale jobs and nodes left by an interrupted Python process."""
@@ -860,20 +1006,37 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                 continue
             job_id = payload.get("job_id")
             target_node = payload.get("target_node")
-            partial_path = artifact_root / "disk.qcow2.partial"
-            final_path = artifact_root / "disk.qcow2"
+            schema_version = payload.get("schema_version")
+            backup_mode = payload.get("backup_mode")
+            bitmap_capture = schema_version == 2 and backup_mode in {
+                "new-base",
+                "incremental",
+            }
+            artifact_filename = "increment.qcow2" if backup_mode == "incremental" else "disk.qcow2"
+            partial_path = artifact_root / f"{artifact_filename}.partial"
+            final_path = artifact_root / artifact_filename
             operation_id = (
                 _live_backup_operation_id(job_id, target_node)
                 if isinstance(job_id, str) and isinstance(target_node, str)
                 else None
             )
             valid = (
-                payload.get("schema_version") == 1
+                schema_version in {1, 2}
+                and (schema_version == 1 or bitmap_capture)
                 and payload.get("snapshot_id") == journal_snapshot_id
                 and payload.get("phase") in _LIVE_BACKUP_PHASES
                 and payload.get("partial_path") == str(partial_path)
                 and payload.get("final_path") == str(final_path)
                 and operation_id is not None
+                and (
+                    not bitmap_capture
+                    or (
+                        isinstance(payload.get("bitmap_name"), str)
+                        and bool(payload["bitmap_name"])
+                        and isinstance(payload.get("virtual_size_bytes"), int)
+                        and payload["virtual_size_bytes"] > 0
+                    )
+                )
             )
             if not valid:
                 # Do not let a malformed entry select QMP resources or files;
@@ -889,14 +1052,104 @@ class QemuRuntimeAdapter(RuntimeAdapter):
             persisted = journal_snapshot_id in persisted_snapshot_ids
             assert operation_id is not None
             validated_job_id, validated_target_node = _live_backup_identifiers(operation_id)
+
+            if bitmap_capture and not persisted:
+                phase = str(payload["phase"])
+                jobs = {job.job_id: job for job in client.query_jobs()}
+                job = jobs.get(validated_job_id)
+                if phase in {"node-attached", "job-running"}:
+                    if job is None and phase == "job-running":
+                        retry_command = self._bitmap_snapshot_command(vm_id, locked_snapshot_id)
+                        raise self._bitmap_recovery_error(
+                            vm_id=vm_id,
+                            snapshot_id=journal_snapshot_id,
+                            fact=f"The last disk capture for sandbox '{vm_id}' may be incomplete.",
+                            recovery=f"Run '{retry_command}' to create a fresh disk capture.",
+                            recovery_command=retry_command,
+                            details={
+                                "bitmap_name": payload["bitmap_name"],
+                                "bitmap_state_ambiguous": True,
+                            },
+                        )
+                    if job is not None and job.status == "concluded" and job.error is None:
+                        with suppress(Exception):
+                            client.dismiss_job(validated_job_id)
+                        payload["phase"] = "job-concluded"
+                        self._write_live_backup_manifest(manifest_path, payload)
+                        phase = "job-concluded"
+                    elif job is not None:
+                        cleaned = self._cleanup_live_backup(
+                            client,
+                            job_id=validated_job_id,
+                            target_node=validated_target_node,
+                            artifact_root=artifact_root,
+                            trusted_snapshot_dir=trusted_snapshot_dir,
+                            artifact_filename=artifact_filename,
+                        )
+                        if cleaned:
+                            if backup_mode == "new-base":
+                                with suppress(Exception):
+                                    client.remove_dirty_bitmap(
+                                        QEMU_ROOT_NODE_NAME,
+                                        str(payload["bitmap_name"]),
+                                    )
+                            with suppress(OSError):
+                                manifest_path.unlink()
+                            with suppress(OSError):
+                                manifest_path.parent.rmdir()
+                        continue
+
+                if phase in {"job-concluded", "node-detached", "artifact-published"}:
+                    if validated_target_node in self._node_names(client):
+                        client.blockdev_del(validated_target_node)
+                    payload["phase"] = "node-detached"
+                    self._write_live_backup_manifest(manifest_path, payload)
+                    self._publish_recovered_bitmap_artifact(
+                        vm_id=vm_id,
+                        retry_snapshot_id=locked_snapshot_id,
+                        deadline=deadline,
+                        manifest_path=manifest_path,
+                        payload=payload,
+                        partial_path=partial_path,
+                        final_path=final_path,
+                    )
+                    clear_command = self._bitmap_recovery_clear_command(journal_snapshot_id)
+                    raise self._bitmap_recovery_error(
+                        vm_id=vm_id,
+                        snapshot_id=journal_snapshot_id,
+                        fact=(
+                            f"Recovered disk data for sandbox '{vm_id}' is ready at '{final_path}'."
+                        ),
+                        recovery=(
+                            f"After adopting that file, run '{clear_command}' to clear "
+                            "the recovery record."
+                        ),
+                        recovery_command=clear_command,
+                        details={
+                            "bitmap_name": payload["bitmap_name"],
+                            "artifact_path": str(final_path),
+                            "artifact_kind": payload.get("artifact_kind"),
+                            "virtual_size_bytes": payload.get("virtual_size_bytes"),
+                            "changed_bytes": payload.get("changed_bytes"),
+                            "bitmap_granularity_bytes": payload.get("bitmap_granularity_bytes"),
+                        },
+                    )
+
             cleaned = self._cleanup_live_backup(
                 client,
                 job_id=validated_job_id,
                 target_node=validated_target_node,
                 artifact_root=None if persisted else artifact_root,
                 trusted_snapshot_dir=trusted_snapshot_dir,
+                artifact_filename=artifact_filename,
             )
             if cleaned:
+                if bitmap_capture and backup_mode == "new-base":
+                    with suppress(Exception):
+                        client.remove_dirty_bitmap(
+                            QEMU_ROOT_NODE_NAME,
+                            str(payload["bitmap_name"]),
+                        )
                 with suppress(OSError):
                     manifest_path.unlink()
                 if not persisted:
@@ -947,7 +1200,11 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                     "cause_details": getattr(exc, "details", {}),
                 },
             ) from exc
-        missing = sorted(_LIVE_BACKUP_REQUIRED_COMMANDS - commands)
+        required_commands = set(_LIVE_BACKUP_REQUIRED_COMMANDS)
+        bitmap_backup = request.qemu_dirty_bitmap_backup
+        if bitmap_backup is not None:
+            required_commands.update(_DIRTY_BITMAP_BACKUP_REQUIRED_COMMANDS)
+        missing = sorted(required_commands - commands)
         if missing:
             raise self._live_backup_error(
                 request,
@@ -963,15 +1220,63 @@ class QemuRuntimeAdapter(RuntimeAdapter):
             request=request,
             deadline=deadline,
         )
+        artifact_kind: Literal["full", "incremental"] | None = None
+        changed_bytes: int | None = None
+        bitmap_granularity: int | None = None
+        artifact_filename = "disk.qcow2"
+        if bitmap_backup is not None:
+            bitmaps = client.query_dirty_bitmaps(QEMU_ROOT_NODE_NAME)
+            existing_bitmap = next(
+                (bitmap for bitmap in bitmaps if bitmap.name == bitmap_backup.bitmap_name),
+                None,
+            )
+            if bitmap_backup.mode == "new-base":
+                if existing_bitmap is not None:
+                    raise self._live_backup_error(
+                        request,
+                        f"The dirty bitmap for sandbox '{request.vm_info.vm_id}' already exists",
+                        {"bitmap_name": bitmap_backup.bitmap_name},
+                    )
+                artifact_kind = "full"
+            else:
+                if existing_bitmap is None:
+                    raise self._live_backup_error(
+                        request,
+                        f"The dirty bitmap for sandbox '{request.vm_info.vm_id}' is missing",
+                        {"bitmap_name": bitmap_backup.bitmap_name},
+                    )
+                if (
+                    not existing_bitmap.recording
+                    or not existing_bitmap.persistent
+                    or existing_bitmap.busy
+                    or existing_bitmap.inconsistent
+                ):
+                    raise self._live_backup_error(
+                        request,
+                        f"The dirty bitmap for sandbox '{request.vm_info.vm_id}' is not usable",
+                        {
+                            "bitmap_name": bitmap_backup.bitmap_name,
+                            "recording": existing_bitmap.recording,
+                            "persistent": existing_bitmap.persistent,
+                            "busy": existing_bitmap.busy,
+                            "inconsistent": existing_bitmap.inconsistent,
+                        },
+                    )
+                artifact_kind = "incremental"
+                artifact_filename = "increment.qcow2"
+                changed_bytes = existing_bitmap.dirty_bytes
+                bitmap_granularity = existing_bitmap.granularity
+
         self._require_live_backup_space(
             qemu_img,
             request.managed_disk_path,
             request.snapshot_root,
             request=request,
             deadline=deadline,
+            required_bytes=changed_bytes if artifact_kind == "incremental" else None,
         )
-        partial_path = request.snapshot_root / "disk.qcow2.partial"
-        final_path = request.snapshot_root / "disk.qcow2"
+        partial_path = request.snapshot_root / f"{artifact_filename}.partial"
+        final_path = request.snapshot_root / artifact_filename
         create = self._run_live_backup_subprocess(
             [str(qemu_img), "create", "-f", "qcow2", str(partial_path), str(virtual_size)],
             request=request,
@@ -989,7 +1294,7 @@ class QemuRuntimeAdapter(RuntimeAdapter):
         job_id, target_node = _live_backup_identifiers(operation_id)
         manifest_path = request.snapshot_root / _LIVE_BACKUP_MANIFEST
         manifest: dict[str, Any] = {
-            "schema_version": 1,
+            "schema_version": 2 if bitmap_backup is not None else 1,
             "vm_id": request.vm_info.vm_id,
             "snapshot_id": request.snapshot_id,
             "job_id": job_id,
@@ -998,6 +1303,13 @@ class QemuRuntimeAdapter(RuntimeAdapter):
             "final_path": str(final_path),
             "phase": "target-created",
         }
+        if bitmap_backup is not None:
+            manifest["backup_mode"] = bitmap_backup.mode
+            manifest["bitmap_name"] = bitmap_backup.bitmap_name
+            manifest["artifact_kind"] = artifact_kind
+            manifest["virtual_size_bytes"] = virtual_size
+            manifest["changed_bytes"] = changed_bytes
+            manifest["bitmap_granularity_bytes"] = bitmap_granularity
         try:
             self._write_live_backup_manifest(manifest_path, manifest)
         except OSError as exc:
@@ -1009,17 +1321,36 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                 {"error": str(exc)},
             ) from exc
 
+        bitmap_job_submitted = False
         try:
             client.blockdev_add(target_node, partial_path)
             manifest["phase"] = "node-attached"
             self._write_live_backup_manifest(manifest_path, manifest)
 
-            client.blockdev_backup(
-                job_id=job_id,
-                source_node=QEMU_ROOT_NODE_NAME,
-                target_node=target_node,
-                max_bytes_per_second=request.max_bytes_per_second,
-            )
+            if bitmap_backup is None:
+                client.blockdev_backup(
+                    job_id=job_id,
+                    source_node=QEMU_ROOT_NODE_NAME,
+                    target_node=target_node,
+                    max_bytes_per_second=request.max_bytes_per_second,
+                )
+            elif bitmap_backup.mode == "new-base":
+                client.start_full_backup_with_dirty_bitmap(
+                    job_id=job_id,
+                    source_node=QEMU_ROOT_NODE_NAME,
+                    target_node=target_node,
+                    bitmap_name=bitmap_backup.bitmap_name,
+                    max_bytes_per_second=request.max_bytes_per_second,
+                )
+            else:
+                client.blockdev_backup_incremental(
+                    job_id=job_id,
+                    source_node=QEMU_ROOT_NODE_NAME,
+                    target_node=target_node,
+                    bitmap_name=bitmap_backup.bitmap_name,
+                    max_bytes_per_second=request.max_bytes_per_second,
+                )
+            bitmap_job_submitted = bitmap_backup is not None
             captured_at = datetime.now(timezone.utc)
             logger.info(
                 "Live QEMU backup started vm_id=%s snapshot_id=%s job_id=%s "
@@ -1039,12 +1370,29 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                     job_id,
                     timeout=self._remaining_live_backup_timeout(request, deadline),
                 )
-            except SmolVMError as exc:
-                if str(exc) == "Timed out waiting for QMP job":
-                    raise self._live_backup_timeout_error(request) from exc
-                raise
+            except QMPJobTimeoutError as exc:
+                raise self._live_backup_timeout_error(request) from exc
             manifest["phase"] = "job-concluded"
             self._write_live_backup_manifest(manifest_path, manifest)
+
+            if bitmap_backup is not None and bitmap_backup.mode == "new-base":
+                created_bitmap = next(
+                    (
+                        bitmap
+                        for bitmap in client.query_dirty_bitmaps(QEMU_ROOT_NODE_NAME)
+                        if bitmap.name == bitmap_backup.bitmap_name
+                    ),
+                    None,
+                )
+                if created_bitmap is None:
+                    raise self._live_backup_error(
+                        request,
+                        f"The new dirty bitmap for sandbox '{request.vm_info.vm_id}' is missing",
+                        {"bitmap_name": bitmap_backup.bitmap_name},
+                    )
+                bitmap_granularity = created_bitmap.granularity
+                manifest["bitmap_granularity_bytes"] = bitmap_granularity
+                self._write_live_backup_manifest(manifest_path, manifest)
 
             client.blockdev_del(target_node)
             manifest["phase"] = "node-detached"
@@ -1074,6 +1422,11 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                 captured_at=captured_at,
                 capture_method="live",
                 operation_manifest_path=manifest_path,
+                artifact_kind=artifact_kind,
+                virtual_size_bytes=virtual_size if bitmap_backup is not None else None,
+                changed_bytes=changed_bytes,
+                bitmap_granularity_bytes=bitmap_granularity,
+                bitmap_name=bitmap_backup.bitmap_name if bitmap_backup is not None else None,
             )
         except Exception as original_error:
             logger.warning(
@@ -1085,13 +1438,103 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                 time.monotonic() - backup_started,
                 original_error,
             )
+            if bitmap_backup is not None:
+                phase = str(manifest["phase"])
+                if phase in {"job-concluded", "node-detached", "artifact-published"}:
+                    retry_command = self._bitmap_snapshot_command(
+                        request.vm_info.vm_id, request.snapshot_id
+                    )
+                    raise self._bitmap_recovery_error(
+                        vm_id=request.vm_info.vm_id,
+                        snapshot_id=request.snapshot_id,
+                        fact=(
+                            f"The completed disk capture for sandbox "
+                            f"'{request.vm_info.vm_id}' still needs to be published."
+                        ),
+                        recovery=f"Retry with '{retry_command}'.",
+                        recovery_command=retry_command,
+                        details={"bitmap_name": bitmap_backup.bitmap_name},
+                    ) from original_error
+
+                try:
+                    jobs = {job.job_id: job for job in client.query_jobs()}
+                except Exception as query_error:
+                    if bitmap_job_submitted:
+                        retry_command = self._bitmap_snapshot_command(
+                            request.vm_info.vm_id, request.snapshot_id
+                        )
+                        raise self._bitmap_recovery_error(
+                            vm_id=request.vm_info.vm_id,
+                            snapshot_id=request.snapshot_id,
+                            fact=(
+                                f"The last disk capture for sandbox "
+                                f"'{request.vm_info.vm_id}' may be incomplete."
+                            ),
+                            recovery=(f"Run '{retry_command}' to create a fresh disk capture."),
+                            recovery_command=retry_command,
+                            details={
+                                "bitmap_name": bitmap_backup.bitmap_name,
+                                "bitmap_state_ambiguous": True,
+                                "job_query_error": str(query_error),
+                            },
+                        ) from original_error
+                else:
+                    job = jobs.get(job_id)
+                    if job is not None and job.status == "concluded" and job.error is None:
+                        with suppress(Exception):
+                            client.dismiss_job(job_id)
+                        manifest["phase"] = "job-concluded"
+                        self._write_live_backup_manifest(manifest_path, manifest)
+                        retry_command = self._bitmap_snapshot_command(
+                            request.vm_info.vm_id, request.snapshot_id
+                        )
+                        raise self._bitmap_recovery_error(
+                            vm_id=request.vm_info.vm_id,
+                            snapshot_id=request.snapshot_id,
+                            fact=(
+                                f"The completed disk capture for sandbox "
+                                f"'{request.vm_info.vm_id}' still needs to be published."
+                            ),
+                            recovery=f"Retry with '{retry_command}'.",
+                            recovery_command=retry_command,
+                            details={"bitmap_name": bitmap_backup.bitmap_name},
+                        ) from original_error
+                    known_job_failure = isinstance(
+                        original_error, (OperationTimeoutError, QMPJobFailedError)
+                    )
+                    if job is None and bitmap_job_submitted and not known_job_failure:
+                        manifest["phase"] = "job-running"
+                        with suppress(OSError):
+                            self._write_live_backup_manifest(manifest_path, manifest)
+                        retry_command = self._bitmap_snapshot_command(
+                            request.vm_info.vm_id, request.snapshot_id
+                        )
+                        raise self._bitmap_recovery_error(
+                            vm_id=request.vm_info.vm_id,
+                            snapshot_id=request.snapshot_id,
+                            fact=(
+                                f"The last disk capture for sandbox "
+                                f"'{request.vm_info.vm_id}' may be incomplete."
+                            ),
+                            recovery=(f"Run '{retry_command}' to create a fresh disk capture."),
+                            recovery_command=retry_command,
+                            details={
+                                "bitmap_name": bitmap_backup.bitmap_name,
+                                "bitmap_state_ambiguous": True,
+                            },
+                        ) from original_error
+
             cleanup_safe = self._cleanup_live_backup(
                 client,
                 job_id=job_id,
                 target_node=target_node,
                 artifact_root=request.snapshot_root,
                 trusted_snapshot_dir=request.snapshot_root.parent,
+                artifact_filename=artifact_filename,
             )
+            if cleanup_safe and bitmap_backup is not None and bitmap_backup.mode == "new-base":
+                with suppress(Exception):
+                    client.remove_dirty_bitmap(QEMU_ROOT_NODE_NAME, bitmap_backup.bitmap_name)
             if cleanup_safe:
                 with suppress(OSError):
                     manifest_path.unlink()

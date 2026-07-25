@@ -14,6 +14,7 @@
 
 """Tests for SmolVM storage module."""
 
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -471,6 +472,11 @@ class TestSnapshotStorage:
         assert fetched.vm_config.rootfs_path == sample_config.rootfs_path
         assert isinstance(fetched.vm_config.port_forwards[0], PortForwardConfig)
         assert fetched.network_config.tap_device == "tap2"
+        assert fetched.artifact_kind is None
+        assert fetched.virtual_size_bytes is None
+        assert fetched.changed_bytes is None
+        assert fetched.bitmap_granularity_bytes is None
+        assert fetched.bitmap_name is None
         assert [item.snapshot_id for item in listed] == ["snap-001"]
 
         restored = state_manager.mark_snapshot_restored("snap-001", "vm001")
@@ -514,7 +520,7 @@ class TestSnapshotStorage:
 
         snapshot_dir = tmp_path / "snapshots" / "snap-qemu"
         snapshot_dir.mkdir(parents=True)
-        disk_path = snapshot_dir / "disk.qcow2"
+        disk_path = snapshot_dir / "increment.qcow2"
         disk_path.write_bytes(b"")
         snapshot = SnapshotInfo(
             snapshot_id="snap-qemu",
@@ -524,6 +530,11 @@ class TestSnapshotStorage:
             vm_config=qemu_config,
             network_config=network,
             created_at=datetime.now(timezone.utc),
+            artifact_kind="incremental",
+            virtual_size_bytes=10 * 1024 * 1024,
+            changed_bytes=131072,
+            bitmap_granularity_bytes=65536,
+            bitmap_name="celesto-chain0",
         )
 
         state_manager.create_snapshot(snapshot)
@@ -533,6 +544,27 @@ class TestSnapshotStorage:
         assert fetched.artifacts.state_path is None
         assert fetched.artifacts.memory_path is None
         assert fetched.artifacts.disk_path == disk_path
+        assert fetched.artifact_kind == "incremental"
+        assert fetched.virtual_size_bytes == 10 * 1024 * 1024
+        assert fetched.changed_bytes == 131072
+        assert fetched.bitmap_granularity_bytes == 65536
+        assert fetched.bitmap_name == "celesto-chain0"
+
+        with sqlite3.connect(state_manager.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE snapshots
+                SET virtual_size_bytes = ?, changed_bytes = ?,
+                    bitmap_granularity_bytes = ?, bitmap_name = ?
+                WHERE snapshot_id = ?
+                """,
+                ("invalid", -1, 0, sqlite3.Binary(b"not-text"), "snap-qemu"),
+            )
+        malformed = state_manager.get_snapshot("snap-qemu")
+        assert malformed.virtual_size_bytes is None
+        assert malformed.changed_bytes is None
+        assert malformed.bitmap_granularity_bytes is None
+        assert malformed.bitmap_name is None
 
 
 class TestReconciliation:

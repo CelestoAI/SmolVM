@@ -194,6 +194,11 @@ class SQLiteStateManager:
                     network_config TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     snapshot_type TEXT,
+                    artifact_kind TEXT,
+                    virtual_size_bytes INTEGER,
+                    changed_bytes INTEGER,
+                    bitmap_granularity_bytes INTEGER,
+                    bitmap_name TEXT,
                     restored INTEGER DEFAULT 0,
                     restored_vm_id TEXT
                 );
@@ -213,6 +218,16 @@ class SQLiteStateManager:
                 conn.execute("ALTER TABLE snapshots ADD COLUMN artifacts TEXT")
             if "snapshot_type" not in snapshot_columns:
                 conn.execute("ALTER TABLE snapshots ADD COLUMN snapshot_type TEXT")
+            if "artifact_kind" not in snapshot_columns:
+                conn.execute("ALTER TABLE snapshots ADD COLUMN artifact_kind TEXT")
+            if "virtual_size_bytes" not in snapshot_columns:
+                conn.execute("ALTER TABLE snapshots ADD COLUMN virtual_size_bytes INTEGER")
+            if "changed_bytes" not in snapshot_columns:
+                conn.execute("ALTER TABLE snapshots ADD COLUMN changed_bytes INTEGER")
+            if "bitmap_granularity_bytes" not in snapshot_columns:
+                conn.execute("ALTER TABLE snapshots ADD COLUMN bitmap_granularity_bytes INTEGER")
+            if "bitmap_name" not in snapshot_columns:
+                conn.execute("ALTER TABLE snapshots ADD COLUMN bitmap_name TEXT")
             browser_columns = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(browser_sessions)").fetchall()
@@ -740,9 +755,11 @@ class SQLiteStateManager:
                 INSERT INTO snapshots (
                     snapshot_id, vm_id, snapshot_path, mem_file_path, disk_path,
                     backend, artifacts, vm_config, network_config,
-                    created_at, snapshot_type, restored, restored_vm_id
+                    created_at, snapshot_type, artifact_kind, virtual_size_bytes,
+                    changed_bytes, bitmap_granularity_bytes, bitmap_name,
+                    restored, restored_vm_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     info.snapshot_id,
@@ -756,6 +773,11 @@ class SQLiteStateManager:
                     info.network_config.model_dump_json(),
                     info.created_at.isoformat(),
                     info.snapshot_type.value,
+                    info.artifact_kind,
+                    info.virtual_size_bytes,
+                    info.changed_bytes,
+                    info.bitmap_granularity_bytes,
+                    info.bitmap_name,
                     int(info.restored),
                     info.restored_vm_id,
                 ),

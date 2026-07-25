@@ -86,6 +86,7 @@ from smolvm.runtime.backends import (
     resolve_backend_for_guest,
     resolve_backend_status,
 )
+from smolvm.runtime.base import QemuDirtyBitmapBackup
 from smolvm.runtime.boot_profiles import (
     KernelBootProfile,
     get_boot_profile_spec,
@@ -1718,6 +1719,7 @@ class SmolVM:
         flush_policy: GuestFlushPolicy | str = GuestFlushPolicy.REQUIRED,
         timeout_seconds: float = 600.0,
         max_bytes_per_second: int | None = None,
+        qemu_dirty_bitmap_backup: QemuDirtyBitmapBackup | None = None,
     ) -> SnapshotInfo:
         """Create a snapshot for the VM.
 
@@ -1737,6 +1739,9 @@ class SmolVM:
                 flush to succeed, treats it as best-effort, or skips it.
             timeout_seconds: Maximum time for live disk capture.
             max_bytes_per_second: Optional generic bandwidth limit for live capture.
+            qemu_dirty_bitmap_backup: Start a new persistent QEMU bitmap chain or
+                capture its next incremental disk artifact. Requires a live-only
+                running QEMU disk snapshot.
         """
         try:
             resolved_snapshot_type = SnapshotType(snapshot_type)
@@ -1802,6 +1807,7 @@ class SmolVM:
             capture_policy=resolved_capture_policy,
             timeout_seconds=timeout_seconds,
             max_bytes_per_second=max_bytes_per_second,
+            qemu_dirty_bitmap_backup=qemu_dirty_bitmap_backup,
         )
         self._refresh_info()
         self._reset_runtime_state()

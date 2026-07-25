@@ -32,7 +32,7 @@ from smolvm_core import qmp as core_qmp
 
 import smolvm.qmp as qmp_module
 from smolvm.exceptions import SmolVMError
-from smolvm.qmp import QMPClient
+from smolvm.qmp import QMPClient, QMPDirtyBitmap, QMPJobFailedError
 from smolvm.runtime.qemu import _live_backup_identifiers
 
 
@@ -195,7 +195,7 @@ def test_qmp_wait_for_job_raises_on_job_error(qmp_socket_path: Path) -> None:
     with QMPClient(socket_path) as client:
         client.connect()
         client.snapshot_delete("job1", "snap0", ["disk0"])
-        with pytest.raises(SmolVMError, match="QMP job failed"):
+        with pytest.raises(QMPJobFailedError, match="QMP job failed"):
             client.wait_for_job("job1", poll_interval=0.01)
 
     thread.join(timeout=2.0)
@@ -273,6 +273,7 @@ def test_qmp_live_block_backup_commands_round_trip(qmp_socket_path: Path) -> Non
         "blockdev-backup": [{"return": {}}],
         "query-block-jobs": [{"return": [{"device": "job-live", "offset": 5, "len": 10}]}],
         "job-cancel": [{"return": {}}],
+        "block-job-cancel": [{"return": {}}],
         "query-named-block-nodes": [{"return": [{"node-name": "target-live"}]}],
         "blockdev-del": [{"return": {}}],
     }
@@ -290,6 +291,7 @@ def test_qmp_live_block_backup_commands_round_trip(qmp_socket_path: Path) -> Non
             max_bytes_per_second=1024,
         )
         assert client.query_block_jobs()[0]["offset"] == 5
+        client.cancel_job("job-live")
         client.cancel_job("job-live", force=True)
         assert client.query_named_block_nodes()[0]["node-name"] == "target-live"
         client.blockdev_del("target-live")
@@ -309,7 +311,158 @@ def test_qmp_live_block_backup_commands_round_trip(qmp_socket_path: Path) -> Non
         "speed": 1024,
     }
     cancel = next(request for request in requests if request["execute"] == "job-cancel")
-    assert cancel["arguments"] == {"id": "job-live", "force": True}
+    assert cancel["arguments"] == {"id": "job-live"}
+    forced_cancel = next(
+        request for request in requests if request["execute"] == "block-job-cancel"
+    )
+    assert forced_cancel["arguments"] == {"device": "job-live", "force": True}
+
+
+def test_qmp_dirty_bitmap_and_incremental_backup_commands_round_trip(
+    qmp_socket_path: Path,
+) -> None:
+    """Dirty bitmap helpers should parse status and emit exact QMP payloads."""
+    requests: list[dict[str, object]] = []
+    responses: dict[str, list[dict[str, object] | list[dict[str, object]]]] = {
+        "qmp_capabilities": [{"return": {}}],
+        "query-named-block-nodes": [
+            {
+                "return": [
+                    {
+                        "node-name": "rootdisk0",
+                        "dirty-bitmaps": [
+                            {
+                                "name": "celesto-chain0",
+                                "count": 131072,
+                                "granularity": 65536,
+                                "recording": True,
+                                "busy": False,
+                                "persistent": True,
+                            }
+                        ],
+                    }
+                ]
+            }
+        ],
+        "transaction": [{"return": {}}],
+        "blockdev-backup": [{"return": {}}],
+        "block-dirty-bitmap-remove": [{"return": {}}],
+    }
+    thread = _start_qmp_server(qmp_socket_path, responses, requests)
+
+    with QMPClient(qmp_socket_path) as client:
+        client.connect()
+        assert client.query_dirty_bitmaps("rootdisk0") == [
+            QMPDirtyBitmap(
+                name="celesto-chain0",
+                recording=True,
+                busy=False,
+                persistent=True,
+                inconsistent=False,
+                granularity=65536,
+                dirty_bytes=131072,
+            )
+        ]
+        client.start_full_backup_with_dirty_bitmap(
+            job_id="job-base",
+            source_node="rootdisk0",
+            target_node="target-base",
+            bitmap_name="celesto-chain0",
+            max_bytes_per_second=1024,
+        )
+        client.blockdev_backup_incremental(
+            job_id="job-increment",
+            source_node="rootdisk0",
+            target_node="target-increment",
+            bitmap_name="celesto-chain0",
+            max_bytes_per_second=2048,
+        )
+        client.remove_dirty_bitmap("rootdisk0", "celesto-chain0")
+
+    thread.join(timeout=2.0)
+
+    transaction = next(request for request in requests if request["execute"] == "transaction")
+    assert transaction["arguments"] == {
+        "actions": [
+            {
+                "type": "block-dirty-bitmap-add",
+                "data": {
+                    "node": "rootdisk0",
+                    "name": "celesto-chain0",
+                    "persistent": True,
+                },
+            },
+            {
+                "type": "blockdev-backup",
+                "data": {
+                    "job-id": "job-base",
+                    "device": "rootdisk0",
+                    "target": "target-base",
+                    "sync": "full",
+                    "auto-finalize": True,
+                    "auto-dismiss": False,
+                    "speed": 1024,
+                },
+            },
+        ]
+    }
+    incremental = next(request for request in requests if request["execute"] == "blockdev-backup")
+    assert incremental["arguments"] == {
+        "job-id": "job-increment",
+        "device": "rootdisk0",
+        "target": "target-increment",
+        "sync": "incremental",
+        "bitmap": "celesto-chain0",
+        "auto-finalize": True,
+        "auto-dismiss": False,
+        "speed": 2048,
+    }
+    remove = next(
+        request for request in requests if request["execute"] == "block-dirty-bitmap-remove"
+    )
+    assert remove["arguments"] == {"node": "rootdisk0", "name": "celesto-chain0"}
+
+
+@pytest.mark.parametrize(
+    "invalid_field,invalid_value",
+    [
+        ("recording", 1),
+        ("busy", "false"),
+        ("persistent", 1),
+        ("inconsistent", "false"),
+        ("count", -1),
+    ],
+)
+def test_qmp_dirty_bitmap_rejects_malformed_status(
+    qmp_socket_path: Path,
+    invalid_field: str,
+    invalid_value: object,
+) -> None:
+    """Bitmap status flags must be booleans and dirty counts non-negative."""
+    row: dict[str, object] = {
+        "name": "celesto-chain0",
+        "count": 131072,
+        "granularity": 65536,
+        "recording": True,
+        "busy": False,
+        "persistent": True,
+    }
+    row[invalid_field] = invalid_value
+    requests: list[dict[str, object]] = []
+    responses: dict[str, list[dict[str, object] | list[dict[str, object]]]] = {
+        "qmp_capabilities": [{"return": {}}],
+        "query-named-block-nodes": [
+            {"return": [{"node-name": "rootdisk0", "dirty-bitmaps": [row]}]}
+        ],
+    }
+    thread = _start_qmp_server(qmp_socket_path, responses, requests)
+
+    with QMPClient(qmp_socket_path) as client:
+        client.connect()
+        with pytest.raises(SmolVMError, match="invalid dirty bitmap status"):
+            client.query_dirty_bitmaps("rootdisk0")
+
+    thread.join(timeout=2.0)
 
 
 def test_qmp_command_error_includes_qemu_description(qmp_socket_path: Path) -> None:

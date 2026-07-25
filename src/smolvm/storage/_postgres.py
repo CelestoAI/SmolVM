@@ -201,6 +201,11 @@ class PostgresStateManager:
                     network_config TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     snapshot_type TEXT,
+                    artifact_kind TEXT,
+                    virtual_size_bytes BIGINT,
+                    changed_bytes BIGINT,
+                    bitmap_granularity_bytes BIGINT,
+                    bitmap_name TEXT,
                     restored BOOLEAN DEFAULT FALSE,
                     restored_vm_id TEXT
                 );
@@ -209,6 +214,11 @@ class PostgresStateManager:
 
                 ALTER TABLE vms ADD COLUMN IF NOT EXISTS display TEXT;
                 ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS snapshot_type TEXT;
+                ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS artifact_kind TEXT;
+                ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS virtual_size_bytes BIGINT;
+                ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS changed_bytes BIGINT;
+                ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS bitmap_granularity_bytes BIGINT;
+                ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS bitmap_name TEXT;
                 ALTER TABLE browser_sessions ADD COLUMN IF NOT EXISTS vnc_url TEXT;
                 ALTER TABLE browser_sessions ADD COLUMN IF NOT EXISTS vnc_port INTEGER;
                 """
@@ -724,9 +734,14 @@ class PostgresStateManager:
                 INSERT INTO snapshots (
                     snapshot_id, vm_id, snapshot_path, mem_file_path, disk_path,
                     backend, artifacts, vm_config, network_config,
-                    created_at, snapshot_type, restored, restored_vm_id
+                    created_at, snapshot_type, artifact_kind, virtual_size_bytes,
+                    changed_bytes, bitmap_granularity_bytes, bitmap_name,
+                    restored, restored_vm_id
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
                 """,
                 (
                     info.snapshot_id,
@@ -740,6 +755,11 @@ class PostgresStateManager:
                     info.network_config.model_dump_json(),
                     info.created_at.isoformat(),
                     info.snapshot_type.value,
+                    info.artifact_kind,
+                    info.virtual_size_bytes,
+                    info.changed_bytes,
+                    info.bitmap_granularity_bytes,
+                    info.bitmap_name,
                     info.restored,
                     info.restored_vm_id,
                 ),
