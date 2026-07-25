@@ -268,6 +268,16 @@ def ensure_ssh_key(key_dir: Path | None = None) -> tuple[Path, Path]:
                 pass
         return private_key, public_key
 
+    # Only one half of the pair survived (an interrupted generation, or a
+    # deleted .pub). ssh-keygen would stop at an interactive "Overwrite (y/n)?"
+    # prompt it writes to the stderr we discard: the CLI either blocks forever
+    # on a terminal, or fails with no visible reason. Clear the leftovers so
+    # generation is unattended.
+    for leftover in (private_key, public_key):
+        if leftover.exists():
+            logger.warning("Removing incomplete SSH key file: %s", leftover)
+            leftover.unlink()
+
     logger.info("Generating new SSH key pair at %s...", key_dir)
     subprocess.run(
         [
@@ -282,6 +292,7 @@ def ensure_ssh_key(key_dir: Path | None = None) -> tuple[Path, Path]:
             "smolvm-auto",
         ],
         check=True,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )

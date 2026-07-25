@@ -493,6 +493,11 @@ class SQLiteStateManager:
             raise ValueError("vm_id cannot be empty")
         if guest_port < 1 or guest_port > 65535:
             raise ValueError("guest_port must be 1-65535")
+        # Without this, an out-of-range request was persisted and only surfaced
+        # much later as an opaque hypervisor error at hostfwd time — and a
+        # stored port 0 means "any port", so the recorded number was wrong too.
+        if host_port is not None and (host_port < 1 or host_port > 65535):
+            raise ValueError("host_port must be 1-65535")
 
         now = now_iso()
 
@@ -1033,7 +1038,11 @@ class SQLiteStateManager:
 
             for row in running:
                 pid = row["pid"]
-                if pid is None:
+                # A non-positive pid is not a process: os.kill(0, 0) probes our
+                # own process group and os.kill(-1, 0) probes every process we
+                # may signal, so both "succeed" and the sandbox stays wedged in
+                # RUNNING forever instead of being reconciled.
+                if pid is None or pid <= 0:
                     stale_vms.append(row["id"])
                     continue
 

@@ -311,6 +311,48 @@ class TestSSHClientWaitForSSH:
         with pytest.raises(ValueError, match="timeout must be"):
             client.wait_for_ssh(timeout=0)
 
+    def test_timeout_names_the_unopened_port(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A port that never opens must say so, not report an empty error.
+
+        Phase 1 used to fall out of its ``while`` on timeout and continue into
+        phase 2. Phase 2's loop then never ran (the deadline had already
+        passed), so the raised message ended with ``last error:`` and nothing
+        after it — the one fact we knew, that sshd never answered, was dropped.
+
+        The clock advances inside ``sleep`` — the real cadence — so the backoff
+        eventually consumes the last of the budget and the loop exits via its
+        ``while`` condition. That is the path that used to fall through; the
+        in-loop deadline check masked it.
+        """
+        now = [0.0]
+        monkeypatch.setattr("smolvm.ssh.time.monotonic", lambda: now[0])
+
+        def _advance(seconds: float) -> None:
+            assert seconds >= 0
+            now[0] += seconds
+
+        monkeypatch.setattr("smolvm.ssh.time.sleep", _advance)
+        monkeypatch.setattr(SSHClient, "_tcp_port_open", lambda self, timeout=0.1: False)
+        monkeypatch.setattr(
+            SSHClient, "_connect", lambda self: pytest.fail("phase 2 must not be reached")
+        )
+
+        client = SSHClient("172.16.0.2")
+        with pytest.raises(OperationTimeoutError, match="port never opened"):
+            client.wait_for_ssh(timeout=1.0)
+
+    def test_tcp_probe_tolerates_an_expired_deadline(self) -> None:
+        """A non-positive probe timeout means "not open yet", not a crash.
+
+        ``wait_for_ssh`` derives the probe timeout from the remaining budget,
+        which can go non-positive. ``socket.create_connection`` rejects that
+        with ``ValueError`` — not an ``OSError``, so it escaped the retry loop.
+        """
+        client = SSHClient("172.16.0.2")
+
+        assert client._tcp_port_open(timeout=0) is False
+        assert client._tcp_port_open(timeout=-0.5) is False
+
     @patch.object(SSHClient, "_tcp_port_open", return_value=True)
     def test_connect_loop_uses_tight_backoff_first(
         self, _mock_port: MagicMock, monkeypatch: pytest.MonkeyPatch

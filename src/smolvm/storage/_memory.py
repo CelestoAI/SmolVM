@@ -236,6 +236,10 @@ class MemoryStateManager:
         excluded_host_ports: set[int] | None = None,
     ) -> int:
         del guest_port
+        # Same range check the SQLite backend applies, so both state managers
+        # reject an unusable port up front instead of at hypervisor start.
+        if host_port is not None and (host_port < 1 or host_port > 65535):
+            raise ValueError("host_port must be 1-65535")
         with self._lock:
             existing = self._ssh_ports.get(vm_id)
             if existing is not None:

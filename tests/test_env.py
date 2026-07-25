@@ -14,6 +14,7 @@
 
 """Tests for smolvm.env — environment variable injection helpers."""
 
+import subprocess
 from unittest.mock import MagicMock
 
 import pytest
@@ -218,6 +219,47 @@ class TestInjectEnvVars:
         with pytest.raises(ValueError, match="Invalid"):
             inject_env_vars(ssh, {"BAD KEY": "val"}, merge=False)
         ssh.run.assert_not_called()
+
+    def test_staging_file_is_a_sibling_of_the_env_file(self) -> None:
+        """The temp file must share a filesystem with its destination.
+
+        ``rename(2)`` is what makes the final swap atomic, and it cannot cross
+        filesystems. Staging under ``/tmp`` — a separate tmpfs on most guest
+        images — silently downgraded the ``mv`` to copy-then-unlink, so an
+        interrupted write left every new login shell sourcing a truncated file.
+        """
+        ssh = _make_ssh_mock()
+        inject_env_vars(ssh, {"FOO": "bar"}, merge=False)
+
+        call_cmd = ssh.run.call_args[0][0]
+        env_dir = ENV_FILE.rsplit("/", 1)[0]
+
+        assert f"mktemp {env_dir}/" in call_cmd
+        assert "mktemp /tmp/" not in call_cmd
+
+    def test_generated_script_writes_the_env_file(self, tmp_path, monkeypatch) -> None:
+        """Execute the generated shell script for real and check the result."""
+        env_file = tmp_path / "profile.d" / "smolvm_env.sh"
+        monkeypatch.setattr("smolvm.env.ENV_FILE", str(env_file))
+
+        ssh = MagicMock()
+
+        def _run(cmd: str, timeout: int | None = None) -> CommandResult:
+            completed = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True)
+            return CommandResult(
+                exit_code=completed.returncode,
+                stdout=completed.stdout,
+                stderr=completed.stderr,
+            )
+
+        ssh.run = _run
+
+        inject_env_vars(ssh, {"FOO": "bar baz"}, merge=False)
+
+        assert env_file.read_text().splitlines()[-1] == "export FOO='bar baz'"
+        assert env_file.stat().st_mode & 0o777 == 0o644
+        # The trap cleaned up after itself: no staging file left behind.
+        assert [p.name for p in env_file.parent.iterdir()] == [env_file.name]
 
 
 # ── read_env_vars ────────────────────────────────────────────────────

@@ -14,6 +14,7 @@
 
 """Tests for SmolVM storage module."""
 
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -342,6 +343,35 @@ class TestSSHPortAllocation:
         """The SSH port pool must not allocate invalid TCP ports."""
         assert SSH_PORT_END == 65535
 
+    @pytest.mark.parametrize("host_port", [0, -1, 65536])
+    def test_requested_host_port_must_be_a_valid_tcp_port(
+        self,
+        state_manager: StateManager,
+        sample_config: VMConfig,
+        host_port: int,
+    ) -> None:
+        """An unusable requested port is rejected up front.
+
+        ``guest_port`` was range-checked but ``host_port`` was not, so an
+        out-of-range value was persisted and only surfaced much later as an
+        opaque hypervisor error. Port 0 was worse: it means "any port", so the
+        number recorded in state did not match what the VM actually listened on.
+        """
+        state_manager.create_vm(sample_config)
+
+        with pytest.raises(ValueError, match="host_port must be 1-65535"):
+            state_manager.reserve_ssh_port("vm001", host_port=host_port)
+
+        assert state_manager.get_ssh_port("vm001") is None
+
+    def test_valid_requested_host_port_is_reserved(
+        self, state_manager: StateManager, sample_config: VMConfig
+    ) -> None:
+        """The range check must not reject legitimate ports."""
+        state_manager.create_vm(sample_config)
+
+        assert state_manager.reserve_ssh_port("vm001", host_port=65535) == 65535
+
     def test_reserve_ssh_port_is_stable(
         self, state_manager: StateManager, sample_config: VMConfig
     ) -> None:
@@ -593,6 +623,37 @@ class TestReconciliation:
         vm_info = state_manager.get_vm("vm001")
         assert vm_info.status == VMState.ERROR
         assert vm_info.pid is None
+
+    @pytest.mark.parametrize("pid", [0, -1])
+    def test_reconcile_non_positive_pid(
+        self,
+        state_manager: StateManager,
+        sample_config: VMConfig,
+        pid: int,
+    ) -> None:
+        """A pid of 0 or -1 is not a live VM.
+
+        ``os.kill(0, 0)`` probes our own process group and ``os.kill(-1, 0)``
+        probes every process we may signal, so both return successfully and the
+        sandbox stayed wedged in RUNNING forever instead of being reconciled.
+        """
+        state_manager.create_vm(sample_config)
+        state_manager.update_vm("vm001", status=VMState.RUNNING, pid=pid)
+
+        assert "vm001" in state_manager.reconcile()
+        assert state_manager.get_vm("vm001").status == VMState.ERROR
+
+    def test_reconcile_leaves_live_process_alone(
+        self,
+        state_manager: StateManager,
+        sample_config: VMConfig,
+    ) -> None:
+        """A real, running pid must not be reconciled away."""
+        state_manager.create_vm(sample_config)
+        state_manager.update_vm("vm001", status=VMState.RUNNING, pid=os.getpid())
+
+        assert state_manager.reconcile() == []
+        assert state_manager.get_vm("vm001").status == VMState.RUNNING
 
 
 class TestBrowserSessionStorage:

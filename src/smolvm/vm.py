@@ -3525,8 +3525,11 @@ class SmolVMManager:
                 self._process_handles.pop(pid, None)
             return
 
-        start = time.time()
-        while time.time() - start < timeout:
+        # Monotonic: a wall-clock step forward would abandon the wait on a VM
+        # that is shutting down cleanly (the caller then escalates to SIGKILL),
+        # and a step backward would stall the wait well past *timeout*.
+        start = time.monotonic()
+        while time.monotonic() - start < timeout:
             if not self._is_process_running(pid):
                 return
             time.sleep(0.1)

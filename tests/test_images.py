@@ -307,6 +307,95 @@ class TestDownloadFile:
         with pytest.raises(ImageError, match="Download failed"):
             image_manager._download_file("https://example.com/file", dest, "abc123")
 
+    @patch("smolvm.images.manager.requests.get")
+    def test_failed_download_does_not_leak_file_descriptors(
+        self, mock_get: MagicMock, image_manager: ImageManager, tmp_path: Path
+    ) -> None:
+        """A failing download must close its staging descriptor.
+
+        The staging file comes from ``mkstemp``, which hands back an already-open
+        descriptor. Opening it only after the request succeeded leaked one
+        descriptor per failure, and a retry loop then exhausted the process.
+        """
+        import requests
+
+        fd_dir = Path("/proc/self/fd")
+        if not fd_dir.is_dir():
+            pytest.skip("descriptor accounting requires /proc")
+
+        mock_get.side_effect = requests.ConnectionError("no network")
+        dest = tmp_path / "output.bin"
+
+        before = len(list(fd_dir.iterdir()))
+        for _ in range(25):
+            with pytest.raises(ImageError):
+                image_manager._download_file("https://example.com/file", dest, None)
+
+        assert len(list(fd_dir.iterdir())) == before
+
+    @patch("smolvm.images.manager.requests.get")
+    def test_unparseable_content_length_is_ignored(
+        self, mock_get: MagicMock, image_manager: ImageManager, tmp_path: Path
+    ) -> None:
+        """A malformed ``Content-Length`` is a progress hint, not a failure."""
+        content = b"payload"
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        # Proxies sometimes fold a repeated header into one comma-joined value.
+        mock_resp.headers = {"content-length": "7, 7"}
+        mock_resp.iter_content = lambda chunk_size: iter([content])
+        mock_get.return_value = mock_resp
+
+        dest = tmp_path / "output.bin"
+        totals: list[int | None] = []
+        image_manager._download_file(
+            "https://example.com/file",
+            dest,
+            hashlib.sha256(content).hexdigest(),
+            progress_callback=lambda _chunk, total: totals.append(total),
+        )
+
+        assert dest.read_bytes() == content
+        assert totals == [None]
+
+    @patch("smolvm.images.manager.requests.get")
+    def test_uppercase_expected_sha256_accepted(
+        self, mock_get: MagicMock, image_manager: ImageManager, tmp_path: Path
+    ) -> None:
+        """Hex digests are case-insensitive; an uppercase pin must verify."""
+        content = b"payload"
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.headers = {}
+        mock_resp.iter_content = lambda chunk_size: iter([content])
+        mock_get.return_value = mock_resp
+
+        dest = tmp_path / "output.bin"
+        image_manager._download_file(
+            "https://example.com/file",
+            dest,
+            hashlib.sha256(content).hexdigest().upper(),
+        )
+
+        assert dest.read_bytes() == content
+
+    @patch("smolvm.images.manager.requests.get")
+    def test_uppercase_expected_sha256_still_detects_mismatch(
+        self, mock_get: MagicMock, image_manager: ImageManager, tmp_path: Path
+    ) -> None:
+        """Case-insensitive comparison must not weaken the check itself."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.headers = {}
+        mock_resp.iter_content = lambda chunk_size: iter([b"wrong content"])
+        mock_get.return_value = mock_resp
+
+        dest = tmp_path / "output.bin"
+        with pytest.raises(ImageError, match="SHA-256 mismatch"):
+            image_manager._download_file("https://example.com/file", dest, "A" * 64)
+
+        assert not dest.exists()
+
 
 class TestVerifySHA256:
     """Tests for SHA-256 verification."""
@@ -333,6 +422,41 @@ class TestVerifySHA256:
         file_path.write_bytes(b"any content")
 
         assert ImageManager._verify_sha256(file_path, None) is True
+
+    def test_hash_comparison_is_case_insensitive(self, tmp_path: Path) -> None:
+        """An uppercase or padded digest verifies the same as a lowercase one.
+
+        Comparing raw strings made an uppercase pin permanently unverifiable:
+        the cached file "failed" its checksum on every run and was re-downloaded
+        forever. ``_verify_sha512`` already normalized; ``_verify_sha256`` did not.
+        """
+        content = b"hello world"
+        file_path = tmp_path / "test.bin"
+        file_path.write_bytes(content)
+
+        sha256 = hashlib.sha256(content).hexdigest()
+        sha512 = hashlib.sha512(content).hexdigest()
+
+        assert ImageManager._verify_sha256(file_path, sha256.upper()) is True
+        assert ImageManager._verify_sha256(file_path, f"  {sha256.upper()}\n") is True
+        assert ImageManager._verify_sha512(file_path, sha512.upper()) is True
+        # Normalization must not turn a real mismatch into a pass.
+        assert ImageManager._verify_sha256(file_path, "A" * 64) is False
+
+    def test_blank_hash_means_no_pin(self, tmp_path: Path) -> None:
+        """A blank digest reads as "not pinned", matching ``_download_file``.
+
+        ``_download_file`` has always treated a falsy digest as "no pin" and
+        skipped verification, so a blank string never gated what landed in the
+        cache. The verifiers now agree with it instead of reporting a mismatch
+        that would re-download the same file forever.
+        """
+        file_path = tmp_path / "test.bin"
+        file_path.write_bytes(b"hello world")
+
+        assert ImageManager._verify_sha256(file_path, "") is True
+        assert ImageManager._verify_sha256(file_path, "   ") is True
+        assert ImageManager._verify_sha512(file_path, "") is True
 
     @patch("smolvm.images.manager.requests.get")
     def test_download_skips_sha_when_none(self, mock_get: MagicMock, tmp_path: Path) -> None:

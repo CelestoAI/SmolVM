@@ -48,6 +48,41 @@ _DOWNLOAD_CHUNK_SIZE = 8192
 IMAGE_DIR_ENV = "SMOLVM_IMAGE_DIR"
 
 
+def _normalize_digest(expected: str | None) -> str | None:
+    """Return a hex digest in the canonical form used for comparison.
+
+    Hex digests are case-insensitive, and publishers write them both ways
+    (``sha256sum`` lowercases, plenty of release pages and S3 manifests
+    uppercase). Comparing raw strings made an uppercase pin permanently
+    unverifiable: the download "failed" its checksum every time and the
+    cache never converged.
+
+    ``None`` — and a blank string, which every caller has always treated the
+    same way — means "no digest was pinned", so verification is skipped.
+    """
+    if expected is None:
+        return None
+    normalized = expected.strip().lower()
+    return normalized or None
+
+
+def _parse_content_length(raw_length: str | None) -> int | None:
+    """Return the response body size, or ``None`` when it isn't usable.
+
+    ``Content-Length`` is only a progress hint here. Some proxies emit a
+    repeated value ("123, 123") or drop the header entirely, and neither
+    should turn a working download into a crash.
+    """
+    if raw_length is None:
+        return None
+    try:
+        total = int(raw_length.strip())
+    except (AttributeError, ValueError):
+        logger.debug("Ignoring unparseable content-length header: %r", raw_length)
+        return None
+    return total if total >= 0 else None
+
+
 def _expand_image_dir(path: Path) -> Path:
     try:
         return path.expanduser()
@@ -634,17 +669,20 @@ class ImageManager:
         tmp_fd, tmp_path_str = tempfile.mkstemp(dir=dest.parent, suffix=".tmp")
         tmp_path = Path(tmp_path_str)
 
+        expected = _normalize_digest(expected_sha256)
+
         try:
-            response = requests.get(url, stream=True, timeout=300)
-            response.raise_for_status()
-
-            total: int | None = None
-            raw_length = response.headers.get("content-length")
-            if raw_length is not None:
-                total = int(raw_length)
-
-            sha256 = hashlib.sha256() if expected_sha256 else None
+            # Take ownership of the mkstemp descriptor before anything else can
+            # raise. Opening it inside the request block leaked one descriptor
+            # per failed download, and a retry loop then ran the process out of
+            # file handles.
             with open(tmp_fd, "wb") as f:
+                response = requests.get(url, stream=True, timeout=300)
+                response.raise_for_status()
+
+                total = _parse_content_length(response.headers.get("content-length"))
+
+                sha256 = hashlib.sha256() if expected else None
                 for chunk in response.iter_content(chunk_size=_DOWNLOAD_CHUNK_SIZE):
                     f.write(chunk)
                     if sha256 is not None:
@@ -652,12 +690,12 @@ class ImageManager:
                     if progress_callback is not None:
                         progress_callback(len(chunk), total)
 
-            if sha256 is not None and expected_sha256 is not None:
+            if sha256 is not None and expected is not None:
                 actual_hash = sha256.hexdigest()
-                if actual_hash != expected_sha256:
+                if actual_hash != expected:
                     raise ImageError(
                         f"SHA-256 mismatch for {url}\n"
-                        f"  expected: {expected_sha256}\n"
+                        f"  expected: {expected}\n"
                         f"  actual:   {actual_hash}"
                     )
 
@@ -682,7 +720,8 @@ class ImageManager:
         Returns:
             True if the checksum matches or if no hash was provided.
         """
-        if expected is None:
+        normalized = _normalize_digest(expected)
+        if normalized is None:
             return True
 
         sha256 = hashlib.sha256()
@@ -694,11 +733,11 @@ class ImageManager:
                 sha256.update(chunk)
 
         actual = sha256.hexdigest()
-        if actual != expected:
+        if actual != normalized:
             logger.debug(
                 "SHA-256 mismatch for %s: expected=%s, actual=%s",
                 path,
-                expected,
+                normalized,
                 actual,
             )
             return False
@@ -727,15 +766,16 @@ class ImageManager:
         Returns:
             True if the checksum matches or if no hash was provided.
         """
-        if expected is None:
+        normalized = _normalize_digest(expected)
+        if normalized is None:
             return True
 
         actual = cls._compute_sha512(path)
-        if actual != expected.lower():
+        if actual != normalized:
             logger.debug(
                 "SHA-512 mismatch for %s: expected=%s, actual=%s",
                 path,
-                expected,
+                normalized,
                 actual,
             )
             return False

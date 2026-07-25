@@ -106,9 +106,12 @@ class LibkrunRuntimeAdapter(RuntimeAdapter):
         from contextlib import suppress
 
         settle = min(0.5, boot_timeout)
-        deadline = time.time() + settle
+        # Monotonic: the async twin already uses the loop clock, and a
+        # wall-clock step here would either skip the settle window entirely
+        # or stretch it far past the caller's boot timeout.
+        deadline = time.monotonic() + settle
 
-        while time.time() < deadline:
+        while time.monotonic() < deadline:
             rc = process.poll()
             if rc is not None:
                 raise SmolVMError(

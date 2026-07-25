@@ -14,6 +14,7 @@
 
 """Tests for SmolVM utils module."""
 
+import shutil
 import subprocess
 from unittest.mock import MagicMock, patch
 
@@ -234,3 +235,55 @@ class TestEnsureSSHKey:
         assert private_key == key_dir / "id_ed25519"
         assert public_key == key_dir / "id_ed25519.pub"
         mock_run.assert_called_once()
+
+    def test_complete_key_pair_is_reused(self, tmp_path) -> None:
+        """An intact pair is returned as-is, never regenerated."""
+        key_dir = tmp_path / "keys"
+        key_dir.mkdir()
+        (key_dir / "id_ed25519").write_text("private")
+        (key_dir / "id_ed25519.pub").write_text("public")
+
+        with patch("smolvm.utils.subprocess.run") as mock_run:
+            ensure_ssh_key(key_dir=key_dir)
+
+        mock_run.assert_not_called()
+        assert (key_dir / "id_ed25519").read_text() == "private"
+
+    @pytest.mark.parametrize("survivor", ["id_ed25519", "id_ed25519.pub"])
+    def test_half_present_key_pair_is_regenerated(self, tmp_path, survivor: str) -> None:
+        """A leftover half of a pair is cleared before ssh-keygen runs.
+
+        ssh-keygen refuses to overwrite an existing key file without answering
+        an interactive "Overwrite (y/n)?" prompt. That prompt goes to the stderr
+        this call discards, so a half-written pair (interrupted generation, or a
+        deleted ``.pub``) either blocked the CLI on a terminal or failed with no
+        visible reason.
+        """
+        key_dir = tmp_path / "keys"
+        key_dir.mkdir()
+        (key_dir / survivor).write_text("leftover")
+
+        with patch("smolvm.utils.subprocess.run") as mock_run:
+            ensure_ssh_key(key_dir=key_dir)
+
+        mock_run.assert_called_once()
+        # The leftover is gone, so ssh-keygen writes both halves unprompted.
+        assert not (key_dir / survivor).exists()
+        # And stdin is closed, so a future prompt can never block the CLI.
+        assert mock_run.call_args.kwargs["stdin"] is subprocess.DEVNULL
+
+    def test_generated_key_pair_is_usable(self, tmp_path) -> None:
+        """End-to-end: recovery from a half-present pair yields a real key."""
+        if shutil.which("ssh-keygen") is None:
+            pytest.skip("ssh-keygen is not installed")
+
+        key_dir = tmp_path / "keys"
+        private_key, public_key = ensure_ssh_key(key_dir=key_dir)
+        original = private_key.read_bytes()
+
+        public_key.unlink()
+        private_key, public_key = ensure_ssh_key(key_dir=key_dir)
+
+        assert private_key.exists() and public_key.exists()
+        assert private_key.read_bytes() != original
+        assert public_key.read_text().startswith("ssh-ed25519 ")
