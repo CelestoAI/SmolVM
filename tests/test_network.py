@@ -686,3 +686,102 @@ class TestEgressAllowlist:
         # TAP should also be removed from allowed_taps set.
         all_scripts = "\n".join(c.args[0] for c in nm._run_nft_script.call_args_list)
         assert 'delete element inet smolvm_filter allowed_taps { "tap42" }' in all_scripts
+
+    @pytest.mark.parametrize(
+        ("label", "allowed_ips"),
+        [("allowlist", ["1.1.1.1"]), ("deny all", [])],
+    )
+    def test_egress_allowlist_refuses_ipv6(self, label: str, allowed_ips: list[str]) -> None:
+        """An egress allowlist must not leave IPv6 wide open.
+
+        The allow/drop rules match ``ip daddr``, which in an ``inet`` table
+        only matches IPv4 packets, and ``resolve_domains_to_ips`` discards
+        AAAA records so no IPv6 destination can ever reach the list. IPv6
+        therefore matched nothing and fell through to the forward chain's
+        ``policy accept`` — a guest that picked up a global IPv6 address
+        reached the whole internet with the allowlist nominally in force.
+        """
+        nm = NetworkManager()
+        nm._outbound_interface = "eth0"
+        nm._ensure_nftables_base = MagicMock()
+        nm._nft_list_table = MagicMock(
+            return_value="table inet smolvm_filter {\n  chain forward {\n  }\n}\n"
+        )
+        nm._run_nft_script = MagicMock()
+
+        nm.apply_egress_allowlist("tap42", allowed_ips)
+        script = nm._run_nft_script.call_args_list[0].args[0]
+
+        drop_ipv6 = (
+            'add rule inet smolvm_filter forward iifname "tap42" meta nfproto ipv6 '
+            'counter drop comment "smolvm:egress:tap42:drop6"'
+        )
+        assert drop_ipv6 in script, f"{label} left IPv6 unrestricted"
+
+        # First, so the established/related accept cannot re-admit an IPv6 flow.
+        established = (
+            'add rule inet smolvm_filter forward iifname "tap42" ct state established,related'
+        )
+        assert script.index(drop_ipv6) < script.index(established)
+
+    def test_egress_ipv6_drop_is_cleaned_up_with_the_rest(self) -> None:
+        """The IPv6 rule must not outlive the sandbox it belongs to.
+
+        Cleanup matches on the ``smolvm:egress:<tap>:`` comment prefix, so a
+        rule tagged outside that prefix would leak into the host ruleset and
+        keep dropping traffic for a TAP name that gets reused later.
+        """
+        nm = NetworkManager()
+        nm._ensure_nftables_base = MagicMock()
+        nm._nft_list_table = MagicMock(
+            return_value=(
+                "table inet smolvm_filter {\n"
+                "  chain forward {\n"
+                '    iifname "tap42" meta nfproto ipv6 counter drop '
+                'comment "smolvm:egress:tap42:drop6" # handle 40\n'
+                '    iifname "tap42" counter drop comment "smolvm:egress:tap42:drop" # handle 42\n'
+                "  }\n"
+                "}\n"
+            )
+        )
+        nm._run_nft_script = MagicMock()
+
+        nm.remove_egress_rules("tap42")
+
+        script = "\n".join(c.args[0] for c in nm._run_nft_script.call_args_list)
+        assert "delete rule inet smolvm_filter forward handle 40" in script
+        assert "delete rule inet smolvm_filter forward handle 42" in script
+
+    def test_sync_and_async_appliers_emit_identical_rules(self) -> None:
+        """The twins must not drift — the IPv6 gap was duplicated in both.
+
+        Both paths build their rules from one helper now; this pins that so a
+        future edit to one copy cannot silently leave the other behind.
+        """
+        import asyncio
+
+        def _make() -> NetworkManager:
+            nm = NetworkManager()
+            nm._outbound_interface = "eth0"
+            nm._ensure_nftables_base = MagicMock()
+            nm._async_ensure_nftables_base = AsyncMock()
+            nm._nft_list_table = MagicMock(
+                return_value="table inet smolvm_filter {\n  chain forward {\n  }\n}\n"
+            )
+            nm._async_nft_list_table = AsyncMock(
+                return_value="table inet smolvm_filter {\n  chain forward {\n  }\n}\n"
+            )
+            nm._run_nft_script = MagicMock()
+            nm._async_run_nft_script = AsyncMock()
+            nm._async_delete_nft_elements_best_effort = AsyncMock()
+            return nm
+
+        sync_nm = _make()
+        sync_nm.apply_egress_allowlist("tap42", ["1.1.1.1", "8.8.8.8"])
+        sync_script = sync_nm._run_nft_script.call_args_list[0].args[0]
+
+        async_nm = _make()
+        asyncio.run(async_nm.async_apply_egress_allowlist("tap42", ["1.1.1.1", "8.8.8.8"]))
+        async_script = async_nm._async_run_nft_script.call_args_list[0].args[0]
+
+        assert sync_script == async_script

@@ -65,6 +65,17 @@ def _make_tarball_with_member(arcname: str) -> bytes:
     return buf.getvalue()
 
 
+def _make_tarball_with_symlink(arcname: str, target: str) -> bytes:
+    """Create a minimal .tar.gz whose single member is a symlink."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo(name=arcname)
+        info.type = tarfile.SYMTYPE
+        info.linkname = target
+        tar.addfile(info)
+    return buf.getvalue()
+
+
 def _mock_response(tarball_bytes: bytes) -> MagicMock:
     mock_response = MagicMock()
     mock_response.raise_for_status = MagicMock()
@@ -325,3 +336,140 @@ class TestDashboardExtractDist:
             assert extractall_calls[0].get("filter") == "data"
         else:
             assert "filter" not in extractall_calls[0]
+
+
+class TestGuestTarModeBits:
+    """The sandbox is untrusted; its tar must not carry mode bits to the host."""
+
+    @staticmethod
+    def _guest_tarball() -> bytes:
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w") as archive:
+            directory = tarfile.TarInfo("subdir")
+            directory.type = tarfile.DIRTYPE
+            directory.mode = 0o2777
+            archive.addfile(directory)
+            for name, mode in (
+                ("setuid_root", 0o4755),
+                ("setgid", 0o2755),
+                ("sticky", 0o1777),
+                ("plain", 0o644),
+                ("script", 0o755),
+            ):
+                member = tarfile.TarInfo(name)
+                member.size = 4
+                member.mode = mode
+                archive.addfile(member, io.BytesIO(b"data"))
+        return buffer.getvalue()
+
+    def test_setuid_setgid_and_sticky_bits_are_stripped(self, tmp_path: Path) -> None:
+        """A guest tar must not be able to plant a setuid file on the host.
+
+        ``stat.S_IMODE`` keeps 0o7777 — setuid, setgid and sticky included —
+        and this archive is produced inside the sandbox and unpacked on the
+        host, often under ``sudo`` because SmolVM needs root for host
+        networking. Honouring those bits turned a directory download into a
+        privilege-escalation primitive.
+        """
+        import stat as stat_module
+
+        from smolvm.comm.rust_http_vsock_channel import _safe_extract_tar
+
+        destination = tmp_path / "downloaded"
+        _safe_extract_tar(self._guest_tarball(), destination)
+
+        dangerous = stat_module.S_ISUID | stat_module.S_ISGID | stat_module.S_ISVTX
+        offenders = [path.name for path in destination.iterdir() if path.stat().st_mode & dangerous]
+        assert not offenders, f"guest-supplied special mode bits survived on {offenders}"
+
+    def test_ordinary_permissions_are_still_preserved(self, tmp_path: Path) -> None:
+        """Stripping the dangerous bits must not flatten normal permissions."""
+        import stat as stat_module
+
+        from smolvm.comm.rust_http_vsock_channel import _safe_extract_tar
+
+        destination = tmp_path / "downloaded"
+        _safe_extract_tar(self._guest_tarball(), destination)
+
+        modes = {
+            path.name: stat_module.S_IMODE(path.stat().st_mode) for path in destination.iterdir()
+        }
+        assert modes["plain"] == 0o644
+        assert modes["script"] == 0o755
+        # The dangerous bit is dropped; the permission bits beneath it stay.
+        assert modes["setuid_root"] == 0o755
+        assert modes["setgid"] == 0o755
+        assert modes["sticky"] == 0o777
+
+
+class TestLinkMembersRejected:
+    """Path validation must also cover links, not just ``..`` and ``/``."""
+
+    def test_host_manager_rejects_symlink_member(self, tmp_path: Path) -> None:
+        """A symlink escaping the extraction directory must be refused.
+
+        On Python without PEP 706's ``data`` filter these archives are
+        extracted unfiltered, and the name check alone does not stop a member
+        like ``link -> /etc`` — a later member written "through" that link
+        lands outside the temporary directory entirely.
+        """
+        from smolvm.host.manager import HostManager
+
+        tarball_bytes = _make_tarball_with_symlink("release/link", "/etc")
+        mock_get = patch(
+            "smolvm.host.manager.requests.get",
+            return_value=_mock_response(tarball_bytes),
+        )
+
+        hm = HostManager()
+        with mock_get, pytest.raises(HostError, match="link or device"):
+            hm._download_and_extract(
+                url="http://example.com/fc.tgz",
+                dest=tmp_path / "fc",
+                version="v1.13.0",
+                arch="x86_64",
+            )
+
+    def test_dashboard_rejects_symlink_member(self, tmp_path: Path) -> None:
+        """Same guard on the dashboard archive."""
+        _ensure_dashboard_importable()
+        from smolvm.dashboard.server import _extract_dashboard_dist
+
+        archive = tmp_path / "dash.tar.gz"
+        archive.write_bytes(_make_tarball_with_symlink("dist/link", "/etc"))
+
+        with pytest.raises(RuntimeError, match="Unsafe entry"):
+            _extract_dashboard_dist(archive, tmp_path / "out")
+
+
+class TestGuestFileModeHeader:
+    """The guest's file-mode header is untrusted input applied on the host."""
+
+    def test_setuid_and_setgid_are_masked_off(self) -> None:
+        """``x-smolvm-file-mode`` must not be able to set setuid on the host.
+
+        This is the single-file sibling of the tar extraction path — the same
+        bug, one function away, and it would have survived a fix that only
+        looked at directory downloads.
+        """
+        from smolvm.comm.rust_http_vsock_channel import _parse_mode_header
+
+        assert _parse_mode_header("0o4755") == 0o755
+        assert _parse_mode_header("2755") == 0o755
+        assert _parse_mode_header("1777") == 0o777
+
+    def test_ordinary_modes_survive(self) -> None:
+        """Masking must not disturb normal permissions."""
+        from smolvm.comm.rust_http_vsock_channel import _parse_mode_header
+
+        assert _parse_mode_header("644") == 0o644
+        assert _parse_mode_header("0o600") == 0o600
+
+    @pytest.mark.parametrize("value", ["not-octal", "-1", ""])
+    def test_malformed_mode_raises_a_smolvm_error(self, value: str) -> None:
+        """A malformed header is a protocol error, not a bare ValueError."""
+        from smolvm.comm.rust_http_vsock_channel import _parse_mode_header
+        from smolvm.exceptions import SmolVMError
+
+        with pytest.raises(SmolVMError, match="file mode"):
+            _parse_mode_header(value)

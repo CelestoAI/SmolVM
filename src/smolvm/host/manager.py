@@ -290,10 +290,16 @@ class HostManager:
 
             # Extract
             with tarfile.open(tarball_path, "r:gz") as tar:
-                # Security: validate member paths to prevent path traversal
+                # Security: validate member paths to prevent path traversal.
+                # Links and device nodes are rejected too: the unfiltered
+                # fallback below would happily create a symlink pointing
+                # outside tmp_dir and then write "through" it, which the path
+                # check alone does not catch.
                 for member in tar.getmembers():
                     if member.name.startswith("/") or ".." in PurePosixPath(member.name).parts:
                         raise HostError(f"Refusing to extract suspicious path: {member.name}")
+                    if member.issym() or member.islnk() or member.isdev():
+                        raise HostError(f"Refusing to extract link or device: {member.name}")
                 if hasattr(tarfile, "data_filter"):
                     tar.extractall(path=tmp_dir, filter="data")
                 else:

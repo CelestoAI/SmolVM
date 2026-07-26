@@ -219,6 +219,11 @@ def _extract_dashboard_dist(archive_path: Path, extract_dir: Path) -> Path:
             member_path = Path(member.name)
             if member_path.is_absolute() or ".." in member_path.parts:
                 raise RuntimeError(f"Unsafe path in dashboard archive: {member.name}")
+            # The unfiltered fallback below would create a symlink pointing
+            # outside extract_dir and then write "through" it — something the
+            # path check alone does not catch.
+            if member.issym() or member.islnk() or member.isdev():
+                raise RuntimeError(f"Unsafe entry in dashboard archive: {member.name}")
 
         if hasattr(tarfile, "data_filter"):
             tar.extractall(path=extract_dir, filter="data")
