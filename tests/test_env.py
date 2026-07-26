@@ -245,6 +245,7 @@ class TestInjectEnvVars:
         ssh = MagicMock()
 
         def _run(cmd: str, timeout: int | None = None) -> CommandResult:
+            """Execute the generated script for real instead of mocking it."""
             completed = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True)
             return CommandResult(
                 exit_code=completed.returncode,

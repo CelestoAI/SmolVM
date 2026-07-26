@@ -328,6 +328,7 @@ class TestSSHClientWaitForSSH:
         monkeypatch.setattr("smolvm.ssh.time.monotonic", lambda: now[0])
 
         def _advance(seconds: float) -> None:
+            """Stand in for time.sleep by moving the fake clock forward."""
             assert seconds >= 0
             now[0] += seconds
 

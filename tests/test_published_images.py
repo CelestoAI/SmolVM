@@ -1051,6 +1051,7 @@ class TestDecompressZstd:
         dst = tmp_path / "rootfs.ext4"
 
         def _fail_after_creating_staging(_src: object, target: object, **_kwargs: object) -> str:
+            """Create the staging file, then fail with a non-OSError."""
             Path(target).write_bytes(b"\0" * 4096)
             raise zstandard.ZstdError("corrupt frame")
 
@@ -1076,6 +1077,7 @@ class TestDecompressZstd:
         dst = tmp_path / "rootfs.ext4"
 
         def _interrupt(_src: object, target: object, **_kwargs: object) -> str:
+            """Create the staging file, then raise KeyboardInterrupt."""
             Path(target).write_bytes(b"\0" * 4096)
             raise KeyboardInterrupt
 

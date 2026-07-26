@@ -181,6 +181,7 @@ def test_socket_wait_uses_a_monotonic_deadline(tmp_path: Path) -> None:
     sidecar = _SwtpmSidecar(vm_id="vm-win", firmware_dir=tmp_path, context=context)
 
     def fake_run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        """Simulate swtpm forking: create the socket and pidfile."""
         sidecar.socket_path.touch()
         sidecar.pidfile_path.write_text("4242\n")
         return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
