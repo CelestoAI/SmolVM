@@ -57,15 +57,28 @@ def _normalize_digest(expected: str | None) -> str | None:
     unverifiable: the download "failed" its checksum every time and the
     cache never converged.
 
-    Only ``None`` means "no digest was pinned". A blank string is left blank
-    so it still fails comparison: callers disagree on whether blank means
-    unpinned (``_download_file`` tests truthiness) or pinned-but-empty
-    (``ensure_rootfs_only`` tests ``is not None``), and collapsing it here
-    would let the stricter caller accept an unverified image.
+    Only ``None`` means "no digest was pinned". A blank string is a malformed
+    pin, not an opt-out — see :func:`_reject_blank_digest`.
     """
     if expected is None:
         return None
     return expected.strip().lower()
+
+
+def _reject_blank_digest(expected: str | None, *, algorithm: str, source: str) -> None:
+    """Fail a download whose pin is present but empty.
+
+    A caller that passes a digest is asking for verification. Reading blank as
+    "no digest" let a malformed pin download an unverified image while the
+    cache check — which compares blank and fails — rejected the very same file,
+    so the image was re-fetched, unverified, on every call.
+    """
+    if expected is not None and not expected:
+        raise ImageError(
+            f"The {algorithm} checksum given for {source} is empty, so the download "
+            "cannot be verified. Supply the full checksum, or remove it to skip "
+            "verification deliberately."
+        )
 
 
 def _parse_content_length(raw_length: str | None) -> int | None:
@@ -564,6 +577,11 @@ class ImageManager:
         if not name:
             raise ValueError("image name cannot be empty")
 
+        # Fail before any network work, and with a message that names the real
+        # problem rather than a mismatch against an empty expected value.
+        _reject_blank_digest(_normalize_digest(sha256), algorithm="SHA-256", source=url)
+        _reject_blank_digest(_normalize_digest(sha512), algorithm="SHA-512", source=url)
+
         safe_filename = ImageSource.normalize_cache_filename(filename)
         image_dir = self.cache_dir / name
         rootfs_path = image_dir / safe_filename
@@ -672,6 +690,7 @@ class ImageManager:
         tmp_path = Path(tmp_path_str)
 
         expected = _normalize_digest(expected_sha256)
+        _reject_blank_digest(expected, algorithm="SHA-256", source=url)
 
         try:
             # Take ownership of the mkstemp descriptor before anything else can
@@ -970,6 +989,7 @@ class ImageManager:
         # different case, while the cache check accepted it — so the two
         # disagreed and the image could never be fetched.
         expected = _normalize_digest(expected_sha256)
+        _reject_blank_digest(expected, algorithm="SHA-256", source=f"s3://{bucket}/{key}")
 
         try:
             sha256 = hashlib.sha256() if expected else None

@@ -607,9 +607,10 @@ class TestEnsureRootfsOnly:
     ) -> None:
         """A blank sha512 must not downgrade into "unverified, accepted".
 
-        This call site gates on ``sha512 is not None``, so a blank string is a
-        pin it expects to enforce. Treating blank as "no digest" would hand
-        back a rootfs that nothing checked.
+        Passing a digest is a request for verification, so an empty one is
+        malformed input and says so by name — rather than surfacing as a
+        mismatch against an empty expected value, or (worse) being read as
+        "no digest" and handing back a rootfs that nothing checked.
         """
         mock_resp = MagicMock()
         mock_resp.raise_for_status = MagicMock()
@@ -618,12 +619,15 @@ class TestEnsureRootfsOnly:
         mock_get.return_value = mock_resp
 
         mgr = ImageManager(cache_dir=tmp_path / "images")
-        with pytest.raises(ImageError, match="SHA-512 mismatch"):
+        with pytest.raises(ImageError, match="SHA-512 checksum .* is empty"):
             mgr.ensure_rootfs_only(
                 "blank-pin",
                 url="https://example.com/rootfs.qcow2",
                 sha512="",
             )
+
+        # Nothing was fetched: the malformed pin fails before any network work.
+        mock_get.assert_not_called()
 
 
 class TestImageManagerInit:
@@ -1156,3 +1160,278 @@ class TestS3CredentialResolution:
             from smolvm.images.manager import _require_boto3
 
             _require_boto3()
+
+
+# ---------------------------------------------------------------------------
+# Digest handling is spread across four comparison sites and several public
+# entry points. Two bugs came from treating one of them in isolation: the S3
+# download path was left comparing raw strings while the cache check
+# normalized (so the two disagreed and an uppercase-pinned image could never
+# be fetched), and a "blank means unpinned" shortcut that suited
+# ``_download_file`` silently let ``ensure_rootfs_only`` accept an unverified
+# rootfs.
+#
+# The tests below exercise every entry point as a *set*, so a change to the
+# shared helper has to satisfy all of its callers at once rather than just the
+# one that prompted it. Adding a new digest-checked download path means adding
+# it to ``_digest_sinks`` — the structural test at the bottom fails if a new
+# comparison site skips normalization entirely.
+# ---------------------------------------------------------------------------
+
+_DIGEST_CONTENT = b"payload-under-test"
+_GOOD_SHA256 = hashlib.sha256(_DIGEST_CONTENT).hexdigest()
+_GOOD_SHA512 = hashlib.sha512(_DIGEST_CONTENT).hexdigest()
+_WRONG_SHA256 = "b" * 64
+_WRONG_SHA512 = "b" * 128
+
+
+def _http_response(content: bytes) -> MagicMock:
+    response = MagicMock()
+    response.raise_for_status = MagicMock()
+    response.headers = {}
+    response.iter_content = lambda chunk_size: iter([content])
+    return response
+
+
+def _s3_client(content: bytes) -> MagicMock:
+    client = MagicMock()
+    body = MagicMock()
+    body.iter_chunks.return_value = iter([content])
+    client.get_object.return_value = {"Body": body}
+    return client
+
+
+def _accepts_via_http_download(tmp_path: Path, digest: str) -> bool:
+    mgr = ImageManager(cache_dir=tmp_path)
+    with patch("smolvm.images.manager.requests.get", return_value=_http_response(_DIGEST_CONTENT)):
+        try:
+            mgr._download_file("https://example.com/f", tmp_path / "http.bin", digest)
+        except ImageError:
+            return False
+    return True
+
+
+def _accepts_via_s3_download(tmp_path: Path, digest: str) -> bool:
+    mgr = ImageManager(cache_dir=tmp_path)
+    try:
+        mgr._download_s3_file(
+            _s3_client(_DIGEST_CONTENT), "bucket", "key", tmp_path / "s3.bin", digest
+        )
+    except ImageError:
+        return False
+    return True
+
+
+def _accepts_via_cache_check_sha256(tmp_path: Path, digest: str) -> bool:
+    target = tmp_path / "cache256.bin"
+    target.write_bytes(_DIGEST_CONTENT)
+    return ImageManager._verify_sha256(target, digest)
+
+
+def _accepts_via_cache_check_sha512(tmp_path: Path, digest: str) -> bool:
+    target = tmp_path / "cache512.bin"
+    target.write_bytes(_DIGEST_CONTENT)
+    return ImageManager._verify_sha512(target, digest)
+
+
+def _accepts_via_ensure_rootfs_sha256(tmp_path: Path, digest: str) -> bool:
+    mgr = ImageManager(cache_dir=tmp_path / "cache")
+    with patch("smolvm.images.manager.requests.get", return_value=_http_response(_DIGEST_CONTENT)):
+        try:
+            mgr.ensure_rootfs_only("rootfs-256", url="https://example.com/r", sha256=digest)
+        except ImageError:
+            return False
+    return True
+
+
+def _accepts_via_ensure_rootfs_sha512(tmp_path: Path, digest: str) -> bool:
+    mgr = ImageManager(cache_dir=tmp_path / "cache")
+    with patch("smolvm.images.manager.requests.get", return_value=_http_response(_DIGEST_CONTENT)):
+        try:
+            mgr.ensure_rootfs_only("rootfs-512", url="https://example.com/r", sha512=digest)
+        except ImageError:
+            return False
+    return True
+
+
+def _accepts_via_ensure_image(tmp_path: Path, digest: str) -> bool:
+    source = ImageSource(
+        name="img",
+        kernel_url="https://example.com/k",
+        kernel_sha256=digest,
+        rootfs_url="https://example.com/r",
+        rootfs_sha256=digest,
+    )
+    mgr = ImageManager(cache_dir=tmp_path / "cache", registry={"img": source})
+    with patch("smolvm.images.manager.requests.get", return_value=_http_response(_DIGEST_CONTENT)):
+        try:
+            mgr.ensure_image("img")
+        except ImageError:
+            return False
+    return True
+
+
+# (label, accepts_fn, correct_digest, wrong_digest). Every caller-facing path
+# that checks a digest belongs here.
+_SHA256_SINKS = [
+    ("http download", _accepts_via_http_download, _GOOD_SHA256, _WRONG_SHA256),
+    ("s3 download", _accepts_via_s3_download, _GOOD_SHA256, _WRONG_SHA256),
+    ("cache check", _accepts_via_cache_check_sha256, _GOOD_SHA256, _WRONG_SHA256),
+    ("ensure_rootfs_only", _accepts_via_ensure_rootfs_sha256, _GOOD_SHA256, _WRONG_SHA256),
+    ("ensure_image", _accepts_via_ensure_image, _GOOD_SHA256, _WRONG_SHA256),
+]
+_SHA512_SINKS = [
+    ("cache check", _accepts_via_cache_check_sha512, _GOOD_SHA512, _WRONG_SHA512),
+    ("ensure_rootfs_only", _accepts_via_ensure_rootfs_sha512, _GOOD_SHA512, _WRONG_SHA512),
+]
+_DIGEST_SINKS = _SHA256_SINKS + _SHA512_SINKS
+
+
+def _spell(digest: str, style: str) -> str:
+    """Return an equivalent spelling of the same hex digest."""
+    if style == "lowercase":
+        return digest
+    if style == "uppercase":
+        return digest.upper()
+    if style == "mixed case":
+        return "".join(c.upper() if i % 2 else c for i, c in enumerate(digest))
+    if style == "surrounding whitespace":
+        return f"  {digest}\n"
+    raise AssertionError(f"unknown spelling: {style}")
+
+
+class TestDigestContractAcrossCallSites:
+    """The digest contract must hold at every call site, not just one."""
+
+    @pytest.mark.parametrize(
+        "style", ["lowercase", "uppercase", "mixed case", "surrounding whitespace"]
+    )
+    @pytest.mark.parametrize(("label", "accepts", "good", "_wrong"), _DIGEST_SINKS)
+    def test_every_call_site_accepts_every_spelling_of_a_correct_digest(
+        self,
+        tmp_path: Path,
+        label: str,
+        accepts: object,
+        good: str,
+        _wrong: str,
+        style: str,
+    ) -> None:
+        """Hex digests are case-insensitive, so all sites must agree on them.
+
+        The S3 download path once compared raw strings while the cache check
+        normalized. The two disagreed: an uppercase-pinned image failed every
+        fetch yet passed the cache check, so it could never be pulled.
+        """
+        assert accepts(tmp_path, _spell(good, style)) is True, (
+            f"{label} rejected a correct digest written in {style}"
+        )
+
+    @pytest.mark.parametrize(("label", "accepts", "_good", "wrong"), _DIGEST_SINKS)
+    def test_every_call_site_rejects_a_wrong_digest(
+        self, tmp_path: Path, label: str, accepts: object, _good: str, wrong: str
+    ) -> None:
+        """Normalizing case must never soften the check itself."""
+        assert accepts(tmp_path, wrong) is False, f"{label} accepted a wrong digest"
+
+    @pytest.mark.parametrize(("label", "accepts", "_good", "_wrong"), _DIGEST_SINKS)
+    def test_no_call_site_treats_a_blank_digest_as_verified(
+        self, tmp_path: Path, label: str, accepts: object, _good: str, _wrong: str
+    ) -> None:
+        """A blank digest must never read as "checked and correct".
+
+        Collapsing blank to "unpinned" inside the shared helper suited
+        ``_download_file`` (which tests truthiness) but broke
+        ``ensure_rootfs_only`` (which tests ``is not None``), turning a hard
+        failure into an accepted, unverified rootfs. Blank is malformed input;
+        no site may report it as a passing check.
+        """
+        assert accepts(tmp_path, "") is False, f"{label} accepted a blank digest as verified"
+
+    @pytest.mark.parametrize(("label", "accepts", "_good", "_wrong"), _DIGEST_SINKS)
+    def test_none_means_unpinned_everywhere(
+        self, tmp_path: Path, label: str, accepts: object, _good: str, _wrong: str
+    ) -> None:
+        """``None`` is the one value that means "no digest was pinned"."""
+        assert accepts(tmp_path, None) is True, f"{label} rejected an explicitly unpinned digest"
+
+
+class TestDigestNormalizationIsStructural:
+    """Guard against a new comparison site quietly skipping normalization."""
+
+    def test_every_computed_digest_comparison_normalizes_the_expected_value(self) -> None:
+        """Any function comparing a computed digest must normalize first.
+
+        This is the shape of the S3 bug: a second download path grew its own
+        ``actual_hash != expected_sha256`` comparison and simply never picked
+        up the shared helper. A behavioural test only catches that if someone
+        remembers to add the new path to ``_DIGEST_SINKS``; this catches it
+        even if they don't.
+        """
+        import ast
+        import inspect
+
+        from smolvm.images import manager
+
+        tree = ast.parse(inspect.getsource(manager))
+        # By convention in this module the freshly computed digest is bound to
+        # ``actual`` or ``actual_hash``.
+        computed_names = {"actual", "actual_hash"}
+        offenders: list[str] = []
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            compares_a_digest = any(
+                isinstance(child, ast.Name) and child.id in computed_names
+                for cmp_node in ast.walk(node)
+                if isinstance(cmp_node, ast.Compare)
+                for child in ast.walk(cmp_node)
+            )
+            if not compares_a_digest:
+                continue
+            normalizes = any(
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id == "_normalize_digest"
+                for call in ast.walk(node)
+            )
+            if not normalizes:
+                offenders.append(node.name)
+
+        assert not offenders, (
+            f"{offenders} compare a computed digest without calling _normalize_digest(). "
+            "Route the expected value through it so every call site agrees on "
+            "case and whitespace, then add the path to _DIGEST_SINKS."
+        )
+
+    def test_the_structural_guard_can_actually_fail(self) -> None:
+        """The guard above is worthless if its detection never fires.
+
+        A structural test that silently matches nothing passes forever. This
+        pins the detection itself against a known-bad snippet.
+        """
+        import ast
+
+        bad = ast.parse(
+            "def _download_new_thing(expected_sha256):\n"
+            "    actual_hash = h.hexdigest()\n"
+            "    if actual_hash != expected_sha256:\n"
+            "        raise ImageError('mismatch')\n"
+        )
+        function = next(n for n in ast.walk(bad) if isinstance(n, ast.FunctionDef))
+
+        compares_a_digest = any(
+            isinstance(child, ast.Name) and child.id in {"actual", "actual_hash"}
+            for cmp_node in ast.walk(function)
+            if isinstance(cmp_node, ast.Compare)
+            for child in ast.walk(cmp_node)
+        )
+        normalizes = any(
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == "_normalize_digest"
+            for call in ast.walk(function)
+        )
+
+        assert compares_a_digest, "detection missed a plain digest comparison"
+        assert not normalizes, "detection wrongly reported normalization"
