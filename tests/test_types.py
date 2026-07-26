@@ -15,7 +15,7 @@
 """Tests for SmolVM types module."""
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -484,7 +484,7 @@ class TestSnapshotInfo:
             ),
             vm_config=config,
             network_config=network,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
 
         assert snapshot.snapshot_id == "snap-1234"

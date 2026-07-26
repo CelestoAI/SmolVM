@@ -14,7 +14,7 @@ import uuid
 import webbrowser
 from collections.abc import Callable
 from contextlib import suppress
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -251,7 +251,7 @@ class _BrowserSandbox:
             config if config.session_id else config.model_copy(update={"session_id": session_id})
         )
         artifacts_dir = self._session_artifacts_dir(session_id)
-        expires_at = datetime.now(timezone.utc) + timedelta(minutes=session_config.timeout_minutes)
+        expires_at = datetime.now(UTC) + timedelta(minutes=session_config.timeout_minutes)
 
         vm: SmolVM | None = None
         try:

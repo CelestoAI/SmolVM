@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import subprocess
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, TextIO
 
@@ -98,7 +98,7 @@ class SnapshotCreateResult:
 
     artifacts: SnapshotArtifacts
     source_status: VMState
-    captured_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    captured_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     capture_method: Literal["paused", "live"] = "paused"
     operation_manifest_path: Path | None = None
     artifact_kind: Literal["full", "incremental"] | None = None

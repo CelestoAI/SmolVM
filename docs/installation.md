@@ -1,6 +1,6 @@
 # Install SmolVM
 
-Install SmolVM, prepare the machine that will run sandboxes, and confirm that it is ready. You need Python 3.10 or newer; supported host setup is Linux and macOS.
+Install SmolVM, prepare the machine that will run sandboxes, and confirm that it is ready. You need Python 3.11 or newer; supported host setup is Linux and macOS.
 
 ## Install the package
 

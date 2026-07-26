@@ -40,7 +40,7 @@ import shutil
 import tarfile
 import tempfile
 from contextlib import suppress
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -316,7 +316,7 @@ def run_image_save(
             manifest = {
                 "schema_version": _SCHEMA_VERSION,
                 "saved_by": __version__,
-                "created": datetime.now(timezone.utc).isoformat(),
+                "created": datetime.now(UTC).isoformat(),
                 "name": archive_name,
                 "kind": _entry_kind(entry, root),
                 "rootfs_sidecar": sidecar_value,

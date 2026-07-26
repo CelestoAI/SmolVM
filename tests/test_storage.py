@@ -15,7 +15,7 @@
 """Tests for SmolVM storage module."""
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -455,7 +455,7 @@ class TestSnapshotStorage:
             ),
             vm_config=config_with_forwards,
             network_config=network,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         assert snapshot.artifacts.state_path is not None
         assert snapshot.artifacts.memory_path is not None
@@ -530,7 +530,7 @@ class TestSnapshotStorage:
             artifacts=SnapshotArtifacts(disk_path=disk_path),
             vm_config=qemu_config,
             network_config=network,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             artifact_kind="incremental",
             virtual_size_bytes=10 * 1024 * 1024,
             changed_bytes=131072,
@@ -610,7 +610,7 @@ class TestBrowserSessionStorage:
             profile_id="acct-1",
             record_video=True,
         )
-        expires_at = datetime.now(timezone.utc)
+        expires_at = datetime.now(UTC)
         info = BrowserSessionInfo(
             session_id="browser-abc123",
             vm_id="browser-prof-acct-1-deadbeef",

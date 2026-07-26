@@ -18,7 +18,7 @@ import json
 import shutil
 import subprocess
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -503,7 +503,7 @@ def test_restore_qemu_snapshot_rehydrates_deleted_vm(
         artifacts=SnapshotArtifacts(disk_path=snapshot_dir / "disk.qcow2"),
         vm_config=vm_info.config.model_copy(update={"rootfs_format": None}),
         network_config=vm_info.network,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     snapshot.artifacts.disk_path.write_text("snapshotted-qcow2")
     qemu_smol_vm.state.create_snapshot(snapshot)
@@ -546,7 +546,7 @@ def test_restore_validates_artifacts_before_stopping_existing_vm(
         artifacts=SnapshotArtifacts(disk_path=qemu_smol_vm.snapshot_dir / "missing.qcow2"),
         vm_config=vm_info.config,
         network_config=vm_info.network,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     qemu_smol_vm.state.create_snapshot(snapshot)
 
@@ -579,7 +579,7 @@ def test_restore_qemu_snapshot_reserves_persisted_vsock_cid(
         artifacts=SnapshotArtifacts(disk_path=snapshot_dir / "disk.qcow2"),
         vm_config=vm_info.config,
         network_config=vm_info.network,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     snapshot.artifacts.disk_path.write_text("snapshotted-qcow2")
     qemu_smol_vm.state.create_snapshot(snapshot)
@@ -619,7 +619,7 @@ def test_restore_qemu_snapshot_persistence_failure_removes_placeholder(
             guest_mac="52:54:00:5d:00:04",
             ssh_host_port=2205,
         ),
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     snapshot.artifacts.disk_path.write_text("snapshotted-qcow2")
     qemu_smol_vm.state.create_snapshot(snapshot)
@@ -650,7 +650,7 @@ def test_restore_qemu_snapshot_rolls_back_new_vm_resources_on_failure(
         artifacts=SnapshotArtifacts(disk_path=snapshot_dir / "disk.qcow2"),
         vm_config=vm_info.config,
         network_config=vm_info.network,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     snapshot.artifacts.disk_path.write_text("snapshotted-qcow2")
     qemu_smol_vm.state.create_snapshot(snapshot)
@@ -696,7 +696,7 @@ def test_restore_qemu_snapshot_restores_backup_when_status_update_fails(
         artifacts=SnapshotArtifacts(disk_path=snapshot_dir / "disk.qcow2"),
         vm_config=vm_info.config,
         network_config=vm_info.network,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     snapshot.artifacts.disk_path.write_text("snapshotted-qcow2")
     qemu_smol_vm.state.create_snapshot(snapshot)
@@ -729,7 +729,7 @@ def test_restore_qemu_snapshot_preserves_existing_managed_disk_on_failure(
         artifacts=SnapshotArtifacts(disk_path=snapshot_dir / "disk.qcow2"),
         vm_config=vm_info.config,
         network_config=vm_info.network,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     snapshot.artifacts.disk_path.write_text("snapshotted-qcow2")
     qemu_smol_vm.state.create_snapshot(snapshot)
@@ -803,7 +803,7 @@ def test_restore_qemu_snapshot_removes_replaced_disk_sidecars(
         artifacts=SnapshotArtifacts(disk_path=snapshot_disk),
         vm_config=config,
         network_config=qemu_smol_vm.state.get_vm("vm001").network,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     qemu_smol_vm.state.create_snapshot(snapshot)
     process = MagicMock()
@@ -838,7 +838,7 @@ def test_delete_qemu_snapshot_rejects_active_restored_vm(
         artifacts=SnapshotArtifacts(disk_path=snapshot_dir / "disk.qcow2"),
         vm_config=vm_info.config,
         network_config=vm_info.network,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     snapshot.artifacts.disk_path.write_text("snapshotted-qcow2")
     qemu_smol_vm.state.create_snapshot(snapshot)
@@ -2075,7 +2075,7 @@ def test_qemu_live_snapshot_preserves_persisted_published_artifact(
         artifacts=SnapshotArtifacts(disk_path=old_final),
         vm_config=qemu_smol_vm.get("vm001").config,
         network_config=qemu_smol_vm.get("vm001").network,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         snapshot_type=SnapshotType.DISK,
     )
     qemu_smol_vm.state.create_snapshot(snapshot)
@@ -2164,7 +2164,7 @@ def test_restore_qemu_disk_snapshot_boots_fresh_without_loading_vmstate(
         artifacts=SnapshotArtifacts(disk_path=snapshot_dir / "disk.qcow2"),
         vm_config=vm_info.config,
         network_config=vm_info.network,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         snapshot_type=SnapshotType.DISK,
     )
     snapshot.artifacts.disk_path.write_text("disk-only-qcow2")

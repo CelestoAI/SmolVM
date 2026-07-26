@@ -144,7 +144,7 @@ async def async_run_command(
             proc.communicate(input=input.encode() if input else None),
             timeout=timeout,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         await proc.wait()
         raise SmolVMError(f"Command timed out: {' '.join(full_cmd)}") from None
