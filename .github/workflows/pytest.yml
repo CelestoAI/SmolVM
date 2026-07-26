@@ -13,20 +13,30 @@ jobs:
   pytest:
     runs-on: ubuntu-latest
 
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13", "3.14"]
+
+    name: pytest (Python ${{ matrix.python-version }})
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      - name: Set up Python 3.13
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # The cache key includes the Python version: smolvm-core is a pyo3
+      # extension module linked against a specific interpreter, so build
+      # artifacts are not shareable across matrix entries.
       - name: Cache Rust build
         uses: actions/cache@v4
         with:
@@ -34,15 +44,15 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: rust-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'smolvm-core/Cargo.toml', 'guest-agent/Cargo.toml') }}
-          restore-keys: rust-${{ runner.os }}-
+          key: rust-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'smolvm-core/Cargo.toml', 'guest-agent/Cargo.toml') }}
+          restore-keys: rust-${{ runner.os }}-py${{ matrix.python-version }}-
 
       - name: Install uv
         uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
 
       # uv workspace resolves smolvm-core from local smolvm-core/ directory
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --extra dev --python ${{ matrix.python-version }}
 
       - name: Assert native extension available
         run: |
@@ -57,7 +67,10 @@ jobs:
       - name: Run pytest
         run: uv run pytest
 
+      # The guest agent is pure Rust and does not link against Python, so
+      # running it once is enough to cover the whole matrix.
       - name: Run Rust guest-agent tests
+        if: matrix.python-version == '3.13'
         run: cargo test -p smolvm-guest-agent
 
   package-smoke:
