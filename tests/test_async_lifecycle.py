@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -69,7 +68,7 @@ class TestAsyncRunCommand:
         from smolvm.utils import async_run_command
 
         mock_proc = AsyncMock()
-        mock_proc.communicate.side_effect = asyncio.TimeoutError()
+        mock_proc.communicate.side_effect = TimeoutError()
         mock_proc.kill = MagicMock()
         mock_proc.wait = AsyncMock()
 

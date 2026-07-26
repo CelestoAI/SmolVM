@@ -36,7 +36,7 @@ import sys
 import time
 import uuid
 from contextlib import suppress
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -649,7 +649,7 @@ def run_benchmark(
     snapshot_type: SnapshotChoice = "auto",
 ) -> dict[str, Any]:
     report: dict[str, Any] = {
-        "date": datetime.now(timezone.utc).isoformat(),
+        "date": datetime.now(UTC).isoformat(),
         "host": {
             "system": platform.system(),
             "machine": platform.machine(),

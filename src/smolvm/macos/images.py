@@ -22,7 +22,7 @@ import tempfile
 import zipfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -230,7 +230,7 @@ class MacOSImageManager:
             allocated_size_bytes=details.disk_size.allocated,
             driver_version=self.driver.version(),
             host_arch=platform.machine(),
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         manifest_path = self.manifest_path(name)
         manifest_path.parent.mkdir(parents=True, exist_ok=True)

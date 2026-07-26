@@ -20,7 +20,7 @@ import asyncio
 import logging
 import shutil
 from contextlib import suppress
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -184,7 +184,7 @@ class FirecrackerRuntimeAdapter(RuntimeAdapter):
 
             if request.original_status == VMState.RUNNING:
                 client.pause_vm()
-            captured_at = datetime.now(timezone.utc)
+            captured_at = datetime.now(UTC)
 
             if request.snapshot_type == SnapshotType.DISK:
                 shutil.copy2(request.managed_disk_path, disk_path)

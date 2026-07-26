@@ -17,7 +17,7 @@
 import ast
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import ANY, MagicMock, patch
 
@@ -107,7 +107,7 @@ def _make_snapshot_info(
     snapshot.snapshot_type = SnapshotType.FULL
     snapshot.restored = restored
     snapshot.restored_vm_id = restored_vm_id
-    snapshot.created_at = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
+    snapshot.created_at = datetime(2026, 4, 3, 12, 0, tzinfo=UTC)
     snapshot.artifacts = MagicMock()
     snapshot.artifacts.state_path = Path(f"/tmp/{snapshot_id}/vmstate.bin")
     snapshot.artifacts.memory_path = Path(f"/tmp/{snapshot_id}/mem.bin")
