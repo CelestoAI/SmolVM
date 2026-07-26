@@ -761,6 +761,7 @@ class TestEgressAllowlist:
         import asyncio
 
         def _make() -> NetworkManager:
+            """A NetworkManager with both sync and async nft plumbing mocked."""
             nm = NetworkManager()
             nm._outbound_interface = "eth0"
             nm._ensure_nftables_base = MagicMock()

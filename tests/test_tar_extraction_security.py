@@ -343,6 +343,7 @@ class TestGuestTarModeBits:
 
     @staticmethod
     def _guest_tarball() -> bytes:
+        """A tar as an untrusted guest agent could produce it."""
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w") as archive:
             directory = tarfile.TarInfo("subdir")

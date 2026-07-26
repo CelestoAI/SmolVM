@@ -25,13 +25,13 @@ import stat
 import tarfile
 import tempfile
 from enum import Enum
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 import requests
 from pydantic import BaseModel
 
 from smolvm.exceptions import HostError
-from smolvm.utils import which
+from smolvm.utils import unsafe_tar_member_kind, which
 
 logger = logging.getLogger(__name__)
 
@@ -290,15 +290,14 @@ class HostManager:
 
             # Extract
             with tarfile.open(tarball_path, "r:gz") as tar:
-                # Security: validate member paths to prevent path traversal.
-                # Links and device nodes are rejected too: the unfiltered
-                # fallback below would happily create a symlink pointing
-                # outside tmp_dir and then write "through" it, which the path
-                # check alone does not catch.
+                # Security: reject members that could escape tmp_dir, whether
+                # by path or through a link. One shared rule — see
+                # smolvm.utils.unsafe_tar_member_kind.
                 for member in tar.getmembers():
-                    if member.name.startswith("/") or ".." in PurePosixPath(member.name).parts:
+                    kind = unsafe_tar_member_kind(member)
+                    if kind == "path":
                         raise HostError(f"Refusing to extract suspicious path: {member.name}")
-                    if member.issym() or member.islnk() or member.isdev():
+                    if kind is not None:
                         raise HostError(f"Refusing to extract link or device: {member.name}")
                 if hasattr(tarfile, "data_filter"):
                     tar.extractall(path=tmp_dir, filter="data")

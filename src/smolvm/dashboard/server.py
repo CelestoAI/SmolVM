@@ -47,6 +47,7 @@ from smolvm.dashboard.poller import poll_vm_state
 from smolvm.exceptions import SmolVMError, VMNotFoundError
 from smolvm.storage import StateManagerProtocol
 from smolvm.types import VMInfo, VMState
+from smolvm.utils import unsafe_tar_member_kind
 from smolvm.vm import SmolVMManager, resolve_data_dir
 
 logger = logging.getLogger(__name__)
@@ -215,14 +216,12 @@ def _download_asset(url: str, destination: Path) -> None:
 def _extract_dashboard_dist(archive_path: Path, extract_dir: Path) -> Path:
     """Extract dashboard archive and return the extracted dist directory."""
     with tarfile.open(archive_path, "r:gz") as tar:
+        # One shared rule — see smolvm.utils.unsafe_tar_member_kind.
         for member in tar.getmembers():
-            member_path = Path(member.name)
-            if member_path.is_absolute() or ".." in member_path.parts:
+            kind = unsafe_tar_member_kind(member)
+            if kind == "path":
                 raise RuntimeError(f"Unsafe path in dashboard archive: {member.name}")
-            # The unfiltered fallback below would create a symlink pointing
-            # outside extract_dir and then write "through" it — something the
-            # path check alone does not catch.
-            if member.issym() or member.islnk() or member.isdev():
+            if kind is not None:
                 raise RuntimeError(f"Unsafe entry in dashboard archive: {member.name}")
 
         if hasattr(tarfile, "data_filter"):

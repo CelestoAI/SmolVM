@@ -20,6 +20,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 from smolvm.exceptions import ImageError
 from smolvm.images.manager import (
@@ -332,6 +333,75 @@ class TestDownloadFile:
                 image_manager._download_file("https://example.com/file", dest, None)
 
         assert len(list(fd_dir.iterdir())) == before
+
+    # Every way a download can fail before it completes. Pinning one failure
+    # mode is not enough: a later change added blank-digest validation between
+    # mkstemp() and the try block, which leaked both the descriptor and the
+    # .tmp file on a path this test did not cover. New early exits belong here.
+    _DOWNLOAD_FAILURE_MODES = [
+        ("network error", requests.ConnectionError("no network"), None),
+        ("http error", requests.HTTPError("500 server error"), None),
+        ("blank digest", None, ""),
+        ("digest mismatch", None, "a" * 64),
+    ]
+
+    @pytest.mark.parametrize(
+        ("label", "get_error", "digest"),
+        _DOWNLOAD_FAILURE_MODES,
+        ids=[case[0] for case in _DOWNLOAD_FAILURE_MODES],
+    )
+    @patch("smolvm.images.manager.requests.get")
+    def test_no_failure_mode_leaks_descriptors_or_temp_files(
+        self,
+        mock_get: MagicMock,
+        image_manager: ImageManager,
+        tmp_path: Path,
+        label: str,
+        get_error: Exception | None,
+        digest: str | None,
+    ) -> None:
+        """No early exit may strand the staging descriptor or its .tmp file."""
+        fd_dir = Path("/proc/self/fd")
+        if not fd_dir.is_dir():
+            pytest.skip("descriptor accounting requires /proc")
+
+        if get_error is not None:
+            mock_get.side_effect = get_error
+        else:
+            mock_get.return_value = _http_response(b"payload")
+
+        dest = tmp_path / "output.bin"
+        before = len(list(fd_dir.iterdir()))
+        for _ in range(25):
+            with pytest.raises(ImageError):
+                image_manager._download_file("https://example.com/file", dest, digest)
+
+        assert len(list(fd_dir.iterdir())) == before, f"{label} leaked descriptors"
+        assert not list(tmp_path.glob("*.tmp")), f"{label} orphaned staging files"
+
+    @pytest.mark.parametrize(
+        ("label", "digest"),
+        [("blank digest", ""), ("digest mismatch", "a" * 64)],
+        ids=["blank digest", "digest mismatch"],
+    )
+    def test_s3_failure_modes_do_not_leak_either(
+        self, image_manager: ImageManager, tmp_path: Path, label: str, digest: str
+    ) -> None:
+        """The S3 path allocates the same way and must release it the same way."""
+        fd_dir = Path("/proc/self/fd")
+        if not fd_dir.is_dir():
+            pytest.skip("descriptor accounting requires /proc")
+
+        dest = tmp_path / "output.bin"
+        before = len(list(fd_dir.iterdir()))
+        for _ in range(25):
+            with pytest.raises(ImageError):
+                image_manager._download_s3_file(
+                    _s3_client(b"payload"), "bucket", "key", dest, digest
+                )
+
+        assert len(list(fd_dir.iterdir())) == before, f"{label} leaked descriptors"
+        assert not list(tmp_path.glob("*.tmp")), f"{label} orphaned staging files"
 
     @patch("smolvm.images.manager.requests.get")
     def test_unparseable_content_length_is_ignored(
@@ -1186,6 +1256,7 @@ _WRONG_SHA512 = "b" * 128
 
 
 def _http_response(content: bytes) -> MagicMock:
+    """A minimal mocked ``requests`` response serving *content* in one chunk."""
     response = MagicMock()
     response.raise_for_status = MagicMock()
     response.headers = {}
@@ -1194,6 +1265,7 @@ def _http_response(content: bytes) -> MagicMock:
 
 
 def _s3_client(content: bytes) -> MagicMock:
+    """A minimal mocked boto3 client whose object body is *content*."""
     client = MagicMock()
     body = MagicMock()
     body.iter_chunks.return_value = iter([content])
@@ -1202,6 +1274,7 @@ def _s3_client(content: bytes) -> MagicMock:
 
 
 def _accepts_via_http_download(tmp_path: Path, digest: str) -> bool:
+    """Whether the HTTP download path accepts *digest*."""
     mgr = ImageManager(cache_dir=tmp_path)
     with patch("smolvm.images.manager.requests.get", return_value=_http_response(_DIGEST_CONTENT)):
         try:
@@ -1212,6 +1285,7 @@ def _accepts_via_http_download(tmp_path: Path, digest: str) -> bool:
 
 
 def _accepts_via_s3_download(tmp_path: Path, digest: str) -> bool:
+    """Whether the S3 download path accepts *digest*."""
     mgr = ImageManager(cache_dir=tmp_path)
     try:
         mgr._download_s3_file(
@@ -1223,18 +1297,21 @@ def _accepts_via_s3_download(tmp_path: Path, digest: str) -> bool:
 
 
 def _accepts_via_cache_check_sha256(tmp_path: Path, digest: str) -> bool:
+    """Whether the SHA-256 cache verifier accepts *digest*."""
     target = tmp_path / "cache256.bin"
     target.write_bytes(_DIGEST_CONTENT)
     return ImageManager._verify_sha256(target, digest)
 
 
 def _accepts_via_cache_check_sha512(tmp_path: Path, digest: str) -> bool:
+    """Whether the SHA-512 cache verifier accepts *digest*."""
     target = tmp_path / "cache512.bin"
     target.write_bytes(_DIGEST_CONTENT)
     return ImageManager._verify_sha512(target, digest)
 
 
 def _accepts_via_ensure_rootfs_sha256(tmp_path: Path, digest: str) -> bool:
+    """Whether ``ensure_rootfs_only``'s sha256 pin accepts *digest*."""
     mgr = ImageManager(cache_dir=tmp_path / "cache")
     with patch("smolvm.images.manager.requests.get", return_value=_http_response(_DIGEST_CONTENT)):
         try:
@@ -1245,6 +1322,7 @@ def _accepts_via_ensure_rootfs_sha256(tmp_path: Path, digest: str) -> bool:
 
 
 def _accepts_via_ensure_rootfs_sha512(tmp_path: Path, digest: str) -> bool:
+    """Whether ``ensure_rootfs_only``'s sha512 pin accepts *digest*."""
     mgr = ImageManager(cache_dir=tmp_path / "cache")
     with patch("smolvm.images.manager.requests.get", return_value=_http_response(_DIGEST_CONTENT)):
         try:
@@ -1255,6 +1333,7 @@ def _accepts_via_ensure_rootfs_sha512(tmp_path: Path, digest: str) -> bool:
 
 
 def _accepts_via_ensure_image(tmp_path: Path, digest: str) -> bool:
+    """Whether the public ``ensure_image`` entry point accepts *digest*."""
     source = ImageSource(
         name="img",
         kernel_url="https://example.com/k",

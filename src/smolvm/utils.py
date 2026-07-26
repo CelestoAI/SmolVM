@@ -18,10 +18,11 @@ import logging
 import os
 import shutil
 import subprocess
+import tarfile
 import time
 from collections.abc import Sequence
 from contextlib import suppress
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from smolvm.exceptions import SmolVMError
 
@@ -200,6 +201,33 @@ def tail_file(path: Path, line_count: int) -> tuple[list[str], int, bool]:
         normalized = normalized[:-1]  # no trailing empty line, matching splitlines
     lines = normalized.split("\n") if normalized else []
     return lines[-line_count:], len(data), ends_with_newline
+
+
+def unsafe_tar_member_kind(member: "tarfile.TarInfo") -> str | None:
+    """Classify why *member* is unsafe to extract, or ``None`` if it is fine.
+
+    One definition of "unsafe tar member", shared by every extractor. Returns
+    a category — ``"path"``, ``"link"`` or ``"device"`` — rather than a
+    message, so each caller keeps its own exception type and its own wording.
+
+    Two rules, both needed. Absolute paths and ``..`` components escape the
+    destination directly. Links and device nodes escape indirectly: a member
+    like ``link -> /etc`` passes any name-based check, and a later member
+    written "through" it lands outside the destination entirely — which is why
+    a path check alone is not a traversal guard.
+
+    Python 3.12's ``filter="data"`` enforces all of this, but the extractors
+    still carry an unfiltered fallback for older interpreters, and that
+    fallback is exactly where these rules have to hold.
+    """
+    name = member.name
+    if name.startswith("/") or ".." in PurePosixPath(name).parts:
+        return "path"
+    if member.issym() or member.islnk():
+        return "link"
+    if member.isdev():
+        return "device"
+    return None
 
 
 def which(binary: str) -> Path | None:

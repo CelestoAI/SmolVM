@@ -684,13 +684,17 @@ class ImageManager:
         Raises:
             ImageError: If download or checksum verification fails.
         """
+        # Validate the pin before allocating anything. Both helpers are pure,
+        # and raising between mkstemp() and the try block below would leak the
+        # descriptor *and* orphan the .tmp file, since neither the `with` nor
+        # the `finally` would be reached.
+        expected = _normalize_digest(expected_sha256)
+        _reject_blank_digest(expected, algorithm="SHA-256", source=url)
+
         # Use a temp file in the same directory for atomic rename
         dest.parent.mkdir(parents=True, exist_ok=True)
         tmp_fd, tmp_path_str = tempfile.mkstemp(dir=dest.parent, suffix=".tmp")
         tmp_path = Path(tmp_path_str)
-
-        expected = _normalize_digest(expected_sha256)
-        _reject_blank_digest(expected, algorithm="SHA-256", source=url)
 
         try:
             # Take ownership of the mkstemp descriptor before anything else can
@@ -979,17 +983,19 @@ class ImageManager:
 
         Uses the same temp-file-then-rename pattern as :meth:`_download_file`.
         """
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        tmp_fd, tmp_path_str = tempfile.mkstemp(dir=dest.parent, suffix=".tmp")
-        tmp_path = Path(tmp_path_str)
-
         # Same normalization as the HTTP path and the cache check. Without it
         # an uppercase digest in a ``smolvm-image.json`` failed every download
         # with a mismatch whose expected and actual were the same digest in
         # different case, while the cache check accepted it — so the two
-        # disagreed and the image could never be fetched.
+        # disagreed and the image could never be fetched. Runs before mkstemp
+        # for the same reason as in ``_download_file``: raising after it would
+        # leak the descriptor and orphan the .tmp file.
         expected = _normalize_digest(expected_sha256)
         _reject_blank_digest(expected, algorithm="SHA-256", source=f"s3://{bucket}/{key}")
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp_fd, tmp_path_str = tempfile.mkstemp(dir=dest.parent, suffix=".tmp")
+        tmp_path = Path(tmp_path_str)
 
         try:
             sha256 = hashlib.sha256() if expected else None
