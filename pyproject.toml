@@ -8,7 +8,7 @@ version = "0.0.30a0"
 description = "Open-source AI sandbox infrastructure with unified API for VMMs -- Firecracker, QEMU and libkrun."
 readme = "README.md"
 license = "Apache-2.0"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     { name = "Celesto AI", email = "hello@celesto.ai" }
 ]
@@ -19,7 +19,6 @@ classifiers = [
     "Operating System :: MacOS :: MacOS X",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -82,14 +81,17 @@ packages = ["src/smolvm"]
 exclude = ["/ui", "/smolvm-core"]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
+# Migrating `(str, Enum)` to `StrEnum` changes `str()`/f-string output from
+# "VMState.RUNNING" to "running", which would alter CLI output and JSON payloads.
+ignore = ["UP042"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 strict = true
 warn_return_any = true
 warn_unused_ignores = true

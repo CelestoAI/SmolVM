@@ -25,7 +25,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, TextIO
@@ -59,7 +59,7 @@ class CommandPlan:
 def utc_now_iso() -> str:
     """Return an ISO-8601 UTC timestamp with second precision."""
 
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
 def host_info() -> dict[str, str]:

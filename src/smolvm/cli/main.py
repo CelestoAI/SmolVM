@@ -26,10 +26,10 @@ import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from contextlib import suppress
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any, NotRequired, TypedDict
 
 import click
 from rich.markup import escape
@@ -45,7 +45,6 @@ from rich.progress import (
 )
 from rich.table import Table
 from rich.text import Text
-from typing_extensions import NotRequired
 
 from smolvm.cli._kvm_session import maybe_reexec_for_kvm_group
 from smolvm.cli.output import (
@@ -822,8 +821,8 @@ def _format_started_at(iso_ts: str) -> str:
     """Render an ISO timestamp as ``YYYY-MM-DD HH:MM:SS UTC``."""
     dt = datetime.fromisoformat(iso_ts)
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 def _render_create_result(data: CreatePayload) -> None:
@@ -1345,7 +1344,7 @@ def _run_create(args: SimpleNamespace) -> int:
                     else VMState.RUNNING.value
                 ),
                 "os": os_label,
-                "started_at": datetime.now(timezone.utc).isoformat(),
+                "started_at": datetime.now(UTC).isoformat(),
             },
             "next": {
                 "shell_command": (None if is_macos else f"smolvm sandbox shell {vm.vm_id}"),

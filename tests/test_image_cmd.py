@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from datetime import UTC
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -548,11 +549,11 @@ class TestChoiceListsMatchPublishedTypes:
 
 class TestRelativeTime:
     def test_buckets(self) -> None:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from smolvm.cli.image import _relative_time
 
-        now = datetime(2026, 7, 17, 12, 0, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 7, 17, 12, 0, 0, tzinfo=UTC)
 
         def at(seconds_ago: int) -> str:
             from datetime import timedelta

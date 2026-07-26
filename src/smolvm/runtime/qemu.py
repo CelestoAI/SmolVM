@@ -26,7 +26,7 @@ import signal
 import subprocess
 import time
 from contextlib import suppress
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -468,7 +468,7 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                     )
                     client.wait_for_job(save_job_id)
                 snapshot_saved = True
-                captured_at = datetime.now(timezone.utc)
+                captured_at = datetime.now(UTC)
 
                 disk_path = request.snapshot_root / "disk.qcow2"
                 if request.snapshot_type == SnapshotType.DIFF:
@@ -1422,7 +1422,7 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                     max_bytes_per_second=request.max_bytes_per_second,
                 )
             bitmap_job_submitted = bitmap_backup is not None
-            captured_at = datetime.now(timezone.utc)
+            captured_at = datetime.now(UTC)
             logger.info(
                 "Live QEMU backup started vm_id=%s snapshot_id=%s job_id=%s "
                 "virtual_bytes=%d max_bytes_per_second=%s",

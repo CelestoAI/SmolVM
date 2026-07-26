@@ -30,9 +30,9 @@ import re
 import shlex
 import shutil
 from contextlib import AbstractContextManager, nullcontext
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, TypedDict, cast
+from typing import Any, NotRequired, TypedDict, cast
 
 from rich.progress import (
     BarColumn,
@@ -43,7 +43,6 @@ from rich.progress import (
     TimeElapsedColumn,
     TransferSpeedColumn,
 )
-from typing_extensions import NotRequired
 
 from smolvm import __version__
 from smolvm.cli.output import (
@@ -100,7 +99,7 @@ def _canonical_preset(name: str) -> str:
 def _created_iso(path: Path) -> str | None:
     """ISO 8601 UTC creation marker for a cache entry (its dir mtime)."""
     try:
-        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).isoformat()
     except OSError:
         return None
 
@@ -117,7 +116,7 @@ def _relative_time(iso_ts: str | None, *, now: datetime | None = None) -> str:
         # A naive timestamp can't be compared to the aware clock; degrade
         # like any other unusable input instead of raising.
         return "-"
-    current = now if now is not None else datetime.now(timezone.utc)
+    current = now if now is not None else datetime.now(UTC)
     seconds = max(0, int((current - then).total_seconds()))
     for unit, span in (
         ("year", 31_536_000),

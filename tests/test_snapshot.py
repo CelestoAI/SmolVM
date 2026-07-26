@@ -14,7 +14,7 @@
 
 """Tests for VM snapshot lifecycle management."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -284,7 +284,7 @@ def test_restore_snapshot_rehydrates_deleted_vm(
         ),
         vm_config=vm_info.config,
         network_config=vm_info.network,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     snapshot.artifacts.state_path.write_text("vmstate")
     snapshot.artifacts.memory_path.write_text("memory")
@@ -346,7 +346,7 @@ def test_restore_firecracker_full_snapshot_returns_vsock_uds_path(
             update={"vsock": VsockConfig(guest_cid=42, uds_path=str(uds_path))}
         ),
         network_config=vm_info.network,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     snapshot.artifacts.state_path.write_text("vmstate")
     snapshot.artifacts.memory_path.write_text("memory")
@@ -392,7 +392,7 @@ def test_restore_snapshot_rolls_back_new_vm_resources_on_failure(
         ),
         vm_config=vm_info.config,
         network_config=vm_info.network,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     snapshot.artifacts.state_path.write_text("vmstate")
     snapshot.artifacts.memory_path.write_text("memory")
@@ -446,7 +446,7 @@ def test_restore_snapshot_preserves_existing_managed_disk_on_failure(
         ),
         vm_config=vm_info.config,
         network_config=vm_info.network,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     snapshot.artifacts.state_path.write_text("vmstate")
     snapshot.artifacts.memory_path.write_text("memory")
@@ -522,7 +522,7 @@ def test_delete_snapshot_preserves_metadata_when_disk_cleanup_fails(
         ),
         vm_config=vm_info.config,
         network_config=vm_info.network,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     smol_vm.state.create_snapshot(snapshot)
 
@@ -653,7 +653,7 @@ def test_restore_firecracker_disk_snapshot_boots_fresh_without_loading_vmstate(
         ),
         vm_config=vm_info.config,
         network_config=vm_info.network,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         snapshot_type=SnapshotType.DISK,
     )
     snapshot.artifacts.disk_path.write_text("disk-only-ext4")

@@ -42,7 +42,7 @@ import time
 import uuid
 from collections.abc import Callable
 from contextlib import suppress
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -520,7 +520,7 @@ def main() -> None:
     backend = _resolve_and_validate_backend(args.backend)
 
     started = time.monotonic()
-    started_at = datetime.now(timezone.utc).isoformat()
+    started_at = datetime.now(UTC).isoformat()
 
     results: dict[str, Any] = {}
     for name in selected:
