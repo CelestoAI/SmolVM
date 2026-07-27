@@ -17,7 +17,7 @@ import shlex
 import subprocess
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import suppress
 from pathlib import Path
 from typing import BinaryIO
@@ -112,6 +112,37 @@ class LumeDriver:
             return MacOSInstallProgress("setup")
         return None
 
+    @staticmethod
+    def _iter_output_lines(stream: BinaryIO) -> Iterator[bytes]:
+        """Yield log lines as soon as they arrive, splitting on newline or return.
+
+        The install runs behind a terminal (see `install_base_image`), so read
+        raw chunks instead of `readline()`: a terminal can deliver partial
+        writes, and progress reporters often overwrite a line with a carriage
+        return rather than ending it with a newline.
+        """
+        buffer = b""
+        while True:
+            try:
+                chunk = stream.read(4096)
+            except OSError:
+                # macOS reports EIO on the terminal once the child exits.
+                break
+            except ValueError:
+                # A stuck runtime can outlive the reader, which closes the
+                # terminal out from under this loop while it waits.
+                break
+            if not chunk:
+                break
+            buffer += chunk
+            parts = re.split(rb"[\r\n]", buffer)
+            buffer = parts.pop()
+            for part in parts:
+                if part:
+                    yield part + b"\n"
+        if buffer:
+            yield buffer + b"\n"
+
     @classmethod
     def _stream_install_output(
         cls,
@@ -121,7 +152,7 @@ class LumeDriver:
     ) -> None:
         try:
             with log_path.open("ab") as log:
-                while raw_line := stream.readline():
+                for raw_line in cls._iter_output_lines(stream):
                     safe_line = re.sub(rb"vnc://[^\s@]*@", b"vnc://<redacted>@", raw_line)
                     log.write(safe_line)
                     log.flush()
@@ -134,6 +165,26 @@ class LumeDriver:
                                 on_progress(update)
         except OSError:
             return
+
+    @staticmethod
+    def _open_progress_terminal() -> tuple[BinaryIO, int]:
+        """Open a terminal pair so the child reports progress line by line.
+
+        Returns the readable end for SmolVM and the writable end to hand to the
+        child. Imported here because these modules are Unix-only, while this
+        file is imported wherever the macOS backend is merely referenced.
+        """
+        import pty
+        import termios
+
+        primary_fd, secondary_fd = pty.openpty()
+        with suppress(OSError, termios.error):
+            attributes = termios.tcgetattr(secondary_fd)
+            # Without this a terminal rewrites every "\n" as "\r\n", which would
+            # put stray carriage returns in the saved build log.
+            attributes[1] &= ~termios.ONLCR
+            termios.tcsetattr(secondary_fd, termios.TCSANOW, attributes)
+        return os.fdopen(primary_fd, "rb", buffering=0), secondary_fd
 
     def install_base_image(
         self,
@@ -171,23 +222,34 @@ class LumeDriver:
             initial_phase = "download" if ipsw == "latest" else "install"
             with suppress(Exception):
                 on_progress(MacOSInstallProgress(initial_phase, 0))
+        # Lume decides how much to buffer by looking at its own stdout. Down a
+        # plain pipe it buffers ~4 KiB, which on a slow connection holds back
+        # every percentage update until the download is most of the way done —
+        # the caller's progress bar sits at 0% for many minutes. Handing it a
+        # terminal makes it report each line as it happens.
+        stream, secondary_fd = self._open_progress_terminal()
         try:
             process = subprocess.Popen(
                 [str(self.binary), *arguments],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+                stdout=secondary_fd,
+                stderr=secondary_fd,
+                stdin=subprocess.DEVNULL,
                 env=self._environment(log_level="info"),
                 start_new_session=True,
             )
         except OSError as exc:
+            stream.close()
+            os.close(secondary_fd)
             raise SmolVMError(
                 "macOS image preparation did not start; run "
                 f"'smolvm image build --os macos --ipsw {ipsw} -t {request.name}' to try again."
             ) from exc
-        assert process.stdout is not None
+        # The child owns the writable end now; keep it open here and the reader
+        # would never see end-of-file.
+        os.close(secondary_fd)
         reader = threading.Thread(
             target=self._stream_install_output,
-            args=(process.stdout, log_path, on_progress),
+            args=(stream, log_path, on_progress),
             daemon=True,
             name=f"smolvm-lume-install-{request.name}",
         )
@@ -209,6 +271,7 @@ class LumeDriver:
             ) from exc
         finally:
             reader.join(timeout=5)
+            stream.close()
         if return_code != 0:
             raise SmolVMError(
                 "macOS image preparation failed; inspect the image build log, then run "

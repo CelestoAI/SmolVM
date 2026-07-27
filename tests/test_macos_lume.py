@@ -8,6 +8,7 @@
 
 import io
 import subprocess
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -136,6 +137,75 @@ def test_lume_progress_parser_recognizes_download_install_and_setup() -> None:
     assert LumeDriver._progress_from_line("INFO: Starting offline unattended setup") == (
         MacOSInstallProgress("setup")
     )
+
+
+def test_lume_install_gives_the_runtime_a_terminal(tmp_path: Path) -> None:
+    """Lume only reports progress line by line when its output is a terminal."""
+    binary = tmp_path / "lume-tty"
+    binary.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "print(f'INFO: isatty={sys.stdout.isatty()}', flush=True)\n"
+    )
+    binary.chmod(0o755)
+
+    LumeDriver(binary).install_base_image(
+        MacOSInstallRequest(name="macos-latest", storage_path=tmp_path),
+        log_path=tmp_path / "build.log",
+        on_progress=None,
+    )
+
+    assert "INFO: isatty=True" in (tmp_path / "build.log").read_text()
+
+
+def test_lume_install_reports_progress_before_the_runtime_exits(tmp_path: Path) -> None:
+    """Progress must not be withheld until the child's output buffer fills."""
+    binary = tmp_path / "lume-unflushed"
+    # No flush= anywhere: a block-buffered child holds these back down a pipe.
+    binary.write_text(
+        "#!/usr/bin/env python3\n"
+        "import time\n"
+        "print('INFO: Downloading IPSW Progress: 7%')\n"
+        "time.sleep(30)\n"
+    )
+    binary.chmod(0o755)
+    driver = LumeDriver(binary)
+    seen = threading.Event()
+
+    def record(update: MacOSInstallProgress) -> None:
+        if update == MacOSInstallProgress("download", 7):
+            seen.set()
+
+    def install() -> None:
+        # Killing the child below makes the install fail; that is the teardown,
+        # not the thing under test.
+        with pytest.raises(SmolVMError):
+            driver.install_base_image(
+                MacOSInstallRequest(name="macos-latest", storage_path=tmp_path),
+                log_path=tmp_path / "build.log",
+                on_progress=record,
+            )
+
+    worker = threading.Thread(target=install, daemon=True)
+    worker.start()
+    try:
+        assert seen.wait(timeout=10), "download progress never reached the caller"
+    finally:
+        subprocess.run(["pkill", "-f", str(binary)], check=False)
+        worker.join(timeout=10)
+
+
+def test_lume_install_stream_splits_carriage_return_updates(tmp_path: Path) -> None:
+    """Progress reporters often overwrite one line instead of ending it."""
+    updates: list[MacOSInstallProgress] = []
+    stream = io.BytesIO(b"INFO: Downloading IPSW Progress: 3%\rINFO: Downloading IPSW Progress: 9%")
+
+    LumeDriver._stream_install_output(stream, tmp_path / "build.log", updates.append)
+
+    assert updates == [
+        MacOSInstallProgress("download", 3),
+        MacOSInstallProgress("download", 9),
+    ]
 
 
 def test_lume_details_accept_null_stopped_vm_fields() -> None:
