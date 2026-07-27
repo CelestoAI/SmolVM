@@ -30,6 +30,18 @@ smolvm sandbox desktop test-mac
 
 SmolVM opens the built-in Screen Sharing app. The connection stays on this Mac and uses a temporary password that is not printed.
 
+## Copy and paste
+
+Copy and paste works in both directions between your Mac and the sandbox desktop. Copy on one side, paste on the other.
+
+Anything you copy on your Mac is readable inside the sandbox while it runs. If you would rather keep the two clipboards separate, turn it off when you create the sandbox:
+
+```bash
+smolvm sandbox create --os macos --name private-mac --no-clipboard
+```
+
+The choice is saved with the sandbox, so stopping and starting it keeps the same setting.
+
 ## Share files
 
 Add one local folder when you create the sandbox:

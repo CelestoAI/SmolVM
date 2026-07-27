@@ -565,6 +565,7 @@ def _build_auto_config(
     ssh_key_path: str | None = None,
     on_download: Callable[[str, int, int | None], None] | None = None,
     data_dir: Path | None = None,
+    clipboard: bool = True,
 ) -> tuple[VMConfig, str | None]:
     """Build the default SSH-ready VM config used by zero-config flows."""
     requested_os = _normalize_guest_os(os) if os is not None else None
@@ -599,7 +600,11 @@ def _build_auto_config(
                 f"This macOS image uses {manifest.memory_mib} MiB of memory; remove the custom "
                 "memory setting and create the sandbox again."
             )
-        machine = image_manager.machine_config(resolved_vm_name, data_dir=resolved_data_dir)
+        machine = image_manager.machine_config(
+            resolved_vm_name,
+            data_dir=resolved_data_dir,
+            clipboard=clipboard,
+        )
         config = VMConfig(
             vm_id=resolved_vm_name,
             vcpu_count=manifest.cpu_count,

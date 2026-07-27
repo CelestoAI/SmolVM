@@ -93,6 +93,7 @@ class MacOSRunRequest:
     name: str
     storage_path: Path
     workspace_mounts: tuple[WorkspaceMount, ...] = ()
+    clipboard: bool = True
 
     def __post_init__(self) -> None:
         _validate_lume_name(self.name)

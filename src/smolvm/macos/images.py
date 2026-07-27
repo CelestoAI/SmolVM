@@ -364,6 +364,7 @@ class MacOSImageManager:
         *,
         data_dir: Path,
         name: str = MACOS_DEFAULT_IMAGE,
+        clipboard: bool = True,
     ) -> MacOSMachineConfig:
         manifest = self.get(name)
         return MacOSMachineConfig(
@@ -373,4 +374,5 @@ class MacOSImageManager:
             guest_version=manifest.guest_version,
             guest_build=manifest.guest_build,
             disk_size_mib=manifest.disk_size_bytes // (1024 * 1024),
+            clipboard=clipboard,
         )

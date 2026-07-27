@@ -767,6 +767,7 @@ class TestCliCreate:
             disk_size_mib=4096,
             ssh_key_path=None,
             on_download=ANY,
+            clipboard=True,
         )
         mock_vm_cls.assert_called_once_with(
             config,
@@ -844,6 +845,7 @@ class TestCliCreate:
             disk_size_mib=2048,
             ssh_key_path=None,
             on_download=ANY,
+            clipboard=True,
         )
         mock_vm_cls.assert_called_once_with(
             config,
@@ -943,6 +945,7 @@ class TestCliCreate:
             disk_size_mib=4096,
             ssh_key_path=None,
             on_download=ANY,
+            clipboard=True,
         )
         mock_vm_cls.assert_called_once_with(
             config,
@@ -1135,6 +1138,7 @@ class TestCliCreate:
             memory=None,
             disk_size_mib=None,
             ssh_key_path=None,
+            clipboard=True,
         )
         vm.start.assert_called_once_with(boot_timeout=30.0)
         vm.wait_for_ready.assert_called_once_with(timeout=30.0, on_progress=None)

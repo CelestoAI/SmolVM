@@ -87,6 +87,14 @@ def sandbox() -> None:
 @comm_channel_option
 @click.option("--mount", "mounts", multiple=True, metavar="HOST_PATH[:GUEST_PATH]")
 @click.option("--writable-mounts", is_flag=True, help="Allow writes to mounted host folders.")
+@click.option(
+    "--clipboard/--no-clipboard",
+    default=True,
+    help=(
+        "Copy and paste between this Mac and the macOS desktop (on by default). "
+        "Use --no-clipboard to keep the two clipboards separate."
+    ),
+)
 @click.option("--yes", is_flag=True, help="Confirm one-time macOS image preparation.")
 @click.option(
     "--network",
@@ -115,6 +123,7 @@ def sandbox_create(
     comm_channel: str | None,
     mounts: tuple[str, ...],
     writable_mounts: bool,
+    clipboard: bool,
     yes: bool,
     network_mode: str,
     bridge_name: str | None,
@@ -136,6 +145,7 @@ def sandbox_create(
             comm_channel=comm_channel,
             mounts=_mounts(mounts),
             writable_mounts=writable_mounts,
+            clipboard=clipboard,
             yes=yes,
             network_mode=network_mode,
             bridge_name=bridge_name,
