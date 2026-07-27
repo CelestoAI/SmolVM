@@ -78,6 +78,7 @@ class VzRuntimeAdapter(RuntimeAdapter):
                 name=vm_info.vm_id,
                 storage_path=machine.bundle_path.parent,
                 workspace_mounts=tuple(vm_info.config.workspace_mounts),
+                clipboard=machine.clipboard,
             ),
             log_path=log_path,
             timeout=boot_timeout,

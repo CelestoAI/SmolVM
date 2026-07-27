@@ -1291,6 +1291,7 @@ def _run_create(args: SimpleNamespace) -> int:
                         disk_size_mib=args.disk_size_mib,
                         ssh_key_path=None,
                         on_download=on_download,
+                        clipboard=getattr(args, "clipboard", True),
                     ),
                     boot_timeout=args.boot_timeout,
                     prepare_message=_create_progress_message(resolved_backend, resolved_guest_os),
@@ -1310,6 +1311,7 @@ def _run_create(args: SimpleNamespace) -> int:
                     memory=args.memory_mib,
                     disk_size_mib=args.disk_size_mib,
                     ssh_key_path=None,
+                    clipboard=getattr(args, "clipboard", True),
                 )
                 config = _apply_network_attachment(
                     config,

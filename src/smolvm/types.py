@@ -252,6 +252,7 @@ class MacOSMachineConfig(BaseModel):
     display_width: Annotated[int, Field(ge=1024, le=7680)] = 1440
     display_height: Annotated[int, Field(ge=768, le=4320)] = 900
     ssh_user: str = "lume"
+    clipboard: bool = True
 
     @field_validator("base_image", "guest_version", "ssh_user")
     @classmethod

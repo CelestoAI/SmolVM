@@ -383,6 +383,10 @@ class LumeDriver:
             "--network",
             "nat",
         ]
+        if request.clipboard:
+            # Copy and paste between this Mac and the sandbox desktop. Lume
+            # carries the text over its own SSH connection to the guest.
+            arguments.append("--clipboard")
         for mount in request.workspace_mounts:
             arguments.extend(
                 [

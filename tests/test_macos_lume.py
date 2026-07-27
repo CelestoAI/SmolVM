@@ -208,6 +208,43 @@ def test_lume_install_stream_splits_carriage_return_updates(tmp_path: Path) -> N
     ]
 
 
+def _recorded_run_command(request: MacOSRunRequest, tmp_path: Path, binary: Path) -> list[str]:
+    """Start a VM and return the argument list handed to the runtime."""
+    commands: list[list[str]] = []
+    real_popen = subprocess.Popen
+
+    def record(command: list[str], *args: object, **kwargs: object) -> object:
+        commands.append(command)
+        return real_popen(command, *args, **kwargs)  # type: ignore[arg-type]
+
+    driver = LumeDriver(binary)
+    with patch("smolvm.macos.lume.subprocess.Popen", side_effect=record):
+        process, _ = driver.start(request, log_path=tmp_path / "run.log", timeout=10)
+    process.terminate()
+    process.wait(timeout=5)
+    return commands[0]
+
+
+def test_lume_run_enables_clipboard_by_default(fake_lume: Path, tmp_path: Path) -> None:
+    command = _recorded_run_command(
+        MacOSRunRequest(name="macos-latest", storage_path=tmp_path),
+        tmp_path,
+        fake_lume,
+    )
+
+    assert "--clipboard" in command
+
+
+def test_lume_run_omits_clipboard_when_disabled(fake_lume: Path, tmp_path: Path) -> None:
+    command = _recorded_run_command(
+        MacOSRunRequest(name="macos-latest", storage_path=tmp_path, clipboard=False),
+        tmp_path,
+        fake_lume,
+    )
+
+    assert "--clipboard" not in command
+
+
 def test_lume_details_accept_null_stopped_vm_fields() -> None:
     details = LumeVMDetails.model_validate(
         {
