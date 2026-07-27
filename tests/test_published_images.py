@@ -1036,3 +1036,55 @@ class TestDecompressZstd:
         assert not dst.exists()
         assert not staging.exists()
         assert not helper_tmp.exists()
+
+    def test_non_oserror_failure_removes_staging_file(self, tmp_path: Path) -> None:
+        """Cleanup must not be limited to ``OSError``.
+
+        The staging file is a full-size rootfs. Only cleaning up on ``OSError``
+        meant a decoder that raised anything else orphaned a multi-GB partial —
+        and every retry orphaned another one.
+        """
+        import zstandard
+
+        src = tmp_path / "rootfs.ext4.zst"
+        src.write_bytes(zstandard.ZstdCompressor().compress(b"payload"))
+        dst = tmp_path / "rootfs.ext4"
+
+        def _fail_after_creating_staging(_src: object, target: object, **_kwargs: object) -> str:
+            """Create the staging file, then fail with a non-OSError."""
+            Path(target).write_bytes(b"\0" * 4096)
+            raise zstandard.ZstdError("corrupt frame")
+
+        for _ in range(3):
+            with (
+                patch(
+                    "smolvm.host.disk.decompress_zstd_sparse",
+                    side_effect=_fail_after_creating_staging,
+                ),
+                pytest.raises(zstandard.ZstdError),
+            ):
+                _decompress_zstd(src, dst)
+
+        assert not dst.exists()
+        assert not list(tmp_path.glob("*.partial"))
+
+    def test_keyboard_interrupt_removes_staging_file(self, tmp_path: Path) -> None:
+        """Ctrl-C mid-decompress must not orphan the staging file either."""
+        import zstandard
+
+        src = tmp_path / "rootfs.ext4.zst"
+        src.write_bytes(zstandard.ZstdCompressor().compress(b"payload"))
+        dst = tmp_path / "rootfs.ext4"
+
+        def _interrupt(_src: object, target: object, **_kwargs: object) -> str:
+            """Create the staging file, then raise KeyboardInterrupt."""
+            Path(target).write_bytes(b"\0" * 4096)
+            raise KeyboardInterrupt
+
+        with (
+            patch("smolvm.host.disk.decompress_zstd_sparse", side_effect=_interrupt),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            _decompress_zstd(src, dst)
+
+        assert not list(tmp_path.glob("*.partial"))

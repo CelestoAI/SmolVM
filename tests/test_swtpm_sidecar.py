@@ -165,3 +165,52 @@ def test_stop_is_safe_when_pidfile_missing(tmp_path: Path) -> None:
     )
     # Don't create any files. stop() should be a clean no-op.
     sidecar.stop()
+
+
+def _no_wall_clock() -> float:
+    """Stand-in for ``time.time`` that fails if a wait loop consults it."""
+    raise AssertionError(
+        "runtime wait loops must use time.monotonic(); a wall-clock deadline can "
+        "be skipped past (or pushed out of reach) by an NTP step or DST change"
+    )
+
+
+def test_socket_wait_uses_a_monotonic_deadline(tmp_path: Path) -> None:
+    """``start()`` must time its socket wait against the monotonic clock."""
+    context = _make_context(tmp_path)
+    sidecar = _SwtpmSidecar(vm_id="vm-win", firmware_dir=tmp_path, context=context)
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        """Simulate swtpm forking: create the socket and pidfile."""
+        sidecar.socket_path.touch()
+        sidecar.pidfile_path.write_text("4242\n")
+        return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+    with (
+        patch("smolvm.runtime.qemu.which", return_value=Path("/usr/bin/swtpm")),
+        patch("smolvm.runtime.qemu.subprocess.run", side_effect=fake_run),
+        patch("smolvm.runtime.qemu.time.time", side_effect=_no_wall_clock),
+    ):
+        assert sidecar.start() == 4242
+
+
+def test_shutdown_wait_uses_a_monotonic_deadline(tmp_path: Path) -> None:
+    """``stop()`` must time its post-SIGTERM wait against the monotonic clock."""
+    context = _make_context(tmp_path)
+    sidecar = _SwtpmSidecar(vm_id="vm-win", firmware_dir=tmp_path, context=context)
+
+    sidecar.socket_path.parent.mkdir(parents=True, exist_ok=True)
+    sidecar.socket_path.touch()
+    sidecar.pidfile_path.write_text("12345\n")
+
+    # Alive for the signal, then gone for the wait loop and the SIGKILL re-check.
+    context.is_process_running.side_effect = [True, False, False, False]
+
+    with (
+        patch("smolvm.runtime.qemu.os.kill"),
+        patch("smolvm.runtime.qemu.time.time", side_effect=_no_wall_clock),
+    ):
+        sidecar.stop()
+
+    assert not sidecar.socket_path.exists()
+    assert not sidecar.pidfile_path.exists()

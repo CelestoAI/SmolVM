@@ -18,9 +18,11 @@ import logging
 import os
 import shutil
 import subprocess
+import tarfile
 import time
 from collections.abc import Sequence
-from pathlib import Path
+from contextlib import suppress
+from pathlib import Path, PurePosixPath
 
 from smolvm.exceptions import SmolVMError
 
@@ -201,6 +203,33 @@ def tail_file(path: Path, line_count: int) -> tuple[list[str], int, bool]:
     return lines[-line_count:], len(data), ends_with_newline
 
 
+def unsafe_tar_member_kind(member: "tarfile.TarInfo") -> str | None:
+    """Classify why *member* is unsafe to extract, or ``None`` if it is fine.
+
+    One definition of "unsafe tar member", shared by every extractor. Returns
+    a category — ``"path"``, ``"link"`` or ``"device"`` — rather than a
+    message, so each caller keeps its own exception type and its own wording.
+
+    Two rules, both needed. Absolute paths and ``..`` components escape the
+    destination directly. Links and device nodes escape indirectly: a member
+    like ``link -> /etc`` passes any name-based check, and a later member
+    written "through" it lands outside the destination entirely — which is why
+    a path check alone is not a traversal guard.
+
+    Python 3.12's ``filter="data"`` enforces all of this, but the extractors
+    still carry an unfiltered fallback for older interpreters, and that
+    fallback is exactly where these rules have to hold.
+    """
+    name = member.name
+    if name.startswith("/") or ".." in PurePosixPath(name).parts:
+        return "path"
+    if member.issym() or member.islnk():
+        return "link"
+    if member.isdev():
+        return "device"
+    return None
+
+
 def which(binary: str) -> Path | None:
     """Find a binary on the system PATH.
 
@@ -268,6 +297,41 @@ def ensure_ssh_key(key_dir: Path | None = None) -> tuple[Path, Path]:
                 pass
         return private_key, public_key
 
+    # The private key is what every existing sandbox trusts — its public half
+    # is already in their authorized_keys. Losing it locks the user out of all
+    # of them, so a missing .pub is repaired from the private key rather than
+    # triggering a silent key rotation.
+    if private_key.exists():
+        logger.info("Public key missing; deriving it from %s", private_key)
+        derived = subprocess.run(
+            ["ssh-keygen", "-y", "-f", str(private_key)],
+            check=False,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+        )
+        if derived.returncode != 0:
+            raise SmolVMError(
+                f"SmolVM's SSH key at '{private_key}' could not be read. Move it "
+                f"somewhere safe and delete '{key_dir}' to start over — sandboxes "
+                "created with the old key will need to be recreated.\n"
+                f"ssh-keygen stderr: {derived.stderr.strip()}"
+            )
+        public_key.write_text(derived.stdout)
+        public_key.chmod(0o644)
+        if sudo_uid is not None and sudo_gid is not None:
+            with suppress(OSError):
+                os.chown(public_key, sudo_uid, sudo_gid)
+        return private_key, public_key
+
+    # Only an orphaned .pub survived. Without its private half it authenticates
+    # nothing, and ssh-keygen would stop at an interactive "Overwrite (y/n)?"
+    # prompt written to the stderr we discard — blocking the CLI on a terminal,
+    # or failing invisibly otherwise. Clear it so generation is unattended.
+    if public_key.exists():
+        logger.warning("Removing orphaned SSH public key with no private half: %s", public_key)
+        public_key.unlink()
+
     logger.info("Generating new SSH key pair at %s...", key_dir)
     subprocess.run(
         [
@@ -282,6 +346,7 @@ def ensure_ssh_key(key_dir: Path | None = None) -> tuple[Path, Path]:
             "smolvm-auto",
         ],
         check=True,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )

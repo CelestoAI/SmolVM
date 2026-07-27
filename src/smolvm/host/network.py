@@ -1843,6 +1843,64 @@ class NetworkManager:
             comment=comment,
         )
 
+    def _egress_rule_lines(self, tap_device: str, allowed_ips: list[str]) -> list[str]:
+        """Build the nft rules enforcing an egress allowlist for one TAP.
+
+        Shared by the sync and async appliers so the two cannot drift — the
+        IPv6 gap below existed in both copies and would have had to be found
+        and fixed twice.
+
+        Rule order matters and is fail-closed:
+
+        1. Drop all IPv6 leaving the TAP. The allowlist is IPv4-only — the
+           accept and drop rules below match ``ip daddr``, which in an
+           ``inet`` table skips IPv6 packets entirely, and
+           ``resolve_domains_to_ips`` discards AAAA records so no IPv6
+           destination can ever be on the list. Without this rule IPv6
+           traffic matched nothing and fell through to the chain's
+           ``policy accept``, so a guest that picked up a global IPv6
+           address (via SLAAC on a bridged LAN, say) reached the whole
+           internet with the allowlist still nominally in force. This is
+           first so the established/related accept below cannot re-admit an
+           IPv6 flow.
+        2. Accept established/related return traffic.
+        3. Accept the allowed IPv4 destinations.
+        4. Drop everything else.
+        """
+        comment_prefix = f"smolvm:egress:{tap_device}"
+        tap = self._quote(tap_device)
+        lines = [
+            (
+                f"add rule {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} forward "
+                f"iifname {tap} meta nfproto ipv6 counter drop "
+                f"comment {self._quote(f'{comment_prefix}:drop6')}"
+            ),
+            (
+                f"add rule {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} forward "
+                f"iifname {tap} ct state established,related "
+                f"counter accept comment {self._quote(f'{comment_prefix}:established')}"
+            ),
+        ]
+
+        if allowed_ips:
+            # nftables anonymous set: ip daddr != { a, b, c }
+            ip_set = ", ".join(allowed_ips)
+            lines.append(
+                f"add rule {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} forward "
+                f"iifname {tap} ip daddr {{ {ip_set} }} "
+                f"counter accept comment {self._quote(f'{comment_prefix}:allow')}"
+            )
+            drop_expr = f"iifname {tap} ip daddr != {{ {ip_set} }} counter drop"
+        else:
+            # No IPs allowed — drop unconditionally.
+            drop_expr = f"iifname {tap} counter drop"
+
+        lines.append(
+            f"add rule {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} forward "
+            f"{drop_expr} comment {self._quote(f'{comment_prefix}:drop')}"
+        )
+        return lines
+
     def apply_egress_allowlist(
         self,
         tap_device: str,
@@ -1853,6 +1911,8 @@ class NetworkManager:
         Installs per-TAP rules in the SmolVM filter forward chain keyed by tap
         name so they are isolated between tenants::
 
+            # the allowlist is IPv4-only, so IPv6 egress is refused outright
+            iifname <tap> meta nfproto ipv6 counter drop
             # pass matching return traffic (established sessions)
             iifname <tap> ct state established,related counter accept
             # allow the configured destination set
@@ -1897,33 +1957,7 @@ class NetworkManager:
             _NFT_FILTER_TABLE,
             comment=f"smolvm:nat:tap:{tap_device}:to:{iface}",
         )
-        script_lines = [
-            (
-                f"add rule {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} forward "
-                f"iifname {self._quote(tap_device)} ct state established,related "
-                f"counter accept comment {self._quote(f'{comment_prefix}:established')}"
-            ),
-        ]
-
-        if allowed_ips:
-            # nftables anonymous set: ip daddr != { a, b, c }
-            ip_set = ", ".join(allowed_ips)
-            script_lines.append(
-                (
-                    f"add rule {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} forward "
-                    f"iifname {self._quote(tap_device)} ip daddr {{ {ip_set} }} "
-                    f"counter accept comment {self._quote(f'{comment_prefix}:allow')}"
-                ),
-            )
-            drop_expr = f"iifname {self._quote(tap_device)} ip daddr != {{ {ip_set} }} counter drop"
-        else:
-            # No IPs allowed — drop unconditionally.
-            drop_expr = f"iifname {self._quote(tap_device)} counter drop"
-
-        script_lines.append(
-            f"add rule {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} forward "
-            f"{drop_expr} comment {self._quote(f'{comment_prefix}:drop')}"
-        )
+        script_lines = self._egress_rule_lines(tap_device, allowed_ips)
 
         script_lines.extend(old_egress_delete_lines)
         script_lines.extend(old_nat_accept_delete_lines)
@@ -1973,31 +2007,7 @@ class NetworkManager:
             _NFT_FILTER_TABLE,
             comment=f"smolvm:nat:tap:{tap_device}:to:{iface}",
         )
-        script_lines = [
-            (
-                f"add rule {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} forward "
-                f"iifname {self._quote(tap_device)} ct state established,related "
-                f"counter accept comment {self._quote(f'{comment_prefix}:established')}"
-            ),
-        ]
-
-        if allowed_ips:
-            ip_set = ", ".join(allowed_ips)
-            script_lines.append(
-                (
-                    f"add rule {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} forward "
-                    f"iifname {self._quote(tap_device)} ip daddr {{ {ip_set} }} "
-                    f"counter accept comment {self._quote(f'{comment_prefix}:allow')}"
-                ),
-            )
-            drop_expr = f"iifname {self._quote(tap_device)} ip daddr != {{ {ip_set} }} counter drop"
-        else:
-            drop_expr = f"iifname {self._quote(tap_device)} counter drop"
-
-        script_lines.append(
-            f"add rule {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE} forward "
-            f"{drop_expr} comment {self._quote(f'{comment_prefix}:drop')}"
-        )
+        script_lines = self._egress_rule_lines(tap_device, allowed_ips)
 
         script_lines.extend(old_egress_delete_lines)
         script_lines.extend(old_nat_accept_delete_lines)

@@ -140,13 +140,22 @@ def _atomic_write(ssh: CommChannel, content: str) -> "CommandResult":  # noqa: F
     payload (heredoc delimiter injection, quote escaping, etc.).
     A ``mktemp``-generated temp file prevents symlink attacks, and a
     ``trap`` ensures the temp file is cleaned up on any failure.
+
+    The temp file is created **next to the destination**, not in ``/tmp``.
+    ``rename(2)`` — the only thing that makes the swap atomic — cannot
+    cross filesystems, and ``/tmp`` is a separate tmpfs on most guest
+    images. Staging there silently downgraded the final ``mv`` to a
+    copy-then-unlink, so an interrupted write left every new login shell
+    sourcing a half-written env file.
     """
     from smolvm.types import CommandResult  # noqa: F401 - avoid circular import
 
     b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
+    env_dir = ENV_FILE.rsplit("/", 1)[0]
     cmd = (
         "set -e; "
-        "_t=$(mktemp /tmp/.smolvm_env.XXXXXXXXXX); "
+        f"mkdir -p {env_dir}; "
+        f"_t=$(mktemp {env_dir}/.smolvm_env.XXXXXXXXXX); "
         "trap 'rm -f \"$_t\"' EXIT; "
         f"printf '%s' '{b64}' | base64 -d > \"$_t\"; "
         f'chmod 0644 "$_t"; '

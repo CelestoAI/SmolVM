@@ -1161,9 +1161,9 @@ if len(sys.argv) != 3:
 
 port = int(sys.argv[1])
 timeout = float(sys.argv[2])
-deadline = time.time() + timeout
+deadline = time.monotonic() + timeout
 
-while time.time() < deadline:
+while time.monotonic() < deadline:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(1.0)
         if sock.connect_ex(("127.0.0.1", port)) == 0:

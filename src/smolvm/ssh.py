@@ -419,6 +419,12 @@ class SSHClient:
         and is used to efficiently poll for port readiness before attempting
         a paramiko connect.
         """
+        if timeout <= 0:
+            # ``socket.create_connection`` rejects a non-positive timeout with
+            # ValueError, which is not an OSError and would escape the caller's
+            # retry loop. A deadline that has already passed simply means the
+            # port is not open yet.
+            return False
         try:
             with socket.create_connection((self.host, self.port), timeout=timeout) as sock:
                 # Read the SSH banner to confirm sshd is actually ready,
@@ -469,19 +475,27 @@ class SSHClient:
 
         # Phase 1: Fast TCP probe — detect when sshd port is open.
         backoff = _WAIT_BACKOFF_START
+        port_opened = False
         while time.monotonic() < deadline:
             if self._tcp_port_open(timeout=min(0.5, deadline - time.monotonic())):
                 logger.debug("TCP port %d is open on %s", self.port, self.host)
+                port_opened = True
                 break
 
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise OperationTimeoutError(
-                    f"wait_for_ssh({self.host}:{self.port}): port never opened",
-                    timeout,
-                )
+                break
             time.sleep(min(backoff, remaining))
             backoff = min(backoff * _WAIT_BACKOFF_FACTOR, interval)
+
+        if not port_opened:
+            # Falling through to phase 2 here would burn no time (the deadline
+            # has passed) and then report an empty "last error", hiding the
+            # only fact we actually know: sshd never answered on the port.
+            raise OperationTimeoutError(
+                f"wait_for_ssh({self.host}:{self.port}): port never opened",
+                timeout,
+            )
 
         # Phase 2: Establish persistent paramiko connection. The TCP port is
         # already open, but sshd may still be mid-startup (and on QEMU user-mode

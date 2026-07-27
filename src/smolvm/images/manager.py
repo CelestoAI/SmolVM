@@ -48,6 +48,56 @@ _DOWNLOAD_CHUNK_SIZE = 8192
 IMAGE_DIR_ENV = "SMOLVM_IMAGE_DIR"
 
 
+def _normalize_digest(expected: str | None) -> str | None:
+    """Return a hex digest in the canonical form used for comparison.
+
+    Hex digests are case-insensitive, and publishers write them both ways
+    (``sha256sum`` lowercases, plenty of release pages and S3 manifests
+    uppercase). Comparing raw strings made an uppercase pin permanently
+    unverifiable: the download "failed" its checksum every time and the
+    cache never converged.
+
+    Only ``None`` means "no digest was pinned". A blank string is a malformed
+    pin, not an opt-out — see :func:`_reject_blank_digest`.
+    """
+    if expected is None:
+        return None
+    return expected.strip().lower()
+
+
+def _reject_blank_digest(expected: str | None, *, algorithm: str, source: str) -> None:
+    """Fail a download whose pin is present but empty.
+
+    A caller that passes a digest is asking for verification. Reading blank as
+    "no digest" let a malformed pin download an unverified image while the
+    cache check — which compares blank and fails — rejected the very same file,
+    so the image was re-fetched, unverified, on every call.
+    """
+    if expected is not None and not expected:
+        raise ImageError(
+            f"The {algorithm} checksum given for {source} is empty, so the download "
+            "cannot be verified. Supply the full checksum, or remove it to skip "
+            "verification deliberately."
+        )
+
+
+def _parse_content_length(raw_length: str | None) -> int | None:
+    """Return the response body size, or ``None`` when it isn't usable.
+
+    ``Content-Length`` is only a progress hint here. Some proxies emit a
+    repeated value ("123, 123") or drop the header entirely, and neither
+    should turn a working download into a crash.
+    """
+    if raw_length is None:
+        return None
+    try:
+        total = int(raw_length.strip())
+    except (AttributeError, ValueError):
+        logger.debug("Ignoring unparseable content-length header: %r", raw_length)
+        return None
+    return total if total >= 0 else None
+
+
 def _expand_image_dir(path: Path) -> Path:
     try:
         return path.expanduser()
@@ -527,6 +577,11 @@ class ImageManager:
         if not name:
             raise ValueError("image name cannot be empty")
 
+        # Fail before any network work, and with a message that names the real
+        # problem rather than a mismatch against an empty expected value.
+        _reject_blank_digest(_normalize_digest(sha256), algorithm="SHA-256", source=url)
+        _reject_blank_digest(_normalize_digest(sha512), algorithm="SHA-512", source=url)
+
         safe_filename = ImageSource.normalize_cache_filename(filename)
         image_dir = self.cache_dir / name
         rootfs_path = image_dir / safe_filename
@@ -629,22 +684,30 @@ class ImageManager:
         Raises:
             ImageError: If download or checksum verification fails.
         """
+        # Validate the pin before allocating anything. Both helpers are pure,
+        # and raising between mkstemp() and the try block below would leak the
+        # descriptor *and* orphan the .tmp file, since neither the `with` nor
+        # the `finally` would be reached.
+        expected = _normalize_digest(expected_sha256)
+        _reject_blank_digest(expected, algorithm="SHA-256", source=url)
+
         # Use a temp file in the same directory for atomic rename
         dest.parent.mkdir(parents=True, exist_ok=True)
         tmp_fd, tmp_path_str = tempfile.mkstemp(dir=dest.parent, suffix=".tmp")
         tmp_path = Path(tmp_path_str)
 
         try:
-            response = requests.get(url, stream=True, timeout=300)
-            response.raise_for_status()
-
-            total: int | None = None
-            raw_length = response.headers.get("content-length")
-            if raw_length is not None:
-                total = int(raw_length)
-
-            sha256 = hashlib.sha256() if expected_sha256 else None
+            # Take ownership of the mkstemp descriptor before anything else can
+            # raise. Opening it inside the request block leaked one descriptor
+            # per failed download, and a retry loop then ran the process out of
+            # file handles.
             with open(tmp_fd, "wb") as f:
+                response = requests.get(url, stream=True, timeout=300)
+                response.raise_for_status()
+
+                total = _parse_content_length(response.headers.get("content-length"))
+
+                sha256 = hashlib.sha256() if expected else None
                 for chunk in response.iter_content(chunk_size=_DOWNLOAD_CHUNK_SIZE):
                     f.write(chunk)
                     if sha256 is not None:
@@ -652,12 +715,12 @@ class ImageManager:
                     if progress_callback is not None:
                         progress_callback(len(chunk), total)
 
-            if sha256 is not None and expected_sha256 is not None:
+            if sha256 is not None and expected is not None:
                 actual_hash = sha256.hexdigest()
-                if actual_hash != expected_sha256:
+                if actual_hash != expected:
                     raise ImageError(
                         f"SHA-256 mismatch for {url}\n"
-                        f"  expected: {expected_sha256}\n"
+                        f"  expected: {expected}\n"
                         f"  actual:   {actual_hash}"
                     )
 
@@ -682,7 +745,8 @@ class ImageManager:
         Returns:
             True if the checksum matches or if no hash was provided.
         """
-        if expected is None:
+        normalized = _normalize_digest(expected)
+        if normalized is None:
             return True
 
         sha256 = hashlib.sha256()
@@ -694,11 +758,11 @@ class ImageManager:
                 sha256.update(chunk)
 
         actual = sha256.hexdigest()
-        if actual != expected:
+        if actual != normalized:
             logger.debug(
                 "SHA-256 mismatch for %s: expected=%s, actual=%s",
                 path,
-                expected,
+                normalized,
                 actual,
             )
             return False
@@ -727,15 +791,16 @@ class ImageManager:
         Returns:
             True if the checksum matches or if no hash was provided.
         """
-        if expected is None:
+        normalized = _normalize_digest(expected)
+        if normalized is None:
             return True
 
         actual = cls._compute_sha512(path)
-        if actual != expected.lower():
+        if actual != normalized:
             logger.debug(
                 "SHA-512 mismatch for %s: expected=%s, actual=%s",
                 path,
-                expected,
+                normalized,
                 actual,
             )
             return False
@@ -918,12 +983,22 @@ class ImageManager:
 
         Uses the same temp-file-then-rename pattern as :meth:`_download_file`.
         """
+        # Same normalization as the HTTP path and the cache check. Without it
+        # an uppercase digest in a ``smolvm-image.json`` failed every download
+        # with a mismatch whose expected and actual were the same digest in
+        # different case, while the cache check accepted it — so the two
+        # disagreed and the image could never be fetched. Runs before mkstemp
+        # for the same reason as in ``_download_file``: raising after it would
+        # leak the descriptor and orphan the .tmp file.
+        expected = _normalize_digest(expected_sha256)
+        _reject_blank_digest(expected, algorithm="SHA-256", source=f"s3://{bucket}/{key}")
+
         dest.parent.mkdir(parents=True, exist_ok=True)
         tmp_fd, tmp_path_str = tempfile.mkstemp(dir=dest.parent, suffix=".tmp")
         tmp_path = Path(tmp_path_str)
 
         try:
-            sha256 = hashlib.sha256() if expected_sha256 else None
+            sha256 = hashlib.sha256() if expected else None
             # Use get_object (single GetObject call) instead of
             # download_fileobj which issues HeadObject first — some
             # S3-compatible stores reject HeadObject.
@@ -937,12 +1012,12 @@ class ImageManager:
                     if progress_callback is not None:
                         progress_callback(len(chunk), total)
 
-            if sha256 is not None and expected_sha256 is not None:
+            if sha256 is not None and expected is not None:
                 actual_hash = sha256.hexdigest()
-                if actual_hash != expected_sha256:
+                if actual_hash != expected:
                     raise ImageError(
                         f"SHA-256 mismatch for s3://{bucket}/{key}\n"
-                        f"  expected: {expected_sha256}\n"
+                        f"  expected: {expected}\n"
                         f"  actual:   {actual_hash}"
                     )
 

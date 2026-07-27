@@ -433,15 +433,21 @@ def _decompress_zstd(src: Path, dst: Path) -> None:
 
     staging = dst.with_name(f".{dst.name}.{uuid4().hex}.partial")
     try:
-        decompress_zstd_sparse(src, staging, chunk_size=_SPARSE_DECOMPRESS_CHUNK_SIZE)
-        staging.replace(dst)
-    except OSError as exc:
+        try:
+            decompress_zstd_sparse(src, staging, chunk_size=_SPARSE_DECOMPRESS_CHUNK_SIZE)
+            staging.replace(dst)
+        except OSError as exc:
+            if _looks_like_zstd_decode_error(exc):
+                import zstandard
+
+                raise zstandard.ZstdError(str(exc)) from exc
+            raise
+    except BaseException:
+        # Clean up on *any* failure, not just OSError. A corrupt archive
+        # (ZstdError) or a Ctrl-C used to leave the multi-GB partial behind,
+        # and every retry orphaned another copy of it.
         (staging.parent / (staging.name + ".tmp")).unlink(missing_ok=True)
         staging.unlink(missing_ok=True)
-        if _looks_like_zstd_decode_error(exc):
-            import zstandard
-
-            raise zstandard.ZstdError(str(exc)) from exc
         raise
 
 

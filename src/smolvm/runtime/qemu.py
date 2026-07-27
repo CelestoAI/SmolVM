@@ -213,8 +213,10 @@ class _SwtpmSidecar:
                 },
             ) from exc
 
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+        # Monotonic: a wall-clock deadline can be skipped past (or pushed out
+        # of reach) by an NTP step or a DST change mid-boot.
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
             if self._socket_path.exists():
                 break
             time.sleep(0.05)
@@ -245,8 +247,8 @@ class _SwtpmSidecar:
             if pid > 0 and self._context.is_process_running(pid):
                 with suppress(ProcessLookupError, OSError):
                     os.kill(pid, signal.SIGTERM)
-                deadline = time.time() + 5.0
-                while time.time() < deadline and self._context.is_process_running(pid):
+                deadline = time.monotonic() + 5.0
+                while time.monotonic() < deadline and self._context.is_process_running(pid):
                     time.sleep(0.05)
                 if self._context.is_process_running(pid):
                     with suppress(ProcessLookupError, OSError):
@@ -1726,8 +1728,8 @@ class QemuRuntimeAdapter(RuntimeAdapter):
 
     def _wait_for_runtime(self, process: Any, control_socket_path: Path, timeout: float) -> None:
         """Wait for QEMU to expose its QMP socket or fail fast if it exits."""
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
             exit_code = process.poll()
             if exit_code is not None:
                 raise SmolVMError(

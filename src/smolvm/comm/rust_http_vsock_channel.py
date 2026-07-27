@@ -178,8 +178,22 @@ def _vsock_unavailable_message(sandbox_name: str | None) -> str:
 
 
 def _parse_mode_header(value: str) -> int:
+    """Parse the guest's ``x-smolvm-file-mode`` header into safe permissions.
+
+    Masked for the same reason as :func:`_safe_tar_member_mode`: this value
+    comes from the untrusted sandbox and is applied to a file on the host, so
+    an unmasked ``int(value, 8)`` let a guest set setuid/setgid on a
+    downloaded file. Masking also bounds the value, which ``os.chmod``
+    otherwise rejects with ``OverflowError`` for an absurd header.
+    """
     value = value.strip().removeprefix("0o")
-    return int(value, 8)
+    try:
+        mode = int(value, 8)
+    except ValueError as exc:
+        raise SmolVMError(f"guest agent returned an invalid file mode: {value!r}") from exc
+    if mode < 0:
+        raise SmolVMError(f"guest agent returned a negative file mode: {value!r}")
+    return mode & 0o777
 
 
 def _parse_size_header(value: str, *, header: str, method: str, path: str) -> int:
@@ -371,6 +385,21 @@ def _add_tar_path(archive: tarfile.TarFile, path: Path, arcname: PurePosixPath) 
             _add_tar_path(archive, child, arcname / child.name)
 
 
+def _safe_tar_member_mode(mode: int) -> int:
+    """Return the permission bits safe to copy from a guest-supplied tar.
+
+    ``stat.S_IMODE`` keeps 0o7777, which includes setuid, setgid and the
+    sticky bit. This archive comes from the sandbox, which is untrusted by
+    design, and it is unpacked on the host — often under ``sudo``, since
+    SmolVM needs root for host networking. Honouring those bits let a guest
+    plant a setuid-root file on the host filesystem, so a directory download
+    became a privilege-escalation primitive. Ordinary read/write/execute
+    permissions are still preserved. Matches ``host/lume.py``, which already
+    masks its own extraction this way.
+    """
+    return mode & 0o777
+
+
 def _safe_extract_tar(data: bytes, destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as archive:
@@ -382,7 +411,7 @@ def _safe_extract_tar(data: bytes, destination: Path) -> None:
             if member.isdir():
                 _safe_mkdir(destination, target)
                 if member.mode:
-                    os.chmod(target, stat.S_IMODE(member.mode))
+                    os.chmod(target, _safe_tar_member_mode(member.mode))
                 continue
             if not member.isfile():
                 raise SmolVMError(f"Refusing unsupported tar entry: {member.name}")
@@ -394,7 +423,7 @@ def _safe_extract_tar(data: bytes, destination: Path) -> None:
                 raise SmolVMError(f"Tar entry has no data: {member.name}")
             target.write_bytes(source.read())
             if member.mode:
-                os.chmod(target, stat.S_IMODE(member.mode))
+                os.chmod(target, _safe_tar_member_mode(member.mode))
 
 
 def _safe_tar_member_path(name: str) -> Path | None:

@@ -14,6 +14,7 @@
 
 """Tests for SmolVM utils module."""
 
+import shutil
 import subprocess
 from unittest.mock import MagicMock, patch
 
@@ -234,3 +235,98 @@ class TestEnsureSSHKey:
         assert private_key == key_dir / "id_ed25519"
         assert public_key == key_dir / "id_ed25519.pub"
         mock_run.assert_called_once()
+
+    def test_complete_key_pair_is_reused(self, tmp_path) -> None:
+        """An intact pair is returned as-is, never regenerated."""
+        key_dir = tmp_path / "keys"
+        key_dir.mkdir()
+        (key_dir / "id_ed25519").write_text("private")
+        (key_dir / "id_ed25519.pub").write_text("public")
+
+        with patch("smolvm.utils.subprocess.run") as mock_run:
+            ensure_ssh_key(key_dir=key_dir)
+
+        mock_run.assert_not_called()
+        assert (key_dir / "id_ed25519").read_text() == "private"
+
+    def test_orphaned_public_key_is_cleared_before_generating(self, tmp_path) -> None:
+        """A ``.pub`` with no private half authenticates nothing — clear it.
+
+        ssh-keygen refuses to overwrite an existing key file without answering
+        an interactive "Overwrite (y/n)?" prompt, and that prompt goes to the
+        stderr this call discards: on a terminal it blocked the CLI forever,
+        otherwise it failed with no visible reason.
+        """
+        key_dir = tmp_path / "keys"
+        key_dir.mkdir()
+        (key_dir / "id_ed25519.pub").write_text("orphaned")
+
+        with patch("smolvm.utils.subprocess.run") as mock_run:
+            ensure_ssh_key(key_dir=key_dir)
+
+        mock_run.assert_called_once()
+        # Cleared before the call, so ssh-keygen writes both halves unprompted
+        # (the real binary is mocked here, hence the file simply stays gone)...
+        assert not (key_dir / "id_ed25519.pub").exists()
+        # ...and stdin is closed, so a prompt can never block the CLI anyway.
+        assert mock_run.call_args.kwargs["stdin"] is subprocess.DEVNULL
+
+    def test_missing_public_key_never_rotates_the_private_key(self, tmp_path) -> None:
+        """A missing ``.pub`` is repaired, not treated as a reason to rotate.
+
+        The private key is what every existing sandbox trusts — its public half
+        is already in their ``authorized_keys``. Deleting it to regenerate a
+        fresh pair silently locks the user out of every sandbox they have, and
+        the ``.pub`` is derivable from the private key anyway.
+        """
+        if shutil.which("ssh-keygen") is None:
+            pytest.skip("ssh-keygen is not installed")
+
+        key_dir = tmp_path / "keys"
+        private_key, public_key = ensure_ssh_key(key_dir=key_dir)
+        original_private = private_key.read_bytes()
+        original_public = public_key.read_text().split()[1]
+
+        public_key.unlink()
+        private_key, public_key = ensure_ssh_key(key_dir=key_dir)
+
+        assert private_key.read_bytes() == original_private
+        # The re-derived public key is the same key material, not a new one.
+        assert public_key.read_text().split()[1] == original_public
+        assert public_key.read_text().startswith("ssh-ed25519 ")
+
+    def test_unreadable_private_key_fails_loudly(self, tmp_path) -> None:
+        """An unrepairable key must not be silently replaced.
+
+        Rotating here would lock the user out of every existing sandbox without
+        telling them, so the failure is surfaced with a recovery instead.
+        """
+        if shutil.which("ssh-keygen") is None:
+            pytest.skip("ssh-keygen is not installed")
+
+        key_dir = tmp_path / "keys"
+        key_dir.mkdir()
+        private_key = key_dir / "id_ed25519"
+        private_key.write_text("this is not a key")
+
+        with pytest.raises(SmolVMError, match="could not be read"):
+            ensure_ssh_key(key_dir=key_dir)
+
+        # The unreadable key is left exactly where it was for the user to save.
+        assert private_key.read_text() == "this is not a key"
+
+    def test_generated_key_pair_is_usable(self, tmp_path) -> None:
+        """End-to-end: a fresh generation yields a real, matching pair."""
+        if shutil.which("ssh-keygen") is None:
+            pytest.skip("ssh-keygen is not installed")
+
+        private_key, public_key = ensure_ssh_key(key_dir=tmp_path / "keys")
+
+        assert public_key.read_text().startswith("ssh-ed25519 ")
+        derived = subprocess.run(
+            ["ssh-keygen", "-y", "-f", str(private_key)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert derived.stdout.split()[1] == public_key.read_text().split()[1]
