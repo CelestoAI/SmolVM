@@ -33,10 +33,12 @@ import {
   deleteSandbox,
   execCommand,
   getSandbox,
+  getSandboxDesktop,
   listSandboxes,
 } from "./client/sdk.gen";
 import type {
   CreateSandboxRequest,
+  DesktopResponse,
   ExecRequest,
   ExecResponse,
   SandboxResponse,
@@ -44,6 +46,7 @@ import type {
 
 export type {
   CreateSandboxRequest,
+  DesktopResponse,
   ExecRequest,
   ExecResponse,
   SandboxResponse,
@@ -128,6 +131,20 @@ class SandboxApi {
     if (error) {
       throw new Error(`Failed to delete sandbox ${sandboxId}: ${describeError(error)}`);
     }
+  }
+
+  /** Get the sandbox's desktop endpoint, for viewing its screen. */
+  async desktop(sandboxId: string): Promise<DesktopResponse> {
+    const { data, error } = await getSandboxDesktop({
+      client: this.client,
+      path: { sandbox_id: sandboxId },
+    });
+    if (error) {
+      throw new Error(
+        `Failed to get desktop for sandbox ${sandboxId}: ${describeError(error)}`,
+      );
+    }
+    return data!;
   }
 
   /** Run a command inside a sandbox and return its result. */

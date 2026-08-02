@@ -14,7 +14,9 @@
     "generate": "openapi-ts",
     "sync": "npm run dump-openapi && npm run generate",
     "typecheck": "tsc --noEmit",
-    "test": "echo 'No JS tests yet. See https://github.com/CelestoAI/SmolVM for the test plan.' && exit 0"
+    "build": "tsc",
+    "test:contracts": "tsc --noEmit --target es2022 --module esnext --moduleResolution bundler --strict --skipLibCheck fixtures/desktop-facade.contract.ts",
+    "test": "npm run typecheck && npm run test:contracts"
   },
   "devDependencies": {
     "@hey-api/openapi-ts": "^0.99.0",
