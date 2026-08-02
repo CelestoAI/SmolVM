@@ -1,23 +1,6 @@
 import { useMemo, useEffect, useState, useCallback, useRef } from 'react'
 import { normalizeStatus } from '@/utils/status'
-
-function getApiBaseUrl() {
-    const envBase = import.meta.env.VITE_API_BASE_URL
-    if (envBase) {
-        return String(envBase).replace(/\/$/, '')
-    }
-
-    if (typeof window === 'undefined') {
-        return ''
-    }
-
-    const { protocol, hostname, port } = window.location
-    if (port === '5173') {
-        return `${protocol}//${hostname}:8000`
-    }
-
-    return ''
-}
+import { getApiBaseUrl } from '@/utils/api'
 
 function getWsUrl(apiBase) {
     if (typeof window === 'undefined') return null
