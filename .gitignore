@@ -222,3 +222,4 @@ play.ipynb
 notes/
 *.iso
 .gstack/
+.sqry/
