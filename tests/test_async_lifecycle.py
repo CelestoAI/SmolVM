@@ -368,6 +368,51 @@ class TestAsyncSmolVMFacade:
         assert vm.status == VMState.RUNNING
 
     @pytest.mark.asyncio
+    async def test_async_start_cancellation_applies_completed_resume_state(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Cancellation waits for the unkillable resume before leaving the facade."""
+        import asyncio
+        import threading
+
+        from smolvm.facade import SmolVM
+
+        config = _paused_vm_config(tmp_path)
+        resumed_info = MagicMock(vm_id="vm-paused-async", status=VMState.RUNNING, config=config)
+        release_resume = threading.Event()
+        resume_started = threading.Event()
+
+        def blocking_resume(_vm_id: str) -> MagicMock:
+            resume_started.set()
+            assert release_resume.wait(timeout=5)
+            return resumed_info
+
+        mock_sdk = _paused_sdk(monkeypatch, config)
+        mock_sdk.resume.side_effect = blocking_resume
+        vm = SmolVM(config)
+        start_task = asyncio.create_task(vm.async_start())
+
+        while not resume_started.is_set():
+            await asyncio.sleep(0)
+        start_task.cancel()
+        await asyncio.sleep(0)
+
+        # The worker cannot be cancelled, so async_start retains ownership of
+        # its result rather than returning with permanently stale cached state.
+        assert not start_task.done()
+        assert vm.status == VMState.PAUSED
+
+        release_resume.set()
+        with pytest.raises(asyncio.CancelledError):
+            await start_task
+
+        mock_sdk.resume.assert_called_once_with("vm-paused-async")
+        assert vm.info is resumed_info
+        assert vm.status == VMState.RUNNING
+
+    @pytest.mark.asyncio
     async def test_async_start_propagates_resume_failure(
         self,
         monkeypatch: pytest.MonkeyPatch,
