@@ -4573,12 +4573,17 @@ class TestCliImage:
 
         cache_dir = tmp_path / cache_name("codex", "amd64", "firecracker")
         cache_dir.mkdir()
+        dir_mtime_ns = cache_dir.stat().st_mtime_ns
 
         def fake_ensure(*args: object, **kwargs: object) -> LocalImage:
             # Simulate decompression: a file appears in the cache dir
             # without any on_download callback firing.
             rootfs = cache_dir / "rootfs.ext4"
             rootfs.write_text("decompressed")
+            # The kernel stamps directory mtimes from a coarse clock, so a
+            # fast decompression genuinely leaves the mtime untouched. Pin it
+            # so this regression cannot pass by winning a timing race.
+            os.utime(cache_dir, ns=(dir_mtime_ns, dir_mtime_ns))
             return LocalImage(
                 name="codex-cache", kernel_path=cache_dir / "vmlinux.bin", rootfs_path=rootfs
             )
@@ -4586,6 +4591,90 @@ class TestCliImage:
         mock_ensure_published.side_effect = fake_ensure
 
         ret = main(["image", "pull", "codex", "--image-dir", str(tmp_path), "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["data"]["already_cached"] is False
+
+    @patch("smolvm.images.published.ensure_published_image")
+    @patch("smolvm.cli.main._vmm_for_host", return_value="firecracker")
+    @patch("smolvm.cli.main._host_arch_for_published", return_value="amd64")
+    def test_image_pull_unfingerprintable_cache_is_not_a_cache_hit(
+        self,
+        mock_arch: MagicMock,
+        mock_vmm: MagicMock,
+        mock_ensure_published: MagicMock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """A cache we cannot fully read must not be reported as a no-op pull.
+
+        If the same file were skipped before and after, the two scans could
+        match while the cache actually changed, so an unreadable entry has to
+        fail closed rather than silently shrink the comparison.
+        """
+        from smolvm.images.manager import LocalImage
+        from smolvm.images.published import cache_name
+
+        cache_dir = tmp_path / cache_name("codex", "amd64", "firecracker")
+        cache_dir.mkdir()
+        rootfs = cache_dir / "rootfs.ext4"
+        rootfs.write_text("cached")
+
+        mock_ensure_published.side_effect = lambda *a, **k: LocalImage(
+            name="codex-cache", kernel_path=cache_dir / "vmlinux.bin", rootfs_path=rootfs
+        )
+
+        real_stat = Path.stat
+
+        def unreadable(self: Path, *args: object, **kwargs: object) -> os.stat_result:
+            if self.name == "rootfs.ext4":
+                raise PermissionError(13, "Permission denied")
+            return real_stat(self, *args, **kwargs)  # type: ignore[arg-type]
+
+        with patch.object(Path, "stat", unreadable):
+            ret = main(["image", "pull", "codex", "--image-dir", str(tmp_path), "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["data"]["already_cached"] is False
+
+    @patch("smolvm.images.published.ensure_published_image")
+    @patch("smolvm.cli.main._vmm_for_host", return_value="firecracker")
+    @patch("smolvm.cli.main._host_arch_for_published", return_value="amd64")
+    def test_image_pull_unreadable_subdirectory_is_not_a_cache_hit(
+        self,
+        mock_arch: MagicMock,
+        mock_vmm: MagicMock,
+        mock_ensure_published: MagicMock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """A directory we cannot descend into must not read as a complete scan.
+
+        ``Path.rglob`` silently skips a directory it cannot open, so a scan
+        that missed a whole subtree would otherwise compare equal to the next
+        one and report a real pull as cached.
+        """
+        from smolvm.images.manager import LocalImage
+        from smolvm.images.published import cache_name
+
+        cache_dir = tmp_path / cache_name("codex", "amd64", "firecracker")
+        layers = cache_dir / "layers"
+        layers.mkdir(parents=True)
+        rootfs = cache_dir / "rootfs.ext4"
+        rootfs.write_text("cached")
+        (layers / "layer0.bin").write_text("cached")
+        os.chmod(layers, 0o000)
+
+        mock_ensure_published.side_effect = lambda *a, **k: LocalImage(
+            name="codex-cache", kernel_path=cache_dir / "vmlinux.bin", rootfs_path=rootfs
+        )
+
+        try:
+            ret = main(["image", "pull", "codex", "--image-dir", str(tmp_path), "--json"])
+        finally:
+            os.chmod(layers, 0o755)
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)

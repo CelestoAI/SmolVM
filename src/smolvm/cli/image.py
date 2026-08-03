@@ -26,12 +26,14 @@ operate on the directory returned by
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import shutil
 from contextlib import AbstractContextManager, nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
+from stat import S_ISREG
 from typing import Any, NotRequired, TypedDict, cast
 
 from rich.progress import (
@@ -640,6 +642,53 @@ def _non_default_dir_warnings(root: Path) -> list[str]:
     ]
 
 
+def _cache_inventory(path: Path) -> dict[str, tuple[int, int, int]] | None:
+    """Fingerprint every file under ``path``, or ``None`` if that is not possible.
+
+    Directory mtimes cannot answer "did anything happen here?": the kernel
+    stamps them from a coarse clock, so a file created milliseconds after the
+    directory is created leaves the directory's mtime untouched. Comparing the
+    set of files instead (name, size, inode, mtime) detects a download or a
+    decompression regardless of how fast it finished.
+
+    ``None`` means "no usable fingerprint", either because the directory does
+    not exist or because a file in it could not be read. A partial scan is not
+    a safe basis for claiming nothing happened: if the same file were skipped
+    before and after the pull, the two scans could match while the cache
+    actually changed. Callers treat ``None`` as a cache miss.
+    """
+
+    def _raise(error: OSError) -> None:
+        raise error
+
+    inventory: dict[str, tuple[int, int, int]] = {}
+    try:
+        if not path.is_dir():
+            return None
+        # os.walk with a raising onerror, not rglob: rglob silently skips a
+        # directory it cannot read, which would hand back a partial scan that
+        # looks like a complete one.
+        for dirpath, _dirnames, filenames in os.walk(path, onerror=_raise):
+            for name in filenames:
+                item = Path(dirpath) / name
+                try:
+                    stat = item.stat()
+                except FileNotFoundError:
+                    # Vanished between listing and stat, so it is not part of
+                    # the cache under either scan.
+                    continue
+                if not S_ISREG(stat.st_mode):
+                    continue
+                inventory[str(item.relative_to(path))] = (
+                    stat.st_size,
+                    stat.st_ino,
+                    stat.st_mtime_ns,
+                )
+    except OSError:
+        return None
+    return inventory
+
+
 def _execute_pull(
     *,
     preset: str,
@@ -664,9 +713,9 @@ def _execute_pull(
 
     # "Already cached" must mean the pull was a no-op. Downloads are
     # observable through on_download, but rootfs decompression is not, so
-    # also watch the cache directory itself: any file (re)created in it —
-    # by download or decompression — bumps its mtime.
-    pre_mtime = target_dir.stat().st_mtime_ns if target_dir.is_dir() else None
+    # also watch the cache directory itself: any file added, replaced, or
+    # resized by a download or a decompression changes its inventory.
+    pre_inventory = _cache_inventory(target_dir)
     downloaded = False
     download_tasks: dict[str, Any] = {}
 
@@ -689,8 +738,10 @@ def _execute_pull(
         on_download=on_download,
     )
 
-    post_mtime = target_dir.stat().st_mtime_ns if target_dir.is_dir() else None
-    already_cached = not downloaded and pre_mtime is not None and post_mtime == pre_mtime
+    post_inventory = _cache_inventory(target_dir)
+    already_cached = (
+        not downloaded and pre_inventory is not None and post_inventory == pre_inventory
+    )
 
     return ImagePullPayload(
         preset=preset,
