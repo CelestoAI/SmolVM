@@ -466,7 +466,12 @@ class MemoryStateManager:
             for vm_id, info in list(self._vms.items()):
                 if info.status not in (VMState.RUNNING, VMState.PAUSED):
                     continue
-                if info.pid is None:
+                # A non-positive pid is not a process: os.kill(0, 0) probes our
+                # own process group and os.kill(-1, 0) probes every process we
+                # may signal, so both "succeed" and the sandbox stays wedged in
+                # RUNNING forever instead of being reconciled. Same rule the
+                # CLI's SQLite store applies.
+                if info.pid is None or info.pid <= 0:
                     stale.append(vm_id)
                     continue
                 try:
