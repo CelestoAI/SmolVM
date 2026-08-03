@@ -2798,7 +2798,28 @@ class SmolVM:
         if self._info.status == VMState.RUNNING:
             return self
         if self._info.status == VMState.PAUSED:
-            return self.resume()
+            # Starting a paused VM means resuming it. The SDK resume call is
+            # blocking, so run it on a worker thread and apply the resulting
+            # state change back here, on the caller's event loop.
+            resume_task = asyncio.create_task(asyncio.to_thread(self._sdk.resume, self._vm_id))
+            cancelled = False
+            while True:
+                try:
+                    # Cancelling this coroutine cannot stop a worker thread.
+                    # Keep ownership of the result so the facade cannot remain
+                    # cached as PAUSED after the manager has resumed the VM.
+                    info = await asyncio.shield(resume_task)
+                    break
+                except asyncio.CancelledError:
+                    cancelled = True
+                    if resume_task.cancelled():
+                        raise
+            self._info = info
+            self._reset_runtime_state(close_ssh=False)
+            logger.info("VM %s resumed", self._vm_id)
+            if cancelled:
+                raise asyncio.CancelledError
+            return self
 
         self._info = await self._sdk.async_start(self._vm_id, boot_timeout=boot_timeout)
         self._reset_runtime_state(close_ssh=False)
