@@ -240,6 +240,32 @@ class TestAsyncSmolVMManager:
 # ---------------------------------------------------------------------------
 
 
+def _paused_vm_config(tmp_path: Path) -> VMConfig:
+    """A minimal config whose kernel and rootfs exist on disk."""
+    kernel = tmp_path / "vmlinux"
+    rootfs = tmp_path / "rootfs.ext4"
+    kernel.touch()
+    rootfs.touch()
+    return VMConfig(
+        vm_id="vm-paused-async",
+        kernel_path=kernel,
+        rootfs_path=rootfs,
+        backend="qemu",
+    )
+
+
+def _paused_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+    config: VMConfig,
+    status: VMState = VMState.PAUSED,
+) -> MagicMock:
+    """Patch the SDK so a new ``SmolVM`` starts in the given status."""
+    mock_sdk = MagicMock()
+    mock_sdk.create.return_value = MagicMock(vm_id=config.vm_id, status=status, config=config)
+    monkeypatch.setattr("smolvm.facade.SmolVMManager", MagicMock(return_value=mock_sdk))
+    return mock_sdk
+
+
 class TestAsyncSmolVMFacade:
     """Tests for async facade methods."""
 
@@ -286,6 +312,159 @@ class TestAsyncSmolVMFacade:
 
         assert result is vm
         mock_sdk.async_start.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_async_start_resumes_paused_vm_without_blocking_event_loop(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """The paused-VM fast path must not call the synchronous resume on the loop."""
+        import asyncio
+        import threading
+
+        from smolvm.facade import SmolVM
+
+        config = _paused_vm_config(tmp_path)
+        resumed_info = MagicMock(vm_id="vm-paused-async", status=VMState.RUNNING, config=config)
+
+        release_resume = threading.Event()
+        resume_started = threading.Event()
+        resume_thread: list[int] = []
+
+        def blocking_resume(_vm_id: str) -> MagicMock:
+            resume_thread.append(threading.get_ident())
+            resume_started.set()
+            # Bounded only so a regression fails the assertions below instead
+            # of hanging the suite; the release is driven by the loop, not time.
+            assert release_resume.wait(timeout=5)
+            return resumed_info
+
+        mock_sdk = _paused_sdk(monkeypatch, config)
+        mock_sdk.resume.side_effect = blocking_resume
+        vm = SmolVM(config)
+
+        loop_thread = threading.get_ident()
+        start_task = asyncio.create_task(vm.async_start())
+
+        # The event loop must keep running while the SDK call is blocked.
+        heartbeats = 0
+        while not resume_started.is_set():
+            await asyncio.sleep(0)
+            heartbeats += 1
+            assert heartbeats < 10_000, "resume never reached its worker thread"
+        for _ in range(3):
+            await asyncio.sleep(0)
+            heartbeats += 1
+        assert not start_task.done()
+
+        release_resume.set()
+        assert await start_task is vm
+
+        mock_sdk.resume.assert_called_once_with("vm-paused-async")
+        assert resume_thread == [resume_thread[0]] and resume_thread[0] != loop_thread
+        # State is applied back on the caller once the worker finishes.
+        assert vm.info is resumed_info
+        assert vm.status == VMState.RUNNING
+
+    @pytest.mark.asyncio
+    async def test_async_start_cancellation_applies_completed_resume_state(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Cancellation waits for the unkillable resume before leaving the facade."""
+        import asyncio
+        import threading
+
+        from smolvm.facade import SmolVM
+
+        config = _paused_vm_config(tmp_path)
+        resumed_info = MagicMock(vm_id="vm-paused-async", status=VMState.RUNNING, config=config)
+        release_resume = threading.Event()
+        resume_started = threading.Event()
+
+        def blocking_resume(_vm_id: str) -> MagicMock:
+            resume_started.set()
+            assert release_resume.wait(timeout=5)
+            return resumed_info
+
+        mock_sdk = _paused_sdk(monkeypatch, config)
+        mock_sdk.resume.side_effect = blocking_resume
+        vm = SmolVM(config)
+        start_task = asyncio.create_task(vm.async_start())
+
+        while not resume_started.is_set():
+            await asyncio.sleep(0)
+        start_task.cancel()
+        await asyncio.sleep(0)
+
+        # The worker cannot be cancelled, so async_start retains ownership of
+        # its result rather than returning with permanently stale cached state.
+        assert not start_task.done()
+        assert vm.status == VMState.PAUSED
+
+        release_resume.set()
+        with pytest.raises(asyncio.CancelledError):
+            await start_task
+
+        mock_sdk.resume.assert_called_once_with("vm-paused-async")
+        assert vm.info is resumed_info
+        assert vm.status == VMState.RUNNING
+
+    @pytest.mark.asyncio
+    async def test_async_start_propagates_resume_failure(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """A failed resume surfaces the original error and reports no transition."""
+        from smolvm.facade import SmolVM
+
+        config = _paused_vm_config(tmp_path)
+        mock_sdk = _paused_sdk(monkeypatch, config)
+        mock_sdk.resume.side_effect = RuntimeError("hypervisor refused resume")
+        vm = SmolVM(config)
+
+        with pytest.raises(RuntimeError, match="hypervisor refused resume"):
+            await vm.async_start()
+
+        assert vm.status == VMState.PAUSED
+
+    @pytest.mark.asyncio
+    async def test_async_start_returns_early_for_running_vm(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Control: an already-running VM neither resumes nor restarts."""
+        from smolvm.facade import SmolVM
+
+        config = _paused_vm_config(tmp_path)
+        mock_sdk = _paused_sdk(monkeypatch, config, status=VMState.RUNNING)
+        vm = SmolVM(config)
+
+        assert await vm.async_start() is vm
+        mock_sdk.resume.assert_not_called()
+        mock_sdk.async_start.assert_not_called()
+
+    def test_sync_resume_still_calls_sdk_directly(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Control: the synchronous resume path is unchanged."""
+        from smolvm.facade import SmolVM
+
+        config = _paused_vm_config(tmp_path)
+        mock_sdk = _paused_sdk(monkeypatch, config)
+        resumed_info = MagicMock(vm_id="vm-paused-async", status=VMState.RUNNING, config=config)
+        mock_sdk.resume.return_value = resumed_info
+        vm = SmolVM(config)
+
+        assert vm.resume() is vm
+        mock_sdk.resume.assert_called_once_with("vm-paused-async")
+        assert vm.info is resumed_info
 
     @pytest.mark.asyncio
     @patch("smolvm.facade.SmolVMManager")
