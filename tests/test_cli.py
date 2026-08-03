@@ -4665,16 +4665,22 @@ class TestCliImage:
         rootfs = cache_dir / "rootfs.ext4"
         rootfs.write_text("cached")
         (layers / "layer0.bin").write_text("cached")
-        os.chmod(layers, 0o000)
 
         mock_ensure_published.side_effect = lambda *a, **k: LocalImage(
             name="codex-cache", kernel_path=cache_dir / "vmlinux.bin", rootfs_path=rootfs
         )
 
-        try:
+        real_scandir = os.scandir
+
+        def unreadable(
+            path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        ) -> object:
+            if Path(os.fsdecode(path)) == layers:
+                raise PermissionError(13, "Permission denied", str(layers))
+            return real_scandir(path)
+
+        with patch("smolvm.cli.image.os.scandir", side_effect=unreadable):
             ret = main(["image", "pull", "codex", "--image-dir", str(tmp_path), "--json"])
-        finally:
-            os.chmod(layers, 0o755)
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
