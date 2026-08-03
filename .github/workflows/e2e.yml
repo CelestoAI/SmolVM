@@ -19,6 +19,8 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+    types: [checks_requested]
   schedule:
     # 03:17 UTC nightly (off the top of the hour to dodge cron congestion).
     - cron: "17 3 * * *"
