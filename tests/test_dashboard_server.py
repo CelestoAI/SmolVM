@@ -276,7 +276,7 @@ def test_execute_command_reports_a_command_that_did_nothing(
 ) -> None:
     """If every sandbox failed, the command did nothing and must say so.
 
-    "Stopped 0 VMs." is technically true but renders as success and clears
+    "Stopped 0 sandboxes." is technically true but renders as success and clears
     the input, hiding a total failure behind a plausible count.
     """
 
@@ -363,7 +363,7 @@ def test_execute_command_treats_an_already_gone_sandbox_as_done(
     response = asyncio.run(server.execute_command(server.CommandRequest(text=text)))
 
     assert isinstance(response, server.CommandResponse)
-    assert response.result == f"{past} 1 VMs."
+    assert response.result == f"{past} 1 sandbox."
 
 
 @pytest.mark.parametrize("prior", [VMState.CREATED, VMState.STOPPED, VMState.ERROR])
@@ -520,7 +520,7 @@ def test_execute_command_group_delete_proceeds_once_confirmed(
     )
 
     assert isinstance(response, server.CommandResponse)
-    assert response.result == "Deleted 2 VMs."
+    assert response.result == "Deleted 2 sandboxes."
     assert deleted == ["sbx-1", "sbx-2"]
 
 
@@ -545,9 +545,9 @@ def test_execute_command_unknown_sandbox_is_an_error_for_every_verb(
     monkeypatch: pytest.MonkeyPatch,
     verb: str,
 ) -> None:
-    """'stop'/'delete' on a name that does not exist is a failure, not "0 VMs".
+    """'stop'/'delete' on a name that does not exist is a failure, not "0 sandboxes".
 
-    A 200 whose result reads "Stopped 0 VMs." renders in the dashboard's
+    A 200 whose result reads "Stopped 0 sandboxes." renders in the dashboard's
     success area and clears the command, so a typo looks like it worked.
     """
     monkeypatch.setattr(server, "_get_state_manager", lambda _app: DummyStateManager())
@@ -573,7 +573,7 @@ def test_execute_command_group_target_matching_nothing_is_a_result(
 
     assert isinstance(response, server.CommandResponse)
     assert response.affected_vms == []
-    assert response.result.endswith("0 VMs.")
+    assert response.result.endswith("0 sandboxes.")
 
 
 def test_execute_command_route_declares_its_error_responses() -> None:

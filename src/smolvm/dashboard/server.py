@@ -836,7 +836,7 @@ def _selects_a_group(target: str) -> bool:
     """Whether *target* names a group of sandboxes rather than one sandbox.
 
     "all" and a status name select a group, so matching nothing is a real
-    result ("Stopped 0 VMs."). Anything else names one sandbox, and matching
+    result ("Stopped 0 sandboxes."). Anything else names one sandbox, and matching
     nothing means that sandbox does not exist.
     """
     target_lower = target.strip().lower()
@@ -910,7 +910,8 @@ def _bulk_result(
     otherwise have nothing left to act on.
     """
     if not skipped and not failed:
-        return f"{past_tense} {len(done)} VMs."
+        noun = "sandbox" if len(done) == 1 else "sandboxes"
+        return f"{past_tense} {len(done)} {noun}."
     total = len(done) + len(skipped) + len(failed)
     parts = [f"{past_tense} {len(done)} of {total} sandboxes."]
     if skipped:
