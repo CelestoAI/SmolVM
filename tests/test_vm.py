@@ -260,9 +260,16 @@ class TestSmolVMCreate:
         )
         _attach_mock_network(smol_vm)
 
-        vm_info = await smol_vm.async_create(
-            sample_config.model_copy(update={"vm_id": "vm-async-qemu", "backend": "qemu"})
-        )
+        with patch.object(
+            smol_vm,
+            "_async_materialize_rootfs",
+            AsyncMock(side_effect=lambda config: config),
+        ) as mock_materialize_rootfs:
+            vm_info = await smol_vm.async_create(
+                sample_config.model_copy(update={"vm_id": "vm-async-qemu", "backend": "qemu"})
+            )
+
+        mock_materialize_rootfs.assert_awaited_once()
 
         assert vm_info.network is not None
         assert vm_info.network.tap_device == "usernet"
