@@ -15,6 +15,7 @@
 """Tests for dashboard FastAPI server logic."""
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,6 +28,11 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 
 from smolvm.dashboard import server
+from smolvm.exceptions import VMNotFoundError
+from smolvm.types import VMConfig, VMInfo, VMState
+
+_KERNEL = Path(__file__).resolve()
+_ROOTFS = Path(__file__).resolve()
 
 
 class DummyStateManager:
@@ -34,6 +40,9 @@ class DummyStateManager:
 
     def list_vms(self, status: object = None) -> list[object]:
         return []
+
+    def get_vm(self, vm_id: str) -> object:
+        raise VMNotFoundError(vm_id)
 
 
 class DummySDK:
@@ -205,6 +214,386 @@ def test_execute_command_route_uses_command_response_model() -> None:
     assert route.response_model is server.CommandResponse
 
 
+class _FleetStateManager:
+    """State manager holding a fixed set of running sandboxes."""
+
+    def __init__(self, vm_ids: list[str], status: VMState = VMState.RUNNING) -> None:
+        self._vm_ids = vm_ids
+        self._status = status
+
+    def _vm(self, vm_id: str) -> VMInfo:
+        return VMInfo(
+            vm_id=vm_id,
+            status=self._status,
+            config=VMConfig(vm_id=vm_id, kernel_path=_KERNEL, rootfs_path=_ROOTFS),
+        )
+
+    def list_vms(self, status: object = None) -> list[VMInfo]:
+        return [self._vm(vm_id) for vm_id in self._vm_ids]
+
+    def get_vm(self, vm_id: str) -> VMInfo:
+        if vm_id in self._vm_ids:
+            return self._vm(vm_id)
+        raise VMNotFoundError(vm_id)
+
+
+def _sdk_returning_unchanged(status: VMState = VMState.CREATED) -> object:
+    """An SDK whose stop mirrors the manager for a sandbox that is not running."""
+
+    class _SDK:
+        def stop(self, vm_id: str) -> VMInfo:
+            return VMInfo(
+                vm_id=vm_id,
+                status=status,
+                config=VMConfig(vm_id=vm_id, kernel_path=_KERNEL, rootfs_path=_ROOTFS),
+            )
+
+    return _SDK()
+
+
+def _sdk_where(behaviour: object) -> object:
+    """An SDK whose stop/delete run *behaviour* for each sandbox id."""
+
+    class _SDK:
+        def stop(self, vm_id: str) -> VMInfo:
+            behaviour(vm_id)  # type: ignore[operator]
+            return VMInfo(
+                vm_id=vm_id,
+                status=VMState.STOPPED,
+                config=VMConfig(vm_id=vm_id, kernel_path=_KERNEL, rootfs_path=_ROOTFS),
+            )
+
+        def delete(self, vm_id: str) -> None:
+            behaviour(vm_id)  # type: ignore[operator]
+
+    return _SDK()
+
+
+@pytest.mark.parametrize("verb", ["stop", "delete"])
+def test_execute_command_reports_a_command_that_did_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+    verb: str,
+) -> None:
+    """If every sandbox failed, the command did nothing and must say so.
+
+    "Stopped 0 sandboxes." is technically true but renders as success and clears
+    the input, hiding a total failure behind a plausible count.
+    """
+
+    def boom(_vm_id: str) -> None:
+        raise RuntimeError("hypervisor is wedged")
+
+    monkeypatch.setattr(server, "_get_state_manager", lambda _app: _FleetStateManager(["sbx-1"]))
+    monkeypatch.setattr(server, "_get_sdk", lambda _app: _sdk_where(boom))
+
+    text = f"{verb} all" + (" --force" if verb == "delete" else "")
+    response = asyncio.run(server.execute_command(server.CommandRequest(text=text)))
+
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 500
+    error = json.loads(response.body)["error"]
+    # Names the sandbox and an exact command, per the user-facing message rules.
+    assert f"Could not {verb} 'sbx-1'" in error
+    assert f"Run '{verb} sbx-1' to try again" in error
+
+
+@pytest.mark.parametrize("verb,past", [("stop", "Stopped"), ("delete", "Deleted")])
+def test_execute_command_reports_a_partial_failure_honestly(
+    monkeypatch: pytest.MonkeyPatch,
+    verb: str,
+    past: str,
+) -> None:
+    """A count alone would hide the sandboxes that did not do what was asked."""
+
+    def one_fails(vm_id: str) -> None:
+        if vm_id == "sbx-2":
+            raise RuntimeError("wedged")
+
+    monkeypatch.setattr(
+        server, "_get_state_manager", lambda _app: _FleetStateManager(["sbx-1", "sbx-2"])
+    )
+    monkeypatch.setattr(server, "_get_sdk", lambda _app: _sdk_where(one_fails))
+
+    text = f"{verb} all" + (" --force" if verb == "delete" else "")
+    response = asyncio.run(server.execute_command(server.CommandRequest(text=text)))
+
+    assert isinstance(response, server.CommandResponse)
+    assert response.result == (
+        f"{past} 1 of 2 sandboxes. 'sbx-2' failed: run '{verb} sbx-2' to try again."
+    )
+    assert response.affected_vms == ["sbx-1"]
+
+
+def test_execute_command_caps_the_failed_names_it_prints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wide command must not print a wall of ids at the user."""
+
+    def boom(_vm_id: str) -> None:
+        raise RuntimeError("wedged")
+
+    fleet = [f"sbx-{n}" for n in range(1, 7)]
+    monkeypatch.setattr(server, "_get_state_manager", lambda _app: _FleetStateManager(fleet))
+    monkeypatch.setattr(server, "_get_sdk", lambda _app: _sdk_where(boom))
+
+    response = asyncio.run(server.execute_command(server.CommandRequest(text="stop all")))
+
+    assert isinstance(response, JSONResponse)
+    error = json.loads(response.body)["error"]
+    assert "'sbx-1', 'sbx-2', 'sbx-3' and 3 more" in error
+    assert "sbx-4" not in error
+    assert "Run 'stop sbx-1' to try again" in error
+
+
+@pytest.mark.parametrize("verb,past", [("stop", "Stopped"), ("delete", "Deleted")])
+def test_execute_command_treats_an_already_gone_sandbox_as_done(
+    monkeypatch: pytest.MonkeyPatch,
+    verb: str,
+    past: str,
+) -> None:
+    """A sandbox that vanished mid-command is already in the state asked for."""
+
+    def vanished(vm_id: str) -> None:
+        raise VMNotFoundError(vm_id)
+
+    monkeypatch.setattr(server, "_get_state_manager", lambda _app: _FleetStateManager(["sbx-1"]))
+    monkeypatch.setattr(server, "_get_sdk", lambda _app: _sdk_where(vanished))
+
+    text = f"{verb} sbx-1" + (" --force" if verb == "delete" else "")
+    response = asyncio.run(server.execute_command(server.CommandRequest(text=text)))
+
+    assert isinstance(response, server.CommandResponse)
+    assert response.result == f"{past} 1 sandbox."
+
+
+@pytest.mark.parametrize("prior", [VMState.CREATED, VMState.STOPPED, VMState.ERROR])
+def test_execute_command_does_not_claim_to_stop_a_sandbox_that_was_not_running(
+    monkeypatch: pytest.MonkeyPatch,
+    prior: VMState,
+) -> None:
+    """The manager returns the record unchanged when there was nothing to stop.
+
+    Every state that is not RUNNING or PAUSED behaves this way, so the returned
+    record proves nothing on its own. ``STOPPED`` is the trap: the record comes
+    back reading ``STOPPED`` without this command having stopped anything.
+    """
+    monkeypatch.setattr(
+        server,
+        "_get_state_manager",
+        lambda _app: _FleetStateManager(["sbx-idle"], status=prior),
+    )
+    monkeypatch.setattr(server, "_get_sdk", lambda _app: _sdk_returning_unchanged(prior))
+
+    response = asyncio.run(server.execute_command(server.CommandRequest(text="stop sbx-idle")))
+
+    assert isinstance(response, server.CommandResponse)
+    assert response.result == "Stopped 0 of 1 sandboxes. 'sbx-idle' was not running."
+    assert response.affected_vms == []
+
+
+def test_execute_command_does_not_claim_to_stop_an_idle_sandbox_that_vanished(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Vanishing is not stopping if the sandbox was not running to begin with.
+
+    "Already gone is the state you asked for" is true for delete. For stop it
+    only holds when the sandbox was actually running when the command started.
+    """
+
+    class _VanishedSDK:
+        def stop(self, vm_id: str) -> VMInfo:
+            raise VMNotFoundError(vm_id)
+
+    monkeypatch.setattr(
+        server,
+        "_get_state_manager",
+        lambda _app: _FleetStateManager(["sbx-idle"], status=VMState.STOPPED),
+    )
+    monkeypatch.setattr(server, "_get_sdk", lambda _app: _VanishedSDK())
+
+    response = asyncio.run(server.execute_command(server.CommandRequest(text="stop sbx-idle")))
+
+    assert isinstance(response, server.CommandResponse)
+    assert response.result == "Stopped 0 of 1 sandboxes. 'sbx-idle' was not running."
+    assert response.affected_vms == []
+
+
+def test_execute_command_errors_when_only_idle_sandboxes_survive_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing stopped and something failed, so this is not a result.
+
+    A sandbox that was merely idle must not soften a real failure into a 200
+    that renders as success and clears the command.
+    """
+
+    class _MixedSDK:
+        def stop(self, vm_id: str) -> VMInfo:
+            if vm_id == "sbx-1":
+                return VMInfo(
+                    vm_id=vm_id,
+                    status=VMState.CREATED,
+                    config=VMConfig(vm_id=vm_id, kernel_path=_KERNEL, rootfs_path=_ROOTFS),
+                )
+            raise RuntimeError("wedged")
+
+    class _MixedFleet(_FleetStateManager):
+        def _vm(self, vm_id: str) -> VMInfo:
+            status = VMState.CREATED if vm_id == "sbx-1" else VMState.RUNNING
+            return VMInfo(
+                vm_id=vm_id,
+                status=status,
+                config=VMConfig(vm_id=vm_id, kernel_path=_KERNEL, rootfs_path=_ROOTFS),
+            )
+
+    monkeypatch.setattr(server, "_get_state_manager", lambda _app: _MixedFleet(["sbx-1", "sbx-2"]))
+    monkeypatch.setattr(server, "_get_sdk", lambda _app: _MixedSDK())
+
+    response = asyncio.run(server.execute_command(server.CommandRequest(text="stop all")))
+
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 500
+    assert "Could not stop 'sbx-2'" in json.loads(response.body)["error"]
+
+
+def test_execute_command_reports_a_running_sandbox_that_did_not_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sandbox that was running and stayed running is a failure, not a no-op."""
+
+    class _StubbornSDK:
+        def stop(self, vm_id: str) -> VMInfo:
+            return VMInfo(
+                vm_id=vm_id,
+                status=VMState.RUNNING,
+                config=VMConfig(vm_id=vm_id, kernel_path=_KERNEL, rootfs_path=_ROOTFS),
+            )
+
+    monkeypatch.setattr(server, "_get_state_manager", lambda _app: _FleetStateManager(["sbx-1"]))
+    monkeypatch.setattr(server, "_get_sdk", lambda _app: _StubbornSDK())
+
+    response = asyncio.run(server.execute_command(server.CommandRequest(text="stop sbx-1")))
+
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 500
+    assert "Could not stop 'sbx-1'" in json.loads(response.body)["error"]
+
+
+def test_execute_command_group_delete_needs_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deleting a whole group is irreversible, so one line must not do it.
+
+    The CLI confirms the equivalent operation; the dashboard must not be the
+    easier route to the more destructive outcome.
+    """
+    deleted: list[str] = []
+    monkeypatch.setattr(
+        server, "_get_state_manager", lambda _app: _FleetStateManager(["sbx-1", "sbx-2"])
+    )
+    monkeypatch.setattr(server, "_get_sdk", lambda _app: _sdk_where(deleted.append))
+
+    response = asyncio.run(server.execute_command(server.CommandRequest(text="delete all")))
+
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 409
+    error = json.loads(response.body)["error"]
+    assert "Deleting 2 sandboxes cannot be undone" in error
+    assert "Run 'delete all --force' to confirm" in error
+    assert deleted == [], "nothing may be deleted before the user confirms"
+
+
+@pytest.mark.parametrize("target", ["all", "running"])
+def test_execute_command_group_delete_proceeds_once_confirmed(
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+) -> None:
+    """--force is the confirmation, and it applies to any group selector."""
+    deleted: list[str] = []
+    monkeypatch.setattr(
+        server, "_get_state_manager", lambda _app: _FleetStateManager(["sbx-1", "sbx-2"])
+    )
+    monkeypatch.setattr(server, "_get_sdk", lambda _app: _sdk_where(deleted.append))
+
+    response = asyncio.run(
+        server.execute_command(server.CommandRequest(text=f"delete {target} --force"))
+    )
+
+    assert isinstance(response, server.CommandResponse)
+    assert response.result == "Deleted 2 sandboxes."
+    assert deleted == ["sbx-1", "sbx-2"]
+
+
+def test_execute_command_single_delete_needs_no_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control: one named sandbox matches the existing per-sandbox delete button."""
+    deleted: list[str] = []
+    monkeypatch.setattr(
+        server, "_get_state_manager", lambda _app: _FleetStateManager(["sbx-1", "sbx-2"])
+    )
+    monkeypatch.setattr(server, "_get_sdk", lambda _app: _sdk_where(deleted.append))
+
+    response = asyncio.run(server.execute_command(server.CommandRequest(text="delete sbx-1")))
+
+    assert isinstance(response, server.CommandResponse)
+    assert deleted == ["sbx-1"]
+
+
+@pytest.mark.parametrize("verb", ["stop", "delete"])
+def test_execute_command_unknown_sandbox_is_an_error_for_every_verb(
+    monkeypatch: pytest.MonkeyPatch,
+    verb: str,
+) -> None:
+    """'stop'/'delete' on a name that does not exist is a failure, not "0 sandboxes".
+
+    A 200 whose result reads "Stopped 0 sandboxes." renders in the dashboard's
+    success area and clears the command, so a typo looks like it worked.
+    """
+    monkeypatch.setattr(server, "_get_state_manager", lambda _app: DummyStateManager())
+    monkeypatch.setattr(server, "_get_sdk", lambda _app: DummySDK())
+
+    response = asyncio.run(server.execute_command(server.CommandRequest(text=f"{verb} sbx-nope")))
+
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 404
+    assert "No sandbox named 'sbx-nope'" in json.loads(response.body)["error"]
+
+
+@pytest.mark.parametrize("text", ["stop all", "delete all", "stop error", "stop running"])
+def test_execute_command_group_target_matching_nothing_is_a_result(
+    monkeypatch: pytest.MonkeyPatch,
+    text: str,
+) -> None:
+    """Control: a group that matches no sandbox is a true result, not an error."""
+    monkeypatch.setattr(server, "_get_state_manager", lambda _app: DummyStateManager())
+    monkeypatch.setattr(server, "_get_sdk", lambda _app: DummySDK())
+
+    response = asyncio.run(server.execute_command(server.CommandRequest(text=text)))
+
+    assert isinstance(response, server.CommandResponse)
+    assert response.affected_vms == []
+    assert response.result.endswith("0 sandboxes.")
+
+
+def test_execute_command_route_declares_its_error_responses() -> None:
+    """The failure statuses the endpoint really returns must be in the schema.
+
+    A caller reading only the schema would otherwise plan for 200 and 422 and
+    be surprised by the 400 and 404 the command bar relies on.
+    """
+    route = next(
+        r
+        for r in server.app.routes
+        if isinstance(r, APIRoute) and r.path == "/api/command" and "POST" in r.methods
+    )
+
+    # Every non-2xx the handler can actually return, so a caller reading only
+    # the schema is not surprised by one of them.
+    for status in (400, 404, 409, 500):
+        assert route.responses[status]["model"] is server.CommandErrorResponse
+
+
 def test_execute_command_returns_pydantic_model_on_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -231,6 +620,51 @@ def test_execute_command_unknown_input_returns_400_json(
 
     assert isinstance(response, JSONResponse)
     assert response.status_code == 400
+    # A user-facing error must name a recovery, not only state the problem.
+    error = json.loads(response.body)["error"]
+    assert "'nope' is not a command" in error
+    # Bare verbs would pass even if the syntax were dropped; assert the forms.
+    assert "'list'" in error
+    for form in ("'info <sandbox>'", "'stop <sandbox>'", "'delete <sandbox>'"):
+        assert form in error
+
+
+def test_execute_command_unknown_status_names_the_valid_statuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bad 'list <status>' must tell the user which statuses exist."""
+    monkeypatch.setattr(server, "_get_state_manager", lambda _app: DummyStateManager())
+    monkeypatch.setattr(server, "_get_sdk", lambda _app: DummySDK())
+
+    response = asyncio.run(server.execute_command(server.CommandRequest(text="list bogus")))
+
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 400
+    error = json.loads(response.body)["error"]
+    assert "'bogus' is not a sandbox status" in error
+    assert "Try 'list' on its own, or 'list' with one of:" in error
+    for state in VMState:
+        assert state.value in error
+
+
+def test_execute_command_missing_vm_is_an_error_not_a_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """'info <unknown>' failed, so it must not come back as a command result.
+
+    A 200 with the text in ``result`` would render in the dashboard's success
+    area and clear the command the user typed, as if the lookup had worked.
+    """
+    monkeypatch.setattr(server, "_get_state_manager", lambda _app: DummyStateManager())
+    monkeypatch.setattr(server, "_get_sdk", lambda _app: DummySDK())
+
+    response = asyncio.run(server.execute_command(server.CommandRequest(text="info sbx-nope")))
+
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 404
+    error = json.loads(response.body)["error"]
+    assert "No sandbox named 'sbx-nope'" in error
+    assert "Run 'list' to see the ones you have." in error
 
 
 def test_open_vm_desktop_keeps_password_on_host(

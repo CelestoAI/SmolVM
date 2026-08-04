@@ -411,6 +411,16 @@ class CommandRequest(BaseModel):
     text: str
 
 
+class CommandErrorResponse(BaseModel):
+    """The body returned when a command cannot be run.
+
+    ``error`` is a finished sentence for the user: it says what went wrong and
+    names a command that recovers, so a caller can show it unchanged.
+    """
+
+    error: str
+
+
 class CommandResponse(BaseModel):
     """Response from a command execution.
 
@@ -678,7 +688,28 @@ async def stop_vm(vm_id: str) -> dict[str, Any]:
     return _vm_info_to_dict(info)
 
 
-@app.post("/api/command", response_model=CommandResponse)
+@app.post(
+    "/api/command",
+    response_model=CommandResponse,
+    responses={
+        400: {
+            "model": CommandErrorResponse,
+            "description": "The text was not a command, or named an unknown sandbox status.",
+        },
+        404: {
+            "model": CommandErrorResponse,
+            "description": "The command named a sandbox that does not exist.",
+        },
+        409: {
+            "model": CommandErrorResponse,
+            "description": "The command deletes a group and needs --force to confirm.",
+        },
+        500: {
+            "model": CommandErrorResponse,
+            "description": "Every sandbox the command named failed, so nothing happened.",
+        },
+    },
+)
 async def execute_command(request: CommandRequest) -> CommandResponse | JSONResponse:
     """Execute a command-style action from the command bar."""
     sdk = _get_sdk(app)
@@ -686,6 +717,7 @@ async def execute_command(request: CommandRequest) -> CommandResponse | JSONResp
     parsed = parse_command(request.text)
 
     affected: list[str] = []
+    failed: list[str] = []
     result_msg = ""
 
     if parsed.action == CommandAction.LIST:
@@ -694,9 +726,15 @@ async def execute_command(request: CommandRequest) -> CommandResponse | JSONResp
             try:
                 filter_state = VMState(parsed.target)
             except ValueError:
+                statuses = ", ".join(state.value for state in VMState)
                 return JSONResponse(
                     status_code=400,
-                    content={"error": f"Unknown status: {parsed.target}"},
+                    content={
+                        "error": (
+                            f"'{parsed.target}' is not a sandbox status. "
+                            f"Try 'list' on its own, or 'list' with one of: {statuses}."
+                        )
+                    },
                 )
         vms = await asyncio.to_thread(sm.list_vms, filter_state)
         affected = [vm.vm_id for vm in vms]
@@ -705,28 +743,64 @@ async def execute_command(request: CommandRequest) -> CommandResponse | JSONResp
     elif parsed.action == CommandAction.DELETE:
         vms = await asyncio.to_thread(sm.list_vms)
         targets = _resolve_targets(vms, parsed.target)
+        if not targets and not _selects_a_group(parsed.target):
+            return _no_such_sandbox(parsed.target)
+        if targets and _selects_a_group(parsed.target) and not parsed.params.get("force"):
+            return _needs_confirmation(parsed.target, len(targets))
         for vm_id in targets:
             try:
                 await asyncio.to_thread(sdk.delete, vm_id)
                 affected.append(vm_id)
             except VMNotFoundError:
+                # Already gone, which is the state the user asked for.
                 logger.warning("VM %s already deleted, skipping.", vm_id)
+                affected.append(vm_id)
             except Exception:
                 logger.warning("Failed to delete VM %s", vm_id, exc_info=True)
-        result_msg = f"Deleted {len(affected)} VMs."
+                failed.append(vm_id)
+        if failed and not affected:
+            return _nothing_happened("delete", failed)
+        result_msg = _bulk_result("Deleted", "delete", affected, [], failed)
 
     elif parsed.action == CommandAction.STOP:
         vms = await asyncio.to_thread(sm.list_vms)
         targets = _resolve_targets(vms, parsed.target)
+        if not targets and not _selects_a_group(parsed.target):
+            return _no_such_sandbox(parsed.target)
+        not_running: list[str] = []
+        # Whether this command stopped a sandbox depends on the state it was in
+        # beforehand: the manager returns the record unchanged for anything not
+        # RUNNING or PAUSED, so the record it hands back proves nothing on its own.
+        was_running = {vm.vm_id: vm.status in (VMState.RUNNING, VMState.PAUSED) for vm in vms}
         for vm_id in targets:
             try:
-                await asyncio.to_thread(sdk.stop, vm_id)
-                affected.append(vm_id)
+                stopped = await asyncio.to_thread(sdk.stop, vm_id)
             except VMNotFoundError:
+                # Gone means it is no longer running, but it only counts as
+                # this command stopping it if it was running when we looked.
                 logger.warning("VM %s not found, skipping.", vm_id)
+                if was_running.get(vm_id, False):
+                    affected.append(vm_id)
+                else:
+                    not_running.append(vm_id)
+                continue
             except Exception:
                 logger.warning("Failed to stop VM %s", vm_id, exc_info=True)
-        result_msg = f"Stopped {len(affected)} VMs."
+                failed.append(vm_id)
+                continue
+            if not was_running.get(vm_id, False):
+                not_running.append(vm_id)
+            elif stopped.status == VMState.STOPPED:
+                affected.append(vm_id)
+            else:
+                # It was running and did not stop, which is a failure.
+                logger.warning("VM %s did not stop (status: %s)", vm_id, stopped.status)
+                failed.append(vm_id)
+        # Nothing succeeded and something genuinely failed, so this is an
+        # error however many sandboxes were merely not running.
+        if failed and not affected:
+            return _nothing_happened("stop", failed)
+        result_msg = _bulk_result("Stopped", "stop", affected, not_running, failed)
 
     elif parsed.action == CommandAction.INFO:
         try:
@@ -734,12 +808,20 @@ async def execute_command(request: CommandRequest) -> CommandResponse | JSONResp
             affected = [vm.vm_id]
             result_msg = f"VM {vm.vm_id}: {vm.status.value}"
         except VMNotFoundError:
-            result_msg = f"VM not found: {parsed.target}"
+            # A lookup that found nothing is a failed command, not a result.
+            # Returning it as a success would render it in the result area and
+            # clear the command the user typed, as if it had worked.
+            return _no_such_sandbox(parsed.target)
 
     else:
         return JSONResponse(
             status_code=400,
-            content={"error": f"Unknown command: {request.text}"},
+            content={
+                "error": (
+                    f"'{request.text}' is not a command. Try 'list', "
+                    "'info <sandbox>', 'stop <sandbox>', or 'delete <sandbox>'."
+                )
+            },
         )
 
     return CommandResponse(
@@ -748,6 +830,96 @@ async def execute_command(request: CommandRequest) -> CommandResponse | JSONResp
         result=result_msg,
         affected_vms=affected,
     )
+
+
+def _selects_a_group(target: str) -> bool:
+    """Whether *target* names a group of sandboxes rather than one sandbox.
+
+    "all" and a status name select a group, so matching nothing is a real
+    result ("Stopped 0 sandboxes."). Anything else names one sandbox, and matching
+    nothing means that sandbox does not exist.
+    """
+    target_lower = target.strip().lower()
+    if target_lower == "all":
+        return True
+    try:
+        VMState(target_lower)
+    except ValueError:
+        return False
+    return True
+
+
+def _no_such_sandbox(name: str) -> JSONResponse:
+    """The one 404 body used wherever a command names a sandbox that is gone."""
+    return JSONResponse(
+        status_code=404,
+        content={"error": f"No sandbox named '{name}'. Run 'list' to see the ones you have."},
+    )
+
+
+def _name_list(names: list[str], limit: int = 3) -> str:
+    """Quote a few names without letting a wide command print a wall of ids."""
+    shown = ", ".join(f"'{name}'" for name in names[:limit])
+    if len(names) > limit:
+        shown += f" and {len(names) - limit} more"
+    return shown
+
+
+def _nothing_happened(verb: str, failed: list[str]) -> JSONResponse:
+    """Every sandbox the command named failed, so it did not do anything.
+
+    Reporting this as a result would print a success line and clear the
+    command, hiding a total failure behind a truthful-looking count.
+    """
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": (
+                f"Could not {verb} {_name_list(failed)}. "
+                f"Run '{verb} {failed[0]}' to try again, "
+                "or check the dashboard log for the reason."
+            )
+        },
+    )
+
+
+def _needs_confirmation(target: str, count: int) -> JSONResponse:
+    """Deleting a whole group is not undoable, so make the user say so twice."""
+    return JSONResponse(
+        status_code=409,
+        content={
+            "error": (
+                f"Deleting {count} sandbox{'' if count == 1 else 'es'} cannot be undone. "
+                f"Run 'delete {target} --force' to confirm."
+            )
+        },
+    )
+
+
+def _bulk_result(
+    past_tense: str,
+    verb: str,
+    done: list[str],
+    skipped: list[str],
+    failed: list[str],
+) -> str:
+    """Say what actually happened, including the parts that did not.
+
+    Names the sandboxes that failed and a command that retries one of them,
+    because the command bar clears the input on a result and the user would
+    otherwise have nothing left to act on.
+    """
+    if not skipped and not failed:
+        noun = "sandbox" if len(done) == 1 else "sandboxes"
+        return f"{past_tense} {len(done)} {noun}."
+    total = len(done) + len(skipped) + len(failed)
+    parts = [f"{past_tense} {len(done)} of {total} sandboxes."]
+    if skipped:
+        was_were = "was" if len(skipped) == 1 else "were"
+        parts.append(f"{_name_list(skipped)} {was_were} not running.")
+    if failed:
+        parts.append(f"{_name_list(failed)} failed: run '{verb} {failed[0]}' to try again.")
+    return " ".join(parts)
 
 
 def _resolve_targets(vms: list[VMInfo], target: str) -> list[str]:

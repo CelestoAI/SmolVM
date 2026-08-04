@@ -56,6 +56,9 @@ class ParsedCommand:
     params: dict[str, Any]
 
 
+# How the user confirms a destructive group delete, spelled like the CLI flag.
+_FORCE_FLAG = "--force"
+
 _VERB_ALIASES: dict[str, CommandAction] = {
     "list": CommandAction.LIST,
     "ls": CommandAction.LIST,
@@ -137,15 +140,24 @@ def parse_command(raw_input: str) -> ParsedCommand:
             params=params,
         )
 
-    # info/delete/stop require exactly one target token.
+    # info/delete/stop take one target token. Delete also accepts --force,
+    # which is how the user confirms a group deletion.
+    force = False
+    if action == CommandAction.DELETE and len(tokens) == 3 and tokens[2] == _FORCE_FLAG:
+        force = True
+        tokens = tokens[:2]
+
     if len(tokens) != 2:
         return _unknown(raw_input, target=text)
 
     target = tokens[1]
     logger.info("Parsed command: action=%s target='%s'", action.value, target)
+    params = {"target": target}
+    if action == CommandAction.DELETE:
+        params["force"] = force
     return ParsedCommand(
         action=action,
         target=target,
         raw_input=raw_input,
-        params={"target": target},
+        params=params,
     )
