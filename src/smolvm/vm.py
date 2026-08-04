@@ -172,6 +172,32 @@ QEMU_GATEWAY_IP = "10.0.2.2"
 QEMU_NETMASK = "255.255.255.0"
 SNAPSHOT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$|^[a-z0-9]$")
 
+# Backends that reach the user-mode ("usernet") branch bring their own
+# built-in NAT with fixed addresses: QEMU uses slirp's 10.0.2.0/24 and
+# libkrun uses gvproxy's 192.168.127.0/24. Both are /24, so the netmask is
+# shared. Firecracker always uses a host TAP and VZ returns before this
+# branch, so neither appears here.
+_USERNET_ADDRESSES: dict[str, tuple[str, str, str]] = {
+    BACKEND_QEMU: (QEMU_GUEST_IP, QEMU_GATEWAY_IP, QEMU_NETMASK),
+    BACKEND_LIBKRUN: (LIBKRUN_GUEST_IP, LIBKRUN_GATEWAY_IP, QEMU_NETMASK),
+}
+
+
+def _usernet_addresses(backend: str, vm_id: str) -> tuple[str, str, str]:
+    """Return the (guest IP, gateway IP, netmask) a user-mode backend hands out.
+
+    Both the sync and async creation paths call this, so the two can never
+    drift into persisting one backend's addresses for another's guest.
+    """
+    try:
+        return _USERNET_ADDRESSES[backend]
+    except KeyError:
+        raise NetworkError(
+            f"SmolVM does not know what network settings the '{backend}' backend "
+            f"gives a sandbox. Run "
+            f"'smolvm sandbox create --name {vm_id} --backend {BACKEND_QEMU}' instead."
+        ) from None
+
 
 def _get_sudo_user_info() -> pwd.struct_passwd | None:
     """Return sudo user's passwd entry when running under sudo."""
@@ -2078,12 +2104,11 @@ class SmolVMManager:
                     )
                 mac_seed = ((ssh_host_port or SSH_PORT_START) % 65534) + 1
                 guest_mac = self.network.generate_mac(mac_seed)
-                guest_ip = LIBKRUN_GUEST_IP if backend == BACKEND_LIBKRUN else QEMU_GUEST_IP
-                gateway_ip = LIBKRUN_GATEWAY_IP if backend == BACKEND_LIBKRUN else QEMU_GATEWAY_IP
+                guest_ip, gateway_ip, netmask = _usernet_addresses(backend, effective_config.vm_id)
                 network_config = NetworkConfig(
                     guest_ip=guest_ip,
                     gateway_ip=gateway_ip,
-                    netmask=QEMU_NETMASK,
+                    netmask=netmask,
                     tap_device="usernet",
                     guest_mac=guest_mac,
                     ssh_host_port=ssh_host_port,
@@ -3958,10 +3983,11 @@ class SmolVMManager:
                     )
                 mac_seed = ((ssh_host_port or SSH_PORT_START) % 65534) + 1
                 guest_mac = self.network.generate_mac(mac_seed)
+                guest_ip, gateway_ip, netmask = _usernet_addresses(backend, effective_config.vm_id)
                 network_config = NetworkConfig(
-                    guest_ip=QEMU_GUEST_IP,
-                    gateway_ip=QEMU_GATEWAY_IP,
-                    netmask=QEMU_NETMASK,
+                    guest_ip=guest_ip,
+                    gateway_ip=gateway_ip,
+                    netmask=netmask,
                     tap_device="usernet",
                     guest_mac=guest_mac,
                     ssh_host_port=ssh_host_port,

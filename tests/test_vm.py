@@ -31,7 +31,15 @@ from smolvm.exceptions import (
     VMNotFoundError,
 )
 from smolvm.types import InternetSettings, VMConfig, VMInfo, VMState, WorkspaceMount
-from smolvm.vm import SmolVMManager
+from smolvm.vm import (
+    LIBKRUN_GATEWAY_IP,
+    LIBKRUN_GUEST_IP,
+    QEMU_GATEWAY_IP,
+    QEMU_GUEST_IP,
+    QEMU_NETMASK,
+    SmolVMManager,
+    _usernet_addresses,
+)
 
 
 @pytest.fixture
@@ -197,9 +205,90 @@ class TestSmolVMCreate:
 
         assert vm_info.network is not None
         assert vm_info.network.tap_device == "usernet"
+        assert vm_info.network.guest_ip == LIBKRUN_GUEST_IP
+        assert vm_info.network.gateway_ip == LIBKRUN_GATEWAY_IP
+        assert vm_info.network.netmask == QEMU_NETMASK
         mock_network.create_tap.assert_not_called()
         mock_network.setup_nat.assert_not_called()
         mock_network.setup_ssh_port_forward.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_async_create_libkrun_uses_libkrun_usernet_addresses(
+        self,
+        tmp_path: Path,
+        sample_config: VMConfig,
+    ) -> None:
+        """Async libkrun creation must persist libkrun's usernet endpoints."""
+        smol_vm = SmolVMManager(
+            data_dir=tmp_path / "data-async-libkrun",
+            socket_dir=tmp_path / "sockets-async-libkrun",
+            backend="libkrun",
+        )
+        mock_network = _attach_mock_network(smol_vm)
+
+        vm_info = await smol_vm.async_create(
+            sample_config.model_copy(update={"vm_id": "vm-async-libkrun", "backend": "libkrun"})
+        )
+
+        assert vm_info.network is not None
+        assert vm_info.network.tap_device == "usernet"
+        assert vm_info.network.guest_ip == LIBKRUN_GUEST_IP
+        assert vm_info.network.gateway_ip == LIBKRUN_GATEWAY_IP
+        assert vm_info.network.netmask == QEMU_NETMASK
+
+        # User-mode networking is entirely inside the VMM: no host TAP lease
+        # and no host route, NAT, egress, or SSH-forward setup.
+        assert smol_vm.state.get_ip_lease("vm-async-libkrun") is None
+        mock_network.async_prepare_tap_device.assert_not_called()
+        mock_network.async_create_tap.assert_not_called()
+        mock_network.async_add_route.assert_not_called()
+        mock_network.async_setup_nat.assert_not_called()
+        mock_network.async_apply_egress_allowlist.assert_not_called()
+        mock_network.async_setup_ssh_port_forward.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_async_create_qemu_usernet_keeps_qemu_addresses(
+        self,
+        tmp_path: Path,
+        sample_config: VMConfig,
+    ) -> None:
+        """Control: the QEMU slirp path is unaffected by the libkrun fix."""
+        smol_vm = SmolVMManager(
+            data_dir=tmp_path / "data-async-qemu",
+            socket_dir=tmp_path / "sockets-async-qemu",
+            backend="qemu",
+        )
+        _attach_mock_network(smol_vm)
+
+        with patch.object(
+            smol_vm,
+            "_async_materialize_rootfs",
+            AsyncMock(side_effect=lambda config: config),
+        ) as mock_materialize_rootfs:
+            vm_info = await smol_vm.async_create(
+                sample_config.model_copy(update={"vm_id": "vm-async-qemu", "backend": "qemu"})
+            )
+
+        mock_materialize_rootfs.assert_awaited_once()
+
+        assert vm_info.network is not None
+        assert vm_info.network.tap_device == "usernet"
+        assert vm_info.network.guest_ip == QEMU_GUEST_IP
+        assert vm_info.network.gateway_ip == QEMU_GATEWAY_IP
+        assert vm_info.network.netmask == QEMU_NETMASK
+
+    def test_usernet_addresses_rejects_unknown_backend(self) -> None:
+        """An unmapped backend fails closed instead of silently getting QEMU's addresses."""
+        from smolvm.exceptions import NetworkError
+
+        with pytest.raises(NetworkError) as excinfo:
+            _usernet_addresses("not-a-backend", "sbx-test")
+
+        # The message has to be usable by someone who did not write this code:
+        # plain English, the sandbox they named, and a command that recovers.
+        message = str(excinfo.value)
+        assert "'not-a-backend'" in message
+        assert "smolvm sandbox create --name sbx-test --backend qemu" in message
 
     def test_check_prerequisites_libkrun_only_checks_library_and_ssh(self, tmp_path: Path) -> None:
         """libkrun prerequisite checks should not require qemu/qemu-img."""
@@ -515,7 +604,7 @@ class TestSmolVMCreate:
             vm_info.network.tap_device,
         )
         mock_network.async_setup_nat.assert_awaited_once_with(vm_info.network.tap_device)
-        mock_network.async_setup_ssh_port_forward.assert_not_awaited()
+        mock_network.async_setup_ssh_port_forward.assert_not_called()
 
 
 class TestSmolVMDiskLifecycle:
