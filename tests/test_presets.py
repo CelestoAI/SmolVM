@@ -28,6 +28,7 @@ from smolvm.presets import (
     GIT_HOST_CONFIGS,
     HERMES_PRESET,
     OPENCLAW_PRESET,
+    OPENCODE_PRESET,
     PI_PRESET,
     HostConfigCopy,
     HostKeychainSecret,
@@ -71,7 +72,7 @@ class TestRegistry:
     """Built-in preset registration."""
 
     def test_builtin_presets_registered(self) -> None:
-        assert preset_names() == ["claude-code", "codex", "hermes", "openclaw", "pi"]
+        assert preset_names() == ["claude-code", "codex", "hermes", "openclaw", "opencode", "pi"]
 
     def test_list_presets_sorted_by_name(self) -> None:
         names = [p.name for p in list_presets()]
@@ -81,6 +82,7 @@ class TestRegistry:
             "claude-code",
             "hermes",
             "openclaw",
+            "opencode",
             "pi",
         }
 
@@ -99,8 +101,14 @@ class TestRegistry:
     def test_get_preset_returns_hermes(self) -> None:
         assert get_preset("hermes") is HERMES_PRESET
 
+    def test_get_preset_returns_opencode(self) -> None:
+        assert get_preset("opencode") is OPENCODE_PRESET
+
     def test_unknown_preset_lists_available(self) -> None:
-        with pytest.raises(KeyError, match="Available: claude-code, codex, hermes, openclaw, pi"):
+        with pytest.raises(
+            KeyError,
+            match="Available: claude-code, codex, hermes, openclaw, opencode, pi",
+        ):
             get_preset("nonexistent")
 
 
@@ -465,6 +473,31 @@ class TestOpenClawPreset:
 
     def test_openclaw_no_keychain_secrets(self) -> None:
         assert OPENCLAW_PRESET.host_keychain_secrets == ()
+
+
+class TestOpenCodePreset:
+    """Stable OpenCode preset wiring."""
+
+    def test_opencode_preset_shape(self) -> None:
+        assert OPENCODE_PRESET.name == "opencode"
+        assert OPENCODE_PRESET.launch_command == "opencode"
+        assert OPENCODE_PRESET.aliases == ()
+        assert "ANTHROPIC_API_KEY" in OPENCODE_PRESET.host_env_vars
+        assert "OPENAI_API_KEY" in OPENCODE_PRESET.host_env_vars
+
+    def test_opencode_install_runs_stable_npm_package(self) -> None:
+        assert "opencode-ai" in OPENCODE_PRESET.install_script
+        assert "npm install -g" in OPENCODE_PRESET.install_script
+        assert "@beta" not in OPENCODE_PRESET.install_script
+
+    def test_opencode_copies_config_and_auth(self) -> None:
+        pairs = [(cfg.host_path, cfg.guest_path) for cfg in OPENCODE_PRESET.host_configs]
+        assert pairs == [
+            ("~/.config/opencode", "/root/.config/opencode"),
+            ("~/.local/share/opencode/auth.json", "/root/.local/share/opencode/auth.json"),
+        ]
+        auth = OPENCODE_PRESET.host_configs[1]
+        assert auth.file_mode == 0o600
 
 
 class TestHermesPreset:

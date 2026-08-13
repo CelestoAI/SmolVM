@@ -26,7 +26,7 @@ on:
     inputs:
       presets:
         description: >-
-          Comma-separated presets to build (e.g. "openclaw,codex,claude-code").
+          Comma-separated presets to build (e.g. "openclaw,codex,claude-code,opencode").
           Use "all" to build every preset.
         type: string
         default: "all"
@@ -453,7 +453,8 @@ jobs:
 
   # ── Stage 2b: Layer presets on top of base ────────────────────
   #
-  # codex, claude-code, hermes, pi use the shared base rootfs.
+  # codex, claude-code, hermes, and pi use the shared base rootfs. Stable
+  # OpenCode uses install-at-boot until its Ubuntu image is smoke-tested.
   # Each job copies the base, chroots in, runs the preset's install.
   preset:
     needs: base-rootfs

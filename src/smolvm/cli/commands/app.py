@@ -1408,7 +1408,7 @@ def _register_preset_commands() -> None:
 
     for preset in list_presets():
         public_name = "claude" if preset.name == "claude-code" else preset.name
-        if public_name not in {"codex", "claude", "openclaw", "hermes", "pi"}:
+        if public_name not in {"codex", "claude", "openclaw", "opencode", "hermes", "pi"}:
             continue
 
         @click.group(public_name, context_settings=CONTEXT_SETTINGS, help=preset.summary)
@@ -1449,6 +1449,7 @@ def _register_preset_commands() -> None:
                 comm_channel: str | None,
                 boot_timeout: float,
                 json_output: bool,
+                **extra: Any,
             ) -> Any:
                 _before_command(json_output=json_output)
                 return _handlers()._run_start(
@@ -1467,9 +1468,25 @@ def _register_preset_commands() -> None:
                         attach=attach,
                         comm_channel=comm_channel,
                         boot_timeout=boot_timeout,
+                        server=bool(extra.get("server", False)),
+                        port=extra.get("port"),
                         json=json_output,
                     )
                 )
+
+            if preset_name == "opencode":
+                start = click.option(
+                    "--port",
+                    type=positive_int_type(),
+                    default=4096,
+                    show_default=True,
+                    help="Host and sandbox port for OpenCode server mode.",
+                )(start)
+                start = click.option(
+                    "--server",
+                    is_flag=True,
+                    help="Run OpenCode as a headless server instead of opening its TUI.",
+                )(start)
 
             return start
 

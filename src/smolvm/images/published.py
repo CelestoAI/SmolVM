@@ -49,7 +49,7 @@ from smolvm.exceptions import ImageError
 from smolvm.images.manager import ImageManager, ImageSource, LocalImage
 
 Arch = Literal["amd64", "arm64"]
-Preset = Literal["codex", "claude-code", "openclaw", "hermes", "pi", "ubuntu"]
+Preset = Literal["codex", "claude-code", "openclaw", "opencode", "hermes", "pi", "ubuntu"]
 # ``libkrun`` is reserved here for a future spike — manifest accepts the type
 # but the CLI never resolves a host to it until libkrun support is wired.
 Vmm = Literal["firecracker", "qemu", "libkrun"]

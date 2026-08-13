@@ -33,6 +33,7 @@ from smolvm.presets.claude_code import CLAUDE_CODE_PRESET
 from smolvm.presets.codex import CODEX_PRESET
 from smolvm.presets.hermes import HERMES_PRESET
 from smolvm.presets.openclaw import OPENCLAW_PRESET
+from smolvm.presets.opencode import OPENCODE_PRESET
 from smolvm.presets.pi import PI_PRESET
 
 _BUILTIN_PRESETS: tuple[Preset, ...] = (
@@ -40,6 +41,7 @@ _BUILTIN_PRESETS: tuple[Preset, ...] = (
     CLAUDE_CODE_PRESET,
     HERMES_PRESET,
     OPENCLAW_PRESET,
+    OPENCODE_PRESET,
     PI_PRESET,
 )
 
@@ -90,6 +92,7 @@ __all__ = [
     "GIT_HOST_CONFIGS",
     "HERMES_PRESET",
     "OPENCLAW_PRESET",
+    "OPENCODE_PRESET",
     "PI_PRESET",
     "HostConfigCopy",
     "HostKeychainSecret",
