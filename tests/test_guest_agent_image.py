@@ -122,6 +122,22 @@ def test_ci_build_preset_bakes_guest_agent() -> None:
     assert "/usr/local/bin/smolvm-guest-agent" in script
 
 
+def test_ci_build_preset_preinstalls_pinned_stable_opencode() -> None:
+    """The published OpenCode layer must use the same pinned stable version."""
+    script = (_REPO_ROOT / "scripts" / "ci" / "build-preset.sh").read_text()
+    workflow = (_REPO_ROOT / ".github" / "workflows" / "build-published-images.yml").read_text()
+
+    assert "opencode-ai@1.18.18" in script
+    assert "preset: [codex, claude-code, hermes, opencode, pi, ubuntu]" in workflow
+    assert "- preset: opencode\n            os: alpine" in workflow
+
+
+def test_published_image_smoke_matrix_includes_opencode() -> None:
+    workflow = (_REPO_ROOT / ".github" / "workflows" / "smoke-published-images.yml").read_text()
+
+    assert "rootfs: [openclaw, opencode, ubuntu]" in workflow
+
+
 def test_published_image_workflow_uploads_guest_agent_binaries() -> None:
     """The image release workflow should publish standalone guest-agent binaries."""
     workflow = (_REPO_ROOT / ".github" / "workflows" / "build-published-images.yml").read_text()

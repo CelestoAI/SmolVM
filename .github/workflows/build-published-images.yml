@@ -453,8 +453,7 @@ jobs:
 
   # ── Stage 2b: Layer presets on top of base ────────────────────
   #
-  # codex, claude-code, hermes, and pi use the shared base rootfs. Stable
-  # OpenCode uses install-at-boot until its Ubuntu image is smoke-tested.
+  # codex, claude-code, hermes, opencode, and pi use the shared base rootfs.
   # Each job copies the base, chroots in, runs the preset's install.
   preset:
     needs: base-rootfs
@@ -464,7 +463,7 @@ jobs:
         arch: [amd64, arm64]
         # "ubuntu" is the bare base image (no preset install) — gives
         # firecracker a raw-ext4 Ubuntu for `create --os ubuntu`.
-        preset: [codex, claude-code, hermes, pi, ubuntu]
+        preset: [codex, claude-code, hermes, opencode, pi, ubuntu]
         os: [ubuntu, alpine]
         # Phase 1 of the Alpine rollout (#264) excludes hermes — its
         # ``[all]`` extras pull manylinux2014 wheels that don't have
@@ -474,6 +473,8 @@ jobs:
         # Ubuntu-only — there's no bare-Alpine published image yet.
         exclude:
           - preset: hermes
+            os: alpine
+          - preset: opencode
             os: alpine
           - preset: ubuntu
             os: alpine

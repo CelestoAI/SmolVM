@@ -19,11 +19,13 @@ from __future__ import annotations
 from smolvm.presets._scripts import NODE20_BOOTSTRAP, npm_install_global
 from smolvm.presets._types import HostConfigCopy, Preset
 
+OPENCODE_VERSION = "1.18.18"
+
 OPENCODE_PRESET = Preset(
     name="opencode",
     summary="Start a sandbox with the stable OpenCode agent preinstalled.",
     setup_script=NODE20_BOOTSTRAP,
-    install_script=npm_install_global("opencode-ai"),
+    install_script=npm_install_global(f"opencode-ai@{OPENCODE_VERSION}"),
     host_env_vars=(
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",

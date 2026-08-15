@@ -4,7 +4,7 @@
 # one of the published images — otherwise only discovered by the first
 # user trying `smolvm create`.
 #
-# Each cell tests a *real* published SmolVM image (openclaw and the bare
+# Each cell tests a *real* published SmolVM image (openclaw, opencode, and the bare
 # ubuntu base), exactly how the runtime boots them:
 #   - Downloads the published kernel + ``<rootfs>-<arch>-rootfs.ext4.zst``
 #     from the release and decompresses it (no SHA pinning — we test what
@@ -62,7 +62,7 @@ jobs:
       fail-fast: false
       matrix:
         arch: [amd64, arm64]
-        rootfs: [openclaw, ubuntu]
+        rootfs: [openclaw, opencode, ubuntu]
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     timeout-minutes: 20
 
@@ -122,8 +122,8 @@ jobs:
           ARCH: ${{ matrix.arch }}
           ROOTFS: ${{ matrix.rootfs }}
         run: |
-          # Both cells are published SmolVM raw-ext4 images (openclaw and the
-          # bare ubuntu base) — same download + decompress path.
+          # These are published SmolVM raw-ext4 images — same download and
+          # decompress path for every preset.
           gh release download "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --pattern "${ROOTFS}-${ARCH}-rootfs.ext4.zst" \

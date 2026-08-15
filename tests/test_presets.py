@@ -486,7 +486,10 @@ class TestOpenCodePreset:
         assert "OPENAI_API_KEY" in OPENCODE_PRESET.host_env_vars
 
     def test_opencode_install_runs_stable_npm_package(self) -> None:
-        assert "opencode-ai" in OPENCODE_PRESET.install_script
+        from smolvm.presets.opencode import OPENCODE_VERSION
+
+        assert f"opencode-ai@{OPENCODE_VERSION}" in OPENCODE_PRESET.install_script
+        assert OPENCODE_VERSION == "1.18.18"
         assert "npm install -g" in OPENCODE_PRESET.install_script
         assert "@beta" not in OPENCODE_PRESET.install_script
 
@@ -557,6 +560,7 @@ class TestNpmInstallGlobalSafety:
             "lodash",
             "@openai/codex",
             "@anthropic-ai/claude-code",
+            "opencode-ai@1.18.18",
             "some-pkg.v2",
         ],
     )

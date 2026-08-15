@@ -19,7 +19,7 @@ from __future__ import annotations
 import re
 
 # npm package names. ``@scope/name`` is the only multi-segment form allowed.
-_SAFE_NPM_NAME_RE = re.compile(r"^@?[a-zA-Z0-9._\-]+(/[a-zA-Z0-9._\-]+)?$")
+_SAFE_NPM_NAME_RE = re.compile(r"^@?[a-zA-Z0-9._\-]+(/[a-zA-Z0-9._\-]+)?(@[a-zA-Z0-9._\-]+)?$")
 
 # PyPI package names — alphanumerics, hyphens, underscores, dots, optional extras.
 _SAFE_PYPI_NAME_RE = re.compile(r"^[a-zA-Z0-9._\-]+(\[[a-zA-Z0-9,._\-]+\])?$")
@@ -76,6 +76,9 @@ fi
 
 def npm_install_global(package: str) -> str:
     """Return a script that globally installs *package* via npm.
+
+    A package may include a simple npm version or dist-tag suffix, such as
+    ``opencode-ai@1.18.18``. The package and suffix are still shell-safe.
 
     Assumes Node is already on PATH — pair this with
     :data:`NODE20_BOOTSTRAP` as the preset's ``setup_script`` so that
