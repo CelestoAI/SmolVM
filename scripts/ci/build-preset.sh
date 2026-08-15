@@ -175,7 +175,7 @@ case "$PRESET" in
   opencode)
     chroot "$MNT" "$SHELL_BIN" -c '
       set -euo pipefail
-      npm install -g --silent opencode-ai@1.18.18
+      npm install -g --silent opencode-ai
       npm cache clean --force >/dev/null 2>&1 || true
       rm -rf /root/.npm /root/.cache /tmp/*
     '

@@ -122,12 +122,12 @@ def test_ci_build_preset_bakes_guest_agent() -> None:
     assert "/usr/local/bin/smolvm-guest-agent" in script
 
 
-def test_ci_build_preset_preinstalls_pinned_stable_opencode() -> None:
-    """The published OpenCode layer must use the same pinned stable version."""
+def test_ci_build_preset_preinstalls_stable_opencode() -> None:
+    """The published OpenCode layer follows the existing npm preset process."""
     script = (_REPO_ROOT / "scripts" / "ci" / "build-preset.sh").read_text()
     workflow = (_REPO_ROOT / ".github" / "workflows" / "build-published-images.yml").read_text()
 
-    assert "opencode-ai@1.18.18" in script
+    assert "npm install -g --silent opencode-ai" in script
     assert "preset: [codex, claude-code, hermes, opencode, pi, ubuntu]" in workflow
     assert "- preset: opencode\n            os: alpine" in workflow
 
