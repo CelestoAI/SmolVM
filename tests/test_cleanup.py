@@ -15,11 +15,12 @@
 """Tests for delete and cleanup CLI commands."""
 
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from smolvm.cli.cleanup import run_cleanup, run_delete
+from smolvm.cli.cleanup import run_cleanup, run_delete, run_prune_sandboxes
 from smolvm.cli.main import main as cli_main
 
 
@@ -378,3 +379,146 @@ class TestCleanup:
             == "Run 'smolvm sandbox delete --all --force --json' to confirm."
         )
         mock_run_cleanup.assert_not_called()
+
+
+class TestSandboxPrune:
+    """Tests for ``smolvm sandbox prune``."""
+
+    @pytest.fixture
+    def mock_sdk_cls(self) -> MagicMock:
+        with patch("smolvm.cli.cleanup.CLIService") as mock_service_cls:
+            sdk = MagicMock()
+            manager = mock_service_cls.return_value.manager.return_value
+            manager.__enter__.return_value = sdk
+            manager.__exit__.return_value = None
+            yield sdk
+
+    @staticmethod
+    def _leftover(
+        vm_id: str, name: str, *, kind: str = "disk", retained: bool = False
+    ) -> MagicMock:
+        artifact = MagicMock()
+        artifact.vm_id = vm_id
+        artifact.path = Path(f"/data/disks/{name}")
+        artifact.kind = kind
+        artifact.size_bytes = 1024
+        artifact.retained = retained
+        return artifact
+
+    def test_prune_removes_leftovers(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Leftover files are deleted and the freed space is reported."""
+        sdk = mock_sdk_cls
+        leftover = self._leftover("sbx-gone", "sbx-gone.qcow2")
+        sdk.find_leftover_artifacts.return_value = [leftover]
+        sdk.prune_leftover_artifacts.return_value = [leftover]
+
+        ret = run_prune_sandboxes(force=True)
+
+        assert ret == 0
+        sdk.prune_leftover_artifacts.assert_called_once_with(include_retained=False)
+        out = capsys.readouterr().out
+        assert "sbx-gone.qcow2" in out
+        assert "Freed" in out
+
+    def test_prune_dry_run_keeps_files(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """A dry run reports the same list without deleting anything."""
+        sdk = mock_sdk_cls
+        sdk.find_leftover_artifacts.return_value = [self._leftover("sbx-gone", "sbx-gone.qcow2")]
+
+        ret = run_prune_sandboxes(dry_run=True)
+
+        assert ret == 0
+        sdk.prune_leftover_artifacts.assert_not_called()
+        assert "Would free" in capsys.readouterr().out
+
+    def test_prune_reports_saved_disks_it_skipped(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Saved disks are left alone, and the user is told how to remove them."""
+        sdk = mock_sdk_cls
+        sdk.find_leftover_artifacts.return_value = [
+            self._leftover("sbx-saved", "sbx-saved.qcow2", retained=True)
+        ]
+
+        ret = run_prune_sandboxes(force=True)
+
+        assert ret == 0
+        sdk.prune_leftover_artifacts.assert_not_called()
+        out = capsys.readouterr().out
+        assert "--include-saved" in out
+        assert "Nothing to clean up" in out
+
+    def test_prune_include_saved_removes_them(
+        self,
+        mock_sdk_cls: MagicMock,
+    ) -> None:
+        """``--include-saved`` opts in to deleting kept disks."""
+        sdk = mock_sdk_cls
+        saved = self._leftover("sbx-saved", "sbx-saved.qcow2", retained=True)
+        sdk.find_leftover_artifacts.return_value = [saved]
+        sdk.prune_leftover_artifacts.return_value = [saved]
+
+        ret = run_prune_sandboxes(force=True, include_retained=True)
+
+        assert ret == 0
+        sdk.prune_leftover_artifacts.assert_called_once_with(include_retained=True)
+
+    def test_prune_json_requires_force(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Unattended JSON callers must confirm before anything is deleted."""
+        sdk = mock_sdk_cls
+        sdk.find_leftover_artifacts.return_value = [self._leftover("sbx-gone", "sbx-gone.qcow2")]
+
+        ret = run_prune_sandboxes(json_output=True)
+
+        assert ret == 1
+        sdk.prune_leftover_artifacts.assert_not_called()
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["ok"] is False
+        assert "smolvm sandbox prune --force --json" in payload["error"]["message"]
+
+    def test_prune_json_payload(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """JSON output lists what was removed and how much it freed."""
+        sdk = mock_sdk_cls
+        leftover = self._leftover("sbx-gone", "sbx-gone.qcow2")
+        sdk.find_leftover_artifacts.return_value = [leftover]
+        sdk.prune_leftover_artifacts.return_value = [leftover]
+
+        ret = run_prune_sandboxes(force=True, json_output=True)
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["command"] == "sandbox.prune"
+        assert payload["ok"] is True
+        assert payload["data"]["removed"][0]["vm_id"] == "sbx-gone"
+        assert payload["data"]["freed_bytes"] == 1024
+
+    def test_cli_wires_prune_command(self) -> None:
+        """``smolvm sandbox prune`` reaches the runner with its flags."""
+        with patch("smolvm.cli.cleanup.run_prune_sandboxes", return_value=0) as runner:
+            ret = cli_main(["sandbox", "prune", "--dry-run", "--include-saved"])
+
+        assert ret == 0
+        runner.assert_called_once_with(
+            dry_run=True,
+            force=False,
+            include_retained=True,
+            json_output=False,
+        )

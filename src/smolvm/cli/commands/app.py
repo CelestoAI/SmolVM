@@ -430,6 +430,33 @@ def sandbox_delete(
     )
 
 
+@sandbox.command("prune")
+@click.option("--dry-run", is_flag=True, help="Show what would be deleted.")
+@click.option("--force", is_flag=True, help="Skip the confirmation prompt.")
+@click.option(
+    "--include-saved",
+    is_flag=True,
+    help="Also delete disks you asked SmolVM to save.",
+)
+@json_option
+def sandbox_prune(
+    dry_run: bool,
+    force: bool,
+    include_saved: bool,
+    json_output: bool,
+) -> Any:
+    """Delete files left behind by sandboxes that no longer exist."""
+    _before_command(json_output=json_output)
+    from smolvm.cli.cleanup import run_prune_sandboxes
+
+    return run_prune_sandboxes(
+        dry_run=dry_run,
+        force=force,
+        include_retained=include_saved,
+        json_output=json_output,
+    )
+
+
 @cli.command("setup", help="Install or validate local runtime dependencies.")
 @click.option("--check-only", is_flag=True, help="Check what is needed without installing.")
 @click.option("--with-docker", is_flag=True, help="Also install or check Docker.")

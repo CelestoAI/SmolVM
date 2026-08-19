@@ -37,6 +37,7 @@ import sys
 import time
 from collections.abc import Iterator
 from contextlib import asynccontextmanager, contextmanager, suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
 from uuid import uuid4
@@ -103,12 +104,35 @@ DEFAULT_DATA_DIR_ENV = "SMOLVM_DATA_DIR"
 DEFAULT_SYSTEM_DATA_DIR = Path("/var/lib/smolvm")
 DEFAULT_SOCKET_DIR = Path("/tmp")
 
+# Marks a per-VM disk that outlives its VM row on purpose, so the reclaim
+# sweep can tell a deliberately kept disk from a leaked one.
+RETAINED_DISK_MARKER_SUFFIX = ".retained"
+
 # Backend-specific defaults
 QEMU_GUEST_IP = "10.0.2.15"
 _MIB = 1024 * 1024
 LIBKRUN_GUEST_IP = "192.168.127.2"
 LIBKRUN_GATEWAY_IP = "192.168.127.1"
 _QEMU_VSOCK_CID_RE = re.compile(r"vhost-vsock-(?:pci|device),guest-cid=(\d+)")
+
+
+@dataclass(frozen=True)
+class LeftoverArtifact:
+    """A file left behind by a sandbox that no longer exists."""
+
+    vm_id: str
+    path: Path
+    size_bytes: int
+    kind: str  # "disk" or "log"
+    retained: bool = False
+
+
+def _file_size(path: Path) -> int:
+    """Return a file's size, or 0 when it cannot be read."""
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
 
 
 def _linux_os_release_ids(os_release_path: Path = Path("/etc/os-release")) -> set[str]:
@@ -1019,6 +1043,9 @@ class SmolVMManager:
                 config.vm_id,
                 instance_rootfs,
             )
+
+        # A VM row owns this disk again, so it is no longer a kept leftover.
+        self._clear_retained_marker(instance_rootfs)
 
         return config.model_copy(
             update={"rootfs_path": instance_rootfs, "rootfs_format": materialized_format}
@@ -2022,7 +2049,10 @@ class SmolVMManager:
                     effective_config = self._resize_materialized_rootfs(effective_config)
                     self._materialize_firmware(effective_config)
                 self._discard_existing_managed_disk_backup(managed_disk_backup)
-            except Exception:
+            except BaseException:
+                # BaseException, not Exception: a Ctrl-C here lands between the
+                # disk being written and the VM row existing, and a disk with no
+                # row can never be found again.
                 self._restore_existing_managed_disk_backup(managed_disk_backup)
                 if vm_record_created:
                     with suppress(Exception):
@@ -2190,8 +2220,9 @@ class SmolVMManager:
             )
             return vm_info
 
-        except Exception as e:
-            # Rollback on failure
+        except BaseException as e:
+            # Rollback on failure, including Ctrl-C: the VM row is about to go,
+            # so its disk has to go with it.
             logger.error("Failed to create VM %s: %s", effective_config.vm_id, e)
             self._cleanup_resources(
                 effective_config.vm_id,
@@ -3633,6 +3664,12 @@ class SmolVMManager:
     ) -> None:
         """Clean up resources for a VM.
 
+        Host teardown (network, leases, sockets) and artifact removal (disk,
+        firmware, runtime log) run as two independent steps on purpose. The
+        callers delete the VM row whatever cleanup manages to do, and a disk
+        with no row is unreachable, so a failing host step must never cost
+        the caller their disk.
+
         Args:
             vm_id: The VM identifier.
             preserve_managed_disk: Keep the managed disk during create rollback
@@ -3640,175 +3677,460 @@ class SmolVMManager:
             require_bridge_cleanup: Abort deletion and retain state when an owned
                 bridge interface cannot be removed.
         """
+        vm_info = self._vm_info_for_cleanup(vm_id)
         try:
-            vm_info = None
-            with suppress(VMNotFoundError):
-                vm_info = self.state.get_vm(vm_id)
-
-            backend = self.backend
-            if vm_info is not None:
-                with suppress(SmolVMError):
-                    backend = self._backend_for_vm(vm_info)
-
-            lease = self.state.get_ip_lease(vm_id)
-
-            # Check for a bridge-mode TAP allocation (no IP lease).
-            tap_alloc = self.state.get_tap_allocation(vm_id)
-
-            ssh_host_port: int | None = None
-            guest_ip: str | None = lease[0] if lease else None
-            if vm_info and vm_info.network:
-                ssh_host_port = vm_info.network.ssh_host_port
-                guest_ip = vm_info.network.guest_ip
-            else:
-                ssh_host_port = self.state.get_ssh_port(vm_id)
-
-            # Determine if this is a bridge-mode VM.
-            is_bridge = (
-                vm_info is not None
-                and vm_info.network is not None
-                and vm_info.network.mode == "bridge"
-            ) or (tap_alloc is not None and tap_alloc[1] == "bridge")
-
-            # Firecracker and QEMU-on-TAP both provision host TAP/NAT/ssh-forward
-            # resources; slirp-mode QEMU and libkrun do not. When vm_info is gone
-            # (early-failure cleanup) the IP lease or TAP allocation is the
-            # definitive tell that a TAP existed.
-            if vm_info is not None:
-                uses_tap = self._uses_host_tap_networking(vm_info.config, backend)
-            else:
-                uses_tap = lease is not None or tap_alloc is not None
-
-            # Bridge mode: clean up TAP and TAP allocation only.
-            # No NAT, route, SSH forward, or egress rules to remove.
-            if is_bridge:
-                tap_device = tap_alloc[0] if tap_alloc else None
-                if tap_device is None and vm_info is not None and vm_info.network is not None:
-                    tap_device = vm_info.network.tap_device
-                if tap_device:
-                    try:
-                        self.network.cleanup_bridged_tap(tap_device, vm_id)
-                    except BridgeTapOwnershipError as exc:
-                        # The reservation is stale and the foreign replacement
-                        # must survive. It is safe to forget only this stale name.
-                        logger.warning(
-                            "Did not remove foreign bridge interface %s for %s: %s",
-                            tap_device,
-                            vm_id,
-                            exc,
-                        )
-                        if tap_alloc:
-                            self.state.release_tap_name(vm_id)
-                    except Exception:
-                        # Keep both the VM row and allocation so a later delete
-                        # can retry ownership-checked cleanup.
-                        if require_bridge_cleanup:
-                            raise
-                        logger.warning(
-                            "Could not remove owned bridge interface %s for %s; "
-                            "retaining its reservation",
-                            tap_device,
-                            vm_id,
-                        )
-                    else:
-                        if tap_alloc:
-                            self.state.release_tap_name(vm_id)
-            else:
-                # NAT mode cleanup
-                if uses_tap and ssh_host_port is not None and guest_ip:
-                    with suppress(Exception):
-                        self.network.cleanup_ssh_port_forward(
-                            vm_id=vm_id,
-                            guest_ip=guest_ip,
-                            host_port=ssh_host_port,
-                        )
-
-                # Reconnect flows may not have in-memory local-forward state.
-                # Always remove any persisted localhost forwarding rules by vm_id.
-                with suppress(Exception):
-                    self.network.cleanup_all_local_port_forwards(vm_id)
-
-                # Get IP lease info
-                if lease:
-                    _, tap_device = lease
-
-                    if uses_tap:
-                        # Tear down host TAP/NAT for backends that provisioned it.
-                        with suppress(Exception):
-                            self.network.remove_egress_rules(tap_device)
-                        self.network.cleanup_nat_rules(tap_device)
-                        self.network.cleanup_tap(tap_device)
-
-                    # Release IP lease regardless of backend.
-                    self.state.release_ip(vm_id)
-
-            if ssh_host_port is not None and not is_bridge:
-                self.state.release_ssh_port(vm_id)
-
-            for socket_path in (
-                self.socket_dir / f"fc-{vm_id}.sock",
-                self.socket_dir / f"qmp-{vm_id}.sock",
-            ):
-                if socket_path.exists():
-                    self._unlink_socket(socket_path)
-
-            self._close_runtime_log(vm_id, BACKEND_FIRECRACKER)
-            self._close_runtime_log(vm_id, BACKEND_QEMU)
-            self._close_runtime_log(vm_id, BACKEND_LIBKRUN)
-            self._close_runtime_log(vm_id, BACKEND_VZ)
-
-            managed_disk = self._managed_disk_for_vm(vm_info)
-            if managed_disk and managed_disk.exists():
-                if preserve_managed_disk or vm_info.config.retain_disk_on_delete:
-                    logger.info(
-                        "Retaining isolated disk for VM %s at %s",
-                        vm_id,
-                        managed_disk,
-                    )
-                else:
-                    managed_sidecars = self._managed_disk_backing_sidecars(managed_disk)
-                    with suppress(Exception):
-                        managed_disk.unlink()
-                        logger.info("Removed isolated disk for VM %s: %s", vm_id, managed_disk)
-                    for sidecar in managed_sidecars:
-                        with suppress(Exception):
-                            sidecar.unlink()
-                            logger.info(
-                                "Removed isolated disk sidecar for VM %s: %s",
-                                vm_id,
-                                sidecar,
-                            )
-
-            # Per-VM firmware state (OVMF NVRAM + swtpm). Coupled to the
-            # disk lifecycle — kept iff retain_disk_on_delete is set so
-            # Secure Boot enrollment persists for a later VM with the
-            # same ID.
-            firmware_state = self.data_dir / "firmware" / vm_id
-            if firmware_state.exists():
-                retain = vm_info is not None and vm_info.config.retain_disk_on_delete
-                if retain:
-                    logger.info(
-                        "Retaining per-VM firmware state for VM %s at %s",
-                        vm_id,
-                        firmware_state,
-                    )
-                else:
-                    with suppress(Exception):
-                        shutil.rmtree(firmware_state)
-                        logger.info(
-                            "Removed per-VM firmware state for VM %s: %s",
-                            vm_id,
-                            firmware_state,
-                        )
-
+            self._cleanup_host_resources(
+                vm_id,
+                vm_info,
+                require_bridge_cleanup=require_bridge_cleanup,
+            )
         except Exception as e:
             logger.warning("Error during cleanup for %s: %s", vm_id, e)
             if require_bridge_cleanup:
+                # The VM row and its disk must survive so a later delete can
+                # retry the ownership-checked bridge teardown.
                 raise
+        self._cleanup_vm_artifacts(
+            vm_id,
+            vm_info,
+            preserve_managed_disk=preserve_managed_disk,
+        )
 
-    # ==================================================================
-    # Async lifecycle methods
-    #
+    @contextmanager
+    def _cleanup_step(self, vm_id: str, description: str) -> Iterator[None]:
+        """Run one teardown step, logging and continuing when it fails.
+
+        Cleanup is a list of independent releases. One that fails must not
+        skip the others, because the caller drops the VM row regardless and
+        nothing else knows to retry them.
+        """
+        try:
+            yield
+        except Exception as exc:  # noqa: BLE001 - one failed step must not skip the rest
+            logger.warning("Could not %s for %s: %s", description, vm_id, exc)
+
+    def _vm_info_for_cleanup(self, vm_id: str) -> VMInfo | None:
+        """Return the VM row to clean up, or None when it is already gone."""
+        try:
+            return self.state.get_vm(vm_id)
+        except VMNotFoundError:
+            return None
+        except Exception as exc:  # noqa: BLE001 - inventory faults must not block cleanup
+            logger.warning("Could not read the VM row for %s during cleanup: %s", vm_id, exc)
+            return None
+
+    def _cleanup_host_resources(
+        self,
+        vm_id: str,
+        vm_info: VMInfo | None,
+        *,
+        require_bridge_cleanup: bool = False,
+    ) -> None:
+        """Release host-side resources: network, leases, sockets, log handles."""
+        backend = self.backend
+        if vm_info is not None:
+            with suppress(SmolVMError):
+                backend = self._backend_for_vm(vm_info)
+
+        lease = self.state.get_ip_lease(vm_id)
+
+        # Check for a bridge-mode TAP allocation (no IP lease).
+        tap_alloc = self.state.get_tap_allocation(vm_id)
+
+        ssh_host_port: int | None = None
+        guest_ip: str | None = lease[0] if lease else None
+        if vm_info and vm_info.network:
+            ssh_host_port = vm_info.network.ssh_host_port
+            guest_ip = vm_info.network.guest_ip
+        else:
+            ssh_host_port = self.state.get_ssh_port(vm_id)
+
+        # Determine if this is a bridge-mode VM.
+        is_bridge = (
+            vm_info is not None and vm_info.network is not None and vm_info.network.mode == "bridge"
+        ) or (tap_alloc is not None and tap_alloc[1] == "bridge")
+
+        # Firecracker and QEMU-on-TAP both provision host TAP/NAT/ssh-forward
+        # resources; slirp-mode QEMU and libkrun do not. When vm_info is gone
+        # (early-failure cleanup) the IP lease or TAP allocation is the
+        # definitive tell that a TAP existed.
+        if vm_info is not None:
+            uses_tap = self._uses_host_tap_networking(vm_info.config, backend)
+        else:
+            uses_tap = lease is not None or tap_alloc is not None
+
+        # Bridge mode: clean up TAP and TAP allocation only.
+        # No NAT, route, SSH forward, or egress rules to remove.
+        if is_bridge:
+            tap_device = tap_alloc[0] if tap_alloc else None
+            if tap_device is None and vm_info is not None and vm_info.network is not None:
+                tap_device = vm_info.network.tap_device
+            if tap_device:
+                try:
+                    self.network.cleanup_bridged_tap(tap_device, vm_id)
+                except BridgeTapOwnershipError as exc:
+                    # The reservation is stale and the foreign replacement
+                    # must survive. It is safe to forget only this stale name.
+                    logger.warning(
+                        "Did not remove foreign bridge interface %s for %s: %s",
+                        tap_device,
+                        vm_id,
+                        exc,
+                    )
+                    if tap_alloc:
+                        self.state.release_tap_name(vm_id)
+                except Exception:
+                    # Keep both the VM row and allocation so a later delete
+                    # can retry ownership-checked cleanup.
+                    if require_bridge_cleanup:
+                        raise
+                    logger.warning(
+                        "Could not remove owned bridge interface %s for %s; "
+                        "retaining its reservation",
+                        tap_device,
+                        vm_id,
+                    )
+                else:
+                    if tap_alloc:
+                        self.state.release_tap_name(vm_id)
+        else:
+            # NAT mode cleanup
+            if uses_tap and ssh_host_port is not None and guest_ip:
+                with suppress(Exception):
+                    self.network.cleanup_ssh_port_forward(
+                        vm_id=vm_id,
+                        guest_ip=guest_ip,
+                        host_port=ssh_host_port,
+                    )
+
+            # Reconnect flows may not have in-memory local-forward state.
+            # Always remove any persisted localhost forwarding rules by vm_id.
+            with suppress(Exception):
+                self.network.cleanup_all_local_port_forwards(vm_id)
+
+            # Get IP lease info
+            if lease:
+                _, tap_device = lease
+
+                if uses_tap:
+                    # Tear down host TAP/NAT for backends that provisioned it.
+                    with suppress(Exception):
+                        self.network.remove_egress_rules(tap_device)
+                    with self._cleanup_step(vm_id, "remove host network rules"):
+                        self.network.cleanup_nat_rules(tap_device)
+                    with self._cleanup_step(vm_id, "remove the host network device"):
+                        self.network.cleanup_tap(tap_device)
+
+                # Release IP lease regardless of backend.
+                with self._cleanup_step(vm_id, "release the IP address"):
+                    self.state.release_ip(vm_id)
+
+        if ssh_host_port is not None and not is_bridge:
+            with self._cleanup_step(vm_id, "release the SSH port"):
+                self.state.release_ssh_port(vm_id)
+
+        for socket_path in (
+            self.socket_dir / f"fc-{vm_id}.sock",
+            self.socket_dir / f"qmp-{vm_id}.sock",
+        ):
+            if socket_path.exists():
+                with self._cleanup_step(vm_id, "remove the control socket"):
+                    self._unlink_socket(socket_path)
+
+        self._close_runtime_log(vm_id, BACKEND_FIRECRACKER)
+        self._close_runtime_log(vm_id, BACKEND_QEMU)
+        self._close_runtime_log(vm_id, BACKEND_LIBKRUN)
+        self._close_runtime_log(vm_id, BACKEND_VZ)
+
+    def _cleanup_vm_artifacts(
+        self,
+        vm_id: str,
+        vm_info: VMInfo | None,
+        *,
+        preserve_managed_disk: bool = False,
+    ) -> None:
+        """Remove the on-disk artifacts a VM owns: disk, firmware, runtime log.
+
+        Each artifact is removed independently so one failure cannot strand
+        the rest. Safe to call for a VM whose row is already gone: the disk
+        path is derivable from the VM ID, which is what makes
+        ``smolvm sandbox delete <id>`` able to reclaim a leaked disk.
+        """
+        retain_requested = vm_info is not None and vm_info.config.retain_disk_on_delete
+
+        for managed_disk in self._managed_disks_for_cleanup(vm_id, vm_info):
+            if not managed_disk.exists():
+                continue
+            if retain_requested:
+                self._mark_disk_retained(managed_disk)
+                logger.info("Retaining isolated disk for VM %s at %s", vm_id, managed_disk)
+            elif preserve_managed_disk or self._retained_marker_path(managed_disk).exists():
+                logger.info("Retaining isolated disk for VM %s at %s", vm_id, managed_disk)
+            else:
+                self._remove_managed_disk(vm_id, managed_disk)
+
+        # Per-VM firmware state (OVMF NVRAM + swtpm). Coupled to the
+        # disk lifecycle - kept iff retain_disk_on_delete is set so
+        # Secure Boot enrollment persists for a later VM with the
+        # same ID.
+        firmware_state = self.data_dir / "firmware" / vm_id
+        if firmware_state.exists():
+            if retain_requested:
+                logger.info(
+                    "Retaining per-VM firmware state for VM %s at %s",
+                    vm_id,
+                    firmware_state,
+                )
+            else:
+                with suppress(Exception):
+                    shutil.rmtree(firmware_state)
+                    logger.info(
+                        "Removed per-VM firmware state for VM %s: %s",
+                        vm_id,
+                        firmware_state,
+                    )
+
+        # The runtime log belongs to this VM alone and nothing else reads it
+        # once the VM is gone.
+        with suppress(Exception):
+            runtime_log = self.data_dir / f"{vm_id}.log"
+            if runtime_log.is_file():
+                runtime_log.unlink()
+                logger.info("Removed runtime log for VM %s: %s", vm_id, runtime_log)
+
+    def _managed_disks_for_cleanup(self, vm_id: str, vm_info: VMInfo | None) -> list[Path]:
+        """Return the managed disks that cleanup owns for this VM."""
+        if vm_info is not None:
+            managed_disk = self._managed_disk_for_vm(vm_info)
+            return [managed_disk] if managed_disk else []
+        # No row: fall back to the deterministic per-VM disk names so a disk
+        # orphaned by a crash or a failed teardown is still reclaimable.
+        return self._instance_disk_paths_for_id(vm_id)
+
+    def _instance_disk_paths_for_id(self, vm_id: str) -> list[Path]:
+        """Return existing managed disks named after *vm_id*, whatever the format."""
+        paths = []
+        for suffix in (".qcow2", ".ext4"):
+            candidate = self.disk_dir / f"{vm_id}{suffix}"
+            if candidate.is_file():
+                paths.append(candidate)
+        return paths
+
+    @staticmethod
+    def _retained_marker_path(managed_disk: Path) -> Path:
+        """Return the marker that flags a disk as deliberately kept."""
+        return managed_disk.with_name(f"{managed_disk.name}{RETAINED_DISK_MARKER_SUFFIX}")
+
+    def _mark_disk_retained(self, managed_disk: Path) -> None:
+        """Record that this disk outlives its VM row on purpose.
+
+        Without the marker a retained disk is indistinguishable from a leaked
+        one, so the reclaim sweep would delete state the user asked to keep.
+        """
+        with suppress(OSError):
+            self._retained_marker_path(managed_disk).touch()
+
+    def _clear_retained_marker(self, managed_disk: Path) -> None:
+        """Drop the retention marker once a VM row owns this disk again."""
+        with suppress(OSError):
+            self._retained_marker_path(managed_disk).unlink(missing_ok=True)
+
+    def _managed_disk_companions(self, managed_disk: Path) -> list[Path]:
+        """Return files that exist only to serve *managed_disk*.
+
+        Backing sidecars, restore staging copies, create-time backups and the
+        retention marker are all named after the disk itself, so they are the
+        disk's to remove.
+        """
+        companions = dict.fromkeys(self._managed_disk_backing_sidecars(managed_disk))
+        with suppress(OSError):
+            for path in sorted(managed_disk.parent.glob(f"{managed_disk.name}.*")):
+                if path.is_file():
+                    companions[path] = None
+        return list(companions)
+
+    # ------------------------------------------------------------------
+    # Reclaiming leftovers
+    # ------------------------------------------------------------------
+
+    def find_leftover_artifacts(self) -> list[LeftoverArtifact]:
+        """Return disks and logs whose sandbox no longer exists.
+
+        A per-VM disk is only reachable through its row in the inventory, so
+        one that outlived its row can never be found by name again. This walks
+        the data directory instead and reports what is safe to delete.
+        """
+        live_ids = {vm.vm_id for vm in self.state.list_vms()}
+        with suppress(Exception):
+            # Browser sandboxes are tracked in their own table; their VMs must
+            # not look like leftovers while a session still owns them.
+            for session in self.state.list_browser_sessions():
+                live_ids.add(session.session_id)
+                if session.vm_id:
+                    live_ids.add(session.vm_id)
+
+        in_use = self._running_process_args()
+
+        leftovers: list[LeftoverArtifact] = []
+        for managed_disk in self._all_managed_disks():
+            vm_id = managed_disk.name.rsplit(".", 1)[0]
+            if vm_id in live_ids:
+                continue
+            if self._path_in_use(managed_disk, in_use):
+                # A sandbox started from an SDK script keeps its inventory in
+                # memory, so the disk of a live VM can look unreferenced here.
+                logger.debug("Skipping in-use disk %s", managed_disk)
+                continue
+            retained = self._retained_marker_path(managed_disk).exists()
+            for path in (managed_disk, *self._managed_disk_companions(managed_disk)):
+                leftovers.append(
+                    LeftoverArtifact(
+                        vm_id=vm_id,
+                        path=path,
+                        size_bytes=_file_size(path),
+                        kind="disk",
+                        retained=retained,
+                    )
+                )
+            log_path = self.data_dir / f"{vm_id}.log"
+            if log_path.is_file():
+                leftovers.append(
+                    LeftoverArtifact(
+                        vm_id=vm_id,
+                        path=log_path,
+                        size_bytes=_file_size(log_path),
+                        kind="log",
+                        retained=retained,
+                    )
+                )
+
+        seen = {leftover.path for leftover in leftovers}
+        for log_path in sorted(self.data_dir.glob("*.log")):
+            vm_id = log_path.name[: -len(".log")]
+            if not log_path.is_file() or log_path in seen or vm_id in live_ids:
+                continue
+            leftovers.append(
+                LeftoverArtifact(
+                    vm_id=vm_id,
+                    path=log_path,
+                    size_bytes=_file_size(log_path),
+                    kind="log",
+                )
+            )
+
+        return sorted(leftovers, key=lambda leftover: (leftover.vm_id, str(leftover.path)))
+
+    def leftover_paths_for_vm(self, vm_id: str) -> list[Path]:
+        """Return files a deleted sandbox would leave behind, by name.
+
+        Cheap enough to call before a delete: it only checks the handful of
+        paths a VM ID can own.
+        """
+        paths = list(self._instance_disk_paths_for_id(vm_id))
+        for managed_disk in list(paths):
+            paths.extend(self._managed_disk_companions(managed_disk))
+        runtime_log = self.data_dir / f"{vm_id}.log"
+        if runtime_log.is_file():
+            paths.append(runtime_log)
+        return paths
+
+    def prune_leftover_artifacts(
+        self,
+        *,
+        include_retained: bool = False,
+        dry_run: bool = False,
+    ) -> list[LeftoverArtifact]:
+        """Delete leftover disks and logs, and return what was removed.
+
+        Disks kept on purpose (``retain_disk_on_delete``) are skipped unless
+        *include_retained* is set.
+        """
+        removable = [
+            leftover
+            for leftover in self.find_leftover_artifacts()
+            if include_retained or not leftover.retained
+        ]
+        if dry_run:
+            return removable
+
+        removed: list[LeftoverArtifact] = []
+        for leftover in removable:
+            try:
+                leftover.path.unlink()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                logger.warning("Could not remove leftover file %s: %s", leftover.path, exc)
+                continue
+            logger.info(
+                "Removed leftover %s for %s: %s", leftover.kind, leftover.vm_id, leftover.path
+            )
+            removed.append(leftover)
+        return removed
+
+    @staticmethod
+    def _path_in_use(path: Path, process_args: str) -> bool:
+        """Return whether a running process names this exact file."""
+        candidates = {str(path)}
+        with suppress(OSError):
+            candidates.add(str(path.resolve()))
+        return any(candidate in process_args for candidate in candidates)
+
+    def _running_process_args(self) -> str:
+        """Return the command lines of running processes, best effort.
+
+        Sandboxes started from an SDK script keep their inventory in memory,
+        so their disks are not in the CLI database. Matching against live
+        hypervisor command lines keeps the reclaim sweep off those disks.
+        """
+        try:
+            result = subprocess.run(
+                ["ps", "-Awwo", "args="],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.warning(
+                "Could not list running processes (%s); "
+                "sandboxes started outside this command may not be detected.",
+                exc,
+            )
+            return ""
+        return result.stdout
+
+    def _all_managed_disks(self) -> list[Path]:
+        """Return every per-VM disk in the disk directory.
+
+        Sidecars are named after their disk (``sbx-a.qcow2.backing-1.qcow2``)
+        and VM IDs never contain a dot, so a single dot marks a real disk.
+        """
+        disks: list[Path] = []
+        with suppress(OSError):
+            for path in sorted(self.disk_dir.iterdir()):
+                if not path.is_file():
+                    continue
+                stem, dot, suffix = path.name.partition(".")
+                if dot and stem and suffix in {"qcow2", "ext4"}:
+                    disks.append(path)
+        return disks
+
+    def _remove_managed_disk(self, vm_id: str, managed_disk: Path) -> None:
+        """Remove a managed disk and every file that only serves it."""
+        companions = self._managed_disk_companions(managed_disk)
+        with suppress(Exception):
+            managed_disk.unlink()
+            logger.info("Removed isolated disk for VM %s: %s", vm_id, managed_disk)
+        for companion in companions:
+            with suppress(Exception):
+                companion.unlink()
+                logger.info(
+                    "Removed isolated disk sidecar for VM %s: %s",
+                    vm_id,
+                    companion,
+                )
+
     # Each async method mirrors its sync counterpart, replacing blocking
     # subprocess calls and time.sleep() with asyncio equivalents.
     # ==================================================================
@@ -3893,7 +4215,8 @@ class SmolVMManager:
                     self._discard_existing_managed_disk_backup,
                     managed_disk_backup,
                 )
-            except Exception:
+            except BaseException:
+                # See create(): Ctrl-C must not strand an unreferenced disk.
                 await asyncio.to_thread(
                     self._restore_existing_managed_disk_backup,
                     managed_disk_backup,
@@ -4038,7 +4361,8 @@ class SmolVMManager:
 
             return vm_info
 
-        except Exception as e:
+        except BaseException as e:
+            # See create(): roll back on Ctrl-C too.
             logger.error("Failed to create VM %s: %s", effective_config.vm_id, e)
             await self._async_cleanup_resources(
                 effective_config.vm_id,
@@ -4205,6 +4529,9 @@ class SmolVMManager:
             else:
                 await self._async_copy_with_reflink(config.rootfs_path, instance_rootfs)
 
+        # A VM row owns this disk again, so it is no longer a kept leftover.
+        self._clear_retained_marker(instance_rootfs)
+
         return config.model_copy(
             update={"rootfs_path": instance_rootfs, "rootfs_format": materialized_format}
         )
@@ -4318,149 +4645,128 @@ class SmolVMManager:
         require_bridge_cleanup: bool = False,
     ) -> None:
         """Async version of :meth:`_cleanup_resources`."""
+        vm_info = self._vm_info_for_cleanup(vm_id)
         try:
-            vm_info = None
-            with suppress(VMNotFoundError):
-                vm_info = self.state.get_vm(vm_id)
-
-            backend = self.backend
-            if vm_info is not None:
-                with suppress(SmolVMError):
-                    backend = self._backend_for_vm(vm_info)
-
-            lease = self.state.get_ip_lease(vm_id)
-
-            tap_alloc = self.state.get_tap_allocation(vm_id)
-
-            ssh_host_port: int | None = None
-            guest_ip: str | None = lease[0] if lease else None
-            if vm_info and vm_info.network:
-                ssh_host_port = vm_info.network.ssh_host_port
-                guest_ip = vm_info.network.guest_ip
-            else:
-                ssh_host_port = self.state.get_ssh_port(vm_id)
-
-            is_bridge = (
-                vm_info is not None
-                and vm_info.network is not None
-                and vm_info.network.mode == "bridge"
-            ) or (tap_alloc is not None and tap_alloc[1] == "bridge")
-
-            # See the sync cleanup path for the TAP-vs-slirp rationale.
-            if vm_info is not None:
-                uses_tap = self._uses_host_tap_networking(vm_info.config, backend)
-            else:
-                uses_tap = lease is not None or tap_alloc is not None
-
-            if is_bridge:
-                tap_device = tap_alloc[0] if tap_alloc else None
-                if tap_device is None and vm_info is not None and vm_info.network is not None:
-                    tap_device = vm_info.network.tap_device
-                if tap_device:
-                    try:
-                        await self.network.async_cleanup_bridged_tap(tap_device, vm_id)
-                    except BridgeTapOwnershipError as exc:
-                        logger.warning(
-                            "Did not remove foreign bridge interface %s for %s: %s",
-                            tap_device,
-                            vm_id,
-                            exc,
-                        )
-                        if tap_alloc:
-                            self.state.release_tap_name(vm_id)
-                    except Exception:
-                        if require_bridge_cleanup:
-                            raise
-                        logger.warning(
-                            "Could not remove owned bridge interface %s for %s; "
-                            "retaining its reservation",
-                            tap_device,
-                            vm_id,
-                        )
-                    else:
-                        if tap_alloc:
-                            self.state.release_tap_name(vm_id)
-            else:
-                if uses_tap and ssh_host_port is not None and guest_ip:
-                    with suppress(Exception):
-                        await self.network.async_cleanup_ssh_port_forward(
-                            vm_id=vm_id,
-                            guest_ip=guest_ip,
-                            host_port=ssh_host_port,
-                        )
-
-                with suppress(Exception):
-                    await self.network.async_cleanup_all_local_port_forwards(vm_id)
-
-                if lease:
-                    _, tap_device = lease
-
-                    if uses_tap:
-                        with suppress(Exception):
-                            await self.network.async_remove_egress_rules(tap_device)
-                        await self.network.async_cleanup_nat_rules(tap_device)
-                        await self.network.async_cleanup_tap(tap_device)
-
-                    self.state.release_ip(vm_id)
-
-            if ssh_host_port is not None and not is_bridge:
-                self.state.release_ssh_port(vm_id)
-
-            for socket_path in (
-                self.socket_dir / f"fc-{vm_id}.sock",
-                self.socket_dir / f"qmp-{vm_id}.sock",
-            ):
-                if socket_path.exists():
-                    await self._async_unlink_socket(socket_path)
-
-            self._close_runtime_log(vm_id, BACKEND_FIRECRACKER)
-            self._close_runtime_log(vm_id, BACKEND_QEMU)
-            self._close_runtime_log(vm_id, BACKEND_LIBKRUN)
-            self._close_runtime_log(vm_id, BACKEND_VZ)
-
-            managed_disk = self._managed_disk_for_vm(vm_info)
-            if managed_disk and managed_disk.exists():
-                if preserve_managed_disk or vm_info.config.retain_disk_on_delete:
-                    logger.info("Retaining isolated disk for VM %s at %s", vm_id, managed_disk)
-                else:
-                    managed_sidecars = await asyncio.to_thread(
-                        self._managed_disk_backing_sidecars,
-                        managed_disk,
-                    )
-                    with suppress(Exception):
-                        managed_disk.unlink()
-                        logger.info("Removed isolated disk for VM %s: %s", vm_id, managed_disk)
-                    for sidecar in managed_sidecars:
-                        with suppress(Exception):
-                            sidecar.unlink()
-                            logger.info(
-                                "Removed isolated disk sidecar for VM %s: %s",
-                                vm_id,
-                                sidecar,
-                            )
-
-            # Per-VM firmware state (OVMF NVRAM + swtpm). Mirrors the sync
-            # _cleanup_resources path so async_delete() doesn't leave
-            # Windows-guest firmware behind.
-            firmware_state = self.data_dir / "firmware" / vm_id
-            if firmware_state.exists():
-                retain = vm_info is not None and vm_info.config.retain_disk_on_delete
-                if retain:
-                    logger.info(
-                        "Retaining per-VM firmware state for VM %s at %s",
-                        vm_id,
-                        firmware_state,
-                    )
-                else:
-                    with suppress(Exception):
-                        shutil.rmtree(firmware_state)
-                        logger.info(
-                            "Removed per-VM firmware state for VM %s: %s",
-                            vm_id,
-                            firmware_state,
-                        )
-
+            await self._async_cleanup_host_resources(
+                vm_id,
+                vm_info,
+                require_bridge_cleanup=require_bridge_cleanup,
+            )
         except Exception as e:
             logger.warning("Error during async cleanup for %s: %s", vm_id, e)
             if require_bridge_cleanup:
+                # See :meth:`_cleanup_resources`: the row and disk must
+                # survive so a later delete can retry bridge teardown.
                 raise
+        await asyncio.to_thread(
+            self._cleanup_vm_artifacts,
+            vm_id,
+            vm_info,
+            preserve_managed_disk=preserve_managed_disk,
+        )
+
+    async def _async_cleanup_host_resources(
+        self,
+        vm_id: str,
+        vm_info: VMInfo | None,
+        *,
+        require_bridge_cleanup: bool = False,
+    ) -> None:
+        """Async version of :meth:`_cleanup_host_resources`."""
+        backend = self.backend
+        if vm_info is not None:
+            with suppress(SmolVMError):
+                backend = self._backend_for_vm(vm_info)
+
+        lease = self.state.get_ip_lease(vm_id)
+
+        tap_alloc = self.state.get_tap_allocation(vm_id)
+
+        ssh_host_port: int | None = None
+        guest_ip: str | None = lease[0] if lease else None
+        if vm_info and vm_info.network:
+            ssh_host_port = vm_info.network.ssh_host_port
+            guest_ip = vm_info.network.guest_ip
+        else:
+            ssh_host_port = self.state.get_ssh_port(vm_id)
+
+        is_bridge = (
+            vm_info is not None and vm_info.network is not None and vm_info.network.mode == "bridge"
+        ) or (tap_alloc is not None and tap_alloc[1] == "bridge")
+
+        # See the sync cleanup path for the TAP-vs-slirp rationale.
+        if vm_info is not None:
+            uses_tap = self._uses_host_tap_networking(vm_info.config, backend)
+        else:
+            uses_tap = lease is not None or tap_alloc is not None
+
+        if is_bridge:
+            tap_device = tap_alloc[0] if tap_alloc else None
+            if tap_device is None and vm_info is not None and vm_info.network is not None:
+                tap_device = vm_info.network.tap_device
+            if tap_device:
+                try:
+                    await self.network.async_cleanup_bridged_tap(tap_device, vm_id)
+                except BridgeTapOwnershipError as exc:
+                    logger.warning(
+                        "Did not remove foreign bridge interface %s for %s: %s",
+                        tap_device,
+                        vm_id,
+                        exc,
+                    )
+                    if tap_alloc:
+                        self.state.release_tap_name(vm_id)
+                except Exception:
+                    if require_bridge_cleanup:
+                        raise
+                    logger.warning(
+                        "Could not remove owned bridge interface %s for %s; "
+                        "retaining its reservation",
+                        tap_device,
+                        vm_id,
+                    )
+                else:
+                    if tap_alloc:
+                        self.state.release_tap_name(vm_id)
+        else:
+            if uses_tap and ssh_host_port is not None and guest_ip:
+                with suppress(Exception):
+                    await self.network.async_cleanup_ssh_port_forward(
+                        vm_id=vm_id,
+                        guest_ip=guest_ip,
+                        host_port=ssh_host_port,
+                    )
+
+            with suppress(Exception):
+                await self.network.async_cleanup_all_local_port_forwards(vm_id)
+
+            if lease:
+                _, tap_device = lease
+
+                if uses_tap:
+                    with suppress(Exception):
+                        await self.network.async_remove_egress_rules(tap_device)
+                    with self._cleanup_step(vm_id, "remove host network rules"):
+                        await self.network.async_cleanup_nat_rules(tap_device)
+                    with self._cleanup_step(vm_id, "remove the host network device"):
+                        await self.network.async_cleanup_tap(tap_device)
+
+                with self._cleanup_step(vm_id, "release the IP address"):
+                    self.state.release_ip(vm_id)
+
+        if ssh_host_port is not None and not is_bridge:
+            with self._cleanup_step(vm_id, "release the SSH port"):
+                self.state.release_ssh_port(vm_id)
+
+        for socket_path in (
+            self.socket_dir / f"fc-{vm_id}.sock",
+            self.socket_dir / f"qmp-{vm_id}.sock",
+        ):
+            if socket_path.exists():
+                with self._cleanup_step(vm_id, "remove the control socket"):
+                    await self._async_unlink_socket(socket_path)
+
+        self._close_runtime_log(vm_id, BACKEND_FIRECRACKER)
+        self._close_runtime_log(vm_id, BACKEND_QEMU)
+        self._close_runtime_log(vm_id, BACKEND_LIBKRUN)
+        self._close_runtime_log(vm_id, BACKEND_VZ)

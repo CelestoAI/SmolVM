@@ -27,6 +27,7 @@ Run these in the order you need them:
 | `smolvm sandbox start` / `stop` | Start or stop a sandbox. |
 | `smolvm sandbox pause` / `resume` | Temporarily freeze and continue a running sandbox. |
 | `smolvm sandbox delete` | Remove one or more sandboxes. |
+| `smolvm sandbox prune` | Delete files left behind by sandboxes that no longer exist. Add `--dry-run` to see what would go first. |
 
 ### Sandbox data and connections
 
