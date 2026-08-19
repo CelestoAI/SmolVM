@@ -19,7 +19,7 @@ from __future__ import annotations
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from rich.panel import Panel
@@ -81,6 +81,7 @@ class PruneResult:
     kept: list[LeftoverEntry]
     freed_bytes: int
     dry_run: bool = False
+    failed: list[LeftoverEntry] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -468,6 +469,16 @@ def _render_prune(result: PruneResult) -> None:
             )
         )
 
+    if result.failed:
+        console.print(
+            Panel.fit(
+                f"Could not delete {len(result.failed)} file(s):\n"
+                + "\n".join(entry.path for entry in result.failed),
+                title="Left in place",
+                border_style="red",
+            )
+        )
+
     if not result.removed:
         render_empty("Prune", "Nothing to clean up.")
         return
@@ -537,25 +548,30 @@ def run_prune_sandboxes(
                     return 0
 
             removed = candidates
+            failed: list[LeftoverEntry] = []
             if not dry_run and candidates:
                 removed = [
                     _to_entry(artifact)
                     for artifact in sdk.prune_leftover_artifacts(include_retained=include_retained)
                 ]
                 freed_bytes = sum(entry.size_bytes for entry in removed)
+                gone = {entry.path for entry in removed}
+                failed = [entry for entry in candidates if entry.path not in gone]
 
             result = PruneResult(
                 removed=removed,
                 kept=kept,
                 freed_bytes=freed_bytes,
                 dry_run=dry_run,
+                failed=failed,
             )
+            exit_code = 1 if failed else 0
 
             if json_output:
-                emit_json(command_name, 0, data=asdict(result))
+                emit_json(command_name, exit_code, data=asdict(result))
             else:
                 _render_prune(result)
-            return 0
+            return exit_code
     except Exception as exc:
         if json_output:
             emit_error(command_name, exit_code=1, **_error_payload(exc))

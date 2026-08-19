@@ -138,6 +138,7 @@ class TestFailedTeardownKeepsNoDisk:
 
         manager.delete("sbx-disk")
 
+        manager.network.cleanup_nat_rules.assert_called_once()
         assert manager.state.get_ssh_port("sbx-disk") is None
         assert manager.state.get_ip_lease("sbx-disk") is None
         assert not _disk(manager).exists()
@@ -257,6 +258,27 @@ class TestReclaimingDisksWithoutRows:
         assert disk.exists()
         assert not marker.exists()
 
+    def test_failed_create_leaves_a_saved_disk_still_marked(
+        self,
+        manager: SmolVMManager,
+        config: VMConfig,
+    ) -> None:
+        """A create that reuses a saved disk and then fails must not unmark it."""
+        saved = config.model_copy(update={"retain_disk_on_delete": True})
+        manager.create(saved)
+        disk = _disk(manager)
+        marker = disk.with_name(f"{disk.name}.retained")
+        manager.delete("sbx-disk")
+        assert marker.exists()
+
+        manager.network.prepare_tap_device.side_effect = SmolVMError("no sudo")
+        with pytest.raises(SmolVMError, match="no sudo"):
+            manager.create(config)
+
+        assert disk.exists()
+        assert marker.exists()
+        assert manager.prune_leftover_artifacts() == []
+
     def test_delete_removes_the_runtime_log(
         self,
         manager: SmolVMManager,
@@ -341,6 +363,23 @@ class TestLeftoverSweep:
             return_value=f"qemu-system-aarch64 -drive file={_disk(manager)},if=virtio",
         ):
             assert manager.find_leftover_artifacts() == []
+
+        assert _disk(manager).exists()
+
+    def test_refuses_to_sweep_when_running_sandboxes_cannot_be_listed(
+        self,
+        manager: SmolVMManager,
+        config: VMConfig,
+    ) -> None:
+        """Without that check the sweep could delete a live sandbox's disk."""
+        manager.create(config)
+        manager.state.delete_vm("sbx-disk")
+
+        with (
+            patch.object(SmolVMManager, "_running_process_args", return_value=None),
+            pytest.raises(SmolVMError, match="Cannot check which sandboxes are running"),
+        ):
+            manager.prune_leftover_artifacts()
 
         assert _disk(manager).exists()
 

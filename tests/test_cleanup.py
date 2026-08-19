@@ -510,6 +510,25 @@ class TestSandboxPrune:
         assert payload["data"]["removed"][0]["vm_id"] == "sbx-gone"
         assert payload["data"]["freed_bytes"] == 1024
 
+    def test_prune_reports_files_it_could_not_delete(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """A file that would not go must not be reported as a clean sweep."""
+        sdk = mock_sdk_cls
+        stubborn = self._leftover("sbx-gone", "sbx-gone.qcow2")
+        removed = self._leftover("sbx-gone", "sbx-gone.log", kind="log")
+        sdk.find_leftover_artifacts.return_value = [stubborn, removed]
+        sdk.prune_leftover_artifacts.return_value = [removed]
+
+        ret = run_prune_sandboxes(force=True)
+
+        assert ret == 1
+        out = capsys.readouterr().out
+        assert "Could not delete 1 file(s)" in out
+        assert "sbx-gone.qcow2" in out
+
     def test_cli_wires_prune_command(self) -> None:
         """``smolvm sandbox prune`` reaches the runner with its flags."""
         with patch("smolvm.cli.cleanup.run_prune_sandboxes", return_value=0) as runner:

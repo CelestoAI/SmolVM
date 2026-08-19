@@ -1044,9 +1044,6 @@ class SmolVMManager:
                 instance_rootfs,
             )
 
-        # A VM row owns this disk again, so it is no longer a kept leftover.
-        self._clear_retained_marker(instance_rootfs)
-
         return config.model_copy(
             update={"rootfs_path": instance_rootfs, "rootfs_format": materialized_format}
         )
@@ -2012,6 +2009,10 @@ class SmolVMManager:
             managed_disk_existed = (
                 managed_disk_path.exists() if managed_disk_path is not None else False
             )
+            managed_disk_was_saved = managed_disk_existed and (
+                managed_disk_path is not None
+                and self._retained_marker_path(managed_disk_path).exists()
+            )
             firmware_state = self.data_dir / "firmware" / effective_config.vm_id
             firmware_existed = firmware_state.exists()
             macos_bundle = (
@@ -2045,6 +2046,11 @@ class SmolVMManager:
                 # mutate a retained managed disk without a VM row.
                 self.state.create_vm(effective_config)
                 vm_record_created = True
+                # A row owns this disk again, so it is no longer a kept
+                # leftover. Only now: a create that fails after reusing a
+                # saved disk has to leave it marked as saved.
+                if managed_disk_path is not None:
+                    self._clear_retained_marker(managed_disk_path)
                 if effective_config.guest_os is not GuestOS.MACOS:
                     effective_config = self._resize_materialized_rootfs(effective_config)
                     self._materialize_firmware(effective_config)
@@ -2061,6 +2067,7 @@ class SmolVMManager:
                     managed_disk_path,
                     existed_before=managed_disk_existed,
                 )
+                self._restore_retained_marker(managed_disk_path, managed_disk_was_saved)
                 self._cleanup_unpersisted_firmware(
                     effective_config.vm_id,
                     existed_before=firmware_existed,
@@ -2228,6 +2235,7 @@ class SmolVMManager:
                 effective_config.vm_id,
                 preserve_managed_disk=managed_disk_existed,
             )
+            self._restore_retained_marker(managed_disk_path, managed_disk_was_saved)
             # Delete the VM record that was created
             with suppress(Exception):
                 self.state.delete_vm(effective_config.vm_id)
@@ -3930,6 +3938,17 @@ class SmolVMManager:
         with suppress(OSError):
             self._retained_marker_path(managed_disk).touch()
 
+    def _restore_retained_marker(self, managed_disk: Path | None, was_saved: bool) -> None:
+        """Re-mark a saved disk that a failed create preserved.
+
+        A create clears the mark once a row owns the disk. If that create then
+        fails, the disk survives without its row, so the mark has to come back
+        or the reclaim sweep would treat saved state as a leftover.
+        """
+        if not was_saved or managed_disk is None or not managed_disk.exists():
+            return
+        self._mark_disk_retained(managed_disk)
+
     def _clear_retained_marker(self, managed_disk: Path) -> None:
         """Drop the retention marker once a VM row owns this disk again."""
         with suppress(OSError):
@@ -3970,6 +3989,11 @@ class SmolVMManager:
                     live_ids.add(session.vm_id)
 
         in_use = self._running_process_args()
+        if in_use is None:
+            raise SmolVMError(
+                "Cannot check which sandboxes are running right now, so nothing "
+                "was deleted. Retry 'smolvm sandbox prune' in a moment."
+            )
 
         leftovers: list[LeftoverArtifact] = []
         for managed_disk in self._all_managed_disks():
@@ -4076,12 +4100,13 @@ class SmolVMManager:
             candidates.add(str(path.resolve()))
         return any(candidate in process_args for candidate in candidates)
 
-    def _running_process_args(self) -> str:
-        """Return the command lines of running processes, best effort.
+    def _running_process_args(self) -> str | None:
+        """Return the command lines of running processes, or None on failure.
 
         Sandboxes started from an SDK script keep their inventory in memory,
         so their disks are not in the CLI database. Matching against live
-        hypervisor command lines keeps the reclaim sweep off those disks.
+        hypervisor command lines keeps the reclaim sweep off those disks, so
+        failing to read the list has to stop the sweep rather than widen it.
         """
         try:
             result = subprocess.run(
@@ -4092,12 +4117,11 @@ class SmolVMManager:
                 check=False,
             )
         except (OSError, subprocess.SubprocessError) as exc:
-            logger.warning(
-                "Could not list running processes (%s); "
-                "sandboxes started outside this command may not be detected.",
-                exc,
-            )
-            return ""
+            logger.warning("Could not list running processes: %s", exc)
+            return None
+        if result.returncode != 0:
+            logger.warning("Could not list running processes: %s", (result.stderr or "").strip())
+            return None
         return result.stdout
 
     def _all_managed_disks(self) -> list[Path]:
@@ -4172,6 +4196,10 @@ class SmolVMManager:
             managed_disk_existed = (
                 managed_disk_path.exists() if managed_disk_path is not None else False
             )
+            managed_disk_was_saved = managed_disk_existed and (
+                managed_disk_path is not None
+                and self._retained_marker_path(managed_disk_path).exists()
+            )
             firmware_state = self.data_dir / "firmware" / effective_config.vm_id
             firmware_existed = firmware_state.exists()
             macos_bundle = (
@@ -4204,6 +4232,9 @@ class SmolVMManager:
 
                 self.state.create_vm(effective_config)
                 vm_record_created = True
+                # See create(): clear the mark only once a row owns the disk.
+                if managed_disk_path is not None:
+                    self._clear_retained_marker(managed_disk_path)
                 if effective_config.guest_os is not GuestOS.MACOS:
                     effective_config = await asyncio.to_thread(
                         self._resize_materialized_rootfs,
@@ -4228,6 +4259,7 @@ class SmolVMManager:
                     managed_disk_path,
                     existed_before=managed_disk_existed,
                 )
+                self._restore_retained_marker(managed_disk_path, managed_disk_was_saved)
                 self._cleanup_unpersisted_firmware(
                     effective_config.vm_id,
                     existed_before=firmware_existed,
@@ -4368,6 +4400,7 @@ class SmolVMManager:
                 effective_config.vm_id,
                 preserve_managed_disk=managed_disk_existed,
             )
+            self._restore_retained_marker(managed_disk_path, managed_disk_was_saved)
             with suppress(Exception):
                 self.state.delete_vm(effective_config.vm_id)
             raise
@@ -4528,9 +4561,6 @@ class SmolVMManager:
                 )
             else:
                 await self._async_copy_with_reflink(config.rootfs_path, instance_rootfs)
-
-        # A VM row owns this disk again, so it is no longer a kept leftover.
-        self._clear_retained_marker(instance_rootfs)
 
         return config.model_copy(
             update={"rootfs_path": instance_rootfs, "rootfs_format": materialized_format}
