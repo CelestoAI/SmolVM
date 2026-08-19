@@ -19,8 +19,8 @@ from __future__ import annotations
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING
+from dataclasses import asdict, dataclass, field
+from typing import TYPE_CHECKING, Any
 
 from rich.panel import Panel
 from rich.table import Table
@@ -60,6 +60,28 @@ class DeleteSummary:
     target_count: int
     deleted_count: int
     failed_count: int
+
+
+@dataclass(frozen=True)
+class LeftoverEntry:
+    """One file left behind by a sandbox that no longer exists."""
+
+    vm_id: str
+    path: str
+    kind: str
+    size_bytes: int
+    retained: bool
+
+
+@dataclass(frozen=True)
+class PruneResult:
+    """Structured result for ``smolvm sandbox prune``."""
+
+    removed: list[LeftoverEntry]
+    kept: list[LeftoverEntry]
+    freed_bytes: int
+    dry_run: bool = False
+    failed: list[LeftoverEntry] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -169,6 +191,23 @@ def _render_result(result: DeleteResult, *, command: str, warn_not_root: bool) -
 # ---------------------------------------------------------------------------
 
 
+def _delete_one(sdk: SmolVMManager, vm_id: str) -> None:
+    """Delete a sandbox, treating a reclaimed leftover as a successful delete.
+
+    A sandbox whose inventory row is already gone still owns files on disk.
+    ``delete()`` removes them and then reports the missing row, so only call
+    that a failure when there was nothing left to clean up.
+    """
+    from smolvm.exceptions import VMNotFoundError
+
+    leftovers = sdk.leftover_paths_for_vm(vm_id)
+    try:
+        sdk.delete(vm_id)
+    except VMNotFoundError:
+        if not leftovers or any(path.exists() for path in leftovers):
+            raise
+
+
 def _delete_vms_concurrent(
     sdk: SmolVMManager,
     target_ids: list[str],
@@ -183,7 +222,7 @@ def _delete_vms_concurrent(
     if len(target_ids) == 1:
         vm_id = target_ids[0]
         try:
-            sdk.delete(vm_id)
+            _delete_one(sdk, vm_id)
             deleted.append(vm_id)
         except Exception as exc:
             failed.append(DeleteFailure(vm_id=vm_id, error=str(exc)))
@@ -191,7 +230,7 @@ def _delete_vms_concurrent(
 
     def _do_delete(vm_id: str) -> tuple[str, Exception | None]:
         try:
-            sdk.delete(vm_id)
+            _delete_one(sdk, vm_id)
             return vm_id, None
         except Exception as exc:  # noqa: BLE001
             return vm_id, exc
@@ -363,6 +402,175 @@ def run_cleanup(
             else:
                 _render_result(result, command="delete", warn_not_root=warn_not_root)
 
+            return exit_code
+    except Exception as exc:
+        if json_output:
+            emit_error(command_name, exit_code=1, **_error_payload(exc))
+        else:
+            render_error(f"Error: {exc}")
+        return 1
+
+
+# ---------------------------------------------------------------------------
+# smolvm sandbox prune
+# ---------------------------------------------------------------------------
+
+
+def _format_bytes(size: float) -> str:
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if abs(size) < 1024:
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TiB"
+
+
+def _to_entry(artifact: Any) -> LeftoverEntry:
+    return LeftoverEntry(
+        vm_id=artifact.vm_id,
+        path=str(artifact.path),
+        kind=artifact.kind,
+        size_bytes=artifact.size_bytes,
+        retained=artifact.retained,
+    )
+
+
+def _confirm_prune(entries: list[LeftoverEntry], *, freed_bytes: int) -> bool:
+    """Ask before deleting. Returns False when the user backs out."""
+    console = console_stdout()
+    console.print(
+        f"This will delete [bold]{len(entries)}[/bold] file(s) "
+        f"({_format_bytes(freed_bytes)}) left over from sandboxes that no longer exist."
+    )
+    console.print("[yellow]This action cannot be undone.[/yellow]")
+    try:
+        console.print("Continue? \\[y/N] ", end="")
+        answer = input("").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        console.print("\nAborted.")
+        return False
+    if answer not in {"y", "yes"}:
+        console.print("Aborted.")
+        return False
+    return True
+
+
+def _render_prune(result: PruneResult) -> None:
+    console = console_stdout()
+
+    if result.kept:
+        kept_bytes = sum(entry.size_bytes for entry in result.kept)
+        console.print(
+            Panel.fit(
+                f"Kept {len(result.kept)} file(s) ({_format_bytes(kept_bytes)}) you asked "
+                "SmolVM to save. Run 'smolvm sandbox prune --include-saved' to delete "
+                "those too.",
+                title="Kept",
+                border_style="cyan",
+            )
+        )
+
+    if result.failed:
+        console.print(
+            Panel.fit(
+                f"Could not delete {len(result.failed)} file(s):\n"
+                + "\n".join(entry.path for entry in result.failed),
+                title="Left in place",
+                border_style="red",
+            )
+        )
+
+    if not result.removed:
+        render_empty("Prune", "Nothing to clean up.")
+        return
+
+    table = Table(
+        title=f"{'Would remove' if result.dry_run else 'Removed'} ({len(result.removed)})"
+    )
+    table.add_column("Sandbox")
+    table.add_column("File")
+    table.add_column("Size", justify="right")
+    for entry in result.removed:
+        table.add_row(entry.vm_id, entry.path, _format_bytes(entry.size_bytes))
+    console.print(table)
+
+    verb = "Would free" if result.dry_run else "Freed"
+    console.print(
+        Panel.fit(
+            f"{verb} {_format_bytes(result.freed_bytes)}",
+            title="Prune Summary",
+            border_style="cyan" if result.dry_run else "green",
+        )
+    )
+
+
+def run_prune_sandboxes(
+    *,
+    dry_run: bool = False,
+    force: bool = False,
+    include_retained: bool = False,
+    json_output: bool = False,
+    command_name: str = "sandbox.prune",
+) -> int:
+    """Delete disks and logs left behind by sandboxes that no longer exist."""
+    try:
+        with CLIService().manager() as sdk:
+            sdk.reconcile()
+            artifacts = sdk.find_leftover_artifacts()
+            candidates = [
+                _to_entry(artifact)
+                for artifact in artifacts
+                if include_retained or not artifact.retained
+            ]
+            kept = (
+                []
+                if include_retained
+                else [_to_entry(artifact) for artifact in artifacts if artifact.retained]
+            )
+            freed_bytes = sum(entry.size_bytes for entry in candidates)
+
+            if candidates and not dry_run and not force:
+                if json_output:
+                    return emit_error(
+                        command_name,
+                        "refused",
+                        "Refusing to delete leftover files without --force in --json mode. "
+                        "Run 'smolvm sandbox prune --force --json' to confirm.",
+                        recovery="Run 'smolvm sandbox prune --force --json' to confirm.",
+                        exit_code=1,
+                    )
+                if not sys.stdin.isatty():
+                    render_error(
+                        "Refusing to delete leftover files without a confirmation prompt. "
+                        "Pass --force to confirm."
+                    )
+                    return 1
+                if not _confirm_prune(candidates, freed_bytes=freed_bytes):
+                    return 0
+
+            removed = candidates
+            failed: list[LeftoverEntry] = []
+            if not dry_run and candidates:
+                removed = [
+                    _to_entry(artifact)
+                    for artifact in sdk.prune_leftover_artifacts(include_retained=include_retained)
+                ]
+                freed_bytes = sum(entry.size_bytes for entry in removed)
+                gone = {entry.path for entry in removed}
+                failed = [entry for entry in candidates if entry.path not in gone]
+
+            result = PruneResult(
+                removed=removed,
+                kept=kept,
+                freed_bytes=freed_bytes,
+                dry_run=dry_run,
+                failed=failed,
+            )
+            exit_code = 1 if failed else 0
+
+            if json_output:
+                emit_json(command_name, exit_code, data=asdict(result))
+            else:
+                _render_prune(result)
             return exit_code
     except Exception as exc:
         if json_output:
