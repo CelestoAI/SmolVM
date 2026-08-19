@@ -25,7 +25,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from smolvm.exceptions import SmolVMError, VMNotFoundError
-from smolvm.types import VMConfig
+from smolvm.types import NetworkConfig, VMConfig
 from smolvm.vm import SmolVMManager
 
 
@@ -114,7 +114,26 @@ class TestFailedTeardownKeepsNoDisk:
     ) -> None:
         """Leases and ports outlive the row too, so every release must run."""
         manager.create(config)
-        assert manager.state.get_ssh_port("sbx-disk") is not None
+        # Pin the reservations rather than relying on which ones a given host
+        # hands out: what matters is that a failure does not skip them.
+        lease = manager.state.get_ip_lease("sbx-disk")
+        if lease is None:
+            manager.state.allocate_ip("sbx-disk", "tap-test")
+            lease = manager.state.get_ip_lease("sbx-disk")
+        assert lease is not None
+        host_port = manager.state.get_ssh_port("sbx-disk") or manager.state.reserve_ssh_port(
+            "sbx-disk"
+        )
+        manager.state.update_vm(
+            "sbx-disk",
+            network=NetworkConfig(
+                guest_ip=lease[0],
+                gateway_ip="172.16.0.1",
+                tap_device=lease[1],
+                guest_mac="AA:FC:00:00:00:01",
+                ssh_host_port=host_port,
+            ),
+        )
         manager.network.cleanup_nat_rules.side_effect = SmolVMError("no outbound interface")
 
         manager.delete("sbx-disk")
