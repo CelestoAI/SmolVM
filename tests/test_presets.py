@@ -615,8 +615,9 @@ class TestNodeBootstrapFunction:
         assert "command -v apk" in script
         assert "apk add --no-cache" in script
         assert "nodejs npm" in script
-        assert "libgcc libstdc++" in script
-        assert "ripgrep" in script
+        assert "libgcc" not in script
+        assert "libstdc++" not in script
+        assert "ripgrep" not in script
 
     def test_node_bootstrap_rejects_too_low(self) -> None:
         from smolvm.presets._scripts import node_bootstrap

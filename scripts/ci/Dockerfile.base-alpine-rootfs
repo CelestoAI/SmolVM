@@ -28,13 +28,10 @@ RUN apk add --no-cache \
         ca-certificates \
         git \
         bash \
-        libgcc \
-        libstdc++ \
         nodejs \
         npm \
         python3 \
         py3-pip \
-        ripgrep \
     && rm -rf \
         /usr/share/man \
         /usr/share/doc \

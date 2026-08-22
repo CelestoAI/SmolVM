@@ -36,7 +36,7 @@ def node_bootstrap(major: int = 20) -> str:
     return rf"""
 set -euo pipefail
 if command -v apk >/dev/null 2>&1; then
-    apk add --no-cache bash ca-certificates curl git libgcc libstdc++ nodejs npm ripgrep
+    apk add --no-cache bash ca-certificates curl git nodejs npm
 else
     command -v cloud-init >/dev/null 2>&1 && cloud-init status --wait >/dev/null 2>&1 || true
     export DEBIAN_FRONTEND=noninteractive
