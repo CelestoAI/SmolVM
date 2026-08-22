@@ -184,21 +184,12 @@ class StartPresetPayload(TypedDict):
     no_env_hint: str | None
 
 
-class StartServerPayload(TypedDict):
-    """OpenCode server connection details."""
-
-    guest_port: int
-    host_port: int
-    url: str
-
-
 class StartPayload(TypedDict):
     """JSON payload for ``smolvm <preset> start``."""
 
     vm: CreateVmPayload
     preset: StartPresetPayload
     next: CreateNextPayload
-    server: NotRequired[StartServerPayload]
 
 
 def _create_progress_message(backend: str, guest_os: GuestOS) -> str:
@@ -1426,12 +1417,6 @@ def _render_start_result(data: StartPayload) -> None:
         ", ".join(preset["injected_env_keys"]) if preset["injected_env_keys"] else "-",
     )
     console.print(details)
-    if server := data.get("server"):
-        console.print(f"OpenCode server: [bold]{server['url']}[/bold]")
-        console.print(
-            f"Stop forwarding with: [bold]smolvm sandbox port close "
-            f"{vm_data['name']} {server['host_port']}:{server['guest_port']}[/bold]"
-        )
     if not preset["injected_env_keys"] and preset.get("no_env_hint"):
         console.print(f"\n[yellow]{preset['no_env_hint']}[/yellow]")
     console.print(f"Next: [bold]{next_step['shell_command']}[/bold]")
@@ -1615,9 +1600,6 @@ def _run_start_with_published_image(args: SimpleNamespace, preset: object) -> in
             extracted_secrets = transfer_keychain_secrets(channel, _preset)
 
             network = vm.info.network
-            server_data = (
-                _start_opencode_server(vm, args.port) if getattr(args, "server", False) else None
-            )
             data: StartPayload = {
                 "vm": {
                     "name": vm.vm_id,
@@ -1646,15 +1628,13 @@ def _run_start_with_published_image(args: SimpleNamespace, preset: object) -> in
                     "info_command": f"smolvm sandbox info {vm.vm_id}",
                 },
             }
-            if server_data is not None:
-                data["server"] = server_data
             if args.json:
                 emit_json(command_name, 0, data=data)
             else:
                 _render_start_result(data)
 
             success = True
-            if not args.json and _preset.launch_command and not getattr(args, "server", False):
+            if not args.json and _preset.launch_command:
                 return _maybe_attach_and_launch(vm, _preset, attach=getattr(args, "attach", None))
             return 0
         finally:
@@ -1791,9 +1771,6 @@ def _run_start(args: SimpleNamespace) -> int:
             )
 
         network = vm.info.network
-        server_data = (
-            _start_opencode_server(vm, args.port) if getattr(args, "server", False) else None
-        )
         data: StartPayload = {
             "vm": {
                 "name": vm.vm_id,
@@ -1820,16 +1797,13 @@ def _run_start(args: SimpleNamespace) -> int:
                 "info_command": f"smolvm sandbox info {vm.vm_id}",
             },
         }
-        if server_data is not None:
-            data["server"] = server_data
-
         if args.json:
             emit_json(command_name, 0, data=data)
         else:
             _render_start_result(data)
 
         success = True
-        if not args.json and preset.launch_command and not getattr(args, "server", False):
+        if not args.json and preset.launch_command:
             return _maybe_attach_and_launch(vm, preset, attach=getattr(args, "attach", None))
         return 0
     except Exception as exc:
@@ -1964,64 +1938,6 @@ def _preset_control_channel(vm: object, *, timeout: float = 30.0) -> object:
 
     _vm: SmolVM = vm  # type: ignore[assignment]
     return _vm._ensure_control_for_operation(action="apply preset", timeout=timeout)
-
-
-def _start_opencode_server(vm: object, guest_port: int) -> StartServerPayload:
-    """Start stable OpenCode's server and expose it on localhost."""
-    from smolvm.facade import SmolVM
-
-    _vm: SmolVM = vm  # type: ignore[assignment]
-    channel = _vm._ensure_control_for_operation(action="start OpenCode server")
-    command = (
-        "nohup opencode serve --hostname 0.0.0.0 "
-        f"--port {guest_port} >/tmp/opencode-server.log 2>&1 </dev/null &"
-    )
-    result = channel.run(command, timeout=10, shell="raw")
-    if not result.ok:
-        raise RuntimeError(
-            "OpenCode server could not start. Run "
-            f"'smolvm sandbox shell {_vm.vm_id}' and inspect /tmp/opencode-server.log."
-        )
-
-    ready_check = (
-        "for i in $(seq 1 30); do "
-        f"(echo >/dev/tcp/127.0.0.1/{guest_port}) >/dev/null 2>&1 && exit 0; "
-        "sleep 0.2; "
-        "done; exit 1"
-    )
-    ready = channel.run(ready_check, timeout=10, shell="raw")
-    if not ready.ok:
-        raise RuntimeError(
-            "OpenCode server did not become ready. Run "
-            f"'smolvm sandbox shell {_vm.vm_id}' and inspect /tmp/opencode-server.log."
-        )
-
-    # Keep the default URL intuitive by requesting the same port on the host
-    # and guest. The forwarding layer can choose a fallback if it is busy.
-    host_port = _vm.expose_local(guest_port, guest_port)
-    forward_entry: dict[str, object] = {
-        "host_port": host_port,
-        "guest_port": guest_port,
-        "transport": "ssh_tunnel",
-    }
-    tracked = _vm._local_forwards.get((host_port, guest_port))
-    if tracked is not None and tracked.tunnel_proc is None:
-        forward_entry["transport"] = "nftables"
-    if tracked is not None and tracked.tunnel_proc is not None:
-        forward_entry["pid"] = tracked.tunnel_proc.pid
-    forwards = _load_port_forwards(_vm.vm_id)
-    forwards = [
-        item
-        for item in forwards
-        if not (item.get("host_port") == host_port and item.get("guest_port") == guest_port)
-    ]
-    forwards.append(forward_entry)
-    _save_port_forwards(_vm.vm_id, forwards)
-    return {
-        "guest_port": guest_port,
-        "host_port": host_port,
-        "url": f"http://127.0.0.1:{host_port}",
-    }
 
 
 def _render_vm_lifecycle_result(

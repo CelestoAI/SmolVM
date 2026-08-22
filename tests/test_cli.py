@@ -128,48 +128,6 @@ def test_top_level_help_mentions_json_for_agents() -> None:
     assert "Output a JSON envelope" in result.output
 
 
-def test_opencode_help_exposes_stable_server_mode() -> None:
-    from click.testing import CliRunner
-
-    result = CliRunner().invoke(build_cli(), ["opencode", "start", "--help"])
-
-    assert result.exit_code == 0
-    assert "--server" in result.output
-    assert "--port" in result.output
-    assert "beta" not in result.output.lower()
-
-
-def test_opencode_server_starts_and_records_local_forward() -> None:
-    from smolvm.cli.main import _start_opencode_server
-
-    channel = MagicMock()
-    channel.run.return_value.ok = True
-    vm = MagicMock()
-    vm.vm_id = "opencode-test"
-    vm._ensure_control_for_operation.return_value = channel
-    vm.expose_local.return_value = 14096
-    vm._local_forwards = {}
-
-    with (
-        patch("smolvm.cli.main._load_port_forwards", return_value=[]),
-        patch("smolvm.cli.main._save_port_forwards") as save_forwards,
-    ):
-        result = _start_opencode_server(vm, 4096)
-
-    assert result == {
-        "guest_port": 4096,
-        "host_port": 14096,
-        "url": "http://127.0.0.1:14096",
-    }
-    vm.expose_local.assert_called_once_with(4096, 4096)
-    assert channel.run.call_count == 2
-    assert "opencode serve --hostname 0.0.0.0 --port 4096" in channel.run.call_args_list[0].args[0]
-    save_forwards.assert_called_once_with(
-        "opencode-test",
-        [{"host_port": 14096, "guest_port": 4096, "transport": "ssh_tunnel"}],
-    )
-
-
 def test_create_help_describes_backend_specific_guest_default(
     capsys: pytest.CaptureFixture,
 ) -> None:

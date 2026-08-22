@@ -22,18 +22,6 @@ smolvm opencode start --name opencode-work
 
 Each command accepts sandbox options such as `--mount`, `--memory`, and `--disk-size`. Add `--no-attach` if you want to start the sandbox without opening the agent session.
 
-OpenCode can also run as a local-only server for the OpenCode app or another client:
-
-```bash
-smolvm opencode start --server --port 4096 --name opencode-server
-```
-
-SmolVM prints a `http://127.0.0.1:<port>` URL after the server is ready. The guest server listens on its sandbox network, but the host-side forwarding is bound to localhost only. Close the forwarding when it is no longer needed:
-
-```bash
-smolvm sandbox port close opencode-server 4096:4096
-```
-
 ## Credentials and configuration
 
 Set the provider key in your host environment before starting the preset. For example:
