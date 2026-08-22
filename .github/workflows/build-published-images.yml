@@ -474,8 +474,6 @@ jobs:
         exclude:
           - preset: hermes
             os: alpine
-          - preset: opencode
-            os: alpine
           - preset: ubuntu
             os: alpine
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
@@ -587,10 +585,13 @@ jobs:
           if [ "$PRESET" = "hermes" ]; then
             SIZE=6144
           fi
-          # Alpine + JS preset is ~half the Ubuntu equivalent — give it
-          # less scratch space so the published artifact stays compact.
+          # Alpine + JS preset is ~half the Ubuntu equivalent. OpenCode's
+          # native package downloads need extra workspace during npm install.
           if [ "$OS" = "alpine" ]; then
             SIZE=2048
+          fi
+          if [ "$OS" = "alpine" ] && [ "$PRESET" = "opencode" ]; then
+            SIZE=4096
           fi
 
           sudo ARCH="$ARCH" OS="$OS" bash scripts/ci/build-preset.sh \

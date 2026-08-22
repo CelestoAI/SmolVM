@@ -63,15 +63,14 @@ case "$OS" in
     ;;
 esac
 
-# Phase 1 of the Alpine rollout (#264) restricts which presets are eligible:
-# pure-JS presets only. hermes pulls musllinux-incompatible Python wheels
-# and openclaw pulls glibc-only @node-llama-cpp prebuilts. OpenCode remains
-# Ubuntu-only until its stable npm distribution is smoke-tested on Alpine.
+# Phase 1 of the Alpine rollout (#264) supports the pure-JS presets. hermes
+# pulls musllinux-incompatible Python wheels and openclaw pulls glibc-only
+# @node-llama-cpp prebuilts, so both remain Ubuntu-only.
 if [ "$OS" = "alpine" ]; then
   case "$PRESET" in
-    codex|claude-code|pi) ;;
+    codex|claude-code|opencode|pi) ;;
     *)
-      echo "Preset '$PRESET' is not yet supported on Alpine (Phase 1 covers codex/claude-code/pi)." >&2
+      echo "Preset '$PRESET' is not yet supported on Alpine (supported: codex, claude-code, opencode, pi)." >&2
       exit 1
       ;;
   esac

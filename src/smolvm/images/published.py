@@ -307,7 +307,9 @@ def _preset_rows(
     return rows
 
 
-# Alpine rows are published for codex/claude-code/pi in this release. Hermes is
+# Alpine rows are published for codex/claude-code/pi in this release. OpenCode
+# is now built and smoke-tested by CI, but its rows must be added here only
+# after the resulting release assets have verified SHA-256 pins. Hermes is
 # excluded in CI for musllinux compatibility reasons; openclaw uses a separate
 # builder.
 

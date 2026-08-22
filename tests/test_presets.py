@@ -608,6 +608,16 @@ class TestNodeBootstrapFunction:
         assert "setup_22.x" in script
         assert "-ge 22" in script
 
+    def test_node_bootstrap_supports_alpine_packages(self) -> None:
+        from smolvm.presets._scripts import node_bootstrap
+
+        script = node_bootstrap(20)
+        assert "command -v apk" in script
+        assert "apk add --no-cache" in script
+        assert "nodejs npm" in script
+        assert "libgcc libstdc++" in script
+        assert "ripgrep" in script
+
     def test_node_bootstrap_rejects_too_low(self) -> None:
         from smolvm.presets._scripts import node_bootstrap
 

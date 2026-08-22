@@ -4,8 +4,8 @@
 # one of the published images — otherwise only discovered by the first
 # user trying `smolvm create`.
 #
-# Each cell tests a *real* published SmolVM image (openclaw, opencode, and the bare
-# ubuntu base), exactly how the runtime boots them:
+# Each cell tests a *real* published SmolVM image (including the Alpine
+# OpenCode image), exactly how the runtime boots them:
 #   - Downloads the published kernel + ``<rootfs>-<arch>-rootfs.ext4.zst``
 #     from the release and decompresses it (no SHA pinning — we test what
 #     CI just produced, not what's pinned in the manifest).
@@ -63,6 +63,12 @@ jobs:
       matrix:
         arch: [amd64, arm64]
         rootfs: [openclaw, opencode, ubuntu]
+        os: [ubuntu, alpine]
+        exclude:
+          - rootfs: openclaw
+            os: alpine
+          - rootfs: ubuntu
+            os: alpine
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     timeout-minutes: 20
 
@@ -121,15 +127,21 @@ jobs:
           TAG: ${{ steps.release.outputs.tag }}
           ARCH: ${{ matrix.arch }}
           ROOTFS: ${{ matrix.rootfs }}
+          OS: ${{ matrix.os }}
         run: |
           # These are published SmolVM raw-ext4 images — same download and
           # decompress path for every preset.
+          suffix=""
+          if [ "$OS" = "alpine" ]; then
+            suffix="-alpine"
+          fi
+          asset="${ROOTFS}-${ARCH}${suffix}-rootfs.ext4.zst"
           gh release download "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
-              --pattern "${ROOTFS}-${ARCH}-rootfs.ext4.zst" \
+              --pattern "$asset" \
               -D smoke
-          zstd -d "smoke/${ROOTFS}-${ARCH}-rootfs.ext4.zst" -o smoke/rootfs.raw
-          rm "smoke/${ROOTFS}-${ARCH}-rootfs.ext4.zst"
+          zstd -d "smoke/$asset" -o smoke/rootfs.raw
+          rm "smoke/$asset"
 
       - name: Generate SSH key
         run: |
@@ -142,6 +154,7 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
           ROOTFS: ${{ matrix.rootfs }}
+          OS: ${{ matrix.os }}
         run: |
           set -euo pipefail
           # KVM when the runner exposes it, else TCG software emulation with a
@@ -210,11 +223,11 @@ jobs:
           echo "--- last 80 lines of boot log ---"
           tail -80 smoke/boot.log
           if [ "$ok" -ne 1 ]; then
-            echo "::error::sshd did not become ready within ${BUDGET}s on ${ARCH}/${ROOTFS}"
+            echo "::error::sshd did not become ready within ${BUDGET}s on ${ARCH}/${OS}/${ROOTFS}"
             exit 1
           fi
           if [ "$agent_ok" -ne 1 ]; then
-            echo "::error::guest agent missing or not running on ${ARCH}/${ROOTFS}"
+            echo "::error::guest agent missing or not running on ${ARCH}/${OS}/${ROOTFS}"
             exit 1
           fi
 
