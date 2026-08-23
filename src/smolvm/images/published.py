@@ -49,7 +49,7 @@ from smolvm.exceptions import ImageError
 from smolvm.images.manager import ImageManager, ImageSource, LocalImage
 
 Arch = Literal["amd64", "arm64"]
-Preset = Literal["codex", "claude-code", "openclaw", "hermes", "pi", "ubuntu"]
+Preset = Literal["codex", "claude-code", "openclaw", "opencode", "hermes", "pi", "ubuntu"]
 # ``libkrun`` is reserved here for a future spike — manifest accepts the type
 # but the CLI never resolves a host to it until libkrun support is wired.
 Vmm = Literal["firecracker", "qemu", "libkrun"]
@@ -307,7 +307,9 @@ def _preset_rows(
     return rows
 
 
-# Alpine rows are published for codex/claude-code/pi in this release. Hermes is
+# Alpine rows are published for codex/claude-code/pi in this release. OpenCode
+# is now built and smoke-tested by CI, but its rows must be added here only
+# after the resulting release assets have verified SHA-256 pins. Hermes is
 # excluded in CI for musllinux compatibility reasons; openclaw uses a separate
 # builder.
 

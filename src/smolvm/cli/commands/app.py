@@ -1435,7 +1435,7 @@ def _register_preset_commands() -> None:
 
     for preset in list_presets():
         public_name = "claude" if preset.name == "claude-code" else preset.name
-        if public_name not in {"codex", "claude", "openclaw", "hermes", "pi"}:
+        if public_name not in {"codex", "claude", "openclaw", "opencode", "hermes", "pi"}:
             continue
 
         @click.group(public_name, context_settings=CONTEXT_SETTINGS, help=preset.summary)

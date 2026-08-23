@@ -26,31 +26,40 @@ _SAFE_PYPI_NAME_RE = re.compile(r"^[a-zA-Z0-9._\-]+(\[[a-zA-Z0-9,._\-]+\])?$")
 
 
 def node_bootstrap(major: int = 20) -> str:
-    """Return a bash script that installs Node.js *major* via NodeSource.
+    """Return a bash script that installs Node.js *major* on Ubuntu or Alpine.
 
-    Waits for cloud-init to release the apt lock, then installs Node
-    from NodeSource if it is missing or older than *major*. Idempotent.
+    Alpine uses its native packages; Ubuntu waits for cloud-init to release
+    the apt lock and installs Node from NodeSource when needed. Idempotent.
     """
     if not isinstance(major, int) or major < 16:
         raise ValueError(f"Unsupported Node major version: {major}")
     return rf"""
 set -euo pipefail
-cloud-init status --wait >/dev/null 2>&1 || true
-export DEBIAN_FRONTEND=noninteractive
+if command -v apk >/dev/null 2>&1; then
+    apk add --no-cache bash ca-certificates curl git nodejs npm
+else
+    command -v cloud-init >/dev/null 2>&1 && cloud-init status --wait >/dev/null 2>&1 || true
+    export DEBIAN_FRONTEND=noninteractive
 
-apt-get update -qq
-apt-get install -y -qq --no-install-recommends curl ca-certificates gnupg git
+    apt-get update -qq
+    apt-get install -y -qq --no-install-recommends curl ca-certificates gnupg git
+fi
 
 needs_node=1
 if command -v node >/dev/null 2>&1; then
-    major=$(node --version | sed 's/^v//' | cut -d. -f1)
-    if [ "${{major:-0}}" -ge {major} ]; then
+    node_major=$(node --version | sed 's/^v//' | cut -d. -f1)
+    if [ "${{node_major:-0}}" -ge {major} ]; then
         needs_node=0
     fi
 fi
 if [ "$needs_node" = "1" ]; then
-    curl -fsSL https://deb.nodesource.com/setup_{major}.x | bash -
-    apt-get install -y -qq --no-install-recommends nodejs
+    if command -v apk >/dev/null 2>&1; then
+        echo "Alpine's packaged Node.js is older than the requested major ({major})." >&2
+        exit 1
+    else
+        curl -fsSL https://deb.nodesource.com/setup_{major}.x | bash -
+        apt-get install -y -qq --no-install-recommends nodejs
+    fi
 fi
 """
 
@@ -79,7 +88,7 @@ def npm_install_global(package: str) -> str:
 
     Assumes Node is already on PATH — pair this with
     :data:`NODE20_BOOTSTRAP` as the preset's ``setup_script`` so that
-    the apt/Node phase and the npm phase show up as two separate
+    system-package/Node phase and the npm phase show up as two separate
     progress steps in the CLI.
     """
     if not _SAFE_NPM_NAME_RE.match(package):

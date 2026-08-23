@@ -1438,7 +1438,7 @@ _PUBLISHED_BOOT_ARGS_BY_VMM: dict[Vmm, str] = {
 }
 _PUBLISHED_IMAGE_BOOT_ARGS: dict[tuple[str, Vmm], str] = {
     (preset, vmm): args
-    for preset in ("openclaw", "codex", "claude-code", "hermes", "pi")
+    for preset in ("openclaw", "codex", "claude-code", "hermes", "opencode", "pi")
     for vmm, args in _PUBLISHED_BOOT_ARGS_BY_VMM.items()
 }
 
@@ -1797,7 +1797,6 @@ def _run_start(args: SimpleNamespace) -> int:
                 "info_command": f"smolvm sandbox info {vm.vm_id}",
             },
         }
-
         if args.json:
             emit_json(command_name, 0, data=data)
         else:
@@ -3595,6 +3594,7 @@ def _command_name_from_argv(args: Sequence[str]) -> str:
         "codex",
         "claude",
         "openclaw",
+        "opencode",
         "hermes",
         "pi",
     }:

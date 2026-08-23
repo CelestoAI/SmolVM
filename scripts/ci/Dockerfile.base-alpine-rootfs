@@ -8,9 +8,10 @@
 #
 # Tradeoff: musl libc breaks upstream binaries that ship glibc-only prebuilts
 # (``@node-llama-cpp``, some ``manylinux2014`` Python wheels). Phase 1
-# restricts the Alpine variant to pure-JS presets (codex, claude-code, pi).
-# hermes (heavy ML wheels) and openclaw (node-llama-cpp prebuilts) stay
-# Ubuntu-only until those upstream gaps are closed — see issue #264.
+# restricts the Alpine variant to pure-JS presets (codex, claude-code,
+# opencode, pi). hermes (heavy ML wheels) and openclaw (node-llama-cpp
+# prebuilts) stay Ubuntu-only until those upstream gaps are closed — see issue
+# #264.
 
 FROM alpine:3.20
 

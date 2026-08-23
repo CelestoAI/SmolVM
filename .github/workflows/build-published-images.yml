@@ -26,7 +26,7 @@ on:
     inputs:
       presets:
         description: >-
-          Comma-separated presets to build (e.g. "openclaw,codex,claude-code").
+          Comma-separated presets to build (e.g. "openclaw,codex,claude-code,opencode").
           Use "all" to build every preset.
         type: string
         default: "all"
@@ -453,7 +453,7 @@ jobs:
 
   # ── Stage 2b: Layer presets on top of base ────────────────────
   #
-  # codex, claude-code, hermes, pi use the shared base rootfs.
+  # codex, claude-code, hermes, opencode, and pi use the shared base rootfs.
   # Each job copies the base, chroots in, runs the preset's install.
   preset:
     needs: base-rootfs
@@ -463,7 +463,7 @@ jobs:
         arch: [amd64, arm64]
         # "ubuntu" is the bare base image (no preset install) — gives
         # firecracker a raw-ext4 Ubuntu for `create --os ubuntu`.
-        preset: [codex, claude-code, hermes, pi, ubuntu]
+        preset: [codex, claude-code, hermes, opencode, pi, ubuntu]
         os: [ubuntu, alpine]
         # Phase 1 of the Alpine rollout (#264) excludes hermes — its
         # ``[all]`` extras pull manylinux2014 wheels that don't have
@@ -585,10 +585,13 @@ jobs:
           if [ "$PRESET" = "hermes" ]; then
             SIZE=6144
           fi
-          # Alpine + JS preset is ~half the Ubuntu equivalent — give it
-          # less scratch space so the published artifact stays compact.
+          # Alpine + JS preset is ~half the Ubuntu equivalent. OpenCode's
+          # native package downloads need extra workspace during npm install.
           if [ "$OS" = "alpine" ]; then
             SIZE=2048
+          fi
+          if [ "$OS" = "alpine" ] && [ "$PRESET" = "opencode" ]; then
+            SIZE=4096
           fi
 
           sudo ARCH="$ARCH" OS="$OS" bash scripts/ci/build-preset.sh \

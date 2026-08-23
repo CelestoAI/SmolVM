@@ -20,7 +20,7 @@
 # NOTE: openclaw uses its own builder (build_openclaw_rootfs) which bakes
 # in a custom init script, sidecars, and systemctl proxy. It's not layered
 # through this script. This script handles: codex, claude-code, hermes, pi,
-# and the bare "ubuntu" image (no preset install — just the finalized base
+# opencode, and the bare "ubuntu" image (no preset install — just the finalized base
 # rootfs, used for `create --os ubuntu` on firecracker).
 #
 # Runs in CI on a matching-arch runner. Requires: chroot, mount (loop).
@@ -63,14 +63,14 @@ case "$OS" in
     ;;
 esac
 
-# Phase 1 of the Alpine rollout (#264) restricts which presets are eligible:
-# pure-JS presets only. hermes pulls musllinux-incompatible Python wheels
-# and openclaw pulls glibc-only @node-llama-cpp prebuilts.
+# Phase 1 of the Alpine rollout (#264) supports the pure-JS presets. hermes
+# pulls musllinux-incompatible Python wheels and openclaw pulls glibc-only
+# @node-llama-cpp prebuilts, so both remain Ubuntu-only.
 if [ "$OS" = "alpine" ]; then
   case "$PRESET" in
-    codex|claude-code|pi) ;;
+    codex|claude-code|opencode|pi) ;;
     *)
-      echo "Preset '$PRESET' is not yet supported on Alpine (Phase 1 covers codex/claude-code/pi)." >&2
+      echo "Preset '$PRESET' is not yet supported on Alpine (supported: codex, claude-code, opencode, pi)." >&2
       exit 1
       ;;
   esac
@@ -166,6 +166,15 @@ case "$PRESET" in
     chroot "$MNT" "$SHELL_BIN" -c '
       set -euo pipefail
       npm install -g --silent @mariozechner/pi-coding-agent
+      npm cache clean --force >/dev/null 2>&1 || true
+      rm -rf /root/.npm /root/.cache /tmp/*
+    '
+    ;;
+
+  opencode)
+    chroot "$MNT" "$SHELL_BIN" -c '
+      set -euo pipefail
+      npm install -g --silent opencode-ai
       npm cache clean --force >/dev/null 2>&1 || true
       rm -rf /root/.npm /root/.cache /tmp/*
     '
