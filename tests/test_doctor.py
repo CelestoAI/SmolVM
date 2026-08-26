@@ -77,6 +77,56 @@ class TestDoctorFirecracker:
         assert report.failures == []
         assert report.warnings == []
 
+    def test_missing_configured_firecracker_names_exact_recovery(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A configured folder should appear in the doctor failure and fix."""
+        configured = tmp_path / "custom firecracker"
+        monkeypatch.setenv("SMOLVM_FIRECRACKER_DIR", str(configured))
+        mock_host = MagicMock()
+        mock_host.find_firecracker.return_value = None
+
+        with (
+            patch("smolvm.host.doctor.HostManager", return_value=mock_host),
+            patch("smolvm.host.doctor._check_kvm_runtime", return_value=_pass("kvm")),
+            patch(
+                "smolvm.host.doctor._check_kvm_permissions",
+                return_value=_pass("worker:kvm-permissions"),
+            ),
+            patch(
+                "smolvm.host.doctor._check_kvm_nx_huge_pages",
+                return_value=_pass("worker:kvm-nx-huge-pages"),
+            ),
+            patch(
+                "smolvm.host.doctor._check_thp_disabled",
+                return_value=_pass("worker:thp-disabled"),
+            ),
+            patch(
+                "smolvm.host.doctor._check_ksm_disabled",
+                return_value=_pass("worker:ksm-disabled"),
+            ),
+            patch(
+                "smolvm.host.doctor._check_swap_disabled",
+                return_value=_pass("worker:swap-disabled"),
+            ),
+            patch("smolvm.host.doctor.check_network_prerequisites", return_value=[]),
+            patch(
+                "smolvm.host.doctor.which",
+                side_effect=lambda binary: Path(f"/usr/bin/{binary}"),
+            ),
+            patch("smolvm.host.doctor.run_command", return_value=MagicMock(stdout="")),
+        ):
+            report = generate_doctor_report(backend="firecracker")
+
+        firecracker = next(check for check in report.checks if check.name == "firecracker")
+        assert firecracker.status == "fail"
+        assert str(configured / "firecracker") in firecracker.detail
+        assert firecracker.fix is not None
+        assert "smolvm setup --firecracker-dir" in firecracker.fix
+        assert str(configured) in firecracker.fix
+
     @patch("smolvm.host.doctor._check_kvm_runtime", new=lambda: _pass("kvm"))
     @patch("smolvm.host.doctor._check_kvm_permissions", new=lambda: _pass("worker:kvm-permissions"))
     @patch(

@@ -1,4 +1,5 @@
 import contextlib
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -257,3 +258,30 @@ def test_firecracker_available_needs_binary_and_kvm() -> None:
         assert b.firecracker_available() is False
     with _env(fc_binary=True, kvm=True):
         assert b.firecracker_available() is True
+
+
+def test_firecracker_probe_honors_configured_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binary = tmp_path / "firecracker"
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+    monkeypatch.setenv("SMOLVM_FIRECRACKER_DIR", str(tmp_path))
+    monkeypatch.setattr(b, "which", lambda _name: None)
+
+    assert b._firecracker_binary_present() is True
+
+
+def test_missing_configured_firecracker_does_not_fall_back_to_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path_binary = tmp_path / "path" / "firecracker"
+    path_binary.parent.mkdir()
+    path_binary.write_text("#!/bin/sh\n")
+    path_binary.chmod(0o755)
+    monkeypatch.setenv("SMOLVM_FIRECRACKER_DIR", str(tmp_path / "missing"))
+    monkeypatch.setattr(b, "which", lambda _name: path_binary)
+
+    assert b._firecracker_binary_present() is False

@@ -24,6 +24,8 @@ from os import fspath
 from pathlib import Path
 from typing import Literal
 
+from smolvm.host.paths import configured_firecracker_dir
+
 SetupPlatform = Literal["linux", "macos"]
 
 _LINUX_SCRIPT = "system-setup.sh"
@@ -44,6 +46,7 @@ class SetupOptions:
     skip_kvm_check: bool = False
     skip_runtime_check: bool = False
     firecracker_version: str | None = None
+    firecracker_dir: Path | None = None
 
 
 def packaged_asset_root() -> Path:
@@ -136,6 +139,9 @@ def build_setup_command(
             argv.append("--skip-deps")
         if options.runtime_user:
             argv.extend(["--runtime-user", options.runtime_user])
+        configured_dir = configured_firecracker_dir(options.firecracker_dir)
+        if configured_dir is not None:
+            argv.extend(["--firecracker-dir", str(configured_dir)])
         if options.for_bake:
             argv.append("--for-bake")
         if options.skip_kvm_check and not options.for_bake:

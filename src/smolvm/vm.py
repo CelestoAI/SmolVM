@@ -3377,8 +3377,7 @@ class SmolVMManager:
         fc_path = self.host.find_firecracker()
         if fc_path is None:
             raise SmolVMError(
-                "Firecracker binary not found. "
-                "Install it with: smolvm.host.manager.HostManager().install_firecracker()"
+                "Firecracker isn't installed; run 'smolvm setup', then start the sandbox again."
             )
 
         cmd = [str(fc_path), "--api-sock", str(socket_path)]

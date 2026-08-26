@@ -2496,6 +2496,7 @@ class TestCliSetup:
         assert "--runtime-user" not in help_text
         assert "--remove-runtime-config" not in help_text
         assert "--no-configure-runtime" not in help_text
+        assert "--firecracker-dir" not in help_text
         # Cross-platform flags should still appear
         assert "--skip-deps" in help_text
 
@@ -2548,6 +2549,66 @@ class TestCliSetup:
         assert ret == 0
         options = mock_run_setup.call_args.args[0]
         assert options.firecracker_version == "v1.15.0"
+
+    @patch("smolvm.cli.main.platform.system", return_value="Linux")
+    @patch("smolvm.host.setup.run_setup")
+    def test_setup_firecracker_dir_forwarded(
+        self,
+        mock_run_setup: MagicMock,
+        mock_platform_system: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """``--firecracker-dir`` should populate SetupOptions."""
+        mock_run_setup.return_value = 0
+        selected = tmp_path / "firecracker"
+
+        ret = main(["setup", "--firecracker-dir", str(selected)])
+
+        assert ret == 0
+        options = mock_run_setup.call_args.args[0]
+        assert options.firecracker_dir == selected
+
+    @patch("smolvm.cli.main.platform.system", return_value="Linux")
+    @patch("smolvm.host.setup.run_setup")
+    def test_setup_custom_firecracker_dir_warns_when_not_discoverable(
+        self,
+        mock_run_setup: MagicMock,
+        mock_platform_system: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A one-shot custom folder should name the persistent environment setting."""
+        mock_run_setup.return_value = 0
+        selected = tmp_path / "not-on-path"
+        monkeypatch.delenv("SMOLVM_FIRECRACKER_DIR", raising=False)
+        monkeypatch.setenv("PATH", "/usr/bin")
+
+        ret = main(["setup", "--firecracker-dir", str(selected)])
+
+        assert ret == 0
+        output = "".join(capsys.readouterr().out.split())
+        assert f"SMOLVM_FIRECRACKER_DIR={selected}" in output
+
+    @patch("smolvm.cli.commands.options.platform.system", return_value="Linux")
+    def test_setup_remove_runtime_config_rejects_firecracker_dir(
+        self,
+        mock_platform_system: MagicMock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Runtime-policy removal should reject installation options."""
+        ret = main(
+            [
+                "setup",
+                "--remove-runtime-config",
+                "--firecracker-dir",
+                str(tmp_path),
+            ]
+        )
+
+        assert ret == 2
+        assert "not allowed with --firecracker-dir" in capsys.readouterr().err
 
     @patch("smolvm.cli.main.platform.system", return_value="Linux")
     @patch("smolvm.host.setup.run_setup")

@@ -1581,6 +1581,18 @@ class TestDataDirResolution:
 class TestFirecrackerLaunchAndSocketCleanup:
     """Tests for Firecracker launch mode and socket cleanup behavior."""
 
+    def test_missing_firecracker_uses_public_setup_recovery(
+        self,
+        smol_vm: SmolVMManager,
+        tmp_path: Path,
+    ) -> None:
+        """Missing Firecracker errors should point to the public setup command."""
+        with (
+            patch.object(smol_vm.host, "find_firecracker", return_value=None),
+            pytest.raises(SmolVMError, match="smolvm setup"),
+        ):
+            smol_vm._start_firecracker(tmp_path / "fc.sock", tmp_path / "fc.log")
+
     def test_start_firecracker_runs_without_sudo(
         self, smol_vm: SmolVMManager, tmp_path: Path
     ) -> None:

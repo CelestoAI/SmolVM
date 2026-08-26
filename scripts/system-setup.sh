@@ -15,7 +15,7 @@
 # limitations under the License.
 
 # system-setup.sh - System-level setup for SmolVM (no Python/venv).
-# Installs Firecracker/Jailer and host dependencies. Docker is optional.
+# Installs Firecracker and host dependencies. Docker is optional.
 # Can optionally configure command-scoped NOPASSWD sudo for runtime operations.
 set -euo pipefail
 
@@ -42,6 +42,8 @@ RUNTIME_USER=""
 SKIP_KVM_CHECK=false
 SKIP_RUNTIME_CHECK=false
 FIRECRACKER_VERSION=""
+FIRECRACKER_DIR=""
+FIRECRACKER_DIR_CONFIGURED=false
 
 usage() {
     cat <<EOF_USAGE
@@ -52,7 +54,7 @@ Installs host dependencies and Firecracker (no Python/venv involvement).
 Options:
   --check-only                   Only validate system prerequisites; do not install.
   --with-docker                  Install Docker (required for SSH image demo).
-  --skip-deps                    Skip apt dependency install (assumes deps already present).
+  --skip-deps                    Do not install missing operating-system packages.
   --configure-runtime            Configure scoped NOPASSWD sudoers for SmolVM runtime.
   --remove-runtime-config        Remove generated runtime sudoers config.
   --runtime-user <user>          Target user for runtime sudoers/docker group (default: invoking user).
@@ -63,6 +65,8 @@ Options:
   --skip-runtime-check           Skip the post-install sudoers self-test on the live host.
   --firecracker-version <ver>    Pin Firecracker release tag (e.g. v1.14.1). Falls back
                                  to \$SMOLVM_FIRECRACKER_VERSION or the built-in default.
+  --firecracker-dir <dir>        Folder for Firecracker (default:
+                                 \$SMOLVM_FIRECRACKER_DIR or ~/.smolvm/bin).
   -h, --help                     Show this help.
 EOF_USAGE
 }
@@ -105,11 +109,19 @@ while [[ $# -gt 0 ]]; do
             ;;
         --firecracker-version)
             if [[ $# -lt 2 ]]; then
-                echo "❌ --firecracker-version requires a value"
-                usage
+                echo "❌ --firecracker-version needs a release tag such as 'v1.14.1'."
                 exit 1
             fi
             FIRECRACKER_VERSION="$2"
+            shift
+            ;;
+        --firecracker-dir)
+            if [[ $# -lt 2 || -z "$2" || "$2" == -* ]]; then
+                echo "❌ --firecracker-dir needs an absolute folder."
+                exit 1
+            fi
+            FIRECRACKER_DIR="$2"
+            FIRECRACKER_DIR_CONFIGURED=true
             shift
             ;;
         -h|--help)
@@ -151,6 +163,75 @@ resolve_runtime_user() {
     fi
 
     echo ""
+}
+
+resolve_user_home() {
+    local runtime_user="$1"
+    local runtime_home=""
+    if command -v getent >/dev/null 2>&1; then
+        runtime_home="$(getent passwd "${runtime_user}" 2>/dev/null | cut -d: -f6 || true)"
+    fi
+    if [[ -z "${runtime_home}" && "${runtime_user}" == "$(id -un)" ]]; then
+        runtime_home="${HOME:-}"
+    fi
+    if [[ -z "${runtime_home}" ]]; then
+        echo "❌ Home folder for '${runtime_user}' was not found; rerun with '--firecracker-dir /absolute/path'." >&2
+        return 1
+    fi
+    printf '%s\n' "${runtime_home}"
+}
+
+resolve_firecracker_directory() {
+    local runtime_user
+    local runtime_home
+    runtime_user="$(resolve_runtime_user)"
+    if [[ -z "${runtime_user}" && ${EUID} -eq 0 ]]; then
+        runtime_user="root"
+    fi
+    if [[ -z "${runtime_user}" ]]; then
+        echo "❌ SmolVM could not determine your account; rerun with '--runtime-user $(id -un)'."
+        return 1
+    fi
+    runtime_home="$(resolve_user_home "${runtime_user}")"
+
+    if [[ "${FIRECRACKER_DIR_CONFIGURED}" != "true" && -n "${SMOLVM_FIRECRACKER_DIR+x}" ]]; then
+        if [[ -z "${SMOLVM_FIRECRACKER_DIR//[[:space:]]/}" ]]; then
+            echo "❌ SMOLVM_FIRECRACKER_DIR is empty; unset it or set it to an absolute folder."
+            return 1
+        fi
+        FIRECRACKER_DIR="${SMOLVM_FIRECRACKER_DIR}"
+        FIRECRACKER_DIR_CONFIGURED=true
+    fi
+    if [[ -z "${FIRECRACKER_DIR}" ]]; then
+        FIRECRACKER_DIR="${runtime_home}/.smolvm/bin"
+    fi
+    if [[ "${FIRECRACKER_DIR}" != /* ]]; then
+        echo "❌ Firecracker folder must be absolute: '${FIRECRACKER_DIR}'; rerun with '--firecracker-dir /absolute/path'."
+        return 1
+    fi
+    if [[ -e "${FIRECRACKER_DIR}" && ! -d "${FIRECRACKER_DIR}" ]]; then
+        echo "❌ Firecracker folder is a file: '${FIRECRACKER_DIR}'; choose another folder with '--firecracker-dir'."
+        return 1
+    fi
+}
+
+find_firecracker_path() {
+    local selected="${FIRECRACKER_DIR}/firecracker"
+    if [[ "${FIRECRACKER_DIR_CONFIGURED}" == "true" ]]; then
+        if [[ -f "${selected}" && -x "${selected}" ]]; then
+            printf '%s\n' "${selected}"
+        fi
+        return 0
+    fi
+
+    local system_path
+    system_path="$(command -v firecracker 2>/dev/null || true)"
+    if [[ -n "${system_path}" ]]; then
+        printf '%s\n' "${system_path}"
+    elif [[ -f "${selected}" && -x "${selected}" ]]; then
+        printf '%s\n' "${selected}"
+    fi
+    return 0
 }
 
 ensure_group_membership() {
@@ -285,6 +366,8 @@ if [[ "${REMOVE_RUNTIME_CONFIG}" == "true" ]]; then
     exit 0
 fi
 
+resolve_firecracker_directory
+
 missing_items=()
 
 check_kvm() {
@@ -309,35 +392,99 @@ check_cmd() {
     fi
 }
 
+check_firecracker() {
+    local path
+    path="$(find_firecracker_path)"
+    if [[ -n "${path}" ]]; then
+        echo "  ✅ Firecracker (${path})"
+    else
+        echo "  ❌ Firecracker (${FIRECRACKER_DIR}/firecracker)"
+        missing_items+=("Firecracker")
+    fi
+}
+
 run_checks() {
     check_kvm
     check_cmd "ip" "ip (iproute2)"
     check_cmd "nft" "nft (nftables)"
     check_cmd "ssh" "ssh (openssh-client)"
-    check_cmd "firecracker" "firecracker"
+    check_firecracker
     if [[ "${WITH_DOCKER}" == "true" ]]; then
         check_cmd "docker" "docker"
     fi
 }
 
-required_runtime_cmds=("ip" "nft" "ssh")
-required_install_cmds=("wget" "tar")
-if [[ "${WITH_DOCKER}" == "true" ]]; then
-    required_install_cmds+=("curl")
-fi
+missing_commands=()
 
-check_required_cmds() {
-    local missing=()
+collect_missing_commands() {
+    missing_commands=()
+    local cmd
     for cmd in "$@"; do
-        if ! command -v "$cmd" >/dev/null 2>&1; then
-            missing+=("$cmd")
+        if ! command -v "${cmd}" >/dev/null 2>&1; then
+            missing_commands+=("${cmd}")
         fi
     done
-    if [[ ${#missing[@]} -ne 0 ]]; then
-        echo "❌ Missing required commands: ${missing[*]}"
+}
+
+packages_for_commands() {
+    local family="$1"
+    shift
+    local cmd
+    local package
+    local packages=()
+    for cmd in "$@"; do
+        package="${cmd}"
+        case "${family}:${cmd}" in
+            apt:ip) package="iproute2" ;;
+            apt:nft) package="nftables" ;;
+            apt:ssh) package="openssh-client" ;;
+            apt:sysctl) package="procps" ;;
+            apt:visudo) package="sudo" ;;
+            apt:install) package="coreutils" ;;
+            dnf:ip) package="iproute" ;;
+            dnf:nft) package="nftables" ;;
+            dnf:ssh) package="openssh-clients" ;;
+            dnf:sysctl) package="procps-ng" ;;
+            dnf:visudo) package="sudo" ;;
+            dnf:install) package="coreutils" ;;
+        esac
+        packages+=("${package}")
+    done
+    printf '%s\n' "${packages[@]}"
+}
+
+install_missing_dependencies() {
+    if [[ ${#missing_commands[@]} -eq 0 ]]; then
+        echo "✅ Host dependencies already installed"
+        return 0
+    fi
+
+    local packages=()
+    if [[ -e /run/ostree-booted ]] && command -v rpm-ostree >/dev/null 2>&1; then
+        mapfile -t packages < <(packages_for_commands dnf "${missing_commands[@]}")
+        echo "❌ Required commands are missing: ${missing_commands[*]}; run 'sudo rpm-ostree install ${packages[*]}', reboot, then run 'smolvm setup --skip-deps'."
         return 1
     fi
-    return 0
+
+    if command -v apt-get >/dev/null 2>&1; then
+        mapfile -t packages < <(packages_for_commands apt "${missing_commands[@]}")
+        if ! apt-get update -qq; then
+            echo "⚠️  Package-list refresh failed; SmolVM will try the existing package list."
+        fi
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${packages[@]}"
+    elif command -v dnf >/dev/null 2>&1; then
+        mapfile -t packages < <(packages_for_commands dnf "${missing_commands[@]}")
+        dnf install -y "${packages[@]}"
+    else
+        echo "❌ Required commands are missing: ${missing_commands[*]}; install them with your operating system, then run 'smolvm setup --skip-deps'."
+        return 1
+    fi
+
+    collect_missing_commands "${required_commands[@]}"
+    if [[ ${#missing_commands[@]} -ne 0 ]]; then
+        echo "❌ Required commands are still missing: ${missing_commands[*]}; install them, then run 'smolvm setup --skip-deps'."
+        return 1
+    fi
 }
 
 if [[ "${CHECK_ONLY}" == "true" ]]; then
@@ -378,60 +525,51 @@ if [[ -e /dev/kvm ]]; then
     install_kvm_udev_rule
 fi
 
+firecracker_path="$(find_firecracker_path)"
+required_commands=("ip" "nft" "ssh")
+if [[ "${CONFIGURE_RUNTIME}" == "true" ]]; then
+    required_commands+=("sysctl" "visudo" "install")
+fi
+if [[ -z "${firecracker_path}" ]]; then
+    required_commands+=("wget" "tar")
+fi
+if [[ "${WITH_DOCKER}" == "true" ]]; then
+    required_commands+=("curl")
+fi
+collect_missing_commands "${required_commands[@]}"
+
 if [[ "${SKIP_DEPS}" == "true" ]]; then
-    echo "Skipping dependency installation (--skip-deps)"
-    if ! check_required_cmds "${required_runtime_cmds[@]}" "${required_install_cmds[@]}"; then
-        echo "Install missing commands or rerun without --skip-deps."
+    echo "Skipping operating-system package installation (--skip-deps)"
+    if [[ ${#missing_commands[@]} -ne 0 ]]; then
+        echo "❌ Required commands are missing: ${missing_commands[*]}; install them, then run 'smolvm setup --skip-deps'."
         exit 1
     fi
 else
-    echo "Installing host dependencies..."
-    if ! command -v apt-get >/dev/null 2>&1; then
-        echo "❌ apt-get not found. Install dependencies manually or rerun with --skip-deps."
-        exit 1
-    fi
-
-    update_output=""
-    if ! update_output=$(apt-get update -qq 2>&1); then
-        echo "⚠️  apt-get update failed. Continuing with existing package lists."
-        echo "    If installs fail, fix apt sources or rerun with --skip-deps."
-    fi
-    if [[ -n "${update_output}" ]]; then
-        echo "${update_output}"
-        if echo "${update_output}" | grep -Eq "EXPKEYSIG|NO_PUBKEY|The following signatures were invalid|Failed to fetch|^W:"; then
-            echo "⚠️  apt-get update reported repository warnings."
-            echo "    If installs fail, fix /etc/apt/sources.list(.d) or rerun with --skip-deps."
-        fi
-    fi
-
-    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl wget jq nftables iproute2 e2fsprogs openssh-client tar; then
-        echo "❌ apt-get install failed. Fix apt sources or install deps manually, then rerun with --skip-deps."
-        exit 1
-    fi
-
-    if ! check_required_cmds "${required_runtime_cmds[@]}" "${required_install_cmds[@]}"; then
-        echo "❌ Required commands are still missing after install."
-        exit 1
-    fi
+    install_missing_dependencies
 fi
 
-if command -v firecracker >/dev/null 2>&1; then
-    echo "✅ Firecracker already installed: $(command -v firecracker)"
+if [[ -n "${firecracker_path}" ]]; then
+    echo "✅ Firecracker already installed: ${firecracker_path}"
 else
     if [[ ! -f "${INSTALL_SCRIPT}" ]]; then
-        echo "❌ install.sh not found at ${INSTALL_SCRIPT}"
+        echo "❌ Firecracker installer is missing: '${INSTALL_SCRIPT}'; reinstall SmolVM, then run 'smolvm setup' again."
         exit 1
     fi
-    echo "Installing Firecracker..."
-    install_args=(--skip-deps)
+    echo "Installing Firecracker in '${FIRECRACKER_DIR}'..."
+    install_args=(--skip-deps --firecracker-dir "${FIRECRACKER_DIR}")
+    runtime_user="$(resolve_runtime_user)"
+    if [[ -n "${runtime_user}" ]]; then
+        install_args+=(--runtime-user "${runtime_user}")
+    fi
     if [[ -n "${FIRECRACKER_VERSION}" ]]; then
         install_args+=(--firecracker-version "${FIRECRACKER_VERSION}")
     fi
     bash "${INSTALL_SCRIPT}" "${install_args[@]}"
+    firecracker_path="$(find_firecracker_path)"
 fi
 
-if ! command -v firecracker >/dev/null 2>&1; then
-    echo "❌ Firecracker install failed: firecracker not found in PATH"
+if [[ -z "${firecracker_path}" ]]; then
+    echo "❌ Firecracker is missing from '${FIRECRACKER_DIR}'; run 'smolvm setup --firecracker-dir ${FIRECRACKER_DIR}' to install it."
     exit 1
 fi
 
@@ -439,8 +577,12 @@ if [[ "${WITH_DOCKER}" == "true" ]]; then
     if command -v docker >/dev/null 2>&1; then
         echo "✅ Docker already installed"
     else
+        if [[ -e /run/ostree-booted ]]; then
+            echo "❌ Docker is not installed; install it through your operating system, or rerun 'smolvm setup' without '--with-docker'."
+            exit 1
+        fi
         if ! command -v curl >/dev/null 2>&1; then
-            echo "❌ curl not found (required for Docker install). Install curl or rerun without --skip-deps."
+            echo "❌ curl is missing; install it, then rerun 'smolvm setup --with-docker'."
             exit 1
         fi
         echo "Installing Docker..."

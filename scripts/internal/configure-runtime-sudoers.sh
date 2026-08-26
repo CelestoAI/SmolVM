@@ -24,7 +24,8 @@ CHECK_ONLY=false
 REMOVE=false
 SKIP_RUNTIME_CHECK=false
 LOOPFS_HELPER_SRC="${SCRIPT_DIR}/image-build-loopfs.sh"
-LOOPFS_HELPER_DST="/usr/local/libexec/smolvm-loopfs-helper"
+LOOPFS_HELPER_DIR="/var/lib/smolvm/libexec"
+LOOPFS_HELPER_DST="${LOOPFS_HELPER_DIR}/smolvm-loopfs-helper"
 
 usage() {
     cat <<EOF
@@ -99,19 +100,13 @@ IP_BIN="$(command -v ip || true)"
 NFT_BIN="$(command -v nft || true)"
 SYSCTL_BIN="$(command -v sysctl || true)"
 VISUDO_BIN="$(command -v visudo || true)"
-FIRECRACKER_BIN="$(command -v firecracker || true)"
 INSTALL_BIN="$(command -v install || true)"
-
-if [[ -z "${FIRECRACKER_BIN}" && -x "/usr/local/bin/firecracker" ]]; then
-    FIRECRACKER_BIN="/usr/local/bin/firecracker"
-fi
 
 for item in \
     "ip:${IP_BIN}" \
     "nft:${NFT_BIN}" \
     "sysctl:${SYSCTL_BIN}" \
     "visudo:${VISUDO_BIN}" \
-    "firecracker:${FIRECRACKER_BIN}" \
     "install:${INSTALL_BIN}"
 do
     name="${item%%:*}"
@@ -124,13 +119,52 @@ done
 
 SUDOERS_FILE="/etc/sudoers.d/smolvm-runtime-${RUNTIME_USER}"
 
+validate_helper_directory() {
+    local path
+    local owner
+    local mode
+    for path in /var /var/lib /var/lib/smolvm "${LOOPFS_HELPER_DIR}"; do
+        if [[ -L "${path}" ]]; then
+            echo "❌ Runtime helper folder cannot be a link: '${path}'; remove the link, then run 'smolvm setup' again."
+            return 1
+        fi
+        if [[ ! -e "${path}" ]]; then
+            continue
+        fi
+        owner="$(stat -c %u "${path}")"
+        mode="$(stat -c %a "${path}")"
+        if [[ "${owner}" != "0" ]] || (( (8#${mode} & 8#022) != 0 )); then
+            echo "❌ Runtime helper folder must be controlled by root: '${path}'; run 'sudo chown root:root ${path} && sudo chmod 755 ${path}', then run 'smolvm setup' again."
+            return 1
+        fi
+    done
+}
+
+validate_helper_file() {
+    if [[ ! -f "${LOOPFS_HELPER_DST}" || ! -x "${LOOPFS_HELPER_DST}" ]]; then
+        echo "❌ Runtime helper is missing or not executable: '${LOOPFS_HELPER_DST}'; run 'smolvm setup' to restore it."
+        return 1
+    fi
+    local owner
+    local mode
+    owner="$(stat -c %u "${LOOPFS_HELPER_DST}")"
+    mode="$(stat -c %a "${LOOPFS_HELPER_DST}")"
+    if [[ "${owner}" != "0" ]] || (( (8#${mode} & 8#022) != 0 )); then
+        echo "❌ Runtime helper must be controlled by root: '${LOOPFS_HELPER_DST}'; run 'smolvm setup' to restore it."
+        return 1
+    fi
+}
+
 install_loopfs_helper() {
     if [[ ! -f "${LOOPFS_HELPER_SRC}" ]]; then
-        echo "❌ Required helper script not found: ${LOOPFS_HELPER_SRC}"
+        echo "❌ Runtime helper source is missing: '${LOOPFS_HELPER_SRC}'; reinstall SmolVM, then run 'smolvm setup' again."
         exit 1
     fi
-    mkdir -p "$(dirname "${LOOPFS_HELPER_DST}")"
+    validate_helper_directory
+    "${INSTALL_BIN}" -d -o root -g root -m 0755 /var/lib/smolvm "${LOOPFS_HELPER_DIR}"
+    validate_helper_directory
     "${INSTALL_BIN}" -o root -g root -m 0755 "${LOOPFS_HELPER_SRC}" "${LOOPFS_HELPER_DST}"
+    validate_helper_file
 }
 
 render_sudoers() {
@@ -140,11 +174,10 @@ render_sudoers() {
     # sysctl to a per-tap pattern. Sysctl is widened to match the ip/nft scope.
     cat > "${target_file}" <<EOF
 # Managed by SmolVM (${SCRIPT_NAME}) for user ${RUNTIME_USER}
-# Allows only commands needed by SmolVM runtime networking, Firecracker, and image mount helper.
+# Allows only commands needed by SmolVM networking and the image-build helper.
 Cmnd_Alias SMOLVM_NET_CMDS = ${IP_BIN} *, ${NFT_BIN} *, ${SYSCTL_BIN} *
-Cmnd_Alias SMOLVM_VM_CMDS = ${FIRECRACKER_BIN} *, /bin/kill -9 *, /usr/bin/kill -9 *
 Cmnd_Alias SMOLVM_IMG_CMDS = ${LOOPFS_HELPER_DST} *
-${RUNTIME_USER} ALL=(root) NOPASSWD: SMOLVM_NET_CMDS, SMOLVM_VM_CMDS, SMOLVM_IMG_CMDS
+${RUNTIME_USER} ALL=(root) NOPASSWD: SMOLVM_NET_CMDS, SMOLVM_IMG_CMDS
 EOF
 }
 
@@ -165,9 +198,6 @@ check_runtime_access() {
     fi
     if ! "${runner[@]}" "${SYSCTL_BIN}" net.ipv4.ip_forward >/dev/null 2>&1; then
         failures+=("sysctl")
-    fi
-    if ! "${runner[@]}" "${FIRECRACKER_BIN}" --version >/dev/null 2>&1; then
-        failures+=("firecracker")
     fi
     if ! "${runner[@]}" "${LOOPFS_HELPER_DST}" --help >/dev/null 2>&1; then
         failures+=("image-build-loopfs-helper")
@@ -198,10 +228,8 @@ if [[ "${CHECK_ONLY}" == "true" ]]; then
         exit 1
     fi
     validate_sudoers_file "${SUDOERS_FILE}"
-    if [[ ! -x "${LOOPFS_HELPER_DST}" ]]; then
-        echo "❌ Runtime helper missing or not executable: ${LOOPFS_HELPER_DST}"
-        exit 1
-    fi
+    validate_helper_directory
+    validate_helper_file
     check_runtime_access
     exit 0
 fi

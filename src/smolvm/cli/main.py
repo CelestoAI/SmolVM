@@ -476,9 +476,16 @@ def _run_setup(
     skip_kvm_check: bool,
     skip_runtime_check: bool,
     firecracker_version: str | None,
+    firecracker_dir: Path | None,
     assets_dir: bool,
 ) -> int:
     """Handle ``smolvm setup``."""
+    from smolvm.host.paths import (
+        configured_firecracker_dir,
+        default_firecracker_dir,
+        directory_is_on_path,
+        resolve_firecracker_dir,
+    )
     from smolvm.host.setup import SetupOptions, packaged_asset_root, run_setup
 
     if assets_dir:
@@ -525,6 +532,8 @@ def _run_setup(
         invalid_remove_runtime_flags.append("--no-configure-runtime")
     if skip_deps:
         invalid_remove_runtime_flags.append("--skip-deps")
+    if firecracker_dir is not None:
+        invalid_remove_runtime_flags.append("--firecracker-dir")
 
     if remove_runtime_config and invalid_remove_runtime_flags:
         raise click.UsageError(
@@ -543,6 +552,7 @@ def _run_setup(
         skip_kvm_check=skip_kvm_check,
         skip_runtime_check=skip_runtime_check,
         firecracker_version=firecracker_version,
+        firecracker_dir=firecracker_dir,
     )
 
     if options.for_bake:
@@ -552,7 +562,24 @@ def _run_setup(
         )
 
     try:
-        return run_setup(options)
+        result = run_setup(options)
+        if result == 0 and not check_only and firecracker_dir is not None:
+            resolved_dir = resolve_firecracker_dir(firecracker_dir)
+            environment_dir = configured_firecracker_dir()
+            discoverable = (
+                resolved_dir == default_firecracker_dir()
+                or environment_dir == resolved_dir
+                or directory_is_on_path(resolved_dir)
+            )
+            if not discoverable:
+                export_value = shlex.quote(str(resolved_dir))
+                console_stdout().print(
+                    "Firecracker was installed in "
+                    f"'{escape(str(resolved_dir))}'; run "
+                    f"'export SMOLVM_FIRECRACKER_DIR={escape(export_value)}' "
+                    "before your next SmolVM command."
+                )
+        return result
     except Exception as exc:
         return _emit_cli_error("setup", 1, exc, json_output=False)
 

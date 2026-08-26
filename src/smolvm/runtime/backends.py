@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from smolvm.exceptions import SmolVMError
+from smolvm.host.paths import find_firecracker
 from smolvm.utils import which  # noqa: F401 — imported for test patching
 
 logger = logging.getLogger(__name__)
@@ -36,10 +37,6 @@ BACKEND_AUTO = "auto"
 
 SUPPORTED_BACKENDS = {BACKEND_FIRECRACKER, BACKEND_QEMU, BACKEND_LIBKRUN, BACKEND_VZ}
 
-# Where ``smolvm`` installs a private Firecracker binary when it isn't on PATH.
-# Kept in sync with ``smolvm.host.manager.HostManager.BIN_DIR``; duplicated here
-# so backend selection stays free of the heavier host-manager import.
-_LOCAL_BIN_DIR = Path.home() / ".smolvm" / "bin"
 _KVM_DEVICE = Path("/dev/kvm")
 
 
@@ -73,11 +70,8 @@ def _qemu_system_candidates() -> tuple[str, ...]:
 
 
 def _firecracker_binary_present() -> bool:
-    """Return whether a Firecracker binary is on ``PATH`` or in ``~/.smolvm/bin``."""
-    if which("firecracker") is not None:
-        return True
-    local = _LOCAL_BIN_DIR / "firecracker"
-    return local.exists() and os.access(local, os.X_OK)
+    """Return whether the configured Firecracker binary is executable."""
+    return find_firecracker(path_lookup=which) is not None
 
 
 def _kvm_accessible() -> bool:
@@ -328,8 +322,7 @@ def _create_with_qemu_command(vm_name: str | None) -> str:
 def _firecracker_missing_message(vm_name: str | None = None) -> str:
     """Plain-English recovery for a missing Firecracker binary."""
     return (
-        "Firecracker isn't installed on this machine. Install it and make sure "
-        "the 'firecracker' binary is on your PATH (or in ~/.smolvm/bin), or "
+        "Firecracker isn't installed on this machine. Run 'smolvm setup', or "
         f"create the sandbox with a different backend, e.g. '{_create_with_qemu_command(vm_name)}'."
     )
 
