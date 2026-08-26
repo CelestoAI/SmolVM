@@ -607,6 +607,15 @@ class TestSmolVMCreate:
         mock_network.async_setup_ssh_port_forward.assert_not_called()
 
 
+# 32 MiB. `sparse_copy` decides per chunk by content, so the source's own hole
+# map is irrelevant; what decides whether the TARGET ends up sparse is its size
+# on the volume the test runs on. On one macOS volume a written extent below
+# ~16 MiB comes back fully allocated while 32 MiB does not, and other APFS
+# volumes on the same machine punch holes from 1 MiB. The mechanism is not
+# identified, so treat this as a margin rather than a bound.
+_SPARSE_HOLE_BYTES = 32 * 1024 * 1024
+
+
 class TestSmolVMDiskLifecycle:
     """Tests for per-VM disk materialization and cleanup."""
 
@@ -614,7 +623,7 @@ class TestSmolVMDiskLifecycle:
     def _write_sparse_file(path: Path) -> None:
         with path.open("wb") as file:
             file.write(b"start")
-            file.seek(4 * 1024 * 1024)
+            file.seek(_SPARSE_HOLE_BYTES)
             file.write(b"end")
 
     @staticmethod
@@ -622,7 +631,7 @@ class TestSmolVMDiskLifecycle:
         assert target.stat().st_size == source.stat().st_size
         with target.open("rb") as file:
             assert file.read(5) == b"start"
-            file.seek(4 * 1024 * 1024)
+            file.seek(_SPARSE_HOLE_BYTES)
             assert file.read(3) == b"end"
         assert target.stat().st_blocks * 512 < target.stat().st_size
 

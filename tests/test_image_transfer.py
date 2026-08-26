@@ -29,7 +29,15 @@ import zstandard
 
 from smolvm.cli.main import main
 
-_SPARSE_PAYLOAD = b"\x00" * (1 << 20) + b"REAL-DATA" + b"\x00" * (1 << 20)
+# 32 MiB. `sparse_copy` decides per chunk by content, so the source's own hole
+# map is irrelevant; what decides whether the TARGET ends up sparse is its size
+# on the volume the test runs on. On one macOS volume a written extent below
+# ~16 MiB comes back fully allocated while 32 MiB does not, and other APFS
+# volumes on the same machine punch holes from 1 MiB. The mechanism is not
+# identified, so treat this as a margin rather than a bound.
+_SPARSE_HOLE_BYTES = 32 * 1024 * 1024
+
+_SPARSE_PAYLOAD = b"\x00" * _SPARSE_HOLE_BYTES + b"REAL-DATA"
 
 
 def _make_published_entry(root: Path, name: str) -> Path:
@@ -41,7 +49,7 @@ def _make_published_entry(root: Path, name: str) -> Path:
     (d / "vmlinux.bin").write_bytes(b"kernel-bytes")
     with open(d / "rootfs.ext4", "wb") as f:
         f.truncate(len(_SPARSE_PAYLOAD))
-        f.seek(1 << 20)
+        f.seek(_SPARSE_HOLE_BYTES)
         f.write(b"REAL-DATA")
     return d
 
@@ -107,7 +115,7 @@ class TestSaveLoadRoundTrip:
         ).read_text()
         # Rootfs content intact and holes restored.
         with open(loaded / "rootfs.ext4", "rb") as f:
-            f.seek(1 << 20)
+            f.seek(_SPARSE_HOLE_BYTES)
             assert f.read(9) == b"REAL-DATA"
         st = os.stat(loaded / "rootfs.ext4")
         if getattr(st, "st_blocks", None) is not None:

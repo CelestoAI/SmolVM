@@ -166,10 +166,19 @@ def test_production_code_does_not_import_private_core_extension() -> None:
     assert offenders == []
 
 
+# 32 MiB. `sparse_copy` decides per chunk by content, so the source's own hole
+# map is irrelevant; what decides whether the TARGET ends up sparse is its size
+# on the volume the test runs on. On one macOS volume a written extent below
+# ~16 MiB comes back fully allocated while 32 MiB does not, and other APFS
+# volumes on the same machine punch holes from 1 MiB. The mechanism is not
+# identified, so treat this as a margin rather than a bound.
+_SPARSE_HOLE_BYTES = 32 * 1024 * 1024
+
+
 def _write_sparse_file(path: Path) -> None:
     with path.open("wb") as file:
         file.write(b"start")
-        file.seek(4 * 1024 * 1024)
+        file.seek(_SPARSE_HOLE_BYTES)
         file.write(b"end")
 
 
@@ -190,7 +199,7 @@ def test_native_clone_or_sparse_copy_preserves_sparse_holes(tmp_path: Path) -> N
     assert target.stat().st_size == source.stat().st_size
     with target.open("rb") as file:
         assert file.read(5) == b"start"
-        file.seek(4 * 1024 * 1024)
+        file.seek(_SPARSE_HOLE_BYTES)
         assert file.read(3) == b"end"
     assert target.stat().st_blocks * 512 < target.stat().st_size
 
@@ -198,7 +207,7 @@ def test_native_clone_or_sparse_copy_preserves_sparse_holes(tmp_path: Path) -> N
 def test_native_decompress_zstd_sparse_preserves_sparse_holes(tmp_path: Path) -> None:
     """Native zstd decompression should avoid allocating zero-filled ranges."""
     zstandard = pytest.importorskip("zstandard")
-    plain = b"start" + (b"\0" * (4 * 1024 * 1024)) + b"end"
+    plain = b"start" + (b"\0" * _SPARSE_HOLE_BYTES) + b"end"
     source = tmp_path / "rootfs.ext4.zst"
     target = tmp_path / "rootfs.ext4"
     source.write_bytes(zstandard.ZstdCompressor(level=3).compress(plain))

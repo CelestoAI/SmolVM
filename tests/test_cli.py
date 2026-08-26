@@ -5344,7 +5344,10 @@ class TestCliCompletion:
         capsys: pytest.CaptureFixture,
     ) -> None:
         """`completion bash --install` persists the script and sources it from ~/.bashrc."""
-        ret = main(["completion", "bash", "--install"])
+        # Pin the platform: ~/.bashrc is the Linux answer, and the macOS answer
+        # has its own test below. Without this the assertion tracks the host.
+        with patch("smolvm.cli.completion.platform.system", return_value="Linux"):
+            ret = main(["completion", "bash", "--install"])
 
         assert ret == 0
         script_path = fake_home / ".smolvm" / "completions" / "smolvm.bash"
@@ -5356,8 +5359,9 @@ class TestCliCompletion:
 
     def test_completion_install_is_idempotent(self, fake_home: Path) -> None:
         """Re-running --install refreshes the script without duplicating the rc line."""
-        main(["completion", "bash", "--install"])
-        ret = main(["completion", "bash", "--install"])
+        with patch("smolvm.cli.completion.platform.system", return_value="Linux"):
+            main(["completion", "bash", "--install"])
+            ret = main(["completion", "bash", "--install"])
 
         assert ret == 0
         script_path = fake_home / ".smolvm" / "completions" / "smolvm.bash"
@@ -5418,7 +5422,8 @@ class TestCliCompletion:
         quirky_home.mkdir()
         with pytest.MonkeyPatch.context() as mp:
             mp.setenv("HOME", str(quirky_home))
-            ret = main(["completion", "bash", "--install"])
+            with patch("smolvm.cli.completion.platform.system", return_value="Linux"):
+                ret = main(["completion", "bash", "--install"])
 
         assert ret == 0
         script_path = quirky_home / ".smolvm" / "completions" / "smolvm.bash"
@@ -5531,7 +5536,10 @@ class TestCliCompletion:
         sudo_info.pw_uid = os.getuid()
         sudo_info.pw_gid = os.getgid()
 
-        with patch("smolvm.vm._get_sudo_user_info", return_value=sudo_info):
+        with (
+            patch("smolvm.vm._get_sudo_user_info", return_value=sudo_info),
+            patch("smolvm.cli.completion.platform.system", return_value="Linux"),
+        ):
             ret = main(["completion", "bash", "--install"])
 
         assert ret == 0

@@ -928,6 +928,15 @@ class TestBundledManifest:
             )
 
 
+# 32 MiB. `sparse_copy` decides per chunk by content, so the source's own hole
+# map is irrelevant; what decides whether the TARGET ends up sparse is its size
+# on the volume the test runs on. On one macOS volume a written extent below
+# ~16 MiB comes back fully allocated while 32 MiB does not, and other APFS
+# volumes on the same machine punch holes from 1 MiB. The mechanism is not
+# identified, so treat this as a margin rather than a bound.
+_SPARSE_HOLE_BYTES = 32 * 1024 * 1024
+
+
 class TestDecompressZstd:
     """Direct tests for the streaming decompressor."""
 
@@ -987,7 +996,7 @@ class TestDecompressZstd:
         """Published raw ext4 caches should keep large zero regions sparse."""
         import zstandard
 
-        plain = b"start" + (b"\0" * (4 * 1024 * 1024)) + b"end"
+        plain = b"start" + (b"\0" * _SPARSE_HOLE_BYTES) + b"end"
         src = tmp_path / "rootfs.ext4.zst"
         src.write_bytes(zstandard.ZstdCompressor(level=3).compress(plain))
         dst = tmp_path / "rootfs.ext4"
