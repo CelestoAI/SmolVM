@@ -2588,7 +2588,7 @@ class TestCliSetup:
 
         assert ret == 0
         output = "".join(capsys.readouterr().out.split())
-        assert f"SMOLVM_FIRECRACKER_DIR={selected}" in output
+        assert f"runexportSMOLVM_FIRECRACKER_DIR={selected}" in output
 
     @patch("smolvm.cli.commands.options.platform.system", return_value="Linux")
     def test_setup_remove_runtime_config_rejects_firecracker_dir(

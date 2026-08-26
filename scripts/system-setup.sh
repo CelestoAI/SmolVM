@@ -182,27 +182,26 @@ resolve_user_home() {
 }
 
 resolve_firecracker_directory() {
-    local runtime_user
-    local runtime_home
-    runtime_user="$(resolve_runtime_user)"
-    if [[ -z "${runtime_user}" && ${EUID} -eq 0 ]]; then
-        runtime_user="root"
-    fi
-    if [[ -z "${runtime_user}" ]]; then
-        echo "❌ SmolVM could not determine your account; rerun with '--runtime-user $(id -un)'."
-        return 1
-    fi
-    runtime_home="$(resolve_user_home "${runtime_user}")"
-
     if [[ "${FIRECRACKER_DIR_CONFIGURED}" != "true" && -n "${SMOLVM_FIRECRACKER_DIR+x}" ]]; then
         if [[ -z "${SMOLVM_FIRECRACKER_DIR//[[:space:]]/}" ]]; then
-            echo "❌ SMOLVM_FIRECRACKER_DIR is empty; unset it or set it to an absolute folder."
+            echo "❌ SMOLVM_FIRECRACKER_DIR is empty; run 'unset SMOLVM_FIRECRACKER_DIR', then run 'smolvm setup'."
             return 1
         fi
         FIRECRACKER_DIR="${SMOLVM_FIRECRACKER_DIR}"
         FIRECRACKER_DIR_CONFIGURED=true
     fi
     if [[ -z "${FIRECRACKER_DIR}" ]]; then
+        local runtime_user
+        local runtime_home
+        runtime_user="$(resolve_runtime_user)"
+        if [[ -z "${runtime_user}" && ${EUID} -eq 0 ]]; then
+            runtime_user="root"
+        fi
+        if [[ -z "${runtime_user}" ]]; then
+            echo "❌ SmolVM could not determine your account; rerun with '--runtime-user $(id -un)'."
+            return 1
+        fi
+        runtime_home="$(resolve_user_home "${runtime_user}")"
         FIRECRACKER_DIR="${runtime_home}/.smolvm/bin"
     fi
     if [[ "${FIRECRACKER_DIR}" != /* ]]; then
@@ -569,7 +568,8 @@ else
 fi
 
 if [[ -z "${firecracker_path}" ]]; then
-    echo "❌ Firecracker is missing from '${FIRECRACKER_DIR}'; run 'smolvm setup --firecracker-dir ${FIRECRACKER_DIR}' to install it."
+    printf -v firecracker_dir_arg '%q' "${FIRECRACKER_DIR}"
+    echo "❌ Firecracker is missing from '${FIRECRACKER_DIR}'; run this command: smolvm setup --firecracker-dir ${firecracker_dir_arg}"
     exit 1
 fi
 

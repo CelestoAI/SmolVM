@@ -53,8 +53,13 @@ def test_environment_beats_default(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 def test_empty_environment_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(SMOLVM_FIRECRACKER_DIR_ENV, "   ")
 
-    with pytest.raises(ValueError, match="SMOLVM_FIRECRACKER_DIR cannot be empty"):
+    with pytest.raises(ValueError) as exc_info:
         resolve_firecracker_dir()
+
+    message = str(exc_info.value)
+    assert "SMOLVM_FIRECRACKER_DIR is empty" in message
+    assert "unset SMOLVM_FIRECRACKER_DIR" in message
+    assert "smolvm setup" in message
 
 
 def test_relative_explicit_directory_becomes_absolute(

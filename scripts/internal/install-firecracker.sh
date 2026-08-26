@@ -141,18 +141,25 @@ if ! id "${runtime_user}" >/dev/null 2>&1; then
     exit 1
 fi
 runtime_group="$(id -gn "${runtime_user}")"
-runtime_home="$(resolve_user_home "${runtime_user}")"
+runtime_home=""
 
 if [[ -n "${FIRECRACKER_DIR_OVERRIDE}" ]]; then
     FIRECRACKER_DIR="${FIRECRACKER_DIR_OVERRIDE}"
 elif [[ -n "${SMOLVM_FIRECRACKER_DIR+x}" ]]; then
     if [[ -z "${SMOLVM_FIRECRACKER_DIR//[[:space:]]/}" ]]; then
-        echo "❌ SMOLVM_FIRECRACKER_DIR is empty; unset it or set it to an absolute folder."
+        echo "❌ SMOLVM_FIRECRACKER_DIR is empty; run 'unset SMOLVM_FIRECRACKER_DIR', then run 'smolvm setup'."
         exit 1
     fi
     FIRECRACKER_DIR="${SMOLVM_FIRECRACKER_DIR}"
 else
+    runtime_home="$(resolve_user_home "${runtime_user}")"
     FIRECRACKER_DIR="${runtime_home}/.smolvm/bin"
+fi
+
+# A configured folder does not require a home lookup, but use one when available
+# so destinations inside the user's home keep that user's ownership.
+if [[ -z "${runtime_home}" ]]; then
+    runtime_home="$(resolve_user_home "${runtime_user}" 2>/dev/null || true)"
 fi
 
 if [[ "${FIRECRACKER_DIR}" != /* ]]; then
@@ -165,8 +172,10 @@ if [[ -e "${FIRECRACKER_DIR}" && ! -d "${FIRECRACKER_DIR}" ]]; then
 fi
 
 user_scoped_dir=false
-if [[ "${FIRECRACKER_DIR}" == "${runtime_home}" || "${FIRECRACKER_DIR}" == "${runtime_home}/"* ]]; then
-    user_scoped_dir=true
+if [[ -n "${runtime_home}" ]]; then
+    if [[ "${FIRECRACKER_DIR}" == "${runtime_home}" || "${FIRECRACKER_DIR}" == "${runtime_home}/"* ]]; then
+        user_scoped_dir=true
+    fi
 fi
 
 if [[ -n "${FC_VERSION_OVERRIDE}" ]]; then

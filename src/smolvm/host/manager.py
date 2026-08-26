@@ -229,7 +229,7 @@ class HostManager:
             fallback = shlex.quote(str(default_firecracker_dir()))
             raise HostError(
                 f"Could not install Firecracker in '{firecracker_dir}': {e}; "
-                f"fix that folder, or run 'smolvm setup --firecracker-dir {fallback}'."
+                f"fix that folder, or run smolvm setup --firecracker-dir {fallback}."
             ) from e
 
         # Verify the binary exists and is executable

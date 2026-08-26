@@ -186,15 +186,15 @@ shell_hint() {
 
 main() {
     printf "\n"
-    printf "%s" "${GREEN}"
+    printf "%b" "${GREEN}"
     cat <<'BANNER'
       ___      _        _          _   ___
      / __|___ | |___ __| |_ ___   /_\ |_ _|
     | (__/ -_)| / -_|_-<  _/ _ \ / _ \ | |
      \___\___||_\___/__/\__\___//_/ \_\___|
 BANNER
-    printf "%s" "${RESET}"
-    printf "    %sSmolVM Installer%s\n" "${BOLD}" "${RESET}"
+    printf "%b" "${RESET}"
+    printf "    %bSmolVM Installer%b\n" "${BOLD}" "${RESET}"
     printf "    One command to give AI agents their own computer.\n\n"
 
     ensure_uv

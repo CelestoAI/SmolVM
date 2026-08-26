@@ -15,6 +15,7 @@
 """Tests for SmolVM doctor diagnostics."""
 
 import json
+import shlex
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -123,9 +124,9 @@ class TestDoctorFirecracker:
         firecracker = next(check for check in report.checks if check.name == "firecracker")
         assert firecracker.status == "fail"
         assert str(configured / "firecracker") in firecracker.detail
-        assert firecracker.fix is not None
-        assert "smolvm setup --firecracker-dir" in firecracker.fix
-        assert str(configured) in firecracker.fix
+        assert firecracker.fix == (
+            f"Run smolvm setup --firecracker-dir {shlex.quote(str(configured))}."
+        )
 
     @patch("smolvm.host.doctor._check_kvm_runtime", new=lambda: _pass("kvm"))
     @patch("smolvm.host.doctor._check_kvm_permissions", new=lambda: _pass("worker:kvm-permissions"))

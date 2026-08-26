@@ -31,7 +31,8 @@ def _normalize_directory(value: str | Path, *, source: str) -> Path:
     if isinstance(value, str) and not value.strip():
         if source == SMOLVM_FIRECRACKER_DIR_ENV:
             raise ValueError(
-                f"{SMOLVM_FIRECRACKER_DIR_ENV} cannot be empty; unset it or set it to a folder."
+                f"{SMOLVM_FIRECRACKER_DIR_ENV} is empty; run "
+                f"'unset {SMOLVM_FIRECRACKER_DIR_ENV}', then run 'smolvm setup'."
             )
         raise ValueError("firecracker_dir cannot be empty; choose a folder for Firecracker.")
 

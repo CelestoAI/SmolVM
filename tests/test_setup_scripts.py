@@ -88,19 +88,23 @@ def _run_installer(
     tools: Path,
     *,
     fail_tar: bool = False,
+    runtime_user: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["PATH"] = f"{tools}{os.pathsep}{env['PATH']}"
     if fail_tar:
         env["FAIL_FAKE_TAR"] = "1"
+    args = [
+        "bash",
+        str(_INSTALL_SCRIPT),
+        "--skip-deps",
+        "--firecracker-dir",
+        str(destination),
+    ]
+    if runtime_user is not None:
+        args.extend(["--runtime-user", runtime_user])
     return subprocess.run(
-        [
-            "bash",
-            str(_INSTALL_SCRIPT),
-            "--skip-deps",
-            "--firecracker-dir",
-            str(destination),
-        ],
+        args,
         env=env,
         capture_output=True,
         text=True,
@@ -118,7 +122,22 @@ def test_installer_supports_custom_directory_with_spaces(tmp_path: Path) -> None
     binary = destination / "firecracker"
     assert binary.is_file()
     assert os.access(binary, os.X_OK)
-    assert "Firecracker v1.14.1" in subprocess.check_output([binary], text=True)
+    version_output = subprocess.check_output([binary], text=True)
+    assert "Firecracker v1.14.1" in version_output
+
+
+def test_explicit_directory_does_not_require_runtime_user_home(tmp_path: Path) -> None:
+    if subprocess.run(["id", "nobody"], check=False, capture_output=True).returncode != 0:
+        pytest.skip("test requires the standard nobody account")
+
+    tools = _fake_download_tools(tmp_path)
+    _write_executable(tools / "getent", "#!/bin/sh\nexit 1\n")
+    destination = tmp_path / "explicit" / "bin"
+
+    result = _run_installer(destination, tools, runtime_user="nobody")
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert (destination / "firecracker").is_file()
 
 
 def test_failed_reinstall_preserves_existing_binary(tmp_path: Path) -> None:
@@ -173,7 +192,14 @@ def test_runtime_sudo_policy_excludes_user_writable_programs() -> None:
     text = _RUNTIME_CONFIG_SCRIPT.read_text()
 
     assert 'LOOPFS_HELPER_DIR="/var/lib/smolvm/libexec"' in text
+    assert '[[ -L "${LOOPFS_HELPER_DST}"' in text
     assert "SMOLVM_VM_CMDS" not in text
     assert "FIRECRACKER_BIN" not in text
     assert "kill -9" not in text
     assert "SMOLVM_FIRECRACKER_DIR" not in text
+
+
+def test_setup_recovery_shell_quotes_custom_firecracker_directory() -> None:
+    text = _SYSTEM_SETUP_SCRIPT.read_text()
+
+    assert "printf -v firecracker_dir_arg '%q'" in text

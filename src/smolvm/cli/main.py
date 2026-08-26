@@ -576,7 +576,7 @@ def _run_setup(
                 console_stdout().print(
                     "Firecracker was installed in "
                     f"'{escape(str(resolved_dir))}'; run "
-                    f"'export SMOLVM_FIRECRACKER_DIR={escape(export_value)}' "
+                    f"export SMOLVM_FIRECRACKER_DIR={escape(export_value)} "
                     "before your next SmolVM command."
                 )
         return result

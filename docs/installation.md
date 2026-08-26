@@ -40,7 +40,7 @@ smolvm setup --firecracker-dir "$HOME/.local/bin"
 If that folder is not already on `PATH`, set it for future SmolVM commands:
 
 ```bash
-export SMOLVM_FIRECRACKER_DIR="$HOME/.local/share/smolvm/bin"
+export SMOLVM_FIRECRACKER_DIR="$HOME/.local/bin"
 smolvm setup
 ```
 

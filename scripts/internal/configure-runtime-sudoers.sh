@@ -141,7 +141,7 @@ validate_helper_directory() {
 }
 
 validate_helper_file() {
-    if [[ ! -f "${LOOPFS_HELPER_DST}" || ! -x "${LOOPFS_HELPER_DST}" ]]; then
+    if [[ -L "${LOOPFS_HELPER_DST}" || ! -f "${LOOPFS_HELPER_DST}" || ! -x "${LOOPFS_HELPER_DST}" ]]; then
         echo "❌ Runtime helper is missing or not executable: '${LOOPFS_HELPER_DST}'; run 'smolvm setup' to restore it."
         return 1
     fi

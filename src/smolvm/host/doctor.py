@@ -621,7 +621,7 @@ def generate_doctor_report(backend: str | None = None) -> DoctorReport:
                 name="firecracker",
                 status="pass" if firecracker_path is not None else "fail",
                 detail=str(firecracker_path) if firecracker_path is not None else missing_detail,
-                fix=None if firecracker_path is not None else f"Run '{setup_command}'.",
+                fix=None if firecracker_path is not None else f"Run {setup_command}.",
             )
         )
 
