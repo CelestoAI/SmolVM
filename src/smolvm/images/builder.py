@@ -57,7 +57,8 @@ SSH_BOOT_ARGS = "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/i
 # 200+ VMs.  No console= since we don't need serial output in production.
 OPENCLAW_BOOT_ARGS = "reboot=k panic=1 pci=off init=/init 8250.nr_uarts=0"
 
-LOOPFS_HELPER_PATH = Path("/usr/local/libexec/smolvm-loopfs-helper")
+LOOPFS_HELPER_PATH = Path("/var/lib/smolvm/libexec/smolvm-loopfs-helper")
+LEGACY_LOOPFS_HELPER_PATH = Path("/usr/local/libexec/smolvm-loopfs-helper")
 
 # The SmolVM guest agent (vsock control plane). It is baked into every image
 # built here and launched by /init. The Rust crate lives in the repository
@@ -1845,9 +1846,10 @@ echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
         )
 
     def _loopfs_helper_path(self) -> Path | None:
-        """Return installed privileged helper path if available."""
-        if LOOPFS_HELPER_PATH.is_file():
-            return LOOPFS_HELPER_PATH
+        """Return the preferred or legacy privileged helper when executable."""
+        for candidate in (LOOPFS_HELPER_PATH, LEGACY_LOOPFS_HELPER_PATH):
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return candidate
         return None
 
     def _run_loopfs(self, action: str, *args: Path, timeout: int = 30) -> None:

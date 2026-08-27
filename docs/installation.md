@@ -27,6 +27,29 @@ smolvm doctor
 
 `smolvm doctor` reports problems and their recovery steps. Add `--strict` when a warning should fail an automated check.
 
+### Choose where Firecracker is stored
+
+On Linux, Firecracker is the program that starts a sandbox. SmolVM stores it in `~/.smolvm/bin` by default, which works without changing system folders.
+
+Choose another folder for one setup run with:
+
+```bash
+smolvm setup --firecracker-dir "$HOME/.local/bin"
+```
+
+If that folder is not already on `PATH`, set it for future SmolVM commands:
+
+```bash
+export SMOLVM_FIRECRACKER_DIR="$HOME/.local/bin"
+smolvm setup
+```
+
+This setting changes only the Firecracker location. Images still use `SMOLVM_IMAGE_DIR`, and sandbox state still uses `SMOLVM_DATA_DIR`.
+
+### Fedora Atomic desktops
+
+Silverblue, Bluefin, and other Fedora Atomic systems can use the normal setup command when the required host tools are already installed. SmolVM does not change the rpm-ostree deployment automatically. If a tool is missing, setup prints the exact `rpm-ostree` command and asks you to reboot before retrying.
+
 ### Prepare macOS desktop support
 
 Apple Silicon Mac users can install the separate local desktop runtime:

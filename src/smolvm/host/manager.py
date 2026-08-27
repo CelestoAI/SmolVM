@@ -20,6 +20,7 @@ Validates the host environment and manages the Firecracker binary.
 import logging
 import os
 import platform
+import shlex
 import shutil
 import stat
 import tarfile
@@ -31,6 +32,13 @@ import requests
 from pydantic import BaseModel
 
 from smolvm.exceptions import HostError
+from smolvm.host.paths import (
+    default_firecracker_dir,
+    resolve_firecracker_dir,
+)
+from smolvm.host.paths import (
+    find_firecracker as find_firecracker_binary,
+)
 from smolvm.utils import unsafe_tar_member_kind, which
 
 logger = logging.getLogger(__name__)
@@ -83,17 +91,33 @@ class HostManager:
     SMOLVM_HOME = Path.home() / ".smolvm"
     BIN_DIR = SMOLVM_HOME / "bin"
 
-    def __init__(self, firecracker_version: str = DEFAULT_FIRECRACKER_VERSION) -> None:
+    def __init__(
+        self,
+        firecracker_version: str = DEFAULT_FIRECRACKER_VERSION,
+        firecracker_dir: str | Path | None = None,
+    ) -> None:
         """Initialize the host manager.
 
         Args:
             firecracker_version: Pinned Firecracker version to install
                 when auto-installing (e.g., "v1.14.1").
+            firecracker_dir: Folder containing SmolVM's private Firecracker
+                binary. Explicit values override ``SMOLVM_FIRECRACKER_DIR``.
         """
         if not firecracker_version:
             raise ValueError("firecracker_version cannot be empty")
 
         self.firecracker_version = firecracker_version
+        self._firecracker_dir = firecracker_dir
+
+    def _firecracker_dir_input(self) -> str | Path | None:
+        """Return explicit configuration, including the legacy instance alias."""
+        return self.__dict__.get("BIN_DIR", self._firecracker_dir)
+
+    @property
+    def firecracker_dir(self) -> Path:
+        """Return the configured installation folder at call time."""
+        return resolve_firecracker_dir(self._firecracker_dir_input())
 
     # ------------------------------------------------------------------
     # Public API
@@ -151,26 +175,14 @@ class HostManager:
         return missing
 
     def find_firecracker(self) -> Path | None:
-        """Find the Firecracker binary.
-
-        Searches:
-        1. System PATH
-        2. ``~/.smolvm/bin/firecracker``
-
-        Returns:
-            Path to the binary, or None if not found.
-        """
-        # Check system PATH first
-        system_path = which("firecracker")
-        if system_path is not None:
-            logger.debug("Found firecracker in PATH: %s", system_path)
-            return system_path
-
-        # Check SmolVM local install
-        local_path = self.BIN_DIR / "firecracker"
-        if local_path.exists() and os.access(local_path, os.X_OK):
-            logger.debug("Found firecracker at: %s", local_path)
-            return local_path
+        """Find Firecracker in the configured folder, PATH, or user default."""
+        path = find_firecracker_binary(
+            self._firecracker_dir_input(),
+            path_lookup=which,
+        )
+        if path is not None:
+            logger.debug("Found firecracker at: %s", path)
+            return path
 
         logger.debug("Firecracker binary not found")
         return None
@@ -205,16 +217,20 @@ class HostManager:
         url = FIRECRACKER_RELEASE_URL.format(version=version, arch=arch)
         logger.info("Downloading Firecracker %s for %s from %s", version, arch, url)
 
-        # Ensure install directory exists
-        self.BIN_DIR.mkdir(parents=True, exist_ok=True)
-        dest = self.BIN_DIR / "firecracker"
+        firecracker_dir = self.firecracker_dir
+        dest = firecracker_dir / "firecracker"
 
         try:
+            firecracker_dir.mkdir(parents=True, exist_ok=True)
             self._download_and_extract(url, dest, version, arch)
         except requests.RequestException as e:
             raise HostError(f"Failed to download Firecracker: {e}") from e
         except (tarfile.TarError, OSError) as e:
-            raise HostError(f"Failed to extract Firecracker: {e}") from e
+            fallback = shlex.quote(str(default_firecracker_dir()))
+            raise HostError(
+                f"Could not install Firecracker in '{firecracker_dir}': {e}; "
+                f"fix that folder, or run smolvm setup --firecracker-dir {fallback}."
+            ) from e
 
         # Verify the binary exists and is executable
         if not dest.exists():

@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import platform
 import re
+import shlex
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -32,6 +33,7 @@ from smolvm.cli.output import console_stdout, emit_json, render_error, status_st
 from smolvm.exceptions import SmolVMError
 from smolvm.host.manager import HostManager
 from smolvm.host.network import check_network_prerequisites
+from smolvm.host.paths import configured_firecracker_dir
 from smolvm.runtime.backends import (
     BACKEND_AUTO,
     BACKEND_FIRECRACKER,
@@ -603,15 +605,23 @@ def generate_doctor_report(backend: str | None = None) -> DoctorReport:
         checks.append(_check_kvm_runtime())
 
         firecracker_path = host.find_firecracker()
+        configured_dir = configured_firecracker_dir()
+        missing_detail = (
+            f"Not found at {configured_dir / 'firecracker'}"
+            if configured_dir is not None
+            else "Not found in PATH or ~/.smolvm/bin"
+        )
+        setup_command = (
+            "smolvm setup"
+            if configured_dir is None
+            else f"smolvm setup --firecracker-dir {shlex.quote(str(configured_dir))}"
+        )
         checks.append(
             DoctorCheck(
                 name="firecracker",
                 status="pass" if firecracker_path is not None else "fail",
-                detail=(
-                    str(firecracker_path)
-                    if firecracker_path is not None
-                    else "binary not found in PATH or ~/.smolvm/bin"
-                ),
+                detail=str(firecracker_path) if firecracker_path is not None else missing_detail,
+                fix=None if firecracker_path is not None else f"Run {setup_command}.",
             )
         )
 
