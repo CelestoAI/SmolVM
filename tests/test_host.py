@@ -104,12 +104,20 @@ class TestCheckDependencies:
 class TestFindFirecracker:
     """Tests for finding the Firecracker binary."""
 
-    @patch("smolvm.host.manager.which", return_value=Path("/usr/local/bin/firecracker"))
-    def test_found_in_path(self, mock_which: MagicMock, host_manager: HostManager) -> None:
-        """Test finding firecracker in system PATH."""
-        result = host_manager.find_firecracker()
+    @patch("smolvm.host.manager.which")
+    def test_found_in_path(
+        self,
+        mock_which: MagicMock,
+        host_manager: HostManager,
+        tmp_path: Path,
+    ) -> None:
+        """Test finding an executable Firecracker in system PATH."""
+        binary = tmp_path / "firecracker"
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+        mock_which.return_value = binary
 
-        assert result == Path("/usr/local/bin/firecracker")
+        assert host_manager.find_firecracker() == binary
 
     @patch("smolvm.host.manager.os.access", return_value=True)
     @patch("smolvm.host.manager.which", return_value=None)
@@ -121,25 +129,19 @@ class TestFindFirecracker:
         tmp_path: Path,
     ) -> None:
         """Test finding firecracker in ~/.smolvm/bin/."""
-        # Override BIN_DIR to use tmp_path
-        host_manager.BIN_DIR = tmp_path / "bin"
-        host_manager.BIN_DIR.mkdir(parents=True)
-        fc_binary = host_manager.BIN_DIR / "firecracker"
-        fc_binary.touch()
+        host_manager = HostManager(firecracker_dir=tmp_path / "bin")
+        host_manager.firecracker_dir.mkdir(parents=True)
+        fc_binary = host_manager.firecracker_dir / "firecracker"
+        fc_binary.touch(mode=0o755)
 
-        result = host_manager.find_firecracker()
-
-        assert result == fc_binary
+        assert host_manager.find_firecracker() == fc_binary
 
     @patch("smolvm.host.manager.which", return_value=None)
     def test_not_found(self, mock_which: MagicMock, host_manager: HostManager) -> None:
         """Test when firecracker is not found anywhere."""
-        # BIN_DIR default points to ~/.smolvm/bin which doesn't have it
-        host_manager.BIN_DIR = Path("/nonexistent/dir")
+        host_manager = HostManager(firecracker_dir=Path("/nonexistent/dir"))
 
-        result = host_manager.find_firecracker()
-
-        assert result is None
+        assert host_manager.find_firecracker() is None
 
 
 class TestInstallFirecracker:
@@ -163,8 +165,7 @@ class TestInstallFirecracker:
         tmp_path: Path,
     ) -> None:
         """Test successful firecracker installation."""
-        # Override paths
-        host_manager.BIN_DIR = tmp_path / "bin"
+        host_manager = HostManager(firecracker_dir=tmp_path / "bin")
 
         # Create a fake tarball with a firecracker binary inside
         version = DEFAULT_FIRECRACKER_VERSION
@@ -229,7 +230,7 @@ class TestValidate:
         host_manager: HostManager,
     ) -> None:
         """Test validation when nothing is available."""
-        host_manager.BIN_DIR = Path("/nonexistent")
+        host_manager = HostManager(firecracker_dir=Path("/nonexistent"))
 
         info = host_manager.validate()
 
@@ -250,6 +251,11 @@ class TestHostManagerInit:
         """Test custom Firecracker version."""
         hm = HostManager(firecracker_version="v1.13.0")
         assert hm.firecracker_version == "v1.13.0"
+
+    def test_explicit_firecracker_dir(self, tmp_path: Path) -> None:
+        """An explicit Firecracker folder should override the default."""
+        hm = HostManager(firecracker_dir=tmp_path)
+        assert hm.firecracker_dir == tmp_path.resolve()
 
     def test_empty_version_raises(self) -> None:
         """Test that empty version raises ValueError."""

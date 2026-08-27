@@ -262,6 +262,51 @@ class TestBuildSetupCommand:
             "v1.15.0",
         ]
 
+    def test_linux_firecracker_dir_forwarded_as_absolute_path(self, tmp_path: Path) -> None:
+        asset_root = _make_asset_root(tmp_path)
+        selected = tmp_path / "path with spaces"
+
+        command = host_setup_module.build_setup_command(
+            host_setup_module.SetupOptions(firecracker_dir=selected),
+            system_name="Linux",
+            asset_root=asset_root,
+        )
+
+        assert command[-2:] == ["--firecracker-dir", str(selected.resolve())]
+
+    def test_linux_firecracker_dir_reads_environment(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        asset_root = _make_asset_root(tmp_path)
+        selected = tmp_path / "environment"
+        monkeypatch.setenv("SMOLVM_FIRECRACKER_DIR", str(selected))
+
+        command = host_setup_module.build_setup_command(
+            host_setup_module.SetupOptions(),
+            system_name="Linux",
+            asset_root=asset_root,
+        )
+
+        assert command[-2:] == ["--firecracker-dir", str(selected.resolve())]
+
+    def test_linux_relative_firecracker_dir_resolves_before_bash(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        asset_root = _make_asset_root(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        command = host_setup_module.build_setup_command(
+            host_setup_module.SetupOptions(firecracker_dir=Path("runtime/bin")),
+            system_name="Linux",
+            asset_root=asset_root,
+        )
+
+        assert command[-2:] == ["--firecracker-dir", str((tmp_path / "runtime/bin").resolve())]
+
     def test_macos_ignores_linux_only_bake_flags(self, tmp_path: Path) -> None:
         asset_root = _make_asset_root(tmp_path)
 

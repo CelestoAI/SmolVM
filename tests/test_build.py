@@ -221,6 +221,31 @@ class TestDockerDiagnostics:
 class TestImageBuilderLoopFs:
     """Tests for image builder loopfs helper integration."""
 
+    def test_loopfs_helper_prefers_new_root_controlled_path(self, tmp_path: Path) -> None:
+        preferred = tmp_path / "var" / "smolvm-loopfs-helper"
+        legacy = tmp_path / "usr-local" / "smolvm-loopfs-helper"
+        for helper in (preferred, legacy):
+            helper.parent.mkdir(parents=True)
+            helper.touch(mode=0o755)
+
+        with (
+            patch.object(builder_mod, "LOOPFS_HELPER_PATH", preferred),
+            patch.object(builder_mod, "LEGACY_LOOPFS_HELPER_PATH", legacy),
+        ):
+            assert ImageBuilder(cache_dir=tmp_path / "images")._loopfs_helper_path() == preferred
+
+    def test_loopfs_helper_uses_legacy_path_during_migration(self, tmp_path: Path) -> None:
+        preferred = tmp_path / "missing"
+        legacy = tmp_path / "legacy" / "smolvm-loopfs-helper"
+        legacy.parent.mkdir()
+        legacy.touch(mode=0o755)
+
+        with (
+            patch.object(builder_mod, "LOOPFS_HELPER_PATH", preferred),
+            patch.object(builder_mod, "LEGACY_LOOPFS_HELPER_PATH", legacy),
+        ):
+            assert ImageBuilder(cache_dir=tmp_path / "images")._loopfs_helper_path() == legacy
+
     def test_run_loopfs_missing_helper_raises(self, tmp_path: Path) -> None:
         builder = ImageBuilder(cache_dir=tmp_path / "images")
 

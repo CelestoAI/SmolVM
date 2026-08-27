@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import shlex
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -470,6 +471,16 @@ def sandbox_prune(
 @click.option("--skip-kvm-check", cls=LinuxOnlyOption, is_flag=True)
 @click.option("--skip-runtime-check", cls=LinuxOnlyOption, is_flag=True)
 @click.option("--firecracker-version", cls=LinuxOnlyOption, default=None, metavar="VER")
+@click.option(
+    "--firecracker-dir",
+    cls=LinuxOnlyOption,
+    type=click.Path(path_type=Path, file_okay=False),
+    default=None,
+    metavar="DIR",
+    help=(
+        "Folder for the Firecracker program (default: $SMOLVM_FIRECRACKER_DIR or ~/.smolvm/bin)."
+    ),
+)
 def setup(
     check_only: bool,
     with_docker: bool,
@@ -483,6 +494,7 @@ def setup(
     skip_kvm_check: bool,
     skip_runtime_check: bool,
     firecracker_version: str | None,
+    firecracker_dir: Path | None,
 ) -> Any:
     _before_command(skip_update_notice=assets_dir)
     return _handlers()._run_setup(
@@ -498,6 +510,7 @@ def setup(
         skip_kvm_check=skip_kvm_check,
         skip_runtime_check=skip_runtime_check,
         firecracker_version=firecracker_version,
+        firecracker_dir=firecracker_dir,
         assets_dir=assets_dir,
     )
 

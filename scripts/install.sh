@@ -27,8 +27,9 @@
 #   3. Runs `smolvm setup` to configure the host
 #
 # Options (forwarded to `smolvm setup`):
-#   --skip-deps      Skip apt dependency installation (assumes deps are present)
-#   --with-docker    Also install Docker for SSH image support
+#   --skip-deps              Skip operating-system package installation
+#   --with-docker            Also install Docker for SSH image support
+#   --firecracker-dir <dir>  Install Firecracker in a specific folder
 #
 # After installation, the `smolvm` command is available globally.
 
@@ -49,11 +50,35 @@ warn()  { printf "${BOLD}${YELLOW}warning:${RESET} %s\n" "$*"; }
 error() { printf "${BOLD}${RED}error:${RESET} %s\n" "$*" >&2; }
 die()   { error "$@"; exit 1; }
 
-# Collect extra flags to forward to `smolvm setup`
+# Collect extra flags to forward to `smolvm setup`. Remember the Firecracker
+# folder so the final doctor check uses the same location.
 SETUP_ARGS=()
-for arg in "$@"; do
-    SETUP_ARGS+=("$arg")
+FIRECRACKER_DIR_ARG=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --firecracker-dir)
+            if [[ $# -lt 2 ]]; then
+                die "--firecracker-dir needs a folder."
+            fi
+            SETUP_ARGS+=("$1" "$2")
+            FIRECRACKER_DIR_ARG="$2"
+            shift 2
+            ;;
+        --firecracker-dir=*)
+            SETUP_ARGS+=("$1")
+            FIRECRACKER_DIR_ARG="${1#*=}"
+            shift
+            ;;
+        *)
+            SETUP_ARGS+=("$1")
+            shift
+            ;;
+    esac
 done
+
+if [[ -n "${FIRECRACKER_DIR_ARG}" ]]; then
+    export SMOLVM_FIRECRACKER_DIR="${FIRECRACKER_DIR_ARG}"
+fi
 
 # ---------------------------------------------------------------------------
 # Step 1 — Ensure uv is available
@@ -67,7 +92,9 @@ find_uv() {
     # 2. Common install locations (not yet on PATH in this session)
     for candidate in "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
         if [ -x "$candidate" ]; then
-            export PATH="$(dirname "$candidate"):$PATH"
+            local candidate_dir
+            candidate_dir="$(dirname "$candidate")"
+            export PATH="${candidate_dir}:$PATH"
             return 0
         fi
     done
@@ -127,7 +154,7 @@ install_smolvm() {
 
 run_setup() {
     info "Running smolvm setup …"
-    smolvm setup --skip-deps ${SETUP_ARGS[@]+"${SETUP_ARGS[@]}"}
+    smolvm setup --skip-deps "${SETUP_ARGS[@]}"
 }
 
 # ---------------------------------------------------------------------------
@@ -159,15 +186,15 @@ shell_hint() {
 
 main() {
     printf "\n"
-    printf "${GREEN}"
+    printf "%b" "${GREEN}"
     cat <<'BANNER'
       ___      _        _          _   ___
      / __|___ | |___ __| |_ ___   /_\ |_ _|
     | (__/ -_)| / -_|_-<  _/ _ \ / _ \ | |
      \___\___||_\___/__/\__\___//_/ \_\___|
 BANNER
-    printf "${RESET}"
-    printf "    ${BOLD}SmolVM Installer${RESET}\n"
+    printf "%b" "${RESET}"
+    printf "    %bSmolVM Installer%b\n" "${BOLD}" "${RESET}"
     printf "    One command to give AI agents their own computer.\n\n"
 
     ensure_uv

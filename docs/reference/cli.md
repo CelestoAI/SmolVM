@@ -12,6 +12,14 @@ The CLI creates and manages disposable sandboxes. Run `smolvm COMMAND --help` fo
 | `smolvm update` | Upgrade to the latest stable release. |
 | `smolvm prune` | Remove stale cached images (alias for `smolvm image prune`). |
 
+On Linux, `smolvm setup` stores Firecracker—the program that starts a sandbox—in `~/.smolvm/bin`. Use `--firecracker-dir` to choose another folder for one setup run:
+
+```bash
+smolvm setup --firecracker-dir "$HOME/.local/bin"
+```
+
+Set `SMOLVM_FIRECRACKER_DIR` when future commands also need to find a folder that is not on `PATH`. See [Install SmolVM](../installation.md) for Fedora Atomic and build-machine setup.
+
 ## Work with sandboxes
 
 Run these in the order you need them:
