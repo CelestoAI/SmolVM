@@ -983,11 +983,16 @@ class TestDecompressZstd:
         assert not list(tmp_path.glob("*.partial"))
         assert not list(tmp_path.glob("*.partial.tmp"))
 
-    def test_decompress_zstd_preserves_sparse_zero_ranges(self, tmp_path: Path) -> None:
+    def test_decompress_zstd_preserves_sparse_zero_ranges(
+        self,
+        tmp_path: Path,
+        sparse_test_config: tuple[int, bool],
+    ) -> None:
         """Published raw ext4 caches should keep large zero regions sparse."""
         import zstandard
 
-        plain = b"start" + (b"\0" * (4 * 1024 * 1024)) + b"end"
+        hole_bytes, supports_sparse_allocation = sparse_test_config
+        plain = b"start" + (b"\0" * hole_bytes) + b"end"
         src = tmp_path / "rootfs.ext4.zst"
         src.write_bytes(zstandard.ZstdCompressor(level=3).compress(plain))
         dst = tmp_path / "rootfs.ext4"
@@ -995,7 +1000,8 @@ class TestDecompressZstd:
         _decompress_zstd(src, dst)
 
         assert dst.read_bytes() == plain
-        assert dst.stat().st_blocks * 512 < dst.stat().st_size
+        if supports_sparse_allocation:
+            assert dst.stat().st_blocks * 512 < dst.stat().st_size
 
     def test_corrupted_input_cleans_up_tmp_file(self, tmp_path: Path) -> None:
         """A failed decompress must not leave a half-written ``.tmp`` behind."""

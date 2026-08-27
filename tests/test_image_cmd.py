@@ -604,7 +604,12 @@ class TestAliases:
         assert payload["command"] == "image.list"
 
 
-def _make_published_entry(root: Path, name: str) -> Path:
+def _make_published_entry(
+    root: Path,
+    name: str,
+    *,
+    hole_bytes: int = 1 * 1024 * 1024,
+) -> Path:
     """A realistic published cache dir: kernel, zst, sparse rootfs, sidecar."""
     import hashlib
 
@@ -612,23 +617,31 @@ def _make_published_entry(root: Path, name: str) -> Path:
 
     d = root / name
     d.mkdir(parents=True)
-    raw = b"\x00" * (1 << 20) + b"REAL-DATA" + b"\x00" * (1 << 20)
+    raw = b"\x00" * hole_bytes + b"REAL-DATA" + b"\x00" * (1 * 1024 * 1024)
     (d / "rootfs.ext4.zst").write_bytes(zstandard.compress(raw))
     sha = hashlib.sha256((d / "rootfs.ext4.zst").read_bytes()).hexdigest()
     (d / "rootfs.ext4.from-sha256").write_text(f"sparse-v1:{sha}")
     (d / "vmlinux.bin").write_bytes(b"kernel-bytes")
     with open(d / "rootfs.ext4", "wb") as f:
         f.truncate(len(raw))
-        f.seek(1 << 20)
+        f.seek(hole_bytes)
         f.write(b"REAL-DATA")
     return d
 
 
 class TestImageInspect:
     def test_inspect_exact_name_returns_array(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+        sparse_test_config: tuple[int, bool],
     ) -> None:
-        _make_published_entry(tmp_path, "codex-v0.0.1-amd64-firecracker")
+        hole_bytes, supports_sparse_allocation = sparse_test_config
+        _make_published_entry(
+            tmp_path,
+            "codex-v0.0.1-amd64-firecracker",
+            hole_bytes=hole_bytes,
+        )
 
         ret = main(
             [
@@ -656,7 +669,7 @@ class TestImageInspect:
             "vmlinux.bin",
         }
         rootfs = files["rootfs.ext4"]
-        if os.name == "posix":
+        if supports_sparse_allocation:
             assert rootfs["size_on_disk_bytes"] < rootfs["size_bytes"]
         # Stale version: no manifest section.
         assert entry["manifest"] is None

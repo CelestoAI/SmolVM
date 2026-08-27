@@ -14,14 +14,27 @@ permissions:
 
 jobs:
   pytest:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
 
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         python-version: ["3.13", "3.14"]
+        # One macOS leg rather than the full cross-product: macOS runners are
+        # slower to schedule, and a single job is enough to catch an assertion
+        # that only holds on Linux. macOS is the first OS in the package
+        # classifiers and CONTRIBUTING.md documents it as a dev platform, but
+        # the suite had never run on it.
+        include:
+          # `label` is undefined on the ubuntu legs, so it renders empty and their
+          # existing check names are untouched -- required status checks and the
+          # merge queue gate on those names.
+          - os: macos-latest
+            python-version: "3.14"
+            label: ", macOS"
 
-    name: pytest (Python ${{ matrix.python-version }})
+    name: pytest (Python ${{ matrix.python-version }}${{ matrix.label }})
 
     steps:
       - name: Check out repository
@@ -57,13 +70,26 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev --python ${{ matrix.python-version }}
 
+      # Netlink is a Linux interface, so HAS_NETLINK is False on macOS by
+      # design. Assert the strong property where it applies; macOS asserts the
+      # portable one below.
       - name: Assert native extension available
+        if: runner.os == 'Linux'
         run: |
           uv run python -c "
           from smolvm.host._accel import HAS_NETLINK
           assert HAS_NETLINK, 'smolvm-core not loaded'
           from smolvm_core import network
           assert network.available(), 'Native extension reports native networking unavailable on Linux'
+          print('smolvm-core: OK')
+          "
+
+      - name: Assert native extension available (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          uv run python -c "
+          from smolvm_core import disk
+          assert disk.available(), 'Native extension reports native disk I/O unavailable'
           print('smolvm-core: OK')
           "
 

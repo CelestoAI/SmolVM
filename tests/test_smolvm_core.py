@@ -166,23 +166,28 @@ def test_production_code_does_not_import_private_core_extension() -> None:
     assert offenders == []
 
 
-def _write_sparse_file(path: Path) -> None:
+def _write_sparse_file(path: Path, hole_bytes: int) -> None:
     with path.open("wb") as file:
         file.write(b"start")
-        file.seek(4 * 1024 * 1024)
+        file.seek(hole_bytes)
         file.write(b"end")
 
 
-def _assert_sparse_image(path: Path, expected: bytes) -> None:
+def _assert_sparse_image(path: Path, expected: bytes, *, assert_sparse: bool) -> None:
     assert path.read_bytes() == expected
-    assert path.stat().st_blocks * 512 < path.stat().st_size
+    if assert_sparse:
+        assert path.stat().st_blocks * 512 < path.stat().st_size
 
 
-def test_native_clone_or_sparse_copy_preserves_sparse_holes(tmp_path: Path) -> None:
+def test_native_clone_or_sparse_copy_preserves_sparse_holes(
+    tmp_path: Path,
+    sparse_test_config: tuple[int, bool],
+) -> None:
     """Native disk copy should keep sparse raw-rootfs holes sparse."""
+    hole_bytes, supports_sparse_allocation = sparse_test_config
     source = tmp_path / "source.ext4"
     target = tmp_path / "target.ext4"
-    _write_sparse_file(source)
+    _write_sparse_file(source, hole_bytes)
 
     method = smolvm_core.disk.clone_or_sparse_copy(str(source), str(target))
 
@@ -190,15 +195,20 @@ def test_native_clone_or_sparse_copy_preserves_sparse_holes(tmp_path: Path) -> N
     assert target.stat().st_size == source.stat().st_size
     with target.open("rb") as file:
         assert file.read(5) == b"start"
-        file.seek(4 * 1024 * 1024)
+        file.seek(hole_bytes)
         assert file.read(3) == b"end"
-    assert target.stat().st_blocks * 512 < target.stat().st_size
+    if supports_sparse_allocation:
+        assert target.stat().st_blocks * 512 < target.stat().st_size
 
 
-def test_native_decompress_zstd_sparse_preserves_sparse_holes(tmp_path: Path) -> None:
+def test_native_decompress_zstd_sparse_preserves_sparse_holes(
+    tmp_path: Path,
+    sparse_test_config: tuple[int, bool],
+) -> None:
     """Native zstd decompression should avoid allocating zero-filled ranges."""
     zstandard = pytest.importorskip("zstandard")
-    plain = b"start" + (b"\0" * (4 * 1024 * 1024)) + b"end"
+    hole_bytes, supports_sparse_allocation = sparse_test_config
+    plain = b"start" + (b"\0" * hole_bytes) + b"end"
     source = tmp_path / "rootfs.ext4.zst"
     target = tmp_path / "rootfs.ext4"
     source.write_bytes(zstandard.ZstdCompressor(level=3).compress(plain))
@@ -206,7 +216,7 @@ def test_native_decompress_zstd_sparse_preserves_sparse_holes(tmp_path: Path) ->
     method = smolvm_core.disk.decompress_zstd_sparse(str(source), str(target), 1024 * 1024)
 
     assert method == "sparse"
-    _assert_sparse_image(target, plain)
+    _assert_sparse_image(target, plain, assert_sparse=supports_sparse_allocation)
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS-specific unsupported helper path")
