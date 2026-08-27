@@ -29,27 +29,27 @@ import zstandard
 
 from smolvm.cli.main import main
 
-# 32 MiB. `sparse_copy` decides per chunk by content, so the source's own hole
-# map is irrelevant; what decides whether the TARGET ends up sparse is its size
-# on the volume the test runs on. On one macOS volume a written extent below
-# ~16 MiB comes back fully allocated while 32 MiB does not, and other APFS
-# volumes on the same machine punch holes from 1 MiB. The mechanism is not
-# identified, so treat this as a margin rather than a bound.
-_SPARSE_HOLE_BYTES = 32 * 1024 * 1024
-
-_SPARSE_PAYLOAD = b"\x00" * _SPARSE_HOLE_BYTES + b"REAL-DATA"
+_DEFAULT_HOLE_BYTES = 1 * 1024 * 1024
+_TRAILING_HOLE_BYTES = 1 * 1024 * 1024
+_SPARSE_PAYLOAD = b"\x00" * _DEFAULT_HOLE_BYTES + b"REAL-DATA" + b"\x00" * _TRAILING_HOLE_BYTES
 
 
-def _make_published_entry(root: Path, name: str) -> Path:
+def _make_published_entry(
+    root: Path,
+    name: str,
+    *,
+    hole_bytes: int = _DEFAULT_HOLE_BYTES,
+) -> Path:
+    payload = b"\x00" * hole_bytes + b"REAL-DATA" + b"\x00" * _TRAILING_HOLE_BYTES
     d = root / name
     d.mkdir(parents=True)
-    (d / "rootfs.ext4.zst").write_bytes(zstandard.compress(_SPARSE_PAYLOAD))
+    (d / "rootfs.ext4.zst").write_bytes(zstandard.compress(payload))
     sha = hashlib.sha256((d / "rootfs.ext4.zst").read_bytes()).hexdigest()
     (d / "rootfs.ext4.from-sha256").write_text(f"sparse-v1:{sha}")
     (d / "vmlinux.bin").write_bytes(b"kernel-bytes")
     with open(d / "rootfs.ext4", "wb") as f:
-        f.truncate(len(_SPARSE_PAYLOAD))
-        f.seek(_SPARSE_HOLE_BYTES)
+        f.truncate(len(payload))
+        f.seek(hole_bytes)
         f.write(b"REAL-DATA")
     return d
 
@@ -74,10 +74,18 @@ def _write_archive(
 
 class TestSaveLoadRoundTrip:
     def test_published_entry_round_trips(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+        sparse_test_config: tuple[int, bool],
     ) -> None:
+        hole_bytes, supports_sparse_allocation = sparse_test_config
         src = tmp_path / "src"
-        entry = _make_published_entry(src, "codex-v0.0.1-amd64-firecracker")
+        entry = _make_published_entry(
+            src,
+            "codex-v0.0.1-amd64-firecracker",
+            hole_bytes=hole_bytes,
+        )
         archive = tmp_path / "codex.tar"
 
         ret = main(
@@ -115,10 +123,12 @@ class TestSaveLoadRoundTrip:
         ).read_text()
         # Rootfs content intact and holes restored.
         with open(loaded / "rootfs.ext4", "rb") as f:
-            f.seek(_SPARSE_HOLE_BYTES)
+            f.seek(hole_bytes)
             assert f.read(9) == b"REAL-DATA"
+            f.seek(-_TRAILING_HOLE_BYTES, os.SEEK_END)
+            assert f.read() == b"\x00" * _TRAILING_HOLE_BYTES
         st = os.stat(loaded / "rootfs.ext4")
-        if getattr(st, "st_blocks", None) is not None:
+        if supports_sparse_allocation:
             assert st.st_blocks * 512 < st.st_size
 
     def test_custom_entry_round_trips(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:

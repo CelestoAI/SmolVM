@@ -607,33 +607,31 @@ class TestSmolVMCreate:
         mock_network.async_setup_ssh_port_forward.assert_not_called()
 
 
-# 32 MiB. `sparse_copy` decides per chunk by content, so the source's own hole
-# map is irrelevant; what decides whether the TARGET ends up sparse is its size
-# on the volume the test runs on. On one macOS volume a written extent below
-# ~16 MiB comes back fully allocated while 32 MiB does not, and other APFS
-# volumes on the same machine punch holes from 1 MiB. The mechanism is not
-# identified, so treat this as a margin rather than a bound.
-_SPARSE_HOLE_BYTES = 32 * 1024 * 1024
-
-
 class TestSmolVMDiskLifecycle:
     """Tests for per-VM disk materialization and cleanup."""
 
     @staticmethod
-    def _write_sparse_file(path: Path) -> None:
+    def _write_sparse_file(path: Path, hole_bytes: int) -> None:
         with path.open("wb") as file:
             file.write(b"start")
-            file.seek(_SPARSE_HOLE_BYTES)
+            file.seek(hole_bytes)
             file.write(b"end")
 
     @staticmethod
-    def _assert_sparse_copy(source: Path, target: Path) -> None:
+    def _assert_sparse_copy(
+        source: Path,
+        target: Path,
+        *,
+        hole_bytes: int,
+        assert_sparse: bool,
+    ) -> None:
         assert target.stat().st_size == source.stat().st_size
         with target.open("rb") as file:
             assert file.read(5) == b"start"
-            file.seek(_SPARSE_HOLE_BYTES)
+            file.seek(hole_bytes)
             assert file.read(3) == b"end"
-        assert target.stat().st_blocks * 512 < target.stat().st_size
+        if assert_sparse:
+            assert target.stat().st_blocks * 512 < target.stat().st_size
 
     def test_copy_with_reflink_uses_host_disk_helper(self, tmp_path: Path) -> None:
         """Raw isolated-disk copies should go through the host disk switchboard."""
@@ -650,11 +648,13 @@ class TestSmolVMDiskLifecycle:
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
+        sparse_test_config: tuple[int, bool],
     ) -> None:
         """The non-GNU cp fallback should also avoid writing sparse zero ranges."""
+        hole_bytes, supports_sparse_allocation = sparse_test_config
         source = tmp_path / "source.ext4"
         target = tmp_path / "target.ext4"
-        self._write_sparse_file(source)
+        self._write_sparse_file(source, hole_bytes)
         monkeypatch.setenv("SMOLVM_DISABLE_NATIVE_DISK", "1")
 
         with (
@@ -670,18 +670,25 @@ class TestSmolVMDiskLifecycle:
             mock_core_disk.clone_or_sparse_copy.side_effect = AssertionError("core disabled")
             SmolVMManager._copy_with_reflink(source, target)
 
-        self._assert_sparse_copy(source, target)
+        self._assert_sparse_copy(
+            source,
+            target,
+            hole_bytes=hole_bytes,
+            assert_sparse=supports_sparse_allocation,
+        )
 
     @pytest.mark.asyncio
     async def test_async_copy_with_reflink_fallback_preserves_sparse_holes(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
+        sparse_test_config: tuple[int, bool],
     ) -> None:
         """Async disk materialization should use the same sparse fallback."""
+        hole_bytes, supports_sparse_allocation = sparse_test_config
         source = tmp_path / "source.ext4"
         target = tmp_path / "target.ext4"
-        self._write_sparse_file(source)
+        self._write_sparse_file(source, hole_bytes)
         manager = SmolVMManager(data_dir=tmp_path / "data", socket_dir=tmp_path / "sockets")
         monkeypatch.setenv("SMOLVM_DISABLE_NATIVE_DISK", "1")
 
@@ -698,7 +705,12 @@ class TestSmolVMDiskLifecycle:
             mock_core_disk.clone_or_sparse_copy.side_effect = AssertionError("core disabled")
             await manager._async_copy_with_reflink(source, target)
 
-        self._assert_sparse_copy(source, target)
+        self._assert_sparse_copy(
+            source,
+            target,
+            hole_bytes=hole_bytes,
+            assert_sparse=supports_sparse_allocation,
+        )
 
     @patch("smolvm.vm.NetworkManager")
     def test_create_materializes_isolated_disk(
