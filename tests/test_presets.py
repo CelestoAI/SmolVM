@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -476,6 +477,28 @@ class TestOpenClawPreset:
         assert f"openclaw@{OPENCLAW_VERSION}" in OPENCLAW_PRESET.install_script
         assert "npm install -g" in OPENCLAW_PRESET.install_script
         assert "--allow-scripts=openclaw" in OPENCLAW_PRESET.install_script
+        assert f"openclaw --version | grep -F {OPENCLAW_VERSION}" in OPENCLAW_PRESET.install_script
+
+    def test_openclaw_install_fails_when_the_cli_reports_another_version(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        npm = tmp_path / "npm"
+        npm.write_text('#!/bin/sh\nif [ "$1" = "--version" ]; then printf "11.16.0\\n"; fi\n')
+        npm.chmod(0o755)
+        openclaw = tmp_path / "openclaw"
+        openclaw.write_text('#!/bin/sh\nprintf "OpenClaw 2026.8.0\\n"\n')
+        openclaw.chmod(0o755)
+
+        result = subprocess.run(
+            ["bash", "-c", OPENCLAW_PRESET.install_script],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PATH": f"{tmp_path}:{os.environ.get('PATH', '')}"},
+        )
+
+        assert result.returncode != 0
 
     def test_openclaw_setup_uses_supported_node24_patch(self) -> None:
         assert "setup_24.x" in OPENCLAW_PRESET.setup_script
@@ -710,6 +733,8 @@ class TestNodeBootstrapFunction:
         assert "libgcc" not in script
         assert "libstdc++" not in script
         assert "ripgrep" not in script
+        assert "This Alpine image does not provide a compatible Node.js version" in script
+        assert "Run '$SMOLVM_NODE_RECOVERY_COMMAND'" in script
 
     def test_node_bootstrap_rejects_too_low(self) -> None:
         from smolvm.presets._scripts import node_bootstrap
@@ -960,6 +985,27 @@ class TestApplyPreset:
 
         assert len(ssh.run.call_args_list) == 1
         assert "smolvm_env.sh" not in ssh.run.call_args.args[0]
+
+    def test_setup_receives_exact_node_recovery_command(self) -> None:
+        from smolvm.presets._scripts import node_bootstrap
+
+        ssh = MagicMock()
+        ssh.run.return_value = _ok()
+        preset = self._make_preset(setup=node_bootstrap(20), install="")
+
+        apply_preset(
+            ssh,
+            preset,
+            preset_command="claude",
+            sandbox_name="sbx-claude",
+        )
+
+        command = shlex.split(ssh.run.call_args_list[0].args[0])[2]
+        assert (
+            "SMOLVM_NODE_RECOVERY_COMMAND='smolvm claude start --name sbx-claude --os ubuntu'"
+            in command
+        )
+        assert "Run '$SMOLVM_NODE_RECOVERY_COMMAND'" in command
 
     def test_progress_callback_receives_steps(
         self,

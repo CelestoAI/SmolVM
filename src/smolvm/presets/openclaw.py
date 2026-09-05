@@ -31,6 +31,7 @@ OPENCLAW_PRESET = Preset(
         "openclaw",
         version=OPENCLAW_VERSION,
         allow_scripts=True,
+        verify_executable="openclaw",
     ),
     host_env_vars=(
         "OPENROUTER_API_KEY",

@@ -86,6 +86,8 @@ def apply_preset(
     *,
     on_progress: Callable[[str], None] | None = None,
     install_timeout: int = _DEFAULT_INSTALL_TIMEOUT,
+    preset_command: str | None = None,
+    sandbox_name: str | None = None,
 ) -> dict[str, object]:
     """Apply *preset* to a guest reachable through a control channel.
 
@@ -105,11 +107,27 @@ def apply_preset(
     # "Installing..." line that stalls for the full duration.
     if preset.setup_script.strip():
         notify("Installing system packages...")
-        _run_install_phase(ssh, preset, preset.setup_script, install_timeout, phase="setup")
+        _run_install_phase(
+            ssh,
+            preset,
+            preset.setup_script,
+            install_timeout,
+            phase="setup",
+            preset_command=preset_command,
+            sandbox_name=sandbox_name,
+        )
 
     if preset.install_script.strip():
         notify(f"Installing {preset.name}...")
-        _run_install_phase(ssh, preset, preset.install_script, install_timeout, phase="install")
+        _run_install_phase(
+            ssh,
+            preset,
+            preset.install_script,
+            install_timeout,
+            phase="install",
+            preset_command=preset_command,
+            sandbox_name=sandbox_name,
+        )
 
     copied_configs = transfer_host_configs(
         ssh, preset, on_progress=on_progress, include_git_configs=True
@@ -145,13 +163,22 @@ def _run_install_phase(
     install_timeout: int,
     *,
     phase: str,
+    preset_command: str | None,
+    sandbox_name: str | None,
 ) -> None:
     """Run a setup or install bash script and surface failures uniformly.
 
     *phase* tags the SmolVMError context (``"setup"`` or ``"install"``) so
     JSON consumers can tell which step failed without parsing the message.
     """
-    command = f"bash -lc {shlex.quote(script)}"
+    public_name = preset_command or ("claude" if preset.name == "claude-code" else preset.name)
+    recovery_parts = ["smolvm", public_name, "start"]
+    if sandbox_name:
+        recovery_parts.extend(("--name", sandbox_name))
+    recovery_parts.extend(("--os", "ubuntu"))
+    recovery_command = shlex.join(recovery_parts)
+    context = f"SMOLVM_NODE_RECOVERY_COMMAND={shlex.quote(recovery_command)}\n"
+    command = f"bash -lc {shlex.quote(context + script)}"
     result = ssh.run(command, timeout=install_timeout, shell="raw")
     if not result.ok:
         stderr_tail = (result.stderr or "").strip().splitlines()[-20:]

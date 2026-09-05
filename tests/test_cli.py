@@ -3871,6 +3871,8 @@ class TestCliStart:
         assert payload["data"]["preset"]["injected_env_keys"] == ["OPENAI_API_KEY"]
         assert payload["data"]["next"]["shell_command"] == "smolvm sandbox shell sbx-1"
         assert payload["data"]["next"]["ssh_command"] == "smolvm sandbox ssh sbx-1"
+        assert mock_apply_fn.call_args.kwargs["preset_command"] == "codex"
+        assert mock_apply_fn.call_args.kwargs["sandbox_name"] == "sbx-1"
 
     @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.presets.apply_preset")
@@ -4106,6 +4108,7 @@ class TestCliStart:
         kwargs = mock_build_auto_config.call_args.kwargs
         assert kwargs["memory"] == 4096
         assert kwargs["disk_size_mib"] == 16384
+        assert mock_apply.call_args.kwargs["preset_command"] == "claude"
 
     @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.facade._build_auto_config")
@@ -4762,6 +4765,34 @@ class TestOpenClawOpen:
         assert json.loads(state_path.read_text()) == [
             {"host_port": 39876, "guest_port": 18789, "transport": "nftables"}
         ]
+
+    @pytest.mark.parametrize(
+        "records",
+        [
+            [None],
+            [{}],
+            [{"host_port": 39876}],
+            [{"guest_port": 18789}],
+        ],
+    )
+    def test_load_port_forwards_rejects_invalid_records(
+        self,
+        records: list[object],
+        tmp_path: Path,
+    ) -> None:
+        from smolvm.cli.main import _load_port_forwards_unlocked
+
+        state_path = tmp_path / "forwards.json"
+        state_path.write_text(json.dumps(records))
+
+        expected = (
+            "Port forward state for 'sbx-claw' is corrupt. "
+            f"Remove '{state_path}' to reset: rm '{state_path}'"
+        )
+        with pytest.raises(RuntimeError, match="corrupt") as raised:
+            _load_port_forwards_unlocked("sbx-claw", state_path)
+
+        assert str(raised.value) == expected
 
 
 class TestPublishedImageLaunchPath:

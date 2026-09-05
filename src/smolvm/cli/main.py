@@ -1796,6 +1796,7 @@ def _run_start(args: SimpleNamespace) -> int:
                 vm=vm,
                 preset=preset,
                 install_timeout=int(args.install_timeout),
+                preset_command=command_name.rsplit(".", 1)[0],
             )
         else:
             config, ssh_key_path = _build_auto_config(
@@ -1830,6 +1831,8 @@ def _run_start(args: SimpleNamespace) -> int:
                 ssh,
                 preset,
                 install_timeout=int(args.install_timeout),
+                preset_command=command_name.rsplit(".", 1)[0],
+                sandbox_name=vm.vm_id,
             )
 
         network = vm.info.network
@@ -1957,6 +1960,7 @@ def _apply_preset_with_progress(
     vm: object,
     preset: object,
     install_timeout: int,
+    preset_command: str,
 ) -> dict[str, object]:
     """Run :func:`apply_preset` with a Rich spinner showing each step."""
     from rich.console import Console
@@ -1988,6 +1992,8 @@ def _apply_preset_with_progress(
             _preset,
             on_progress=on_progress,
             install_timeout=install_timeout,
+            preset_command=preset_command,
+            sandbox_name=_vm.vm_id,
         )
         progress.remove_task(task)
 
@@ -3033,7 +3039,10 @@ def _load_port_forwards_unlocked(vm_id: str, path: Path) -> list[dict]:
         raise RuntimeError(
             f"Port forward state for '{vm_id}' is unreadable. Remove '{path}' to reset: rm '{path}'"
         ) from exc
-    if not isinstance(data, list):
+    if not isinstance(data, list) or any(
+        not isinstance(item, dict) or "host_port" not in item or "guest_port" not in item
+        for item in data
+    ):
         raise RuntimeError(
             f"Port forward state for '{vm_id}' is corrupt. Remove '{path}' to reset: rm '{path}'"
         )
