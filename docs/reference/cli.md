@@ -48,7 +48,7 @@ Run these in the order you need them:
 
 ## Start a prepared agent
 
-`smolvm codex start`, `smolvm claude start`, `smolvm pi start`, `smolvm hermes start`, and `smolvm openclaw start` create a sandbox and install that agent. See [Agent presets](../guides/agent-presets.md).
+`smolvm codex start`, `smolvm claude start`, `smolvm pi start`, `smolvm hermes start`, and `smolvm openclaw start` create a sandbox and install that agent. `smolvm openclaw open SANDBOX` starts or reuses its gateway and opens the dashboard over a localhost-only connection. Add `--no-browser` to print the one-time link or `--json` for structured output. See [Agent presets](../guides/agent-presets.md).
 
 ## Manage downloaded images
 

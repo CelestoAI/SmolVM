@@ -383,7 +383,7 @@ These examples show how to wrap SmolVM as a tool for popular agent frameworks, s
 
 | What it does | Example |
 | --- | --- |
-| Install and run OpenClaw inside a Debian sandbox with a 4 GB root filesystem | [openclaw.py](examples/openclaw.py) |
+| Install and run OpenClaw 2026.9.1 inside a Debian sandbox with a 4 GB root filesystem | [openclaw.py](examples/openclaw.py) |
 
 Each script shows its own `pip install ...` line when it needs extra packages.
 

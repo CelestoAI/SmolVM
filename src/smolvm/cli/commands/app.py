@@ -1514,6 +1514,48 @@ def _register_preset_commands() -> None:
             return start
 
         preset_group.add_command(_make_start_callback(preset.name, public_name))
+        if preset.name == "openclaw":
+
+            @click.command("open", help="Open this sandbox's OpenClaw dashboard.")
+            @click.argument("vm_id", metavar="sandbox", shell_complete=complete_sandbox_names)
+            @click.option(
+                "--host-port",
+                type=click.IntRange(1, 65535),
+                default=None,
+                help="Local port to use; SmolVM chooses one when omitted.",
+            )
+            @click.option(
+                "--no-browser",
+                is_flag=True,
+                help="Print the one-time dashboard link instead of opening it.",
+            )
+            @ssh_auth_options
+            @comm_channel_option
+            @json_option
+            def openclaw_open(
+                vm_id: str,
+                host_port: int | None,
+                no_browser: bool,
+                ssh_key: str | None,
+                ssh_user: str,
+                comm_channel: str | None,
+                json_output: bool,
+            ) -> Any:
+                _before_command(json_output=json_output)
+                return _handlers()._run_openclaw_open(
+                    _ns(
+                        command_name="openclaw.open",
+                        vm_id=vm_id,
+                        host_port=host_port,
+                        no_browser=no_browser,
+                        ssh_key=ssh_key,
+                        ssh_user=ssh_user,
+                        comm_channel=comm_channel,
+                        json=json_output,
+                    )
+                )
+
+            preset_group.add_command(openclaw_open)
         cli.add_command(preset_group)
 
 
