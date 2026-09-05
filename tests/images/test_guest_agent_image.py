@@ -26,7 +26,7 @@ from smolvm.exceptions import ImageError
 from smolvm.images import builder as builder_mod
 from smolvm.images.builder import ImageBuilder
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _assert_clock_sync_loop_before_sshd(script: str) -> None:

@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _INSTALL_SCRIPT = _REPO_ROOT / "scripts" / "internal" / "install-firecracker.sh"
 _SYSTEM_SETUP_SCRIPT = _REPO_ROOT / "scripts" / "system-setup.sh"
 _ONE_LINE_INSTALLER = _REPO_ROOT / "scripts" / "install.sh"
