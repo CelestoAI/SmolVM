@@ -212,19 +212,28 @@ Windows guests need a Linux host with KVM. Host mounts, network controls, and sn
 
 It sucks to “press enter and accept changes” every few seconds while using coding agents. SmolVM makes it easy to isolate the agent coding environment from the host (laptops).
 
-With a single command you get a claude/codex pre-installed sandbox ready with git credential to make you build a billion dollar business without making any mistake ;)
+Start any supported coding agent in its own sandbox:
 
 Video tutorial:
 
 <a href="https://youtu.be/j1qyrTsI0Jw"><img src="https://img.youtube.com/vi/j1qyrTsI0Jw/maxresdefault.jpg" alt="Coding agents in a sandbox" width="480"></a>
 
 ```bash
-smolvm codex start  # start a new environment with codex preinstalled
-
-smolvm claude start  # start a new environment with claude preinstalled
-
-smolvm pi start  # start a new environment with the Pi coding agent preinstalled
+smolvm codex start
+smolvm claude start
+smolvm pi start
+smolvm hermes start
+smolvm opencode start
+smolvm openclaw start --name openclaw-work --no-attach
 ```
+
+OpenClaw also has a private browser dashboard. Open it after the named sandbox starts:
+
+```bash
+smolvm openclaw open openclaw-work
+```
+
+See the [agent preset guide](docs/guides/agent-presets.md) for credentials, configuration, and the full OpenClaw dashboard flow.
 
 
 ## Browser sandbox
