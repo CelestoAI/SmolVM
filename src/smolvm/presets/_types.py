@@ -138,6 +138,9 @@ class Preset:
             denied.
         default_mem_mib: Memory bump versus the OS default.
         default_disk_mib: Disk bump versus the OS default.
+        supported_oses: Guest operating systems this preset supports.
+        prefer_published_image: Whether the CLI may use a matching prebuilt
+            image instead of installing the preset after boot.
     """
 
     name: str
@@ -150,6 +153,8 @@ class Preset:
     host_keychain_secrets: tuple[HostKeychainSecret, ...] = field(default_factory=tuple)
     default_mem_mib: int = 2048
     default_disk_mib: int = 8192
+    supported_oses: tuple[str, ...] = ("ubuntu", "alpine")
+    prefer_published_image: bool = True
     launch_command: str | None = None
     """Guest command run when the user attaches after install — e.g. ``"codex"``."""
     no_env_hint: str | None = None

@@ -20,12 +20,17 @@ import re
 
 # npm package names. ``@scope/name`` is the only multi-segment form allowed.
 _SAFE_NPM_NAME_RE = re.compile(r"^@?[a-zA-Z0-9._\-]+(/[a-zA-Z0-9._\-]+)?$")
+_SAFE_NPM_VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+){2}(?:[-+][a-zA-Z0-9._-]+)?$")
 
 # PyPI package names — alphanumerics, hyphens, underscores, dots, optional extras.
 _SAFE_PYPI_NAME_RE = re.compile(r"^[a-zA-Z0-9._\-]+(\[[a-zA-Z0-9,._\-]+\])?$")
 
 
-def node_bootstrap(major: int = 20) -> str:
+def node_bootstrap(
+    major: int = 20,
+    *,
+    minimum_version: tuple[int, int, int] | None = None,
+) -> str:
     """Return a bash script that installs Node.js *major* on Ubuntu or Alpine.
 
     Alpine uses its native packages; Ubuntu waits for cloud-init to release
@@ -33,6 +38,32 @@ def node_bootstrap(major: int = 20) -> str:
     """
     if not isinstance(major, int) or major < 16:
         raise ValueError(f"Unsupported Node major version: {major}")
+    if minimum_version is not None:
+        if len(minimum_version) != 3 or any(
+            not isinstance(part, int) or part < 0 for part in minimum_version
+        ):
+            raise ValueError(f"Invalid minimum Node version: {minimum_version!r}")
+        if minimum_version[0] != major:
+            raise ValueError(
+                f"Minimum Node version {minimum_version!r} does not match major {major}"
+            )
+
+    required_version = minimum_version or (major, 0, 0)
+    required_text = ".".join(str(part) for part in required_version)
+    if minimum_version is None:
+        requirement_message = f"Node {major}.0.0 or newer is required"
+        supported_expression = (
+            f"current[0] > {major} || (current[0] === {major} && "
+            "(current[1] > minimum[1] || "
+            "(current[1] === minimum[1] && current[2] >= minimum[2])))"
+        )
+    else:
+        requirement_message = f"Node {required_text} or newer within the {major}.x line is required"
+        supported_expression = (
+            f"current[0] === {major} && "
+            "(current[1] > minimum[1] || "
+            "(current[1] === minimum[1] && current[2] >= minimum[2]))"
+        )
     return rf"""
 set -euo pipefail
 if command -v apk >/dev/null 2>&1; then
@@ -47,20 +78,37 @@ fi
 
 needs_node=1
 if command -v node >/dev/null 2>&1; then
-    node_major=$(node --version | sed 's/^v//' | cut -d. -f1)
-    if [ "${{node_major:-0}}" -ge {major} ]; then
+    if node -e '
+const current = process.versions.node.split(".").map(Number);
+const minimum = [{required_version[0]}, {required_version[1]}, {required_version[2]}];
+const supported = {supported_expression};
+process.exit(supported ? 0 : 1);
+'; then
         needs_node=0
     fi
 fi
 if [ "$needs_node" = "1" ]; then
     if command -v apk >/dev/null 2>&1; then
-        echo "Alpine's packaged Node.js is older than the requested major ({major})." >&2
+        echo "Alpine's packaged Node.js does not meet this requirement: {requirement_message}." >&2
         exit 1
     else
         curl -fsSL https://deb.nodesource.com/setup_{major}.x | bash -
         apt-get install -y -qq --no-install-recommends nodejs
     fi
 fi
+
+node -e '
+const current = process.versions.node.split(".").map(Number);
+const minimum = [{required_version[0]}, {required_version[1]}, {required_version[2]}];
+const supported = {supported_expression};
+if (!supported) {{
+  console.error(
+    "{requirement_message}; found " +
+      process.versions.node + "."
+  );
+  process.exit(1);
+}}
+'
 """
 
 
@@ -83,7 +131,12 @@ fi
 """
 
 
-def npm_install_global(package: str) -> str:
+def npm_install_global(
+    package: str,
+    *,
+    version: str | None = None,
+    allow_scripts: bool = False,
+) -> str:
     """Return a script that globally installs *package* via npm.
 
     Assumes Node is already on PATH — pair this with
@@ -93,11 +146,28 @@ def npm_install_global(package: str) -> str:
     """
     if not _SAFE_NPM_NAME_RE.match(package):
         raise ValueError(f"Refusing to install unsafe npm package name: {package!r}")
+    if version is not None and not _SAFE_NPM_VERSION_RE.match(version):
+        raise ValueError(f"Refusing to install unsafe npm package version: {version!r}")
+    package_spec = f"{package}@{version}" if version is not None else package
+    lifecycle_policy = "npm_lifecycle_arg=\n"
+    if allow_scripts:
+        lifecycle_policy += rf"""
+npm_version=$(npm --version)
+npm_major=${{npm_version%%.*}}
+npm_rest=${{npm_version#*.}}
+npm_minor=${{npm_rest%%.*}}
+if [ "${{npm_major:-0}}" -ge 12 ] || {{
+    [ "${{npm_major:-0}}" -eq 11 ] && [ "${{npm_minor:-0}}" -ge 16 ];
+}}; then
+    npm_lifecycle_arg=--allow-scripts={package}
+fi
+"""
     # Cleaning the cache after install removes ~350-700 MB of leftover
     # tarballs from /root/.npm/_cacache; npm rebuilds it on demand.
     return (
         "set -euo pipefail\n"
-        f"npm install -g --silent {package}\n"
+        f"{lifecycle_policy}"
+        f'npm install -g --silent ${{npm_lifecycle_arg:+"$npm_lifecycle_arg"}} {package_spec}\n'
         "npm cache clean --force >/dev/null 2>&1 || true\n"
     )
 

@@ -392,6 +392,53 @@ class TestAgentRuntimeBakedIntoImages:
         builder.build_alpine_ssh()
 
 
+class TestOpenClawImageBuilder:
+    """OpenClaw images match the 2.0 runtime and state model."""
+
+    @patch.object(ImageBuilder, "check_docker", return_value=True)
+    @patch.object(ImageBuilder, "_do_build")
+    def test_build_openclaw_rootfs_pins_runtime_without_legacy_sidecars(
+        self,
+        mock_do_build: MagicMock,
+        _mock_check_docker: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        builder = ImageBuilder(cache_dir=tmp_path / "images")
+
+        def _fake_do_build(
+            name: str,
+            dockerfile_content: str,
+            init_script: str,
+            image_dir: Path,
+            kernel_path: Path,
+            rootfs_path: Path,
+            rootfs_size_mb: int,
+            **kwargs: object,
+        ) -> None:
+            assert name == "openclaw"
+            assert "FROM node:24.15.0-bookworm-slim" in dockerfile_content
+            assert "openclaw@2026.9.1" in dockerfile_content
+            assert "--allow-scripts=openclaw" in dockerfile_content
+            assert "openclaw --version | grep -F 2026.9.1" in dockerfile_content
+            assert "/root/.openclaw" in dockerfile_content
+            assert "/home/node/.openclaw" not in dockerfile_content
+            assert "device-approver" not in dockerfile_content
+            assert "watch-devices" not in dockerfile_content
+            assert "systemctl proxy" not in dockerfile_content
+            assert "device-approver" not in init_script
+            assert "extra_files" not in kwargs
+            assert rootfs_size_mb == 2048
+            kernel_path.touch()
+            rootfs_path.touch()
+
+        mock_do_build.side_effect = _fake_do_build
+
+        kernel, rootfs = builder.build_openclaw_rootfs(kernel_url="file:///tmp/vmlinux")
+
+        assert kernel.exists()
+        assert rootfs.exists()
+
+
 class TestBrowserImageBuilder:
     """Tests for browser image builder entrypoints."""
 

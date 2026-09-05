@@ -26,6 +26,7 @@ from smolvm.presets._install import (
     apply_preset,
     collect_host_env,
     transfer_host_configs,
+    transfer_host_env,
     transfer_keychain_secrets,
 )
 from smolvm.presets._types import HostConfigCopy, HostKeychainSecret, Preset
@@ -101,6 +102,7 @@ __all__ = [
     "collect_host_env",
     "get_preset",
     "transfer_host_configs",
+    "transfer_host_env",
     "transfer_keychain_secrets",
     "list_presets",
     "preset_command_names",

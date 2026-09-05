@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -38,6 +40,7 @@ from smolvm.presets import (
     get_preset,
     list_presets,
     preset_names,
+    transfer_host_env,
 )
 from smolvm.presets._scripts import npm_install_global, uv_install_global
 from smolvm.types import CommandResult
@@ -459,17 +462,28 @@ class TestOpenClawPreset:
             "OPENCLAW_GATEWAY_PASSWORD",
         )
 
-    def test_openclaw_copies_config_dir(self) -> None:
+    def test_openclaw_copies_only_portable_config_files(self) -> None:
         pairs = [(cfg.host_path, cfg.guest_path) for cfg in OPENCLAW_PRESET.host_configs]
-        assert pairs == [("~/.openclaw", "/root/.openclaw")]
+        assert pairs == [
+            ("~/.openclaw/openclaw.json", "/root/.openclaw/openclaw.json"),
+            ("~/.openclaw/.env", "/root/.openclaw/.env"),
+        ]
+        assert all(cfg.file_mode == 0o600 for cfg in OPENCLAW_PRESET.host_configs)
 
-    def test_openclaw_install_runs_npm_install(self) -> None:
-        assert "openclaw" in OPENCLAW_PRESET.install_script
+    def test_openclaw_install_is_pinned_and_allows_lifecycle_scripts(self) -> None:
+        from smolvm.presets.openclaw import OPENCLAW_VERSION
+
+        assert f"openclaw@{OPENCLAW_VERSION}" in OPENCLAW_PRESET.install_script
         assert "npm install -g" in OPENCLAW_PRESET.install_script
+        assert "--allow-scripts=openclaw" in OPENCLAW_PRESET.install_script
 
-    def test_openclaw_setup_uses_node22(self) -> None:
-        assert "setup_22.x" in OPENCLAW_PRESET.setup_script
-        assert "-ge 22" in OPENCLAW_PRESET.setup_script
+    def test_openclaw_setup_uses_supported_node24_patch(self) -> None:
+        assert "setup_24.x" in OPENCLAW_PRESET.setup_script
+        assert "const minimum = [24, 15, 0]" in OPENCLAW_PRESET.setup_script
+
+    def test_openclaw_is_ubuntu_only_and_skips_stale_published_image(self) -> None:
+        assert OPENCLAW_PRESET.supported_oses == ("ubuntu",)
+        assert OPENCLAW_PRESET.prefer_published_image is False
 
     def test_openclaw_no_keychain_secrets(self) -> None:
         assert OPENCLAW_PRESET.host_keychain_secrets == ()
@@ -564,6 +578,75 @@ class TestNpmInstallGlobalSafety:
         script = npm_install_global(name)
         assert name in script
 
+    def test_default_install_script_runs_without_lifecycle_option_error(
+        self, tmp_path: Path
+    ) -> None:
+        npm = tmp_path / "npm"
+        npm.write_text("#!/bin/sh\nexit 0\n")
+        npm.chmod(0o755)
+
+        result = subprocess.run(
+            ["bash", "-c", npm_install_global("example-package")],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PATH": f"{tmp_path}:{os.environ.get('PATH', '')}"},
+        )
+
+        assert result.returncode == 0, result.stderr
+
+    @pytest.mark.parametrize("version", ["latest", "1.2", "1.2.3; echo bad"])
+    def test_rejects_unpinned_or_unsafe_versions(self, version: str) -> None:
+        with pytest.raises(ValueError, match="unsafe npm package version"):
+            npm_install_global("openclaw", version=version)
+
+    def test_accepts_exact_version_and_lifecycle_policy(self) -> None:
+        script = npm_install_global("openclaw", version="2026.9.1", allow_scripts=True)
+
+        assert "openclaw@2026.9.1" in script
+        assert "--allow-scripts=openclaw" in script
+        assert "npm_major" in script
+
+    @pytest.mark.parametrize(
+        "npm_version,allows_scripts",
+        [("11.15.0", False), ("11.16.0", True), ("12.0.0", True)],
+    )
+    def test_lifecycle_policy_matches_supported_npm_versions(
+        self,
+        tmp_path: Path,
+        npm_version: str,
+        allows_scripts: bool,
+    ) -> None:
+        npm = tmp_path / "npm"
+        npm.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = "--version" ]; then printf "%s\\n" "$NPM_VERSION"; exit 0; fi\n'
+            'printf "%s\\n" "$@" >> "$NPM_LOG"\n'
+        )
+        npm.chmod(0o755)
+        log = tmp_path / "npm.log"
+
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                npm_install_global("openclaw", version="2026.9.1", allow_scripts=True),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                "PATH": f"{tmp_path}:{os.environ.get('PATH', '')}",
+                "NPM_LOG": str(log),
+                "NPM_VERSION": npm_version,
+            },
+        )
+
+        assert result.returncode == 0, result.stderr
+        install_args = log.read_text().splitlines()
+        assert ("--allow-scripts=openclaw" in install_args) is allows_scripts
+
 
 class TestUvInstallGlobalSafety:
     """The uv install helper rejects unsafe package names."""
@@ -606,7 +689,16 @@ class TestNodeBootstrapFunction:
 
         script = node_bootstrap(22)
         assert "setup_22.x" in script
-        assert "-ge 22" in script
+        assert "current[0] > 22" in script
+
+    def test_node_bootstrap_can_pin_a_minimum_patch_within_a_major(self) -> None:
+        from smolvm.presets._scripts import node_bootstrap
+
+        script = node_bootstrap(24, minimum_version=(24, 15, 0))
+
+        assert "setup_24.x" in script
+        assert "const minimum = [24, 15, 0]" in script
+        assert "current[0] === 24" in script
 
     def test_node_bootstrap_supports_alpine_packages(self) -> None:
         from smolvm.presets._scripts import node_bootstrap
@@ -624,6 +716,12 @@ class TestNodeBootstrapFunction:
 
         with pytest.raises(ValueError, match="Unsupported Node major version"):
             node_bootstrap(10)
+
+    def test_node_bootstrap_rejects_mismatched_minimum_major(self) -> None:
+        from smolvm.presets._scripts import node_bootstrap
+
+        with pytest.raises(ValueError, match="does not match major"):
+            node_bootstrap(24, minimum_version=(22, 12, 0))
 
 
 class TestCollectHostEnv:
@@ -649,12 +747,39 @@ class TestCollectHostEnv:
         assert collect_host_env(CODEX_PRESET) == {}
 
 
+class TestTransferHostEnv:
+    """Forwarding works for both modern and fallback control channels."""
+
+    def test_uses_managed_env_when_supported(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        channel = MagicMock()
+        channel.supports.return_value = True
+        channel.set_managed_env.return_value = {"OPENAI_API_KEY": "sk-test"}
+
+        keys = transfer_host_env(channel, CODEX_PRESET)
+
+        assert keys == ["OPENAI_API_KEY"]
+        channel.set_managed_env.assert_called_once_with({"OPENAI_API_KEY": "sk-test"})
+
+    def test_falls_back_to_profile_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        channel = MagicMock()
+        channel.supports.return_value = False
+        channel.run.return_value = _ok()
+
+        keys = transfer_host_env(channel, CODEX_PRESET)
+
+        assert keys == ["OPENAI_API_KEY"]
+        assert any("smolvm_env.sh" in call.args[0] for call in channel.run.call_args_list)
+
+
 class TestApplyPreset:
     """Integration of file copy + env injection + install over a mocked channel."""
 
     def _make_preset(
         self,
         *,
+        setup: str = "",
         install: str = "true",
         host_env_vars: tuple[str, ...] = (),
         host_configs: tuple[HostConfigCopy, ...] = (),
@@ -663,34 +788,65 @@ class TestApplyPreset:
         return Preset(
             name="test",
             summary="test preset",
+            setup_script=setup,
             install_script=install,
             host_env_vars=host_env_vars,
             host_configs=host_configs,
             host_keychain_secrets=host_keychain_secrets,
         )
 
-    def test_install_runs_after_copy_and_env(
+    def test_install_runs_before_copy_and_credentials(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("MY_KEY", "secret")
-        ssh = MagicMock()
-        # read_env_vars (called by inject_env_vars in merge mode) should
-        # return an empty dict (no existing env).
-        ssh.run.return_value = _ok()
+        import smolvm.presets._install as install_mod
 
-        preset = self._make_preset(host_env_vars=("MY_KEY",))
+        events: list[str] = []
+        ssh = MagicMock()
+        preset = self._make_preset(
+            setup="setup command",
+            install="install command",
+            host_env_vars=("MY_KEY",),
+        )
+        monkeypatch.setattr(
+            install_mod,
+            "_run_install_phase",
+            lambda *_args, phase, **_kwargs: events.append(phase),
+        )
+        monkeypatch.setattr(
+            install_mod,
+            "transfer_host_configs",
+            lambda *_args, **_kwargs: events.append("configs") or ["/root/config"],
+        )
+        monkeypatch.setattr(
+            install_mod,
+            "transfer_keychain_secrets",
+            lambda *_args, **_kwargs: events.append("keychain") or ["/root/secret"],
+        )
+        monkeypatch.setattr(
+            install_mod,
+            "transfer_host_env",
+            lambda *_args, **_kwargs: events.append("environment") or ["MY_KEY"],
+        )
+        monkeypatch.setattr(
+            install_mod,
+            "register_workspace_safe_directories",
+            lambda *_args, **_kwargs: events.append("safe-directories"),
+        )
 
         summary = apply_preset(ssh, preset)
 
         assert summary["preset"] == "test"
         assert summary["injected_env_keys"] == ["MY_KEY"]
-        assert summary["copied_configs"] == []
-        # install command was run
-        assert any(
-            call.args == ("bash -lc true",) and call.kwargs["shell"] == "raw"
-            for call in ssh.run.call_args_list
-        )
+        assert summary["copied_configs"] == ["/root/config"]
+        assert events == [
+            "setup",
+            "install",
+            "configs",
+            "keychain",
+            "environment",
+            "safe-directories",
+        ]
 
     def test_skips_missing_optional_config(
         self,
@@ -773,36 +929,37 @@ class TestApplyPreset:
 
         apply_preset(ssh, preset)
 
-        # The directory is staged as a tarball, scp'd, and extracted on the guest.
+        # The directory is staged as a tarball, uploaded under /root, and
+        # extracted with failure-safe cleanup.
         ssh.put_file.assert_called_once()
         upload_target = ssh.put_file.call_args.args[1]
-        assert upload_target.startswith("/tmp/.smolvm-preset-")
+        assert upload_target.startswith("/root/.smolvm-preset-")
         assert upload_target.endswith(".tar")
 
         commands_run = [call.args[0] for call in ssh.run.call_args_list]
-        assert any("tar -xf" in cmd and "/root/.claude" in cmd for cmd in commands_run)
+        extract_command = next(
+            cmd for cmd in commands_run if "tar -xf" in cmd and "/root/.claude" in cmd
+        )
+        assert "chmod 600" in extract_command
+        assert "trap 'rm -f" in extract_command
 
-    def test_install_failure_raises_with_stderr_tail(self) -> None:
+    def test_install_failure_raises_before_credentials_are_transferred(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         ssh = MagicMock()
-        # First .run for inject_env (read_env_vars) succeeds, then install fails.
-        ssh.run.side_effect = [
-            _ok(),  # read_env_vars in inject_env_vars
-            _ok(),  # _atomic_write inside inject_env_vars
-            _fail(stderr="line1\nline2\nE: bad apt key\n"),  # install script
-        ]
+        ssh.run.return_value = _fail(stderr="line1\nline2\nE: bad apt key\n")
+        monkeypatch.setenv("FOO_KEY", "1")
+        preset = self._make_preset(
+            install="apt-get install -y bogus-pkg",
+            host_env_vars=("FOO_KEY",),
+        )
 
-        import os
+        with pytest.raises(SmolVMError, match="install failed"):
+            apply_preset(ssh, preset)
 
-        os.environ["FOO_KEY"] = "1"
-        try:
-            preset = self._make_preset(
-                install="apt-get install -y bogus-pkg",
-                host_env_vars=("FOO_KEY",),
-            )
-            with pytest.raises(SmolVMError, match="install failed"):
-                apply_preset(ssh, preset)
-        finally:
-            os.environ.pop("FOO_KEY", None)
+        assert len(ssh.run.call_args_list) == 1
+        assert "smolvm_env.sh" not in ssh.run.call_args.args[0]
 
     def test_progress_callback_receives_steps(
         self,
@@ -1129,6 +1286,8 @@ class TestGitCredentialInjection:
             ("~/.config/gh", "/root/.config/gh"),
         }
         assert all(c.required is False for c in GIT_HOST_CONFIGS)
+        ssh_config = next(c for c in GIT_HOST_CONFIGS if c.host_path == "~/.ssh")
+        assert ssh_config.exclude_patterns == ("authorized_keys", "authorized_keys2")
 
     def _seed_git_home(self, home: Path) -> None:
         """Create a host home dir with a representative git auth surface."""
@@ -1281,6 +1440,41 @@ class TestGitCredentialInjection:
         # Mode bits survive — the SSH private key stays at 0o600.
         key_member = next(m for m in members if m.name.endswith("id_ed25519"))
         assert key_member.mode & 0o777 == 0o600
+
+    def test_git_ssh_copy_preserves_guest_authorized_keys(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Host login policy must not replace SmolVM's guest access key."""
+        import tarfile
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        ssh_dir = tmp_path / ".ssh"
+        ssh_dir.mkdir()
+        (ssh_dir / "id_ed25519").write_text("PRIVATE")
+        (ssh_dir / "authorized_keys").write_text("HOST-INCOMING-KEY\n")
+        (ssh_dir / "authorized_keys2").write_text("HOST-LEGACY-INCOMING-KEY\n")
+
+        ssh = MagicMock()
+        ssh.run.return_value = _ok()
+        staged_tars: list[Path] = []
+
+        def capture_put(local: object, _remote: str) -> None:
+            path = Path(str(local))
+            if path.suffix == ".tar":
+                snapshot = tmp_path / f"authorized-keys-{len(staged_tars)}.tar"
+                snapshot.write_bytes(path.read_bytes())
+                staged_tars.append(snapshot)
+
+        ssh.put_file.side_effect = capture_put
+
+        apply_preset(ssh, self._stub_codex_preset())
+
+        assert staged_tars, "no SSH archive was staged"
+        with tarfile.open(staged_tars[0]) as tf:
+            names = {member.name.removeprefix("./").rstrip("/") for member in tf.getmembers()}
+        assert "id_ed25519" in names
+        assert "authorized_keys" not in names
+        assert "authorized_keys2" not in names
 
     def test_git_credentials_chmodded_to_0600_after_upload(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

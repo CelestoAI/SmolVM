@@ -19,7 +19,9 @@ without re-auth. The applier in ``_install.py`` runs these copies
 through the same pipeline as harness-specific configs (e.g.
 ``~/.codex``); missing entries are skipped silently. The whole
 ``~/.ssh`` directory rides through ``_copy_dir`` so tar preserves
-0o600 modes — sshd would reject world-readable keys otherwise.
+0o600 modes — sshd would reject world-readable keys otherwise. Incoming
+``authorized_keys`` files stay guest-owned so copying host SSH config cannot
+remove SmolVM's access to the sandbox after setup.
 """
 
 from __future__ import annotations
@@ -42,7 +44,11 @@ GIT_HOST_CONFIGS: tuple[HostConfigCopy, ...] = (
         guest_path="/root/.git-credentials",
         file_mode=0o600,
     ),
-    HostConfigCopy(host_path="~/.ssh", guest_path="/root/.ssh"),
+    HostConfigCopy(
+        host_path="~/.ssh",
+        guest_path="/root/.ssh",
+        exclude_patterns=("authorized_keys", "authorized_keys2"),
+    ),
     HostConfigCopy(host_path="~/.config/gh", guest_path="/root/.config/gh"),
 )
 

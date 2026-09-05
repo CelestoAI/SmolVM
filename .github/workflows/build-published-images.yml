@@ -234,9 +234,9 @@ jobs:
 
   # ── Stage 2a: Build openclaw (custom builder, not layered) ────
   #
-  # openclaw has a custom init script, device-approver sidecar, and
-  # systemctl proxy that its Dockerfile bakes in. It uses
-  # builder.build_openclaw_rootfs() rather than the layered path.
+  # openclaw pins its supported Node runtime and CLI version in a custom
+  # Dockerfile. It uses builder.build_openclaw_rootfs() rather than the
+  # layered path.
   openclaw:
     strategy:
       fail-fast: false
