@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -41,7 +40,7 @@ def test_main_configures_context_and_returns_start_result(
     class FakeContext:
         ctx_id = 41
 
-        def __enter__(self) -> "FakeContext":
+        def __enter__(self) -> FakeContext:
             calls.append(("enter", None))
             return self
 
@@ -92,7 +91,7 @@ def test_main_returns_one_when_libkrun_reports_failure(
     class FakeContext:
         ctx_id = 1
 
-        def __enter__(self) -> "FakeContext":
+        def __enter__(self) -> FakeContext:
             return self
 
         def __exit__(self, *_args: object) -> None:
