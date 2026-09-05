@@ -35,6 +35,7 @@ from smolvm.cli.main import (
     build_cli,
     main,
 )
+from smolvm.exceptions import VMNotFoundError
 from smolvm.types import (
     BrowserSessionState,
     CommandResult,
@@ -4324,6 +4325,35 @@ class TestOpenClawOpen:
         assert ret == 0
         assert "open" in capsys.readouterr().out
 
+    def test_start_help_only_offers_supported_os_and_explains_slow_install(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        ret = main(["openclaw", "start", "--help"])
+
+        assert ret == 0
+        output = capsys.readouterr().out
+        normalized_output = " ".join(output.split())
+        assert "Installation may take several minutes" in normalized_output
+        assert "--os [ubuntu]" in output
+        assert "alpine" not in output
+        assert "windows" not in output
+        assert "Sandbox name; SmolVM generates one when omitted." in normalized_output
+        assert "Seconds to wait for each agent installation step." in normalized_output
+
+    @patch("smolvm.cli.main._cli_vm_from_id", side_effect=VMNotFoundError("missing-claw"))
+    def test_open_missing_sandbox_names_recovery_commands(
+        self,
+        _mock_vm_from_id: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        ret = main(["openclaw", "open", "missing-claw", "--json"])
+
+        assert ret == 1
+        error = json.loads(capsys.readouterr().out)["error"]["message"]
+        assert "Sandbox 'missing-claw' was not found" in error
+        assert "smolvm sandbox list --all" in error
+        assert "smolvm openclaw start --name missing-claw --no-attach" in error
+
     @patch("smolvm.cli.main._run_openclaw_open", return_value=0)
     def test_open_routes_options_to_handler(self, mock_run: MagicMock) -> None:
         ret = main(
@@ -4607,6 +4637,10 @@ class TestOpenClawOpen:
         error = json.loads(capsys.readouterr().out)["error"]["message"]
         assert message in error
         assert "sbx-claw" in error
+        if message in {"OpenClaw is not installed", "requires OpenClaw 2026.9.1"}:
+            assert "smolvm sandbox snapshot create sbx-claw" in error
+            assert "smolvm sandbox delete sbx-claw" in error
+            assert "smolvm openclaw start --name sbx-claw --no-attach" in error
         vm.expose_local.assert_not_called()
         vm.close.assert_called_once()
 

@@ -26,6 +26,8 @@ Each command accepts sandbox options such as `--mount`, `--memory`, and `--disk-
 
 SmolVM installs OpenClaw 2026.9.1 with a supported Node.js 24 runtime. Start it without attaching to the terminal:
 
+For this release, creating a new OpenClaw sandbox can take several minutes because SmolVM installs Node.js and OpenClaw after the sandbox starts. The command shows each installation step while you wait. A future published image will restore the faster prebuilt path.
+
 ```bash
 smolvm openclaw start --name openclaw-work --no-attach
 ```
@@ -44,7 +46,30 @@ smolvm openclaw open openclaw-work --no-browser
 
 Close the local connection with the exact command printed by `openclaw open`. You can also list active connections with `smolvm sandbox port list openclaw-work`.
 
-OpenClaw currently supports Ubuntu sandboxes in SmolVM. Its first start installs the pinned release after boot because the published OpenClaw image predates 2.0; SmolVM will use a prebuilt image again after replacement image artifacts are released and pinned.
+OpenClaw currently supports Ubuntu sandboxes in SmolVM.
+
+## Replace an older OpenClaw sandbox
+
+Updating SmolVM changes newly created sandboxes, but it does not replace OpenClaw inside an existing sandbox. Save the old sandbox before deleting it so you can recover files that were not stored on your machine:
+
+```bash
+smolvm sandbox snapshot create openclaw-work --snapshot-id openclaw-work-before-openclaw-upgrade
+# Created snapshot 'openclaw-work-before-openclaw-upgrade' from VM 'openclaw-work'.
+```
+
+Delete the old sandbox after the snapshot succeeds:
+
+```bash
+smolvm sandbox delete openclaw-work
+```
+
+Then create a fresh sandbox with the version pinned by your installed SmolVM release:
+
+```bash
+smolvm openclaw start --name openclaw-work --no-attach
+```
+
+If you need the old sandbox again, delete its replacement and restore the saved snapshot with `smolvm sandbox snapshot restore openclaw-work-before-openclaw-upgrade`.
 
 ## Credentials and configuration
 

@@ -31,6 +31,26 @@ from smolvm.types import BrowserSessionState, GuestFlushPolicy, GuestOS, Snapsho
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
 
 
+class _PresetOSChoice(click.Choice):
+    """Advertise supported OSes while preserving actionable runtime errors.
+
+    Known SmolVM operating systems that a specific preset does not support
+    still reach the preset handler. That handler can then return the same
+    recovery command in both terminal and JSON output. Help text and shell
+    completion only expose the choices that will work.
+    """
+
+    def convert(
+        self,
+        value: object,
+        param: click.Parameter | None,
+        ctx: click.Context | None,
+    ) -> str | None:
+        if value is not None and str(value) in {guest_os.value for guest_os in GuestOS}:
+            return str(value)
+        return super().convert(value, param, ctx)
+
+
 def _handlers() -> Any:
     from smolvm.cli import main
 
@@ -1455,23 +1475,71 @@ def _register_preset_commands() -> None:
         def preset_group() -> None:
             pass
 
-        def _make_start_callback(preset_name: str, command_name: str) -> Any:
-            @click.command("start", help="Start this agent in a sandbox.")
-            @click.option("-n", "--name", default=None)
-            @click.option("--memory", "memory_mib", type=int, default=None)
-            @click.option("--disk-size", "disk_size_mib", type=int, default=None)
+        def _make_start_callback(
+            preset_name: str,
+            command_name: str,
+            supported_oses: tuple[str, ...],
+            *,
+            prefer_published_image: bool,
+        ) -> Any:
+            start_help = "Create a sandbox and install this agent."
+            if not prefer_published_image:
+                start_help += " Installation may take several minutes."
+
+            @click.command("start", help=start_help)
+            @click.option(
+                "-n",
+                "--name",
+                default=None,
+                help="Sandbox name; SmolVM generates one when omitted.",
+            )
+            @click.option(
+                "--memory",
+                "memory_mib",
+                type=int,
+                default=None,
+                help="Memory in MiB; uses the preset default when omitted.",
+            )
+            @click.option(
+                "--disk-size",
+                "disk_size_mib",
+                type=int,
+                default=None,
+                help="Disk size in MiB; uses the preset default when omitted.",
+            )
             @backend_option(default=None)
             @qemu_machine_option
             @click.option(
                 "--os",
                 "os_name",
-                type=click.Choice([guest_os.value for guest_os in GuestOS]),
+                type=_PresetOSChoice(list(supported_oses)),
                 default=None,
+                help="Guest operating system; uses Ubuntu when omitted.",
             )
-            @click.option("--mount", "mounts", multiple=True, metavar="HOST_PATH[:GUEST_PATH]")
-            @click.option("--writable-mounts", is_flag=True)
-            @click.option("--install-timeout", type=positive_float_type(), default=600.0)
-            @click.option("--attach/--no-attach", default=None)
+            @click.option(
+                "--mount",
+                "mounts",
+                multiple=True,
+                metavar="HOST_PATH[:GUEST_PATH]",
+                help="Share a host folder; repeat the option to share more than one.",
+            )
+            @click.option(
+                "--writable-mounts",
+                is_flag=True,
+                help="Allow the sandbox to modify shared host folders.",
+            )
+            @click.option(
+                "--install-timeout",
+                type=positive_float_type(),
+                default=600.0,
+                show_default=True,
+                help="Seconds to wait for each agent installation step.",
+            )
+            @click.option(
+                "--attach/--no-attach",
+                default=None,
+                help="Open the agent after setup, or leave the sandbox running.",
+            )
             @comm_channel_option
             @boot_timeout_option
             @json_option
@@ -1513,7 +1581,14 @@ def _register_preset_commands() -> None:
 
             return start
 
-        preset_group.add_command(_make_start_callback(preset.name, public_name))
+        preset_group.add_command(
+            _make_start_callback(
+                preset.name,
+                public_name,
+                preset.supported_oses,
+                prefer_published_image=preset.prefer_published_image,
+            )
+        )
         if preset.name == "openclaw":
 
             @click.command("open", help="Open this sandbox's OpenClaw dashboard.")

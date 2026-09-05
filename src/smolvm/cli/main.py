@@ -58,6 +58,7 @@ from smolvm.cli.output import (
     render_error,
     status_style,
 )
+from smolvm.exceptions import VMNotFoundError
 from smolvm.types import BrowserSessionState, DesktopEndpoint, GuestOS, VMState
 
 if TYPE_CHECKING:
@@ -3343,8 +3344,9 @@ def _start_openclaw_gateway(vm: FacadeVM, vm_id: str) -> None:
     installed = vm.run("openclaw --version", timeout=10)
     if not installed.ok:
         raise RuntimeError(
-            f"OpenClaw is not installed in sandbox '{vm_id}'; run "
-            f"'smolvm sandbox delete {vm_id}', then "
+            f"OpenClaw is not installed in sandbox '{vm_id}'. Before replacing it, run "
+            f"'smolvm sandbox snapshot create {vm_id} --snapshot-id "
+            f"{vm_id}-before-openclaw-upgrade', then 'smolvm sandbox delete {vm_id}' and "
             f"'smolvm openclaw start --name {vm_id} --no-attach'."
         )
     version_output = "\n".join((installed.stdout, installed.stderr))
@@ -3353,8 +3355,10 @@ def _start_openclaw_gateway(vm: FacadeVM, vm_id: str) -> None:
         found_version = version_match.group(0) if version_match is not None else "unknown"
         raise RuntimeError(
             f"Sandbox '{vm_id}' has OpenClaw {found_version}, but this command requires "
-            f"OpenClaw {OPENCLAW_VERSION}; run 'smolvm sandbox delete {vm_id}', then "
-            f"'smolvm openclaw start --name {vm_id} --no-attach'."
+            f"OpenClaw {OPENCLAW_VERSION}. Before replacing it, run 'smolvm sandbox "
+            f"snapshot create {vm_id} --snapshot-id {vm_id}-before-openclaw-upgrade', then "
+            f"'smolvm sandbox delete {vm_id}' and 'smolvm openclaw start --name {vm_id} "
+            "--no-attach'."
         )
 
     command = f"""
@@ -3528,6 +3532,12 @@ def _run_openclaw_open(args: SimpleNamespace) -> int:
             console.print(f"Stop sharing it with: [bold]{escape(close_command)}[/bold]")
         return 0
     except Exception as exc:
+        if isinstance(exc, VMNotFoundError):
+            exc = RuntimeError(
+                f"Sandbox '{args.vm_id}' was not found; run 'smolvm sandbox list --all' "
+                f"to choose one, or 'smolvm openclaw start --name {args.vm_id} "
+                "--no-attach' to create it."
+            )
         if vm is not None and forward_active and host_port is not None:
             try:
                 with _port_forward_operation_lock(args.vm_id):

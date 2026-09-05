@@ -233,7 +233,7 @@ OpenClaw also has a private browser dashboard. Open it after the named sandbox s
 smolvm openclaw open openclaw-work
 ```
 
-See the [agent preset guide](docs/guides/agent-presets.md) for credentials, configuration, and the full OpenClaw dashboard flow.
+Creating an OpenClaw sandbox currently takes several minutes while SmolVM installs its supported Node.js runtime and pinned OpenClaw release. See the [OpenClaw guide](docs/guides/agent-presets.md#open-openclaws-dashboard) for credentials, the dashboard flow, and safe steps for replacing an older sandbox.
 
 
 ## Browser sandbox
