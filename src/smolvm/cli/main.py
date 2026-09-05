@@ -3033,18 +3033,19 @@ def _load_port_forwards_unlocked(vm_id: str, path: Path) -> list[dict]:
 
     if not path.exists():
         return []
+    reset_command = f"rm -- {shlex.quote(str(path))}"
     try:
         data = json.loads(path.read_text())
     except Exception as exc:
         raise RuntimeError(
-            f"Port forward state for '{vm_id}' is unreadable. Remove '{path}' to reset: rm '{path}'"
+            f"Port forward state for '{vm_id}' is unreadable. Run {reset_command} to reset it."
         ) from exc
     if not isinstance(data, list) or any(
         not isinstance(item, dict) or "host_port" not in item or "guest_port" not in item
         for item in data
     ):
         raise RuntimeError(
-            f"Port forward state for '{vm_id}' is corrupt. Remove '{path}' to reset: rm '{path}'"
+            f"Port forward state for '{vm_id}' is corrupt. Run {reset_command} to reset it."
         )
     return data
 

@@ -4782,14 +4782,31 @@ class TestOpenClawOpen:
     ) -> None:
         from smolvm.cli.main import _load_port_forwards_unlocked
 
-        state_path = tmp_path / "forwards.json"
+        state_path = tmp_path / "forward state.json"
         state_path.write_text(json.dumps(records))
 
         expected = (
-            "Port forward state for 'sbx-claw' is corrupt. "
-            f"Remove '{state_path}' to reset: rm '{state_path}'"
+            f"Port forward state for 'sbx-claw' is corrupt. Run rm -- '{state_path}' to reset it."
         )
         with pytest.raises(RuntimeError, match="corrupt") as raised:
+            _load_port_forwards_unlocked("sbx-claw", state_path)
+
+        assert str(raised.value) == expected
+
+    def test_load_port_forwards_quotes_the_reset_path_when_json_is_unreadable(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from smolvm.cli.main import _load_port_forwards_unlocked
+
+        state_path = tmp_path / "forward state.json"
+        state_path.write_text("{")
+
+        expected = (
+            "Port forward state for 'sbx-claw' is unreadable. "
+            f"Run rm -- '{state_path}' to reset it."
+        )
+        with pytest.raises(RuntimeError, match="unreadable") as raised:
             _load_port_forwards_unlocked("sbx-claw", state_path)
 
         assert str(raised.value) == expected
