@@ -32,6 +32,16 @@ For this release, creating a new OpenClaw sandbox can take several minutes becau
 smolvm openclaw start --name openclaw-work --no-attach
 ```
 
+List running sandboxes when you need to find its name:
+
+```bash
+smolvm openclaw list
+# NAME              STATUS   PID
+# openclaw-work     running  12345
+```
+
+The list includes every sandbox because older and custom-named sandboxes do not record which preset created them. Add `--all` to include stopped sandboxes, or `--status STATUS` to choose one state.
+
 Then open its private dashboard through a localhost-only connection:
 
 ```bash

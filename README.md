@@ -230,6 +230,10 @@ smolvm openclaw start --name openclaw-work --no-attach
 OpenClaw also has a private browser dashboard. Open it after the named sandbox starts:
 
 ```bash
+smolvm openclaw list
+# NAME              STATUS   PID
+# openclaw-work     running  12345
+
 smolvm openclaw open openclaw-work
 ```
 

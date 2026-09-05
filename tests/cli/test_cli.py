@@ -4326,7 +4326,31 @@ class TestOpenClawOpen:
         ret = main(["openclaw", "--help"])
 
         assert ret == 0
-        assert "open" in capsys.readouterr().out
+        output = capsys.readouterr().out
+        assert "list" in output
+        assert "open" in output
+
+    @patch("smolvm.cli.main._run_list", return_value=0)
+    def test_list_routes_filters_to_the_shared_sandbox_inventory(
+        self,
+        mock_run: MagicMock,
+    ) -> None:
+        ret = main(["openclaw", "list", "--all", "--json"])
+
+        assert ret == 0
+        mock_run.assert_called_once_with(
+            include_all=True,
+            status_filter=None,
+            json_output=True,
+            command_name="openclaw.list",
+        )
+
+    @patch("smolvm.cli.main._run_list", return_value=0)
+    def test_list_rejects_conflicting_filters(self, mock_run: MagicMock) -> None:
+        ret = main(["openclaw", "list", "--all", "--status", "running"])
+
+        assert ret == 2
+        mock_run.assert_not_called()
 
     def test_start_help_only_offers_supported_os_and_explains_slow_install(
         self, capsys: pytest.CaptureFixture[str]
@@ -4354,7 +4378,7 @@ class TestOpenClawOpen:
         assert ret == 1
         error = json.loads(capsys.readouterr().out)["error"]["message"]
         assert "Sandbox 'missing-claw' was not found" in error
-        assert "smolvm sandbox list --all" in error
+        assert "smolvm openclaw list --all" in error
         assert "smolvm openclaw start --name missing-claw --no-attach" in error
 
     @patch("smolvm.cli.main._run_openclaw_open", return_value=0)

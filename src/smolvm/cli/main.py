@@ -3544,7 +3544,7 @@ def _run_openclaw_open(args: SimpleNamespace) -> int:
     except Exception as exc:
         if isinstance(exc, VMNotFoundError):
             exc = RuntimeError(
-                f"Sandbox '{args.vm_id}' was not found; run 'smolvm sandbox list --all' "
+                f"Sandbox '{args.vm_id}' was not found; run 'smolvm openclaw list --all' "
                 f"to choose one, or 'smolvm openclaw start --name {args.vm_id} "
                 "--no-attach' to create it."
             )

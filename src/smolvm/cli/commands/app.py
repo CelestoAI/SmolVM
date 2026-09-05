@@ -1591,6 +1591,34 @@ def _register_preset_commands() -> None:
         )
         if preset.name == "openclaw":
 
+            @click.command("list", help="List sandboxes so you can choose one for OpenClaw.")
+            @click.option("--all", "include_all", is_flag=True, help="Show all sandboxes.")
+            @click.option(
+                "--status",
+                "status_filter",
+                type=click.Choice([state.value for state in VMState]),
+                default=None,
+            )
+            @json_option
+            def openclaw_list(
+                include_all: bool,
+                status_filter: str | None,
+                json_output: bool,
+            ) -> Any:
+                """List sandboxes so you can choose one for OpenClaw."""
+                if include_all and status_filter is not None:
+                    raise click.UsageError(
+                        "Use one filter. Run 'smolvm openclaw list --all' or "
+                        "'smolvm openclaw list --status running'."
+                    )
+                _before_command(json_output=json_output)
+                return _handlers()._run_list(
+                    include_all=include_all,
+                    status_filter=status_filter,
+                    json_output=json_output,
+                    command_name="openclaw.list",
+                )
+
             @click.command("open", help="Open this sandbox's OpenClaw dashboard.")
             @click.argument("vm_id", metavar="sandbox", shell_complete=complete_sandbox_names)
             @click.option(
@@ -1630,6 +1658,7 @@ def _register_preset_commands() -> None:
                     )
                 )
 
+            preset_group.add_command(openclaw_list)
             preset_group.add_command(openclaw_open)
         cli.add_command(preset_group)
 
