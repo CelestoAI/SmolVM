@@ -32,6 +32,9 @@ class FakeWebSocket:
         self._fail = fail
         self.sent: list[dict[str, object]] = []
 
+    async def accept(self) -> None:
+        pass
+
     async def send_json(self, message: dict[str, object]) -> None:
         self.sent.append(message)
         if self._on_send is not None:
@@ -72,3 +75,33 @@ def test_broadcast_removes_dead_connections() -> None:
 
     assert alive in manager._active
     assert dead not in manager._active
+
+
+def test_connect_and_disconnect_track_connections() -> None:
+    manager = ConnectionManager()
+    websocket = FakeWebSocket()
+
+    asyncio.run(manager.connect(websocket))
+    assert manager.connection_count == 1
+
+    manager.disconnect(websocket)
+    manager.disconnect(websocket)
+    assert manager.connection_count == 0
+
+
+def test_broadcast_without_connections_is_a_noop() -> None:
+    manager = ConnectionManager()
+
+    asyncio.run(manager.broadcast({"type": "tick"}))
+
+    assert manager.connection_count == 0
+
+
+def test_send_personal_removes_failed_connection() -> None:
+    manager = ConnectionManager()
+    websocket = FakeWebSocket(fail=True)
+    manager._active.add(websocket)
+
+    asyncio.run(manager.send_personal(websocket, {"type": "notice"}))
+
+    assert manager.connection_count == 0
