@@ -17,8 +17,11 @@
 import ast
 import json
 import os
+from collections.abc import Iterator
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, patch
 
 import click
@@ -32,8 +35,10 @@ from smolvm.cli.main import (
     build_cli,
     main,
 )
+from smolvm.exceptions import VMNotFoundError
 from smolvm.types import (
     BrowserSessionState,
+    CommandResult,
     GuestOS,
     NetworkConfig,
     SnapshotCapturePolicy,
@@ -2051,6 +2056,63 @@ class TestCliPort:
         assert args.command_name == "sandbox.port.list"
         assert args.json is True
 
+    @pytest.mark.parametrize(
+        "process_command,should_kill",
+        [
+            (
+                "/usr/bin/ssh -N -L 127.0.0.1:8080:127.0.0.1:3000 root@127.0.0.1",
+                True,
+            ),
+            ("/usr/bin/ssh root@example.com", False),
+            ("/usr/bin/python worker.py", False),
+        ],
+    )
+    def test_port_close_kills_only_the_recorded_ssh_tunnel(
+        self,
+        process_command: str,
+        should_kill: bool,
+    ) -> None:
+        vm = MagicMock()
+        entry = {
+            "host_port": 8080,
+            "guest_port": 3000,
+            "transport": "ssh_tunnel",
+            "pid": 4321,
+        }
+        with (
+            patch("smolvm.cli.main._port_forward_operation_lock", return_value=nullcontext()),
+            patch("smolvm.cli.main._load_port_forwards", return_value=[entry]),
+            patch("smolvm.cli.main._remove_port_forward") as mock_remove,
+            patch("smolvm.cli.main._cli_vm_from_id", return_value=vm) as mock_vm_from_id,
+            patch(
+                "smolvm.cli.main.subprocess.run",
+                return_value=SimpleNamespace(stdout=process_command),
+            ),
+            patch("smolvm.cli.main.os.kill") as mock_kill,
+        ):
+            ret = main(["sandbox", "port", "close", "vm001", "8080:3000", "--json"])
+
+        assert ret == 0
+        assert mock_kill.called is should_kill
+        mock_vm_from_id.assert_not_called()
+        vm.unexpose_local.assert_not_called()
+        mock_remove.assert_called_once_with("vm001", 8080, 3000)
+
+    def test_port_close_uses_facade_for_non_ssh_forward(self) -> None:
+        vm = MagicMock()
+        entry = {"host_port": 8080, "guest_port": 3000, "transport": "qemu_hostfwd"}
+        with (
+            patch("smolvm.cli.main._port_forward_operation_lock", return_value=nullcontext()),
+            patch("smolvm.cli.main._load_port_forwards", return_value=[entry]),
+            patch("smolvm.cli.main._remove_port_forward") as mock_remove,
+            patch("smolvm.cli.main._cli_vm_from_id", return_value=vm),
+        ):
+            ret = main(["sandbox", "port", "close", "vm001", "8080:3000", "--json"])
+
+        assert ret == 0
+        vm.unexpose_local.assert_called_once_with(8080, 3000)
+        mock_remove.assert_called_once_with("vm001", 8080, 3000)
+
 
 class TestCliShell:
     """Tests for `smolvm sandbox shell`."""
@@ -3809,6 +3871,8 @@ class TestCliStart:
         assert payload["data"]["preset"]["injected_env_keys"] == ["OPENAI_API_KEY"]
         assert payload["data"]["next"]["shell_command"] == "smolvm sandbox shell sbx-1"
         assert payload["data"]["next"]["ssh_command"] == "smolvm sandbox ssh sbx-1"
+        assert mock_apply_fn.call_args.kwargs["preset_command"] == "codex"
+        assert mock_apply_fn.call_args.kwargs["sandbox_name"] == "sbx-1"
 
     @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.presets.apply_preset")
@@ -3976,6 +4040,46 @@ class TestCliStart:
         assert ret == 2
         assert "Invalid value for '--os'" in capsys.readouterr().err
 
+    def test_openclaw_rejects_alpine_with_recovery_command(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        ret = main(["openclaw", "start", "--os", "alpine", "--json"])
+
+        assert ret == 2
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["exit_code"] == 2
+        assert "smolvm openclaw start --os ubuntu" in payload["error"]["message"]
+
+    @patch("smolvm.images.published.is_preset_published", return_value=True)
+    @patch("smolvm.cli.main._run_start_with_published_image")
+    @patch("smolvm.presets.apply_preset")
+    @patch("smolvm.facade._build_auto_config")
+    @patch("smolvm.facade.SmolVM")
+    def test_openclaw_skips_the_stale_published_image(
+        self,
+        mock_vm_cls: MagicMock,
+        mock_build_auto_config: MagicMock,
+        mock_apply: MagicMock,
+        mock_published_path: MagicMock,
+        mock_is_published: MagicMock,
+    ) -> None:
+        config = MagicMock(vm_id="sbx-openclaw")
+        mock_build_auto_config.return_value = (config, "/tmp/id_ed25519")
+        mock_vm_cls.return_value = self._make_vm_mock("sbx-openclaw")
+        mock_apply.return_value = {
+            "preset": "openclaw",
+            "copied_configs": [],
+            "injected_env_keys": [],
+        }
+
+        ret = main(["openclaw", "start", "--json"])
+
+        assert ret == 0
+        mock_is_published.assert_not_called()
+        mock_published_path.assert_not_called()
+        mock_apply.assert_called_once()
+
     @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.cli.main._apply_preset_with_progress")
     @patch("smolvm.facade._build_auto_config")
@@ -4004,6 +4108,7 @@ class TestCliStart:
         kwargs = mock_build_auto_config.call_args.kwargs
         assert kwargs["memory"] == 4096
         assert kwargs["disk_size_mib"] == 16384
+        assert mock_apply.call_args.kwargs["preset_command"] == "claude"
 
     @patch("smolvm.images.published.is_preset_published", return_value=False)
     @patch("smolvm.facade._build_auto_config")
@@ -4214,6 +4319,499 @@ class TestCliStart:
         mock_subprocess_run.assert_not_called()
 
 
+class TestOpenClawOpen:
+    """Tests for ``smolvm openclaw open``."""
+
+    def test_openclaw_help_lists_open_action(self, capsys: pytest.CaptureFixture[str]) -> None:
+        ret = main(["openclaw", "--help"])
+
+        assert ret == 0
+        assert "open" in capsys.readouterr().out
+
+    def test_start_help_only_offers_supported_os_and_explains_slow_install(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        ret = main(["openclaw", "start", "--help"])
+
+        assert ret == 0
+        output = capsys.readouterr().out
+        normalized_output = " ".join(output.split())
+        assert "Installation may take several minutes" in normalized_output
+        assert "--os [ubuntu]" in output
+        assert "alpine" not in output
+        assert "windows" not in output
+        assert "Sandbox name; SmolVM generates one when omitted." in normalized_output
+        assert "Seconds to wait for each agent installation step." in normalized_output
+
+    @patch("smolvm.cli.main._cli_vm_from_id", side_effect=VMNotFoundError("missing-claw"))
+    def test_open_missing_sandbox_names_recovery_commands(
+        self,
+        _mock_vm_from_id: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        ret = main(["openclaw", "open", "missing-claw", "--json"])
+
+        assert ret == 1
+        error = json.loads(capsys.readouterr().out)["error"]["message"]
+        assert "Sandbox 'missing-claw' was not found" in error
+        assert "smolvm sandbox list --all" in error
+        assert "smolvm openclaw start --name missing-claw --no-attach" in error
+
+    @patch("smolvm.cli.main._run_openclaw_open", return_value=0)
+    def test_open_routes_options_to_handler(self, mock_run: MagicMock) -> None:
+        ret = main(
+            [
+                "openclaw",
+                "open",
+                "sbx-claw",
+                "--host-port",
+                "19876",
+                "--no-browser",
+                "--comm-channel",
+                "ssh",
+                "--json",
+            ]
+        )
+
+        assert ret == 0
+        args = mock_run.call_args.args[0]
+        assert args.vm_id == "sbx-claw"
+        assert args.host_port == 19876
+        assert args.no_browser is True
+        assert args.comm_channel == "ssh"
+        assert args.json is True
+
+    @patch("smolvm.cli.main.webbrowser.open", return_value=True)
+    @patch("smolvm.cli.main._track_port_forward")
+    @patch("smolvm.cli.main._cli_vm_from_id")
+    def test_open_starts_gateway_and_hides_one_time_token_after_browser_opens(
+        self,
+        mock_vm_from_id: MagicMock,
+        mock_track: MagicMock,
+        mock_browser_open: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        dashboard = {
+            "ok": True,
+            "browserUrl": "http://127.0.0.1:18789/#token=one-time-secret",
+            "httpUrl": "http://127.0.0.1:18789/",
+            "wsUrl": "ws://127.0.0.1:18789/ws",
+        }
+        vm = MagicMock()
+        vm.run.side_effect = [
+            CommandResult(exit_code=0, stdout="OpenClaw 2026.9.1 (ad6fe23)", stderr=""),
+            CommandResult(exit_code=0, stdout="", stderr=""),
+            CommandResult(exit_code=0, stdout=json.dumps(dashboard), stderr=""),
+        ]
+        vm.expose_local.return_value = 39876
+        mock_vm_from_id.return_value = vm
+
+        ret = main(["openclaw", "open", "sbx-claw"])
+
+        assert ret == 0
+        mock_browser_open.assert_called_once_with("http://127.0.0.1:39876/#token=one-time-secret")
+        vm.expose_local.assert_called_once_with(18789, None, guest_loopback=True)
+        mock_track.assert_called_once_with(vm, "sbx-claw", 39876, 18789)
+        assert vm.run.call_args_list[0].args[0] == "openclaw --version"
+        assert "--bind loopback" in vm.run.call_args_list[1].args[0]
+        assert "/etc/profile.d/smolvm_env.sh" in vm.run.call_args_list[1].args[0]
+        assert "https://127.0.0.1:18789/" in vm.run.call_args_list[1].args[0]
+        assert "--insecure" in vm.run.call_args_list[1].args[0]
+        assert 'kill "$gateway_pid"' in vm.run.call_args_list[1].args[0]
+        assert vm.run.call_args_list[2].args[0] == (
+            "OPENCLAW_GATEWAY_PORT=18789 openclaw dashboard --json --no-open"
+        )
+        output = capsys.readouterr().out
+        assert "http://127.0.0.1:39876/" in output
+        assert "one-time-secret" not in output
+        assert "smolvm sandbox port close sbx-claw 39876:18789" in output
+        vm.close.assert_called_once()
+
+    @patch("smolvm.cli.main.webbrowser.open")
+    @patch("smolvm.cli.main._track_port_forward")
+    @patch("smolvm.cli.main._cli_vm_from_id")
+    def test_json_returns_rewritten_dashboard_links_without_opening_browser(
+        self,
+        mock_vm_from_id: MagicMock,
+        mock_track: MagicMock,
+        mock_browser_open: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        dashboard = {
+            "ok": True,
+            "browserUrl": "http://localhost:18789/#token=secret",
+            "httpUrl": "http://localhost:18789/?token=also-secret",
+        }
+        vm = MagicMock()
+        vm.run.side_effect = [
+            CommandResult(exit_code=0, stdout="OpenClaw 2026.9.1", stderr=""),
+            CommandResult(exit_code=0, stdout="", stderr=""),
+            CommandResult(exit_code=0, stdout=json.dumps(dashboard), stderr=""),
+        ]
+        vm.expose_local.return_value = 39877
+        mock_vm_from_id.return_value = vm
+
+        ret = main(["openclaw", "open", "sbx-claw", "--json"])
+
+        assert ret == 0
+        mock_browser_open.assert_not_called()
+        mock_track.assert_called_once()
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["data"] == {
+            "sandbox": "sbx-claw",
+            "guest_port": 18789,
+            "host_port": 39877,
+            "url": "http://127.0.0.1:39877/",
+            "browser_url": "http://127.0.0.1:39877/#token=secret",
+            "ws_url": None,
+            "opened": False,
+            "close_command": "smolvm sandbox port close sbx-claw 39877:18789",
+        }
+        vm.close.assert_called_once()
+
+    @patch("smolvm.cli.main.webbrowser.open")
+    @patch("smolvm.cli.main._track_port_forward")
+    @patch("smolvm.cli.main._cli_vm_from_id")
+    def test_no_browser_prints_the_one_time_link(
+        self,
+        mock_vm_from_id: MagicMock,
+        _mock_track: MagicMock,
+        mock_browser_open: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        vm = MagicMock()
+        vm.run.side_effect = [
+            CommandResult(exit_code=0, stdout="OpenClaw 2026.9.1", stderr=""),
+            CommandResult(exit_code=0, stdout="", stderr=""),
+            CommandResult(
+                exit_code=0,
+                stdout=json.dumps(
+                    {
+                        "ok": True,
+                        "browserUrl": "http://127.0.0.1:18789/#token=one-time-secret",
+                    }
+                ),
+                stderr="",
+            ),
+        ]
+        vm.expose_local.return_value = 39876
+        mock_vm_from_id.return_value = vm
+
+        ret = main(["openclaw", "open", "sbx-claw", "--no-browser"])
+
+        assert ret == 0
+        mock_browser_open.assert_not_called()
+        assert "http://127.0.0.1:39876/#token=one-time-secret" in capsys.readouterr().out
+
+    @patch("smolvm.cli.main._cli_vm_from_id")
+    def test_open_rejects_non_loopback_dashboard_url_before_exposing_port(
+        self,
+        mock_vm_from_id: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        vm = MagicMock()
+        vm.run.side_effect = [
+            CommandResult(exit_code=0, stdout="OpenClaw 2026.9.1", stderr=""),
+            CommandResult(exit_code=0, stdout="", stderr=""),
+            CommandResult(
+                exit_code=0,
+                stdout=json.dumps({"ok": True, "browserUrl": "https://example.com/token"}),
+                stderr="",
+            ),
+        ]
+        mock_vm_from_id.return_value = vm
+
+        ret = main(["openclaw", "open", "sbx-claw", "--json"])
+
+        assert ret == 1
+        message = json.loads(capsys.readouterr().out)["error"]["message"]
+        assert "unexpected dashboard address" in message
+        assert "smolvm sandbox shell sbx-claw" in message
+        vm.expose_local.assert_not_called()
+        vm.close.assert_called_once()
+
+    @patch("smolvm.cli.main._cli_vm_from_id")
+    def test_open_rejects_the_wrong_loopback_port_before_exposing(
+        self,
+        mock_vm_from_id: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        vm = MagicMock()
+        vm.run.side_effect = [
+            CommandResult(exit_code=0, stdout="OpenClaw 2026.9.1", stderr=""),
+            CommandResult(exit_code=0, stdout="", stderr=""),
+            CommandResult(
+                exit_code=0,
+                stdout=json.dumps(
+                    {"ok": True, "browserUrl": "http://127.0.0.1:19999/#token=secret"}
+                ),
+                stderr="",
+            ),
+        ]
+        mock_vm_from_id.return_value = vm
+
+        ret = main(["openclaw", "open", "sbx-claw", "--json"])
+
+        assert ret == 1
+        message = json.loads(capsys.readouterr().out)["error"]["message"]
+        assert "unexpected dashboard address" in message
+        vm.expose_local.assert_not_called()
+        vm.close.assert_called_once()
+
+    @pytest.mark.parametrize(
+        "results,message",
+        [
+            (
+                [CommandResult(exit_code=1, stdout="", stderr="missing")],
+                "OpenClaw is not installed",
+            ),
+            (
+                [CommandResult(exit_code=0, stdout="OpenClaw 2026.8.8", stderr="")],
+                "requires OpenClaw 2026.9.1",
+            ),
+            (
+                [
+                    CommandResult(exit_code=0, stdout="OpenClaw 2026.9.1", stderr=""),
+                    CommandResult(exit_code=1, stdout="", stderr="gateway failed"),
+                ],
+                "OpenClaw did not become ready",
+            ),
+            (
+                [
+                    CommandResult(exit_code=0, stdout="OpenClaw 2026.9.1", stderr=""),
+                    CommandResult(exit_code=0, stdout="", stderr=""),
+                    CommandResult(exit_code=1, stdout="", stderr="dashboard failed"),
+                ],
+                "OpenClaw could not create a dashboard link",
+            ),
+            (
+                [
+                    CommandResult(exit_code=0, stdout="OpenClaw 2026.9.1", stderr=""),
+                    CommandResult(exit_code=0, stdout="", stderr=""),
+                    CommandResult(exit_code=0, stdout="{", stderr=""),
+                ],
+                "OpenClaw returned an unreadable dashboard link",
+            ),
+            (
+                [
+                    CommandResult(exit_code=0, stdout="OpenClaw 2026.9.1", stderr=""),
+                    CommandResult(exit_code=0, stdout="", stderr=""),
+                    CommandResult(exit_code=0, stdout="[]", stderr=""),
+                ],
+                "OpenClaw returned an unreadable dashboard link",
+            ),
+            (
+                [
+                    CommandResult(exit_code=0, stdout="OpenClaw 2026.9.1", stderr=""),
+                    CommandResult(exit_code=0, stdout="", stderr=""),
+                    CommandResult(
+                        exit_code=0,
+                        stdout=json.dumps({"ok": False}),
+                        stderr="",
+                    ),
+                ],
+                "OpenClaw could not create a dashboard link",
+            ),
+            (
+                [
+                    CommandResult(exit_code=0, stdout="OpenClaw 2026.9.1", stderr=""),
+                    CommandResult(exit_code=0, stdout="", stderr=""),
+                    CommandResult(exit_code=0, stdout=json.dumps({"ok": True}), stderr=""),
+                ],
+                "OpenClaw did not return a dashboard link",
+            ),
+        ],
+    )
+    @patch("smolvm.cli.main._cli_vm_from_id")
+    def test_open_failure_paths_are_actionable_and_do_not_expose_a_port(
+        self,
+        mock_vm_from_id: MagicMock,
+        results: list[CommandResult],
+        message: str,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        vm = MagicMock()
+        vm.run.side_effect = results
+        mock_vm_from_id.return_value = vm
+
+        ret = main(["openclaw", "open", "sbx-claw", "--json"])
+
+        assert ret == 1
+        error = json.loads(capsys.readouterr().out)["error"]["message"]
+        assert message in error
+        assert "sbx-claw" in error
+        if message in {"OpenClaw is not installed", "requires OpenClaw 2026.9.1"}:
+            assert "smolvm sandbox snapshot create sbx-claw" in error
+            assert "smolvm sandbox delete sbx-claw" in error
+            assert "smolvm openclaw start --name sbx-claw --no-attach" in error
+        vm.expose_local.assert_not_called()
+        vm.close.assert_called_once()
+
+    @patch("smolvm.cli.main._remove_port_forward")
+    @patch("smolvm.cli.main._track_port_forward", side_effect=RuntimeError("state corrupt"))
+    @patch("smolvm.cli.main._cli_vm_from_id")
+    def test_open_rolls_back_exposure_when_tracking_fails(
+        self,
+        mock_vm_from_id: MagicMock,
+        _mock_track: MagicMock,
+        mock_remove: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        vm = MagicMock()
+        vm.run.side_effect = [
+            CommandResult(exit_code=0, stdout="OpenClaw 2026.9.1", stderr=""),
+            CommandResult(exit_code=0, stdout="", stderr=""),
+            CommandResult(
+                exit_code=0,
+                stdout=json.dumps(
+                    {"ok": True, "browserUrl": "http://127.0.0.1:18789/#token=secret"}
+                ),
+                stderr="",
+            ),
+        ]
+        vm.expose_local.return_value = 39876
+        mock_vm_from_id.return_value = vm
+
+        ret = main(["openclaw", "open", "sbx-claw", "--json"])
+
+        assert ret == 1
+        assert "state corrupt" in json.loads(capsys.readouterr().out)["error"]["message"]
+        vm.unexpose_local.assert_called_once_with(39876, 18789)
+        mock_remove.assert_called_once_with("sbx-claw", 39876, 18789)
+        vm.close.assert_called_once()
+
+    @patch("smolvm.cli.main.webbrowser.open", side_effect=OSError("no browser"))
+    @patch("smolvm.cli.main._track_port_forward")
+    @patch("smolvm.cli.main._cli_vm_from_id")
+    def test_open_prints_link_when_browser_launch_fails(
+        self,
+        mock_vm_from_id: MagicMock,
+        _mock_track: MagicMock,
+        _mock_browser_open: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        vm = MagicMock()
+        vm.run.side_effect = [
+            CommandResult(exit_code=0, stdout="OpenClaw 2026.9.1", stderr=""),
+            CommandResult(exit_code=0, stdout="", stderr=""),
+            CommandResult(
+                exit_code=0,
+                stdout=json.dumps(
+                    {"ok": True, "browserUrl": "http://127.0.0.1:18789/#token=secret"}
+                ),
+                stderr="",
+            ),
+        ]
+        vm.expose_local.return_value = 39876
+        mock_vm_from_id.return_value = vm
+
+        ret = main(["openclaw", "open", "sbx-claw"])
+
+        assert ret == 0
+        assert "http://127.0.0.1:39876/#token=secret" in capsys.readouterr().out
+        vm.unexpose_local.assert_not_called()
+        vm.close.assert_called_once()
+
+    @patch("smolvm.cli.main._port_forwards_path")
+    def test_track_port_forward_persists_transport_pid_and_replaces_stale_pair(
+        self,
+        mock_path: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        from smolvm.cli.main import _track_port_forward
+
+        state_path = tmp_path / "forwards.json"
+        state_path.write_text(
+            json.dumps(
+                [
+                    {"host_port": 39876, "guest_port": 18789, "transport": "stale"},
+                    {"host_port": 40000, "guest_port": 3000, "transport": "qemu_hostfwd"},
+                ]
+            )
+        )
+        mock_path.return_value = state_path
+        tracked = MagicMock(transport="ssh_tunnel")
+        tracked.tunnel_proc.pid = 4321
+        vm = MagicMock()
+        vm._local_forwards = {(39876, 18789): tracked}
+
+        _track_port_forward(vm, "sbx-claw", 39876, 18789)
+
+        assert json.loads(state_path.read_text()) == [
+            {"host_port": 40000, "guest_port": 3000, "transport": "qemu_hostfwd"},
+            {
+                "host_port": 39876,
+                "guest_port": 18789,
+                "transport": "ssh_tunnel",
+                "pid": 4321,
+            },
+        ]
+
+    @patch("smolvm.cli.main._port_forwards_path")
+    def test_track_port_forward_defaults_to_nftables_without_runtime_record(
+        self,
+        mock_path: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        from smolvm.cli.main import _track_port_forward
+
+        state_path = tmp_path / "forwards.json"
+        mock_path.return_value = state_path
+        vm = MagicMock()
+        vm._local_forwards = {}
+
+        _track_port_forward(vm, "sbx-claw", 39876, 18789)
+
+        assert json.loads(state_path.read_text()) == [
+            {"host_port": 39876, "guest_port": 18789, "transport": "nftables"}
+        ]
+
+    @pytest.mark.parametrize(
+        "records",
+        [
+            [None],
+            [{}],
+            [{"host_port": 39876}],
+            [{"guest_port": 18789}],
+        ],
+    )
+    def test_load_port_forwards_rejects_invalid_records(
+        self,
+        records: list[object],
+        tmp_path: Path,
+    ) -> None:
+        from smolvm.cli.main import _load_port_forwards_unlocked
+
+        state_path = tmp_path / "forward state.json"
+        state_path.write_text(json.dumps(records))
+
+        expected = (
+            f"Port forward state for 'sbx-claw' is corrupt. Run rm -- '{state_path}' to reset it."
+        )
+        with pytest.raises(RuntimeError, match="corrupt") as raised:
+            _load_port_forwards_unlocked("sbx-claw", state_path)
+
+        assert str(raised.value) == expected
+
+    def test_load_port_forwards_quotes_the_reset_path_when_json_is_unreadable(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from smolvm.cli.main import _load_port_forwards_unlocked
+
+        state_path = tmp_path / "forward state.json"
+        state_path.write_text("{")
+
+        expected = (
+            "Port forward state for 'sbx-claw' is unreadable. "
+            f"Run rm -- '{state_path}' to reset it."
+        )
+        with pytest.raises(RuntimeError, match="unreadable") as raised:
+            _load_port_forwards_unlocked("sbx-claw", state_path)
+
+        assert str(raised.value) == expected
+
+
 class TestPublishedImageLaunchPath:
     """Tests for the published-image launch path.
 
@@ -4221,6 +4819,24 @@ class TestPublishedImageLaunchPath:
     via ensure_published_image, then boots directly. Tooling assumed to be
     preinstalled in the image.
     """
+
+    @pytest.fixture(autouse=True)
+    def _enable_the_published_path_for_legacy_path_tests(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> Iterator[None]:
+        """Exercise the path directly while production skips the stale OpenClaw image."""
+        from dataclasses import replace
+
+        from smolvm.presets import OPENCLAW_PRESET
+
+        for key in OPENCLAW_PRESET.host_env_vars:
+            monkeypatch.delenv(key, raising=False)
+        with patch.dict(
+            "smolvm.presets._REGISTRY",
+            {"openclaw": replace(OPENCLAW_PRESET, prefer_published_image=True)},
+        ):
+            yield
 
     @patch("smolvm.cli.main.platform.machine")
     def test_arch_helper_normalizes(self, mock_machine: MagicMock) -> None:
@@ -4399,6 +5015,8 @@ class TestPublishedImageLaunchPath:
         expected_arch: str,
         expected_vmm: str,
         expected_backend: str,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """End-to-end: download → VMConfig → start, no apply_preset call."""
         from smolvm.images.manager import LocalImage
@@ -4428,7 +5046,12 @@ class TestPublishedImageLaunchPath:
         mock_vm.info.network = MagicMock(spec=NetworkConfig)
         mock_vm.info.network.guest_ip = "172.16.0.2"
         mock_vm.info.network.ssh_host_port = 2200
+        channel = MagicMock()
+        channel.supports.return_value = True
+        channel.set_managed_env.return_value = {"OPENAI_API_KEY": "published-secret"}
+        mock_vm._ensure_control_for_file_transfer.return_value = channel
         mock_vm_cls.return_value = mock_vm
+        monkeypatch.setenv("OPENAI_API_KEY", "published-secret")
 
         # If apply_preset gets called, this test should fail loudly.
         with patch("smolvm.presets.apply_preset") as mock_apply:
@@ -4438,6 +5061,9 @@ class TestPublishedImageLaunchPath:
 
         assert ret == 0
         mock_ensure_image.assert_called_once_with("openclaw", expected_arch, expected_vmm, "ubuntu")
+        channel.set_managed_env.assert_called_once_with({"OPENAI_API_KEY": "published-secret"})
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["data"]["preset"]["injected_env_keys"] == ["OPENAI_API_KEY"]
 
         # Verify VMConfig was built with the right wiring.
         config_arg = mock_vm_cls.call_args[0][0]

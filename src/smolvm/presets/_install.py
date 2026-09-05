@@ -58,24 +58,76 @@ def collect_host_env(preset: Preset) -> dict[str, str]:
     return {key: value for key in preset.host_env_vars if (value := os.environ.get(key))}
 
 
+def transfer_host_env(
+    channel: CommChannel,
+    preset: Preset,
+    *,
+    on_progress: Callable[[str], None] | None = None,
+) -> list[str]:
+    """Forward the preset's available host environment variables."""
+    notify = on_progress or (lambda _msg: None)
+    env_vars = collect_host_env(preset)
+    if not env_vars:
+        return []
+
+    notify(f"Forwarding {len(env_vars)} environment variable(s)...")
+    set_managed_env = getattr(channel, "set_managed_env", None)
+    supports = getattr(channel, "supports", None)
+    if callable(set_managed_env) and (
+        callable(supports) and supports("env_managed", "env.managed") is True
+    ):
+        return sorted(set_managed_env(env_vars).keys())
+    return inject_env_vars(channel, env_vars)
+
+
 def apply_preset(
     ssh: CommChannel,
     preset: Preset,
     *,
     on_progress: Callable[[str], None] | None = None,
     install_timeout: int = _DEFAULT_INSTALL_TIMEOUT,
+    preset_command: str | None = None,
+    sandbox_name: str | None = None,
 ) -> dict[str, object]:
     """Apply *preset* to a guest reachable through a control channel.
 
-    Order: copy host configs, inject env vars, then run the install
-    script. Configs are placed before install runs so that the freshly
-    installed CLI finds its config on first invocation.
+    Order: install public packages first, then copy host configs and
+    inject credentials. Keeping secrets out of the guest until package
+    installation succeeds limits what network-fetched install scripts can
+    access. The installed CLI still sees its config on first invocation.
 
     Returns:
         A summary dict (copied paths, injected env keys) suitable for
         logging or JSON output.
     """
     notify = on_progress or (lambda _msg: None)
+
+    # Setup phase (apt + Node toolchain) runs before install_script so
+    # the user sees two distinct progress steps instead of one opaque
+    # "Installing..." line that stalls for the full duration.
+    if preset.setup_script.strip():
+        notify("Installing system packages...")
+        _run_install_phase(
+            ssh,
+            preset,
+            preset.setup_script,
+            install_timeout,
+            phase="setup",
+            preset_command=preset_command,
+            sandbox_name=sandbox_name,
+        )
+
+    if preset.install_script.strip():
+        notify(f"Installing {preset.name}...")
+        _run_install_phase(
+            ssh,
+            preset,
+            preset.install_script,
+            install_timeout,
+            phase="install",
+            preset_command=preset_command,
+            sandbox_name=sandbox_name,
+        )
 
     copied_configs = transfer_host_configs(
         ssh, preset, on_progress=on_progress, include_git_configs=True
@@ -86,29 +138,7 @@ def apply_preset(
     # tar-extract over a credential file we just wrote.
     extracted_secrets: list[str] = transfer_keychain_secrets(ssh, preset, on_progress=on_progress)
 
-    env_vars = collect_host_env(preset)
-    injected_keys: list[str] = []
-    if env_vars:
-        notify(f"Forwarding {len(env_vars)} environment variable(s)...")
-        set_managed_env = getattr(ssh, "set_managed_env", None)
-        supports = getattr(ssh, "supports", None)
-        if callable(set_managed_env) and (
-            callable(supports) and supports("env_managed", "env.managed") is True
-        ):
-            injected_keys = sorted(set_managed_env(env_vars).keys())
-        else:
-            injected_keys = inject_env_vars(ssh, env_vars)
-
-    # Setup phase (apt + Node toolchain) runs before install_script so
-    # the user sees two distinct progress steps instead of one opaque
-    # "Installing..." line that stalls for the full duration.
-    if preset.setup_script.strip():
-        notify("Installing system packages...")
-        _run_install_phase(ssh, preset, preset.setup_script, install_timeout, phase="setup")
-
-    if preset.install_script.strip():
-        notify(f"Installing {preset.name}...")
-        _run_install_phase(ssh, preset, preset.install_script, install_timeout, phase="install")
+    injected_keys = transfer_host_env(ssh, preset, on_progress=on_progress)
 
     # Trust the workspace mounts so git stops refusing to operate on the
     # 9p-shared repo with "fatal: detected dubious ownership". Runs after
@@ -133,13 +163,22 @@ def _run_install_phase(
     install_timeout: int,
     *,
     phase: str,
+    preset_command: str | None,
+    sandbox_name: str | None,
 ) -> None:
     """Run a setup or install bash script and surface failures uniformly.
 
     *phase* tags the SmolVMError context (``"setup"`` or ``"install"``) so
     JSON consumers can tell which step failed without parsing the message.
     """
-    command = f"bash -lc {shlex.quote(script)}"
+    public_name = preset_command or ("claude" if preset.name == "claude-code" else preset.name)
+    recovery_parts = ["smolvm", public_name, "start"]
+    if sandbox_name:
+        recovery_parts.extend(("--name", sandbox_name))
+    recovery_parts.extend(("--os", "ubuntu"))
+    recovery_command = shlex.join(recovery_parts)
+    context = f"SMOLVM_NODE_RECOVERY_COMMAND={shlex.quote(recovery_command)}\n"
+    command = f"bash -lc {shlex.quote(context + script)}"
     result = ssh.run(command, timeout=install_timeout, shell="raw")
     if not result.ok:
         stderr_tail = (result.stderr or "").strip().splitlines()[-20:]
@@ -299,13 +338,17 @@ def _copy_dir(
                 filter=_make_dir_tar_filter(include_patterns, exclude_patterns),
             )
 
-        guest_tmp = f"/tmp/.smolvm-preset-{uuid4().hex}.tar"
+        # Keep credential archives under /root rather than world-searchable
+        # /tmp. The EXIT trap removes the archive even when mkdir, chmod, or
+        # extraction fails, so SSH keys cannot be left behind by a partial copy.
+        guest_tmp = f"/root/.smolvm-preset-{uuid4().hex}.tar"
         ssh.put_file(tmp_path, guest_tmp)
         cmd = (
             "set -e; "
+            f"trap 'rm -f -- {guest_tmp}' EXIT; "
+            f"chmod 600 -- {guest_tmp}; "
             f"mkdir -p -- {shlex.quote(guest_path)}; "
-            f"tar -xf {shlex.quote(guest_tmp)} -C {shlex.quote(guest_path)}; "
-            f"rm -f -- {shlex.quote(guest_tmp)}"
+            f"tar -xf {guest_tmp} -C {shlex.quote(guest_path)}"
         )
         result = ssh.run(cmd, timeout=60)
         if not result.ok:
@@ -509,7 +552,7 @@ def transfer_host_configs(
     """Copy the preset's host config files/dirs into the guest.
 
     Runs only the config-copy step from :func:`apply_preset` — no
-    keychain extraction, no env injection, no install scripts. The
+    keychain extraction, environment forwarding, or install scripts. The
     published-image path reuses this so a sandbox booted from a
     pre-baked image still receives ``~/.claude.json`` and ``~/.claude``
     (the interactive CLI reads ``~/.claude.json`` to skip its login

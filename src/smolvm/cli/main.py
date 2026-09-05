@@ -24,8 +24,10 @@ import re
 import shlex
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
-from contextlib import suppress
+import tempfile
+import webbrowser
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -56,6 +58,7 @@ from smolvm.cli.output import (
     render_error,
     status_style,
 )
+from smolvm.exceptions import VMNotFoundError
 from smolvm.types import BrowserSessionState, DesktopEndpoint, GuestOS, VMState
 
 if TYPE_CHECKING:
@@ -68,6 +71,7 @@ if TYPE_CHECKING:
 DASHBOARD_ALLOW_BETA_ENV = "SMOLVM_DASHBOARD_ALLOW_BETA"
 DASHBOARD_URL_ENV = "SMOLVM_DASHBOARD_URL"
 ENV_RELOAD_HINT = "source /etc/profile.d/smolvm_env.sh"
+OPENCLAW_DASHBOARD_PORT = 18789
 
 # Matches PEP 440 pre-release and dev-release version suffixes,
 # e.g. "0.0.5.a1", "0.0.5b2", "0.0.5.dev1", "0.0.5rc1".
@@ -190,6 +194,19 @@ class StartPayload(TypedDict):
     vm: CreateVmPayload
     preset: StartPresetPayload
     next: CreateNextPayload
+
+
+class OpenClawOpenPayload(TypedDict):
+    """Machine-readable result for ``smolvm openclaw open``."""
+
+    sandbox: str
+    guest_port: int
+    host_port: int
+    url: str
+    browser_url: str
+    ws_url: str | None
+    opened: bool
+    close_command: str
 
 
 def _create_progress_message(backend: str, guest_os: GuestOS) -> str:
@@ -1620,11 +1637,16 @@ def _run_start_with_published_image(args: SimpleNamespace, preset: object) -> in
             # a config copy can't clobber a credential we just wrote
             # (mirrors apply_preset's ordering). Git configs are excluded
             # here — the published path is credential-transfer only.
-            from smolvm.presets import transfer_host_configs, transfer_keychain_secrets
+            from smolvm.presets import (
+                transfer_host_configs,
+                transfer_host_env,
+                transfer_keychain_secrets,
+            )
 
             channel = vm._ensure_control_for_file_transfer()
             copied_configs = transfer_host_configs(channel, _preset, include_git_configs=False)
             extracted_secrets = transfer_keychain_secrets(channel, _preset)
+            injected_env_keys = transfer_host_env(channel, _preset)
 
             network = vm.info.network
             data: StartPayload = {
@@ -1645,7 +1667,7 @@ def _run_start_with_published_image(args: SimpleNamespace, preset: object) -> in
                 "preset": {
                     "name": _preset.name,
                     "copied_configs": [*copied_configs, *extracted_secrets],
-                    "injected_env_keys": [],
+                    "injected_env_keys": injected_env_keys,
                     "no_env_hint": _preset.no_env_hint,
                 },
                 "next": {
@@ -1695,6 +1717,17 @@ def _run_start(args: SimpleNamespace) -> int:
 
     # The user-facing default is ubuntu when --os is omitted.
     requested_os = GuestOS(args.os) if args.os is not None else GuestOS.UBUNTU
+    if requested_os.value not in preset.supported_oses:
+        supported_os = preset.supported_oses[0]
+        return _emit_cli_error(
+            command_name,
+            2,
+            ValueError(
+                f"{preset.name} runs on {supported_os} in SmolVM; run "
+                f"'smolvm {command_name.rsplit('.', 1)[0]} start --os {supported_os}'."
+            ),
+            json_output=args.json,
+        )
 
     # Published-image fast path: use a pre-built image from GitHub Releases
     # if one exists for this (preset, arch, vmm, os) tuple. Falls through to
@@ -1709,8 +1742,10 @@ def _run_start(args: SimpleNamespace) -> int:
     else:
         requested_backend = args.backend or "auto"
         published_backend = _VMM_TO_BACKEND[vmm]
-        if requested_backend in {"auto", published_backend} and is_preset_published(
-            preset.name, arch, vmm, requested_os.value
+        if (
+            preset.prefer_published_image
+            and requested_backend in {"auto", published_backend}
+            and is_preset_published(preset.name, arch, vmm, requested_os.value)
         ):
             return _run_start_with_published_image(args, preset)
 
@@ -1761,6 +1796,7 @@ def _run_start(args: SimpleNamespace) -> int:
                 vm=vm,
                 preset=preset,
                 install_timeout=int(args.install_timeout),
+                preset_command=command_name.rsplit(".", 1)[0],
             )
         else:
             config, ssh_key_path = _build_auto_config(
@@ -1795,6 +1831,8 @@ def _run_start(args: SimpleNamespace) -> int:
                 ssh,
                 preset,
                 install_timeout=int(args.install_timeout),
+                preset_command=command_name.rsplit(".", 1)[0],
+                sandbox_name=vm.vm_id,
             )
 
         network = vm.info.network
@@ -1922,6 +1960,7 @@ def _apply_preset_with_progress(
     vm: object,
     preset: object,
     install_timeout: int,
+    preset_command: str,
 ) -> dict[str, object]:
     """Run :func:`apply_preset` with a Rich spinner showing each step."""
     from rich.console import Console
@@ -1953,6 +1992,8 @@ def _apply_preset_with_progress(
             _preset,
             on_progress=on_progress,
             install_timeout=install_timeout,
+            preset_command=preset_command,
+            sandbox_name=_vm.vm_id,
         )
         progress.remove_task(task)
 
@@ -2964,29 +3005,126 @@ def _port_forwards_path(vm_id: str) -> Path:
     return target
 
 
+@contextmanager
+def _port_forward_operation_lock(vm_id: str) -> Iterator[None]:
+    """Serialize expose/close operations for one sandbox across CLI processes."""
+    import fcntl
+
+    path = _port_forwards_path(vm_id)
+    lock_path = path.with_suffix(".operation.lock")
+    with lock_path.open("a+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        yield
+
+
 def _load_port_forwards(vm_id: str) -> list[dict]:
+    """Read a sandbox's forwarding state while holding its process lock."""
+    import fcntl
+
+    path = _port_forwards_path(vm_id)
+    lock_path = path.with_suffix(".lock")
+    with lock_path.open("a+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        return _load_port_forwards_unlocked(vm_id, path)
+
+
+def _load_port_forwards_unlocked(vm_id: str, path: Path) -> list[dict]:
     import json
 
-    p = _port_forwards_path(vm_id)
-    if not p.exists():
+    if not path.exists():
         return []
+    reset_command = f"rm -- {shlex.quote(str(path))}"
     try:
-        data = json.loads(p.read_text())
+        data = json.loads(path.read_text())
     except Exception as exc:
         raise RuntimeError(
-            f"Port forward state for '{vm_id}' is unreadable. Remove '{p}' to reset: rm '{p}'"
+            f"Port forward state for '{vm_id}' is unreadable. Run {reset_command} to reset it."
         ) from exc
-    if not isinstance(data, list):
+    if not isinstance(data, list) or any(
+        not isinstance(item, dict) or "host_port" not in item or "guest_port" not in item
+        for item in data
+    ):
         raise RuntimeError(
-            f"Port forward state for '{vm_id}' is corrupt. Remove '{p}' to reset: rm '{p}'"
+            f"Port forward state for '{vm_id}' is corrupt. Run {reset_command} to reset it."
         )
     return data
 
 
-def _save_port_forwards(vm_id: str, forwards: list[dict]) -> None:
+def _save_port_forwards_unlocked(path: Path, forwards: list[dict]) -> None:
     import json
 
-    _port_forwards_path(vm_id).write_text(json.dumps(forwards, indent=2))
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+            json.dump(forwards, temporary_file, indent=2)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        temporary_path.replace(path)
+    finally:
+        if temporary_path is not None:
+            with suppress(FileNotFoundError):
+                temporary_path.unlink()
+
+
+def _mutate_port_forwards(
+    vm_id: str,
+    mutate: Callable[[list[dict]], list[dict]],
+) -> list[dict]:
+    """Serialize a forwarding-state read/modify/write transaction."""
+    import fcntl
+
+    path = _port_forwards_path(vm_id)
+    lock_path = path.with_suffix(".lock")
+    with lock_path.open("a+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        forwards = mutate(_load_port_forwards_unlocked(vm_id, path))
+        _save_port_forwards_unlocked(path, forwards)
+        return forwards
+
+
+def _remove_port_forward(vm_id: str, host_port: int, guest_port: int) -> None:
+    """Remove one forwarding record without overwriting concurrent updates."""
+
+    def remove(forwards: list[dict]) -> list[dict]:
+        return [
+            item
+            for item in forwards
+            if not (item["host_port"] == host_port and item["guest_port"] == guest_port)
+        ]
+
+    _mutate_port_forwards(vm_id, remove)
+
+
+def _track_port_forward(vm: FacadeVM, vm_id: str, host_port: int, guest_port: int) -> None:
+    """Persist a local port forward created through the facade."""
+    forward_entry: dict[str, object] = {
+        "host_port": host_port,
+        "guest_port": guest_port,
+        "transport": "nftables",
+    }
+    tracked = vm._local_forwards.get((host_port, guest_port))
+    if tracked is not None:
+        forward_entry["transport"] = tracked.transport
+        if tracked.tunnel_proc is not None:
+            forward_entry["pid"] = tracked.tunnel_proc.pid
+
+    def replace(forwards: list[dict]) -> list[dict]:
+        current = [
+            item
+            for item in forwards
+            if not (item["host_port"] == host_port and item["guest_port"] == guest_port)
+        ]
+        current.append(forward_entry)
+        return current
+
+    _mutate_port_forwards(vm_id, replace)
 
 
 def _run_port_expose(args: SimpleNamespace) -> int:
@@ -2996,6 +3134,8 @@ def _run_port_expose(args: SimpleNamespace) -> int:
     json_output: bool = args.json
     command_name = getattr(args, "command_name", "sandbox.port.expose")
     vm: SmolVM | None = None
+    host_port: int | None = None
+    forward_active = False
 
     try:
         host_port_req, guest_port = _parse_port_mapping(args.mapping)
@@ -3019,25 +3159,10 @@ def _run_port_expose(args: SimpleNamespace) -> int:
             ssh_key_path=args.ssh_key,
             comm_channel=args.comm_channel,
         )
-        host_port = vm.expose_local(guest_port, host_port_req)
-
-        # Persist forward info so `port close` and `port list` can find it.
-        forward_entry: dict = {"host_port": host_port, "guest_port": guest_port}
-        tracked = vm._local_forwards.get((host_port, guest_port))
-        if tracked is not None and tracked.tunnel_proc is not None:
-            forward_entry["pid"] = tracked.tunnel_proc.pid
-            forward_entry["transport"] = "ssh_tunnel"
-        else:
-            forward_entry["transport"] = "nftables"
-        forwards = _load_port_forwards(args.vm_id)
-        # Remove any stale entry for the same pair before appending.
-        forwards = [
-            f
-            for f in forwards
-            if not (f["host_port"] == host_port and f["guest_port"] == guest_port)
-        ]
-        forwards.append(forward_entry)
-        _save_port_forwards(args.vm_id, forwards)
+        with _port_forward_operation_lock(args.vm_id):
+            host_port = vm.expose_local(guest_port, host_port_req)
+            forward_active = True
+            _track_port_forward(vm, args.vm_id, host_port, guest_port)
 
         if json_output:
             emit_json(
@@ -3061,6 +3186,13 @@ def _run_port_expose(args: SimpleNamespace) -> int:
                 f"{args.vm_id} {host_port}:{guest_port}[/bold]"
             )
     except Exception as exc:
+        if vm is not None and forward_active and host_port is not None:
+            try:
+                with _port_forward_operation_lock(args.vm_id):
+                    vm.unexpose_local(host_port, guest_port)
+                    _remove_port_forward(args.vm_id, host_port, guest_port)
+            except Exception:
+                pass
         return _emit_cli_error(command_name, 1, exc, json_output=json_output)
     finally:
         if vm is not None:
@@ -3088,46 +3220,55 @@ def _run_port_close(args: SimpleNamespace) -> int:
         return _emit_cli_error(command_name, 1, exc, json_output=json_output)
 
     try:
-        # Kill stored SSH tunnel process if present.
-        forwards = _load_port_forwards(args.vm_id)
-        entry = next(
-            (f for f in forwards if f["host_port"] == host_port and f["guest_port"] == guest_port),
-            None,
-        )
-        if entry and entry.get("transport") == "ssh_tunnel" and entry.get("pid"):
-            import os
-            import signal
-            import subprocess as _sp
+        with _port_forward_operation_lock(args.vm_id):
+            # Kill stored SSH tunnel process if present.
+            forwards = _load_port_forwards(args.vm_id)
+            entry = next(
+                (
+                    f
+                    for f in forwards
+                    if f["host_port"] == host_port and f["guest_port"] == guest_port
+                ),
+                None,
+            )
+            ssh_tunnel_entry = entry is not None and entry.get("transport") == "ssh_tunnel"
+            if ssh_tunnel_entry and entry.get("pid"):
+                import os
+                import signal
+                import subprocess as _sp
 
-            pid = entry["pid"]
-            try:
-                # Verify it's still our SSH tunnel before killing.
-                result = _sp.run(
-                    ["ps", "-p", str(pid), "-o", "comm="],
-                    capture_output=True,
-                    text=True,
+                pid = entry["pid"]
+                try:
+                    # Verify both the executable and exact tunnel mapping. A stale
+                    # PID may now belong to an unrelated SSH client.
+                    result = _sp.run(
+                        ["ps", "-p", str(pid), "-o", "command="],
+                        capture_output=True,
+                        text=True,
+                    )
+                    forward_spec = f"127.0.0.1:{host_port}:127.0.0.1:{guest_port}"
+                    command = result.stdout.strip()
+                    executable = Path(command.split()[0]).name if command else ""
+                    if executable == "ssh" and forward_spec in command:
+                        os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+
+            # Reconnected facade instances do not hold the original SSH
+            # Popen object. The stored PID path above is therefore the full
+            # cleanup for SSH tunnels; asking the facade to unexpose as well
+            # could remove an unrelated QEMU hostfwd with the same ports.
+            if not ssh_tunnel_entry:
+                vm = _cli_vm_from_id(
+                    args.vm_id,
+                    ssh_user=args.ssh_user,
+                    ssh_key_path=args.ssh_key,
+                    comm_channel=args.comm_channel,
                 )
-                if "ssh" in result.stdout:
-                    os.kill(pid, signal.SIGTERM)
-            except (ProcessLookupError, OSError):
-                pass
+                vm.unexpose_local(host_port, guest_port)
 
-        # Clean up nftables rules via the facade.
-        vm = _cli_vm_from_id(
-            args.vm_id,
-            ssh_user=args.ssh_user,
-            ssh_key_path=args.ssh_key,
-            comm_channel=args.comm_channel,
-        )
-        vm.unexpose_local(host_port, guest_port)
-
-        # Update state file.
-        forwards = [
-            f
-            for f in forwards
-            if not (f["host_port"] == host_port and f["guest_port"] == guest_port)
-        ]
-        _save_port_forwards(args.vm_id, forwards)
+            # Update state file.
+            _remove_port_forward(args.vm_id, host_port, guest_port)
 
         if json_output:
             emit_json(
@@ -3177,6 +3318,247 @@ def _run_port_list(args: SimpleNamespace) -> int:
             console.print(table)
 
     return 0
+
+
+def _rewrite_openclaw_url(url: str, host_port: int) -> str:
+    """Point an OpenClaw loopback URL at the matching host-side port."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    parsed = urlsplit(url)
+    if (
+        parsed.scheme not in {"http", "https", "ws", "wss"}
+        or parsed.hostname
+        not in {
+            "127.0.0.1",
+            "localhost",
+            "::1",
+        }
+        or parsed.port != OPENCLAW_DASHBOARD_PORT
+    ):
+        raise ValueError("OpenClaw returned an unexpected dashboard address.")
+    return urlunsplit(
+        (
+            parsed.scheme,
+            f"127.0.0.1:{host_port}",
+            parsed.path,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+
+
+def _start_openclaw_gateway(vm: FacadeVM, vm_id: str) -> None:
+    """Start the guest's loopback-only OpenClaw gateway when needed."""
+    from smolvm.presets.openclaw import OPENCLAW_VERSION
+
+    installed = vm.run("openclaw --version", timeout=10)
+    if not installed.ok:
+        raise RuntimeError(
+            f"OpenClaw is not installed in sandbox '{vm_id}'. Before replacing it, run "
+            f"'smolvm sandbox snapshot create {vm_id} --snapshot-id "
+            f"{vm_id}-before-openclaw-upgrade', then 'smolvm sandbox delete {vm_id}' and "
+            f"'smolvm openclaw start --name {vm_id} --no-attach'."
+        )
+    version_output = "\n".join((installed.stdout, installed.stderr))
+    version_match = re.search(r"\b\d{4}\.\d+\.\d+\b", version_output)
+    if version_match is None or version_match.group(0) != OPENCLAW_VERSION:
+        found_version = version_match.group(0) if version_match is not None else "unknown"
+        raise RuntimeError(
+            f"Sandbox '{vm_id}' has OpenClaw {found_version}, but this command requires "
+            f"OpenClaw {OPENCLAW_VERSION}. Before replacing it, run 'smolvm sandbox "
+            f"snapshot create {vm_id} --snapshot-id {vm_id}-before-openclaw-upgrade', then "
+            f"'smolvm sandbox delete {vm_id}' and 'smolvm openclaw start --name {vm_id} "
+            "--no-attach'."
+        )
+
+    command = f"""
+set -e
+gateway_ready() {{
+    curl --fail --silent --show-error --max-time 2 \
+        http://127.0.0.1:{OPENCLAW_DASHBOARD_PORT}/ >/dev/null 2>&1 ||
+    curl --fail --silent --show-error --insecure --max-time 2 \
+        https://127.0.0.1:{OPENCLAW_DASHBOARD_PORT}/ >/dev/null 2>&1
+}}
+if gateway_ready; then
+    exit 0
+fi
+if [ -r /etc/profile.d/smolvm_env.sh ]; then
+    . /etc/profile.d/smolvm_env.sh
+fi
+mkdir -p /root/.openclaw
+nohup openclaw gateway run --allow-unconfigured --bind loopback \
+    --port {OPENCLAW_DASHBOARD_PORT} \
+    </dev/null >/tmp/smolvm-openclaw-gateway.log 2>&1 &
+gateway_pid=$!
+echo "$gateway_pid" >/tmp/smolvm-openclaw-gateway.pid
+for _attempt in $(seq 1 60); do
+    if gateway_ready; then
+        exit 0
+    fi
+    sleep 0.5
+done
+kill "$gateway_pid" >/dev/null 2>&1 || true
+wait "$gateway_pid" >/dev/null 2>&1 || true
+rm -f /tmp/smolvm-openclaw-gateway.pid
+exit 1
+"""
+    started = vm.run(command, timeout=45, shell="raw")
+    if not started.ok:
+        raise RuntimeError(
+            f"OpenClaw did not become ready in sandbox '{vm_id}'; run "
+            f"'smolvm sandbox shell {vm_id}', then "
+            "'openclaw doctor' to inspect it."
+        )
+
+
+def _run_openclaw_open(args: SimpleNamespace) -> int:
+    """Open the OpenClaw 2.0 dashboard for a running sandbox."""
+    import json
+    from urllib.parse import urlsplit, urlunsplit
+
+    command_name = getattr(args, "command_name", "openclaw.open")
+    vm: FacadeVM | None = None
+    host_port: int | None = None
+    forward_active = False
+    try:
+        vm = _cli_vm_from_id(
+            args.vm_id,
+            ssh_user=args.ssh_user,
+            ssh_key_path=args.ssh_key,
+            comm_channel=args.comm_channel,
+        )
+        _start_openclaw_gateway(vm, args.vm_id)
+
+        dashboard = vm.run(
+            f"OPENCLAW_GATEWAY_PORT={OPENCLAW_DASHBOARD_PORT} openclaw dashboard --json --no-open",
+            timeout=30,
+        )
+        if not dashboard.ok:
+            raise RuntimeError(
+                f"OpenClaw could not create a dashboard link for sandbox '{args.vm_id}'; "
+                f"run 'smolvm sandbox shell {args.vm_id}', then 'openclaw dashboard'."
+            )
+        try:
+            dashboard_data = json.loads(dashboard.output)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"OpenClaw returned an unreadable dashboard link for sandbox '{args.vm_id}'; "
+                f"run 'smolvm sandbox shell {args.vm_id}', then 'openclaw dashboard'."
+            ) from exc
+        if not isinstance(dashboard_data, dict):
+            raise RuntimeError(
+                f"OpenClaw returned an unreadable dashboard link for sandbox '{args.vm_id}'; "
+                f"run 'smolvm sandbox shell {args.vm_id}', then 'openclaw dashboard'."
+            )
+        if dashboard_data.get("ok") is False:
+            raise RuntimeError(
+                f"OpenClaw could not create a dashboard link for sandbox '{args.vm_id}'; "
+                f"run 'smolvm sandbox shell {args.vm_id}', then 'openclaw dashboard'."
+            )
+
+        raw_browser_url = dashboard_data.get("browserUrl") or dashboard_data.get("url")
+        if not isinstance(raw_browser_url, str) or not raw_browser_url:
+            raise RuntimeError(
+                f"OpenClaw did not return a dashboard link for sandbox '{args.vm_id}'; "
+                f"run 'smolvm sandbox shell {args.vm_id}', then 'openclaw dashboard'."
+            )
+
+        raw_http_url = dashboard_data.get("httpUrl")
+        raw_ws_url = dashboard_data.get("wsUrl")
+        # Validate every upstream address before creating a host-side port
+        # forward. OpenClaw dashboard links should always target its loopback
+        # gateway; accepting a remote URL here could leak the one-time token.
+        try:
+            _rewrite_openclaw_url(raw_browser_url, OPENCLAW_DASHBOARD_PORT)
+            if isinstance(raw_http_url, str) and raw_http_url:
+                _rewrite_openclaw_url(raw_http_url, OPENCLAW_DASHBOARD_PORT)
+            if isinstance(raw_ws_url, str) and raw_ws_url:
+                _rewrite_openclaw_url(raw_ws_url, OPENCLAW_DASHBOARD_PORT)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"OpenClaw returned an unexpected dashboard address for sandbox "
+                f"'{args.vm_id}'; run 'smolvm sandbox shell {args.vm_id}', then "
+                "'openclaw dashboard'."
+            ) from exc
+
+        with _port_forward_operation_lock(args.vm_id):
+            host_port = vm.expose_local(
+                OPENCLAW_DASHBOARD_PORT,
+                args.host_port,
+                guest_loopback=True,
+            )
+            forward_active = True
+            _track_port_forward(vm, args.vm_id, host_port, OPENCLAW_DASHBOARD_PORT)
+
+        browser_url = _rewrite_openclaw_url(raw_browser_url, host_port)
+        clean_source = (
+            _rewrite_openclaw_url(raw_http_url, host_port)
+            if isinstance(raw_http_url, str) and raw_http_url
+            else browser_url
+        )
+        parsed_clean_url = urlsplit(clean_source)
+        clean_url = urlunsplit(
+            (
+                parsed_clean_url.scheme,
+                parsed_clean_url.netloc,
+                parsed_clean_url.path,
+                "",
+                "",
+            )
+        )
+
+        ws_url = (
+            _rewrite_openclaw_url(raw_ws_url, host_port)
+            if isinstance(raw_ws_url, str) and raw_ws_url
+            else None
+        )
+        opened = False
+        if not args.no_browser and not args.json:
+            with suppress(Exception):
+                opened = bool(webbrowser.open(browser_url))
+        close_command = (
+            f"smolvm sandbox port close {args.vm_id} {host_port}:{OPENCLAW_DASHBOARD_PORT}"
+        )
+        data: OpenClawOpenPayload = {
+            "sandbox": args.vm_id,
+            "guest_port": OPENCLAW_DASHBOARD_PORT,
+            "host_port": host_port,
+            "url": clean_url,
+            "browser_url": browser_url,
+            "ws_url": ws_url,
+            "opened": opened,
+            "close_command": close_command,
+        }
+
+        if args.json:
+            emit_json(command_name, 0, data=data)
+        else:
+            console = console_stdout()
+            if opened:
+                console.print(f"Opened OpenClaw at [bold]{escape(clean_url)}[/bold]")
+            else:
+                console.print("Open this one-time OpenClaw link within 10 minutes:")
+                console.print(escape(browser_url))
+            console.print(f"Stop sharing it with: [bold]{escape(close_command)}[/bold]")
+        return 0
+    except Exception as exc:
+        if isinstance(exc, VMNotFoundError):
+            exc = RuntimeError(
+                f"Sandbox '{args.vm_id}' was not found; run 'smolvm sandbox list --all' "
+                f"to choose one, or 'smolvm openclaw start --name {args.vm_id} "
+                "--no-attach' to create it."
+            )
+        if vm is not None and forward_active and host_port is not None:
+            try:
+                with _port_forward_operation_lock(args.vm_id):
+                    vm.unexpose_local(host_port, OPENCLAW_DASHBOARD_PORT)
+                    _remove_port_forward(args.vm_id, host_port, OPENCLAW_DASHBOARD_PORT)
+            except Exception:
+                pass
+        return _emit_cli_error(command_name, 1, exc, json_output=args.json)
+    finally:
+        if vm is not None:
+            vm.close()
 
 
 def _run_port(args: SimpleNamespace) -> int:

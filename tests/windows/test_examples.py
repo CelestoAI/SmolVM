@@ -103,6 +103,16 @@ def test_top_level_examples_import_without_optional_dependencies(example_name: s
     _load_module(TOP_LEVEL_EXAMPLES_DIR / example_name)
 
 
+def test_openclaw_example_handles_custom_ports_and_tls_config() -> None:
+    """Keep the SDK example aligned with the CLI dashboard compatibility fixes."""
+    source = (TOP_LEVEL_EXAMPLES_DIR / "openclaw.py").read_text(encoding="utf-8")
+
+    assert "OPENCLAW_GATEWAY_PORT={GUEST_DASHBOARD_PORT}" in source
+    assert "https://127.0.0.1:{GUEST_DASHBOARD_PORT}/" in source
+    assert "--insecure" in source
+    assert "parsed.port != GUEST_DASHBOARD_PORT" in source
+
+
 def test_langchain_tool_import_without_pydantic_v1_warning() -> None:
     """Import the LangChain shell example without triggering Python 3.14 warnings."""
     path = AGENT_TOOL_EXAMPLES_DIR / "langchain_tool.py"

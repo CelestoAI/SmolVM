@@ -19,19 +19,43 @@ from __future__ import annotations
 from smolvm.presets._scripts import node_bootstrap, npm_install_global
 from smolvm.presets._types import HostConfigCopy, Preset
 
+OPENCLAW_VERSION = "2026.9.1"
+OPENCLAW_NODE_VERSION = (24, 15, 0)
+
 OPENCLAW_PRESET = Preset(
     name="openclaw",
     aliases=("claw",),
     summary="Start a sandbox with the OpenClaw CLI preinstalled.",
-    setup_script=node_bootstrap(22),
-    install_script=npm_install_global("openclaw"),
+    setup_script=node_bootstrap(24, minimum_version=OPENCLAW_NODE_VERSION),
+    install_script=npm_install_global(
+        "openclaw",
+        version=OPENCLAW_VERSION,
+        allow_scripts=True,
+        verify_executable="openclaw",
+    ),
     host_env_vars=(
         "OPENROUTER_API_KEY",
         "OPENAI_API_KEY",
         "OPENCLAW_GATEWAY_TOKEN",
         "OPENCLAW_GATEWAY_PASSWORD",
     ),
-    host_configs=(HostConfigCopy(host_path="~/.openclaw", guest_path="/root/.openclaw"),),
+    host_configs=(
+        HostConfigCopy(
+            host_path="~/.openclaw/openclaw.json",
+            guest_path="/root/.openclaw/openclaw.json",
+            file_mode=0o600,
+        ),
+        HostConfigCopy(
+            host_path="~/.openclaw/.env",
+            guest_path="/root/.openclaw/.env",
+            file_mode=0o600,
+        ),
+    ),
+    supported_oses=("ubuntu",),
+    # The current published image predates OpenClaw 2.0. Keep users on the
+    # exact fallback install until replacement artifacts are released and
+    # pinned in images/published.py.
+    prefer_published_image=False,
     launch_command="openclaw",
     no_env_hint=(
         "No API key found. Set OPENROUTER_API_KEY, OPENAI_API_KEY, or"

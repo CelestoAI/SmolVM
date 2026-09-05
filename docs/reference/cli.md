@@ -48,7 +48,7 @@ Run these in the order you need them:
 
 ## Start a prepared agent
 
-`smolvm codex start`, `smolvm claude start`, `smolvm pi start`, `smolvm hermes start`, and `smolvm openclaw start` create a sandbox and install that agent. See [Agent presets](../guides/agent-presets.md).
+`smolvm codex start`, `smolvm claude start`, `smolvm pi start`, `smolvm hermes start`, `smolvm openclaw start`, and `smolvm opencode start` create a sandbox and install that agent. `smolvm openclaw open SANDBOX` starts or reuses its gateway and opens the dashboard over a localhost-only connection. Add `--host-port PORT` to choose the local port, `--no-browser` to print the one-time link, or `--json` for structured output. The current OpenClaw fallback installation can take several minutes; see [Agent presets](../guides/agent-presets.md#open-openclaws-dashboard) for the complete workflow and safe upgrade steps.
 
 ## Manage downloaded images
 

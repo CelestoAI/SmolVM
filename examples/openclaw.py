@@ -1,27 +1,31 @@
 #!/usr/bin/env python3
-"""Install OpenClaw inside a Debian-based SmolVM guest (4GB rootfs).
+"""Run OpenClaw 2026.9.1 in a disposable SmolVM sandbox.
 
-If ``OPENROUTER_API_KEY`` or ``OPENAI_API_KEY`` is set on the host, it is
-injected into the guest environment and used for non-interactive onboarding.
+For everyday use, prefer ``smolvm openclaw start`` followed by
+``smolvm openclaw open``. This lower-level example shows the same runtime,
+safe configuration transfer, and localhost-only dashboard flow with the SDK.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import sys
+from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from smolvm import SSH_BOOT_ARGS, ImageBuilder, SmolVM, VMConfig
+from smolvm.presets.openclaw import OPENCLAW_NODE_VERSION, OPENCLAW_VERSION
 from smolvm.utils import ensure_ssh_key
 
 GUEST_DASHBOARD_PORT = 18789
 HOST_DASHBOARD_PORT = 18789
-GATEWAY_TOKEN = "smolvm-local-token"
 OPENCLAW_PREFIX = "/opt/openclaw"
 VM_MEMORY_MIB = 2048
 
 
-def _run_or_exit(vm: SmolVM, command: str, timeout: int = 300) -> None:
-    """Run a guest command, print output, and exit on failure."""
+def _run_or_exit(vm: SmolVM, command: str, timeout: int = 300) -> str:
+    """Run one guest command and stop with a readable error if it fails."""
     print(f"\n$ {command}")
     result = vm.run(command, timeout=timeout)
     if result.output:
@@ -31,216 +35,177 @@ def _run_or_exit(vm: SmolVM, command: str, timeout: int = 300) -> None:
     if not result.ok:
         print(f"Command failed (exit {result.exit_code}): {command}", file=sys.stderr)
         raise SystemExit(result.exit_code)
+    return result.output
 
 
 def _host_env_vars() -> dict[str, str]:
-    """Collect optional provider API keys from the host."""
-    env_vars: dict[str, str] = {}
-
-    openrouter_api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
-    if openrouter_api_key:
-        env_vars["OPENROUTER_API_KEY"] = openrouter_api_key
-
-    openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if openai_api_key:
-        env_vars["OPENAI_API_KEY"] = openai_api_key
-
-    return env_vars
-
-
-def _start_gateway(vm: SmolVM) -> None:
-    """Start OpenClaw gateway in the guest and wait until ready."""
-    print("\n== Starting OpenClaw gateway ==")
-    _run_or_exit(
-        vm,
-        (
-            f"nohup openclaw gateway --allow-unconfigured --token {GATEWAY_TOKEN} "
-            f"--port {GUEST_DASHBOARD_PORT} "
-            ">/tmp/openclaw-gateway.log 2>&1 &"
-        ),
-        timeout=30,
+    """Collect only the credentials OpenClaw knows how to use."""
+    names = (
+        "OPENROUTER_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENCLAW_GATEWAY_TOKEN",
+        "OPENCLAW_GATEWAY_PASSWORD",
     )
-    _run_or_exit(
-        vm,
-        (
-            f"for i in $(seq 1 45); do "
-            f"curl -sS -o /dev/null http://127.0.0.1:{GUEST_DASHBOARD_PORT}/ && exit 0; "
-            "sleep 1; "
-            "done; "
-            "echo 'Gateway did not start in time' >&2; "
-            "tail -n 80 /tmp/openclaw-gateway.log >&2; "
-            "exit 1"
-        ),
-        timeout=90,
+    return {name: value for name in names if (value := os.getenv(name, "").strip())}
+
+
+def _copy_portable_config(vm: SmolVM) -> None:
+    """Copy config files, but leave OpenClaw's SQLite state on the host."""
+    source_dir = Path.home() / ".openclaw"
+    copies = (
+        (source_dir / "openclaw.json", "/root/.openclaw/openclaw.json"),
+        (source_dir / ".env", "/root/.openclaw/.env"),
     )
-
-
-def _onboard_openclaw_if_possible(vm: SmolVM, env_vars: dict[str, str]) -> None:
-    """Run non-interactive onboarding when a provider API key is available."""
-    gateway_args = (
-        f"--gateway-auth token --gateway-token {GATEWAY_TOKEN} "
-        f"--gateway-port {GUEST_DASHBOARD_PORT} --gateway-bind loopback"
-    )
-
-    if "OPENROUTER_API_KEY" in env_vars:
-        print("\n== Onboarding OpenClaw with OPENROUTER_API_KEY ==")
-        _run_or_exit(
-            vm,
-            'openclaw onboard --openrouter-api-key "$OPENROUTER_API_KEY" '
-            f"{gateway_args} --accept-risk --non-interactive",
-            timeout=300,
-        )
+    available = [(source, target) for source, target in copies if source.is_file()]
+    if not available:
         return
 
-    if "OPENAI_API_KEY" in env_vars:
-        print("\n== Onboarding OpenClaw with OPENAI_API_KEY ==")
-        _run_or_exit(
-            vm,
-            'openclaw onboard --openai-api-key "$OPENAI_API_KEY" '
-            f"{gateway_args} --accept-risk --non-interactive",
-            timeout=300,
-        )
-        return
-
-    print("\nNo OPENROUTER_API_KEY or OPENAI_API_KEY found; skipping onboarding.")
+    _run_or_exit(vm, "mkdir -p /root/.openclaw", timeout=30)
+    for source, target in available:
+        vm.upload_file(source, target)
+        _run_or_exit(vm, f"chmod 600 {target}", timeout=30)
 
 
-def _ensure_node_runtime(vm: SmolVM) -> None:
-    """Install Node.js/NPM and guarantee Node >= 22.12.0 for OpenClaw."""
-    print("\n== Installing runtime dependencies ==")
+def _install_supported_node(vm: SmolVM) -> None:
+    """Install the Node.js line supported by this OpenClaw release."""
+    node_major = OPENCLAW_NODE_VERSION[0]
+    minimum = ", ".join(str(part) for part in OPENCLAW_NODE_VERSION)
+    required_text = ".".join(str(part) for part in OPENCLAW_NODE_VERSION)
     _run_or_exit(
         vm,
-        (
-            "apt-get update && "
-            "apt-get install -y --no-install-recommends "
-            "ca-certificates curl gnupg git bash && "
-            "rm -rf /var/lib/apt/lists/*"
-        ),
-        timeout=300,
-    )
-
-    # OpenClaw currently requires Node >= 22.12.0.
-    _run_or_exit(vm, "mkdir -p /etc/apt/keyrings", timeout=60)
-    _run_or_exit(
-        vm,
-        (
-            "curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key "
-            "| gpg --dearmor --batch --yes -o /etc/apt/keyrings/nodesource.gpg"
-        ),
-        timeout=120,
+        "set -e; "
+        "apt-get update -qq; "
+        "apt-get install -y -qq --no-install-recommends curl ca-certificates gnupg git; "
+        f"curl -fsSL https://deb.nodesource.com/setup_{node_major}.x | bash -; "
+        "apt-get install -y -qq --no-install-recommends nodejs",
+        timeout=600,
     )
     _run_or_exit(
         vm,
-        (
-            "echo 'deb [signed-by=/etc/apt/keyrings/nodesource.gpg] "
-            "https://deb.nodesource.com/node_22.x nodistro main' "
-            "> /etc/apt/sources.list.d/nodesource.list"
-        ),
-        timeout=60,
-    )
-    _run_or_exit(
-        vm,
-        (
-            "apt-get update && "
-            "apt-get install -y --no-install-recommends nodejs && "
-            "rm -rf /var/lib/apt/lists/*"
-        ),
-        timeout=300,
-    )
-    _run_or_exit(vm, "node -v && npm -v", timeout=60)
-    _run_or_exit(
-        vm,
-        (
-            "node -e \"const [maj,min]=process.versions.node.split('.').map(Number); "
-            "if(maj<22||(maj===22&&min<12)){"
-            "console.error('Node >=22.12.0 required, found '+process.versions.node);"
-            "process.exit(1)"
-            '}"'
-        ),
+        "node -e '"
+        'const current=process.versions.node.split(".").map(Number);'
+        f"const minimum=[{minimum}];"
+        f"const ok=current[0]==={node_major}&&(current[1]>minimum[1]||"
+        "(current[1]===minimum[1]&&current[2]>=minimum[2]));"
+        f'if(!ok){{console.error("Node {required_text} or newer within {node_major}.x is '
+        'required; found "+'
+        "process.versions.node);process.exit(1)}'",
         timeout=60,
     )
 
 
 def _install_openclaw(vm: SmolVM) -> None:
-    """Install OpenClaw in an isolated npm prefix to avoid global path conflicts."""
-    print("\n== Installing OpenClaw ==")
-    _run_or_exit(vm, f"rm -rf {OPENCLAW_PREFIX}", timeout=60)
-    _run_or_exit(vm, f"mkdir -p {OPENCLAW_PREFIX}", timeout=60)
-    _run_or_exit(vm, "npm cache clean --force || true", timeout=120)
+    """Install the exact OpenClaw release and permit its package setup script."""
+    _run_or_exit(vm, f"rm -rf {OPENCLAW_PREFIX} && mkdir -p {OPENCLAW_PREFIX}", timeout=60)
     _run_or_exit(
         vm,
-        f"npm --prefix {OPENCLAW_PREFIX} install -g openclaw",
+        "set -e; "
+        "npm_version=$(npm --version); "
+        "npm_major=${npm_version%%.*}; npm_rest=${npm_version#*.}; "
+        "npm_minor=${npm_rest%%.*}; npm_lifecycle_arg=; "
+        'if [ "$npm_major" -ge 12 ] || '
+        '{ [ "$npm_major" -eq 11 ] && [ "$npm_minor" -ge 16 ]; }; then '
+        "npm_lifecycle_arg=--allow-scripts=openclaw; fi; "
+        f"npm --prefix {OPENCLAW_PREFIX} install -g $npm_lifecycle_arg "
+        f"openclaw@{OPENCLAW_VERSION}; "
+        f"ln -sf {OPENCLAW_PREFIX}/bin/openclaw /usr/local/bin/openclaw; "
+        f"openclaw --version | grep -F {OPENCLAW_VERSION}; "
+        "npm cache clean --force >/dev/null 2>&1",
         timeout=1200,
     )
+
+
+def _start_gateway(vm: SmolVM) -> None:
+    """Start the loopback-only OpenClaw gateway and wait until it responds."""
     _run_or_exit(
         vm,
-        f"ln -sf {OPENCLAW_PREFIX}/bin/openclaw /usr/local/bin/openclaw",
+        "gateway_ready() { "
+        f"curl --fail --silent --show-error --max-time 2 http://127.0.0.1:{GUEST_DASHBOARD_PORT}/ "
+        ">/dev/null 2>&1 || "
+        "curl --fail --silent --show-error --insecure --max-time 2 "
+        f"https://127.0.0.1:{GUEST_DASHBOARD_PORT}/ >/dev/null 2>&1; "
+        "}; "
+        "if gateway_ready; "
+        "then exit 0; fi; "
+        "nohup openclaw gateway run --allow-unconfigured --bind loopback "
+        f"--port {GUEST_DASHBOARD_PORT} "
+        "</dev/null >/tmp/smolvm-openclaw-gateway.log 2>&1 & "
+        'gateway_pid=$!; echo "$gateway_pid" >/tmp/smolvm-openclaw-gateway.pid; '
+        "for attempt in $(seq 1 60); do "
+        "gateway_ready && exit 0; "
+        "sleep 0.5; done; "
+        'kill "$gateway_pid" >/dev/null 2>&1 || true; '
+        'wait "$gateway_pid" >/dev/null 2>&1 || true; '
+        "rm -f /tmp/smolvm-openclaw-gateway.pid; "
+        "tail -n 80 /tmp/smolvm-openclaw-gateway.log >&2; exit 1",
         timeout=60,
     )
-    print("\n== Verifying OpenClaw install ==")
-    _run_or_exit(
+
+
+def _dashboard_url(vm: SmolVM, host_port: int) -> str:
+    """Create a one-time dashboard link and point it at the host port."""
+    raw = _run_or_exit(
         vm,
-        "command -v openclaw >/dev/null || { echo 'openclaw not found in PATH' >&2; exit 1; }",
-        timeout=60,
+        f"OPENCLAW_GATEWAY_PORT={GUEST_DASHBOARD_PORT} openclaw dashboard --json --no-open",
+        timeout=30,
     )
-    _run_or_exit(vm, "openclaw --help >/dev/null 2>&1 || true", timeout=60)
+    try:
+        data = json.loads(raw)
+        url = data.get("browserUrl") or data.get("url")
+    except (AttributeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("OpenClaw returned an unreadable dashboard link.") from exc
+    if not isinstance(url, str):
+        raise RuntimeError("OpenClaw did not return a dashboard link.")
+
+    parsed = urlsplit(url)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+        or parsed.port != GUEST_DASHBOARD_PORT
+    ):
+        raise RuntimeError("OpenClaw returned an unexpected dashboard address.")
+    return urlunsplit(
+        (parsed.scheme, f"127.0.0.1:{host_port}", parsed.path, parsed.query, parsed.fragment)
+    )
 
 
 def main() -> int:
     env_vars = _host_env_vars()
-    if "OPENROUTER_API_KEY" in env_vars:
-        print("Using OPENROUTER_API_KEY from host environment.")
-    elif "OPENAI_API_KEY" in env_vars:
-        print("Using OPENAI_API_KEY from host environment.")
-    else:
-        print("No provider API key set; continuing without onboarding.")
-
     private_key, public_key = ensure_ssh_key()
     kernel, rootfs = ImageBuilder().build_debian_ssh_key(
         ssh_public_key=public_key,
         name="debian-ssh-key-openclaw-4g",
         rootfs_size_mb=4096,
     )
-
     config = VMConfig(
         vcpu_count=1,
-        # OpenClaw npm install is memory-heavy; 512 MiB can drop SSH mid-command.
         memory=VM_MEMORY_MIB,
         kernel_path=kernel,
         rootfs_path=rootfs,
         boot_args=SSH_BOOT_ARGS,
-        env_vars=env_vars,
     )
 
     with SmolVM(config, ssh_key_path=str(private_key)) as vm:
-        print(f"VM running: {vm.vm_id} ({vm.get_ip()})")
-        _run_or_exit(vm, "df -h /", timeout=60)
-
-        _ensure_node_runtime(vm)
+        print(f"Sandbox running: {vm.vm_id} ({vm.get_ip()})")
+        _install_supported_node(vm)
         _install_openclaw(vm)
+        _copy_portable_config(vm)
+        if env_vars:
+            vm.set_env_vars(env_vars)
         _start_gateway(vm)
-        _onboard_openclaw_if_possible(vm, env_vars)
 
         host_port = vm.expose_local(
-            guest_port=GUEST_DASHBOARD_PORT,
-            host_port=HOST_DASHBOARD_PORT,
+            GUEST_DASHBOARD_PORT,
+            HOST_DASHBOARD_PORT,
+            guest_loopback=True,
         )
-        print(f"\nDashboard ready: http://127.0.0.1:{host_port}/ (localhost only)")
-        if host_port != HOST_DASHBOARD_PORT:
-            print(
-                f"Preferred localhost port {HOST_DASHBOARD_PORT} was unavailable; "
-                f"using {host_port} instead."
-            )
-        print(f"Gateway token: {GATEWAY_TOKEN}")
-
-        # Helpful in headless mode: prints dashboard URL if browser open is unavailable.
-        _run_or_exit(vm, "openclaw dashboard || true", timeout=60)
+        print("\nOpen this one-time OpenClaw link within 10 minutes:")
+        print(_dashboard_url(vm, host_port))
         try:
-            input("\nPress Enter to stop and clean up the VM...")
+            input("\nPress Enter to stop and delete the sandbox...")
         except EOFError:
-            print("\nNo interactive input available; cleaning up now.")
+            print("\nNo interactive input is available; deleting the sandbox now.")
 
-    print("\nOpenClaw install flow completed.")
     return 0
 
 

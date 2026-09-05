@@ -39,6 +39,7 @@ from smolvm.exceptions import ImageError, SmolVMError
 from smolvm.images.boot import BootImage, DirectKernelBoot
 from smolvm.images.manager import resolve_image_dir
 from smolvm.kernels import KernelArch, ensure_base_kernel_for_backend
+from smolvm.presets.openclaw import OPENCLAW_NODE_VERSION, OPENCLAW_VERSION
 from smolvm.runtime.backends import resolve_backend
 from smolvm.runtime.boot_profiles import (
     KernelBootProfile,
@@ -1289,15 +1290,14 @@ RUN chmod +x /init
         kernel_url: str | None = None,
         extra_packages: list[str] | None = None,
     ) -> tuple[Path, Path]:
-        """Build OpenClaw rootfs with Node.js, sidecars, and init wiring.
+        """Build an OpenClaw rootfs with a supported Node.js runtime.
 
         The resulting image contains:
 
-        - Node.js >= 22.12.0 (``node:22.12.0-bookworm-slim`` base)
+        - Node.js 24.15.0 (``node:24.15.0-bookworm-slim`` base)
         - OpenClaw pre-installed at ``/opt/openclaw/`` (symlinked to ``/usr/local/bin/openclaw``)
-        - ``inotify-tools`` and the device-approver sidecar
         - SSH server for ``vm.run()`` management commands
-        - Custom ``/init`` that boots networking, sshd, and the sidecar
+        - Custom ``/init`` that boots networking and sshd
         - Custom system packages like `git` (for npm source dependencies)
 
         Boot the resulting VM with :data:`OPENCLAW_BOOT_ARGS`.
@@ -1344,69 +1344,8 @@ RUN chmod +x /init
 
         init_script = self._openclaw_init_script()
 
-        # --- Sidecar scripts (TDD Decision 1.2.5) ---
-        device_approver_py = r"""#!/usr/bin/env python3
-import json, time
-
-BASE = "/home/node/.openclaw/devices"
-PENDING = f"{BASE}/pending.json"
-PAIRED  = f"{BASE}/paired.json"
-
-def approve():
-    try:
-        pending = json.loads(open(PENDING).read())
-    except (FileNotFoundError, json.JSONDecodeError):
-        return
-    if not pending:
-        return
-    try:
-        paired = json.loads(open(PAIRED).read())
-    except (FileNotFoundError, json.JSONDecodeError):
-        paired = {}
-    now_ms = int(time.time() * 1000)
-    for _, entry in pending.items():
-        device_id = entry.get("deviceId")
-        if not device_id:
-            continue
-        paired[device_id] = {**entry, "pairedAt": now_ms}
-    open(PAIRED, "w").write(json.dumps(paired, indent=2))
-    open(PENDING, "w").write(json.dumps({}))
-
-approve()
-"""
-
-        watch_devices_sh = r"""#!/bin/bash
-# Watch DIRECTORY not the file — handles atomic rename writes
-while inotifywait -e close_write,moved_to \
-    /home/node/.openclaw/devices 2>/dev/null; do
-    python3 /usr/local/bin/device-approver.py
-done
-"""
-
-        systemctl_proxy_sh = r"""#!/bin/bash
-if [ "$1" = "start" ] && [ "$2" = "openclaw" ]; then
-    echo "Starting openclaw via dummy systemctl..."
-    # The reconciler provisions the config via SSH then calls `systemctl start openclaw`.
-    # We use --allow-unconfigured so the gateway starts even before pairing completes.
-    #
-    # `</dev/null` — prevents openclaw from inheriting the SSH channel's stdin, which
-    #   would otherwise keep the SSH session alive until openclaw exits.
-    # `& disown`   — removes the job from bash's job table so the non-interactive shell
-    #   (su -c) can exit immediately without waiting for the backgrounded process.
-    #   Without disown, non-interactive bash may wait for child jobs before exiting,
-    #   causing the reconciler's ssh timeout to fire even though openclaw started.
-    _CMD="cd /home/node && HOME=/home/node"
-    _CMD="${_CMD} nohup openclaw gateway --allow-unconfigured"
-    _CMD="${_CMD} </dev/null > /var/log/openclaw.log 2>&1 & disown"
-    su - node -c "${_CMD}"
-    exit 0
-fi
-echo "dummy systemctl: ignoring command $@"
-exit 0
-"""
-
         dockerfile_content = f"""
-FROM node:22.12.0-bookworm-slim
+FROM node:{".".join(str(part) for part in OPENCLAW_NODE_VERSION)}-bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -1416,8 +1355,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     curl \\
     bash \\
     ca-certificates \\
-    inotify-tools \\
-    python3 \\
     {packages_str} \\
     && rm -rf /var/lib/apt/lists/*
 
@@ -1429,18 +1366,23 @@ RUN rm -f /etc/ssh/ssh_host_* && \\
     sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config && \\
     sed -ri 's/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
 
-# Prepare OpenClaw directories and workspace
-RUN useradd -m -s /bin/bash node 2>/dev/null || true && \\
-    mkdir -p /opt/openclaw /home/node/.openclaw/devices /workspace && \\
-    chown -R node:node /opt/openclaw /home/node/.openclaw /workspace
+# Prepare OpenClaw directories and workspace. SmolVM attaches as root, so the
+# CLI, copied configuration, and dashboard gateway share one state directory.
+RUN mkdir -p /opt/openclaw /root/.openclaw /workspace
 
 WORKDIR /opt/openclaw
 RUN npm init -y && \\
-    npm --prefix /opt/openclaw install -g openclaw && \\
+    npm_version=$(npm --version) && \\
+    npm_major=${{npm_version%%.*}} && \\
+    npm_rest=${{npm_version#*.}} && \\
+    npm_minor=${{npm_rest%%.*}} && \\
+    npm_lifecycle_arg="" && \\
+    if [ "$npm_major" -ge 12 ] || {{ [ "$npm_major" -eq 11 ] && [ "$npm_minor" -ge 16 ]; }}; \\
+        then npm_lifecycle_arg="--allow-scripts=openclaw"; fi && \\
+    npm --prefix /opt/openclaw install -g $npm_lifecycle_arg openclaw@{OPENCLAW_VERSION} && \\
     ln -sf /opt/openclaw/bin/openclaw /usr/local/bin/openclaw && \\
-    touch /var/log/openclaw.log && \\
-    chown node:node /var/log/openclaw.log && \\
-    npm cache clean --force >/dev/null 2>&1 || true
+    openclaw --version | grep -F {OPENCLAW_VERSION} && \\
+    npm cache clean --force >/dev/null 2>&1
 
 # Strip @node-llama-cpp GPU and non-host-arch backends. Inside Firecracker
 # there is no GPU passthrough, so the CUDA/Vulkan binaries are dead weight
@@ -1452,15 +1394,6 @@ RUN rm -rf \\
     /opt/openclaw/lib/node_modules/openclaw/node_modules/@node-llama-cpp/linux-x64-cuda-ext \\
     /opt/openclaw/lib/node_modules/openclaw/node_modules/@node-llama-cpp/linux-x64-vulkan \\
     /opt/openclaw/lib/node_modules/openclaw/node_modules/@node-llama-cpp/linux-armv7l
-
-# Sidecar and proxy scripts
-COPY device-approver.py /usr/local/bin/device-approver.py
-COPY watch-devices.sh /usr/local/bin/watch-devices.sh
-COPY systemctl /usr/local/bin/systemctl
-RUN chmod +x \\
-    /usr/local/bin/device-approver.py \\
-    /usr/local/bin/watch-devices.sh \\
-    /usr/local/bin/systemctl
 
 # Init script
 COPY init /init
@@ -1475,9 +1408,6 @@ RUN chmod +x /init
                 "rootfs_size_mb": rootfs_size_mb,
                 "kernel_url": kernel_url,
                 "extra_packages": extra_packages,
-                "_device_approver_sha256": hashlib.sha256(device_approver_py.encode()).hexdigest(),
-                "_watch_devices_sha256": hashlib.sha256(watch_devices_sh.encode()).hexdigest(),
-                "_systemctl_proxy_sha256": hashlib.sha256(systemctl_proxy_sh.encode()).hexdigest(),
             },
             dockerfile_content,
             init_script,
@@ -1506,11 +1436,6 @@ RUN chmod +x /init
                 kernel_path,
                 rootfs_path,
                 rootfs_size_mb,
-                extra_files={
-                    "device-approver.py": device_approver_py,
-                    "watch-devices.sh": watch_devices_sh,
-                    "systemctl": systemctl_proxy_sh,
-                },
                 kernel_url=kernel_url,
                 fingerprint_data=fingerprint_data,
             )
@@ -1823,27 +1748,10 @@ done
     def _openclaw_init_script(self) -> str:
         """PID 1 init script for OpenClaw images.
 
-        Extends the base init with:
-        - Device-approver sidecar launched as a background process
-        - ``/home/node/.openclaw/devices`` directory setup
-        - Hostname set to ``openclaw``
+        OpenClaw 2.0 owns browser pairing in SQLite, so the image only needs
+        the shared SmolVM init behavior and an identifiable hostname.
         """
-        device_approver_block = r"""
-# ── Device-Approver Sidecar ─────────────────────────────────
-# Launched as a background process — no systemd required.
-# watch-devices.sh uses inotifywait on the directory (not file) to
-# handle atomic-rename writes from OpenClaw.
-log_ts "device-approver-start"
-mkdir -p /home/node/.openclaw/devices
-chown -R 1000:1000 /home/node/.openclaw
-/usr/local/bin/watch-devices.sh &
-DEVICE_APPROVER_PID=$!
-log_ts "device-approver-started"
-echo "Device-approver running with PID=${DEVICE_APPROVER_PID}"
-"""
-        return self._base_init_script(
-            custom_hostname="openclaw", custom_commands=device_approver_block
-        )
+        return self._base_init_script(custom_hostname="openclaw")
 
     def _loopfs_helper_path(self) -> Path | None:
         """Return the preferred or legacy privileged helper when executable."""
