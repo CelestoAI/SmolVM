@@ -27,7 +27,7 @@ from types import ModuleType
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 DEMO_ROOT = REPO_ROOT / "examples" / "cua" / "legacy_report_fetcher"
 
 
