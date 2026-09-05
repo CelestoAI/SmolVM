@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 README_PATH = REPO_ROOT / "README.md"
 TOP_LEVEL_EXAMPLES_DIR = REPO_ROOT / "examples"
 AGENT_TOOL_EXAMPLES_DIR = TOP_LEVEL_EXAMPLES_DIR / "agent_tools"
