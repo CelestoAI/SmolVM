@@ -27,7 +27,7 @@ Run these in the order you need them:
 | Command | Use it to |
 | --- | --- |
 | `smolvm sandbox create` | Create a sandbox. Add `--network bridge --bridge BRIDGE` only when the sandbox should appear as a separate computer on that network. |
-| `smolvm sandbox list` / `info` | Find or inspect sandboxes. |
+| `smolvm sandbox list` / `info` | Find or inspect sandboxes. Add `--preset PRESET` to list sandboxes created by one agent preset. |
 | `smolvm sandbox shell` / `ssh` | Open a shell. `shell` uses SmolVM's fast control channel when available; `ssh` explicitly uses SSH. |
 | `smolvm sandbox desktop` | Open a running macOS sandbox in Screen Sharing. Add `--start` to start it first. |
 | `smolvm sandbox exec` | Run one command inside a running sandbox and print its output — handy for scripts and agents. Put the command after `--`, e.g. `smolvm sandbox exec my-sandbox -- ls -la`. Add `--start` to start the sandbox first if it isn't running. |
@@ -48,7 +48,7 @@ Run these in the order you need them:
 
 ## Start a prepared agent
 
-`smolvm codex start`, `smolvm claude start`, `smolvm pi start`, `smolvm hermes start`, `smolvm openclaw start`, and `smolvm opencode start` create a sandbox and install that agent. Run `smolvm openclaw list` to find a sandbox, then `smolvm openclaw open SANDBOX` to start or reuse its gateway and open the dashboard over a localhost-only connection. Add `--all` or `--status STATUS` to filter the list. Add `--host-port PORT` to choose the dashboard's local port, `--no-browser` to print the one-time link, or `--json` for structured output. The current OpenClaw fallback installation can take several minutes; see [Agent presets](../guides/agent-presets.md#open-openclaws-dashboard) for the complete workflow and safe upgrade steps.
+`smolvm codex start`, `smolvm claude start`, `smolvm pi start`, `smolvm hermes start`, `smolvm openclaw start`, and `smolvm opencode start` create a sandbox and install that agent. Run `smolvm openclaw list` to find an OpenClaw sandbox; `smolvm sandbox list --preset openclaw` is the generic equivalent. Add `--all` to include stopped sandboxes or `--status STATUS` to choose one state. Then run `smolvm openclaw open SANDBOX` to start or reuse its gateway and open the dashboard over a localhost-only connection. Add `--host-port PORT` to choose the dashboard's local port, `--no-browser` to print the one-time link, or `--json` for structured output. Sandboxes created before preset tracking remain visible in unfiltered sandbox listings but are excluded from preset-filtered results. The current OpenClaw fallback installation can take several minutes; see [Agent presets](../guides/agent-presets.md#open-openclaws-dashboard) for the complete workflow and safe upgrade steps.
 
 ## Manage downloaded images
 

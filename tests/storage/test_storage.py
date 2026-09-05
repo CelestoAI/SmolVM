@@ -14,6 +14,7 @@
 
 """Tests for SmolVM storage module."""
 
+import json
 import os
 import sqlite3
 from datetime import UTC, datetime
@@ -96,6 +97,33 @@ class TestStateManagerVMOperations:
 
         assert vm_info.vm_id == "vm001"
         assert vm_info.status == VMState.CREATED
+
+    def test_get_vm_preserves_preset_provenance(
+        self,
+        state_manager: StateManager,
+        sample_config: VMConfig,
+    ) -> None:
+        config = sample_config.model_copy(update={"preset": "openclaw"})
+        state_manager.create_vm(config)
+
+        assert state_manager.get_vm("vm001").config.preset == "openclaw"
+
+    def test_get_legacy_vm_without_preset_defaults_to_none(
+        self,
+        state_manager: StateManager,
+        sample_config: VMConfig,
+    ) -> None:
+        state_manager.create_vm(sample_config)
+        with sqlite3.connect(state_manager.db_path) as conn:
+            raw = conn.execute("SELECT config FROM vms WHERE id = 'vm001'").fetchone()[0]
+            legacy_config = json.loads(raw)
+            legacy_config.pop("preset")
+            conn.execute(
+                "UPDATE vms SET config = ? WHERE id = 'vm001'",
+                (json.dumps(legacy_config),),
+            )
+
+        assert state_manager.get_vm("vm001").config.preset is None
 
     def test_get_vm_allows_missing_persisted_paths(
         self,

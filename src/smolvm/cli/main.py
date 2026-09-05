@@ -103,6 +103,7 @@ class VmRow(TypedDict):
     """Machine-readable data for a listed VM."""
 
     name: str
+    preset: str | None
     status: str
     pid: int | None
     ip_address: str | None
@@ -115,6 +116,7 @@ class ListFiltersPayload(TypedDict):
 
     all: bool
     status: str | None
+    preset: str | None
 
 
 class ListPayload(TypedDict):
@@ -440,6 +442,7 @@ def _vm_rows(vms: Sequence[VMInfo]) -> list[VmRow]:
         rows.append(
             {
                 "name": vm.vm_id,
+                "preset": vm.config.preset,
                 "status": vm.status.value,
                 "pid": vm.pid,
                 "ip_address": ip_address,
@@ -452,8 +455,11 @@ def _vm_rows(vms: Sequence[VMInfo]) -> list[VmRow]:
 
 def _render_list(rows: list[VmRow]) -> None:
     """Render the human-facing VM list."""
+    from smolvm.presets import public_preset_name
+
     table = Table(title="SmolVM Instances")
     table.add_column("Name")
+    table.add_column("Preset")
     table.add_column("Status")
     table.add_column("PID", justify="right")
     for row in rows:
@@ -462,6 +468,7 @@ def _render_list(rows: list[VmRow]) -> None:
             name = f"⚠ {name}"
         table.add_row(
             name,
+            public_preset_name(row["preset"]) if row["preset"] else "-",
             Text(str(row["status"]), style=status_style(str(row["status"]))),
             str(row["pid"] or "-"),
         )
@@ -605,6 +612,7 @@ def _run_list(
     *,
     include_all: bool,
     status_filter: str | None,
+    preset_filter: str | None = None,
     json_output: bool,
     command_name: str = "sandbox.list",
 ) -> int:
@@ -614,7 +622,10 @@ def _run_list(
         try:
             effective_status = status_filter or (None if include_all else VMState.RUNNING.value)
             state = VMState(effective_status) if effective_status else None
-            vms = sdk.list_vms(status=state)
+            query_state = None if state is VMState.ERROR else state
+            vms = sdk.list_vms(status=query_state)
+            if preset_filter is not None:
+                vms = [vm for vm in vms if vm.config.preset == preset_filter]
             # Cheap per-row liveness check: a VM marked RUNNING/PAUSED whose
             # QEMU process is gone gets demoted to ERROR right here, so the
             # rendered table reflects reality instead of a stale DB row.
@@ -626,6 +637,7 @@ def _run_list(
                 "filters": {
                     "all": include_all,
                     "status": effective_status,
+                    "preset": preset_filter,
                 },
                 "vms": rows,
             }
@@ -634,7 +646,18 @@ def _run_list(
                 return 0
 
             if not vms:
-                if status_filter:
+                if preset_filter is not None:
+                    from smolvm.presets import public_preset_name
+
+                    public_name = public_preset_name(preset_filter)
+                    if status_filter:
+                        message = f"No '{public_name}' sandboxes with status '{status_filter}'."
+                    elif include_all:
+                        message = f"No '{public_name}' sandboxes found."
+                    else:
+                        message = f"No running '{public_name}' sandboxes found."
+                    message += f" Run 'smolvm {public_name} start'."
+                elif status_filter:
                     message = f"No VMs found with status '{status_filter}'."
                 elif include_all:
                     message = "No VMs found."
@@ -1600,6 +1623,7 @@ def _run_start_with_published_image(args: SimpleNamespace, preset: object) -> in
 
         config = VMConfig(
             vm_id=_resolve_vm_name(args.name, prefix=_preset.name),
+            preset=_preset.name,
             memory=args.memory_mib if args.memory_mib is not None else _preset.default_mem_mib,
             kernel_path=local_image.kernel_path,
             rootfs_path=local_image.rootfs_path,
@@ -1775,6 +1799,7 @@ def _run_start(args: SimpleNamespace) -> int:
                 build_fn=lambda on_download: _build_auto_config(
                     vm_name=args.name,
                     name_prefix=preset.name,
+                    preset_name=preset.name,
                     os=requested_os,
                     backend=backend,
                     qemu_machine=args.qemu_machine,
@@ -1802,6 +1827,7 @@ def _run_start(args: SimpleNamespace) -> int:
             config, ssh_key_path = _build_auto_config(
                 vm_name=args.name,
                 name_prefix=preset.name,
+                preset_name=preset.name,
                 os=requested_os,
                 backend=backend,
                 qemu_machine=args.qemu_machine,
@@ -3544,7 +3570,7 @@ def _run_openclaw_open(args: SimpleNamespace) -> int:
     except Exception as exc:
         if isinstance(exc, VMNotFoundError):
             exc = RuntimeError(
-                f"Sandbox '{args.vm_id}' was not found; run 'smolvm openclaw list --all' "
+                f"Sandbox '{args.vm_id}' was not found; run 'smolvm sandbox list --all' "
                 f"to choose one, or 'smolvm openclaw start --name {args.vm_id} "
                 "--no-attach' to create it."
             )

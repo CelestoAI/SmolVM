@@ -36,11 +36,21 @@ List running sandboxes when you need to find its name:
 
 ```bash
 smolvm openclaw list
-# NAME              STATUS   PID
-# openclaw-work     running  12345
+# NAME              PRESET     STATUS   PID
+# openclaw-work     openclaw   running  12345
 ```
 
-The list includes every sandbox because older and custom-named sandboxes do not record which preset created them. Add `--all` to include stopped sandboxes, or `--status STATUS` to choose one state.
+This command shows running sandboxes created by the OpenClaw preset. Add `--all` to include stopped OpenClaw sandboxes, or `--status STATUS` to choose one state.
+
+Use the generic preset filter when you are working with the full sandbox inventory:
+
+```bash
+smolvm sandbox list --preset openclaw
+# NAME              PRESET     STATUS   PID
+# openclaw-work     openclaw   running  12345
+```
+
+Sandboxes created before preset tracking do not appear in either filtered list. They remain available through `smolvm sandbox list --all`, where the Preset column shows `-`.
 
 Then open its private dashboard through a localhost-only connection:
 
