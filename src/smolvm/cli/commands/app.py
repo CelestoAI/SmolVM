@@ -1628,6 +1628,7 @@ def _register_preset_commands() -> None:
                     include_all=include_all,
                     status_filter=status_filter,
                     preset_filter="openclaw",
+                    show_preset_column=False,
                     json_output=json_output,
                     command_name="openclaw.list",
                 )

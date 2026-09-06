@@ -36,8 +36,8 @@ List running sandboxes when you need to find its name:
 
 ```bash
 smolvm openclaw list
-# NAME              PRESET     STATUS   PID
-# openclaw-work     openclaw   running  12345
+# NAME              STATUS   PID
+# openclaw-work     running  12345
 ```
 
 This command shows running sandboxes created by the OpenClaw preset. Add `--all` to include stopped OpenClaw sandboxes, or `--status STATUS` to choose one state.

@@ -3394,6 +3394,20 @@ class TestCliList:
         assert payload["data"]["filters"]["preset"] == "openclaw"
         assert [row["name"] for row in payload["data"]["vms"]] == ["claw"]
 
+    def test_openclaw_list_omits_the_redundant_preset_column(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        mock_sdk_cls.return_value.list_vms.return_value = [_make_vm_info("claw", preset="openclaw")]
+
+        ret = main(["openclaw", "list"])
+
+        assert ret == 0
+        output = capsys.readouterr().out
+        assert "claw" in output
+        assert "Preset" not in output
+
     @pytest.mark.parametrize(
         ("argv", "expected"),
         [
@@ -4502,6 +4516,7 @@ class TestOpenClawOpen:
             include_all=True,
             status_filter=None,
             preset_filter="openclaw",
+            show_preset_column=False,
             json_output=True,
             command_name="openclaw.list",
         )

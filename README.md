@@ -231,8 +231,8 @@ OpenClaw also has a private browser dashboard. Open it after the named sandbox s
 
 ```bash
 smolvm openclaw list
-# NAME              PRESET     STATUS   PID
-# openclaw-work     openclaw   running  12345
+# NAME              STATUS   PID
+# openclaw-work     running  12345
 
 smolvm openclaw open openclaw-work
 ```

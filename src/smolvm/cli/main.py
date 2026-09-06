@@ -453,25 +453,32 @@ def _vm_rows(vms: Sequence[VMInfo]) -> list[VmRow]:
     return rows
 
 
-def _render_list(rows: list[VmRow]) -> None:
+def _render_list(rows: list[VmRow], *, show_preset_column: bool = True) -> None:
     """Render the human-facing VM list."""
     from smolvm.presets import public_preset_name
 
     table = Table(title="SmolVM Instances")
     table.add_column("Name")
-    table.add_column("Preset")
+    if show_preset_column:
+        table.add_column("Preset")
     table.add_column("Status")
     table.add_column("PID", justify="right")
     for row in rows:
         name = str(row["name"])
         if row["warnings"]:
             name = f"⚠ {name}"
-        table.add_row(
+        values: list[str | Text] = [
             name,
-            public_preset_name(row["preset"]) if row["preset"] else "-",
-            Text(str(row["status"]), style=status_style(str(row["status"]))),
-            str(row["pid"] or "-"),
+        ]
+        if show_preset_column:
+            values.append(public_preset_name(row["preset"]) if row["preset"] else "-")
+        values.extend(
+            [
+                Text(str(row["status"]), style=status_style(str(row["status"]))),
+                str(row["pid"] or "-"),
+            ]
         )
+        table.add_row(*values)
 
     console = console_stdout()
     console.print(table)
@@ -613,6 +620,7 @@ def _run_list(
     include_all: bool,
     status_filter: str | None,
     preset_filter: str | None = None,
+    show_preset_column: bool = True,
     json_output: bool,
     command_name: str = "sandbox.list",
 ) -> int:
@@ -666,7 +674,7 @@ def _run_list(
                 render_empty("SmolVM Instances", message)
                 return 0
 
-            _render_list(rows)
+            _render_list(rows, show_preset_column=show_preset_column)
             return 0
         except Exception as exc:
             return _emit_cli_error(command_name, 1, exc, json_output=json_output)
