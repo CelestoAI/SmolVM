@@ -48,7 +48,13 @@ Run these in the order you need them:
 
 ## Start a prepared agent
 
-`smolvm codex start`, `smolvm claude start`, `smolvm pi start`, `smolvm hermes start`, `smolvm openclaw start`, and `smolvm opencode start` create a sandbox and install that agent. Run `smolvm openclaw list` to find an OpenClaw sandbox; `smolvm sandbox list --preset openclaw` is the generic equivalent. Add `--all` to include stopped sandboxes or `--status STATUS` to choose one state. Then run `smolvm openclaw open SANDBOX` to start or reuse its gateway and open the dashboard over a localhost-only connection. Add `--host-port PORT` to choose the dashboard's local port, `--no-browser` to print the one-time link, or `--json` for structured output. Sandboxes created before preset tracking remain visible in unfiltered sandbox listings but are excluded from preset-filtered results. The current OpenClaw fallback installation can take several minutes; see [Agent presets](../guides/agent-presets.md#open-openclaws-dashboard) for the complete workflow and safe upgrade steps.
+`smolvm codex start`, `smolvm claude start`, `smolvm pi start`, `smolvm hermes start`, `smolvm openclaw start`, and `smolvm opencode start` each create a sandbox and install that agent.
+
+- Create and install OpenClaw with `smolvm openclaw start`.
+- Find an OpenClaw sandbox with `smolvm openclaw list`, or use the generic `smolvm sandbox list --preset openclaw`. Add `--all` to include stopped sandboxes or `--status STATUS` to choose one state.
+- Open the dashboard with `smolvm openclaw open SANDBOX`. It starts or reuses the gateway and connects it over localhost only. Add `--host-port PORT` to choose the dashboard's local port, `--no-browser` to print the one-time link, or `--json` for structured output.
+- Sandboxes created before preset tracking remain visible in unfiltered sandbox listings but are excluded from preset-filtered results.
+- The current OpenClaw fallback installation can take several minutes. See [Agent presets](../guides/agent-presets.md#open-openclaws-dashboard) for the complete workflow and safe upgrade steps.
 
 ## Manage downloaded images
 
