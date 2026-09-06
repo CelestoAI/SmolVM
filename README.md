@@ -130,8 +130,8 @@ smolvm sandbox create --name my-sandbox
 # my-sandbox  running  172.16.0.2
 
 smolvm sandbox list
-# NAME         STATUS   IP
-# my-sandbox   running  172.16.0.2
+# NAME         PRESET  STATUS   PID
+# my-sandbox   -       running  12345
 
 smolvm sandbox stop my-sandbox
 ```
@@ -230,6 +230,10 @@ smolvm openclaw start --name openclaw-work --no-attach
 OpenClaw also has a private browser dashboard. Open it after the named sandbox starts:
 
 ```bash
+smolvm openclaw list
+# NAME              STATUS   PID
+# openclaw-work     running  12345
+
 smolvm openclaw open openclaw-work
 ```
 

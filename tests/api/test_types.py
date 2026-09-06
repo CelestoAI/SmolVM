@@ -57,6 +57,7 @@ class TestVMConfig:
         )
 
         assert config.vm_id == "vm001"
+        assert config.preset is None
         assert config.vcpu_count == 2
         assert config.memory == 512
 

@@ -55,6 +55,7 @@ def _make_vm_info(
     guest_ip: str = "172.16.0.2",
     ssh_host_port: int | None = 2200,
     pid: int | None = 12345,
+    preset: str | None = None,
     workspace_mounts: list[WorkspaceMount] | None = None,
 ) -> MagicMock:
     """Build a lightweight VMInfo-like mock for list tests."""
@@ -62,6 +63,7 @@ def _make_vm_info(
     vm.vm_id = vm_id
     vm.status = status
     vm.pid = pid
+    vm.config.preset = preset
     vm.config.workspace_mounts = workspace_mounts or []
     if guest_ip:
         vm.network = MagicMock(spec=NetworkConfig)
@@ -3133,7 +3135,7 @@ class TestCliList:
         mock_sdk_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """`smolvm sandbox list` should print a Rich table with name, status, and pid."""
+        """`smolvm sandbox list` should show sandbox identity and provenance."""
         vms = [_make_vm_info("vm-abc123", VMState.RUNNING, "172.16.0.2", 2200, 12345)]
         mock_sdk_cls.return_value.list_vms.return_value = vms
 
@@ -3146,6 +3148,7 @@ class TestCliList:
         assert "12345" in out
         assert "SmolVM Instances" in out
         assert "Name" in out
+        assert "Preset" in out
         assert "Status" in out
         assert "PID" in out
         assert "Total: 1 VM(s)." in out
@@ -3221,10 +3224,15 @@ class TestCliList:
         payload = json.loads(capsys.readouterr().out)
         assert payload["command"] == "sandbox.list"
         assert payload["ok"] is True
-        assert payload["data"]["filters"] == {"all": False, "status": "running"}
+        assert payload["data"]["filters"] == {
+            "all": False,
+            "status": "running",
+            "preset": None,
+        }
         assert payload["data"]["vms"] == [
             {
                 "name": "vm-abc123",
+                "preset": None,
                 "status": "running",
                 "ip_address": "172.16.0.2",
                 "ssh_port": 2200,
@@ -3247,7 +3255,11 @@ class TestCliList:
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["data"]["vms"] == []
-        assert payload["data"]["filters"] == {"all": False, "status": "running"}
+        assert payload["data"]["filters"] == {
+            "all": False,
+            "status": "running",
+            "preset": None,
+        }
         mock_sdk_cls.return_value.list_vms.assert_called_once_with(status=VMState.RUNNING)
 
     def test_list_all_json(
@@ -3265,11 +3277,171 @@ class TestCliList:
 
         assert ret == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["data"]["filters"] == {"all": True, "status": None}
+        assert payload["data"]["filters"] == {"all": True, "status": None, "preset": None}
         assert payload["data"]["vms"][0]["name"] == "vm-abc123"
         assert payload["data"]["vms"][1]["status"] == "stopped"
         assert payload["data"]["vms"][1]["ssh_port"] is None
         mock_sdk_cls.return_value.list_vms.assert_called_once_with(status=None)
+
+    def test_list_preset_filters_before_refreshing_status(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Preset filtering uses stored provenance and ignores legacy rows."""
+        openclaw = _make_vm_info("claw", preset="openclaw")
+        codex = _make_vm_info("code", preset="codex")
+        legacy = _make_vm_info("legacy")
+        mock_sdk_cls.return_value.list_vms.return_value = [openclaw, codex, legacy]
+
+        ret = main(["sandbox", "list", "--preset", "openclaw", "--all"])
+
+        assert ret == 0
+        out = capsys.readouterr().out
+        assert "claw" in out
+        assert "openclaw" in out
+        assert "code" not in out
+        assert "legacy" not in out
+        mock_sdk_cls.return_value.refresh_status.assert_called_once_with(openclaw)
+
+    def test_list_preset_alias_uses_canonical_json_value(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """The public `claude` spelling filters on canonical provenance."""
+        mock_sdk_cls.return_value.list_vms.return_value = [
+            _make_vm_info("claude-work", preset="claude-code")
+        ]
+
+        ret = main(["sandbox", "list", "--preset", "claude", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["data"]["filters"]["preset"] == "claude-code"
+        assert payload["data"]["vms"][0]["preset"] == "claude-code"
+
+    def test_list_preset_uses_public_name_in_human_output(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        mock_sdk_cls.return_value.list_vms.return_value = [
+            _make_vm_info("agent-work", preset="claude-code")
+        ]
+
+        ret = main(["sandbox", "list", "--preset", "claude"])
+
+        assert ret == 0
+        output = capsys.readouterr().out
+        assert "claude" in output
+        assert "claude-code" not in output
+
+    def test_list_preset_composes_with_status_filter(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        openclaw = _make_vm_info("claw", VMState.STOPPED, preset="openclaw")
+        codex = _make_vm_info("code", VMState.STOPPED, preset="codex")
+        mock_sdk_cls.return_value.list_vms.return_value = [openclaw, codex]
+
+        ret = main(["sandbox", "list", "--preset", "openclaw", "--status", "stopped", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["data"]["filters"] == {
+            "all": False,
+            "status": "stopped",
+            "preset": "openclaw",
+        }
+        assert [row["name"] for row in payload["data"]["vms"]] == ["claw"]
+        mock_sdk_cls.return_value.list_vms.assert_called_once_with(status=VMState.STOPPED)
+
+    def test_openclaw_list_error_reconciles_stale_running_sandboxes(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        stale = _make_vm_info("claw", VMState.RUNNING, preset="openclaw")
+        reconciled = _make_vm_info("claw", VMState.ERROR, preset="openclaw", pid=None)
+        mock_sdk_cls.return_value.list_vms.return_value = [stale]
+        mock_sdk_cls.return_value.refresh_status.side_effect = lambda _vm: reconciled
+
+        ret = main(["openclaw", "list", "--status", "error", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert [row["name"] for row in payload["data"]["vms"]] == ["claw"]
+        mock_sdk_cls.return_value.list_vms.assert_called_once_with(status=None)
+        mock_sdk_cls.return_value.refresh_status.assert_called_once_with(stale)
+
+    def test_openclaw_list_matches_the_generic_filter(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        mock_sdk_cls.return_value.list_vms.return_value = [
+            _make_vm_info("claw", preset="openclaw"),
+            _make_vm_info("code", preset="codex"),
+        ]
+
+        ret = main(["openclaw", "list", "--all", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["command"] == "openclaw.list"
+        assert payload["data"]["filters"]["preset"] == "openclaw"
+        assert [row["name"] for row in payload["data"]["vms"]] == ["claw"]
+
+    def test_openclaw_list_omits_the_redundant_preset_column(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        mock_sdk_cls.return_value.list_vms.return_value = [_make_vm_info("claw", preset="openclaw")]
+
+        ret = main(["openclaw", "list"])
+
+        assert ret == 0
+        output = capsys.readouterr().out
+        assert "claw" in output
+        assert "Preset" not in output
+
+    @pytest.mark.parametrize(
+        ("argv", "expected"),
+        [
+            (["openclaw", "list"], "No running 'openclaw' sandboxes found."),
+            (["openclaw", "list", "--all"], "No 'openclaw' sandboxes found."),
+            (
+                ["openclaw", "list", "--status", "stopped"],
+                "No 'openclaw' sandboxes with status 'stopped'.",
+            ),
+        ],
+    )
+    def test_openclaw_list_empty_state_names_how_to_create_one(
+        self,
+        argv: list[str],
+        expected: str,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        mock_sdk_cls.return_value.list_vms.return_value = []
+
+        ret = main(argv)
+
+        assert ret == 0
+        output = capsys.readouterr().out
+        assert expected in output
+        assert "smolvm openclaw start" in output
+
+    def test_list_rejects_unknown_preset(self, capsys: pytest.CaptureFixture) -> None:
+        ret = main(["sandbox", "list", "--preset", "unknown"])
+
+        assert ret == 2
+        error = capsys.readouterr().err
+        assert "Invalid value for '--preset'" in error
+        assert "openclaw" in error
 
     def test_list_status_filter_empty(
         self,
@@ -3808,6 +3980,7 @@ class TestCliStart:
         mock_build_auto_config.assert_called_once_with(
             vm_name="sbx-codex",
             name_prefix="codex",
+            preset_name="codex",
             os=GuestOS.UBUNTU,
             backend="qemu",
             qemu_machine="q35",
@@ -3871,6 +4044,7 @@ class TestCliStart:
         assert payload["data"]["preset"]["injected_env_keys"] == ["OPENAI_API_KEY"]
         assert payload["data"]["next"]["shell_command"] == "smolvm sandbox shell sbx-1"
         assert payload["data"]["next"]["ssh_command"] == "smolvm sandbox ssh sbx-1"
+        assert mock_build_auto_config.call_args.kwargs["preset_name"] == "codex"
         assert mock_apply_fn.call_args.kwargs["preset_command"] == "codex"
         assert mock_apply_fn.call_args.kwargs["sandbox_name"] == "sbx-1"
 
@@ -4326,7 +4500,33 @@ class TestOpenClawOpen:
         ret = main(["openclaw", "--help"])
 
         assert ret == 0
-        assert "open" in capsys.readouterr().out
+        output = capsys.readouterr().out
+        assert "list" in output
+        assert "open" in output
+
+    @patch("smolvm.cli.main._run_list", return_value=0)
+    def test_list_routes_filters_to_the_shared_sandbox_inventory(
+        self,
+        mock_run: MagicMock,
+    ) -> None:
+        ret = main(["openclaw", "list", "--all", "--json"])
+
+        assert ret == 0
+        mock_run.assert_called_once_with(
+            include_all=True,
+            status_filter=None,
+            preset_filter="openclaw",
+            show_preset_column=False,
+            json_output=True,
+            command_name="openclaw.list",
+        )
+
+    @patch("smolvm.cli.main._run_list", return_value=0)
+    def test_list_rejects_conflicting_filters(self, mock_run: MagicMock) -> None:
+        ret = main(["openclaw", "list", "--all", "--status", "running"])
+
+        assert ret == 2
+        mock_run.assert_not_called()
 
     def test_start_help_only_offers_supported_os_and_explains_slow_install(
         self, capsys: pytest.CaptureFixture[str]
@@ -4344,15 +4544,22 @@ class TestOpenClawOpen:
         assert "Seconds to wait for each agent installation step." in normalized_output
 
     @patch("smolvm.cli.main._cli_vm_from_id", side_effect=VMNotFoundError("missing-claw"))
+    @pytest.mark.parametrize("json_output", [False, True])
     def test_open_missing_sandbox_names_recovery_commands(
         self,
         _mock_vm_from_id: MagicMock,
+        json_output: bool,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        ret = main(["openclaw", "open", "missing-claw", "--json"])
+        argv = ["openclaw", "open", "missing-claw"]
+        if json_output:
+            argv.append("--json")
+
+        ret = main(argv)
 
         assert ret == 1
-        error = json.loads(capsys.readouterr().out)["error"]["message"]
+        captured = capsys.readouterr()
+        error = json.loads(captured.out)["error"]["message"] if json_output else captured.err
         assert "Sandbox 'missing-claw' was not found" in error
         assert "smolvm sandbox list --all" in error
         assert "smolvm openclaw start --name missing-claw --no-attach" in error
@@ -5067,6 +5274,7 @@ class TestPublishedImageLaunchPath:
 
         # Verify VMConfig was built with the right wiring.
         config_arg = mock_vm_cls.call_args[0][0]
+        assert config_arg.preset == "openclaw"
         assert config_arg.kernel_path == kernel
         assert config_arg.rootfs_path == rootfs
         assert config_arg.backend == expected_backend

@@ -426,6 +426,8 @@ class VMConfig(BaseModel):
     Attributes:
         vm_id: Optional unique identifier (lowercase alphanumeric with hyphens).
             If omitted, SmolVM auto-generates one.
+        preset: Canonical name of the preset that created this sandbox, or
+            ``None`` when it was created without a preset or predates tracking.
         vcpu_count: Number of virtual CPUs (1-32).
         memory: Memory size in MiB (128-16384).
         boot_mode: How the guest boots:
@@ -502,6 +504,7 @@ class VMConfig(BaseModel):
             pattern=_IDENTIFIER_PATTERN,
         ),
     ]
+    preset: str | None = None
     vcpu_count: Annotated[int, Field(ge=1, le=32)] = 2
     memory: Annotated[int, Field(ge=128, le=16384)] = 512
     guest_os: GuestOS = GuestOS.ALPINE
