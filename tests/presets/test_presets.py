@@ -478,8 +478,6 @@ class TestOpenClawPreset:
             "OPENCLAW_GATEWAY_TOKEN",
             "OPENCLAW_GATEWAY_PASSWORD",
         )
-
-    def test_openclaw_starts_without_host_config_files(self) -> None:
         assert OPENCLAW_PRESET.host_configs == ()
 
     def test_openclaw_install_is_pinned_and_allows_lifecycle_scripts(self) -> None:
