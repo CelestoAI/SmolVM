@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "smolvm"
-version = "0.0.30"
+version = "0.0.31"
 description = "Open-source AI sandbox infrastructure with unified API for VMMs -- Firecracker, QEMU and libkrun."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
 authors = [
-    { name = "Celesto AI", email = "hello@celesto.ai" }
+    { name = "Celesto AI", email = "oss@celesto.ai" }
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
