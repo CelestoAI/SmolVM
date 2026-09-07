@@ -90,12 +90,9 @@ def _canonical_preset(name: str) -> str:
     Alias data lives on the preset definitions themselves so a new alias
     automatically works here without touching this module.
     """
-    from smolvm.presets import list_presets
+    from smolvm.presets import canonical_preset_name
 
-    for preset in list_presets():
-        if name == preset.name or name in preset.aliases:
-            return preset.name
-    return name
+    return canonical_preset_name(name)
 
 
 def _created_iso(path: Path) -> str | None:

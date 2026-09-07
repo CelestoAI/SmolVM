@@ -37,10 +37,13 @@ from smolvm.presets import (
     HostKeychainSecret,
     Preset,
     apply_preset,
+    canonical_preset_name,
     collect_host_env,
     get_preset,
     list_presets,
     preset_names,
+    public_preset_name,
+    public_preset_names,
     transfer_host_env,
 )
 from smolvm.presets._scripts import npm_install_global, uv_install_global
@@ -114,6 +117,19 @@ class TestRegistry:
             match="Available: claude-code, codex, hermes, openclaw, opencode, pi",
         ):
             get_preset("nonexistent")
+
+    def test_public_and_canonical_names_are_consistent(self) -> None:
+        assert public_preset_name("claude-code") == "claude"
+        assert canonical_preset_name("claude") == "claude-code"
+        assert canonical_preset_name("claw") == "openclaw"
+        assert public_preset_names() == [
+            "claude",
+            "codex",
+            "hermes",
+            "openclaw",
+            "opencode",
+            "pi",
+        ]
 
 
 class TestCodexPreset:

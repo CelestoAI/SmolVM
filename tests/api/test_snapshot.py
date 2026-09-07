@@ -143,6 +143,7 @@ def test_create_snapshot_pauses_vm_and_persists_metadata(
     tmp_path: Path,
 ) -> None:
     """Snapshot creation should write snapshot metadata and leave the source paused."""
+    sample_config = sample_config.model_copy(update={"preset": "openclaw"})
     _running_vm(smol_vm, sample_config, tmp_path)
     managed_disk = smol_vm.data_dir / "disks" / "vm001.ext4"
     managed_disk.write_text("managed-disk")
@@ -163,6 +164,7 @@ def test_create_snapshot_pauses_vm_and_persists_metadata(
     assert snapshot.snapshot_id == "snap-001"
     assert snapshot.artifacts.disk_path.read_text() == "managed-disk"
     assert persisted.vm_config.rootfs_path == managed_disk
+    assert persisted.vm_config.preset == "openclaw"
     assert smol_vm.get("vm001").status == VMState.PAUSED
     mock_client.pause_vm.assert_called_once()
     mock_client.create_snapshot.assert_called_once()

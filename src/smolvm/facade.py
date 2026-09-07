@@ -557,6 +557,7 @@ def _build_auto_config(
     *,
     vm_name: str | None = None,
     name_prefix: str = "sbx",
+    preset_name: str | None = None,
     os: GuestOS | str | None = None,
     backend: str | None = None,
     qemu_machine: QemuMachine = "auto",
@@ -607,6 +608,7 @@ def _build_auto_config(
         )
         config = VMConfig(
             vm_id=resolved_vm_name,
+            preset=preset_name,
             vcpu_count=manifest.cpu_count,
             memory=manifest.memory_mib,
             guest_os=GuestOS.MACOS,
@@ -675,6 +677,7 @@ def _build_auto_config(
         )
         config = VMConfig(
             vm_id=resolved_vm_name,
+            preset=preset_name,
             vcpu_count=1,
             memory=resolved_memory,
             kernel_path=local_image.kernel_path,
@@ -728,6 +731,7 @@ def _build_auto_config(
     resolved_vm_name = _resolve_vm_name(vm_name, prefix=name_prefix)
     config = VMConfig(
         vm_id=resolved_vm_name,
+        preset=preset_name,
         vcpu_count=1,
         memory=resolved_memory,
         kernel_path=kernel,

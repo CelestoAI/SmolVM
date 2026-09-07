@@ -26,6 +26,7 @@ from smolvm.cli.commands.options import (
 )
 from smolvm.cli.version_check import maybe_print_update_notice
 from smolvm.host.doctor import run_doctor
+from smolvm.presets import canonical_preset_name, public_preset_name, public_preset_names
 from smolvm.types import BrowserSessionState, GuestFlushPolicy, GuestOS, SnapshotType, VMState
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
@@ -184,8 +185,20 @@ def sandbox_create(
     type=click.Choice([state.value for state in VMState]),
     default=None,
 )
+@click.option(
+    "--preset",
+    "preset_filter",
+    type=click.Choice(public_preset_names()),
+    default=None,
+    help="Show sandboxes created by this preset.",
+)
 @json_option
-def sandbox_list(include_all: bool, status_filter: str | None, json_output: bool) -> Any:
+def sandbox_list(
+    include_all: bool,
+    status_filter: str | None,
+    preset_filter: str | None,
+    json_output: bool,
+) -> Any:
     """List your sandboxes."""
     if include_all and status_filter is not None:
         raise click.UsageError(
@@ -196,6 +209,7 @@ def sandbox_list(include_all: bool, status_filter: str | None, json_output: bool
     return _handlers()._run_list(
         include_all=include_all,
         status_filter=status_filter,
+        preset_filter=canonical_preset_name(preset_filter) if preset_filter else None,
         json_output=json_output,
         command_name="sandbox.list",
     )
@@ -1467,9 +1481,7 @@ def _register_preset_commands() -> None:
     from smolvm.presets import list_presets
 
     for preset in list_presets():
-        public_name = "claude" if preset.name == "claude-code" else preset.name
-        if public_name not in {"codex", "claude", "openclaw", "opencode", "hermes", "pi"}:
-            continue
+        public_name = public_preset_name(preset.name)
 
         @click.group(public_name, context_settings=CONTEXT_SETTINGS, help=preset.summary)
         def preset_group() -> None:
@@ -1591,6 +1603,36 @@ def _register_preset_commands() -> None:
         )
         if preset.name == "openclaw":
 
+            @click.command("list", help="List sandboxes created by the OpenClaw preset.")
+            @click.option("--all", "include_all", is_flag=True, help="Show all sandboxes.")
+            @click.option(
+                "--status",
+                "status_filter",
+                type=click.Choice([state.value for state in VMState]),
+                default=None,
+            )
+            @json_option
+            def openclaw_list(
+                include_all: bool,
+                status_filter: str | None,
+                json_output: bool,
+            ) -> Any:
+                """List sandboxes created by the OpenClaw preset."""
+                if include_all and status_filter is not None:
+                    raise click.UsageError(
+                        "Use one filter. Run 'smolvm openclaw list --all' or "
+                        "'smolvm openclaw list --status running'."
+                    )
+                _before_command(json_output=json_output)
+                return _handlers()._run_list(
+                    include_all=include_all,
+                    status_filter=status_filter,
+                    preset_filter="openclaw",
+                    show_preset_column=False,
+                    json_output=json_output,
+                    command_name="openclaw.list",
+                )
+
             @click.command("open", help="Open this sandbox's OpenClaw dashboard.")
             @click.argument("vm_id", metavar="sandbox", shell_complete=complete_sandbox_names)
             @click.option(
@@ -1630,6 +1672,7 @@ def _register_preset_commands() -> None:
                     )
                 )
 
+            preset_group.add_command(openclaw_list)
             preset_group.add_command(openclaw_open)
         cli.add_command(preset_group)
 

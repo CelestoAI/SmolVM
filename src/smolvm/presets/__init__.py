@@ -47,6 +47,9 @@ _BUILTIN_PRESETS: tuple[Preset, ...] = (
 )
 
 _REGISTRY: dict[str, Preset] = {p.name: p for p in _BUILTIN_PRESETS}
+_PUBLIC_NAMES: dict[str, str] = {
+    "claude-code": "claude",
+}
 
 
 def list_presets() -> list[Preset]:
@@ -67,6 +70,24 @@ def get_preset(name: str) -> Preset:
     except KeyError as exc:
         available = ", ".join(sorted(_REGISTRY))
         raise KeyError(f"Unknown preset {name!r}. Available: {available}") from exc
+
+
+def canonical_preset_name(name: str) -> str:
+    """Return the canonical preset name for a CLI-facing name or alias."""
+    for preset in _REGISTRY.values():
+        if name == preset.name or name in preset.aliases:
+            return preset.name
+    return name
+
+
+def public_preset_name(name: str) -> str:
+    """Return the user-facing CLI name for a canonical preset name."""
+    return _PUBLIC_NAMES.get(name, name)
+
+
+def public_preset_names() -> list[str]:
+    """Return preset names exposed by top-level CLI command groups."""
+    return sorted(public_preset_name(name) for name in _REGISTRY)
 
 
 def preset_names() -> list[str]:
@@ -99,6 +120,7 @@ __all__ = [
     "HostKeychainSecret",
     "Preset",
     "apply_preset",
+    "canonical_preset_name",
     "collect_host_env",
     "get_preset",
     "transfer_host_configs",
@@ -107,4 +129,6 @@ __all__ = [
     "list_presets",
     "preset_command_names",
     "preset_names",
+    "public_preset_name",
+    "public_preset_names",
 ]
