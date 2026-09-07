@@ -2,7 +2,7 @@
 """Run OpenClaw 2026.9.1 in a disposable SmolVM sandbox.
 
 For everyday use, prefer ``smolvm openclaw start`` followed by
-``smolvm openclaw open``. This lower-level example shows the same runtime,
+``smolvm openclaw open-ui``. This lower-level example shows the same runtime,
 explicit credential forwarding, and localhost-only dashboard flow with the SDK.
 """
 

@@ -55,16 +55,16 @@ Sandboxes created by older SmolVM releases do not appear in either filtered list
 Then open its private dashboard through a localhost-only connection:
 
 ```bash
-smolvm openclaw open openclaw-work
+smolvm openclaw open-ui openclaw-work
 ```
 
 SmolVM starts the OpenClaw gateway if needed, creates a local port forward, and opens the one-time dashboard link in your browser. If you are working on a remote or headless machine, print the link instead:
 
 ```bash
-smolvm openclaw open openclaw-work --no-browser
+smolvm openclaw open-ui openclaw-work --no-browser
 ```
 
-Close the local connection with the exact command printed by `openclaw open`. You can also list active connections with `smolvm sandbox port list openclaw-work`.
+Close the local connection with the exact command printed by `openclaw open-ui`. You can also list active connections with `smolvm sandbox port list openclaw-work`.
 
 OpenClaw currently supports Ubuntu sandboxes in SmolVM.
 
