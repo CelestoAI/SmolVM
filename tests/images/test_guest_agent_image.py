@@ -222,8 +222,8 @@ def test_guest_agent_source_digest_tracks_release_binary_without_source(
 def test_guest_agent_release_sha_pins_match_published_assets() -> None:
     """Installed wheels must verify the standalone guest-agent release binaries."""
     assert builder_mod._GUEST_AGENT_RELEASE_SHA256 == {
-        "amd64": "c7d002907efbeaa90b88c59e32619fae074276b1c4dc6de4ef029081813f4c01",
-        "arm64": "e9ad9d199b93ff40f6e3b57140e3f7ed66f7ef0976d11b8e29c7ed4210e1b609",
+        "amd64": "a5baa22b6b9fd44328ea750b18495bff31018a1ed98c3e9b68437b86eac9f146",
+        "arm64": "8ab005fb7b5c2eb715a3fa42bd795aeecabf56405578bf33b25448ccf8c823ca",
     }
 
 
