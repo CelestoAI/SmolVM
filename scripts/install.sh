@@ -154,7 +154,11 @@ install_smolvm() {
 
 run_setup() {
     info "Running smolvm setup …"
-    smolvm setup --skip-deps "${SETUP_ARGS[@]}"
+    if ((${#SETUP_ARGS[@]})); then
+        smolvm setup --skip-deps "${SETUP_ARGS[@]}"
+    else
+        smolvm setup --skip-deps
+    fi
 }
 
 # ---------------------------------------------------------------------------
