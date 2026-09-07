@@ -478,14 +478,7 @@ class TestOpenClawPreset:
             "OPENCLAW_GATEWAY_TOKEN",
             "OPENCLAW_GATEWAY_PASSWORD",
         )
-
-    def test_openclaw_copies_only_portable_config_files(self) -> None:
-        pairs = [(cfg.host_path, cfg.guest_path) for cfg in OPENCLAW_PRESET.host_configs]
-        assert pairs == [
-            ("~/.openclaw/openclaw.json", "/root/.openclaw/openclaw.json"),
-            ("~/.openclaw/.env", "/root/.openclaw/.env"),
-        ]
-        assert all(cfg.file_mode == 0o600 for cfg in OPENCLAW_PRESET.host_configs)
+        assert OPENCLAW_PRESET.host_configs == ()
 
     def test_openclaw_install_is_pinned_and_allows_lifecycle_scripts(self) -> None:
         from smolvm.presets.openclaw import OPENCLAW_VERSION

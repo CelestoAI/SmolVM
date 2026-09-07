@@ -3,7 +3,7 @@
 
 For everyday use, prefer ``smolvm openclaw start`` followed by
 ``smolvm openclaw open``. This lower-level example shows the same runtime,
-safe configuration transfer, and localhost-only dashboard flow with the SDK.
+explicit credential forwarding, and localhost-only dashboard flow with the SDK.
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from smolvm import SSH_BOOT_ARGS, ImageBuilder, SmolVM, VMConfig
@@ -47,23 +46,6 @@ def _host_env_vars() -> dict[str, str]:
         "OPENCLAW_GATEWAY_PASSWORD",
     )
     return {name: value for name in names if (value := os.getenv(name, "").strip())}
-
-
-def _copy_portable_config(vm: SmolVM) -> None:
-    """Copy config files, but leave OpenClaw's SQLite state on the host."""
-    source_dir = Path.home() / ".openclaw"
-    copies = (
-        (source_dir / "openclaw.json", "/root/.openclaw/openclaw.json"),
-        (source_dir / ".env", "/root/.openclaw/.env"),
-    )
-    available = [(source, target) for source, target in copies if source.is_file()]
-    if not available:
-        return
-
-    _run_or_exit(vm, "mkdir -p /root/.openclaw", timeout=30)
-    for source, target in available:
-        vm.upload_file(source, target)
-        _run_or_exit(vm, f"chmod 600 {target}", timeout=30)
 
 
 def _install_supported_node(vm: SmolVM) -> None:
@@ -189,7 +171,6 @@ def main() -> int:
         print(f"Sandbox running: {vm.vm_id} ({vm.get_ip()})")
         _install_supported_node(vm)
         _install_openclaw(vm)
-        _copy_portable_config(vm)
         if env_vars:
             vm.set_env_vars(env_vars)
         _start_gateway(vm)
