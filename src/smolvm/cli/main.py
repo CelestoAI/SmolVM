@@ -664,7 +664,18 @@ def _run_list(
                         message = f"No '{public_name}' sandboxes found."
                     else:
                         message = f"No running '{public_name}' sandboxes found."
-                    message += f" Run 'smolvm {public_name} start'."
+                    if include_all:
+                        message += (
+                            "\nOlder or manually prepared: 'smolvm sandbox list --all'."
+                            f"\nCreate one: 'smolvm {public_name} start'."
+                        )
+                    else:
+                        filtered_list_command = (
+                            f"smolvm {public_name} list"
+                            if command_name == f"{public_name}.list"
+                            else f"smolvm sandbox list --preset {public_name}"
+                        )
+                        message += f"\nOther states: '{filtered_list_command} --all'."
                 elif status_filter:
                     message = f"No VMs found with status '{status_filter}'."
                 elif include_all:

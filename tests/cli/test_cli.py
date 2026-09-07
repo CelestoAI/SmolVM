@@ -3409,20 +3409,30 @@ class TestCliList:
         assert "Preset" not in output
 
     @pytest.mark.parametrize(
-        ("argv", "expected"),
+        ("argv", "expected", "expected_recoveries"),
         [
-            (["openclaw", "list"], "No running 'openclaw' sandboxes found."),
-            (["openclaw", "list", "--all"], "No 'openclaw' sandboxes found."),
+            (
+                ["openclaw", "list"],
+                "No running 'openclaw' sandboxes found.",
+                ("smolvm openclaw list --all",),
+            ),
+            (
+                ["openclaw", "list", "--all"],
+                "No 'openclaw' sandboxes found.",
+                ("smolvm sandbox list --all", "smolvm openclaw start"),
+            ),
             (
                 ["openclaw", "list", "--status", "stopped"],
                 "No 'openclaw' sandboxes with status 'stopped'.",
+                ("smolvm openclaw list --all",),
             ),
         ],
     )
-    def test_openclaw_list_empty_state_names_how_to_create_one(
+    def test_openclaw_list_empty_state_names_recovery(
         self,
         argv: list[str],
         expected: str,
+        expected_recoveries: tuple[str, ...],
         mock_sdk_cls: MagicMock,
         capsys: pytest.CaptureFixture,
     ) -> None:
@@ -3431,9 +3441,24 @@ class TestCliList:
         ret = main(argv)
 
         assert ret == 0
-        output = capsys.readouterr().out
+        output = " ".join(capsys.readouterr().out.split())
         assert expected in output
-        assert "smolvm openclaw start" in output
+        for recovery in expected_recoveries:
+            assert recovery in output
+
+    def test_generic_preset_empty_state_uses_generic_list_recovery(
+        self,
+        mock_sdk_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        mock_sdk_cls.return_value.list_vms.return_value = []
+
+        ret = main(["sandbox", "list", "--preset", "codex"])
+
+        assert ret == 0
+        output = " ".join(capsys.readouterr().out.split())
+        assert "smolvm sandbox list --preset codex --all" in output
+        assert "smolvm codex list" not in output
 
     def test_list_rejects_unknown_preset(self, capsys: pytest.CaptureFixture) -> None:
         ret = main(["sandbox", "list", "--preset", "unknown"])
@@ -4493,16 +4518,28 @@ class TestCliStart:
         mock_subprocess_run.assert_not_called()
 
 
-class TestOpenClawOpen:
-    """Tests for ``smolvm openclaw open``."""
+class TestOpenClawCommands:
+    """Tests for OpenClaw-specific commands."""
 
-    def test_openclaw_help_lists_open_action(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_openclaw_help_describes_available_actions(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         ret = main(["openclaw", "--help"])
 
         assert ret == 0
         output = capsys.readouterr().out
+        assert "Create and manage OpenClaw sandboxes." in output
         assert "list" in output
         assert "open" in output
+
+    def test_openclaw_list_help_explains_filters(self, capsys: pytest.CaptureFixture[str]) -> None:
+        ret = main(["openclaw", "list", "--help"])
+
+        assert ret == 0
+        output = " ".join(capsys.readouterr().out.split())
+        assert "List your OpenClaw sandboxes." in output
+        assert "Include OpenClaw sandboxes in every state." in output
+        assert "Show only OpenClaw sandboxes in this state." in output
 
     @patch("smolvm.cli.main._run_list", return_value=0)
     def test_list_routes_filters_to_the_shared_sandbox_inventory(

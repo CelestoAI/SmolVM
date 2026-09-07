@@ -40,7 +40,7 @@ smolvm openclaw list
 # openclaw-work     running  12345
 ```
 
-This command shows running sandboxes created by the OpenClaw preset. Add `--all` to include stopped OpenClaw sandboxes, or `--status STATUS` to choose one state.
+This command shows running OpenClaw sandboxes. Add `--all` to include every state, or `--status STATUS` to choose one state.
 
 Use the generic preset filter when you are working with the full sandbox inventory:
 
@@ -50,7 +50,7 @@ smolvm sandbox list --preset openclaw
 # openclaw-work     openclaw   running  12345
 ```
 
-Sandboxes created before preset tracking do not appear in either filtered list. They remain available through `smolvm sandbox list --all`, where the Preset column shows `-`.
+Sandboxes created by older SmolVM releases do not appear in either filtered list. Manually prepared sandboxes are also excluded. Both remain available through `smolvm sandbox list --all`, where the Preset column shows `-`.
 
 Then open its private dashboard through a localhost-only connection:
 
@@ -117,4 +117,4 @@ Review `doctor` output before running its repair mode. OpenClaw can follow works
 
 ## Implementation notes
 
-The command registry is in [`src/smolvm/presets/__init__.py`](../../src/smolvm/presets/__init__.py). Each preset declares its installer, forwarded environment variables, and copied files: [Codex](../../src/smolvm/presets/codex.py), [Claude Code](../../src/smolvm/presets/claude_code.py), [Pi](../../src/smolvm/presets/pi.py), [Hermes](../../src/smolvm/presets/hermes.py), [OpenClaw](../../src/smolvm/presets/openclaw.py), and [OpenCode](../../src/smolvm/presets/opencode.py). Preset behavior is covered in [`tests/test_presets.py`](../../tests/test_presets.py).
+The command registry is in [`src/smolvm/presets/__init__.py`](../../src/smolvm/presets/__init__.py). Each preset declares its installer, forwarded environment variables, and copied files: [Codex](../../src/smolvm/presets/codex.py), [Claude Code](../../src/smolvm/presets/claude_code.py), [Pi](../../src/smolvm/presets/pi.py), [Hermes](../../src/smolvm/presets/hermes.py), [OpenClaw](../../src/smolvm/presets/openclaw.py), and [OpenCode](../../src/smolvm/presets/opencode.py). Preset behavior is covered in [`tests/presets/test_presets.py`](../../tests/presets/test_presets.py).

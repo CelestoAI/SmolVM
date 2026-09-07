@@ -51,9 +51,9 @@ Run these in the order you need them:
 `smolvm codex start`, `smolvm claude start`, `smolvm pi start`, `smolvm hermes start`, `smolvm openclaw start`, and `smolvm opencode start` each create a sandbox and install that agent.
 
 - Create and install OpenClaw with `smolvm openclaw start`.
-- Find an OpenClaw sandbox with `smolvm openclaw list`, or use the generic `smolvm sandbox list --preset openclaw`. Add `--all` to include stopped sandboxes or `--status STATUS` to choose one state.
+- Find an OpenClaw sandbox with `smolvm openclaw list`, or use the generic `smolvm sandbox list --preset openclaw`. Add `--all` to include every state or `--status STATUS` to choose one state.
 - Open the dashboard with `smolvm openclaw open SANDBOX`. It starts or reuses the gateway and connects it over localhost only. Add `--host-port PORT` to choose the dashboard's local port, `--no-browser` to print the one-time link, or `--json` for structured output.
-- Sandboxes created before preset tracking remain visible in unfiltered sandbox listings but are excluded from preset-filtered results.
+- Sandboxes created by older SmolVM releases and manually prepared sandboxes remain visible through `smolvm sandbox list --all`, but they do not appear in filtered results.
 - The current OpenClaw fallback installation can take several minutes. See [Agent presets](../guides/agent-presets.md#open-openclaws-dashboard) for the complete workflow and safe upgrade steps.
 
 ## Manage downloaded images
@@ -111,4 +111,4 @@ smolvm completion fish > ~/.config/fish/completions/smolvm.fish
 
 `--json` is available on commands that return structured output. `--backend` selects `auto`, `firecracker`, `qemu`, `libkrun`, or `vz` where the command supports that runtime. The `vz` choice is only for macOS guests on Apple Silicon. `--boot-timeout` controls how long an operation waits for a ready sandbox.
 
-**Implementation notes:** the command definitions are the source of truth in [`src/smolvm/cli/commands/app.py`](../../src/smolvm/cli/commands/app.py), including available flags and help text. The CLI command surface is tested by [`tests/test_cli.py`](../../tests/test_cli.py).
+**Implementation notes:** the command definitions are the source of truth in [`src/smolvm/cli/commands/app.py`](../../src/smolvm/cli/commands/app.py), including available flags and help text. The CLI command surface is tested by [`tests/cli/test_cli.py`](../../tests/cli/test_cli.py).
