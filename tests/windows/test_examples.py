@@ -113,6 +113,15 @@ def test_openclaw_example_handles_custom_ports_and_tls_config() -> None:
     assert "parsed.port != GUEST_DASHBOARD_PORT" in source
 
 
+def test_openclaw_example_starts_without_host_config_files() -> None:
+    """The SDK example should preserve the CLI's fresh-sandbox boundary."""
+    source = (TOP_LEVEL_EXAMPLES_DIR / "openclaw.py").read_text(encoding="utf-8")
+
+    assert "_copy_portable_config" not in source
+    assert "~/.openclaw/openclaw.json" not in source
+    assert "~/.openclaw/.env" not in source
+
+
 def test_langchain_tool_import_without_pydantic_v1_warning() -> None:
     """Import the LangChain shell example without triggering Python 3.14 warnings."""
     path = AGENT_TOOL_EXAMPLES_DIR / "langchain_tool.py"

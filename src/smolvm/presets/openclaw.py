@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from smolvm.presets._scripts import node_bootstrap, npm_install_global
-from smolvm.presets._types import HostConfigCopy, Preset
+from smolvm.presets._types import Preset
 
 OPENCLAW_VERSION = "2026.9.1"
 OPENCLAW_NODE_VERSION = (24, 15, 0)
@@ -38,18 +38,6 @@ OPENCLAW_PRESET = Preset(
         "OPENAI_API_KEY",
         "OPENCLAW_GATEWAY_TOKEN",
         "OPENCLAW_GATEWAY_PASSWORD",
-    ),
-    host_configs=(
-        HostConfigCopy(
-            host_path="~/.openclaw/openclaw.json",
-            guest_path="/root/.openclaw/openclaw.json",
-            file_mode=0o600,
-        ),
-        HostConfigCopy(
-            host_path="~/.openclaw/.env",
-            guest_path="/root/.openclaw/.env",
-            file_mode=0o600,
-        ),
     ),
     supported_oses=("ubuntu",),
     # The current published image predates OpenClaw 2.0. Keep users on the

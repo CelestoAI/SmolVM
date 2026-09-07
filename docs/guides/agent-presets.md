@@ -104,16 +104,14 @@ OpenCode supports multiple providers. You can forward common provider keys such 
 
 Presets copy only the configuration they need where possible. Review what you put in host configuration folders before starting a sandbox, especially when they contain credentials.
 
-For OpenClaw, SmolVM copies `~/.openclaw/openclaw.json` and `~/.openclaw/.env` when they exist. It does not copy the whole state directory because OpenClaw 2.0 keeps device and session state in SQLite databases that should not be duplicated into a disposable sandbox. SmolVM also forwards `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `OPENCLAW_GATEWAY_TOKEN`, and `OPENCLAW_GATEWAY_PASSWORD` when set.
+OpenClaw is an exception: every new OpenClaw sandbox starts with a fresh configuration. SmolVM does not copy `~/.openclaw/openclaw.json`, `~/.openclaw/.env`, or any other OpenClaw state from your machine. It forwards `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `OPENCLAW_GATEWAY_TOKEN`, and `OPENCLAW_GATEWAY_PASSWORD` only when those variables are set in the shell that starts SmolVM.
 
-If OpenClaw reports a configuration problem, enter the sandbox and inspect it before applying repairs:
+Run onboarding inside the sandbox when you need configuration beyond those credentials:
 
 ```bash
 smolvm sandbox shell openclaw-work
-openclaw doctor
+openclaw onboard
 ```
-
-Review `doctor` output before running its repair mode. OpenClaw can follow workspace or storage paths named in copied configuration, so a repair may change data outside `~/.openclaw`.
 
 ## Implementation notes
 
