@@ -25,7 +25,7 @@ OPENCLAW_NODE_VERSION = (24, 15, 0)
 OPENCLAW_PRESET = Preset(
     name="openclaw",
     aliases=("claw",),
-    summary="Start a sandbox with the OpenClaw CLI preinstalled.",
+    summary="Create and manage OpenClaw sandboxes.",
     setup_script=node_bootstrap(24, minimum_version=OPENCLAW_NODE_VERSION),
     install_script=npm_install_global(
         "openclaw",

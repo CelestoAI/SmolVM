@@ -1603,13 +1603,19 @@ def _register_preset_commands() -> None:
         )
         if preset.name == "openclaw":
 
-            @click.command("list", help="List sandboxes created by the OpenClaw preset.")
-            @click.option("--all", "include_all", is_flag=True, help="Show all sandboxes.")
+            @click.command("list", help="List your OpenClaw sandboxes.")
+            @click.option(
+                "--all",
+                "include_all",
+                is_flag=True,
+                help="Include OpenClaw sandboxes in every state.",
+            )
             @click.option(
                 "--status",
                 "status_filter",
                 type=click.Choice([state.value for state in VMState]),
                 default=None,
+                help="Show only OpenClaw sandboxes in this state.",
             )
             @json_option
             def openclaw_list(
@@ -1617,7 +1623,7 @@ def _register_preset_commands() -> None:
                 status_filter: str | None,
                 json_output: bool,
             ) -> Any:
-                """List sandboxes created by the OpenClaw preset."""
+                """List your OpenClaw sandboxes."""
                 if include_all and status_filter is not None:
                     raise click.UsageError(
                         "Use one filter. Run 'smolvm openclaw list --all' or "
@@ -1633,7 +1639,7 @@ def _register_preset_commands() -> None:
                     command_name="openclaw.list",
                 )
 
-            @click.command("open", help="Open this sandbox's OpenClaw dashboard.")
+            @click.command("open", help="Open an OpenClaw sandbox's dashboard.")
             @click.argument("vm_id", metavar="sandbox", shell_complete=complete_sandbox_names)
             @click.option(
                 "--host-port",
