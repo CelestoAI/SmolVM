@@ -666,8 +666,9 @@ def _run_list(
                         message = f"No running '{public_name}' sandboxes found."
                     if include_all:
                         message += (
-                            "\nOlder or manually prepared: 'smolvm sandbox list --all'."
-                            f"\nCreate one: 'smolvm {public_name} start'."
+                            "\nTo include older or manually prepared sandboxes, run"
+                            "\n'smolvm sandbox list --all'; to create one, run "
+                            f"'smolvm {public_name} start'."
                         )
                     else:
                         filtered_list_command = (

@@ -3419,7 +3419,10 @@ class TestCliList:
             (
                 ["openclaw", "list", "--all"],
                 "No 'openclaw' sandboxes found.",
-                ("smolvm sandbox list --all", "smolvm openclaw start"),
+                (
+                    "To include older or manually prepared sandboxes, run",
+                    "'smolvm sandbox list --all'; to create one, run 'smolvm openclaw start'.",
+                ),
             ),
             (
                 ["openclaw", "list", "--status", "stopped"],
