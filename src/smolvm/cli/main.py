@@ -198,8 +198,8 @@ class StartPayload(TypedDict):
     next: CreateNextPayload
 
 
-class OpenClawOpenPayload(TypedDict):
-    """Machine-readable result for ``smolvm openclaw open``."""
+class OpenClawOpenUiPayload(TypedDict):
+    """Machine-readable result for ``smolvm openclaw open-ui``."""
 
     sandbox: str
     guest_port: int
@@ -3457,12 +3457,12 @@ exit 1
         )
 
 
-def _run_openclaw_open(args: SimpleNamespace) -> int:
+def _run_openclaw_open_ui(args: SimpleNamespace) -> int:
     """Open the OpenClaw 2.0 dashboard for a running sandbox."""
     import json
     from urllib.parse import urlsplit, urlunsplit
 
-    command_name = getattr(args, "command_name", "openclaw.open")
+    command_name = getattr(args, "command_name", "openclaw.open-ui")
     vm: FacadeVM | None = None
     host_port: int | None = None
     forward_active = False
@@ -3565,7 +3565,7 @@ def _run_openclaw_open(args: SimpleNamespace) -> int:
         close_command = (
             f"smolvm sandbox port close {args.vm_id} {host_port}:{OPENCLAW_DASHBOARD_PORT}"
         )
-        data: OpenClawOpenPayload = {
+        data: OpenClawOpenUiPayload = {
             "sandbox": args.vm_id,
             "guest_port": OPENCLAW_DASHBOARD_PORT,
             "host_port": host_port,

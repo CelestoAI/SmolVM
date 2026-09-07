@@ -4533,7 +4533,7 @@ class TestOpenClawCommands:
         output = capsys.readouterr().out
         assert "Create and manage OpenClaw sandboxes." in output
         assert "list" in output
-        assert "open" in output
+        assert "open-ui" in output
 
     def test_openclaw_list_help_explains_filters(self, capsys: pytest.CaptureFixture[str]) -> None:
         ret = main(["openclaw", "list", "--help"])
@@ -4583,15 +4583,23 @@ class TestOpenClawCommands:
         assert "Sandbox name; SmolVM generates one when omitted." in normalized_output
         assert "Seconds to wait for each agent installation step." in normalized_output
 
+    def test_open_command_has_been_replaced_by_open_ui(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        ret = main(["openclaw", "open", "sbx-claw"])
+
+        assert ret == 2
+        assert "No such command 'open'" in capsys.readouterr().err
+
     @patch("smolvm.cli.main._cli_vm_from_id", side_effect=VMNotFoundError("missing-claw"))
     @pytest.mark.parametrize("json_output", [False, True])
-    def test_open_missing_sandbox_names_recovery_commands(
+    def test_open_ui_missing_sandbox_names_recovery_commands(
         self,
         _mock_vm_from_id: MagicMock,
         json_output: bool,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        argv = ["openclaw", "open", "missing-claw"]
+        argv = ["openclaw", "open-ui", "missing-claw"]
         if json_output:
             argv.append("--json")
 
@@ -4604,12 +4612,12 @@ class TestOpenClawCommands:
         assert "smolvm sandbox list --all" in error
         assert "smolvm openclaw start --name missing-claw --no-attach" in error
 
-    @patch("smolvm.cli.main._run_openclaw_open", return_value=0)
-    def test_open_routes_options_to_handler(self, mock_run: MagicMock) -> None:
+    @patch("smolvm.cli.main._run_openclaw_open_ui", return_value=0)
+    def test_open_ui_routes_options_to_handler(self, mock_run: MagicMock) -> None:
         ret = main(
             [
                 "openclaw",
-                "open",
+                "open-ui",
                 "sbx-claw",
                 "--host-port",
                 "19876",
@@ -4653,7 +4661,7 @@ class TestOpenClawCommands:
         vm.expose_local.return_value = 39876
         mock_vm_from_id.return_value = vm
 
-        ret = main(["openclaw", "open", "sbx-claw"])
+        ret = main(["openclaw", "open-ui", "sbx-claw"])
 
         assert ret == 0
         mock_browser_open.assert_called_once_with("http://127.0.0.1:39876/#token=one-time-secret")
@@ -4698,12 +4706,13 @@ class TestOpenClawCommands:
         vm.expose_local.return_value = 39877
         mock_vm_from_id.return_value = vm
 
-        ret = main(["openclaw", "open", "sbx-claw", "--json"])
+        ret = main(["openclaw", "open-ui", "sbx-claw", "--json"])
 
         assert ret == 0
         mock_browser_open.assert_not_called()
         mock_track.assert_called_once()
         payload = json.loads(capsys.readouterr().out)
+        assert payload["command"] == "openclaw.open-ui"
         assert payload["data"] == {
             "sandbox": "sbx-claw",
             "guest_port": 18789,
@@ -4744,7 +4753,7 @@ class TestOpenClawCommands:
         vm.expose_local.return_value = 39876
         mock_vm_from_id.return_value = vm
 
-        ret = main(["openclaw", "open", "sbx-claw", "--no-browser"])
+        ret = main(["openclaw", "open-ui", "sbx-claw", "--no-browser"])
 
         assert ret == 0
         mock_browser_open.assert_not_called()
@@ -4768,7 +4777,7 @@ class TestOpenClawCommands:
         ]
         mock_vm_from_id.return_value = vm
 
-        ret = main(["openclaw", "open", "sbx-claw", "--json"])
+        ret = main(["openclaw", "open-ui", "sbx-claw", "--json"])
 
         assert ret == 1
         message = json.loads(capsys.readouterr().out)["error"]["message"]
@@ -4797,7 +4806,7 @@ class TestOpenClawCommands:
         ]
         mock_vm_from_id.return_value = vm
 
-        ret = main(["openclaw", "open", "sbx-claw", "--json"])
+        ret = main(["openclaw", "open-ui", "sbx-claw", "--json"])
 
         assert ret == 1
         message = json.loads(capsys.readouterr().out)["error"]["message"]
@@ -4881,7 +4890,7 @@ class TestOpenClawCommands:
         vm.run.side_effect = results
         mock_vm_from_id.return_value = vm
 
-        ret = main(["openclaw", "open", "sbx-claw", "--json"])
+        ret = main(["openclaw", "open-ui", "sbx-claw", "--json"])
 
         assert ret == 1
         error = json.loads(capsys.readouterr().out)["error"]["message"]
@@ -4919,7 +4928,7 @@ class TestOpenClawCommands:
         vm.expose_local.return_value = 39876
         mock_vm_from_id.return_value = vm
 
-        ret = main(["openclaw", "open", "sbx-claw", "--json"])
+        ret = main(["openclaw", "open-ui", "sbx-claw", "--json"])
 
         assert ret == 1
         assert "state corrupt" in json.loads(capsys.readouterr().out)["error"]["message"]
@@ -4952,7 +4961,7 @@ class TestOpenClawCommands:
         vm.expose_local.return_value = 39876
         mock_vm_from_id.return_value = vm
 
-        ret = main(["openclaw", "open", "sbx-claw"])
+        ret = main(["openclaw", "open-ui", "sbx-claw"])
 
         assert ret == 0
         assert "http://127.0.0.1:39876/#token=secret" in capsys.readouterr().out

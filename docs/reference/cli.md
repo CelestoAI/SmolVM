@@ -52,7 +52,7 @@ Run these in the order you need them:
 
 - Create and install OpenClaw with `smolvm openclaw start`.
 - Find an OpenClaw sandbox with `smolvm openclaw list`, or use the generic `smolvm sandbox list --preset openclaw`. Add `--all` to include every state or `--status STATUS` to choose one state.
-- Open the dashboard with `smolvm openclaw open SANDBOX`. It starts or reuses the gateway and connects it over localhost only. Add `--host-port PORT` to choose the dashboard's local port, `--no-browser` to print the one-time link, or `--json` for structured output.
+- Open the dashboard with `smolvm openclaw open-ui SANDBOX`. It starts or reuses the gateway and connects it over localhost only. Add `--host-port PORT` to choose the dashboard's local port, `--no-browser` to print the one-time link, or `--json` for structured output.
 - Sandboxes created by older SmolVM releases and manually prepared sandboxes remain visible through `smolvm sandbox list --all`, but they do not appear in filtered results.
 - The current OpenClaw fallback installation can take several minutes. See [Agent presets](../guides/agent-presets.md#open-openclaws-dashboard) for the complete workflow and safe upgrade steps.
 

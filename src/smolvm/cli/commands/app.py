@@ -1639,7 +1639,7 @@ def _register_preset_commands() -> None:
                     command_name="openclaw.list",
                 )
 
-            @click.command("open", help="Open an OpenClaw sandbox's dashboard.")
+            @click.command("open-ui", help="Open an OpenClaw sandbox's dashboard.")
             @click.argument("vm_id", metavar="sandbox", shell_complete=complete_sandbox_names)
             @click.option(
                 "--host-port",
@@ -1655,7 +1655,7 @@ def _register_preset_commands() -> None:
             @ssh_auth_options
             @comm_channel_option
             @json_option
-            def openclaw_open(
+            def openclaw_open_ui(
                 vm_id: str,
                 host_port: int | None,
                 no_browser: bool,
@@ -1665,9 +1665,9 @@ def _register_preset_commands() -> None:
                 json_output: bool,
             ) -> Any:
                 _before_command(json_output=json_output)
-                return _handlers()._run_openclaw_open(
+                return _handlers()._run_openclaw_open_ui(
                     _ns(
-                        command_name="openclaw.open",
+                        command_name="openclaw.open-ui",
                         vm_id=vm_id,
                         host_port=host_port,
                         no_browser=no_browser,
@@ -1679,7 +1679,7 @@ def _register_preset_commands() -> None:
                 )
 
             preset_group.add_command(openclaw_list)
-            preset_group.add_command(openclaw_open)
+            preset_group.add_command(openclaw_open_ui)
         cli.add_command(preset_group)
 
 

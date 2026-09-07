@@ -234,7 +234,7 @@ smolvm openclaw list
 # NAME              STATUS   PID
 # openclaw-work     running  12345
 
-smolvm openclaw open openclaw-work
+smolvm openclaw open-ui openclaw-work
 ```
 
 Creating an OpenClaw sandbox currently takes several minutes while SmolVM installs its supported Node.js runtime and pinned OpenClaw release. See the [OpenClaw guide](docs/guides/agent-presets.md#open-openclaws-dashboard) for credentials, the dashboard flow, and safe steps for replacing an older sandbox.
