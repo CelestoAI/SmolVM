@@ -26,7 +26,7 @@ import os
 import re
 import socket
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from ipaddress import IPv4Network, collapse_addresses
@@ -2512,7 +2512,7 @@ def _extract_hostname(entry: str) -> str:
     return entry.split(":")[0]
 
 
-def resolve_domains_to_ips(domains: list[str]) -> list[str]:
+def resolve_domains_to_ips(domains: Sequence[str]) -> list[str]:
     """Resolve a list of domain entries to unique IP addresses.
 
     Each entry can be a full URL (``https://example.com/path``) or a bare

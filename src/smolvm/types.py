@@ -299,13 +299,13 @@ class InternetSettings(BaseModel):
     """
 
     mode: Literal["open", "off", "restricted"] | None = None
-    allowed_cidrs: list[str] = Field(default_factory=list)
-    allowed_domains: list[str] = ["*"]
-    allowed_http_methods: list[str] = ["*"]
+    allowed_cidrs: tuple[str, ...] = ()
+    allowed_domains: tuple[str, ...] = ("*",)
+    allowed_http_methods: tuple[str, ...] = ("*",)
 
     @field_validator("allowed_cidrs")
     @classmethod
-    def normalize_cidrs(cls, values: list[str]) -> list[str]:
+    def normalize_cidrs(cls, values: tuple[str, ...]) -> tuple[str, ...]:
         networks = []
         for value in values:
             try:
@@ -329,15 +329,15 @@ class InternetSettings(BaseModel):
             raise ValueError(
                 "Sandbox and link-local addresses cannot be allowed; remove those ranges."
             )
-        return [str(network) for network in collapse_addresses(networks)]
+        return tuple(str(network) for network in collapse_addresses(networks))
 
     @model_validator(mode="after")
     def validate_policy(self) -> "InternetSettings":
-        if self.allowed_http_methods != ["*"]:
+        if self.allowed_http_methods != ("*",):
             raise ValueError(
                 "HTTP method restrictions are unsupported; remove allowed_http_methods."
             )
-        if self.mode is not None and self.allowed_domains != ["*"]:
+        if self.mode is not None and self.allowed_domains != ("*",):
             raise ValueError(
                 "Use either mode or allowed_domains, not both; remove allowed_domains."
             )
@@ -357,7 +357,7 @@ class InternetSettings(BaseModel):
 
     @field_validator("allowed_domains")
     @classmethod
-    def normalize_domains(cls, v: list[str]) -> list[str]:
+    def normalize_domains(cls, v: tuple[str, ...]) -> tuple[str, ...]:
         """Extract and store only lowercased hostnames."""
         normalized: list[str] = []
         for entry in v:
@@ -392,11 +392,11 @@ class InternetSettings(BaseModel):
                 normalized.append(hostname.lower())
         if not normalized:
             raise ValueError("allowed_domains must contain at least one entry")
-        return normalized
+        return tuple(normalized)
 
     @field_validator("allowed_http_methods")
     @classmethod
-    def normalize_methods(cls, v: list[str]) -> list[str]:
+    def normalize_methods(cls, v: tuple[str, ...]) -> tuple[str, ...]:
         """Uppercase and deduplicate HTTP method entries."""
         normalized: list[str] = []
         seen: set[str] = set()
@@ -410,7 +410,7 @@ class InternetSettings(BaseModel):
             normalized.append(method)
         if not normalized:
             raise ValueError("allowed_http_methods must contain at least one entry")
-        return normalized
+        return tuple(normalized)
 
     @property
     def is_allow_all_domains(self) -> bool:

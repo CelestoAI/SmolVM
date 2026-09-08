@@ -13,7 +13,7 @@ def parse_network_policy(value: InternetSettings | dict[str, Any]) -> InternetSe
     try:
         # model_copy/model_construct can bypass even frozen model validation.
         return InternetSettings.model_validate(
-            value.model_dump() if isinstance(value, InternetSettings) else value
+            value.model_dump(warnings=False) if isinstance(value, InternetSettings) else value
         )
     except PydanticValidationError as exc:
         errors = exc.errors(include_url=False, include_context=False)

@@ -1646,7 +1646,7 @@ class SmolVMManager:
     def _policy_destinations(config: VMConfig) -> list[str] | None:
         settings = config.internet_settings
         if settings is not None and settings.has_explicit_restrictions:
-            return settings.allowed_cidrs
+            return list(settings.allowed_cidrs)
         return None
 
     def _setup_policy_network(self, config: VMConfig, tap_device: str) -> None:

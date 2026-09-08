@@ -17,6 +17,7 @@ from _util import BOOT_TIMEOUT, require_backend_available, selected_backend
 from smolvm import SmolVM
 from smolvm.exceptions import SmolVMError
 from smolvm.host.network import NetworkManager
+from smolvm.storage import MemoryStateManager
 from smolvm.types import SnapshotType
 
 pytestmark = pytest.mark.e2e
@@ -288,8 +289,13 @@ def test_firecracker_policy_lifecycle(policy_lab, request, tmp_path, mode):
     settings = {"mode": mode}
     if mode == "restricted":
         settings["allowed_cidrs"] = [allowed]
+    inventory = MemoryStateManager(tmp_path / "inventory")
     sandbox = SmolVM(
-        backend="firecracker", os="alpine", comm_channel="vsock", internet_settings=settings
+        backend="firecracker",
+        os="alpine",
+        comm_channel="vsock",
+        internet_settings=settings,
+        state_manager=inventory,
     )
     restored = None
     snapshot = None
@@ -303,6 +309,9 @@ def test_firecracker_policy_lifecycle(policy_lab, request, tmp_path, mode):
         assert output.read_bytes() == payload.read_bytes()
 
         def check(vm):
+            vm.upload_file(str(payload), "/tmp/policy-payload")
+            vm.download_file("/tmp/policy-payload", str(output))
+            assert output.read_bytes() == payload.read_bytes()
             assert vm.run("printf control-ok").stdout == "control-ok"
             result = vm.run(f"wget -T 1 -qO- http://{allowed}:18080/vm-allowed", timeout=5)
             assert (result.exit_code == 0) is (mode == "restricted")
@@ -317,7 +326,9 @@ def test_firecracker_policy_lifecycle(policy_lab, request, tmp_path, mode):
         snapshot = sandbox.snapshot(snapshot_type=SnapshotType.DISK)
         sandbox.stop()
         sandbox.delete()
-        restored = SmolVM.from_snapshot(snapshot.snapshot_id, backend="firecracker", resume_vm=True)
+        restored = SmolVM.from_snapshot(
+            snapshot.snapshot_id, backend="firecracker", resume_vm=True, state_manager=inventory
+        )
         check(restored)
         assert '"/vm-denied"' not in log.read_text()
     finally:

@@ -2051,7 +2051,7 @@ class TestExplicitPolicyLifecycle:
             smol_vm.ensure_network_connectivity(info)
         for invocation in network.setup_nat.call_args_list:
             assert invocation.kwargs == {"allow_outbound": False}
-        assert network.apply_network_policy.call_args.args[1] == settings.allowed_cidrs
+        assert network.apply_network_policy.call_args.args[1] == list(settings.allowed_cidrs)
         network.setup_ssh_port_forward.assert_not_called()
 
     @pytest.mark.parametrize("backend", ["qemu", "libkrun"])
