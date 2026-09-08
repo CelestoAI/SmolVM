@@ -1616,8 +1616,22 @@ class SmolVMManager:
         resolution = resolution or self._resolve_control_channel_for_config(config, backend)
         return resolution.kind == "ssh"
 
+    @staticmethod
+    def _require_native_policy_lifecycle(config: VMConfig) -> None:
+        if config.network_policy is not None:
+            raise SmolVMError(
+                f"Strict networking for sandbox '{config.vm_id}' is not yet available "
+                "through the native VM API; do not start this sandbox with a weaker policy.",
+                {"vm_id": config.vm_id},
+            )
+
     def ensure_network_connectivity(self, vm_info: VMInfo) -> None:
         """Ensure host-side TAP connectivity exists for network-backed operations."""
+        if vm_info.config.network_policy is not None:
+            from smolvm.network_policy.placement import active_policy
+
+            active_policy(vm_info, vm_info.pid)
+            return  # Never repair or readmit a live restricted placement.
         if vm_info.network is None:
             return
 
@@ -2280,6 +2294,7 @@ class SmolVMManager:
                 {"vm_id": vm_id},
             )
 
+        self._require_native_policy_lifecycle(vm_info.config)
         self._check_workspace_mounts(vm_info)
 
         backend = self._backend_for_vm(vm_info)
@@ -2315,13 +2330,13 @@ class SmolVMManager:
                 launch.pid,
             )
             return vm_info
-        except Exception as e:
+        except BaseException as e:
             logger.error("Failed to start VM %s: %s", vm_id, e)
             self.state.update_vm(
                 vm_id,
                 status=VMState.ERROR,
-                clear_pid=True,
-                clear_socket_path=True,
+                clear_pid=vm_info.config.network_policy is None,
+                clear_socket_path=vm_info.config.network_policy is None,
                 clear_display=True,
             )
             self._close_runtime_log(vm_id, backend, vm_info.control_socket_path)
@@ -2347,12 +2362,20 @@ class SmolVMManager:
 
         vm_info = self.state.get_vm(vm_id)
 
-        if vm_info.status not in (VMState.RUNNING, VMState.PAUSED):
+        strict = vm_info.config.network_policy is not None
+        if vm_info.status not in (VMState.RUNNING, VMState.PAUSED) and not (
+            strict and vm_info.status == VMState.ERROR
+        ):
             logger.warning("VM %s is not running (status: %s)", vm_id, vm_info.status)
             return vm_info
 
         backend = self._backend_for_vm(vm_info)
-        self._runtime_adapter_for_backend(backend).stop(vm_info, timeout=timeout)
+        if strict:
+            from smolvm.network_policy.shutdown import stop_policy
+
+            stop_policy(vm_info, self._process_handles.get(vm_info.pid), timeout=timeout)
+        else:
+            self._runtime_adapter_for_backend(backend).stop(vm_info, timeout=timeout)
         self._close_runtime_log(vm_id, backend, vm_info.control_socket_path)
         vm_info = self.state.update_vm(
             vm_id,
@@ -2387,6 +2410,9 @@ class SmolVMManager:
             raise ValueError("vm_id cannot be empty")
 
         vm_info = self.state.get_vm(vm_id)
+
+        if vm_info.config.network_policy is not None:
+            self.ensure_network_connectivity(vm_info)
 
         if vm_info.status != VMState.PAUSED:
             self._raise_crashed_or_state_error(vm_info, action="resume")
@@ -2804,6 +2830,7 @@ class SmolVMManager:
             raise ValueError("snapshot_id cannot be empty")
 
         snapshot = self.get_snapshot(snapshot_id)
+        self._require_native_policy_lifecycle(snapshot.vm_config)
         if snapshot.restored and not force:
             raise SmolVMError("Snapshot already restored", {"snapshot_id": snapshot_id})
 
@@ -3113,7 +3140,9 @@ class SmolVMManager:
             self._cleanup_resources(vm_id)
             raise
 
-        if vm_info.status in (VMState.RUNNING, VMState.PAUSED):
+        if vm_info.status in (VMState.RUNNING, VMState.PAUSED) or (
+            vm_info.config.network_policy is not None and vm_info.status == VMState.ERROR
+        ):
             self.stop(vm_id)
 
         self._delete_macos_bundle(vm_info)
@@ -3330,15 +3359,27 @@ class SmolVMManager:
             control_socket_path=control_socket_path,
             firmware_vars_path=firmware_vars_path,
             swtpm_socket=swtpm_socket,
-            start_paused=start_paused,
+            # A restricted guest must not execute before its supervisor owns
+            # the actual process. The adapter resumes it after attachment.
+            start_paused=start_paused or vm_info.config.network_policy is not None,
             root_node_name=root_node_name,
         )
 
         logger.debug("Starting QEMU: %s", " ".join(cmd))
 
-        log_file = open(log_path, "w")  # noqa: SIM115 - must stay open for subprocess
+        reservation = None
+        if vm_info.config.network_policy is not None:
+            from smolvm.network_policy.lifecycle import PreparedPolicy
+            from smolvm.network_policy.placement import placement, validate_host
 
+            validate_host(vm_info, self.data_dir)
+            binding, policy_path = placement(vm_info)
+            reservation = PreparedPolicy(vm_info.config.network_policy, binding, policy_path)
+
+        process = None
+        log_file = None
         try:
+            log_file = open(log_path, "w")  # noqa: SIM115 - subprocess owns lifetime
             process = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
@@ -3346,8 +3387,29 @@ class SmolVMManager:
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
-        except Exception:
-            log_file.close()
+            if reservation is not None:
+                # Save process proof before readiness waits. Never clear it on
+                # an uncertain shutdown or release the placement here.
+                self._process_handles[process.pid] = process
+                self.state.update_vm(
+                    vm_info.vm_id,
+                    pid=process.pid,
+                    control_socket_path=control_socket_path,
+                )
+                reservation.attach(process.pid)
+        except BaseException:
+            try:
+                if reservation is not None:
+                    try:
+                        if process is not None:
+                            process.kill()
+                            process.wait(timeout=10)
+                    finally:
+                        if not reservation.attached:
+                            reservation.abort()
+            finally:
+                if log_file is not None:
+                    log_file.close()
             raise
 
         key = f"qemu:{vm_info.vm_id}"
@@ -3685,6 +3747,7 @@ class SmolVMManager:
                 bridge interface cannot be removed.
         """
         vm_info = self._vm_info_for_cleanup(vm_id)
+        self._require_policy_cleanup(vm_id, vm_info)
         try:
             self._cleanup_host_resources(
                 vm_id,
@@ -3702,6 +3765,22 @@ class SmolVMManager:
             vm_info,
             preserve_managed_disk=preserve_managed_disk,
         )
+
+    def _require_policy_cleanup(self, vm_id: str, vm_info: VMInfo | None) -> None:
+        """Never enter best-effort resource release with unresolved policy ownership."""
+        from smolvm.network_policy.placement import STATE_DIRECTORY
+
+        lease = self.state.get_ip_lease(vm_id)
+        tap = f"tap{ip_to_pool_index(lease[0])}" if lease else None
+        if vm_info is not None and vm_info.config.network_policy is not None:
+            if vm_info.status not in (VMState.CREATED, VMState.STOPPED) or vm_info.pid is not None:
+                raise SmolVMError(f"Stop sandbox '{vm_id}' before deleting its network protection.")
+            if vm_info.network is not None:
+                tap = vm_info.network.tap_device
+        if tap and (STATE_DIRECTORY / f"{tap}.json").exists():
+            raise SmolVMError(
+                f"Sandbox '{vm_id}' network cleanup is incomplete; retain its reservation."
+            )
 
     @contextmanager
     def _cleanup_step(self, vm_id: str, description: str) -> Iterator[None]:
@@ -4426,6 +4505,7 @@ class SmolVMManager:
         if vm_info.network is None and vm_info.config.guest_os is not GuestOS.MACOS:
             raise SmolVMError("VM has no network configuration", {"vm_id": vm_id})
 
+        self._require_native_policy_lifecycle(vm_info.config)
         self._check_workspace_mounts(vm_info)
 
         backend = self._backend_for_vm(vm_info)
@@ -4464,13 +4544,13 @@ class SmolVMManager:
                 launch.pid,
             )
             return vm_info
-        except Exception as e:
+        except BaseException as e:
             logger.error("Failed to start VM %s: %s", vm_id, e)
             self.state.update_vm(
                 vm_id,
                 status=VMState.ERROR,
-                clear_pid=True,
-                clear_socket_path=True,
+                clear_pid=vm_info.config.network_policy is None,
+                clear_socket_path=vm_info.config.network_policy is None,
                 clear_display=True,
             )
             self._close_runtime_log(vm_id, backend, vm_info.control_socket_path)
@@ -4484,6 +4564,19 @@ class SmolVMManager:
         logger.info("Stopping VM (async): %s", vm_id)
 
         vm_info = self.state.get_vm(vm_id)
+
+        if vm_info.config.network_policy is not None:
+            shutdown = asyncio.create_task(asyncio.to_thread(self.stop, vm_id, timeout=timeout))
+            try:
+                return await asyncio.shield(shutdown)
+            except asyncio.CancelledError:
+                while not shutdown.done():
+                    try:
+                        await asyncio.shield(shutdown)
+                    except asyncio.CancelledError:
+                        continue
+                shutdown.result()
+                raise
 
         if vm_info.status not in (VMState.RUNNING, VMState.PAUSED):
             logger.warning("VM %s is not running (status: %s)", vm_id, vm_info.status)
@@ -4515,7 +4608,9 @@ class SmolVMManager:
             await self._async_cleanup_resources(vm_id)
             raise
 
-        if vm_info.status in (VMState.RUNNING, VMState.PAUSED):
+        if vm_info.status in (VMState.RUNNING, VMState.PAUSED) or (
+            vm_info.config.network_policy is not None and vm_info.status == VMState.ERROR
+        ):
             await self.async_stop(vm_id)
 
         await asyncio.to_thread(self._delete_macos_bundle, vm_info)
@@ -4675,6 +4770,7 @@ class SmolVMManager:
     ) -> None:
         """Async version of :meth:`_cleanup_resources`."""
         vm_info = self._vm_info_for_cleanup(vm_id)
+        self._require_policy_cleanup(vm_id, vm_info)
         try:
             await self._async_cleanup_host_resources(
                 vm_id,

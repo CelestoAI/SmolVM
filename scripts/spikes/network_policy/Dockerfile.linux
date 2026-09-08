@@ -1,0 +1,10 @@
+# Disposable TAP/firewall experiment. No host network or production mounts.
+FROM smolvm-network-policy-spike
+USER 0:0
+RUN apt-get update && apt-get install -y --no-install-recommends iproute2 nftables util-linux \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=policy firewall.py /spike/firewall.py
+COPY --from=policy *.py /spike/network_policy/
+COPY managed_proxy.py /spike/
+COPY tests/linux /spike/tests/linux
+CMD [".venv/bin/pytest", "tests/linux", "-q", "--disable-warnings", "-p", "no:cacheprovider"]

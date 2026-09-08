@@ -1,0 +1,20 @@
+# Combined proxy/QEMU test image. Public images only, SHA-verified below.
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim@sha256:531f855bda2c73cd6ef67d56b733b357cea384185b3022bd09f05e002cd144ca
+WORKDIR /spike
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    iproute2 nftables qemu-system-arm qemu-utils zstd util-linux \
+    && rm -rf /var/lib/apt/lists/*
+COPY _assets/vmlinux.bin _assets/rootfs.ext4.zst /images/
+RUN echo '99e2f80dc54653bd7d5f74a59c8c5c765fea52f23e664ca50021782da5f3fa7f  /images/vmlinux.bin' | sha256sum -c - \
+    && echo 'eadf9e8681ee700cb41440c54fd247ce5d34b3afc87a203ba0ed2990ef27757d  /images/rootfs.ext4.zst' | sha256sum -c - \
+    && zstd -d --sparse /images/rootfs.ext4.zst -o /images/rootfs.ext4
+# Keep test/code changes after the large immutable guest/dependency layers.
+COPY --from=policy engine.py /spike/candidate.py
+COPY --from=policy *.py /spike/network_policy/
+COPY managed_proxy.py /spike/
+COPY tests/linux /spike/tests/linux
+COPY tests/qemu /spike/tests/qemu
+ENV PYTHONDONTWRITEBYTECODE=1
+CMD [".venv/bin/pytest", "tests/qemu", "-q", "--disable-warnings", "-p", "no:cacheprovider", "-rP"]

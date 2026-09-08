@@ -25,6 +25,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 from smolvm._naming import generate_sandbox_name
+from smolvm.network_policy import NetworkPolicy
 
 
 class VMState(str, Enum):
@@ -530,6 +531,7 @@ class VMConfig(BaseModel):
     vsock: VsockConfig | None = None
     comm_channel: Literal["ssh", "vsock"] | None = None
     internet_settings: InternetSettings | None = None
+    network_policy: NetworkPolicy | None = None
     workspace_mounts: list[WorkspaceMount] = []
     ssh_public_key: str | None = None
     guest_managed_networking: bool = False
@@ -646,6 +648,23 @@ class VMConfig(BaseModel):
         if not _should_validate_paths(info):
             return v
         return cls._validate_file_path(v)
+
+    @model_validator(mode="after")
+    def _check_network_policy_constraints(self) -> "VMConfig":
+        """Strict hostname policies never degrade to the legacy IP allowlist."""
+        if self.network_policy is None:
+            return self
+        if self.internet_settings is not None:
+            raise ValueError("Use network_policy or internet_settings, not both.")
+        if self.backend != "qemu" or self.qemu_network != "tap":
+            raise ValueError("Strict network policies require backend='qemu', qemu_network='tap'.")
+        if self.network_attachment.mode != "nat":
+            raise ValueError("Strict network policies require NAT networking.")
+        if self.guest_os not in (GuestOS.ALPINE, GuestOS.UBUNTU):
+            raise ValueError("Strict network policies require a Linux guest.")
+        if self.comm_channel != "vsock":
+            raise ValueError("Strict network policies require comm_channel='vsock'.")
+        return self
 
     @model_validator(mode="after")
     def _check_bridge_mode_constraints(self) -> "VMConfig":

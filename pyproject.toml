@@ -40,6 +40,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Strict mode is opt-in and needs Python 3.12+. Keep legacy Python 3.11
+# installations and the default dependency graph unchanged.
+network-policy = [
+    "mitmproxy==12.2.3; python_version >= '3.12' and sys_platform == 'linux'",
+]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",

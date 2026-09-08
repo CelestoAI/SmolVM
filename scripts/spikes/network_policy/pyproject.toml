@@ -1,0 +1,15 @@
+[project]
+name = "smolvm-network-policy-spike"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = ["mitmproxy==12.2.3", "pydantic>=2", "pytest>=8,<9", "pytest-asyncio>=1,<2"]
+
+[tool.uv]
+# This candidate must not alter the shipped runtime or its dependency graph.
+managed = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+# Privileged TAP tests are an explicit, separate container invocation.
+testpaths = ["tests/test_wire.py"]
+pythonpath = ["."]

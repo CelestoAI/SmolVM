@@ -288,3 +288,44 @@ def test_explicit_vsock_env_requires_managed_env(
 
     with pytest.raises(SmolVMError, match="Managed environment variables are not available"):
         vm.set_env_vars({"FOO": "bar"})
+
+
+@pytest.mark.parametrize(
+    "operation, healthy",
+    [("run", False), ("files", False), ("ready", False), ("files", True), ("ready", True)],
+)
+def test_cached_vsock_rechecks_strict_policy(tmp_path, operation, healthy):
+    from smolvm.network_policy import NetworkPolicy
+
+    vm = _vsock_vm(tmp_path, comm_channel="vsock", request=None)
+    vm._info = vm._info.model_copy(
+        update={
+            "config": vm._info.config.model_copy(
+                update={"network_policy": NetworkPolicy(allowed_domains=[])}
+            )
+        }
+    )
+    vm._sdk.get.return_value = vm._info
+    vm._control_ready = True
+    channel = MagicMock()
+    vm._control_channel = channel
+    vm.can_run_commands = lambda: True
+    # Stop at dispatch for run; this test concerns admission, not command plumbing.
+    vm._resolve_channel = lambda: MagicMock(kind="vsock")
+    if not healthy:
+        vm._sdk.ensure_network_connectivity.side_effect = RuntimeError("policy stopped")
+
+    def dispatch():
+        if operation == "run":
+            return vm.run("true")
+        if operation == "files":
+            return vm._ensure_control_for_operation(action="copy files")
+        return vm._wait_for_ready(timeout=1)
+
+    if healthy:
+        dispatch()
+    else:
+        with pytest.raises(RuntimeError, match="policy stopped"):
+            dispatch()
+        channel.run.assert_not_called()
+    vm._sdk.ensure_network_connectivity.assert_called_once_with(vm._info)

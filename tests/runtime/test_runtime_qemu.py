@@ -125,3 +125,194 @@ def test_qcow2_backing_inspection_force_shares_running_qemu_disk(tmp_path: Path)
         text=True,
         check=False,
     )
+
+
+@pytest.mark.asyncio
+async def test_strict_cancelled_start_waits_for_boot_and_shutdown(tmp_path):
+    import asyncio
+    import threading
+
+    from smolvm.network_policy import NetworkPolicy
+    from smolvm.runtime.base import RuntimeLaunch
+
+    context = _make_context()
+    adapter = QemuRuntimeAdapter(context)
+    vm = _make_vm_info(tmp_path)
+    vm = vm.model_copy(
+        update={
+            "config": vm.config.model_copy(
+                update={"network_policy": NetworkPolicy(allowed_domains=[])}
+            )
+        }
+    )
+    booting, finish_boot, stopping, finish_stop = (threading.Event() for _ in range(4))
+    process = MagicMock()
+    context.process_handles[12345] = process
+
+    def start(*args, **kwargs):
+        booting.set()
+        assert finish_boot.wait(5)
+        return RuntimeLaunch(
+            pid=12345, control_socket_path=tmp_path / "qmp", status=VMState.RUNNING
+        )
+
+    def wait(**kwargs):
+        stopping.set()
+        assert finish_stop.wait(5)
+
+    process.wait.side_effect = wait
+    adapter.start = start
+    task = asyncio.create_task(adapter.async_start(vm, log_path=tmp_path / "log", boot_timeout=1))
+    try:
+        assert await asyncio.to_thread(booting.wait, 5)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        finish_boot.set()
+        assert await asyncio.to_thread(stopping.wait, 5)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        finish_stop.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        process.kill.assert_called_once()
+        process.wait.assert_called_once_with(timeout=10)
+        context.kill_process.assert_not_called()
+    finally:
+        finish_boot.set()
+        finish_stop.set()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_strict_cancelled_start_preserves_shutdown_failure(tmp_path):
+    import asyncio
+    import threading
+
+    from smolvm.network_policy import NetworkPolicy
+
+    context = _make_context()
+    adapter = QemuRuntimeAdapter(context)
+    vm = _make_vm_info(tmp_path)
+    vm = vm.model_copy(
+        update={
+            "config": vm.config.model_copy(
+                update={"network_policy": NetworkPolicy(allowed_domains=[])}
+            )
+        }
+    )
+    booting, finish = threading.Event(), threading.Event()
+
+    def start(*args, **kwargs):
+        booting.set()
+        assert finish.wait(5)
+        raise RuntimeError("shutdown unverified")
+
+    adapter.start = start
+    task = asyncio.create_task(adapter.async_start(vm, log_path=tmp_path / "log", boot_timeout=1))
+    try:
+        assert await asyncio.to_thread(booting.wait, 5)
+        task.cancel()
+        await asyncio.sleep(0)
+        finish.set()
+        with pytest.raises(RuntimeError, match="shutdown unverified"):
+            await task
+    finally:
+        finish.set()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("failure", [None, "trust", "policy"])
+def test_strict_start_installs_trust_before_return(tmp_path, failure):
+    from smolvm.network_policy import NetworkPolicy
+
+    context = _make_context()
+    adapter = QemuRuntimeAdapter(context)
+    vm = _make_vm_info(tmp_path)
+    vm = vm.model_copy(
+        update={
+            "config": vm.config.model_copy(
+                update={"network_policy": NetworkPolicy(allowed_domains=["example.com"])}
+            )
+        }
+    )
+    events = []
+    process = MagicMock(pid=12345)
+    process.kill.side_effect = lambda: events.append("kill")
+    process.wait.side_effect = lambda **kwargs: events.append("wait")
+    context.start_qemu.return_value = process
+    client = MagicMock()
+    client.__enter__.return_value.cont.side_effect = lambda: events.append("cont")
+
+    def trust(*args, **kwargs):
+        events.append("trust")
+        if failure == "trust":
+            raise RuntimeError("trust failed")
+
+    def verify(*args):
+        events.append("verify")
+        if failure == "policy":
+            raise RuntimeError("policy stopped")
+
+    with (
+        patch.object(
+            adapter, "_resolve_platform_spec", return_value=MagicMock(requires_swtpm=False)
+        ),
+        patch.object(adapter, "_firmware_vars_path", return_value=None),
+        patch.object(adapter, "_wait_for_runtime"),
+        patch.object(adapter, "_client", return_value=client),
+        patch("smolvm.network_policy.guest.configure_started_guest", side_effect=trust) as setup,
+        patch("smolvm.network_policy.placement.active_policy", side_effect=verify),
+    ):
+        if failure == "policy":
+            with pytest.raises(RuntimeError, match="policy stopped"):
+                adapter.start(vm, log_path=tmp_path / "log", boot_timeout=7)
+            assert events == ["verify", "kill", "wait"]
+            setup.assert_not_called()
+            return
+        if failure == "trust":
+            with pytest.raises(RuntimeError, match="trust failed"):
+                adapter.start(vm, log_path=tmp_path / "log", boot_timeout=7)
+            assert events == ["verify", "cont", "trust", "kill", "wait"]
+        else:
+            result = adapter.start(vm, log_path=tmp_path / "log", boot_timeout=7)
+            assert result.pid == 12345
+            assert events == ["verify", "cont", "trust"]
+        setup.assert_called_once_with(vm, 12345, timeout=7)
+
+
+@pytest.mark.parametrize("healthy", [False, True])
+def test_strict_resume_checks_policy_before_cont(tmp_path, healthy):
+    from smolvm.network_policy import NetworkPolicy
+
+    adapter = QemuRuntimeAdapter(_make_context())
+    vm = _make_vm_info(tmp_path)
+    vm = vm.model_copy(
+        update={
+            "config": vm.config.model_copy(
+                update={"network_policy": NetworkPolicy(allowed_domains=[])}
+            )
+        }
+    )
+    events = []
+    client = MagicMock()
+    client.__enter__.return_value.cont.side_effect = lambda: events.append("cont")
+
+    def check(*args):
+        events.append("verify")
+        if not healthy:
+            raise RuntimeError("policy stopped")
+
+    with (
+        patch.object(adapter, "_client", return_value=client) as connect,
+        patch("smolvm.network_policy.placement.active_policy", side_effect=check),
+    ):
+        if healthy:
+            adapter.resume(vm)
+            assert events == ["verify", "cont"]
+        else:
+            with pytest.raises(RuntimeError, match="policy stopped"):
+                adapter.resume(vm)
+            connect.assert_not_called()
+            assert events == ["verify"]

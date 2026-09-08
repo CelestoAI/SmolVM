@@ -297,15 +297,31 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                 swtpm_socket=(swtpm_sidecar.socket_path if swtpm_sidecar else None),
             )
             self._wait_for_runtime(process, control_socket_path, boot_timeout)
+            if vm_info.config.network_policy is not None:
+                # The spawn boundary starts restricted guests with -S and
+                # returns only after the policy supervisor attaches its pidfd.
+                from smolvm.network_policy.placement import active_policy
+
+                active_policy(vm_info, process.pid)
+                with self._client(control_socket_path) as client:
+                    client.cont()
+                from smolvm.network_policy.guest import configure_started_guest
+
+                configure_started_guest(vm_info, process.pid, timeout=boot_timeout)
             return RuntimeLaunch(
                 pid=process.pid,
                 control_socket_path=control_socket_path,
                 status=VMState.RUNNING,
             )
-        except Exception:
+        except BaseException:
             if process is not None:
-                with suppress(Exception):
-                    self._context.kill_process(process.pid)
+                if vm_info.config.network_policy is not None:
+                    # Preserve evidence if shutdown cannot be proven.
+                    process.kill()
+                    process.wait(timeout=10)
+                else:
+                    with suppress(Exception):
+                        self._context.kill_process(process.pid)
             if control_socket_path.exists():
                 with suppress(Exception):
                     self._context.unlink_socket(control_socket_path)
@@ -436,6 +452,10 @@ class QemuRuntimeAdapter(RuntimeAdapter):
 
     def resume(self, vm_info: VMInfo) -> None:
         """Resume a paused QEMU VM."""
+        if vm_info.config.network_policy is not None:
+            from smolvm.network_policy.placement import active_policy
+
+            active_policy(vm_info, vm_info.pid)
         with self._client(vm_info.control_socket_path) as client:
             client.cont()
 
@@ -510,6 +530,10 @@ class QemuRuntimeAdapter(RuntimeAdapter):
                             client.wait_for_job(cleanup_job_id)
                 if request.original_status == VMState.RUNNING:
                     with suppress(Exception):
+                        if vm_info.config.network_policy is not None:
+                            from smolvm.network_policy.placement import active_policy
+
+                            active_policy(vm_info, vm_info.pid)
                         client.cont()
                 raise
 
@@ -1718,9 +1742,42 @@ class QemuRuntimeAdapter(RuntimeAdapter):
         self, vm_info: VMInfo, *, log_path: Path, boot_timeout: float
     ) -> RuntimeLaunch:
         """Async version of :meth:`start`."""
-        return await asyncio.to_thread(
-            self.start, vm_info, log_path=log_path, boot_timeout=boot_timeout
+        if vm_info.config.network_policy is None:
+            return await asyncio.to_thread(
+                self.start, vm_info, log_path=log_path, boot_timeout=boot_timeout
+            )
+        # Cancelling to_thread does not stop its thread. Retain ownership until
+        # boot finishes, including repeated cancellation during shutdown.
+        boot = asyncio.create_task(
+            asyncio.to_thread(self.start, vm_info, log_path=log_path, boot_timeout=boot_timeout)
         )
+        try:
+            return await asyncio.shield(boot)
+        except asyncio.CancelledError:
+            while not boot.done():
+                try:
+                    await asyncio.shield(boot)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            # Failed start already performs verified shutdown and preserves
+            # process evidence if that shutdown fails. Do not hide that error.
+            launch = boot.result()
+            process = self._context.process_handles[launch.pid]
+
+            def terminate() -> None:
+                process.kill()
+                process.wait(timeout=10)
+
+            shutdown = asyncio.create_task(asyncio.to_thread(terminate))
+            while not shutdown.done():
+                try:
+                    await asyncio.shield(shutdown)
+                except asyncio.CancelledError:
+                    continue
+            shutdown.result()
+            raise
 
     async def async_stop(self, vm_info: VMInfo, *, timeout: float) -> None:
         """Async version of :meth:`stop`."""

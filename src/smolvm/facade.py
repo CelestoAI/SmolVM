@@ -1636,6 +1636,8 @@ class SmolVM:
         notify = on_progress or (lambda _msg: None)
 
         if self._info.status == VMState.RUNNING:
+            if self._info.config.network_policy is not None:
+                self._sdk.ensure_network_connectivity(self._info)
             logger.info("VM %s already running; start() is a no-op", self._vm_id)
             return self
         if self._info.status == VMState.PAUSED:
@@ -1913,6 +1915,8 @@ class SmolVM:
                 {"vm_id": self._vm_id},
             )
 
+        if self._info.config.network_policy is not None:
+            self._sdk.ensure_network_connectivity(self._info)
         self._ensure_control_cache_attrs()
         if not self._control_ready:
             try:
@@ -3291,6 +3295,8 @@ modprobe 9pnet_virtio""".strip()
                 f"'smolvm sandbox start {self._vm_id}'.",
                 {"vm_id": self._vm_id},
             )
+        if self._info.config.network_policy is not None:
+            self._sdk.ensure_network_connectivity(self._info)
         self._ensure_control_cache_attrs()
         if self._control_ready and self._control_channel is not None:
             return self._control_channel
@@ -3582,6 +3588,8 @@ modprobe 9pnet_virtio""".strip()
         are required to include the Rust guest agent, so a missing agent is a
         readiness failure instead of an SSH fallback trigger.
         """
+        if self._info.config.network_policy is not None:
+            self._sdk.ensure_network_connectivity(self._info)
         if self._control_ready:
             return
         resolution = self._resolve_channel()
