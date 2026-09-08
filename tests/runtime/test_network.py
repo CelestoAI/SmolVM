@@ -786,3 +786,82 @@ class TestEgressAllowlist:
         async_script = async_nm._async_run_nft_script.call_args_list[0].args[0]
 
         assert sync_script == async_script
+
+
+class TestExplicitNetworkPolicy:
+    @patch("smolvm.host.network.run_command")
+    def test_nat_without_blanket_permission(self, run_command) -> None:
+        run_command.return_value = MagicMock(stdout="")
+        nm = NetworkManager()
+        nm._outbound_interface = "eth0"
+        nm.setup_nat("tap42", allow_outbound=False)
+        scripts = _collect_nft_scripts(run_command)
+        assert 'oifname "eth0" counter masquerade' in scripts
+        assert 'add element inet smolvm_filter allowed_taps { "tap42" }' not in scripts
+
+    @pytest.mark.asyncio
+    @patch("smolvm.host.network.async_run_command")
+    async def test_async_nat_without_blanket_permission(self, run_command) -> None:
+        run_command.return_value = MagicMock(stdout="")
+        nm = NetworkManager()
+        nm._outbound_interface = "eth0"
+        await nm.async_setup_nat("tap42", allow_outbound=False)
+        scripts = _collect_nft_scripts(run_command)
+        assert 'oifname "eth0" counter masquerade' in scripts
+        assert 'add element inet smolvm_filter allowed_taps { "tap42" }' not in scripts
+
+    @pytest.mark.parametrize("destinations", [None, [], ["203.0.113.7/32"]])
+    def test_replacement_is_one_atomic_transaction(self, destinations) -> None:
+        nm = NetworkManager()
+        nm._ensure_nftables_base = MagicMock()
+        nm._run_nft_script = MagicMock()
+        nm.apply_network_policy("tap42", destinations)
+        nm._run_nft_script.assert_called_once()
+        script = nm._run_nft_script.call_args.args[0]
+        assert "flush table inet smolvm_policy_tap42" in script
+        assert "hook forward priority -10" in script
+        assert "hook input priority -10" in script
+        assert "ct state" not in script
+        assert script.index('oifname "tap*" counter drop') < script.index("169.254.0.0/16")
+        if destinations is not None:
+            assert 'input iifname "tap42" counter drop' in script
+            assert "meta nfproto ipv6 counter drop" in script
+            assert 'delete element inet smolvm_filter allowed_taps { "tap42" }' in script
+        if destinations:
+            assert script.index("169.254.0.0/16") < script.index("203.0.113.7/32")
+            assert script.index("203.0.113.7/32") < script.index(
+                'forward iifname "tap42" counter drop'
+            )
+
+    def test_invalid_interface_cannot_change_another_table(self) -> None:
+        nm = NetworkManager()
+        nm._run_nft_script = MagicMock()
+        with pytest.raises(ValueError):
+            nm.apply_network_policy("eth0; flush ruleset", [])
+        nm._run_nft_script.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_async_policy_matches_sync(self) -> None:
+        nm = NetworkManager()
+        nm._ensure_nftables_base = MagicMock()
+        nm._async_ensure_nftables_base = AsyncMock()
+        nm._run_nft_script = MagicMock()
+        nm._async_run_nft_script = AsyncMock()
+        nm.apply_network_policy("tap42", [])
+        await nm.async_apply_network_policy("tap42", [])
+        assert nm._run_nft_script.call_args == nm._async_run_nft_script.call_args
+
+    def test_policy_failure_propagates(self) -> None:
+        nm = NetworkManager()
+        nm._ensure_nftables_base = MagicMock()
+        nm._run_nft_script = MagicMock(side_effect=RuntimeError("nft failed"))
+        with pytest.raises(RuntimeError, match="nft failed"):
+            nm.apply_network_policy("tap42", [])
+
+    def test_cleanup_only_deletes_owned_policy(self) -> None:
+        nm = NetworkManager()
+        nm._run_nft_script = MagicMock()
+        nm.remove_network_policy("tap42")
+        assert nm._run_nft_script.call_args.args[0] == (
+            "add table inet smolvm_policy_tap42\ndelete table inet smolvm_policy_tap42\n"
+        )

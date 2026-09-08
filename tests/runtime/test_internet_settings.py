@@ -78,13 +78,10 @@ class TestInternetSettings:
         with pytest.raises(ValidationError, match="allowed_domains"):
             InternetSettings(allowed_domains=["", "  "])
 
-    def test_methods_uppercased(self) -> None:
-        settings = InternetSettings(allowed_http_methods=["get", "post"])
-        assert settings.allowed_http_methods == ["GET", "POST"]
-
-    def test_methods_deduplicated(self) -> None:
-        settings = InternetSettings(allowed_http_methods=["GET", "get", "Get"])
-        assert settings.allowed_http_methods == ["GET"]
+    @pytest.mark.parametrize("methods", [["get", "post"], ["GET", "get", "Get"], ["*", "GET"]])
+    def test_unenforced_methods_rejected(self, methods: list[str]) -> None:
+        with pytest.raises(ValidationError, match="HTTP method restrictions"):
+            InternetSettings(allowed_http_methods=methods)
 
     def test_empty_methods_raises(self) -> None:
         with pytest.raises(ValidationError, match="allowed_http_methods"):
@@ -173,3 +170,37 @@ class TestResolveDomains:
         mock_getaddrinfo.side_effect = fake_resolve  # type: ignore[union-attr]
         result = resolve_domains_to_ips(["https://good.com", "https://bad.invalid"])
         assert result == ["1.2.3.4"]
+
+
+@pytest.mark.parametrize("mode", ["open", "off", "restricted"])
+def test_explicit_policy_round_trip(mode: str) -> None:
+    cidrs = ["203.0.113.7", "203.0.113.7/32", "198.51.100.0/24"] if mode == "restricted" else []
+    settings = InternetSettings(mode=mode, allowed_cidrs=cidrs)
+    assert InternetSettings.model_validate_json(settings.model_dump_json()) == settings
+    assert settings.is_allow_all_domains is (mode == "open")
+    if mode == "restricted":
+        assert settings.allowed_cidrs == ["198.51.100.0/24", "203.0.113.7/32"]
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"mode": "restricted"},
+        {"mode": "off", "allowed_cidrs": ["1.1.1.1"]},
+        {"allowed_cidrs": ["1.1.1.1"]},
+        {"mode": "open", "allowed_domains": ["example.com"]},
+        {"mode": "restricted", "allowed_cidrs": ["::/0"]},
+        {"mode": "restricted", "allowed_cidrs": ["0.0.0.0/0"]},
+        {"mode": "restricted", "allowed_cidrs": ["172.16.0.7"]},
+        {"mode": "restricted", "allowed_cidrs": ["169.254.169.254"]},
+        {"mode": "restricted", "allowed_cidrs": ["example.com"]},
+    ],
+)
+def test_invalid_policy(settings: dict) -> None:
+    with pytest.raises(ValidationError):
+        InternetSettings(**settings)
+
+
+def test_overlapping_ranges_are_collapsed() -> None:
+    settings = InternetSettings(mode="restricted", allowed_cidrs=["10.20.0.0/24", "10.20.0.1"])
+    assert settings.allowed_cidrs == ["10.20.0.0/24"]

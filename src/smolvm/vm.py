@@ -85,6 +85,7 @@ from smolvm.storage import (
 from smolvm.storage._base import VSOCK_CID_END, VSOCK_CID_START
 from smolvm.types import (
     GuestOS,
+    InternetSettings,
     NetworkConfig,
     RootfsFormat,
     SnapshotCapturePolicy,
@@ -1412,12 +1413,18 @@ class SmolVMManager:
             netmask="32",
         )
         self.network.add_route(network.guest_ip, network.tap_device)
-        self.network.setup_nat(network.tap_device)
+        if vm_config is None:
+            self.network.apply_network_policy(network.tap_device, None)
+            self.network.setup_nat(network.tap_device)
+        else:
+            self._validate_network_policy(vm_config, self._backend_for_config(vm_config))
+            self._setup_policy_network(vm_config, network.tap_device)
 
         # Re-apply domain allowlist if the original config had one
         if (
             vm_config is not None
             and vm_config.internet_settings is not None
+            and vm_config.internet_settings.mode is None
             and not vm_config.internet_settings.is_allow_all_domains
         ):
             allowed_ips = resolve_domains_to_ips(vm_config.internet_settings.allowed_domains)
@@ -1447,6 +1454,8 @@ class SmolVMManager:
             self.network.cleanup_nat_rules(network.tap_device)
         with suppress(Exception):
             self.network.cleanup_tap(network.tap_device)
+        with suppress(Exception):
+            self.network.remove_network_policy(network.tap_device)
 
     def _qemu_binary_candidates(self) -> list[str]:
         """Return architecture-aware qemu-system binary candidates."""
@@ -1616,12 +1625,69 @@ class SmolVMManager:
         resolution = resolution or self._resolve_control_channel_for_config(config, backend)
         return resolution.kind == "ssh"
 
+    def _validate_network_policy(self, config: VMConfig, backend: str) -> None:
+        """Validate after configuration merges and before any resources are allocated."""
+        settings = config.internet_settings
+        if settings is None:
+            return
+        # Frozen Pydantic models still contain mutable lists; model_copy also
+        # bypasses validation. Revalidate at the execution boundary.
+        settings = InternetSettings.model_validate(settings.model_dump())
+        if settings.is_allow_all_domains:
+            return
+        recovery = "Use supported settings or remove internet_settings before creating the sandbox."
+        if config.network_attachment.mode != "nat" or not self._uses_host_tap_networking(
+            config, backend
+        ):
+            raise SmolVMError(
+                f"Sandbox '{config.vm_id}' cannot enforce network restrictions. {recovery}"
+            )
+        if settings.has_explicit_restrictions:
+            if backend != BACKEND_FIRECRACKER or sys.platform != "linux":
+                raise SmolVMError(
+                    f"Sandbox '{config.vm_id}' requires Linux Firecracker for this network mode. "
+                    f"{recovery}"
+                )
+            if config.workspace_mounts or config.port_forwards:
+                raise SmolVMError(
+                    f"Sandbox '{config.vm_id}' cannot use shared folders or exposed ports "
+                    f"with this network mode. {recovery}"
+                )
+            if self._resolve_control_channel_for_config(config, backend).kind != "vsock":
+                raise SmolVMError(
+                    f"Sandbox '{config.vm_id}' requires comm_channel='vsock'. {recovery}"
+                )
+
+    @staticmethod
+    def _policy_destinations(config: VMConfig) -> list[str] | None:
+        settings = config.internet_settings
+        if settings is not None and settings.has_explicit_restrictions:
+            return settings.allowed_cidrs
+        return None
+
+    def _setup_policy_network(self, config: VMConfig, tap_device: str) -> None:
+        destinations = self._policy_destinations(config)
+        self.network.apply_network_policy(tap_device, destinations)
+        if destinations is None:
+            self.network.setup_nat(tap_device)
+        else:
+            self.network.setup_nat(tap_device, allow_outbound=False)
+
+    async def _async_setup_policy_network(self, config: VMConfig, tap_device: str) -> None:
+        destinations = self._policy_destinations(config)
+        await self.network.async_apply_network_policy(tap_device, destinations)
+        if destinations is None:
+            await self.network.async_setup_nat(tap_device)
+        else:
+            await self.network.async_setup_nat(tap_device, allow_outbound=False)
+
     def ensure_network_connectivity(self, vm_info: VMInfo) -> None:
         """Ensure host-side TAP connectivity exists for network-backed operations."""
         if vm_info.network is None:
             return
 
         backend = self._backend_for_vm(vm_info)
+        self._validate_network_policy(vm_info.config, backend)
         if not self._uses_host_tap_networking(vm_info.config, backend):
             return
 
@@ -1638,10 +1704,11 @@ class SmolVMManager:
             return
 
         self.network.add_route(network.guest_ip, network.tap_device)
-        self.network.setup_nat(network.tap_device)
+        self._setup_policy_network(vm_info.config, network.tap_device)
 
         if (
             vm_info.config.internet_settings is not None
+            and vm_info.config.internet_settings.mode is None
             and not vm_info.config.internet_settings.is_allow_all_domains
         ):
             allowed_ips = resolve_domains_to_ips(vm_info.config.internet_settings.allowed_domains)
@@ -2003,6 +2070,8 @@ class SmolVMManager:
             resolution = self._resolve_control_channel_for_config(effective_config, backend)
             self._validate_bridge_mode(effective_config, backend, resolution)
 
+        self._validate_network_policy(effective_config, backend)
+
         with self._vm_create_lock(effective_config.vm_id):
             self._ensure_vm_id_available(effective_config.vm_id)
             managed_disk_path = self._managed_disk_path_for_create(effective_config, backend)
@@ -2130,15 +2199,6 @@ class SmolVMManager:
             )
 
             if not self._uses_host_tap_networking(effective_config, backend):
-                if (
-                    effective_config.internet_settings is not None
-                    and not effective_config.internet_settings.is_allow_all_domains
-                ):
-                    logger.warning(
-                        "internet_settings domain allowlist is not supported "
-                        "with the %s backend (user-mode networking)",
-                        backend,
-                    )
                 mac_seed = ((ssh_host_port or SSH_PORT_START) % 65534) + 1
                 guest_mac = self.network.generate_mac(mac_seed)
                 guest_ip, gateway_ip, netmask = _usernet_addresses(backend, effective_config.vm_id)
@@ -2183,11 +2243,12 @@ class SmolVMManager:
             self.network.prepare_tap_device(tap_name, user=user, netmask="32")
 
             self.network.add_route(guest_ip, tap_name)
-            self.network.setup_nat(tap_name)
+            self._setup_policy_network(effective_config, tap_name)
 
             # Apply domain allowlist if configured
             if (
                 effective_config.internet_settings is not None
+                and effective_config.internet_settings.mode is None
                 and not effective_config.internet_settings.is_allow_all_domains
             ):
                 allowed_ips = resolve_domains_to_ips(
@@ -2283,6 +2344,13 @@ class SmolVMManager:
         self._check_workspace_mounts(vm_info)
 
         backend = self._backend_for_vm(vm_info)
+        self._validate_network_policy(vm_info.config, backend)
+        if (
+            vm_info.config.internet_settings is not None
+            and vm_info.config.internet_settings.has_explicit_restrictions
+        ):
+            self.ensure_network_connectivity(vm_info)
+
         if backend == BACKEND_VZ:
             self._enforce_macos_concurrency_limit(vm_id)
 
@@ -2391,6 +2459,12 @@ class SmolVMManager:
         if vm_info.status != VMState.PAUSED:
             self._raise_crashed_or_state_error(vm_info, action="resume")
 
+        self._validate_network_policy(vm_info.config, self._backend_for_vm(vm_info))
+        if (
+            vm_info.config.internet_settings is not None
+            and vm_info.config.internet_settings.has_explicit_restrictions
+        ):
+            self.ensure_network_connectivity(vm_info)
         try:
             self._runtime_adapter_for_vm(vm_info).resume(vm_info)
         except Exception:
@@ -2887,6 +2961,7 @@ class SmolVMManager:
                 update={"rootfs_path": restore_disk_path}
             )
         effective_snapshot = snapshot.model_copy(update={"vm_config": restore_vm_config})
+        self._validate_network_policy(effective_snapshot.vm_config, effective_snapshot.backend)
         adapter = self._runtime_adapter_for_snapshot(effective_snapshot)
         if effective_snapshot.network_config.mode == "bridge":
             configured_bridge = effective_snapshot.vm_config.network_attachment.bridge
@@ -3827,6 +3902,8 @@ class SmolVMManager:
                         self.network.cleanup_nat_rules(tap_device)
                     with self._cleanup_step(vm_id, "remove the host network device"):
                         self.network.cleanup_tap(tap_device)
+                    with self._cleanup_step(vm_id, "remove network policy"):
+                        self.network.remove_network_policy(tap_device)
 
                 # Release IP lease regardless of backend.
                 with self._cleanup_step(vm_id, "release the IP address"):
@@ -4189,6 +4266,8 @@ class SmolVMManager:
                 resolution,
             )
 
+        self._validate_network_policy(effective_config, backend)
+
         async with self._async_vm_create_lock(effective_config.vm_id):
             self._ensure_vm_id_available(effective_config.vm_id)
             managed_disk_path = self._managed_disk_path_for_create(effective_config, backend)
@@ -4326,15 +4405,6 @@ class SmolVMManager:
             )
 
             if not self._uses_host_tap_networking(effective_config, backend):
-                if (
-                    effective_config.internet_settings is not None
-                    and not effective_config.internet_settings.is_allow_all_domains
-                ):
-                    logger.warning(
-                        "internet_settings domain allowlist is not supported "
-                        "with the %s backend (user-mode networking)",
-                        backend,
-                    )
                 mac_seed = ((ssh_host_port or SSH_PORT_START) % 65534) + 1
                 guest_mac = self.network.generate_mac(mac_seed)
                 guest_ip, gateway_ip, netmask = _usernet_addresses(backend, effective_config.vm_id)
@@ -4359,11 +4429,12 @@ class SmolVMManager:
             user = os.environ.get("USER", "root")
             await self.network.async_prepare_tap_device(tap_name, user=user, netmask="32")
             await self.network.async_add_route(guest_ip, tap_name)
-            await self.network.async_setup_nat(tap_name)
+            await self._async_setup_policy_network(effective_config, tap_name)
 
             # Apply domain allowlist if configured
             if (
                 effective_config.internet_settings is not None
+                and effective_config.internet_settings.mode is None
                 and not effective_config.internet_settings.is_allow_all_domains
             ):
                 allowed_ips = resolve_domains_to_ips(
@@ -4429,6 +4500,13 @@ class SmolVMManager:
         self._check_workspace_mounts(vm_info)
 
         backend = self._backend_for_vm(vm_info)
+        self._validate_network_policy(vm_info.config, backend)
+        if (
+            vm_info.config.internet_settings is not None
+            and vm_info.config.internet_settings.has_explicit_restrictions
+        ):
+            await asyncio.to_thread(self.ensure_network_connectivity, vm_info)
+
         if backend == BACKEND_VZ:
             self._enforce_macos_concurrency_limit(vm_id)
 
@@ -4779,6 +4857,8 @@ class SmolVMManager:
                         await self.network.async_cleanup_nat_rules(tap_device)
                     with self._cleanup_step(vm_id, "remove the host network device"):
                         await self.network.async_cleanup_tap(tap_device)
+                    with self._cleanup_step(vm_id, "remove network policy"):
+                        await self.network.async_remove_network_policy(tap_device)
 
                 with self._cleanup_step(vm_id, "release the IP address"):
                     self.state.release_ip(vm_id)

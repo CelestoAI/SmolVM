@@ -17,6 +17,7 @@
 import re
 from datetime import datetime
 from enum import Enum
+from ipaddress import IPv4Network, collapse_addresses
 from pathlib import Path
 from typing import Annotated, Any, Literal, Protocol
 from urllib.parse import urlparse
@@ -291,23 +292,51 @@ class DesktopEndpoint(BaseModel):
 
 
 class InternetSettings(BaseModel):
-    """Network access controls for a VM.
+    """Outbound access settings; explicit restrictions require Firecracker and vsock.
 
-    Restricts which external domains (and eventually HTTP methods) the guest
-    can reach.  Domain entries may be full URLs (``https://example.com/path``)
-    or bare hostnames (``example.com``).  The special value ``"*"`` means
-    "allow everything" (the default).
-
-    Attributes:
-        allowed_domains: Domains the guest may connect to.
-            Accepts URLs or bare hostnames.  Default ``["*"]`` allows all.
-        allowed_http_methods: HTTP methods the guest may use.
-            Default ``["*"]`` allows all.  **Not enforced yet** — reserved
-            for a future proxy-based implementation.
+    Legacy allowed_domains resolves names to IPv4 addresses at setup time; it
+    does not verify hostnames on connections. HTTP method filtering is unsupported.
     """
 
+    mode: Literal["open", "off", "restricted"] | None = None
+    allowed_cidrs: list[str] = Field(default_factory=list)
     allowed_domains: list[str] = ["*"]
     allowed_http_methods: list[str] = ["*"]
+
+    @field_validator("allowed_cidrs")
+    @classmethod
+    def normalize_cidrs(cls, values: list[str]) -> list[str]:
+        networks = [IPv4Network(value.strip()) for value in values]
+        forbidden = (IPv4Network("172.16.0.0/16"), IPv4Network("169.254.0.0/16"))
+        if any(network.overlaps(block) for network in networks for block in forbidden):
+            raise ValueError(
+                "Sandbox and link-local addresses cannot be allowed; remove those ranges."
+            )
+        return [str(network) for network in collapse_addresses(networks)]
+
+    @model_validator(mode="after")
+    def validate_policy(self) -> "InternetSettings":
+        if self.allowed_http_methods != ["*"]:
+            raise ValueError(
+                "HTTP method restrictions are unsupported; remove allowed_http_methods."
+            )
+        if self.mode is not None and self.allowed_domains != ["*"]:
+            raise ValueError(
+                "Use either mode or allowed_domains, not both; remove allowed_domains."
+            )
+        if self.mode == "restricted" and not self.allowed_cidrs:
+            raise ValueError(
+                "restricted requires allowed_cidrs; use mode='off' to deny all access."
+            )
+        if self.mode != "restricted" and self.allowed_cidrs:
+            raise ValueError(
+                "allowed_cidrs requires mode='restricted'; set that mode or remove the list."
+            )
+        return self
+
+    @property
+    def has_explicit_restrictions(self) -> bool:
+        return self.mode in {"off", "restricted"}
 
     @field_validator("allowed_domains")
     @classmethod
@@ -369,7 +398,7 @@ class InternetSettings(BaseModel):
     @property
     def is_allow_all_domains(self) -> bool:
         """Whether all domains are allowed (wildcard)."""
-        return "*" in self.allowed_domains
+        return not self.has_explicit_restrictions and "*" in self.allowed_domains
 
     model_config = {"frozen": True}
 

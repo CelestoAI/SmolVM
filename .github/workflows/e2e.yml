@@ -131,7 +131,7 @@ jobs:
       - name: Install bridge test tooling
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends iproute2 iputils-ping
+          sudo apt-get install -y --no-install-recommends iproute2 iputils-ping nftables
 
       - name: Enable KVM and optional vsock
         run: |

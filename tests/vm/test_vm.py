@@ -30,7 +30,14 @@ from smolvm.exceptions import (
     VMAlreadyExistsError,
     VMNotFoundError,
 )
-from smolvm.types import InternetSettings, VMConfig, VMInfo, VMState, WorkspaceMount
+from smolvm.types import (
+    InternetSettings,
+    PortForwardConfig,
+    VMConfig,
+    VMInfo,
+    VMState,
+    WorkspaceMount,
+)
 from smolvm.vm import (
     LIBKRUN_GATEWAY_IP,
     LIBKRUN_GUEST_IP,
@@ -79,6 +86,8 @@ def _attach_mock_network(manager: SmolVMManager) -> MagicMock:
     mock_network.async_configure_tap = AsyncMock()
     mock_network.async_add_route = AsyncMock()
     mock_network.async_setup_nat = AsyncMock()
+    mock_network.async_apply_network_policy = AsyncMock()
+    mock_network.async_remove_network_policy = AsyncMock()
     mock_network.async_apply_egress_allowlist = AsyncMock()
     mock_network.async_setup_ssh_port_forward = AsyncMock()
     manager.network = mock_network
@@ -1949,3 +1958,145 @@ class TestResolveBootArgs:
         authkey_at = script.find("ssh-authkey-inject-start")
         sshd_at = script.find("sshd-start")
         assert 0 <= authkey_at < sshd_at, "key install must precede sshd start"
+
+
+class TestExplicitPolicyLifecycle:
+    @pytest.mark.parametrize("incompatible", ["ssh", "mount", "forward"])
+    def test_incompatible_options_fail_before_allocating(
+        self, smol_vm, sample_config, monkeypatch, tmp_path, incompatible
+    ):
+        monkeypatch.setattr("smolvm.vm.sys.platform", "linux")
+        monkeypatch.setattr("smolvm.comm.select.platform.system", lambda: "Linux")
+        updates = {"internet_settings": InternetSettings(mode="off"), "comm_channel": "vsock"}
+        if incompatible == "ssh":
+            updates["comm_channel"] = "ssh"
+        elif incompatible == "mount":
+            updates["workspace_mounts"] = [WorkspaceMount(host_path=tmp_path, guest_path="/work")]
+        else:
+            updates["port_forwards"] = [PortForwardConfig(host_port=18080, guest_port=8080)]
+        smol_vm.state = MagicMock()
+        with pytest.raises(SmolVMError, match="vsock|[Ss]hared folders"):
+            smol_vm.create(sample_config.model_copy(update=updates))
+        smol_vm.state.create_vm.assert_not_called()
+        smol_vm.state.allocate_ip.assert_not_called()
+
+    def test_create_policy_failure_releases_resources(self, smol_vm, sample_config, monkeypatch):
+        monkeypatch.setattr("smolvm.vm.sys.platform", "linux")
+        monkeypatch.setattr("smolvm.comm.select.platform.system", lambda: "Linux")
+        network = _attach_mock_network(smol_vm)
+        network.apply_network_policy.side_effect = SmolVMError("policy install failed")
+        config = sample_config.model_copy(
+            update={"internet_settings": InternetSettings(mode="off"), "comm_channel": "vsock"}
+        )
+        with patch.object(smol_vm.state, "release_ip", wraps=smol_vm.state.release_ip) as release:
+            with pytest.raises(SmolVMError, match="policy install failed"):
+                smol_vm.create(config)
+            release.assert_called_once_with(config.vm_id)
+        with pytest.raises(VMNotFoundError):
+            smol_vm.get(config.vm_id)
+        tap = network.prepare_tap_device.call_args.args[0]
+        network.cleanup_tap.assert_called_once_with(tap)
+        network.remove_network_policy.assert_called_once_with(tap)
+        network.setup_nat.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_async_start_policy_failure_prevents_execution(
+        self, smol_vm, sample_config, monkeypatch
+    ):
+        monkeypatch.setattr("smolvm.vm.sys.platform", "linux")
+        monkeypatch.setattr("smolvm.comm.select.platform.system", lambda: "Linux")
+        network = _attach_mock_network(smol_vm)
+        config = sample_config.model_copy(
+            update={"internet_settings": InternetSettings(mode="off"), "comm_channel": "vsock"}
+        )
+        info = smol_vm.create(config)
+        network.apply_network_policy.side_effect = SmolVMError("policy install failed")
+        adapter = MagicMock()
+        adapter.async_start = AsyncMock()
+        monkeypatch.setattr(smol_vm, "_runtime_adapter_for_backend", lambda _: adapter)
+        with pytest.raises(SmolVMError, match="policy install failed"):
+            await smol_vm.async_start(info.vm_id)
+        adapter.async_start.assert_not_awaited()
+        adapter.start.assert_not_called()
+
+    def test_resume_policy_failure_prevents_execution(self, smol_vm, sample_config, monkeypatch):
+        monkeypatch.setattr("smolvm.vm.sys.platform", "linux")
+        monkeypatch.setattr("smolvm.comm.select.platform.system", lambda: "Linux")
+        network = _attach_mock_network(smol_vm)
+        config = sample_config.model_copy(
+            update={"internet_settings": InternetSettings(mode="off"), "comm_channel": "vsock"}
+        )
+        info = smol_vm.create(config)
+        smol_vm.state.update_vm(info.vm_id, status=VMState.PAUSED)
+        network.apply_network_policy.side_effect = SmolVMError("policy install failed")
+        adapter = MagicMock()
+        monkeypatch.setattr(smol_vm, "_runtime_adapter_for_vm", lambda _: adapter)
+        with pytest.raises(SmolVMError, match="policy install failed"):
+            smol_vm.resume(info.vm_id)
+        adapter.resume.assert_not_called()
+
+    @pytest.mark.parametrize("mode", ["off", "restricted"])
+    def test_create_and_repair_do_not_open_network(self, smol_vm, sample_config, monkeypatch, mode):
+        monkeypatch.setattr("smolvm.vm.sys.platform", "linux")
+        monkeypatch.setattr("smolvm.comm.select.platform.system", lambda: "Linux")
+        network = _attach_mock_network(smol_vm)
+        settings = InternetSettings(
+            mode=mode, allowed_cidrs=["203.0.113.7"] if mode == "restricted" else []
+        )
+        config = sample_config.model_copy(
+            update={"internet_settings": settings, "comm_channel": "vsock"}
+        )
+        with patch("smolvm.vm.resolve_domains_to_ips", side_effect=AssertionError("DNS called")):
+            info = smol_vm.create(config)
+            smol_vm.ensure_network_connectivity(info)
+        for invocation in network.setup_nat.call_args_list:
+            assert invocation.kwargs == {"allow_outbound": False}
+        assert network.apply_network_policy.call_args.args[1] == settings.allowed_cidrs
+        network.setup_ssh_port_forward.assert_not_called()
+
+    @pytest.mark.parametrize("backend", ["qemu", "libkrun"])
+    def test_unsupported_policy_fails_before_allocating(self, smol_vm, sample_config, backend):
+        config = sample_config.model_copy(
+            update={"backend": backend, "internet_settings": InternetSettings(mode="off")}
+        )
+        smol_vm.state = MagicMock()
+        with pytest.raises(SmolVMError, match="network"):
+            smol_vm.create(config)
+        smol_vm.state.create_vm.assert_not_called()
+
+    def test_start_failure_does_not_execute_guest(self, smol_vm, sample_config, monkeypatch):
+        monkeypatch.setattr("smolvm.vm.sys.platform", "linux")
+        monkeypatch.setattr("smolvm.comm.select.platform.system", lambda: "Linux")
+        config = sample_config.model_copy(
+            update={"internet_settings": InternetSettings(mode="off"), "comm_channel": "vsock"}
+        )
+        network = _attach_mock_network(smol_vm)
+        info = smol_vm.create(config)
+        network.apply_network_policy.side_effect = RuntimeError("nft failed")
+        adapter = MagicMock()
+        smol_vm._runtime_adapter_for_backend = MagicMock(return_value=adapter)
+        with pytest.raises(RuntimeError, match="nft failed"):
+            smol_vm.start(info.vm_id)
+        adapter.start.assert_not_called()
+
+    def test_merged_invalid_settings_are_revalidated(self, smol_vm, sample_config):
+        settings = InternetSettings().model_copy(update={"allowed_http_methods": ["GET"]})
+        config = sample_config.model_copy(update={"internet_settings": settings})
+        smol_vm.state = MagicMock()
+        with pytest.raises(ValueError, match="HTTP method restrictions"):
+            smol_vm.create(config)
+        smol_vm.state.create_vm.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_async_create_applies_policy(self, smol_vm, sample_config, monkeypatch):
+        monkeypatch.setattr("smolvm.vm.sys.platform", "linux")
+        monkeypatch.setattr("smolvm.comm.select.platform.system", lambda: "Linux")
+        config = sample_config.model_copy(
+            update={"internet_settings": InternetSettings(mode="off"), "comm_channel": "vsock"}
+        )
+        network = _attach_mock_network(smol_vm)
+        info = await smol_vm.async_create(config)
+        network.async_apply_network_policy.assert_awaited_once_with(info.network.tap_device, [])
+        network.async_setup_nat.assert_awaited_once_with(
+            info.network.tap_device, allow_outbound=False
+        )

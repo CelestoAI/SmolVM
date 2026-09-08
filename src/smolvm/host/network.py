@@ -29,6 +29,7 @@ import time
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
+from ipaddress import IPv4Network, collapse_addresses
 from pathlib import Path
 from typing import TypeVar
 from urllib.parse import urlparse
@@ -1366,7 +1367,7 @@ class NetworkManager:
     # Public firewall/NAT API
     # ------------------------------------------------------------------
 
-    def setup_nat(self, tap_name: str) -> None:
+    def setup_nat(self, tap_name: str, *, allow_outbound: bool = True) -> None:
         """Configure outbound NAT and forwarding for a TAP device."""
         if not tap_name:
             raise ValueError("tap_name cannot be empty")
@@ -1406,13 +1407,16 @@ class NetworkManager:
             ]
         )
 
+        if not allow_outbound:
+            return
+
         # Per-TAP: add to allowed_taps set (O(1), idempotent).
         self._run_nft_script(
             f"add element {_NFT_FILTER_FAMILY} {_NFT_FILTER_TABLE}"
             f" {_NFT_SET_ALLOWED_TAPS} {{ {self._quote(tap_name)} }}\n"
         )
 
-    async def async_setup_nat(self, tap_name: str) -> None:
+    async def async_setup_nat(self, tap_name: str, *, allow_outbound: bool = True) -> None:
         """Configure outbound NAT and forwarding for a TAP device (async)."""
         if not tap_name:
             raise ValueError("tap_name cannot be empty")
@@ -1454,6 +1458,9 @@ class NetworkManager:
                 ),
             ]
         )
+
+        if not allow_outbound:
+            return
 
         # Per-TAP: add to allowed_taps set (O(1), idempotent).
         await self._async_run_nft_script(
@@ -1842,6 +1849,86 @@ class NetworkManager:
             _NFT_FILTER_TABLE,
             comment=comment,
         )
+
+    @staticmethod
+    def _policy_table(tap_device: str) -> str:
+        if not re.fullmatch(r"tap[0-9]+", tap_device):
+            raise ValueError("Network policy requires a managed NAT interface.")
+        return f"smolvm_policy_{tap_device}"
+
+    def _network_policy_script(self, tap_device: str, allowed_ips: list[str] | None) -> str:
+        """Replace one policy atomically, ahead of all ordinary forwarding accepts.
+
+        None preserves open access; [] denies all. No connection-state exemption:
+        stale conntrack entries cannot override the destination policy on reuse.
+        A separate owned table avoids handle discovery and cross-VM update races.
+        """
+        table = self._policy_table(tap_device)
+        tap = self._quote(tap_device)
+        destinations = (
+            None
+            if allowed_ips is None
+            else [
+                str(network)
+                for network in collapse_addresses(IPv4Network(ip) for ip in allowed_ips)
+            ]
+        )
+        lines = [
+            f"add table inet {table}",
+            f"flush table inet {table}",
+            f"add chain inet {table} forward "
+            "{ type filter hook forward priority -10; policy accept; }",
+            f"add chain inet {table} input "
+            "{ type filter hook input priority -10; policy accept; }",
+            f'add rule inet {table} forward iifname {tap} oifname "tap*" counter drop',
+            f"add rule inet {table} forward iifname {tap} ip daddr 169.254.0.0/16 counter drop",
+            f"add rule inet {table} input iifname {tap} ip daddr 169.254.0.0/16 counter drop",
+        ]
+        if destinations is not None:
+            lines.extend(
+                [
+                    f"add rule inet {table} input iifname {tap} counter drop",
+                    f"add rule inet {table} forward iifname {tap} meta nfproto ipv6 counter drop",
+                ]
+            )
+            if destinations:
+                lines.append(
+                    f"add rule inet {table} forward iifname {tap} "
+                    f"ip daddr {{ {', '.join(destinations)} }} counter accept"
+                )
+            lines.append(f"add rule inet {table} forward iifname {tap} counter drop")
+            # add+delete is idempotent even if the element is already absent.
+            # This is in the SAME transaction as the replacement policy.
+            lines.extend(
+                [
+                    f"add element inet {_NFT_FILTER_TABLE} {_NFT_SET_ALLOWED_TAPS} {{ {tap} }}",
+                    f"delete element inet {_NFT_FILTER_TABLE} {_NFT_SET_ALLOWED_TAPS} {{ {tap} }}",
+                ]
+            )
+        return "\n".join(lines) + "\n"
+
+    def apply_network_policy(self, tap_device: str, allowed_ips: list[str] | None) -> None:
+        """Install open isolation, off, or an IPv4 allowlist before guest execution."""
+        script = self._network_policy_script(tap_device, allowed_ips)
+        self._ensure_nftables_base()
+        self._run_nft_script(script)
+
+    async def async_apply_network_policy(
+        self, tap_device: str, allowed_ips: list[str] | None
+    ) -> None:
+        """Async counterpart using exactly the same transaction."""
+        script = self._network_policy_script(tap_device, allowed_ips)
+        await self._async_ensure_nftables_base()
+        await self._async_run_nft_script(script)
+
+    def remove_network_policy(self, tap_device: str) -> None:
+        """Idempotently delete only this managed interface's policy table."""
+        table = self._policy_table(tap_device)
+        self._run_nft_script(f"add table inet {table}\ndelete table inet {table}\n")
+
+    async def async_remove_network_policy(self, tap_device: str) -> None:
+        table = self._policy_table(tap_device)
+        await self._async_run_nft_script(f"add table inet {table}\ndelete table inet {table}\n")
 
     def _egress_rule_lines(self, tap_device: str, allowed_ips: list[str]) -> list[str]:
         """Build the nft rules enforcing an egress allowlist for one TAP.
