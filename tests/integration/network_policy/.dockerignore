@@ -2,9 +2,7 @@
 !Dockerfile
 !pyproject.toml
 !uv.lock
-!candidate.py
-!worker.py
-!managed_proxy.py
+!conftest.py
 !tests/
 !tests/*.py
 !tests/linux/

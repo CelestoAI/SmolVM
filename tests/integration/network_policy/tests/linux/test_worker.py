@@ -6,9 +6,9 @@ import subprocess
 import sys
 
 import pytest
-from managed_proxy import ManagedProxy
 from network_policy import NetworkPolicy
 from network_policy.firewall import NetworkBinding
+from network_policy.process import ManagedProxy
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("SMOLVM_POLICY_LINUX_TESTS") != "1",

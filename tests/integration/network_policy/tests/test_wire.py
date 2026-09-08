@@ -8,7 +8,7 @@ import asyncio
 from contextlib import asynccontextmanager, suppress
 
 import pytest
-from candidate import make_proxy
+from network_policy.engine import make_proxy
 
 
 @asynccontextmanager

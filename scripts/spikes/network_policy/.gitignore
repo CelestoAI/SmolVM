@@ -1,4 +1,0 @@
-# Unlike the library's ignored lockfile, this spike needs a reproducible engine.
-!uv.lock
-
-_assets/

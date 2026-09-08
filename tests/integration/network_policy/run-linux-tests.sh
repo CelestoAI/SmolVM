@@ -3,7 +3,7 @@
 # --privileged, or host filesystem mounts for these tests.
 set -euo pipefail
 cd "$(dirname "$0")"
-docker build --build-context policy=../../../src/smolvm/network_policy -t smolvm-network-policy-spike .
+docker build --build-context policy=../../../src/smolvm/network_policy -t smolvm-network-policy-tests .
 docker build --build-context policy=../../../src/smolvm/network_policy -f Dockerfile.linux -t smolvm-network-policy-linux .
 exec docker run --rm --network none \
   --cap-drop ALL --cap-add NET_ADMIN --cap-add SETUID --cap-add SETGID \

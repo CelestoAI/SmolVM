@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 import pytest
-from firewall import NetworkBinding
+from network_policy.firewall import NetworkBinding
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("SMOLVM_POLICY_LINUX_TESTS") != "1",

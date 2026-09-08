@@ -1,0 +1,8 @@
+# Disposable TAP/firewall regression environment. No host network or production mounts.
+FROM smolvm-network-policy-tests
+USER 0:0
+RUN apt-get update && apt-get install -y --no-install-recommends iproute2 nftables util-linux \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=policy *.py /policy-tests/network_policy/
+COPY tests/linux /policy-tests/tests/linux
+CMD [".venv/bin/pytest", "tests/linux", "-q", "--disable-warnings", "-p", "no:cacheprovider"]

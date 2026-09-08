@@ -16,9 +16,9 @@ from pathlib import Path
 
 import pytest
 from guest import Guest
-from managed_proxy import ManagedProxy
 from network_policy import NetworkPolicy
 from network_policy.firewall import NetworkBinding
+from network_policy.process import ManagedProxy
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("SMOLVM_POLICY_QEMU_TESTS") != "1",
