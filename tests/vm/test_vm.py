@@ -2088,7 +2088,7 @@ class TestExplicitPolicyLifecycle:
         settings = InternetSettings().model_copy(update={"allowed_http_methods": ["GET"]})
         config = sample_config.model_copy(update={"internet_settings": settings})
         smol_vm.state = MagicMock()
-        with pytest.raises(ValueError, match="HTTP method restrictions"):
+        with pytest.raises(SmolVMError, match="HTTP method restrictions"):
             smol_vm.create(config)
         smol_vm.state.create_vm.assert_not_called()
 

@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any, TextIO
 from uuid import uuid4
 
+from smolvm._network_policy import parse_network_policy, validate_network_policy_options
 from smolvm.comm.select import ChannelResolution, VsockNotSupportedError, resolve_comm_channel
 from smolvm.exceptions import (
     BridgeTapOwnershipError,
@@ -85,7 +86,6 @@ from smolvm.storage import (
 from smolvm.storage._base import VSOCK_CID_END, VSOCK_CID_START
 from smolvm.types import (
     GuestOS,
-    InternetSettings,
     NetworkConfig,
     RootfsFormat,
     SnapshotCapturePolicy,
@@ -1630,38 +1630,17 @@ class SmolVMManager:
         settings = config.internet_settings
         if settings is None:
             return
-        # Frozen Pydantic models still contain mutable lists; model_copy also
-        # bypasses validation. Revalidate at the execution boundary.
-        settings = InternetSettings.model_validate(settings.model_dump())
-        if settings.is_allow_all_domains:
-            return
-        recovery = (
-            "Create it on Linux with backend='firecracker', comm_channel='vsock', "
-            "and default private networking instead of a bridge."
+        settings = parse_network_policy(settings)
+        validate_network_policy_options(
+            settings,
+            backend=backend,
+            guest_os=config.guest_os,
+            comm_channel=config.comm_channel,
+            has_mounts=bool(config.workspace_mounts),
+            has_forwards=bool(config.port_forwards),
+            network_mode=config.network_attachment.mode,
+            qemu_network=config.qemu_network,
         )
-        if config.network_attachment.mode != "nat" or not self._uses_host_tap_networking(
-            config, backend
-        ):
-            raise SmolVMError(
-                f"Sandbox '{config.vm_id}' cannot enforce network restrictions. {recovery}"
-            )
-        if settings.has_explicit_restrictions:
-            if backend != BACKEND_FIRECRACKER or sys.platform != "linux":
-                raise SmolVMError(
-                    f"Sandbox '{config.vm_id}' requires Linux Firecracker for this network mode. "
-                    f"{recovery}"
-                )
-            if config.workspace_mounts or config.port_forwards:
-                raise SmolVMError(
-                    f"Sandbox '{config.vm_id}' cannot use shared folders or exposed ports "
-                    "with this network mode; remove workspace_mounts and port_forwards "
-                    "before creating it."
-                )
-            if self._resolve_control_channel_for_config(config, backend).kind != "vsock":
-                raise SmolVMError(
-                    f"Sandbox '{config.vm_id}' requires a direct command connection for this "
-                    "network mode; set comm_channel='vsock' before creating it."
-                )
 
     @staticmethod
     def _policy_destinations(config: VMConfig) -> list[str] | None:

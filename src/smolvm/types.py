@@ -417,7 +417,7 @@ class InternetSettings(BaseModel):
         """Whether all domains are allowed (wildcard)."""
         return not self.has_explicit_restrictions and "*" in self.allowed_domains
 
-    model_config = {"frozen": True}
+    model_config = {"frozen": True, "extra": "forbid"}
 
 
 class NetworkAttachmentConfig(BaseModel):

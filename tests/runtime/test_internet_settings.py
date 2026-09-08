@@ -222,3 +222,9 @@ def test_non_aligned_range_suggests_correction_without_widening_access() -> None
     assert InternetSettings(mode="restricted", allowed_cidrs=["10.20.0.7"]).allowed_cidrs == [
         "10.20.0.7/32"
     ]
+
+
+@pytest.mark.parametrize("unknown", [{"mod": "off"}, {"enabled": False}, {"allowed_ports": [443]}])
+def test_unknown_policy_fields_are_rejected(unknown: dict) -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        InternetSettings(**unknown)
