@@ -89,19 +89,31 @@ The engine passes on Python 3.12 and 3.13. The policy/lifecycle package imports 
 
 The latest SDK regression run has **453 passing tests and 8 skips** across policy, placement, launch, guest trust, cancellation, shutdown, VM operations, facade operations, QEMU snapshots and legacy internet settings. The separate wire suite has **79 passing tests** (42 dependency warnings). Paused launch attaches the persistent supervisor before guest execution. Guest trust uses the real channel API, but unit tests replace the channel. Reconnect and resume verify live policy ownership; snapshot-error recovery checks again before continuing. Initial QEMU resume checks ownership after its readiness wait. Cached vsock readiness, command execution and file/environment operations recheck policy rather than trusting a previously ready channel. Shutdown uses process birth identity and kernel handles, tolerates exit racing a signal, and retains placement unless death and cleanup are verified. Linux shutdown coverage uses an actual sleeping child, not QEMU.
 
-**Native smoke is blocked locally:** the macOS Docker kernel lacks `/dev/vhost-vsock` and the `vhost_vsock` module. A disposable supported Linux host is required for the real init/guest-agent path. Do not change transport or weaken policy to bypass this check. Public start and restore remain gated; this is not a shipped feature.
+### Native GCP validation — 2026-09-08
+
+Native lifecycle smoke passed on a disposable GCP `n1-standard-1` Spot VM with nested KVM, Ubuntu 24.04, Linux `7.0.0-1011-gcp`, Python 3.12.3 and QEMU 8.2.2. The harness bypassed **only the release gate**, using the actual manager, paused QEMU launch, persistent supervisor, guest `/init`, vsock agent, public trust installation and cleanup. No transport, firewall, resolver or engine substitutions.
+
+- Deny-all and `example.com` allowlist: boot, real vsock exec, direct-IP/metadata denial, stop, restart, pause/resume and verified cleanup passed.
+- Allowed HTTPS succeeded; `example.net` was denied. A worker SIGKILL killed its QEMU guest and cleanup succeeded.
+- The creating SDK process exited; after four seconds a new facade adopted the live VM and successfully ran HTTPS. A cached facade rejected command dispatch after explicit fencing.
+- Single post-request sample: worker RSS 80,448 KiB / 7 open FDs; supervisor 34,088 KiB / 7 FDs; QEMU 167,640 KiB / 34 FDs. This is not sustained load or capacity evidence.
+- The VM and auto-delete boot disk were deleted after evidence collection. An initial e2-small lacked KVM; the first nested-KVM Spot was preempted during setup. No existing cloud resources were changed.
+
+**Published-image blocker:** the current `images-2026.09.07.0/pi-amd64-alpine-rootfs.ext4.zst` matched pinned SHA `ceffda243035829895034cc7db7ec254f27dbe683a30343d11778b64c7389023`, but boot panicked with `/init` error -8. A separate filesystem copy, after journal recovery, had zero-byte `/init` and `/usr/local/bin/smolvm-guest-agent`. The original downloaded image was not repaired or substituted in-place.
+
+The passing run used the unmodified older `images-2026.06.30.0` Pi Alpine image, SHA `663411193e9792f3cb5fce88a1b55f7ca12064021d58b4d5b0ed274d2169c460`, with the manifest-pinned amd64 kernel SHA `a7a8da6ad55236edccbdd1015eda023d68a4879be648a348462119138de54cb3`. This validates native policy wiring on that image, **not the current image release**. Public start and restore remain gated. The local macOS Docker kernel still lacks vsock; no workaround was added.
 
 ## Remaining gates
 
 - Bounded load/failure checks for the supported contract; expanded protocol exploration and optimization are deferred.
 - Finish host privilege/setup integration for the persistent VM supervisor. The optional dependency/interpreter strategy is settled; do not reopen engine or interpreter-manager research.
-- Validate native placement, paused launch, attachment, guest trust, adoption and shutdown end-to-end. Restore remains gated and needs fresh-trust handling. Reserve identities until shutdown/cleanup is verified; avoid listener reuse while a failed placement still exists.
+- Repeat native placement, paused launch, attachment, guest trust, adoption and shutdown on a repaired current published image. Restore remains gated and needs fresh-trust handling. Reserve identities until shutdown/cleanup is verified; avoid listener reuse while a failed placement still exists.
 - Real guest init/exec/terminal trust configuration and client matrix. Existing long-lived SSL contexts may need recreation after CA rotation; overwriting a certificate file alone does not prove recovery.
 - Sustained memory/FD/CPU/stream budgets, privacy under all failure paths, mixed-VM saturation and consistent cloud resource reservations. Suppressed worker diagnostics must eventually gain bounded, non-sensitive reason codes.
 - A requesting customer's representative HTTP/1.1 workload. Synthetic curl/urllib tests are not customer compatibility evidence.
 - Independent review and baked-image testing before cloud exposure.
 
-**Not feature-complete.** Persistent supervision is implemented and tested with a sleeping process standing in for the VM. The combined QEMU harness still uses `ManagedProxy` directly. Finish validating the native `PreparedPolicy`, stopped-policy cleanup, allocation and guest configuration integration, then wire Celesto. Do not expose the public field until these paths work. Expanded protocol research and optimization are deferred in favor of shipping the narrow supported feature.
+**Not feature-complete.** The original combined QEMU harness uses `ManagedProxy` directly; the separate GCP run now exercises native `PreparedPolicy`, stopped-policy cleanup, allocation and real guest configuration. Repair and validate the current image release and complete the remaining gates before wiring Celesto. Do not expose the public field until these paths work. Expanded protocol research and optimization are deferred in favor of shipping the narrow supported feature.
 
 ## Reproduce
 
