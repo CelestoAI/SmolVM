@@ -98,7 +98,7 @@ def test_macos_vm_rejects_linux_artifacts_and_unsupported_controls(tmp_path: Pat
             macos_machine=machine,
             env_vars={"TOKEN": "secret"},
         )
-    with pytest.raises(ValidationError, match="do not support domain restrictions"):
+    with pytest.raises(ValidationError, match="do not support network restrictions"):
         VMConfig(
             guest_os=GuestOS.MACOS,
             backend="vz",

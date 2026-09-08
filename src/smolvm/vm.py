@@ -1635,7 +1635,10 @@ class SmolVMManager:
         settings = InternetSettings.model_validate(settings.model_dump())
         if settings.is_allow_all_domains:
             return
-        recovery = "Use supported settings or remove internet_settings before creating the sandbox."
+        recovery = (
+            "Create it on Linux with backend='firecracker', comm_channel='vsock', "
+            "and default private networking instead of a bridge."
+        )
         if config.network_attachment.mode != "nat" or not self._uses_host_tap_networking(
             config, backend
         ):
@@ -1651,11 +1654,13 @@ class SmolVMManager:
             if config.workspace_mounts or config.port_forwards:
                 raise SmolVMError(
                     f"Sandbox '{config.vm_id}' cannot use shared folders or exposed ports "
-                    f"with this network mode. {recovery}"
+                    "with this network mode; remove workspace_mounts and port_forwards "
+                    "before creating it."
                 )
             if self._resolve_control_channel_for_config(config, backend).kind != "vsock":
                 raise SmolVMError(
-                    f"Sandbox '{config.vm_id}' requires comm_channel='vsock'. {recovery}"
+                    f"Sandbox '{config.vm_id}' requires a direct command connection for this "
+                    "network mode; set comm_channel='vsock' before creating it."
                 )
 
     @staticmethod

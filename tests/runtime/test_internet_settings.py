@@ -204,3 +204,21 @@ def test_invalid_policy(settings: dict) -> None:
 def test_overlapping_ranges_are_collapsed() -> None:
     settings = InternetSettings(mode="restricted", allowed_cidrs=["10.20.0.0/24", "10.20.0.1"])
     assert settings.allowed_cidrs == ["10.20.0.0/24"]
+
+
+@pytest.mark.parametrize("value", ["example.com", "::1", "10.0.0.1/99", ""])
+def test_invalid_address_shows_usable_examples(value: str) -> None:
+    with pytest.raises(ValidationError) as error:
+        InternetSettings(mode="restricted", allowed_cidrs=[value])
+    message = str(error.value)
+    assert "Invalid IPv4 address or range" in message
+    assert "203.0.113.10" in message
+    assert "10.20.0.0/24" in message
+
+
+def test_non_aligned_range_suggests_correction_without_widening_access() -> None:
+    with pytest.raises(ValidationError, match="use '10.20.0.0/24'"):
+        InternetSettings(mode="restricted", allowed_cidrs=["10.20.0.7/24"])
+    assert InternetSettings(mode="restricted", allowed_cidrs=["10.20.0.7"]).allowed_cidrs == [
+        "10.20.0.7/32"
+    ]

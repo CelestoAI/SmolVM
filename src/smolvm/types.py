@@ -306,7 +306,24 @@ class InternetSettings(BaseModel):
     @field_validator("allowed_cidrs")
     @classmethod
     def normalize_cidrs(cls, values: list[str]) -> list[str]:
-        networks = [IPv4Network(value.strip()) for value in values]
+        networks = []
+        for value in values:
+            try:
+                network = IPv4Network(value.strip())
+            except ValueError:
+                try:
+                    corrected = IPv4Network(value.strip(), strict=False)
+                except ValueError:
+                    raise ValueError(
+                        f"Invalid IPv4 address or range {value!r}; use an address such as "
+                        "'203.0.113.10' or a range such as '10.20.0.0/24'."
+                    ) from None
+                raise ValueError(
+                    f"Range {value!r} must start at its first address; "
+                    f"use '{corrected}' for the range or remove the slash and prefix "
+                    "to allow only one address."
+                ) from None
+            networks.append(network)
         forbidden = (IPv4Network("172.16.0.0/16"), IPv4Network("169.254.0.0/16"))
         if any(network.overlaps(block) for network in networks for block in forbidden):
             raise ValueError(
@@ -624,8 +641,9 @@ class VMConfig(BaseModel):
                 and not self.internet_settings.is_allow_all_domains
             ):
                 raise ValueError(
-                    "macOS guests do not support domain restrictions in this release; "
-                    "remove internet_settings"
+                    "macOS guests do not support network restrictions in this release; "
+                    "use a Linux guest on Linux with backend='firecracker' "
+                    "and comm_channel='vsock'."
                 )
             return self
 
@@ -701,8 +719,8 @@ class VMConfig(BaseModel):
             )
         if self.internet_settings is not None and not self.internet_settings.is_allow_all_domains:
             raise ValueError(
-                "Domain allow-lists are not enforced in bridge mode; "
-                "remove internet_settings or use NAT mode."
+                "Network restrictions are not supported with bridge networking; "
+                "set network_attachment={'mode': 'nat'} to use private networking."
             )
         return self
 

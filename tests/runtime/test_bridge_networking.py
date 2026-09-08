@@ -257,7 +257,7 @@ class TestVMConfigBridgeMode:
     def test_bridge_mode_rejects_domain_allowlist(self, tmp_path: Path) -> None:
         from smolvm.types import InternetSettings
 
-        with pytest.raises(Exception, match="Domain allow-lists are not enforced"):
+        with pytest.raises(Exception, match="Network restrictions are not supported"):
             _make_vm_config_skip_paths(
                 network_attachment=NetworkAttachmentConfig(mode="bridge", bridge="br10"),
                 internet_settings=InternetSettings(allowed_domains=["example.com"]),

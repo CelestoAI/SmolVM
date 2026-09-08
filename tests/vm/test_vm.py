@@ -2060,8 +2060,13 @@ class TestExplicitPolicyLifecycle:
             update={"backend": backend, "internet_settings": InternetSettings(mode="off")}
         )
         smol_vm.state = MagicMock()
-        with pytest.raises(SmolVMError, match="network"):
+        with pytest.raises(SmolVMError, match="network") as error:
             smol_vm.create(config)
+        message = str(error.value)
+        assert "Linux" in message
+        assert "backend='firecracker'" in message
+        assert "comm_channel='vsock'" in message
+        assert "remove internet_settings" not in message
         smol_vm.state.create_vm.assert_not_called()
 
     def test_start_failure_does_not_execute_guest(self, smol_vm, sample_config, monkeypatch):

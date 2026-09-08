@@ -62,14 +62,23 @@ The default mode is `open`, which enables internet access. Managed private netwo
 
 Use `restricted` with the IPv4 addresses or network ranges your task needs:
 
+Replace `203.0.113.10` below with your service's actual address:
+
 ```python
-settings = {
-    "mode": "restricted",
-    "allowed_cidrs": ["203.0.113.10/32"],
-}
+from smolvm import SmolVM
+
+with SmolVM(
+    backend="firecracker",
+    comm_channel="vsock",
+    internet_settings={
+        "mode": "restricted",
+        "allowed_cidrs": ["203.0.113.10/32"],
+    },
+) as vm:
+    print(vm.run("echo hello").stdout)
 ```
 
-Replace the example address with your service's actual address. `/32` means one address; a range such as `10.20.0.0/24` includes multiple addresses. Bare IPv4 addresses are also accepted. Pass `settings` as `internet_settings` when creating the sandbox, as in the previous example.
+`/32` means one address; a range such as `10.20.0.0/24` includes multiple addresses. Bare IPv4 addresses are also accepted.
 
 Only the listed destinations are reachable, on any port or protocol. IPv6 and connections to your machine are blocked. Sandbox and link-local address ranges cannot be allowed. There is no automatic DNS exception: use an IP address directly or explicitly include the resolver's address. Allowing a resolver permits other traffic to that same address too.
 
