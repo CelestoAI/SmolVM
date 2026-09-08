@@ -9,7 +9,7 @@ Implementation decisions:
 - Explicit off/restricted modes are Firecracker-only; QEMU TAP keeps legacy domain support.
 - Each managed NAT interface gets an owned nftables table with early forward/input checks. Replacement is one transaction, including removal of blanket forwarding permission. This avoids shared rule-handle discovery and makes stale connection state unable to bypass explicit policies.
 - Open mode keeps existing private-network access, with earlier sandbox and IPv4 link-local isolation. No proxy or guest-image change was added.
-- The SDK, lifecycle checks, controlled Linux test suite, CI dependency, and benchmark script are implemented. The full macOS regression suite passes (2,167 passed, 21 skipped, 33 deselected). The controlled Linux namespace packet test passes against both source and the installed wheel, including IPv6 positive/negative controls. No Firecracker lifecycle or latency result is claimed.
+- The SDK, lifecycle checks, controlled Linux test suite, CI dependency, and benchmark script are implemented. The full macOS regression suite passes (2,183 passed, 21 skipped, 33 deselected). The controlled Linux namespace packet test passes against both source and the installed wheel, including IPv6 positive/negative controls. No Firecracker lifecycle or latency result is claimed.
 
 Run `python scripts/benchmark-network-policy.py --help` for the measurement entry point. Use the same script and controlled endpoint against baseline and candidate checkouts on a disposable Linux runner.
 
@@ -37,7 +37,7 @@ SmolVM(
 )
 ```
 
-Add `mode: Literal["open", "off", "restricted"] | None = None` and `allowed_cidrs: list[str] = []`. Missing mode preserves the old interpretation of `allowed_domains`; it is a compatibility case, not a fourth advertised mode.
+Add `mode: Literal["open", "off", "restricted"] | None = None` and `allowed_cidrs: tuple[str, ...] = ()` (list inputs remain accepted; JSON uses arrays). Missing mode preserves the old interpretation of `allowed_domains`; it is a compatibility case, not a fourth advertised mode.
 
 Validation rules:
 
@@ -49,7 +49,7 @@ Validation rules:
 - Preserve legacy domain settings on supported NAT backends, with their existing setup-time IPv4 resolution semantics. Document that they allow addresses, not verified hostnames. Do not route them through a new proxy.
 - A requested restriction on an unsupported backend is an error, replacing the current warning-and-continue behavior.
 
-Use one small normalization helper to produce the effective mode and destination list. No generic policy compiler or plugin interface. Ensure validation runs after facade configuration merging: `model_copy(update=...)` currently bypasses model validation.
+Use shared policy parsing and compatibility validation at the public constructor before image preparation and again at the execution boundary. Unknown keys are rejected. Public SDK policy errors use `smolvm.ValidationError`; direct Pydantic model construction retains Pydantic errors. Policy collections are immutable tuples so caller mutation cannot change stored state. `model_copy(update=...)` bypasses model validation, so execution-boundary revalidation remains required.
 
 Keep the existing serialized VM configuration as the persistence mechanism. Test loading old configurations without the new fields. Existing objects carrying unenforced method restrictions must produce an actionable validation error rather than silently gaining enforcement claims.
 

@@ -982,9 +982,11 @@ class SmolVM:
             actually tried.)
         internet_settings: Network access controls. Accepts an
             :class:`~smolvm.types.InternetSettings` instance or a dict
-            (e.g. ``{"allowed_domains": ["https://example.com/"]}``).
+            (e.g. ``{"mode": "off"}``). Use ``InternetSettings(mode="off")``
+            for typed construction. Unknown settings are rejected before image preparation.
             Explicit off/restricted modes require Linux Firecracker and vsock.
-            Legacy domain lists allow setup-time resolved IPs, not verified hostnames.
+            Policy is immutable after creation. Legacy domain lists allow setup-time
+            resolved IPs, not verified hostnames; HTTP-method filtering is unsupported.
         mounts: Host directories to mount inside the guest, as
             ``HOST_PATH[:GUEST_PATH]`` strings. Equivalent to passing
             ``WorkspaceMount`` instances on a :class:`VMConfig`.
@@ -997,6 +999,9 @@ class SmolVM:
             ``config.workspace_mounts`` instead.
 
     Raises:
+        ValidationError: Invalid or unsupported network policy; details include field
+            errors for invalid settings. Direct InternetSettings construction uses
+            Pydantic's ValidationError instead.
         ValueError: If both *config* and *vm_id* are given, or if auto-config-only
             options are used together with either of them.
     """
@@ -1098,9 +1103,9 @@ class SmolVM:
                     "Windows guests in this release; drop the mounts= arg."
                 )
             if internet_settings is not None:
-                raise ValueError(
-                    "Egress controls (internet_settings=) are not yet "
-                    "supported for Windows guests; drop the internet_settings= arg."
+                raise ValidationError(
+                    "Windows guests do not support internet_settings; use a Linux guest "
+                    "on Linux with backend='firecracker' and comm_channel='vsock'."
                 )
 
         # Workspace mounts currently require the QEMU backend (virtio-9p).
@@ -2494,7 +2499,7 @@ class SmolVM:
         if settings is not None and settings.has_explicit_restrictions:
             raise SmolVMError(
                 f"Sandbox '{self._vm_id}' does not support exposed ports with this network mode; "
-                f"run 'smolvm sandbox delete {self._vm_id}' and recreate it with mode='open'."
+                "create a separate sandbox with mode='open' if you need exposed ports."
             )
 
         if self._info.status != VMState.RUNNING:

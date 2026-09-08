@@ -98,3 +98,31 @@ SmolVM resolves the names to IPv4 addresses during setup and allows traffic to t
 Use `"*"` to allow all destinations. Entries may be hostnames or URLs without a path; SmolVM stores their hostnames. Do not combine domain lists with the new modes. HTTP-method restrictions are unsupported and rejected.
 
 Legacy domain lists require Firecracker private networking or QEMU with `VMConfig.qemu_network="tap"`. Other networking configurations reject restrictions instead of continuing without enforcement. These lists are a compatibility feature, not strict domain filtering.
+
+## Validate settings and handle errors
+
+Use the exported settings class for editor suggestions. Lists are accepted as input; stored collections are immutable tuples. Saved JSON still uses arrays, including when loading older settings. Create a new sandbox to change its policy.
+
+```python
+from smolvm import InternetSettings
+
+policy = InternetSettings(mode="restricted", allowed_cidrs=["203.0.113.10"])
+```
+
+Unknown fields are errors: misspelling `mode` cannot silently enable internet access, and unsupported options such as `allowed_ports` are rejected. Invalid settings fail before image preparation.
+
+Public SDK operations raise `smolvm.ValidationError` for invalid or unsupported policy settings. It is also a `SmolVMError`. For invalid fields, `details["errors"]` contains the field locations, messages, and input values:
+
+```python
+from smolvm import SmolVM, ValidationError
+
+try:
+    SmolVM(internet_settings={"mode": "restricted"})
+except ValidationError as error:
+    print(error)  # restricted requires allowed_cidrs
+    print(error.details.get("errors", []))
+```
+
+Constructing `InternetSettings(...)` or `VMConfig(...)` directly uses Pydantic's `ValidationError`. This is separate from the SDK operation error above.
+
+Python reconnect and snapshot restore must share an inventory. See the [Python snapshot example](snapshots.md#save-and-restore-from-python); setting the same `data_dir` alone does not share inventory.
