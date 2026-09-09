@@ -176,7 +176,13 @@ jobs:
       - name: Run e2e suite
         env:
           SMOLVM_IMAGES_RELEASE_TAG: ${{ steps.image_release_fallback.outputs.tag }}
-        run: sudo -n -E -u "$USER" -g kvm -- env "PATH=$PATH" "SMOLVM_IMAGES_RELEASE_TAG=${SMOLVM_IMAGES_RELEASE_TAG:-}" "$(command -v uv)" run pytest -m e2e tests/e2e -v --e2e-backend "${{ matrix.backend }}"
+          POLICY_RELEASE_VALIDATION: ${{ inputs.policy_release_validation }}
+        run: |
+          test_paths=(tests/e2e)
+          if [[ "$POLICY_RELEASE_VALIDATION" == "true" ]]; then
+            test_paths=(tests/e2e/test_network_policy.py)
+          fi
+          sudo -n -E -u "$USER" -g kvm -- env "PATH=$PATH" "SMOLVM_IMAGES_RELEASE_TAG=${SMOLVM_IMAGES_RELEASE_TAG:-}" "$(command -v uv)" run pytest -m e2e "${test_paths[@]}" -v --e2e-backend "${{ matrix.backend }}"
 
       - name: Build baseline and candidate wheels
         if: inputs.policy_release_validation && matrix.backend == 'firecracker'

@@ -77,6 +77,7 @@ def main() -> None:
                 # Snapshot is complete; disposal is outside the measured spans.
                 sandbox.stop(timeout=0)
                 sandbox.delete()
+                target = None  # The original is gone if restore fails.
                 started = time.monotonic()
                 target = SmolVM.from_snapshot(
                     snap.snapshot_id,
@@ -90,13 +91,14 @@ def main() -> None:
             return result
         finally:
             try:
-                try:
-                    target.stop(timeout=0)
-                finally:
-                    target.delete()
+                if target is not None:
+                    try:
+                        target.stop(timeout=0)
+                    finally:
+                        target.delete()
             finally:
                 if snapshot_id is not None:
-                    target._sdk.delete_snapshot(snapshot_id)
+                    sandbox._sdk.delete_snapshot(snapshot_id)
 
     # Explicit unrecorded warmup separates image download/build from startup.
     sample(-1)
