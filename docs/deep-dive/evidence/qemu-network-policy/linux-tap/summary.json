@@ -151,5 +151,35 @@
       "median_ms": 27343.47797450005,
       "p95_ms": 28684.06188100016
     }
+  },
+  "candidate-open-c8-repeat": {
+    "samples": 100,
+    "concurrency": 8,
+    "mode": "open",
+    "destinations": 0,
+    "wall_seconds": 761.3568763010003,
+    "restore_first_application_ms": {
+      "median_ms": 26641.84851999994,
+      "p95_ms": 28681.50056500008
+    },
+    "first_application_ms": {
+      "median_ms": 13423.710763499912,
+      "p95_ms": 13642.810823999753
+    }
+  },
+  "candidate-off-c8-repeat": {
+    "samples": 100,
+    "concurrency": 8,
+    "mode": "off",
+    "destinations": 0,
+    "wall_seconds": 764.7429251449998,
+    "first_application_ms": {
+      "median_ms": 13580.843020499742,
+      "p95_ms": 13782.18532899973
+    },
+    "restore_first_application_ms": {
+      "median_ms": 27194.429119499546,
+      "p95_ms": 28577.844295999967
+    }
   }
 }

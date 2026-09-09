@@ -14,8 +14,8 @@ Baseline: **v0.0.32**, commit `0ab99c7`. Its wheel was built before production c
 
 | Environment | Application verification | Performance gate |
 | --- | --- | --- |
-| Linux QEMU TAP / KVM | All 12 installed-wheel application/lifecycle/failure tests passed; full-memory off/CIDR restores passed | Default-open startup and serial policies pass; concurrent off/one-destination repeats in progress. Baseline disk restore does not reach the application |
-| Linux QEMU slirp / KVM | 6 installed-wheel tests passed, 6 TAP-only cases skipped; full-memory off restore passed | Pending; baseline needs a documented, verified-dead cleanup retry outside timed regions |
+| Linux QEMU TAP / KVM | All 12 installed-wheel application/lifecycle/failure tests passed; full-memory off/CIDR restores passed | Default-open startup, serial policies, and concurrent off repeat pass. One-destination repeat canceled at user request; not cleared. Baseline disk restore does not reach the application |
+| Linux QEMU slirp / KVM | 6 installed-wheel tests passed, 6 TAP-only cases skipped; full-memory off restore passed | Not measured; additional benchmark canceled at user request |
 | macOS QEMU / HVF | Source and installed-wheel workflow passed: 6 tests; Linux-only cases skipped | Default-open and serial off pass; concurrency-eight off remains **inconclusive, not cleared** |
 
 The [final Linux packet contract](evidence/qemu-network-policy/linux-functional/packet.xml) passed both Firecracker and QEMU cases on the replacement KVM runner. QEMU checks include direct guest-IP and localhost-translated application replies through restricted, off, failed-replacement, and interface-reuse transitions. The [12 TAP tests](evidence/qemu-network-policy/linux-functional/tap-e2e.xml) include shared folders and SDK transfers under both off and CIDR restrictions; the [slirp tests](evidence/qemu-network-policy/linux-functional/slirp-e2e.xml) passed all 6 applicable cases. The [earlier arm64 namespace check](evidence/qemu-network-policy/linux-packet-contract.txt) is supplementary kernel-rule evidence, not KVM lifecycle performance.
@@ -28,7 +28,7 @@ The configured `turing-machine` host was unreachable. After approval to start th
 
 With separate approval, a temporary `n2-standard-2` runner named `smolvm-qemu-policy-0909-01a084f7` was created in `europe-west4-a`: Ubuntu 24.04, Linux 7.0.0-1011-gcp, QEMU 8.2.2, Python 3.12.3, nested KVM, 8 GiB RAM, and a 40 GB balanced persistent disk. A long suspension of the local controller prevented complete evidence retrieval before its three-hour deletion backstop fired. Both the instance and boot disk were confirmed deleted. Its saved application results remain valid, but the incomplete performance run is not a release gate.
 
-An identically sized replacement, `smolvm-qemu-policy-0909-01a084f7-r2`, was created at 16:27 UTC on September 9 with a two-hour deletion backstop. It has no service account; its boot disk is auto-deleted. Each completed case is copied locally before the next starts, and local sleep is temporarily inhibited during measurement. This runner will also be explicitly deleted after collection. No production VM was used or resized.
+An identically sized replacement, `smolvm-qemu-policy-0909-01a084f7-r2`, was created at 16:27 UTC on September 9 with a two-hour deletion backstop and no service account. After the final off repeat, all completed evidence was saved locally and the runner was explicitly deleted. Follow-up instance and disk listings confirmed both temporary VMs and their boot disks were gone; `darkhorse-vm` remained stopped. The queued CIDR repeat never started, and the temporary local sleep inhibitor was removed. No production VM was used or resized.
 
 The [unchanged v0.0.32 TAP smoke](evidence/qemu-network-policy/linux-baseline-restore-failure.txt) reached the application on initial start, but timed out after snapshot/delete/restore. Therefore the TAP startup comparison uses three startup-only 100-sample runs; candidate restore latency is collected separately. A percentage restore comparison against this broken baseline would be misleading. The original baseline is not patched or given network preparation outside the timer.
 
@@ -51,10 +51,18 @@ Runner: the replacement GCP VM described above, with two vCPUs and nested KVM. E
 | Candidate, one destination | 24 | 8 | 13,741.8 | 30,130.0 |
 | Candidate, 32 destinations | 24 | 1 | 2,276.7 | 2,871.2 |
 | Candidate, 32 destinations | 24 | 8 | 13,550.8 | 28,684.1 |
+| Candidate open, repeat | 100 | 8 | 13,642.8 | 28,681.5 |
+| Candidate off, repeat | 100 | 8 | 13,782.2 | 28,577.8 |
 
-Default-open startup passes both baseline comparisons. All serial policy cases and the 32-destination concurrency case are within budget. Concurrent off restore is +5.2% and one-destination restore is +5.6% versus open, so both require the agreed 100-sample repeat; that repeat is in progress, not yet a pass. Baseline private-TAP restore remains unavailable for the reason above.
+Default-open startup passes both baseline comparisons. All serial policy cases and the 32-destination concurrency case are within budget. Initially, concurrent off restore was +5.2% and one-destination restore was +5.6% versus open, triggering larger repeats. Both 100-sample open and off repeats completed successfully: off startup was +1.0% and restore was −0.4% versus the repeated open reference. The off repeat passes; its initial over-budget restore result was not repeatable. Baseline private-TAP restore remains unavailable for the reason above.
+
+The user requested a fast close-out after the in-flight off repeat, without starting the queued one-destination repeat or the additional Linux slirp matrix. The one-destination concurrency gate therefore remains **incomplete, not cleared**. No unrecorded repeat is treated as a pass.
 
 The [summary and raw samples](evidence/qemu-network-policy/linux-tap/summary.json) and [environment, matching packages, and artifact hashes](evidence/qemu-network-policy/linux-tap/environment.json) are retained together.
+
+### Linux slirp performance status
+
+The [unchanged baseline smoke](evidence/qemu-network-policy/linux-functional/baseline-slirp-smoke.log) reached the application but failed during teardown: the existing process-status probe reaped QEMU, then incorrectly reported the now-absent process as still running. This is the lifecycle race fixed in the candidate. A guarded, logged teardown-only retry was prepared for both wheels but was **not used** before the user stopped additional benchmarking. No Linux slirp performance gate is claimed. Its application and full-memory restore checks passed independently.
 
 ### Final-wheel macOS performance results
 
