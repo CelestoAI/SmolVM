@@ -71,6 +71,7 @@ threading.Thread(target=udp, daemon=True).start()
 http.server.ThreadingHTTPServer(("0.0.0.0", 18080), Handler).serve_forever()
 """)
     process = None
+    forwarding_rules: list[tuple[str, str]] = []
     ipv6_forwarding = privileged("sysctl", "-n", "net.ipv6.conf.all.forwarding").stdout.strip()
     try:
         privileged("sysctl", "-w", "net.ipv6.conf.all.forwarding=1")
@@ -79,6 +80,13 @@ http.server.ThreadingHTTPServer(("0.0.0.0", 18080), Handler).serve_forever()
         privileged("ip", "link", "set", peer_if, "netns", ns)
         privileged("ip", "addr", "add", f"{gateway}/24", "dev", host_if)
         privileged("ip", "link", "set", host_if, "up")
+        # Docker runners can default FORWARD to DROP. Permit only this lab's
+        # interface through that ambient firewall; SmolVM's earlier policy
+        # chains still decide which guest packets may reach it.
+        for binary in ("iptables", "ip6tables"):
+            for direction in ("-i", "-o"):
+                privileged(binary, "-w", "-I", "FORWARD", direction, host_if, "-j", "ACCEPT")
+                forwarding_rules.append((binary, direction))
         privileged("sysctl", "-w", f"net.ipv6.conf.{host_if}.forwarding=1")
         privileged("ip", "-6", "addr", "add", "fd00:534d:1::1/64", "dev", host_if, "nodad")
         for address in (allowed, denied):
@@ -133,6 +141,10 @@ http.server.ThreadingHTTPServer(("0.0.0.0", 18080), Handler).serve_forever()
                 privileged("kill", pid, check=False)
             with suppress(subprocess.TimeoutExpired):
                 process.wait(timeout=5)
+        for binary, direction in reversed(forwarding_rules):
+            privileged(
+                binary, "-w", "-D", "FORWARD", direction, host_if, "-j", "ACCEPT", check=False
+            )
         privileged("ip", "link", "del", host_if, check=False)
         privileged("ip", "netns", "del", ns, check=False)
         privileged("sysctl", "-w", f"net.ipv6.conf.all.forwarding={ipv6_forwarding}")
@@ -195,7 +207,7 @@ except (OSError,AssertionError): sys.exit(1)
         privileged("ip", "-n", ns, "-6", "route", "add", "default", "via", "fd00:534d:2::1")
         nm.apply_network_policy(tap, None)
         nm.setup_nat(tap)
-        assert reachable(allowed, token="open")
+        assert reachable(allowed, token="open"), privileged("nft", "list", "ruleset").stdout
         assert reachable("fd00:534d:1::2", token="ipv6-open"), "\n".join(
             (
                 privileged("nft", "list", "ruleset").stdout,
@@ -212,8 +224,26 @@ except (OSError,AssertionError): sys.exit(1)
         neighbor_tap = f"tap{secrets.randbelow(1000000) + 2000000}"
         privileged("ip", "link", "set", host_if, "name", neighbor_tap)
         try:
+            # Keep the ambient firewall permissive for the renamed lab too,
+            # so only SmolVM's isolation rule can make this probe fail.
+            for direction in ("-i", "-o"):
+                privileged(
+                    "iptables", "-w", "-I", "FORWARD", direction, neighbor_tap, "-j", "ACCEPT"
+                )
             assert not reachable(allowed, token="neighbor-denied")
         finally:
+            for direction in ("-i", "-o"):
+                privileged(
+                    "iptables",
+                    "-w",
+                    "-D",
+                    "FORWARD",
+                    direction,
+                    neighbor_tap,
+                    "-j",
+                    "ACCEPT",
+                    check=False,
+                )
             privileged("ip", "link", "set", neighbor_tap, "name", host_if)
         assert reachable(allowed, token="neighbor-restored")
         nm.apply_network_policy(tap, [allowed])
