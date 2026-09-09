@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -46,7 +46,7 @@ def main() -> None:
     _facade.generate_sandbox_name = lambda _existing, prefix="sbx": f"{prefix}-{uuid4().hex[:16]}"
     inventory = MemoryStateManager(args.data_dir)
 
-    def sample(index: int) -> dict:
+    def start_sample(work: dict) -> None:
         kwargs = {
             "backend": "firecracker",
             "os": "alpine",
@@ -60,51 +60,91 @@ def main() -> None:
             kwargs["internet_settings"] = {"mode": args.mode, "allowed_cidrs": args.allow}
         started = time.monotonic()
         sandbox = SmolVM(**kwargs)
-        target = sandbox
-        snapshot_id = None
-        try:
-            sandbox.start()
-            assert sandbox.run("true").exit_code == 0
-            result = {"sample": index, "first_command_ms": (time.monotonic() - started) * 1000}
-            if args.url and args.mode != "off":
-                assert (
-                    sandbox.run(f"wget -T 5 -qO /dev/null {shlex.quote(args.url)}").exit_code == 0
-                )
-                result["first_request_ms"] = (time.monotonic() - started) * 1000
-            if args.restore:
-                snap = sandbox.snapshot(snapshot_type=SnapshotType.DISK)
-                snapshot_id = snap.snapshot_id
-                # Keep the stopped VM's leases while restoring its identity.
-                # Deleting here lets another concurrent sample take its IP.
-                sandbox.stop(timeout=0)
-                started = time.monotonic()
-                target = SmolVM.from_snapshot(
-                    snap.snapshot_id,
-                    backend="firecracker",
-                    resume_vm=True,
-                    data_dir=args.data_dir,
-                    state_manager=inventory,
-                )
-                assert target.run("true").exit_code == 0
-                result["restore_first_command_ms"] = (time.monotonic() - started) * 1000
-            return result
-        finally:
-            try:
-                try:
-                    target.stop(timeout=0)
-                finally:
-                    target.delete()
-            finally:
-                if snapshot_id is not None:
-                    sandbox._sdk.delete_snapshot(snapshot_id)
+        work["vm"] = sandbox
+        work["sdk"] = sandbox._sdk
+        sandbox.start()
+        assert sandbox.run("true").exit_code == 0
+        result = {"sample": work["index"], "first_command_ms": (time.monotonic() - started) * 1000}
+        if args.url and args.mode != "off":
+            assert sandbox.run(f"wget -T 5 -qO /dev/null {shlex.quote(args.url)}").exit_code == 0
+            result["first_request_ms"] = (time.monotonic() - started) * 1000
+        work["result"] = result
 
-    # Explicit unrecorded warmup separates image download/build from startup.
-    sample(-1)
-    with args.output.open("w") as output, ThreadPoolExecutor(args.concurrency) as pool:
-        output.write(json.dumps({"configuration": vars(args)}, default=str) + "\n")
-        for result in pool.map(sample, range(args.samples)):
-            output.write(json.dumps(result) + "\n")
-            output.flush()
+    def restore_sample(work: dict) -> None:
+        started = time.monotonic()
+        restored = SmolVM.from_snapshot(
+            work["snapshot_id"],
+            backend="firecracker",
+            resume_vm=True,
+            data_dir=args.data_dir,
+            state_manager=inventory,
+        )
+        work["vm"] = restored
+        assert restored.run("true").exit_code == 0
+        work["result"]["restore_first_command_ms"] = (time.monotonic() - started) * 1000
+
+    def parallel(pool, function, batch):
+        futures = [pool.submit(function, work) for work in batch]
+        wait(futures)  # Finish every participant before cleanup or the next phase.
+        for future in futures:
+            future.result()
+
+    def measure_batch(pool, indices):
+        batch = [{"index": index, "vm": None, "snapshot_id": None} for index in indices]
+        try:
+            parallel(pool, start_sample, batch)
+            if args.restore:
+                # Snapshot preparation and disposal are outside timing. Complete
+                # the whole batch before restore so no new start can take an IP
+                # required by another sample's snapshot, and old TAPs are gone.
+                for work in batch:
+                    sandbox = work["vm"]
+                    work["snapshot_id"] = sandbox.snapshot(
+                        snapshot_type=SnapshotType.DISK
+                    ).snapshot_id
+                    sandbox.stop(timeout=0)
+                    sandbox.delete()
+                    work["vm"] = None
+                parallel(pool, restore_sample, batch)
+            return [work["result"] for work in batch]
+        finally:
+            # Preserve the workload error if cleanup also fails, but never call
+            # a successful sample clean when disposal failed.
+            import sys
+            import traceback
+
+            failed = sys.exc_info()[0] is not None
+            cleanup_errors = []
+            for work in batch:
+                try:
+                    if work["vm"] is not None:
+                        try:
+                            work["vm"].stop(timeout=0)
+                        finally:
+                            work["vm"].delete()
+                except Exception as error:
+                    cleanup_errors.append(error)
+                    traceback.print_exc()
+                finally:
+                    if work["snapshot_id"] is not None:
+                        try:
+                            work["sdk"].delete_snapshot(work["snapshot_id"])
+                        except Exception as error:
+                            cleanup_errors.append(error)
+                            traceback.print_exc()
+            if cleanup_errors and not failed:
+                raise cleanup_errors[0]
+
+    with ThreadPoolExecutor(args.concurrency) as pool:
+        # Explicit unrecorded warmup excludes image download/build from startup.
+        measure_batch(pool, [-1])
+        with args.output.open("w") as output:
+            output.write(json.dumps({"configuration": vars(args)}, default=str) + "\n")
+            for offset in range(0, args.samples, args.concurrency):
+                indices = range(offset, min(offset + args.concurrency, args.samples))
+                for result in measure_batch(pool, indices):
+                    output.write(json.dumps(result) + "\n")
+                output.flush()
 
 
 if __name__ == "__main__":
