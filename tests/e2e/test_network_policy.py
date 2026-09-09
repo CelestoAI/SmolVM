@@ -116,19 +116,21 @@ http.server.ThreadingHTTPServer(("0.0.0.0", 18080), Handler).serve_forever()
         )
         import urllib.request
 
-        for _ in range(50):
-            try:
-                with urllib.request.urlopen(
-                    f"http://{allowed}:18080/ready", timeout=0.2
-                ) as response:
-                    assert response.read() == b"policy-ok"
-                break
-            except OSError:
-                if process.poll() is not None:
-                    pytest.fail(f"Policy responder failed: {process.stderr.read().decode()}")
-                time.sleep(0.1)
-        else:
-            pytest.fail("Policy responder did not become ready")
+        # Wait for both listeners and IPv6 neighbor discovery before probing
+        # policy behavior. These local lab requests must bypass proxy settings.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        for url in (f"http://{allowed}:18080/ready", "http://[fd00:534d:1::2]:18082/ready"):
+            for _ in range(50):
+                try:
+                    with opener.open(url, timeout=0.2) as response:
+                        assert response.read() == b"policy-ok"
+                    break
+                except OSError:
+                    if process.poll() is not None:
+                        pytest.fail(f"Policy responder failed: {process.stderr.read().decode()}")
+                    time.sleep(0.1)
+            else:
+                pytest.fail(f"Policy responder did not become ready at {url}")
         # This is a simulated metadata service entirely inside our namespace.
         with urllib.request.urlopen("http://169.254.111.222:18080/ready", timeout=1) as response:
             assert response.read() == b"policy-ok"
