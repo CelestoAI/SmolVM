@@ -64,6 +64,7 @@ from smolvm.env_windows import (
 )
 from smolvm.exceptions import (
     CommandExecutionUnavailableError,
+    NetworkError,
     OperationTimeoutError,
     SmolVMError,
     ValidationError,
@@ -985,7 +986,8 @@ class SmolVM:
             :class:`~smolvm.types.InternetSettings` instance or a dict
             (e.g. ``{"mode": "off"}``). Use ``InternetSettings(mode="off")``
             for typed construction. Unknown settings are rejected before image preparation.
-            Explicit off/restricted modes require Linux Firecracker and vsock.
+            QEMU supports off on macOS/Linux slirp and off/restricted on Linux TAP.
+            Firecracker requires Linux and vsock for off/restricted modes.
             Policy is immutable after creation. Legacy domain lists allow setup-time
             resolved IPs, not verified hostnames; HTTP-method filtering is unsupported.
         mounts: Host directories to mount inside the guest, as
@@ -2567,10 +2569,11 @@ class SmolVM:
 
             nftables_configured = False
             keep_nftables = False
+            nftables_cleanup_failed = False
             if should_try_nftables:
-                # nftables does not bind a port. Hold a non-listening socket
-                # for the exposure's lifetime so other callers/processes cannot
-                # claim it. Do not listen: only the guest may satisfy the probe.
+                # Serialize live callers with a bound socket; setup also checks
+                # persisted rules because CLI forwarding outlives its process.
+                # Do not listen: only the guest may satisfy the probe.
                 reservation = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 try:
                     reservation.bind(("127.0.0.1", candidate))
@@ -2605,21 +2608,31 @@ class SmolVM:
                         f"nftables forward localhost:{candidate} -> guest:{guest_port} "
                         "was configured but not reachable"
                     )
+                except NetworkError as e:
+                    # A persisted DNAT rule can outlive its socket owner. Never
+                    # put an SSH listener behind a conflicting/unknown mapping.
+                    attempts.append(str(e))
+                    continue
                 except Exception as e:
                     attempts.append(
                         f"nftables forward localhost:{candidate} -> guest:{guest_port} failed: {e}"
                     )
                 finally:
                     if nftables_configured and not keep_nftables:
-                        with suppress(Exception):
+                        try:
                             self._sdk.network.cleanup_local_port_forward(
                                 vm_id=self._vm_id,
                                 guest_ip=guest_ip,
                                 host_port=candidate,
                                 guest_port=guest_port,
                             )
+                        except Exception as e:
+                            nftables_cleanup_failed = True
+                            attempts.append(f"Cannot remove forward on localhost:{candidate}: {e}")
                     if not keep_nftables:
                         reservation.close()
+                if nftables_cleanup_failed:
+                    continue
 
             qemu_hostfwd_configured = False
             keep_qemu_hostfwd = False

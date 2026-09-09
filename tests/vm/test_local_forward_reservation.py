@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from smolvm.facade import SmolVM
+from smolvm.host.network import NetworkManager
 from smolvm.types import VMState
 
 
@@ -89,3 +90,66 @@ def test_cleanup_failure_still_closes_socket(sandboxes):
     with pytest.raises(RuntimeError, match="nft failed"):
         vm.unexpose_local(port, 8080)
     assert_available(port)
+
+
+@pytest.mark.parametrize("release", ["process_exit", "cleanup_failure"])
+def test_persisted_forward_prevents_reuse_after_owner_exits(sandboxes, monkeypatch, release):
+    """Separate CLI lifetimes share rules, not socket reservations or facades."""
+    rules = []
+
+    def listing(*args, **kwargs):
+        output = "table ip smolvm_nat {\n chain output {\n"
+        for _, _, chain, expression, comment in rules:
+            if chain == "output":
+                output += f'  {expression} comment "{comment}"\n'
+        return SimpleNamespace(stdout=output + " }\n}\n")
+
+    monkeypatch.setattr("smolvm.host.network.run_command", listing)
+    first, second = sandboxes("first-cli"), sandboxes("second-cli")
+    second._info.network.guest_ip = "172.16.0.3"
+    for vm in (first, second):
+        network = NetworkManager()
+        network.enable_ip_forwarding = MagicMock()
+        network._ensure_nftables_base = MagicMock()
+        network._add_nft_rules_if_missing = lambda added: rules.extend(added)
+        vm._sdk.network.setup_local_port_forward = network.setup_local_port_forward
+    port = first.expose_local(8080)
+    if release == "process_exit":
+        first.close()
+        # Closing descriptors models kernel cleanup when the CLI process exits;
+        # installed rules deliberately remain, as they do in real CLI use.
+        first._local_forwards[(port, 8080)].port_reservation.close()
+        first._local_forwards.clear()
+    else:
+        first._sdk.network.cleanup_local_port_forward.side_effect = RuntimeError("nft failed")
+        with pytest.raises(RuntimeError):
+            first.unexpose_local(port, 8080)
+    assert_available(port)
+    other = second.expose_local(8080, host_port=port)
+    assert other != port
+    assert not any(
+        "second-cli" in comment and f"tcp dport {port} " in expression
+        for _, _, _, expression, comment in rules
+    )
+    second._probe_local_forward.assert_called_once_with(other)
+    second._start_local_tunnel.assert_not_called()
+
+
+def test_unknown_ownership_never_falls_back_to_ssh(sandboxes):
+    from smolvm.exceptions import NetworkError
+
+    vm = sandboxes("unreadable")
+    vm._sdk.network.setup_local_port_forward.side_effect = NetworkError("Cannot check forwards")
+    with pytest.raises(Exception, match="Failed to expose"):
+        vm.expose_local(8080)
+    vm._start_local_tunnel.assert_not_called()
+    vm._probe_local_forward.assert_not_called()
+
+
+def test_failed_probe_and_cleanup_never_fall_back_to_ssh(sandboxes):
+    vm = sandboxes("failed-cleanup")
+    vm._probe_local_forward.return_value = False
+    vm._sdk.network.cleanup_local_port_forward.side_effect = RuntimeError("nft failed")
+    with pytest.raises(Exception, match="Failed to expose"):
+        vm.expose_local(8080)
+    vm._start_local_tunnel.assert_not_called()

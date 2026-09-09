@@ -1613,6 +1613,47 @@ class NetworkManager:
         await self._async_delete_nft_rules(_NFT_NAT_FAMILY, _NFT_NAT_TABLE, comment=comment)
         await self._async_delete_nft_rules(_NFT_FILTER_FAMILY, _NFT_FILTER_TABLE, comment=comment)
 
+    @staticmethod
+    def _check_local_port_ownership(
+        output: str, vm_id: str, host_port: int, guest_ip: str, guest_port: int
+    ) -> None:
+        """Reject persisted forwards even after their creating process exits.
+
+        The facade's bound socket serializes concurrent exposures. The installed
+        rules are the ownership record after that socket's process has exited.
+        Parse only our numeric NAT table, including the existing SSH port map.
+        """
+        comment = f"smolvm:{vm_id}:local:{host_port}:{guest_port}"
+        target = f"{guest_ip}:{guest_port}"
+        in_output = False
+        for line in output.splitlines():
+            stripped = line.strip()
+            chain = _NFT_CHAIN_RE.match(stripped)
+            if chain:
+                in_output = chain.group("chain") == "output"
+            elif stripped == "}":
+                in_output = False
+            if not in_output or not re.search(rf"\btcp dport {host_port}\b", line):
+                continue
+            destination = re.search(r"\bdnat to ([0-9.:]+)", line)
+            if destination is None:
+                continue
+            owner = _NFT_RULE_COMMENT_RE.search(line)
+            if owner and owner.group("comment") == comment and destination.group(1) == target:
+                continue  # Reconnecting to the exact same exposure is idempotent.
+            raise NetworkError(
+                f"Localhost port {host_port} already forwards to another application; "
+                "choose a different host port with "
+                f"'smolvm sandbox port expose {vm_id} {guest_port}'."
+            )
+        ssh_map = re.search(r"\bmap dnat_local\s*\{(.*?)\n\s*\}", output, re.DOTALL)
+        if ssh_map and re.search(rf"\b{host_port}\s*:", ssh_map.group(1)):
+            raise NetworkError(
+                f"Localhost port {host_port} is reserved for a sandbox connection; "
+                "choose a different host port with "
+                f"'smolvm sandbox port expose {vm_id} {guest_port}'."
+            )
+
     def setup_local_port_forward(
         self,
         vm_id: str,
@@ -1635,6 +1676,19 @@ class NetworkManager:
 
         comment = f"smolvm:{vm_id}:local:{host_port}:{guest_port}"
         target = f"{guest_ip}:{guest_port}"
+
+        # Unlike best-effort cleanup listings, ownership reads must fail closed.
+        try:
+            output = run_command(
+                ["nft", "-nn", "list", "table", _NFT_NAT_FAMILY, _NFT_NAT_TABLE],
+                use_sudo=True,
+            ).stdout
+        except SmolVMError as exc:
+            raise NetworkError(
+                "Cannot check existing port forwards; retry with "
+                f"'smolvm sandbox port expose {vm_id} {host_port}:{guest_port}'."
+            ) from exc
+        self._check_local_port_ownership(output, vm_id, host_port, guest_ip, guest_port)
 
         self._add_nft_rules_if_missing(
             [
@@ -1690,6 +1744,20 @@ class NetworkManager:
 
         comment = f"smolvm:{vm_id}:local:{host_port}:{guest_port}"
         target = f"{guest_ip}:{guest_port}"
+
+        try:
+            output = (
+                await async_run_command(
+                    ["nft", "-nn", "list", "table", _NFT_NAT_FAMILY, _NFT_NAT_TABLE],
+                    use_sudo=True,
+                )
+            ).stdout
+        except SmolVMError as exc:
+            raise NetworkError(
+                "Cannot check existing port forwards; retry with "
+                f"'smolvm sandbox port expose {vm_id} {host_port}:{guest_port}'."
+            ) from exc
+        self._check_local_port_ownership(output, vm_id, host_port, guest_ip, guest_port)
 
         await self._async_add_nft_rules_if_missing(
             [
