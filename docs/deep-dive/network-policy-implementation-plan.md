@@ -2,16 +2,18 @@
 
 SmolVM should start quickly and do exactly what its network settings promise. The first release will let callers turn outbound access off or limit it to specific IP addresses, while keeping commands and file operations usable.
 
-Status: first-release implementation is complete. The controlled Linux packet test passes; Firecracker lifecycle tests and startup measurements remain release gates. This is not a published release.
+Status: first-release implementation merged in PR #496. Controlled Linux packet tests and real KVM Firecracker lifecycle tests pass, including commands, file transfers, restart, and disk snapshot restore in off/restricted modes. Release preparation is checking actual firewall-install failures, installed-package examples, and startup/restore measurements. This is not a published release.
 
 Implementation decisions:
 
 - Explicit off/restricted modes are Firecracker-only; QEMU TAP keeps legacy domain support.
 - Each managed NAT interface gets an owned nftables table with early forward/input checks. Replacement is one transaction, including removal of blanket forwarding permission. This avoids shared rule-handle discovery and makes stale connection state unable to bypass explicit policies.
 - Open mode keeps existing private-network access, with earlier sandbox and IPv4 link-local isolation. No proxy or guest-image change was added.
-- The SDK, lifecycle checks, controlled Linux test suite, CI dependency, and benchmark script are implemented. The full macOS regression suite passes (2,183 passed, 21 skipped, 33 deselected). The controlled Linux namespace packet test passes against both source and the installed wheel, including IPv6 positive/negative controls. No Firecracker lifecycle or latency result is claimed.
+- The SDK, lifecycle checks, controlled Linux test suite, CI dependency, and benchmark script are implemented. The full regression suite passes (2,183 passed, 21 skipped, 33 deselected). The controlled Linux namespace packet test passes against both source and the installed wheel, including IPv6 positive/negative controls. Firecracker and QEMU E2E passed in [run 34314767896](https://github.com/CelestoAI/SmolVM/actions/runs/34314767896); explicit off/restricted modes remain Firecracker-only. Latency results remain pending.
 
 Run `python scripts/benchmark-network-policy.py --help` for the measurement entry point. Use the same script and controlled endpoint against baseline and candidate checkouts on a disposable Linux runner.
+
+The E2E workflow has an opt-in `policy_release_validation` dispatch input. It builds baseline/candidate wheels, checks the documented examples against the candidate wheel, and saves raw timings and summaries as `network-policy-release-evidence`. Use `policy_samples=100` for release measurements; smaller values only smoke the harness. Baseline is `685b7bd52d0de8efb1c88fe8cf053d0d3b64d171`, immediately before PR #496. Both versions use the same image catalog, one virtual CPU, 512 MiB RAM, and repeated baselines around each serial/concurrent matrix.
 
 ## Shipping decision
 

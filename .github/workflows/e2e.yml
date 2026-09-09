@@ -51,7 +51,7 @@ jobs:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: ${{ matrix.backend }}
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: ${{ inputs.policy_release_validation && 90 || 30 }}
     strategy:
       fail-fast: false
       matrix:
@@ -206,6 +206,7 @@ jobs:
           git rev-parse HEAD > "$SMOLVM_POLICY_RESULTS/candidate-sha.txt"
           git -C "$RUNNER_TEMP/policy-baseline" rev-parse HEAD > "$SMOLVM_POLICY_RESULTS/baseline-sha.txt"
           lscpu > "$SMOLVM_POLICY_RESULTS/runner.txt"
+          cp src/smolvm/images/published.py "$SMOLVM_POLICY_RESULTS/image-catalog.py"
           uv pip freeze --python "$SMOLVM_POLICY_CANDIDATE_PYTHON" > "$SMOLVM_POLICY_RESULTS/candidate-packages.txt"
           uv pip freeze --python "$SMOLVM_POLICY_BASELINE_PYTHON" > "$SMOLVM_POLICY_RESULTS/baseline-packages.txt"
           sudo -n -E -u "$USER" -g kvm -- env "PATH=$PATH" "$(command -v uv)" run \
