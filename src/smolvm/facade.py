@@ -1056,6 +1056,7 @@ class SmolVM:
                     has_forwards=bool(config and config.port_forwards),
                     network_mode=config.network_attachment.mode if config else "nat",
                     qemu_network=config.qemu_network if config else "slirp",
+                    recovery_command=_from_image_config_help(config.vm_id) if config else None,
                 )
 
         if config is not None and vm_id is not None:
@@ -1496,18 +1497,19 @@ class SmolVM:
         per-VM runtime settings and delegates disk isolation/network setup to
         the normal SmolVM lifecycle.
         """
+        resolved_vm_id = _resolve_vm_name(vm_id, prefix=name_prefix)
         if internet_settings is not None:
             internet_settings = parse_network_policy(internet_settings)
             validate_network_policy_options(
                 internet_settings,
-                backend=_normalize_from_image_backend(image, backend, vm_id or "sandbox"),
+                backend=_normalize_from_image_backend(image, backend, resolved_vm_id),
                 guest_os=guest_os,
                 comm_channel=comm_channel,
                 has_mounts=bool(mounts),
                 has_forwards=bool(port_forwards),
                 qemu_network=network or "slirp",
+                recovery_command=_from_image_config_help(resolved_vm_id),
             )
-        resolved_vm_id = _resolve_vm_name(vm_id, prefix=name_prefix)
 
         resolved_backend = _normalize_from_image_backend(image, backend, resolved_vm_id)
         # Verify the backend's tooling before any kernel download or VM start,

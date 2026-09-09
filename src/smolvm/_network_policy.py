@@ -36,6 +36,7 @@ def validate_network_policy_options(
     has_forwards: bool = False,
     network_mode: str = "nat",
     qemu_network: str = "slirp",
+    recovery_command: str | None = None,
 ) -> None:
     if settings.is_allow_all_domains:
         return
@@ -52,12 +53,13 @@ def validate_network_policy_options(
         )
     if settings.has_explicit_restrictions:
         if backend == "qemu":
+            help_text = f" See '{recovery_command or 'smolvm sandbox create --help'}'."
             if settings.mode == "restricted" and (sys.platform != "linux" or qemu_network != "tap"):
                 raise ValidationError(
                     "QEMU address restrictions require Linux TAP networking; use "
                     "SmolVM.from_image(image, backend='qemu', network='tap', "
                     "internet_settings={'mode': 'restricted', 'allowed_cidrs': ['203.0.113.7']}) "
-                    "on Linux (qemu_network='tap' on VMConfig)."
+                    "on Linux (qemu_network='tap' on VMConfig)." + help_text
                 )
             if sys.platform not in {"linux", "darwin"} or (
                 qemu_network == "tap" and sys.platform != "linux"
@@ -65,11 +67,12 @@ def validate_network_policy_options(
                 raise ValidationError(
                     "This QEMU network configuration is unsupported; use mode='off' with "
                     "network='slirp' on macOS or Linux (qemu_network='slirp' on VMConfig)."
+                    + help_text
                 )
             if qemu_network == "tap" and has_forwards:
                 raise ValidationError(
                     "QEMU TAP does not support port_forwards; omit it and connect to the "
-                    "sandbox's IP, or call sandbox.expose_local(8080) after starting it."
+                    "sandbox's IP, or use expose_local(8080) after starting it." + help_text
                 )
             return
         if backend != "firecracker" or sys.platform != "linux":

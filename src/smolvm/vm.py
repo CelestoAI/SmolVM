@@ -1640,6 +1640,7 @@ class SmolVMManager:
             has_forwards=bool(config.port_forwards),
             network_mode=config.network_attachment.mode,
             qemu_network=config.qemu_network,
+            recovery_command=f"smolvm sandbox create --name {config.vm_id} --help",
         )
 
     @staticmethod

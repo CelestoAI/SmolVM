@@ -3925,3 +3925,38 @@ def test_from_image_policy_errors_precede_kernel_preparation():
         with pytest.raises(ValidationError):
             SmolVM.from_image(MagicMock(), internet_settings={"mod": "off"})
         kernel.assert_not_called()
+
+
+@pytest.mark.parametrize("explicit_name", [None, "my-sandbox"])
+@pytest.mark.parametrize(
+    "host,network,policy,forwards",
+    [
+        ("linux", "slirp", {"mode": "restricted", "allowed_cidrs": ["203.0.113.7"]}, None),
+        ("darwin", "tap", {"mode": "off"}, None),
+        ("linux", "tap", {"mode": "off"}, [{"host_port": 8080, "guest_port": 80}]),
+    ],
+)
+def test_from_image_qemu_policy_errors_name_recovery(
+    monkeypatch, explicit_name, host, network, policy, forwards
+):
+    from smolvm import ValidationError
+
+    monkeypatch.setattr("smolvm._network_policy.sys.platform", host)
+    monkeypatch.setattr("smolvm.facade.generate_sandbox_name", lambda *a, **k: "sbx-generated")
+    image = MagicMock(
+        backend=None, boot_mode="direct_kernel", rootfs_format="raw-ext4", initrd_path=None
+    )
+    with patch("smolvm.facade.ensure_backend_available") as prepare:
+        with pytest.raises(ValidationError) as error:
+            SmolVM.from_image(
+                image,
+                vm_id=explicit_name,
+                backend="qemu",
+                network=network,
+                internet_settings=policy,
+                port_forwards=forwards,
+            )
+        assert f"smolvm sandbox create --name {explicit_name or 'sbx-generated'} --help" in str(
+            error.value
+        )
+        prepare.assert_not_called()
