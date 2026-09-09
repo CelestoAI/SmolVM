@@ -46,7 +46,7 @@ def policy_lab(tmp_path: Path):
     gateway, allowed, denied = f"{prefix}.1", f"{prefix}.2", f"{prefix}.3"
     log = tmp_path / "requests.jsonl"
     server = tmp_path / "server.py"
-    server.write_text("""import http.server, json, socket, threading
+    server.write_text("""import http.server, json, socket, socketserver, threading
 from pathlib import Path
 import sys
 log = Path(sys.argv[1])
@@ -63,12 +63,19 @@ def udp():
     while True:
         data, addr = sock.recvfrom(4096)
         record(data.decode(errors="replace")); sock.sendto(data, addr)
-class V6Server(http.server.ThreadingHTTPServer):
+class Server(http.server.ThreadingHTTPServer):
+    def server_bind(self):
+        # HTTPServer normally resolves the machine's hostname at bind time.
+        # The isolated lab has no real DNS, so avoid that unrelated lookup.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = "policy-lab"
+        self.server_port = self.server_address[1]
+class V6Server(Server):
     address_family = socket.AF_INET6
 def serve6(): V6Server(("::", 18082), Handler).serve_forever()
 threading.Thread(target=serve6, daemon=True).start()
 threading.Thread(target=udp, daemon=True).start()
-http.server.ThreadingHTTPServer(("0.0.0.0", 18080), Handler).serve_forever()
+Server(("0.0.0.0", 18080), Handler).serve_forever()
 """)
     process = None
     forwarding_rules: list[tuple[str, str]] = []
