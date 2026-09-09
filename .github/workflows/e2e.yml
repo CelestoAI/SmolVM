@@ -128,10 +128,10 @@ jobs:
             --configure-runtime \
             --runtime-user "$USER"
 
-      - name: Install bridge test tooling
+      - name: Install network test tooling
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends iproute2 iputils-ping
+          sudo apt-get install -y --no-install-recommends iproute2 iputils-ping nftables iptables
 
       - name: Enable KVM and optional vsock
         run: |

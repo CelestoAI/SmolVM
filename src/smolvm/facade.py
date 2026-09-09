@@ -47,6 +47,7 @@ from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
 from smolvm._naming import generate_sandbox_name
+from smolvm._network_policy import parse_network_policy, validate_network_policy_options
 from smolvm.callbacks import Callback, CallbackDispatcher, RunContext
 from smolvm.comm import RustHttpVsockChannel
 from smolvm.comm.base import CommChannel, CommChannelKind
@@ -65,6 +66,7 @@ from smolvm.exceptions import (
     CommandExecutionUnavailableError,
     OperationTimeoutError,
     SmolVMError,
+    ValidationError,
 )
 from smolvm.images.boot import BootImage
 from smolvm.images.cloud_init import (
@@ -980,8 +982,11 @@ class SmolVM:
             actually tried.)
         internet_settings: Network access controls. Accepts an
             :class:`~smolvm.types.InternetSettings` instance or a dict
-            (e.g. ``{"allowed_domains": ["https://example.com/"]}``).
-            When set, only the listed domains are reachable from the VM.
+            (e.g. ``{"mode": "off"}``). Use ``InternetSettings(mode="off")``
+            for typed construction. Unknown settings are rejected before image preparation.
+            Explicit off/restricted modes require Linux Firecracker and vsock.
+            Policy is immutable after creation. Legacy domain lists allow setup-time
+            resolved IPs, not verified hostnames; HTTP-method filtering is unsupported.
         mounts: Host directories to mount inside the guest, as
             ``HOST_PATH[:GUEST_PATH]`` strings. Equivalent to passing
             ``WorkspaceMount`` instances on a :class:`VMConfig`.
@@ -994,6 +999,9 @@ class SmolVM:
             ``config.workspace_mounts`` instead.
 
     Raises:
+        ValidationError: Invalid or unsupported network policy; details include field
+            errors for invalid settings. Direct InternetSettings construction uses
+            Pydantic's ValidationError instead.
         ValueError: If both *config* and *vm_id* are given, or if auto-config-only
             options are used together with either of them.
     """
@@ -1021,6 +1029,32 @@ class SmolVM:
         callbacks: list[Callback] | None = None,
         state_manager: StateManagerProtocol | None = None,
     ) -> None:
+        if internet_settings is not None:
+            if vm_id is not None:
+                raise ValidationError("Policy cannot change on reconnect; omit internet_settings.")
+            if config is not None and config.internet_settings is not None:
+                raise ValidationError(
+                    "internet_settings is already set on VMConfig; pass it in one place only."
+                )
+            internet_settings = parse_network_policy(internet_settings)
+        policy = internet_settings or (config.internet_settings if config is not None else None)
+        if policy is not None:
+            policy = parse_network_policy(policy)
+            if not policy.is_allow_all_domains:
+                policy_backend = backend or (config.backend if config is not None else None)
+                if policy_backend is None and (mounts or (config and config.workspace_mounts)):
+                    policy_backend = BACKEND_QEMU
+                validate_network_policy_options(
+                    policy,
+                    backend=resolve_backend(policy_backend),
+                    guest_os=config.guest_os if config is not None else (os or GuestOS.ALPINE),
+                    comm_channel=comm_channel or (config.comm_channel if config else None),
+                    has_mounts=bool(mounts or (config and config.workspace_mounts)),
+                    has_forwards=bool(config and config.port_forwards),
+                    network_mode=config.network_attachment.mode if config else "nat",
+                    qemu_network=config.qemu_network if config else "slirp",
+                )
+
         if config is not None and vm_id is not None:
             raise ValueError("Provide either config or vm_id, not both.")
 
@@ -1069,9 +1103,9 @@ class SmolVM:
                     "Windows guests in this release; drop the mounts= arg."
                 )
             if internet_settings is not None:
-                raise ValueError(
-                    "Egress controls (internet_settings=) are not yet "
-                    "supported for Windows guests; drop the internet_settings= arg."
+                raise ValidationError(
+                    "Windows guests do not support internet_settings; use a Linux guest "
+                    "on Linux with backend='firecracker' and comm_channel='vsock'."
                 )
 
         # Workspace mounts currently require the QEMU backend (virtio-9p).
@@ -1126,21 +1160,8 @@ class SmolVM:
                 data_dir=data_dir,
             )
 
-        # Normalize and merge internet_settings into the config
-        if internet_settings is not None:
-            if vm_id is not None:
-                raise ValueError(
-                    "internet_settings cannot be set when reconnecting to an existing VM."
-                )
-            if isinstance(internet_settings, dict):
-                internet_settings = InternetSettings(**internet_settings)
-            if config is not None and config.internet_settings is not None:
-                raise ValueError(
-                    "internet_settings is already set on the provided VMConfig; "
-                    "pass it in one place only (either on the config or as a keyword argument)."
-                )
-            if config is not None:
-                config = config.model_copy(update={"internet_settings": internet_settings})
+        if internet_settings is not None and config is not None:
+            config = config.model_copy(update={"internet_settings": internet_settings})
 
         # Normalize and merge mounts into the config
         if mounts is not None:
@@ -1471,6 +1492,17 @@ class SmolVM:
         per-VM runtime settings and delegates disk isolation/network setup to
         the normal SmolVM lifecycle.
         """
+        if internet_settings is not None:
+            internet_settings = parse_network_policy(internet_settings)
+            validate_network_policy_options(
+                internet_settings,
+                backend=_normalize_from_image_backend(image, backend, vm_id or "sandbox"),
+                guest_os=guest_os,
+                comm_channel=comm_channel,
+                has_mounts=bool(mounts),
+                has_forwards=bool(port_forwards),
+                qemu_network=network or "slirp",
+            )
         resolved_vm_id = _resolve_vm_name(vm_id, prefix=name_prefix)
 
         resolved_backend = _normalize_from_image_backend(image, backend, resolved_vm_id)
@@ -2463,6 +2495,12 @@ class SmolVM:
             The host localhost port to connect to.
         """
         self._refresh_info()
+        settings = self._info.config.internet_settings
+        if settings is not None and settings.has_explicit_restrictions:
+            raise SmolVMError(
+                f"Sandbox '{self._vm_id}' does not support exposed ports with this network mode; "
+                "create a separate sandbox with mode='open' if you need exposed ports."
+            )
 
         if self._info.status != VMState.RUNNING:
             raise SmolVMError(

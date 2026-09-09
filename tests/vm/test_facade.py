@@ -1267,7 +1267,7 @@ class TestVMLocalImageParam:
         """Egress allowlist on Windows guests is Phase 2 scope."""
         disk = tmp_path / "win11.qcow2"
         disk.touch()
-        with pytest.raises(ValueError, match=r"internet_settings.* not yet supported for Windows"):
+        with pytest.raises(SmolVMError, match="guest does not support network restrictions"):
             SmolVM(
                 os="windows",
                 image=str(disk),
@@ -3873,3 +3873,49 @@ class TestVMFileDownload:
 
         with pytest.raises(ValueError, match="cannot be empty"):
             vm.download_file("", tmp_path / "out.txt")
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"mod": "off"},
+        {"enabled": False},
+        {"allowed_ips": ["1.1.1.1"]},
+        {"mode": "restricted"},
+        {"mode": "restricted", "allowed_cidrs": ["1.1.1.1"], "allowed_ports": [443]},
+    ],
+)
+def test_policy_errors_precede_image_preparation(settings):
+    from smolvm import ValidationError
+
+    with (
+        patch("smolvm.facade._build_auto_config") as build,
+        patch("smolvm.facade._build_local_image_config") as local,
+        patch("smolvm.facade.SmolVMManager") as manager,
+    ):
+        for kwargs in ({}, {"image": "/tmp/not-needed.qcow2", "os": "alpine"}):
+            with pytest.raises(ValidationError) as error:
+                SmolVM(internet_settings=settings, **kwargs)
+            assert error.value.details["field"] == "internet_settings"
+            assert error.value.details["errors"]
+        build.assert_not_called()
+        local.assert_not_called()
+        manager.assert_not_called()
+
+
+def test_unsupported_policy_precedes_image_preparation():
+    from smolvm import ValidationError
+
+    with patch("smolvm.facade._build_auto_config") as build:
+        with pytest.raises(ValidationError, match="Linux Firecracker"):
+            SmolVM(backend="qemu", internet_settings={"mode": "off"})
+        build.assert_not_called()
+
+
+def test_from_image_policy_errors_precede_kernel_preparation():
+    from smolvm import ValidationError
+
+    with patch("smolvm.facade.ensure_base_kernel_for_backend") as kernel:
+        with pytest.raises(ValidationError):
+            SmolVM.from_image(MagicMock(), internet_settings={"mod": "off"})
+        kernel.assert_not_called()

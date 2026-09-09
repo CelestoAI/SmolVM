@@ -17,6 +17,7 @@
 import re
 from datetime import datetime
 from enum import Enum
+from ipaddress import IPv4Network, collapse_addresses
 from pathlib import Path
 from typing import Annotated, Any, Literal, Protocol
 from urllib.parse import urlparse
@@ -291,27 +292,72 @@ class DesktopEndpoint(BaseModel):
 
 
 class InternetSettings(BaseModel):
-    """Network access controls for a VM.
+    """Outbound access settings; explicit restrictions require Firecracker and vsock.
 
-    Restricts which external domains (and eventually HTTP methods) the guest
-    can reach.  Domain entries may be full URLs (``https://example.com/path``)
-    or bare hostnames (``example.com``).  The special value ``"*"`` means
-    "allow everything" (the default).
-
-    Attributes:
-        allowed_domains: Domains the guest may connect to.
-            Accepts URLs or bare hostnames.  Default ``["*"]`` allows all.
-        allowed_http_methods: HTTP methods the guest may use.
-            Default ``["*"]`` allows all.  **Not enforced yet** — reserved
-            for a future proxy-based implementation.
+    Legacy allowed_domains resolves names to IPv4 addresses at setup time; it
+    does not verify hostnames on connections. HTTP method filtering is unsupported.
     """
 
-    allowed_domains: list[str] = ["*"]
-    allowed_http_methods: list[str] = ["*"]
+    mode: Literal["open", "off", "restricted"] | None = None
+    allowed_cidrs: tuple[str, ...] = ()
+    allowed_domains: tuple[str, ...] = ("*",)
+    allowed_http_methods: tuple[str, ...] = ("*",)
+
+    @field_validator("allowed_cidrs")
+    @classmethod
+    def normalize_cidrs(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        networks = []
+        for value in values:
+            try:
+                network = IPv4Network(value.strip())
+            except ValueError:
+                try:
+                    corrected = IPv4Network(value.strip(), strict=False)
+                except ValueError:
+                    raise ValueError(
+                        f"Invalid IPv4 address or range {value!r}; use an address such as "
+                        "'203.0.113.10' or a range such as '10.20.0.0/24'."
+                    ) from None
+                raise ValueError(
+                    f"Range {value!r} must start at its first address; "
+                    f"use '{corrected}' for the range or remove the slash and prefix "
+                    "to allow only one address."
+                ) from None
+            networks.append(network)
+        forbidden = (IPv4Network("172.16.0.0/16"), IPv4Network("169.254.0.0/16"))
+        if any(network.overlaps(block) for network in networks for block in forbidden):
+            raise ValueError(
+                "Sandbox and link-local addresses cannot be allowed; remove those ranges."
+            )
+        return tuple(str(network) for network in collapse_addresses(networks))
+
+    @model_validator(mode="after")
+    def validate_policy(self) -> "InternetSettings":
+        if self.allowed_http_methods != ("*",):
+            raise ValueError(
+                "HTTP method restrictions are unsupported; remove allowed_http_methods."
+            )
+        if self.mode is not None and self.allowed_domains != ("*",):
+            raise ValueError(
+                "Use either mode or allowed_domains, not both; remove allowed_domains."
+            )
+        if self.mode == "restricted" and not self.allowed_cidrs:
+            raise ValueError(
+                "restricted requires allowed_cidrs; use mode='off' to deny all access."
+            )
+        if self.mode != "restricted" and self.allowed_cidrs:
+            raise ValueError(
+                "allowed_cidrs requires mode='restricted'; set that mode or remove the list."
+            )
+        return self
+
+    @property
+    def has_explicit_restrictions(self) -> bool:
+        return self.mode in {"off", "restricted"}
 
     @field_validator("allowed_domains")
     @classmethod
-    def normalize_domains(cls, v: list[str]) -> list[str]:
+    def normalize_domains(cls, v: tuple[str, ...]) -> tuple[str, ...]:
         """Extract and store only lowercased hostnames."""
         normalized: list[str] = []
         for entry in v:
@@ -346,11 +392,11 @@ class InternetSettings(BaseModel):
                 normalized.append(hostname.lower())
         if not normalized:
             raise ValueError("allowed_domains must contain at least one entry")
-        return normalized
+        return tuple(normalized)
 
     @field_validator("allowed_http_methods")
     @classmethod
-    def normalize_methods(cls, v: list[str]) -> list[str]:
+    def normalize_methods(cls, v: tuple[str, ...]) -> tuple[str, ...]:
         """Uppercase and deduplicate HTTP method entries."""
         normalized: list[str] = []
         seen: set[str] = set()
@@ -364,14 +410,14 @@ class InternetSettings(BaseModel):
             normalized.append(method)
         if not normalized:
             raise ValueError("allowed_http_methods must contain at least one entry")
-        return normalized
+        return tuple(normalized)
 
     @property
     def is_allow_all_domains(self) -> bool:
         """Whether all domains are allowed (wildcard)."""
-        return "*" in self.allowed_domains
+        return not self.has_explicit_restrictions and "*" in self.allowed_domains
 
-    model_config = {"frozen": True}
+    model_config = {"frozen": True, "extra": "forbid"}
 
 
 class NetworkAttachmentConfig(BaseModel):
@@ -595,8 +641,9 @@ class VMConfig(BaseModel):
                 and not self.internet_settings.is_allow_all_domains
             ):
                 raise ValueError(
-                    "macOS guests do not support domain restrictions in this release; "
-                    "remove internet_settings"
+                    "macOS guests do not support network restrictions in this release; "
+                    "use a Linux guest on Linux with backend='firecracker' "
+                    "and comm_channel='vsock'."
                 )
             return self
 
@@ -672,8 +719,8 @@ class VMConfig(BaseModel):
             )
         if self.internet_settings is not None and not self.internet_settings.is_allow_all_domains:
             raise ValueError(
-                "Domain allow-lists are not enforced in bridge mode; "
-                "remove internet_settings or use NAT mode."
+                "Network restrictions are not supported with bridge networking; "
+                "set network_attachment={'mode': 'nat'} to use private networking."
             )
         return self
 

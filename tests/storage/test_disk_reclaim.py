@@ -43,6 +43,8 @@ def manager(tmp_path: Path) -> SmolVMManager:
     network.async_prepare_tap_device = AsyncMock()
     network.async_add_route = AsyncMock()
     network.async_setup_nat = AsyncMock()
+    network.async_apply_network_policy = AsyncMock()
+    network.async_remove_network_policy = AsyncMock()
     network.async_setup_ssh_port_forward = AsyncMock()
     network.async_cleanup_nat_rules = AsyncMock()
     network.async_cleanup_tap = AsyncMock()

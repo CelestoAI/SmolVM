@@ -23,6 +23,7 @@ import pytest
 
 from smolvm.exceptions import SmolVMError, VMNotFoundError
 from smolvm.types import (
+    InternetSettings,
     SnapshotArtifacts,
     SnapshotInfo,
     SnapshotType,
@@ -675,3 +676,45 @@ def test_restore_firecracker_disk_snapshot_boots_fresh_without_loading_vmstate(
     assert managed_disk.read_text() == "disk-only-ext4"
     mock_client.load_snapshot.assert_not_called()
     mock_client.start_instance.assert_called_once()
+
+
+@pytest.mark.parametrize("mode", ["off", "restricted"])
+def test_restore_policy_failure_prevents_guest_execution(smol_vm, sample_config, monkeypatch, mode):
+    monkeypatch.setattr("smolvm.vm.sys.platform", "linux")
+    monkeypatch.setattr("smolvm.comm.select.platform.system", lambda: "Linux")
+    settings = InternetSettings(
+        mode=mode, allowed_cidrs=["203.0.113.7"] if mode == "restricted" else []
+    )
+    config = sample_config.model_copy(
+        update={"internet_settings": settings, "comm_channel": "vsock"}
+    )
+    info = smol_vm.create(config)
+    snapshot_dir = smol_vm.snapshot_dir / "policy-snapshot"
+    snapshot_dir.mkdir(parents=True)
+    snapshot = SnapshotInfo(
+        snapshot_id="policy-snapshot",
+        vm_id=info.vm_id,
+        backend="firecracker",
+        artifacts=SnapshotArtifacts(
+            state_path=snapshot_dir / "state",
+            memory_path=snapshot_dir / "memory",
+            disk_path=snapshot_dir / "disk.ext4",
+        ),
+        vm_config=info.config,
+        network_config=info.network,
+        created_at=datetime.now(UTC),
+    )
+    for path in (
+        snapshot.artifacts.state_path,
+        snapshot.artifacts.memory_path,
+        snapshot.artifacts.disk_path,
+    ):
+        path.write_text("snapshot")
+    smol_vm.state.create_snapshot(snapshot)
+    smol_vm.delete(info.vm_id)
+    smol_vm.network.apply_network_policy.side_effect = SmolVMError("policy install failed")
+    adapter = MagicMock()
+    monkeypatch.setattr(smol_vm, "_runtime_adapter_for_snapshot", lambda _: adapter)
+    with pytest.raises(SmolVMError, match="policy install failed"):
+        smol_vm.restore_snapshot(snapshot.snapshot_id, resume_vm=True)
+    adapter.restore_snapshot.assert_not_called()

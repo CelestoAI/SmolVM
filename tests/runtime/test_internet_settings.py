@@ -29,13 +29,13 @@ class TestInternetSettings:
 
     def test_defaults(self) -> None:
         settings = InternetSettings()
-        assert settings.allowed_domains == ["*"]
-        assert settings.allowed_http_methods == ["*"]
+        assert settings.allowed_domains == ("*",)
+        assert settings.allowed_http_methods == ("*",)
         assert settings.is_allow_all_domains is True
 
     def test_specific_domains(self) -> None:
         settings = InternetSettings(allowed_domains=["https://example.com/"])
-        assert settings.allowed_domains == ["example.com"]
+        assert settings.allowed_domains == ("example.com",)
         assert settings.is_allow_all_domains is False
 
     def test_wildcard_in_domains(self) -> None:
@@ -44,15 +44,15 @@ class TestInternetSettings:
 
     def test_url_extracts_hostname(self) -> None:
         settings = InternetSettings(allowed_domains=["https://Example.COM/", "http://api.test.io"])
-        assert settings.allowed_domains == ["example.com", "api.test.io"]
+        assert settings.allowed_domains == ("example.com", "api.test.io")
 
     def test_bare_domain_lowercased(self) -> None:
         settings = InternetSettings(allowed_domains=["  Example.COM  "])
-        assert settings.allowed_domains == ["example.com"]
+        assert settings.allowed_domains == ("example.com",)
 
     def test_bare_domain_with_port(self) -> None:
         settings = InternetSettings(allowed_domains=["example.com:8080"])
-        assert settings.allowed_domains == ["example.com"]
+        assert settings.allowed_domains == ("example.com",)
 
     def test_url_with_path_raises(self) -> None:
         with pytest.raises(ValidationError, match="paths"):
@@ -68,7 +68,7 @@ class TestInternetSettings:
 
     def test_empty_entries_filtered(self) -> None:
         settings = InternetSettings(allowed_domains=["example.com", "  ", "test.com"])
-        assert settings.allowed_domains == ["example.com", "test.com"]
+        assert settings.allowed_domains == ("example.com", "test.com")
 
     def test_empty_list_raises(self) -> None:
         with pytest.raises(ValidationError, match="allowed_domains"):
@@ -78,13 +78,10 @@ class TestInternetSettings:
         with pytest.raises(ValidationError, match="allowed_domains"):
             InternetSettings(allowed_domains=["", "  "])
 
-    def test_methods_uppercased(self) -> None:
-        settings = InternetSettings(allowed_http_methods=["get", "post"])
-        assert settings.allowed_http_methods == ["GET", "POST"]
-
-    def test_methods_deduplicated(self) -> None:
-        settings = InternetSettings(allowed_http_methods=["GET", "get", "Get"])
-        assert settings.allowed_http_methods == ["GET"]
+    @pytest.mark.parametrize("methods", [["get", "post"], ["GET", "get", "Get"], ["*", "GET"]])
+    def test_unenforced_methods_rejected(self, methods: list[str]) -> None:
+        with pytest.raises(ValidationError, match="HTTP method restrictions"):
+            InternetSettings(allowed_http_methods=methods)
 
     def test_empty_methods_raises(self) -> None:
         with pytest.raises(ValidationError, match="allowed_http_methods"):
@@ -97,7 +94,7 @@ class TestInternetSettings:
 
     def test_from_dict(self) -> None:
         settings = InternetSettings(**{"allowed_domains": ["https://example.com/"]})
-        assert settings.allowed_domains == ["example.com"]
+        assert settings.allowed_domains == ("example.com",)
 
 
 class TestResolveDomains:
@@ -173,3 +170,86 @@ class TestResolveDomains:
         mock_getaddrinfo.side_effect = fake_resolve  # type: ignore[union-attr]
         result = resolve_domains_to_ips(["https://good.com", "https://bad.invalid"])
         assert result == ["1.2.3.4"]
+
+
+@pytest.mark.parametrize("mode", ["open", "off", "restricted"])
+def test_explicit_policy_round_trip(mode: str) -> None:
+    cidrs = ["203.0.113.7", "203.0.113.7/32", "198.51.100.0/24"] if mode == "restricted" else []
+    settings = InternetSettings(mode=mode, allowed_cidrs=cidrs)
+    assert InternetSettings.model_validate_json(settings.model_dump_json()) == settings
+    assert settings.is_allow_all_domains is (mode == "open")
+    if mode == "restricted":
+        assert settings.allowed_cidrs == ("198.51.100.0/24", "203.0.113.7/32")
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"mode": "restricted"},
+        {"mode": "off", "allowed_cidrs": ["1.1.1.1"]},
+        {"allowed_cidrs": ["1.1.1.1"]},
+        {"mode": "open", "allowed_domains": ["example.com"]},
+        {"mode": "restricted", "allowed_cidrs": ["::/0"]},
+        {"mode": "restricted", "allowed_cidrs": ["0.0.0.0/0"]},
+        {"mode": "restricted", "allowed_cidrs": ["172.16.0.7"]},
+        {"mode": "restricted", "allowed_cidrs": ["169.254.169.254"]},
+        {"mode": "restricted", "allowed_cidrs": ["example.com"]},
+    ],
+)
+def test_invalid_policy(settings: dict) -> None:
+    with pytest.raises(ValidationError):
+        InternetSettings(**settings)
+
+
+def test_overlapping_ranges_are_collapsed() -> None:
+    settings = InternetSettings(mode="restricted", allowed_cidrs=["10.20.0.0/24", "10.20.0.1"])
+    assert settings.allowed_cidrs == ("10.20.0.0/24",)
+
+
+@pytest.mark.parametrize("value", ["example.com", "::1", "10.0.0.1/99", ""])
+def test_invalid_address_shows_usable_examples(value: str) -> None:
+    with pytest.raises(ValidationError) as error:
+        InternetSettings(mode="restricted", allowed_cidrs=[value])
+    message = str(error.value)
+    assert "Invalid IPv4 address or range" in message
+    assert "203.0.113.10" in message
+    assert "10.20.0.0/24" in message
+
+
+def test_non_aligned_range_suggests_correction_without_widening_access() -> None:
+    with pytest.raises(ValidationError, match="use '10.20.0.0/24'"):
+        InternetSettings(mode="restricted", allowed_cidrs=["10.20.0.7/24"])
+    assert InternetSettings(mode="restricted", allowed_cidrs=["10.20.0.7"]).allowed_cidrs == (
+        "10.20.0.7/32",
+    )
+
+
+@pytest.mark.parametrize("unknown", [{"mod": "off"}, {"enabled": False}, {"allowed_ports": [443]}])
+def test_unknown_policy_fields_are_rejected(unknown: dict) -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        InternetSettings(**unknown)
+
+
+def test_policy_owns_immutable_collections_and_preserves_json_arrays(tmp_path):
+    import json
+
+    from smolvm.storage import MemoryStateManager
+    from smolvm.types import VMConfig
+
+    addresses = ["1.1.1.1"]
+    policy = InternetSettings(mode="restricted", allowed_cidrs=addresses)
+    disk = tmp_path / "disk"
+    disk.touch()
+    config = VMConfig(rootfs_path=disk, kernel_path=disk, internet_settings=policy)
+    inventory = MemoryStateManager(tmp_path)
+    info = inventory.create_vm(config)
+    addresses.append("2.2.2.2")
+    assert info.config.internet_settings.allowed_cidrs == ("1.1.1.1/32",)
+    for field in ("allowed_cidrs", "allowed_domains", "allowed_http_methods"):
+        with pytest.raises(AttributeError):
+            getattr(info.config.internet_settings, field).append("unexpected")
+    saved = json.loads(policy.model_dump_json())
+    assert saved["allowed_cidrs"] == ["1.1.1.1/32"]
+    assert InternetSettings.model_validate(saved) == policy
+    legacy = InternetSettings.model_validate_json('{"allowed_domains": ["example.com"]}')
+    assert legacy.allowed_domains == ("example.com",)
