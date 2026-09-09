@@ -14,8 +14,11 @@
 
 """Tests for SmolVM images module."""
 
+import errno
 import hashlib
 import json
+import os
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -54,6 +57,52 @@ def image_registry() -> dict[str, ImageSource]:
 def image_manager(tmp_path: Path, image_registry: dict[str, ImageSource]) -> ImageManager:
     """Create an ImageManager with temp cache and test registry."""
     return ImageManager(cache_dir=tmp_path / "images", registry=image_registry)
+
+
+@pytest.fixture
+def staging_fds(monkeypatch):
+    """Record the download's real staging descriptors, not process-wide totals."""
+    descriptors = []
+    mkstemp = tempfile.mkstemp
+
+    def tracked_mkstemp(*args, **kwargs):
+        fd, path = mkstemp(*args, **kwargs)
+        descriptors.append(fd)
+        return fd, path
+
+    monkeypatch.setattr("smolvm.images.manager.tempfile.mkstemp", tracked_mkstemp)
+    return descriptors
+
+
+def assert_staging_fds_closed(descriptors):
+    """Check immediately after each download, before descriptor numbers are reused."""
+    for fd in descriptors:
+        with pytest.raises(OSError) as error:
+            os.fstat(fd)
+        assert error.value.errno == errno.EBADF
+    descriptors.clear()
+
+
+def test_staging_descriptor_check_detects_an_open_file(staging_fds, tmp_path):
+    """The targeted check must still detect a leaked, already-unlinked file."""
+    fd, path = tempfile.mkstemp(dir=tmp_path)
+    Path(path).unlink()
+    try:
+        with pytest.raises(pytest.fail.Exception, match="DID NOT RAISE"):
+            assert_staging_fds_closed(staging_fds)
+    finally:
+        os.close(fd)
+    assert_staging_fds_closed(staging_fds)
+
+
+def test_staging_descriptor_check_ignores_unrelated_cleanup(staging_fds, tmp_path):
+    """Closing another file must not make the download's cleanup look like a leak."""
+    with (tmp_path / "unrelated").open("w") as unrelated:
+        fd, path = tempfile.mkstemp(dir=tmp_path)
+        os.close(fd)
+        Path(path).unlink()
+        unrelated.close()
+        assert_staging_fds_closed(staging_fds)
 
 
 class TestListAvailable:
@@ -310,7 +359,7 @@ class TestDownloadFile:
 
     @patch("smolvm.images.manager.requests.get")
     def test_failed_download_does_not_leak_file_descriptors(
-        self, mock_get: MagicMock, image_manager: ImageManager, tmp_path: Path
+        self, mock_get: MagicMock, image_manager: ImageManager, tmp_path: Path, staging_fds
     ) -> None:
         """A failing download must close its staging descriptor.
 
@@ -320,19 +369,14 @@ class TestDownloadFile:
         """
         import requests
 
-        fd_dir = Path("/proc/self/fd")
-        if not fd_dir.is_dir():
-            pytest.skip("descriptor accounting requires /proc")
-
         mock_get.side_effect = requests.ConnectionError("no network")
         dest = tmp_path / "output.bin"
 
-        before = len(list(fd_dir.iterdir()))
         for _ in range(25):
             with pytest.raises(ImageError):
                 image_manager._download_file("https://example.com/file", dest, None)
-
-        assert len(list(fd_dir.iterdir())) == before
+            assert staging_fds  # Verify this failure path actually allocated a file.
+            assert_staging_fds_closed(staging_fds)
 
     # Every way a download can fail before it completes. Pinning one failure
     # mode is not enough: a later change added blank-digest validation between
@@ -359,24 +403,20 @@ class TestDownloadFile:
         label: str,
         get_error: Exception | None,
         digest: str | None,
+        staging_fds,
     ) -> None:
         """No early exit may strand the staging descriptor or its .tmp file."""
-        fd_dir = Path("/proc/self/fd")
-        if not fd_dir.is_dir():
-            pytest.skip("descriptor accounting requires /proc")
-
         if get_error is not None:
             mock_get.side_effect = get_error
         else:
             mock_get.return_value = _http_response(b"payload")
 
         dest = tmp_path / "output.bin"
-        before = len(list(fd_dir.iterdir()))
         for _ in range(25):
             with pytest.raises(ImageError):
                 image_manager._download_file("https://example.com/file", dest, digest)
-
-        assert len(list(fd_dir.iterdir())) == before, f"{label} leaked descriptors"
+            assert bool(staging_fds) is (label != "blank digest")
+            assert_staging_fds_closed(staging_fds)
         assert not list(tmp_path.glob("*.tmp")), f"{label} orphaned staging files"
 
     @pytest.mark.parametrize(
@@ -385,22 +425,18 @@ class TestDownloadFile:
         ids=["blank digest", "digest mismatch"],
     )
     def test_s3_failure_modes_do_not_leak_either(
-        self, image_manager: ImageManager, tmp_path: Path, label: str, digest: str
+        self, image_manager: ImageManager, tmp_path: Path, label: str, digest: str, staging_fds
     ) -> None:
         """The S3 path allocates the same way and must release it the same way."""
-        fd_dir = Path("/proc/self/fd")
-        if not fd_dir.is_dir():
-            pytest.skip("descriptor accounting requires /proc")
-
         dest = tmp_path / "output.bin"
-        before = len(list(fd_dir.iterdir()))
         for _ in range(25):
             with pytest.raises(ImageError):
                 image_manager._download_s3_file(
                     _s3_client(b"payload"), "bucket", "key", dest, digest
                 )
 
-        assert len(list(fd_dir.iterdir())) == before, f"{label} leaked descriptors"
+            assert bool(staging_fds) is (label != "blank digest")
+            assert_staging_fds_closed(staging_fds)
         assert not list(tmp_path.glob("*.tmp")), f"{label} orphaned staging files"
 
     @patch("smolvm.images.manager.requests.get")
