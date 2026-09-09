@@ -1,0 +1,218 @@
+{
+  "gcp-n2/baseline-before-c1": {
+    "samples": 100,
+    "requested_samples": 100,
+    "first_command_ms": {
+      "median_ms": 1473.8976054999853,
+      "p95_ms": 1487.7262779999683
+    },
+    "first_request_ms": {
+      "median_ms": 1485.378672500019,
+      "p95_ms": 1501.8003799999633
+    },
+    "restore_first_command_ms": {
+      "median_ms": 4040.0966169999606,
+      "p95_ms": 4069.5206249999956
+    }
+  },
+  "gcp-n2/candidate-open-c1": {
+    "samples": 100,
+    "requested_samples": 100,
+    "first_command_ms": {
+      "median_ms": 1488.9057149999303,
+      "p95_ms": 1504.0862060000109
+    },
+    "first_request_ms": {
+      "median_ms": 1500.7267634999835,
+      "p95_ms": 1514.8897619999389
+    },
+    "restore_first_command_ms": {
+      "median_ms": 4059.031325499973,
+      "p95_ms": 4098.781620000182
+    }
+  },
+  "gcp-n2/baseline-after-c1": {
+    "samples": 100,
+    "requested_samples": 100,
+    "first_command_ms": {
+      "median_ms": 1476.5221359999714,
+      "p95_ms": 1492.2003849999328
+    },
+    "first_request_ms": {
+      "median_ms": 1488.5259454999868,
+      "p95_ms": 1504.7974949998206
+    },
+    "restore_first_command_ms": {
+      "median_ms": 4042.300492000095,
+      "p95_ms": 4074.6214460000374
+    }
+  },
+  "github-ci/baseline-after-c8": {
+    "samples": 24,
+    "requested_samples": 24,
+    "first_command_ms": {
+      "median_ms": 2249.001419000024,
+      "p95_ms": 2461.0657690000153
+    },
+    "first_request_ms": {
+      "median_ms": 2266.3180149999675,
+      "p95_ms": 2466.997956
+    },
+    "restore_first_command_ms": {
+      "median_ms": 15767.554873999927,
+      "p95_ms": 16621.682637999926
+    }
+  },
+  "github-ci/baseline-before-c1": {
+    "samples": 100,
+    "requested_samples": 100,
+    "first_command_ms": {
+      "median_ms": 1059.0376940000397,
+      "p95_ms": 1125.6651490000422
+    },
+    "first_request_ms": {
+      "median_ms": 1064.6433299999671,
+      "p95_ms": 1132.3767070000486
+    },
+    "restore_first_command_ms": {
+      "median_ms": 1645.853559999921,
+      "p95_ms": 1845.2279349999117
+    }
+  },
+  "github-ci/baseline-before-c8": {
+    "samples": 24,
+    "requested_samples": 24,
+    "first_command_ms": {
+      "median_ms": 2072.609910000011,
+      "p95_ms": 2474.044655
+    },
+    "first_request_ms": {
+      "median_ms": 2090.764271000012,
+      "p95_ms": 2481.7045600000256
+    },
+    "restore_first_command_ms": {
+      "median_ms": 15757.676712999966,
+      "p95_ms": 16424.534214999992
+    }
+  },
+  "github-ci/candidate-off-c1": {
+    "samples": 100,
+    "requested_samples": 100,
+    "first_command_ms": {
+      "median_ms": 1124.8860765000472,
+      "p95_ms": 1193.6399589999382
+    },
+    "restore_first_command_ms": {
+      "median_ms": 1651.290361499946,
+      "p95_ms": 1752.602842999977
+    }
+  },
+  "github-ci/candidate-off-c8": {
+    "samples": 24,
+    "requested_samples": 24,
+    "first_command_ms": {
+      "median_ms": 2378.214479500002,
+      "p95_ms": 2527.0401509999374
+    },
+    "restore_first_command_ms": {
+      "median_ms": 16097.183248500016,
+      "p95_ms": 16903.05076300001
+    }
+  },
+  "github-ci/candidate-open-c1": {
+    "samples": 100,
+    "requested_samples": 100,
+    "first_command_ms": {
+      "median_ms": 1071.9588970000586,
+      "p95_ms": 1138.6439339999015
+    },
+    "first_request_ms": {
+      "median_ms": 1076.9916605000844,
+      "p95_ms": 1143.866825000032
+    },
+    "restore_first_command_ms": {
+      "median_ms": 1660.3160180001169,
+      "p95_ms": 1766.065830000116
+    }
+  },
+  "github-ci/candidate-open-c8": {
+    "samples": 24,
+    "requested_samples": 24,
+    "first_command_ms": {
+      "median_ms": 2308.8935930000216,
+      "p95_ms": 2459.0056320000144
+    },
+    "first_request_ms": {
+      "median_ms": 2327.9181229999895,
+      "p95_ms": 2466.116735000014
+    },
+    "restore_first_command_ms": {
+      "median_ms": 16065.495922499991,
+      "p95_ms": 16631.827411000017
+    }
+  },
+  "github-ci/candidate-restricted-1-c1": {
+    "samples": 100,
+    "requested_samples": 100,
+    "first_command_ms": {
+      "median_ms": 1112.85245199997,
+      "p95_ms": 1182.3540489999687
+    },
+    "first_request_ms": {
+      "median_ms": 1117.8194159999748,
+      "p95_ms": 1188.9610220000577
+    },
+    "restore_first_command_ms": {
+      "median_ms": 1652.8908870000123,
+      "p95_ms": 1768.1854639999983
+    }
+  },
+  "github-ci/candidate-restricted-1-c8": {
+    "samples": 24,
+    "requested_samples": 24,
+    "first_command_ms": {
+      "median_ms": 2419.1249485000412,
+      "p95_ms": 2527.238343000022
+    },
+    "first_request_ms": {
+      "median_ms": 2432.5634180000293,
+      "p95_ms": 2540.36691400006
+    },
+    "restore_first_command_ms": {
+      "median_ms": 15681.51308900002,
+      "p95_ms": 16574.34923200003
+    }
+  },
+  "github-ci/candidate-restricted-32-c1": {
+    "samples": 83,
+    "requested_samples": 100,
+    "first_command_ms": {
+      "median_ms": 1147.1526110003651,
+      "p95_ms": 1212.4558909999905
+    },
+    "first_request_ms": {
+      "median_ms": 1153.4116610000638,
+      "p95_ms": 1218.9143269997658
+    },
+    "restore_first_command_ms": {
+      "median_ms": 1680.227021999599,
+      "p95_ms": 1786.0611769997377
+    }
+  },
+  "github-ci/candidate-restricted-32-c8": {
+    "samples": 24,
+    "requested_samples": 24,
+    "first_command_ms": {
+      "median_ms": 2405.478701999982,
+      "p95_ms": 2579.4774510000025
+    },
+    "first_request_ms": {
+      "median_ms": 2419.593948499994,
+      "p95_ms": 2589.6504209999875
+    },
+    "restore_first_command_ms": {
+      "median_ms": 15945.726809000007,
+      "p95_ms": 16676.727742000025
+    }
+  }
+}
