@@ -1,0 +1,26 @@
+{
+  "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+  "python": "3.14.0",
+  "qemu": "QEMU emulator version 11.0.0\nCopyright (c) 2003-2026 Fabrice Bellard and the QEMU Project developers\n",
+  "memory_bytes": "38654705664",
+  "config": {
+    "backend": "qemu",
+    "guest_os": "ubuntu",
+    "qemu_network": "slirp",
+    "comm_channel": "ssh",
+    "memory": 512,
+    "vcpu_count": 1,
+    "kernel_path": "/Users/aniket/.smolvm/images/ubuntu-v0.0.31-arm64-qemu/vmlinux.bin",
+    "rootfs_path": "/tmp/smolvm-qemu-policy.K1b64P/app.qcow2",
+    "rootfs_format": "qcow2",
+    "boot_args": "console=ttyAMA0 reboot=k panic=1 root=/dev/vda rw init=/policy-init"
+  },
+  "note": "No other task-generated VM or test workload during measurement.",
+  "baseline_wheel_sha256": "05edd3291595c46605896771bab733cb5a16e96db1f3954946b852fd0788129c",
+  "candidate_wheel_sha256": "9445139fa003eb9a70826bd064ecd6f7281320a7f1300f641ea58b35398640a2",
+  "image_sha256": "2b95927a0f98091021cae2d2c1b971d03e64857deed864b07f60b4181431f315",
+  "kernel_sha256": "99e2f80dc54653bd7d5f74a59c8c5c765fea52f23e664ca50021782da5f3fa7f",
+  "harness_sha256": "a4ce63190aea79e68185c94fb9ebb9cab00f044417181b92e99369a829fd7ab6",
+  "baseline_packages": "{\"PyNaCl\": \"1.6.2\", \"Pygments\": \"2.21.0\", \"annotated-types\": \"0.8.0\", \"bcrypt\": \"5.0.0\", \"certifi\": \"2026.7.22\", \"cffi\": \"2.1.1\", \"charset-normalizer\": \"3.5.1\", \"click\": \"8.5.0\", \"cryptography\": \"50.0.1\", \"idna\": \"3.19\", \"invoke\": \"3.0.3\", \"markdown-it-py\": \"4.2.0\", \"mdurl\": \"0.1.2\", \"paramiko\": \"5.0.0\", \"pycdlib\": \"1.20.0\", \"pycparser\": \"3.0\", \"pydantic\": \"2.13.5\", \"pydantic_core\": \"2.46.5\", \"requests\": \"2.34.2\", \"rich\": \"15.0.0\", \"smolvm\": \"0.0.32\", \"smolvm-core\": \"2026.6.24\", \"typing-inspection\": \"0.4.4\", \"typing_extensions\": \"4.16.0\", \"urllib3\": \"2.7.0\", \"zstandard\": \"0.25.0\"}",
+  "candidate_packages": "{\"PyNaCl\": \"1.6.2\", \"Pygments\": \"2.21.0\", \"annotated-types\": \"0.8.0\", \"bcrypt\": \"5.0.0\", \"certifi\": \"2026.7.22\", \"cffi\": \"2.1.1\", \"charset-normalizer\": \"3.5.1\", \"click\": \"8.5.0\", \"cryptography\": \"50.0.1\", \"idna\": \"3.19\", \"iniconfig\": \"2.3.0\", \"invoke\": \"3.0.3\", \"markdown-it-py\": \"4.2.0\", \"mdurl\": \"0.1.2\", \"packaging\": \"26.3\", \"paramiko\": \"5.0.0\", \"pluggy\": \"1.6.0\", \"pycdlib\": \"1.20.0\", \"pycparser\": \"3.0\", \"pydantic\": \"2.13.5\", \"pydantic_core\": \"2.46.5\", \"pytest\": \"9.1.1\", \"pytest-asyncio\": \"1.4.0\", \"requests\": \"2.34.2\", \"rich\": \"15.0.0\", \"smolvm\": \"0.0.32\", \"smolvm-core\": \"2026.6.24\", \"typing-inspection\": \"0.4.4\", \"typing_extensions\": \"4.16.0\", \"urllib3\": \"2.7.0\", \"zstandard\": \"0.25.0\"}"
+}

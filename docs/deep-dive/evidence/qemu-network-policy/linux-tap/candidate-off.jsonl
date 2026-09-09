@@ -1,0 +1,25 @@
+{"configuration": {"mode": "off", "allow": [], "url": null, "samples": 24, "concurrency": 1, "restore": true, "vm_config": "/tmp/linux-run/linux-tap.json", "application_port": 18080, "output": "/tmp/linux-run/linux-tap-gates/candidate-off.jsonl", "data_dir": "/tmp/linux-run/gate-data-tap"}}
+{"sample": 0, "first_application_ms": 2300.7336289999785, "restore_first_application_ms": 2881.5857769998274}
+{"sample": 1, "first_application_ms": 2266.485992999833, "restore_first_application_ms": 2804.8123809999197}
+{"sample": 2, "first_application_ms": 2267.3039680000784, "restore_first_application_ms": 2686.0877990000063}
+{"sample": 3, "first_application_ms": 2268.7492649999967, "restore_first_application_ms": 2683.0203600000004}
+{"sample": 4, "first_application_ms": 2260.25568, "restore_first_application_ms": 2620.445321000034}
+{"sample": 5, "first_application_ms": 2272.9538309999953, "restore_first_application_ms": 2318.6740080000163}
+{"sample": 6, "first_application_ms": 2249.241955999878, "restore_first_application_ms": 2681.848962999993}
+{"sample": 7, "first_application_ms": 2273.521399999936, "restore_first_application_ms": 2747.3349039998993}
+{"sample": 8, "first_application_ms": 2271.9007750001765, "restore_first_application_ms": 2746.4392940000835}
+{"sample": 9, "first_application_ms": 2273.3624110001074, "restore_first_application_ms": 2619.9330950000785}
+{"sample": 10, "first_application_ms": 2271.9250190000366, "restore_first_application_ms": 2685.112588000038}
+{"sample": 11, "first_application_ms": 2270.035701000097, "restore_first_application_ms": 2805.962564000083}
+{"sample": 12, "first_application_ms": 2276.283338999974, "restore_first_application_ms": 2817.457170000125}
+{"sample": 13, "first_application_ms": 2263.1332759999623, "restore_first_application_ms": 2811.9916069999817}
+{"sample": 14, "first_application_ms": 2270.5883749999884, "restore_first_application_ms": 2812.089442000115}
+{"sample": 15, "first_application_ms": 2268.12979500005, "restore_first_application_ms": 2619.1744080001627}
+{"sample": 16, "first_application_ms": 2249.061496999957, "restore_first_application_ms": 2680.2720989999216}
+{"sample": 17, "first_application_ms": 2238.231786999904, "restore_first_application_ms": 2816.564320999987}
+{"sample": 18, "first_application_ms": 2241.6734230000657, "restore_first_application_ms": 2489.841967999837}
+{"sample": 19, "first_application_ms": 2245.9626709999156, "restore_first_application_ms": 2688.8078760000553}
+{"sample": 20, "first_application_ms": 2268.375662999915, "restore_first_application_ms": 2689.8538279999684}
+{"sample": 21, "first_application_ms": 2273.517886000036, "restore_first_application_ms": 2624.9183040001753}
+{"sample": 22, "first_application_ms": 2242.631445000143, "restore_first_application_ms": 2751.1974070000633}
+{"sample": 23, "first_application_ms": 2270.209969000007, "restore_first_application_ms": 2755.2241420000882}

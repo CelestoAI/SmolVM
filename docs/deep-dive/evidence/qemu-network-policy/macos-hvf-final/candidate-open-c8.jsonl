@@ -1,0 +1,25 @@
+{"configuration": {"mode": "open", "allow": [], "url": null, "samples": 24, "concurrency": 8, "restore": true, "vm_config": "/tmp/smolvm-qemu-policy.K1b64P/macos-slirp.json", "application_port": 18080, "output": "/tmp/smolvm-qemu-policy.K1b64P/macos-gates-awake/candidate-open-c8.jsonl", "data_dir": "/tmp/smolvm-qemu-policy.K1b64P/gate-data"}}
+{"sample": 0, "first_application_ms": 1600.5280829995172, "restore_first_application_ms": 3792.162500001723}
+{"sample": 1, "first_application_ms": 1583.571250004752, "restore_first_application_ms": 3875.010209005268}
+{"sample": 2, "first_application_ms": 1544.6256669965805, "restore_first_application_ms": 3326.3497500011}
+{"sample": 3, "first_application_ms": 1580.0278340029763, "restore_first_application_ms": 3860.5107920011505}
+{"sample": 4, "first_application_ms": 1613.7256670044735, "restore_first_application_ms": 3335.6604170039645}
+{"sample": 5, "first_application_ms": 1617.2995409942814, "restore_first_application_ms": 3529.196833005699}
+{"sample": 6, "first_application_ms": 1579.237583995564, "restore_first_application_ms": 3879.9537919985596}
+{"sample": 7, "first_application_ms": 1263.0035000038333, "restore_first_application_ms": 3708.918749995064}
+{"sample": 8, "first_application_ms": 1656.6449999954784, "restore_first_application_ms": 3353.444500004116}
+{"sample": 9, "first_application_ms": 1469.7433750043274, "restore_first_application_ms": 3339.3815829986124}
+{"sample": 10, "first_application_ms": 1566.4711249992251, "restore_first_application_ms": 3338.5308330034604}
+{"sample": 11, "first_application_ms": 1643.048624995572, "restore_first_application_ms": 3338.732500000333}
+{"sample": 12, "first_application_ms": 1636.6772910041618, "restore_first_application_ms": 3067.4538329985808}
+{"sample": 13, "first_application_ms": 1631.8552500015358, "restore_first_application_ms": 2777.2518750061863}
+{"sample": 14, "first_application_ms": 1651.9377080039703, "restore_first_application_ms": 3050.6763749945094}
+{"sample": 15, "first_application_ms": 1528.8147079991177, "restore_first_application_ms": 2995.6225829955656}
+{"sample": 16, "first_application_ms": 1453.7393330028863, "restore_first_application_ms": 2599.0070840052795}
+{"sample": 17, "first_application_ms": 1427.3482080025133, "restore_first_application_ms": 2618.698708996817}
+{"sample": 18, "first_application_ms": 1277.413042000262, "restore_first_application_ms": 2617.540708000888}
+{"sample": 19, "first_application_ms": 1414.8848339973483, "restore_first_application_ms": 2568.2549999983166}
+{"sample": 20, "first_application_ms": 1434.2937499968684, "restore_first_application_ms": 2607.171625000774}
+{"sample": 21, "first_application_ms": 1446.13770799333, "restore_first_application_ms": 2546.702124993317}
+{"sample": 22, "first_application_ms": 1439.0257080012816, "restore_first_application_ms": 2603.494499999215}
+{"sample": 23, "first_application_ms": 1388.309833004314, "restore_first_application_ms": 2568.2525000011083}

@@ -14,6 +14,7 @@
 
 """Tests for SmolVM main SDK class."""
 
+import socket
 import subprocess
 import sys
 import time
@@ -1716,6 +1717,7 @@ class TestProcessLifecycle:
         result = subprocess.CompletedProcess(args=["ps"], returncode=0, stdout="Z    \n", stderr="")
         with patch("smolvm.vm.subprocess.run", return_value=result) as mock_run:
             assert smol_vm._is_zombie_process(12345) is True
+
         mock_run.assert_called_once_with(
             ["ps", "-o", "state=", "-p", "12345"],
             check=False,
@@ -1723,6 +1725,14 @@ class TestProcessLifecycle:
             text=True,
             timeout=1.0,
         )
+
+    @pytest.mark.parametrize("first_check", [None, PermissionError()])
+    def test_process_reaped_during_zombie_probe_is_not_running(self, smol_vm, first_check):
+        with (
+            patch("smolvm.vm.os.kill", side_effect=[first_check, ProcessLookupError()]),
+            patch.object(smol_vm, "_is_zombie_process", return_value=False),
+        ):
+            assert smol_vm._is_process_running(12345) is False
 
     def test_kill_process_reaps_handle_so_followup_check_returns_false(
         self, smol_vm: SmolVMManager
@@ -2054,7 +2064,7 @@ class TestExplicitPolicyLifecycle:
         assert network.apply_network_policy.call_args.args[1] == list(settings.allowed_cidrs)
         network.setup_ssh_port_forward.assert_not_called()
 
-    @pytest.mark.parametrize("backend", ["qemu", "libkrun"])
+    @pytest.mark.parametrize("backend", ["libkrun"])
     def test_unsupported_policy_fails_before_allocating(self, smol_vm, sample_config, backend):
         config = sample_config.model_copy(
             update={"backend": backend, "internet_settings": InternetSettings(mode="off")}
@@ -2105,3 +2115,131 @@ class TestExplicitPolicyLifecycle:
         network.async_setup_nat.assert_awaited_once_with(
             info.network.tap_device, allow_outbound=False
         )
+
+
+class TestQemuPolicyLifecycle:
+    def test_forward_port_probe_allows_restart_but_not_a_live_listener(self):
+        with socket.socket() as listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(("127.0.0.1", 0))
+            port = listener.getsockname()[1]
+            listener.listen()
+            assert not SmolVMManager._local_tcp_port_is_available("127.0.0.1", port)
+            with socket.create_connection(("127.0.0.1", port)) as client:
+                peer, _ = listener.accept()
+                peer.close()  # Server actively closes: its local port enters TIME_WAIT.
+                assert client.recv(1) == b""
+        assert SmolVMManager._local_tcp_port_is_available("127.0.0.1", port)
+
+    @pytest.fixture
+    def qemu_policy(self, smol_vm, sample_config, monkeypatch, tmp_path):
+        monkeypatch.setattr("smolvm.vm.sys.platform", "linux")
+        network = _attach_mock_network(smol_vm)
+        config = sample_config.model_copy(
+            update={
+                "backend": "qemu",
+                "qemu_network": "tap",
+                "comm_channel": "ssh",
+                "internet_settings": InternetSettings(mode="off"),
+                "workspace_mounts": [WorkspaceMount(host_path=tmp_path, guest_path="/work")],
+            }
+        )
+        return smol_vm, config, network
+
+    @pytest.mark.parametrize("mode", ["off", "restricted"])
+    @pytest.mark.parametrize("tap_present", [False, True])
+    def test_create_and_live_repair_keep_scoped_replies(self, qemu_policy, mode, tap_present):
+        manager, config, network = qemu_policy
+        config = config.model_copy(
+            update={
+                "internet_settings": InternetSettings(
+                    mode=mode,
+                    allowed_cidrs=["203.0.113.7"] if mode == "restricted" else [],
+                )
+            }
+        )
+        info = manager.create(config)
+        network.reset_mock()
+        with (
+            patch("smolvm.vm.resolve_domains_to_ips", side_effect=AssertionError("DNS called")),
+            patch(
+                "smolvm.vm.socket.if_nametoindex",
+                return_value=1,
+                side_effect=None if tap_present else OSError("No such interface"),
+            ),
+        ):
+            manager.ensure_network_connectivity(info)
+        assert [c[0] for c in network.mock_calls] == [
+            *([] if tap_present else ["prepare_tap_device"]),
+            "add_route",
+            "apply_network_policy",
+            "setup_nat",
+            "setup_ssh_port_forward",
+        ]
+        network.apply_network_policy.assert_called_once_with(
+            info.network.tap_device,
+            list(config.internet_settings.allowed_cidrs),
+            guest_ip=info.network.guest_ip,
+        )
+        network.setup_nat.assert_called_once_with(info.network.tap_device, allow_outbound=False)
+        network.reset_mock()
+        network.apply_network_policy.side_effect = SmolVMError("nft failed")
+        with pytest.raises(SmolVMError, match="nft failed"):
+            manager.ensure_network_connectivity(info)
+        network.remove_network_policy.assert_not_called()
+        network.setup_nat.assert_not_called()
+
+    @pytest.mark.parametrize("operation", ["start", "resume"])
+    def test_failure_prevents_execution_and_allows_retry(self, qemu_policy, operation):
+        manager, config, network = qemu_policy
+        info = manager.create(config)
+        if operation == "resume":
+            manager.state.update_vm(info.vm_id, status=VMState.PAUSED)
+        adapter = MagicMock()
+        adapter.start.return_value = SimpleNamespace(
+            status=VMState.RUNNING,
+            pid=12345,
+            control_socket_path=None,
+            display=None,
+            vsock_uds_path=None,
+        )
+        manager._runtime_adapter_for_backend = MagicMock(return_value=adapter)
+        manager._runtime_adapter_for_vm = MagicMock(return_value=adapter)
+        network.apply_network_policy.side_effect = SmolVMError("nft failed")
+        with pytest.raises(SmolVMError, match="nft failed"):
+            getattr(manager, operation)(info.vm_id)
+        getattr(adapter, operation).assert_not_called()
+        network.apply_network_policy.side_effect = None
+        getattr(manager, operation)(info.vm_id)
+        getattr(adapter, operation).assert_called_once()
+
+    def test_failed_create_releases_resources_and_can_retry(self, qemu_policy):
+        manager, config, network = qemu_policy
+        network.apply_network_policy.side_effect = SmolVMError("nft failed")
+        with pytest.raises(SmolVMError, match="nft failed"):
+            manager.create(config)
+        with pytest.raises(VMNotFoundError):
+            manager.get(config.vm_id)
+        network.cleanup_tap.assert_called_once()
+        network.remove_network_policy.assert_called_once()
+        network.apply_network_policy.side_effect = None
+        assert manager.create(config).status == VMState.CREATED
+
+    @pytest.mark.asyncio
+    async def test_async_create_and_start_use_same_policy(self, qemu_policy):
+        manager, config, network = qemu_policy
+        info = await manager.async_create(config)
+        network.async_apply_network_policy.assert_awaited_once_with(
+            info.network.tap_device,
+            [],
+            guest_ip=info.network.guest_ip,
+        )
+        network.async_setup_nat.assert_awaited_once_with(
+            info.network.tap_device, allow_outbound=False
+        )
+        adapter = MagicMock(async_start=AsyncMock())
+        manager._runtime_adapter_for_backend = MagicMock(return_value=adapter)
+        network.apply_network_policy.side_effect = SmolVMError("nft failed")
+        with pytest.raises(SmolVMError, match="nft failed"):
+            await manager.async_start(info.vm_id)
+        adapter.async_start.assert_not_awaited()

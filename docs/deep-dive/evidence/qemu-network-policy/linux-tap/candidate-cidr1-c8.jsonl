@@ -1,0 +1,25 @@
+{"configuration": {"mode": "restricted", "allow": ["198.19.0.1/32"], "url": null, "samples": 24, "concurrency": 8, "restore": true, "vm_config": "/tmp/linux-run/linux-tap.json", "application_port": 18080, "output": "/tmp/linux-run/linux-tap-gates/candidate-cidr1-c8.jsonl", "data_dir": "/tmp/linux-run/gate-data-tap"}}
+{"sample": 0, "first_application_ms": 13745.952317999581, "restore_first_application_ms": 28323.15736800001}
+{"sample": 1, "first_application_ms": 13382.522669000082, "restore_first_application_ms": 28759.877497999696}
+{"sample": 2, "first_application_ms": 13741.809487999944, "restore_first_application_ms": 28396.647180999935}
+{"sample": 3, "first_application_ms": 13695.846381000138, "restore_first_application_ms": 30142.883793000237}
+{"sample": 4, "first_application_ms": 13651.524580999649, "restore_first_application_ms": 30129.968502000338}
+{"sample": 5, "first_application_ms": 13325.147013999867, "restore_first_application_ms": 25936.86332199968}
+{"sample": 6, "first_application_ms": 13692.034012000022, "restore_first_application_ms": 24896.392340000148}
+{"sample": 7, "first_application_ms": 13664.512091999768, "restore_first_application_ms": 24624.182582999765}
+{"sample": 8, "first_application_ms": 13644.479171999592, "restore_first_application_ms": 27183.583251000073}
+{"sample": 9, "first_application_ms": 13343.591863000256, "restore_first_application_ms": 27660.160042999905}
+{"sample": 10, "first_application_ms": 13439.39852099993, "restore_first_application_ms": 27851.855157000045}
+{"sample": 11, "first_application_ms": 13513.944478999747, "restore_first_application_ms": 27631.05330999997}
+{"sample": 12, "first_application_ms": 13266.635567999856, "restore_first_application_ms": 23311.135843999637}
+{"sample": 13, "first_application_ms": 13545.613384000262, "restore_first_application_ms": 23783.970216999933}
+{"sample": 14, "first_application_ms": 13683.733911000218, "restore_first_application_ms": 26946.67042500032}
+{"sample": 15, "first_application_ms": 13676.982953999868, "restore_first_application_ms": 26148.51350300023}
+{"sample": 16, "first_application_ms": 13127.335734000098, "restore_first_application_ms": 28376.71927500014}
+{"sample": 17, "first_application_ms": 13698.61003699998, "restore_first_application_ms": 27616.072582000015}
+{"sample": 18, "first_application_ms": 13618.13365099988, "restore_first_application_ms": 30038.489902000038}
+{"sample": 19, "first_application_ms": 13545.741859999907, "restore_first_application_ms": 28511.165281000103}
+{"sample": 20, "first_application_ms": 13510.774168999887, "restore_first_application_ms": 27272.692609999922}
+{"sample": 21, "first_application_ms": 13615.428107000298, "restore_first_application_ms": 27839.03107499964}
+{"sample": 22, "first_application_ms": 13634.9741920003, "restore_first_application_ms": 22837.195141999928}
+{"sample": 23, "first_application_ms": 13604.33907300012, "restore_first_application_ms": 28180.027644999882}

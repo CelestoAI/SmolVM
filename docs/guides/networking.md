@@ -41,6 +41,21 @@ A bridged sandbox can send traffic directly to the selected network. Configurati
 
 ## Turn outbound access off
 
+QEMU sandboxes on macOS and Linux can keep local applications and shared folders usable while blocking outbound access. Open access remains the default; opt in with `mode="off"`:
+
+```python
+from smolvm import SmolVM
+
+with SmolVM(backend="qemu", internet_settings={"mode": "off"}) as vm:
+    print(vm.run("echo hello").stdout)
+```
+
+The default QEMU network, called **slirp**, needs no administrator setup. Off mode uses QEMU's built-in restriction and disables IPv6. It blocks external TCP, UDP, and DNS, including QEMU's virtual DNS service. Explicit host forwarding remains available: turning outbound access off does not prevent your machine from connecting to an application inside the sandbox.
+
+Shared folders keep their existing setup requirements: a compatible image and a working SSH connection for folder setup. No new command connection is needed for ordinary application traffic.
+
+### Firecracker
+
 On Linux Firecracker sandboxes, turn outbound networking off while keeping commands and file transfers available:
 
 ```python
@@ -56,7 +71,7 @@ with SmolVM(
 
 The `vsock` setting uses a direct connection to the sandbox for commands and files. It does not need internet access. Networking off blocks guest-initiated IP traffic, including DNS and connections to your machine. Command output and explicit file downloads can still leave the sandbox through this direct connection.
 
-The default mode is `open`, which enables internet access. Managed private networking blocks connections between sandboxes and to IPv4 link-local addresses, including the common cloud metadata address `169.254.169.254`. It does not block every private network or every cloud provider's metadata service.
+The default mode is `open`, which enables internet access. Managed Linux TAP networking blocks connections between sandboxes and to IPv4 link-local addresses, including the common cloud metadata address `169.254.169.254`. It does not block every private network or every cloud provider's metadata service. These TAP isolation rules are not a claim about default-open slirp networking.
 
 After upgrading, existing running sandboxes keep their current network rules until SmolVM repairs their networking or they restart. Restart them to apply the updated baseline isolation. To use `off` or `restricted`, create a new sandbox with those settings; reconnecting does not change an existing sandbox's policy.
 
@@ -82,9 +97,55 @@ with SmolVM(
 
 `/32` means one address; a range such as `10.20.0.0/24` includes multiple addresses. Bare IPv4 addresses are also accepted.
 
-Only the listed destinations are reachable, on any port or protocol. IPv6 and connections to your machine are blocked. Sandbox and link-local address ranges cannot be allowed. There is no automatic DNS exception: use an IP address directly or explicitly include the resolver's address. Allowing a resolver permits other traffic to that same address too.
+Only the listed destinations can receive new outbound connections, on any port or protocol. IPv6 and sandbox-initiated connections to your machine are blocked. QEMU can still reply to your machine's TCP connections, as described below. Sandbox and link-local address ranges cannot be allowed. There is no automatic DNS exception: use an IP address directly or explicitly include the resolver's address. Allowing a resolver permits other traffic to that same address too.
 
-These modes currently require Linux Firecracker with private networking and the direct `vsock` control connection. Shared folders and exposed ports are not supported with `off` or `restricted`. Unsupported combinations fail before the sandbox starts. Policy survives restart and snapshot restore; create a new sandbox to change it.
+Firecracker requires the direct `vsock` control connection for these modes; its shared folders and exposed ports remain unsupported. QEMU supports the combinations below. Unsupported combinations fail before image preparation or resource allocation. Policy survives restart and supported snapshot restore; create a new sandbox to change it.
+
+### QEMU address restrictions on Linux
+
+Use **TAP networking** when a Linux QEMU sandbox needs a list of allowed addresses. TAP gives the sandbox its own private IP and uses Linux firewall rules; it requires the existing SmolVM Linux networking setup and privileges. SmolVM never switches to TAP automatically.
+
+With a previously prepared `BootImage` named `image`, create the sandbox explicitly:
+
+```python
+vm = SmolVM.from_image(
+    image,
+    backend="qemu",
+    network="tap",
+    internet_settings={"mode": "restricted", "allowed_cidrs": ["203.0.113.10/32"]},
+)
+```
+
+Replace the example address with your application's destination. For direct `VMConfig` construction, set `backend="qemu"`, `qemu_network="tap"`, and the same `internet_settings`. Use `mode="off"` with TAP to allow no outbound destinations.
+
+| QEMU network | macOS | Linux | Local application access |
+| --- | --- | --- | --- |
+| Default slirp | Open, off | Open, off | `port_forwards` or `expose_local()` |
+| Explicit TAP | Unsupported | Open, off, restricted IPv4 addresses | Guest IP or `expose_local()` |
+
+These controls apply to sandboxes running Linux. Windows and macOS guests are not included.
+
+In off/restricted TAP modes, the sandbox can reply to IPv4 TCP connections initiated by your machine. This keeps applications, SSH, and shared-folder setup usable without allowing new outbound connections to your machine. The exception does not allow guest-initiated traffic, IPv6, or cross-sandbox forwarding.
+
+### Access a QEMU application
+
+Have your application listen on `0.0.0.0` inside the sandbox, then expose its port after starting it:
+
+```python
+vm.start()
+port = vm.expose_local(8080)
+print(f"http://127.0.0.1:{port}")
+```
+
+HTTP, WebSockets, and application file transfers use QEMU forwarding on slirp or localhost firewall forwarding on TAP. They do not require SSH or a guest agent. An application bound only to the sandbox's `127.0.0.1` still needs the existing SSH-based `guest_loopback=True` option.
+
+Slirp preserves configured launch-time `port_forwards` through restart and snapshot restore. TAP does not support that setting; use its guest IP or `expose_local()` instead. Dynamic exposures retain their existing lifetime: recreate them after pause, stop, or restore.
+
+`SmolVM.from_image(..., state_manager=inventory)` and `SmolVM.from_snapshot(..., state_manager=inventory)` can share the same inventory, just like direct construction. The existing QEMU snapshot requirements still apply: an isolated qcow2 disk and no shared folders. See [snapshots](snapshots.md). A disk imported as a new image receives the policy of its new VM configuration; it does not carry policy by itself.
+
+On the tested QEMU 11.0.0/macOS HVF setup, use disk snapshots: full-memory restore hits a QEMU assertion that also reproduces on v0.0.32. See the [validation notes](../deep-dive/qemu-network-policy-validation.md#evidence-status).
+
+These controls intentionally do not add dynamic domain rules, DNS services, proxies, helper VMs, or per-command policy checks. Policy work happens during network setup and lifecycle reconciliation. Production rollout requires the separate [QEMU validation gates](../deep-dive/qemu-network-policy-validation.md).
 
 ## Legacy domain lists
 

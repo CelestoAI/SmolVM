@@ -1,0 +1,9 @@
+{
+  "packet": 0,
+  "tap-e2e": 0,
+  "slirp-e2e": 0,
+  "full-tap-off": 0,
+  "full-tap-restricted": 0,
+  "full-slirp-off": 0,
+  "baseline-slirp-smoke": 1
+}

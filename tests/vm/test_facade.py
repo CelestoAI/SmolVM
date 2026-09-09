@@ -885,6 +885,7 @@ class TestFromBootImage:
             rootfs_format="raw-ext4",
             boot=DirectKernelBoot(quiet=False),
         )
+        inventory = MagicMock()
 
         vm = SmolVM.from_image(
             image,
@@ -896,9 +897,11 @@ class TestFromBootImage:
             network="tap",
             comm_channel="vsock",
             vsock={"guest_cid": 5},
+            state_manager=inventory,
         )
 
         assert vm.vm_id == "vm-custom"
+        assert mock_sdk_cls.call_args.kwargs["state_manager"] is inventory
         created_config = mock_sdk.create.call_args.args[0]
         assert created_config.vm_id == "vm-custom"
         assert created_config.kernel_path == kernel
@@ -3907,8 +3910,11 @@ def test_unsupported_policy_precedes_image_preparation():
     from smolvm import ValidationError
 
     with patch("smolvm.facade._build_auto_config") as build:
-        with pytest.raises(ValidationError, match="Linux Firecracker"):
-            SmolVM(backend="qemu", internet_settings={"mode": "off"})
+        with pytest.raises(ValidationError, match="Linux TAP"):
+            SmolVM(
+                backend="qemu",
+                internet_settings={"mode": "restricted", "allowed_cidrs": ["203.0.113.7"]},
+            )
         build.assert_not_called()
 
 

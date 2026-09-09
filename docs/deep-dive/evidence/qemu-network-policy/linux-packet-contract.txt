@@ -1,0 +1,23 @@
+Linux namespace packet contract, installed candidate wheel in disposable Linux guest on macOS/HVF.
+This is not a Linux QEMU/KVM lifecycle or performance result.
+
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.6.0 -- /tmp/policy-venv/bin/python
+cachedir: .pytest_cache
+rootdir: /tmp
+plugins: asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 6 items / 4 deselected / 2 selected
+
+../tmp/test_network_policy.py::test_firewall_packet_contract[firecracker] PASSED [ 50%]
+../tmp/test_network_policy.py::test_firewall_packet_contract[qemu] PASSED [100%]
+
+=============================== warnings summary ===============================
+../tmp/test_network_policy.py:23
+  /tmp/test_network_policy.py:23: PytestUnknownMarkWarning: Unknown pytest.mark.e2e - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    pytestmark = pytest.mark.e2e
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================= 2 passed, 4 deselected, 1 warning in 41.36s ==================
+ 
+

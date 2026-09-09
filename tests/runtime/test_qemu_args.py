@@ -29,7 +29,9 @@ from smolvm.runtime.guest_platforms import (
 from smolvm.runtime.qemu_args import build_qemu_argv
 from smolvm.types import (
     GuestOS,
+    InternetSettings,
     NetworkConfig,
+    PortForwardConfig,
     QemuMachine,
     VMConfig,
     VMInfo,
@@ -116,6 +118,37 @@ def test_linux_x86_64_kvm_argv_byte_identical(tmp_path: Path) -> None:
         "-device",
         "virtio-net-pci,netdev=net0,mac=52:54:00:12:34:56",
     ]
+
+
+@pytest.mark.parametrize(
+    "system,binary", [("Linux", "qemu-system-x86_64"), ("Darwin", "qemu-system-aarch64")]
+)
+def test_slirp_off_preserves_forwards_and_shared_folder_devices(tmp_path, system, binary):
+    info = _qemu_vm_info(tmp_path)
+    info = info.model_copy(
+        update={
+            "config": info.config.model_copy(
+                update={
+                    "internet_settings": InternetSettings(mode="off"),
+                    "port_forwards": [PortForwardConfig(host_port=18080, guest_port=8080)],
+                    "workspace_mounts": [WorkspaceMount(host_path=tmp_path, guest_path="/work")],
+                }
+            )
+        }
+    )
+    argv = build_qemu_argv(
+        info,
+        qemu_bin=Path(binary),
+        boot_args=info.config.boot_args,
+        platform_spec=_LINUX_SPEC,
+        host_system=system,
+    )
+    netdev = argv[argv.index("-netdev") + 1]
+    assert netdev == (
+        "user,id=net0,dns=10.0.2.3,hostfwd=tcp:127.0.0.1:2200-:22,"
+        "hostfwd=tcp:127.0.0.1:18080-:8080,restrict=on,ipv6=off"
+    )
+    assert "-fsdev" in argv
 
 
 def test_root_drive_format_uses_declared_rootfs_format(tmp_path: Path) -> None:

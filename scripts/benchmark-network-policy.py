@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure cached-image policy startup; run on a disposable Linux Firecracker host.
+"""Measure cached-image policy startup on a disposable test machine.
 
 Run this same script against the baseline checkout with --mode open, then the
 candidate checkout. Keep runner, image, URL, and concurrency identical.
@@ -9,16 +9,34 @@ from __future__ import annotations
 
 import argparse
 import json
+import socket
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
 from urllib.parse import urlparse
+from urllib.request import ProxyHandler, build_opener
 from uuid import uuid4
 
 from smolvm import SmolVM
 from smolvm import facade as _facade
 from smolvm.storage import MemoryStateManager
-from smolvm.types import SnapshotType
+from smolvm.types import SnapshotType, VMConfig
+
+
+def wait_for_application(url: str, timeout: float = 30) -> None:
+    """Time the first successful response, without SSH or a guest agent."""
+    opener = build_opener(ProxyHandler({}))
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            with opener.open(url, timeout=0.25) as response:
+                if response.status == 200 and response.read() == b"ready\n":
+                    return
+        except OSError:
+            pass
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"Application did not become ready at {url}")
+        time.sleep(0.01)
 
 
 def main() -> None:
@@ -29,6 +47,13 @@ def main() -> None:
     parser.add_argument("--samples", type=int, default=100)
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--restore", action="store_true", help="Also measure disk snapshot restore")
+    parser.add_argument("--vm-config", type=Path, help="QEMU VMConfig JSON for a cached test image")
+    parser.add_argument(
+        "--application-port",
+        type=int,
+        default=18080,
+        help="Baked-in QEMU HTTP application returning ready\\n",
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--data-dir", type=Path, required=True, help="Disposable benchmark storage")
     args = parser.parse_args()
@@ -45,6 +70,11 @@ def main() -> None:
     # changing the create/start path or production code, on BOTH versions.
     _facade.generate_sandbox_name = lambda _existing, prefix="sbx": f"{prefix}-{uuid4().hex[:16]}"
     inventory = MemoryStateManager(args.data_dir)
+    template = json.loads(args.vm_config.read_text()) if args.vm_config else None
+    if template and template.get("backend") != "qemu":
+        parser.error("--vm-config requires backend='qemu'")
+    if template and (args.url or template.get("internet_settings") is not None):
+        parser.error("--vm-config uses the baked application and --mode; omit url and saved policy")
 
     def start_sample(work: dict) -> None:
         kwargs = {
@@ -58,11 +88,39 @@ def main() -> None:
         # Omission lets this script run unchanged against the baseline version.
         if args.mode != "open":
             kwargs["internet_settings"] = {"mode": args.mode, "allowed_cidrs": args.allow}
+        if template:
+            config = dict(template, vm_id=f"bench-{uuid4().hex[:16]}")
+            if config.get("qemu_network", "slirp") == "slirp":
+                with socket.socket() as listener:
+                    listener.bind(("127.0.0.1", 0))
+                    port = listener.getsockname()[1]
+                config["port_forwards"] = [{"host_port": port, "guest_port": args.application_port}]
+                work["url"] = f"http://127.0.0.1:{port}/"
+            kwargs = {
+                "config": VMConfig.model_validate(config),
+                "data_dir": args.data_dir,
+                "state_manager": inventory,
+                **(
+                    {"internet_settings": kwargs["internet_settings"]}
+                    if "internet_settings" in kwargs
+                    else {}
+                ),
+            }
         started = time.monotonic()
         sandbox = SmolVM(**kwargs)
         work["vm"] = sandbox
         work["sdk"] = sandbox._sdk
         sandbox.start()
+        if template:
+            work.setdefault(
+                "url", f"http://{sandbox.info.network.guest_ip}:{args.application_port}/"
+            )
+            wait_for_application(work["url"])
+            work["result"] = {
+                "sample": work["index"],
+                "first_application_ms": (time.monotonic() - started) * 1000,
+            }
+            return
         assert sandbox.run("true").exit_code == 0
         result = {"sample": work["index"], "first_command_ms": (time.monotonic() - started) * 1000}
         if args.url and args.mode != "off":
@@ -74,12 +132,16 @@ def main() -> None:
         started = time.monotonic()
         restored = SmolVM.from_snapshot(
             work["snapshot_id"],
-            backend="firecracker",
+            backend="qemu" if template else "firecracker",
             resume_vm=True,
             data_dir=args.data_dir,
             state_manager=inventory,
         )
         work["vm"] = restored
+        if template:
+            wait_for_application(work["url"])
+            work["result"]["restore_first_application_ms"] = (time.monotonic() - started) * 1000
+            return
         assert restored.run("true").exit_code == 0
         work["result"]["restore_first_command_ms"] = (time.monotonic() - started) * 1000
 
@@ -100,9 +162,12 @@ def main() -> None:
                 for work in batch:
                     sandbox = work["vm"]
                     work["snapshot_id"] = sandbox.snapshot(
-                        snapshot_type=SnapshotType.DISK
+                        snapshot_type=SnapshotType.DISK,
+                        # The baked application fixture has no writable workload
+                        # or control agent. Measure crash-consistent disk restore.
+                        **({"flush_policy": "skip"} if template else {}),
                     ).snapshot_id
-                    sandbox.stop(timeout=0)
+                    sandbox.stop(timeout=3 if template else 0)
                     sandbox.delete()
                     work["vm"] = None
                 parallel(pool, restore_sample, batch)
@@ -119,7 +184,7 @@ def main() -> None:
                 try:
                     if work["vm"] is not None:
                         try:
-                            work["vm"].stop(timeout=0)
+                            work["vm"].stop(timeout=3 if template else 0)
                         finally:
                             work["vm"].delete()
                 except Exception as error:

@@ -40,7 +40,7 @@ def test_installed_examples_and_performance(policy_lab, tmp_path):  # noqa: F811
     examples = [
         block.replace("203.0.113.10", allowed)
         for block in re.findall(r"```python\n(.*?)```", guide, re.DOTALL)
-        if "with SmolVM(" in block and '"mode":' in block
+        if "with SmolVM(" in block and '"mode":' in block and 'backend="firecracker"' in block
     ]
     assert len(examples) == 2
     examples.insert(

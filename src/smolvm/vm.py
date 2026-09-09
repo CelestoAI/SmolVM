@@ -1383,13 +1383,13 @@ class SmolVMManager:
                 {"snapshot_id": snapshot_id, "manifest_path": str(manifest_path)},
             ) from exc
 
-    def _ensure_firecracker_network_for_restore(
+    def _ensure_tap_network_for_restore(
         self,
         vm_id: str,
         network: NetworkConfig,
         vm_config: VMConfig | None = None,
     ) -> None:
-        """Ensure host-side network resources exist for a restored Firecracker VM."""
+        """Prepare owned TAP resources and policy before a restored guest can run."""
         # Bridge mode: reserve, validate, and repair the owned TAP only.
         if network.mode == "bridge":
             if vm_config is None:
@@ -1418,7 +1418,7 @@ class SmolVMManager:
             self.network.setup_nat(network.tap_device)
         else:
             self._validate_network_policy(vm_config, self._backend_for_config(vm_config))
-            self._setup_policy_network(vm_config, network.tap_device)
+            self._setup_policy_network(vm_config, network.tap_device, network.guest_ip)
 
         # Re-apply domain allowlist if the original config had one
         if (
@@ -1437,7 +1437,7 @@ class SmolVMManager:
                 host_port=network.ssh_host_port,
             )
 
-    def _teardown_firecracker_network_for_restore(self, vm_id: str, network: NetworkConfig) -> None:
+    def _teardown_tap_network_for_restore(self, vm_id: str, network: NetworkConfig) -> None:
         """Best-effort teardown for host networking provisioned during restore."""
         if network.ssh_host_port is not None:
             with suppress(Exception):
@@ -1649,17 +1649,27 @@ class SmolVMManager:
             return list(settings.allowed_cidrs)
         return None
 
-    def _setup_policy_network(self, config: VMConfig, tap_device: str) -> None:
+    def _setup_policy_network(self, config: VMConfig, tap_device: str, guest_ip: str) -> None:
         destinations = self._policy_destinations(config)
-        self.network.apply_network_policy(tap_device, destinations)
+        if destinations is not None and self._backend_for_config(config) == BACKEND_QEMU:
+            self.network.apply_network_policy(tap_device, destinations, guest_ip=guest_ip)
+        else:
+            self.network.apply_network_policy(tap_device, destinations)
         if destinations is None:
             self.network.setup_nat(tap_device)
         else:
             self.network.setup_nat(tap_device, allow_outbound=False)
 
-    async def _async_setup_policy_network(self, config: VMConfig, tap_device: str) -> None:
+    async def _async_setup_policy_network(
+        self, config: VMConfig, tap_device: str, guest_ip: str
+    ) -> None:
         destinations = self._policy_destinations(config)
-        await self.network.async_apply_network_policy(tap_device, destinations)
+        if destinations is not None and self._backend_for_config(config) == BACKEND_QEMU:
+            await self.network.async_apply_network_policy(
+                tap_device, destinations, guest_ip=guest_ip
+            )
+        else:
+            await self.network.async_apply_network_policy(tap_device, destinations)
         if destinations is None:
             await self.network.async_setup_nat(tap_device)
         else:
@@ -1687,8 +1697,20 @@ class SmolVMManager:
             )
             return
 
+        if backend == BACKEND_QEMU:
+            # QEMU holds the TAP open while running or paused. Recreating it
+            # then returns EBUSY; reconfiguring it would flush live addresses.
+            try:
+                socket.if_nametoindex(network.tap_device)
+            except OSError:
+                self.network.prepare_tap_device(
+                    network.tap_device,
+                    user=os.environ.get("USER", "root"),
+                    host_ip=network.gateway_ip,
+                    netmask="32",
+                )
         self.network.add_route(network.guest_ip, network.tap_device)
-        self._setup_policy_network(vm_info.config, network.tap_device)
+        self._setup_policy_network(vm_info.config, network.tap_device, network.guest_ip)
 
         if (
             vm_info.config.internet_settings is not None
@@ -1947,6 +1969,9 @@ class SmolVMManager:
         """Return whether a local TCP forward target can be bound."""
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                # Match QEMU's listener: completed connections in TIME_WAIT do
+                # not prevent restart, but an active listener still owns its port.
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 sock.bind((host, port))
         except (OSError, OverflowError):
             return False
@@ -2227,7 +2252,7 @@ class SmolVMManager:
             self.network.prepare_tap_device(tap_name, user=user, netmask="32")
 
             self.network.add_route(guest_ip, tap_name)
-            self._setup_policy_network(effective_config, tap_name)
+            self._setup_policy_network(effective_config, tap_name, guest_ip)
 
             # Apply domain allowlist if configured
             if (
@@ -2989,6 +3014,9 @@ class SmolVMManager:
                 self.state.create_vm(persisted_vm_config)
                 created_vm_record = True
             bridge_restore = effective_snapshot.network_config.mode == "bridge"
+            tap_restore = self._uses_host_tap_networking(
+                persisted_vm_config, effective_snapshot.backend
+            )
             if bridge_restore:
                 bridge_name = effective_snapshot.network_config.bridge
                 assert bridge_name is not None
@@ -2998,7 +3026,7 @@ class SmolVMManager:
                     bridge_name=bridge_name,
                     requested_tap=effective_snapshot.network_config.tap_device,
                 )
-            elif effective_snapshot.backend == BACKEND_FIRECRACKER:
+            elif tap_restore:
                 self.state.allocate_ip(
                     restore_vm_id,
                     effective_snapshot.network_config.tap_device,
@@ -3023,8 +3051,8 @@ class SmolVMManager:
                         "to remove this restore attempt."
                     ) from exc
             self.state.update_vm(restore_vm_id, network=effective_snapshot.network_config)
-            if bridge_restore or effective_snapshot.backend == BACKEND_FIRECRACKER:
-                self._ensure_firecracker_network_for_restore(
+            if tap_restore:
+                self._ensure_tap_network_for_restore(
                     restore_vm_id,
                     effective_snapshot.network_config,
                     vm_config=effective_snapshot.vm_config,
@@ -3630,8 +3658,18 @@ class SmolVMManager:
         except ProcessLookupError:
             return False
         except PermissionError:
-            return not self._is_zombie_process(pid)
-        return not self._is_zombie_process(pid)
+            pass
+        if self._is_zombie_process(pid):
+            return False
+        # Starting ps can reap a detached Popen child via subprocess._cleanup.
+        # A now-missing process is not a live one merely because ps saw no Z.
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            pass
+        return True
 
     def _wait_for_process(self, pid: int, timeout: float) -> None:
         """Wait for a process to exit.
@@ -4413,7 +4451,7 @@ class SmolVMManager:
             user = os.environ.get("USER", "root")
             await self.network.async_prepare_tap_device(tap_name, user=user, netmask="32")
             await self.network.async_add_route(guest_ip, tap_name)
-            await self._async_setup_policy_network(effective_config, tap_name)
+            await self._async_setup_policy_network(effective_config, tap_name, guest_ip)
 
             # Apply domain allowlist if configured
             if (

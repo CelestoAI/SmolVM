@@ -29,7 +29,7 @@ import time
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
-from ipaddress import IPv4Network, collapse_addresses
+from ipaddress import IPv4Address, IPv4Network, collapse_addresses
 from pathlib import Path
 from typing import TypeVar
 from urllib.parse import urlparse
@@ -1856,15 +1856,19 @@ class NetworkManager:
             raise ValueError("Network policy requires a managed NAT interface.")
         return f"smolvm_policy_{tap_device}"
 
-    def _network_policy_script(self, tap_device: str, allowed_ips: list[str] | None) -> str:
+    def _network_policy_script(
+        self, tap_device: str, allowed_ips: list[str] | None, *, guest_ip: str | None = None
+    ) -> str:
         """Replace one policy atomically, ahead of all ordinary forwarding accepts.
 
-        None preserves open access; [] denies all. No connection-state exemption:
-        stale conntrack entries cannot override the destination policy on reuse.
+        None preserves open access; [] denies outbound access. QEMU may reply to
+        host-originated IPv4 TCP connections. No outbound connection-state
+        exemption: stale conntrack cannot override the destination policy on reuse.
         A separate owned table avoids handle discovery and cross-VM update races.
         """
         table = self._policy_table(tap_device)
         tap = self._quote(tap_device)
+        reply_address = str(IPv4Address(guest_ip)) if guest_ip is not None else None
         destinations = (
             None
             if allowed_ips is None
@@ -1885,6 +1889,11 @@ class NetworkManager:
             f"add rule inet {table} input iifname {tap} ip daddr 169.254.0.0/16 counter drop",
         ]
         if destinations is not None:
+            if reply_address is not None:
+                lines.append(
+                    f"add rule inet {table} input iifname {tap} ip saddr {reply_address} "
+                    "meta l4proto tcp ct direction reply ct state established counter accept"
+                )
             lines.extend(
                 [
                     f"add rule inet {table} input iifname {tap} counter drop",
@@ -1907,17 +1916,19 @@ class NetworkManager:
             )
         return "\n".join(lines) + "\n"
 
-    def apply_network_policy(self, tap_device: str, allowed_ips: list[str] | None) -> None:
+    def apply_network_policy(
+        self, tap_device: str, allowed_ips: list[str] | None, *, guest_ip: str | None = None
+    ) -> None:
         """Install open isolation, off, or an IPv4 allowlist before guest execution."""
-        script = self._network_policy_script(tap_device, allowed_ips)
+        script = self._network_policy_script(tap_device, allowed_ips, guest_ip=guest_ip)
         self._ensure_nftables_base()
         self._run_nft_script(script)
 
     async def async_apply_network_policy(
-        self, tap_device: str, allowed_ips: list[str] | None
+        self, tap_device: str, allowed_ips: list[str] | None, *, guest_ip: str | None = None
     ) -> None:
         """Async counterpart using exactly the same transaction."""
-        script = self._network_policy_script(tap_device, allowed_ips)
+        script = self._network_policy_script(tap_device, allowed_ips, guest_ip=guest_ip)
         await self._async_ensure_nftables_base()
         await self._async_run_nft_script(script)
 

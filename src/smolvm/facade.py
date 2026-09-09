@@ -1465,6 +1465,7 @@ class SmolVM:
         name_prefix: str = "sbx",
         data_dir: Path | None = None,
         socket_dir: Path | None = None,
+        state_manager: StateManagerProtocol | None = None,
         backend: str | None = None,
         arch: str | None = None,
         qemu_machine: QemuMachine = "auto",
@@ -1552,6 +1553,7 @@ class SmolVM:
             data_dir=data_dir,
             socket_dir=socket_dir,
             backend=resolved_backend,
+            state_manager=state_manager,
             ssh_user=ssh_user,
             ssh_key_path=ssh_key_path,
             ssh_password=ssh_password,
@@ -2496,7 +2498,11 @@ class SmolVM:
         """
         self._refresh_info()
         settings = self._info.config.internet_settings
-        if settings is not None and settings.has_explicit_restrictions:
+        if (
+            settings is not None
+            and settings.has_explicit_restrictions
+            and self._info.config.backend != BACKEND_QEMU
+        ):
             raise SmolVMError(
                 f"Sandbox '{self._vm_id}' does not support exposed ports with this network mode; "
                 "create a separate sandbox with mode='open' if you need exposed ports."
@@ -3726,7 +3732,9 @@ modprobe 9pnet_virtio""".strip()
             return False
         config = getattr(self._info, "config", None)
         backend = getattr(config, "backend", None)
-        return backend not in {BACKEND_QEMU, BACKEND_LIBKRUN}
+        if backend == BACKEND_QEMU:
+            return getattr(config, "qemu_network", None) == "tap"
+        return backend != BACKEND_LIBKRUN
 
     def _should_try_qemu_hostfwd_local_forward(self) -> bool:
         """Return whether localhost exposure should use QEMU's slirp hostfwd."""

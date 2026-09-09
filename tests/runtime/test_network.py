@@ -858,6 +858,40 @@ class TestExplicitNetworkPolicy:
         with pytest.raises(RuntimeError, match="nft failed"):
             nm.apply_network_policy("tap42", [])
 
+    @pytest.mark.parametrize("destinations", [[], ["203.0.113.7/32"]])
+    def test_qemu_host_replies_are_ipv4_tcp_reply_direction_only(self, destinations):
+        nm = NetworkManager()
+        script = nm._network_policy_script("tap42", destinations, guest_ip="172.16.0.42")
+        reply = (
+            'input iifname "tap42" ip saddr 172.16.0.42 meta l4proto tcp '
+            "ct direction reply ct state established counter accept"
+        )
+        assert reply in script
+        assert script.count("ct state") == 1
+        assert script.index("169.254.0.0/16") < script.index(reply)
+        assert script.index(reply) < script.index('input iifname "tap42" counter drop')
+        assert 'forward iifname "tap42" meta nfproto ipv6 counter drop' in script
+        assert script.count("flush table") == 1
+
+    def test_reply_address_must_be_ipv4(self):
+        nm = NetworkManager()
+        nm._run_nft_script = MagicMock()
+        for address in ("::1", "172.16.0.42; flush ruleset"):
+            with pytest.raises(ValueError):
+                nm.apply_network_policy("tap42", [], guest_ip=address)
+        nm._run_nft_script.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_async_qemu_reply_policy_matches_sync(self):
+        nm = NetworkManager()
+        nm._ensure_nftables_base = MagicMock()
+        nm._async_ensure_nftables_base = AsyncMock()
+        nm._run_nft_script = MagicMock()
+        nm._async_run_nft_script = AsyncMock()
+        nm.apply_network_policy("tap42", [], guest_ip="172.16.0.42")
+        await nm.async_apply_network_policy("tap42", [], guest_ip="172.16.0.42")
+        assert nm._run_nft_script.call_args == nm._async_run_nft_script.call_args
+
     def test_cleanup_only_deletes_owned_policy(self) -> None:
         nm = NetworkManager()
         nm._run_nft_script = MagicMock()
