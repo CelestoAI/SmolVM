@@ -15,6 +15,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from smolvm import SmolVM
+from smolvm.storage import MemoryStateManager
 from smolvm.types import SnapshotType
 
 
@@ -27,6 +28,7 @@ def main() -> None:
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--restore", action="store_true", help="Also measure disk snapshot restore")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--data-dir", type=Path, required=True, help="Disposable benchmark storage")
     args = parser.parse_args()
     if args.samples < 1 or args.concurrency < 1:
         parser.error("samples and concurrency must be positive")
@@ -36,8 +38,18 @@ def main() -> None:
         parser.error("url must use http or https")
     import shlex
 
+    inventory = MemoryStateManager(args.data_dir)
+
     def sample(index: int) -> dict:
-        kwargs = {"backend": "firecracker", "os": "alpine", "comm_channel": "vsock"}
+        kwargs = {
+            "backend": "firecracker",
+            "os": "alpine",
+            "comm_channel": "vsock",
+            "memory": 512,
+            "vcpu_count": 1,
+            "data_dir": args.data_dir,
+            "state_manager": inventory,
+        }
         # Omission lets this script run unchanged against the baseline version.
         if args.mode != "open":
             kwargs["internet_settings"] = {"mode": args.mode, "allowed_cidrs": args.allow}
@@ -61,7 +73,11 @@ def main() -> None:
                 sandbox.delete()
                 started = time.monotonic()
                 target = SmolVM.from_snapshot(
-                    snap.snapshot_id, backend="firecracker", resume_vm=True
+                    snap.snapshot_id,
+                    backend="firecracker",
+                    resume_vm=True,
+                    data_dir=args.data_dir,
+                    state_manager=inventory,
                 )
                 assert target.run("true").exit_code == 0
                 result["restore_first_command_ms"] = (time.monotonic() - started) * 1000
