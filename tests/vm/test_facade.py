@@ -885,6 +885,7 @@ class TestFromBootImage:
             rootfs_format="raw-ext4",
             boot=DirectKernelBoot(quiet=False),
         )
+        inventory = MagicMock()
 
         vm = SmolVM.from_image(
             image,
@@ -896,9 +897,11 @@ class TestFromBootImage:
             network="tap",
             comm_channel="vsock",
             vsock={"guest_cid": 5},
+            state_manager=inventory,
         )
 
         assert vm.vm_id == "vm-custom"
+        assert mock_sdk_cls.call_args.kwargs["state_manager"] is inventory
         created_config = mock_sdk.create.call_args.args[0]
         assert created_config.vm_id == "vm-custom"
         assert created_config.kernel_path == kernel
@@ -3907,8 +3910,11 @@ def test_unsupported_policy_precedes_image_preparation():
     from smolvm import ValidationError
 
     with patch("smolvm.facade._build_auto_config") as build:
-        with pytest.raises(ValidationError, match="Linux Firecracker"):
-            SmolVM(backend="qemu", internet_settings={"mode": "off"})
+        with pytest.raises(ValidationError, match="Linux TAP"):
+            SmolVM(
+                backend="qemu",
+                internet_settings={"mode": "restricted", "allowed_cidrs": ["203.0.113.7"]},
+            )
         build.assert_not_called()
 
 
@@ -3919,3 +3925,38 @@ def test_from_image_policy_errors_precede_kernel_preparation():
         with pytest.raises(ValidationError):
             SmolVM.from_image(MagicMock(), internet_settings={"mod": "off"})
         kernel.assert_not_called()
+
+
+@pytest.mark.parametrize("explicit_name", [None, "my-sandbox"])
+@pytest.mark.parametrize(
+    "host,network,policy,forwards",
+    [
+        ("linux", "slirp", {"mode": "restricted", "allowed_cidrs": ["203.0.113.7"]}, None),
+        ("darwin", "tap", {"mode": "off"}, None),
+        ("linux", "tap", {"mode": "off"}, [{"host_port": 8080, "guest_port": 80}]),
+    ],
+)
+def test_from_image_qemu_policy_errors_name_recovery(
+    monkeypatch, explicit_name, host, network, policy, forwards
+):
+    from smolvm import ValidationError
+
+    monkeypatch.setattr("smolvm._network_policy.sys.platform", host)
+    monkeypatch.setattr("smolvm.facade.generate_sandbox_name", lambda *a, **k: "sbx-generated")
+    image = MagicMock(
+        backend=None, boot_mode="direct_kernel", rootfs_format="raw-ext4", initrd_path=None
+    )
+    with patch("smolvm.facade.ensure_backend_available") as prepare:
+        with pytest.raises(ValidationError) as error:
+            SmolVM.from_image(
+                image,
+                vm_id=explicit_name,
+                backend="qemu",
+                network=network,
+                internet_settings=policy,
+                port_forwards=forwards,
+            )
+        assert f"smolvm sandbox create --name {explicit_name or 'sbx-generated'} --help" in str(
+            error.value
+        )
+        prepare.assert_not_called()

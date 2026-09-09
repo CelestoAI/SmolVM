@@ -464,6 +464,74 @@ class TestEpermDetector:
 class TestLocalPortForwarding:
     """Tests for localhost-only forwarding rule setup/cleanup."""
 
+    @pytest.mark.parametrize(
+        "owner,target",
+        [
+            ("other", "172.16.0.3:8080"),
+            ("vm001", "172.16.0.3:8080"),
+            ("vm001", "172.16.0.2:8081"),
+        ],
+    )
+    def test_conflicting_persistent_mapping_is_rejected(self, owner, target):
+        from smolvm.exceptions import NetworkError
+
+        output = (
+            "table ip smolvm_nat {\n chain output {\n"
+            f" tcp dport 18080 counter packets 1 bytes 60 dnat to {target} "
+            f'comment "smolvm:{owner}:local:18080:8080"\n }}\n}}'
+        )
+        with pytest.raises(NetworkError, match="different host port"):
+            NetworkManager._check_local_port_ownership(output, "vm001", 18080, "172.16.0.2", 8080)
+
+    def test_same_persistent_mapping_is_idempotent(self):
+        output = (
+            "table ip smolvm_nat {\n chain output {\n"
+            " tcp dport 18080 dnat to 172.16.0.2:8080 "
+            'comment "smolvm:vm001:local:18080:8080"\n }\n}'
+        )
+        NetworkManager._check_local_port_ownership(output, "vm001", 18080, "172.16.0.2", 8080)
+
+    def test_existing_ssh_map_port_is_rejected(self):
+        from smolvm.exceptions import NetworkError
+
+        output = (
+            "table ip smolvm_nat {\n map dnat_local {\n"
+            " type inet_service : ipv4_addr . inet_service\n"
+            " elements = { 18080 : 172.16.0.2 . 22,\n 2200 : 172.16.0.3 . 22 }\n }\n}"
+        )
+        with pytest.raises(NetworkError, match="reserved"):
+            NetworkManager._check_local_port_ownership(output, "vm001", 18080, "172.16.0.2", 8080)
+
+    @pytest.mark.parametrize("is_async", [False, True])
+    def test_ownership_read_failure_prevents_installation(self, monkeypatch, is_async):
+        import asyncio
+
+        from smolvm.exceptions import NetworkError, SmolVMError
+
+        nm = NetworkManager()
+        monkeypatch.setattr(nm, "enable_ip_forwarding", MagicMock())
+        monkeypatch.setattr(nm, "_ensure_nftables_base", MagicMock())
+        monkeypatch.setattr(nm, "async_enable_ip_forwarding", AsyncMock())
+        monkeypatch.setattr(nm, "_async_ensure_nftables_base", AsyncMock())
+        install = MagicMock()
+        async_install = AsyncMock()
+        monkeypatch.setattr(nm, "_add_nft_rules_if_missing", install)
+        monkeypatch.setattr(nm, "_async_add_nft_rules_if_missing", async_install)
+        monkeypatch.setattr(
+            "smolvm.host.network.run_command", MagicMock(side_effect=SmolVMError("nft failed"))
+        )
+        monkeypatch.setattr(
+            "smolvm.host.network.async_run_command",
+            AsyncMock(side_effect=SmolVMError("nft failed")),
+        )
+        with pytest.raises(NetworkError, match="Cannot check"):
+            if is_async:
+                asyncio.run(nm.async_setup_local_port_forward("vm001", "172.16.0.2", 18080, 8080))
+            else:
+                nm.setup_local_port_forward("vm001", "172.16.0.2", 18080, 8080)
+        install.assert_not_called()
+        async_install.assert_not_called()
+
     @patch("smolvm.host.network.run_command")
     def test_setup_local_port_forward_adds_output_and_forward(
         self,
@@ -857,6 +925,40 @@ class TestExplicitNetworkPolicy:
         nm._run_nft_script = MagicMock(side_effect=RuntimeError("nft failed"))
         with pytest.raises(RuntimeError, match="nft failed"):
             nm.apply_network_policy("tap42", [])
+
+    @pytest.mark.parametrize("destinations", [[], ["203.0.113.7/32"]])
+    def test_qemu_host_replies_are_ipv4_tcp_reply_direction_only(self, destinations):
+        nm = NetworkManager()
+        script = nm._network_policy_script("tap42", destinations, guest_ip="172.16.0.42")
+        reply = (
+            'input iifname "tap42" ip saddr 172.16.0.42 meta l4proto tcp '
+            "ct direction reply ct state established counter accept"
+        )
+        assert reply in script
+        assert script.count("ct state") == 1
+        assert script.index("169.254.0.0/16") < script.index(reply)
+        assert script.index(reply) < script.index('input iifname "tap42" counter drop')
+        assert 'forward iifname "tap42" meta nfproto ipv6 counter drop' in script
+        assert script.count("flush table") == 1
+
+    def test_reply_address_must_be_ipv4(self):
+        nm = NetworkManager()
+        nm._run_nft_script = MagicMock()
+        for address in ("::1", "172.16.0.42; flush ruleset"):
+            with pytest.raises(ValueError):
+                nm.apply_network_policy("tap42", [], guest_ip=address)
+        nm._run_nft_script.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_async_qemu_reply_policy_matches_sync(self):
+        nm = NetworkManager()
+        nm._ensure_nftables_base = MagicMock()
+        nm._async_ensure_nftables_base = AsyncMock()
+        nm._run_nft_script = MagicMock()
+        nm._async_run_nft_script = AsyncMock()
+        nm.apply_network_policy("tap42", [], guest_ip="172.16.0.42")
+        await nm.async_apply_network_policy("tap42", [], guest_ip="172.16.0.42")
+        assert nm._run_nft_script.call_args == nm._async_run_nft_script.call_args
 
     def test_cleanup_only_deletes_owned_policy(self) -> None:
         nm = NetworkManager()

@@ -961,7 +961,7 @@ class TestBridgeLifecycle:
                 return_value=ChannelResolution(kind="vsock"),
             ),
         ):
-            manager._ensure_firecracker_network_for_restore(
+            manager._ensure_tap_network_for_restore(
                 config.vm_id,
                 runtime_network,
                 vm_config=config,

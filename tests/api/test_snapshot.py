@@ -678,15 +678,27 @@ def test_restore_firecracker_disk_snapshot_boots_fresh_without_loading_vmstate(
     mock_client.start_instance.assert_called_once()
 
 
-@pytest.mark.parametrize("mode", ["off", "restricted"])
-def test_restore_policy_failure_prevents_guest_execution(smol_vm, sample_config, monkeypatch, mode):
+@pytest.mark.parametrize("mode", ["open", "off", "restricted"])
+@pytest.mark.parametrize("backend", ["firecracker", "qemu"])
+def test_restore_policy_failure_prevents_guest_execution(
+    smol_vm, sample_config, monkeypatch, mode, backend
+):
+    monkeypatch.setattr(smol_vm, "_materialize_rootfs", lambda config: config)
+    monkeypatch.setattr(
+        smol_vm, "_find_qemu_img_binary", lambda: pytest.fail("Unit test invoked qemu-img")
+    )
     monkeypatch.setattr("smolvm.vm.sys.platform", "linux")
     monkeypatch.setattr("smolvm.comm.select.platform.system", lambda: "Linux")
     settings = InternetSettings(
         mode=mode, allowed_cidrs=["203.0.113.7"] if mode == "restricted" else []
     )
     config = sample_config.model_copy(
-        update={"internet_settings": settings, "comm_channel": "vsock"}
+        update={
+            "internet_settings": settings,
+            "backend": backend,
+            "qemu_network": "tap",
+            "comm_channel": "ssh" if backend == "qemu" else "vsock",
+        }
     )
     info = smol_vm.create(config)
     snapshot_dir = smol_vm.snapshot_dir / "policy-snapshot"
@@ -694,7 +706,7 @@ def test_restore_policy_failure_prevents_guest_execution(smol_vm, sample_config,
     snapshot = SnapshotInfo(
         snapshot_id="policy-snapshot",
         vm_id=info.vm_id,
-        backend="firecracker",
+        backend=backend,
         artifacts=SnapshotArtifacts(
             state_path=snapshot_dir / "state",
             memory_path=snapshot_dir / "memory",
@@ -718,3 +730,32 @@ def test_restore_policy_failure_prevents_guest_execution(smol_vm, sample_config,
     with pytest.raises(SmolVMError, match="policy install failed"):
         smol_vm.restore_snapshot(snapshot.snapshot_id, resume_vm=True)
     adapter.restore_snapshot.assert_not_called()
+    with pytest.raises(VMNotFoundError):
+        smol_vm.get(info.vm_id)
+    # A retry must reserve the old address and install policy before the runtime
+    # can load either a disk or memory snapshot and continue the guest.
+    smol_vm.network.apply_network_policy.side_effect = None
+    smol_vm.network.reset_mock()
+
+    def restored_after_network(request):
+        request.managed_disk_path.write_text("restored disk")
+        smol_vm.network.prepare_tap_device.assert_called_once()
+        smol_vm.network.apply_network_policy.assert_called_once()
+        call = smol_vm.network.apply_network_policy.call_args
+        assert call.args == (
+            info.network.tap_device,
+            list(settings.allowed_cidrs) if mode != "open" else None,
+        )
+        assert call.kwargs == (
+            {"guest_ip": info.network.guest_ip} if backend == "qemu" and mode != "open" else {}
+        )
+        assert smol_vm.state.get_ip_lease(info.vm_id) == (
+            info.network.guest_ip,
+            info.network.tap_device,
+        )
+        return SimpleNamespace(
+            status=VMState.RUNNING, pid=99999, control_socket_path=None, vsock_uds_path=None
+        )
+
+    adapter.restore_snapshot.side_effect = restored_after_network
+    assert smol_vm.restore_snapshot(snapshot.snapshot_id, resume_vm=True).status == VMState.RUNNING

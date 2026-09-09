@@ -57,9 +57,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         record(self.path)
         self.send_response(200); self.end_headers(); self.wfile.write(b"policy-ok")
     def log_message(self, *args): pass
-def udp():
+def udp(address):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(("0.0.0.0", 53))
+    # Reply from the address the client contacted, not the namespace's first IP.
+    sock.bind((address, 53))
     while True:
         data, addr = sock.recvfrom(4096)
         record(data.decode(errors="replace")); sock.sendto(data, addr)
@@ -74,7 +75,8 @@ class V6Server(Server):
     address_family = socket.AF_INET6
 def serve6(): V6Server(("::", 18082), Handler).serve_forever()
 threading.Thread(target=serve6, daemon=True).start()
-threading.Thread(target=udp, daemon=True).start()
+for address in sys.argv[2:]:
+    threading.Thread(target=udp, args=(address,), daemon=True).start()
 Server(("0.0.0.0", 18080), Handler).serve_forever()
 """)
     process = None
@@ -117,6 +119,8 @@ Server(("0.0.0.0", 18080), Handler).serve_forever()
                 sys.executable,
                 str(server),
                 str(log),
+                allowed,
+                denied,
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
@@ -159,16 +163,35 @@ Server(("0.0.0.0", 18080), Handler).serve_forever()
         privileged("sysctl", "-w", f"net.ipv6.conf.all.forwarding={ipv6_forwarding}")
 
 
-def test_firewall_packet_contract(policy_lab):
+@pytest.mark.parametrize("qemu_replies", [False, True], ids=["firecracker", "qemu"])
+def test_firewall_packet_contract(policy_lab, qemu_replies):
     """Exercise TCP/UDP, host access, reuse and IPv6 without KVM."""
     allowed, denied, gateway, log, host_if = policy_lab
     suffix = secrets.token_hex(3)
     ns = f"npg-{suffix}"
     tap = f"tap{secrets.randbelow(1000000) + 100000}"
     peer = f"g{suffix}"
-    nm = NetworkManager()
     # A test-only point-to-point subnet; no allocated SmolVM addresses touched.
     local, guest = "192.0.2.1", "192.0.2.2"
+    nm = NetworkManager(host_ip=local)
+    reply_server = None
+    local_port = None
+    vm_id = f"pkt-{suffix}"
+
+    def apply(destinations):
+        nm.apply_network_policy(tap, destinations, **({"guest_ip": guest} if qemu_replies else {}))
+
+    def host_request():
+        import urllib.request
+
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        urls = [f"http://{guest}:18080"]
+        if local_port is not None:
+            urls.append(f"http://127.0.0.1:{local_port}")
+        for url in urls:
+            with opener.open(url, timeout=2) as response:
+                assert response.read() == b"reply-ok", url
+
     probe = """import socket,sys
 family = socket.AF_INET6 if ":" in sys.argv[1] else socket.AF_INET
 s=socket.socket(family, socket.SOCK_DGRAM if sys.argv[2]=="udp" else socket.SOCK_STREAM)
@@ -207,6 +230,8 @@ except (OSError,AssertionError): sys.exit(1)
         privileged("ip", "link", "set", peer, "netns", ns)
         privileged("ip", "addr", "add", f"{local}/30", "dev", tap)
         privileged("ip", "link", "set", tap, "up")
+        # The real TAP preparation enables this for localhost forwarding.
+        privileged("sysctl", "-w", f"net.ipv4.conf.{tap}.route_localnet=1")
         privileged("sysctl", "-w", f"net.ipv6.conf.{tap}.forwarding=1")
         privileged("ip", "-n", ns, "addr", "add", f"{guest}/30", "dev", peer)
         privileged("ip", "-n", ns, "link", "set", peer, "up")
@@ -214,8 +239,41 @@ except (OSError,AssertionError): sys.exit(1)
         privileged("ip", "-6", "addr", "add", "fd00:534d:2::1/64", "dev", tap, "nodad")
         privileged("ip", "-n", ns, "-6", "addr", "add", "fd00:534d:2::2/64", "dev", peer, "nodad")
         privileged("ip", "-n", ns, "-6", "route", "add", "default", "via", "fd00:534d:2::1")
-        nm.apply_network_policy(tap, None)
+        apply(None)
         nm.setup_nat(tap)
+        if qemu_replies:
+            reply_server = subprocess.Popen(
+                [
+                    *([] if os.geteuid() == 0 else ["sudo", "-n"]),
+                    "ip",
+                    "netns",
+                    "exec",
+                    ns,
+                    sys.executable,
+                    "-c",
+                    "import socket\n"
+                    "s=socket.socket(); s.bind(('0.0.0.0',18080)); s.listen()\n"
+                    "while True:\n"
+                    " c,_=s.accept(); c.recv(4096); "
+                    "c.sendall(b'HTTP/1.0 200 OK\\r\\nContent-Length: 8\\r\\n\\r\\nreply-ok'); "
+                    "c.close()\n",
+                ]
+            )
+            for attempt in range(50):
+                try:
+                    host_request()
+                    break
+                except OSError:
+                    if attempt == 49:
+                        raise
+                    time.sleep(0.02)
+            import socket
+
+            with socket.socket() as listener:
+                listener.bind(("127.0.0.1", 0))
+                local_port = listener.getsockname()[1]
+            nm.setup_local_port_forward(vm_id, guest, local_port, 18080)
+            host_request()
         assert reachable(allowed, token="open"), privileged("nft", "list", "ruleset").stdout
         assert reachable("fd00:534d:1::2", token="ipv6-open"), "\n".join(
             (
@@ -255,7 +313,9 @@ except (OSError,AssertionError): sys.exit(1)
                 )
             privileged("ip", "link", "set", neighbor_tap, "name", host_if)
         assert reachable(allowed, token="neighbor-restored")
-        nm.apply_network_policy(tap, [allowed])
+        apply([allowed])
+        if qemu_replies:
+            host_request()
         assert reachable(allowed, token="allowed")
         assert not reachable("fd00:534d:1::2", token="ipv6-restricted")
         assert reachable(allowed, "udp", "dns-allowed")
@@ -273,7 +333,11 @@ except (OSError,AssertionError): sys.exit(1)
             nm._run_nft_script(nm._network_policy_script(tap, None) + "invalid nft syntax\n")
         assert not reachable(denied, token="failed-update")
         assert reachable(allowed, token="old-policy")
-        nm.apply_network_policy(tap, [])
+        if qemu_replies:
+            host_request()
+        apply([])
+        if qemu_replies:
+            host_request()
         # Even an accidental subsequent blanket NAT permission cannot bypass off.
         nm.setup_nat(tap)
         assert not reachable(allowed, token="off")
@@ -294,7 +358,9 @@ except (OSError,AssertionError): sys.exit(1)
         ]
         assert sum(counters) > 0
         nm.remove_network_policy(tap)
-        nm.apply_network_policy(tap, [denied])
+        apply([denied])
+        if qemu_replies:
+            host_request()
         assert reachable(denied, token="reused")
         assert not reachable(allowed, token="stale")
         requests = log.read_text()
@@ -311,6 +377,13 @@ except (OSError,AssertionError): sys.exit(1)
         ):
             assert blocked not in requests
     finally:
+        if local_port is not None:
+            nm.cleanup_all_local_port_forwards(vm_id)
+        if reply_server is not None:
+            for pid in privileged("ip", "netns", "pids", ns, check=False).stdout.split():
+                privileged("kill", pid, check=False)
+            with suppress(subprocess.TimeoutExpired):
+                reply_server.wait(timeout=5)
         privileged("ip", "link", "del", tap, check=False)
         with suppress(Exception):
             nm.remove_network_policy(tap)

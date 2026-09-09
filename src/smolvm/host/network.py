@@ -29,7 +29,7 @@ import time
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
-from ipaddress import IPv4Network, collapse_addresses
+from ipaddress import IPv4Address, IPv4Network, collapse_addresses
 from pathlib import Path
 from typing import TypeVar
 from urllib.parse import urlparse
@@ -1613,6 +1613,47 @@ class NetworkManager:
         await self._async_delete_nft_rules(_NFT_NAT_FAMILY, _NFT_NAT_TABLE, comment=comment)
         await self._async_delete_nft_rules(_NFT_FILTER_FAMILY, _NFT_FILTER_TABLE, comment=comment)
 
+    @staticmethod
+    def _check_local_port_ownership(
+        output: str, vm_id: str, host_port: int, guest_ip: str, guest_port: int
+    ) -> None:
+        """Reject persisted forwards even after their creating process exits.
+
+        The facade's bound socket serializes concurrent exposures. The installed
+        rules are the ownership record after that socket's process has exited.
+        Parse only our numeric NAT table, including the existing SSH port map.
+        """
+        comment = f"smolvm:{vm_id}:local:{host_port}:{guest_port}"
+        target = f"{guest_ip}:{guest_port}"
+        in_output = False
+        for line in output.splitlines():
+            stripped = line.strip()
+            chain = _NFT_CHAIN_RE.match(stripped)
+            if chain:
+                in_output = chain.group("chain") == "output"
+            elif stripped == "}":
+                in_output = False
+            if not in_output or not re.search(rf"\btcp dport {host_port}\b", line):
+                continue
+            destination = re.search(r"\bdnat to ([0-9.:]+)", line)
+            if destination is None:
+                continue
+            owner = _NFT_RULE_COMMENT_RE.search(line)
+            if owner and owner.group("comment") == comment and destination.group(1) == target:
+                continue  # Reconnecting to the exact same exposure is idempotent.
+            raise NetworkError(
+                f"Localhost port {host_port} already forwards to another application; "
+                "choose a different host port with "
+                f"'smolvm sandbox port expose {vm_id} {guest_port}'."
+            )
+        ssh_map = re.search(r"\bmap dnat_local\s*\{(.*?)\n\s*\}", output, re.DOTALL)
+        if ssh_map and re.search(rf"\b{host_port}\s*:", ssh_map.group(1)):
+            raise NetworkError(
+                f"Localhost port {host_port} is reserved for a sandbox connection; "
+                "choose a different host port with "
+                f"'smolvm sandbox port expose {vm_id} {guest_port}'."
+            )
+
     def setup_local_port_forward(
         self,
         vm_id: str,
@@ -1635,6 +1676,19 @@ class NetworkManager:
 
         comment = f"smolvm:{vm_id}:local:{host_port}:{guest_port}"
         target = f"{guest_ip}:{guest_port}"
+
+        # Unlike best-effort cleanup listings, ownership reads must fail closed.
+        try:
+            output = run_command(
+                ["nft", "-nn", "list", "table", _NFT_NAT_FAMILY, _NFT_NAT_TABLE],
+                use_sudo=True,
+            ).stdout
+        except SmolVMError as exc:
+            raise NetworkError(
+                "Cannot check existing port forwards; retry with "
+                f"'smolvm sandbox port expose {vm_id} {host_port}:{guest_port}'."
+            ) from exc
+        self._check_local_port_ownership(output, vm_id, host_port, guest_ip, guest_port)
 
         self._add_nft_rules_if_missing(
             [
@@ -1690,6 +1744,20 @@ class NetworkManager:
 
         comment = f"smolvm:{vm_id}:local:{host_port}:{guest_port}"
         target = f"{guest_ip}:{guest_port}"
+
+        try:
+            output = (
+                await async_run_command(
+                    ["nft", "-nn", "list", "table", _NFT_NAT_FAMILY, _NFT_NAT_TABLE],
+                    use_sudo=True,
+                )
+            ).stdout
+        except SmolVMError as exc:
+            raise NetworkError(
+                "Cannot check existing port forwards; retry with "
+                f"'smolvm sandbox port expose {vm_id} {host_port}:{guest_port}'."
+            ) from exc
+        self._check_local_port_ownership(output, vm_id, host_port, guest_ip, guest_port)
 
         await self._async_add_nft_rules_if_missing(
             [
@@ -1856,15 +1924,19 @@ class NetworkManager:
             raise ValueError("Network policy requires a managed NAT interface.")
         return f"smolvm_policy_{tap_device}"
 
-    def _network_policy_script(self, tap_device: str, allowed_ips: list[str] | None) -> str:
+    def _network_policy_script(
+        self, tap_device: str, allowed_ips: list[str] | None, *, guest_ip: str | None = None
+    ) -> str:
         """Replace one policy atomically, ahead of all ordinary forwarding accepts.
 
-        None preserves open access; [] denies all. No connection-state exemption:
-        stale conntrack entries cannot override the destination policy on reuse.
+        None preserves open access; [] denies outbound access. QEMU may reply to
+        host-originated IPv4 TCP connections. No outbound connection-state
+        exemption: stale conntrack cannot override the destination policy on reuse.
         A separate owned table avoids handle discovery and cross-VM update races.
         """
         table = self._policy_table(tap_device)
         tap = self._quote(tap_device)
+        reply_address = str(IPv4Address(guest_ip)) if guest_ip is not None else None
         destinations = (
             None
             if allowed_ips is None
@@ -1885,6 +1957,11 @@ class NetworkManager:
             f"add rule inet {table} input iifname {tap} ip daddr 169.254.0.0/16 counter drop",
         ]
         if destinations is not None:
+            if reply_address is not None:
+                lines.append(
+                    f"add rule inet {table} input iifname {tap} ip saddr {reply_address} "
+                    "meta l4proto tcp ct direction reply ct state established counter accept"
+                )
             lines.extend(
                 [
                     f"add rule inet {table} input iifname {tap} counter drop",
@@ -1907,17 +1984,19 @@ class NetworkManager:
             )
         return "\n".join(lines) + "\n"
 
-    def apply_network_policy(self, tap_device: str, allowed_ips: list[str] | None) -> None:
+    def apply_network_policy(
+        self, tap_device: str, allowed_ips: list[str] | None, *, guest_ip: str | None = None
+    ) -> None:
         """Install open isolation, off, or an IPv4 allowlist before guest execution."""
-        script = self._network_policy_script(tap_device, allowed_ips)
+        script = self._network_policy_script(tap_device, allowed_ips, guest_ip=guest_ip)
         self._ensure_nftables_base()
         self._run_nft_script(script)
 
     async def async_apply_network_policy(
-        self, tap_device: str, allowed_ips: list[str] | None
+        self, tap_device: str, allowed_ips: list[str] | None, *, guest_ip: str | None = None
     ) -> None:
         """Async counterpart using exactly the same transaction."""
-        script = self._network_policy_script(tap_device, allowed_ips)
+        script = self._network_policy_script(tap_device, allowed_ips, guest_ip=guest_ip)
         await self._async_ensure_nftables_base()
         await self._async_run_nft_script(script)
 

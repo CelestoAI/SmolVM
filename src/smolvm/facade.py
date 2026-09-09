@@ -64,6 +64,7 @@ from smolvm.env_windows import (
 )
 from smolvm.exceptions import (
     CommandExecutionUnavailableError,
+    NetworkError,
     OperationTimeoutError,
     SmolVMError,
     ValidationError,
@@ -942,6 +943,7 @@ class _LocalForward:
     guest_port: int
     transport: Literal["nftables", "qemu_hostfwd", "ssh_tunnel"]
     tunnel_proc: subprocess.Popen[str] | None = None
+    port_reservation: socket.socket | None = None
 
 
 class SmolVM:
@@ -984,7 +986,8 @@ class SmolVM:
             :class:`~smolvm.types.InternetSettings` instance or a dict
             (e.g. ``{"mode": "off"}``). Use ``InternetSettings(mode="off")``
             for typed construction. Unknown settings are rejected before image preparation.
-            Explicit off/restricted modes require Linux Firecracker and vsock.
+            QEMU supports off on macOS/Linux slirp and off/restricted on Linux TAP.
+            Firecracker requires Linux and vsock for off/restricted modes.
             Policy is immutable after creation. Legacy domain lists allow setup-time
             resolved IPs, not verified hostnames; HTTP-method filtering is unsupported.
         mounts: Host directories to mount inside the guest, as
@@ -1053,6 +1056,7 @@ class SmolVM:
                     has_forwards=bool(config and config.port_forwards),
                     network_mode=config.network_attachment.mode if config else "nat",
                     qemu_network=config.qemu_network if config else "slirp",
+                    recovery_command=_from_image_config_help(config.vm_id) if config else None,
                 )
 
         if config is not None and vm_id is not None:
@@ -1465,6 +1469,7 @@ class SmolVM:
         name_prefix: str = "sbx",
         data_dir: Path | None = None,
         socket_dir: Path | None = None,
+        state_manager: StateManagerProtocol | None = None,
         backend: str | None = None,
         arch: str | None = None,
         qemu_machine: QemuMachine = "auto",
@@ -1492,18 +1497,19 @@ class SmolVM:
         per-VM runtime settings and delegates disk isolation/network setup to
         the normal SmolVM lifecycle.
         """
+        resolved_vm_id = _resolve_vm_name(vm_id, prefix=name_prefix)
         if internet_settings is not None:
             internet_settings = parse_network_policy(internet_settings)
             validate_network_policy_options(
                 internet_settings,
-                backend=_normalize_from_image_backend(image, backend, vm_id or "sandbox"),
+                backend=_normalize_from_image_backend(image, backend, resolved_vm_id),
                 guest_os=guest_os,
                 comm_channel=comm_channel,
                 has_mounts=bool(mounts),
                 has_forwards=bool(port_forwards),
                 qemu_network=network or "slirp",
+                recovery_command=_from_image_config_help(resolved_vm_id),
             )
-        resolved_vm_id = _resolve_vm_name(vm_id, prefix=name_prefix)
 
         resolved_backend = _normalize_from_image_backend(image, backend, resolved_vm_id)
         # Verify the backend's tooling before any kernel download or VM start,
@@ -1552,6 +1558,7 @@ class SmolVM:
             data_dir=data_dir,
             socket_dir=socket_dir,
             backend=resolved_backend,
+            state_manager=state_manager,
             ssh_user=ssh_user,
             ssh_key_path=ssh_key_path,
             ssh_password=ssh_password,
@@ -2496,7 +2503,11 @@ class SmolVM:
         """
         self._refresh_info()
         settings = self._info.config.internet_settings
-        if settings is not None and settings.has_explicit_restrictions:
+        if (
+            settings is not None
+            and settings.has_explicit_restrictions
+            and self._info.config.backend != BACKEND_QEMU
+        ):
             raise SmolVMError(
                 f"Sandbox '{self._vm_id}' does not support exposed ports with this network mode; "
                 "create a separate sandbox with mode='open' if you need exposed ports."
@@ -2560,7 +2571,18 @@ class SmolVM:
 
             nftables_configured = False
             keep_nftables = False
+            nftables_cleanup_failed = False
             if should_try_nftables:
+                # Serialize live callers with a bound socket; setup also checks
+                # persisted rules because CLI forwarding outlives its process.
+                # Do not listen: only the guest may satisfy the probe.
+                reservation = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                try:
+                    reservation.bind(("127.0.0.1", candidate))
+                except OSError:
+                    reservation.close()
+                    attempts.append(f"localhost:{candidate} is already in use")
+                    continue
                 try:
                     self._sdk.network.setup_local_port_forward(
                         vm_id=self._vm_id,
@@ -2574,6 +2596,7 @@ class SmolVM:
                             host_port=candidate,
                             guest_port=guest_port,
                             transport="nftables",
+                            port_reservation=reservation,
                         )
                         keep_nftables = True
                         logger.info(
@@ -2587,19 +2610,31 @@ class SmolVM:
                         f"nftables forward localhost:{candidate} -> guest:{guest_port} "
                         "was configured but not reachable"
                     )
+                except NetworkError as e:
+                    # A persisted DNAT rule can outlive its socket owner. Never
+                    # put an SSH listener behind a conflicting/unknown mapping.
+                    attempts.append(str(e))
+                    continue
                 except Exception as e:
                     attempts.append(
                         f"nftables forward localhost:{candidate} -> guest:{guest_port} failed: {e}"
                     )
                 finally:
                     if nftables_configured and not keep_nftables:
-                        with suppress(Exception):
+                        try:
                             self._sdk.network.cleanup_local_port_forward(
                                 vm_id=self._vm_id,
                                 guest_ip=guest_ip,
                                 host_port=candidate,
                                 guest_port=guest_port,
                             )
+                        except Exception as e:
+                            nftables_cleanup_failed = True
+                            attempts.append(f"Cannot remove forward on localhost:{candidate}: {e}")
+                    if not keep_nftables:
+                        reservation.close()
+                if nftables_cleanup_failed:
+                    continue
 
             qemu_hostfwd_configured = False
             keep_qemu_hostfwd = False
@@ -3726,7 +3761,9 @@ modprobe 9pnet_virtio""".strip()
             return False
         config = getattr(self._info, "config", None)
         backend = getattr(config, "backend", None)
-        return backend not in {BACKEND_QEMU, BACKEND_LIBKRUN}
+        if backend == BACKEND_QEMU:
+            return getattr(config, "qemu_network", None) == "tap"
+        return backend != BACKEND_LIBKRUN
 
     def _should_try_qemu_hostfwd_local_forward(self) -> bool:
         """Return whether localhost exposure should use QEMU's slirp hostfwd."""
@@ -3942,14 +3979,20 @@ modprobe 9pnet_virtio""".strip()
                 forward.guest_port,
                 self._vm_id,
             )
+            if forward.port_reservation is not None:
+                forward.port_reservation.close()
             return
 
-        self._sdk.network.cleanup_local_port_forward(
-            vm_id=self._vm_id,
-            guest_ip=guest_ip,
-            host_port=forward.host_port,
-            guest_port=forward.guest_port,
-        )
+        try:
+            self._sdk.network.cleanup_local_port_forward(
+                vm_id=self._vm_id,
+                guest_ip=guest_ip,
+                host_port=forward.host_port,
+                guest_port=forward.guest_port,
+            )
+        finally:
+            if forward.port_reservation is not None:
+                forward.port_reservation.close()
 
     def _command_exec_remediation(self) -> str:
         """Return actionable guidance when command execution is unavailable."""

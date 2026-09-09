@@ -241,6 +241,9 @@ def build_qemu_argv(
                 f"hostfwd=tcp:{forward.host_address}:{forward.host_port}-:{forward.guest_port}"
             )
         netdev_options = [f"user,id=net0,dns={QEMU_SLIRP_DNS}", *hostfwd_rules]
+        settings = vm_info.config.internet_settings
+        if settings is not None and settings.mode == "off":
+            netdev_options.extend(["restrict=on", "ipv6=off"])
         netdev_arg = ",".join(netdev_options)
 
     cmd: list[str] = [

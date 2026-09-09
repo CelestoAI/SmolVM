@@ -292,7 +292,10 @@ class DesktopEndpoint(BaseModel):
 
 
 class InternetSettings(BaseModel):
-    """Outbound access settings; explicit restrictions require Firecracker and vsock.
+    """Outbound access settings for supported private networking.
+
+    QEMU supports off on macOS/Linux slirp and off/CIDRs on Linux TAP.
+    Firecracker explicit restrictions require Linux and vsock.
 
     Legacy allowed_domains resolves names to IPv4 addresses at setup time; it
     does not verify hostnames on connections. HTTP method filtering is unsupported.
