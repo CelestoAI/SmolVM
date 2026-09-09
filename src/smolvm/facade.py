@@ -942,6 +942,7 @@ class _LocalForward:
     guest_port: int
     transport: Literal["nftables", "qemu_hostfwd", "ssh_tunnel"]
     tunnel_proc: subprocess.Popen[str] | None = None
+    port_reservation: socket.socket | None = None
 
 
 class SmolVM:
@@ -2567,6 +2568,16 @@ class SmolVM:
             nftables_configured = False
             keep_nftables = False
             if should_try_nftables:
+                # nftables does not bind a port. Hold a non-listening socket
+                # for the exposure's lifetime so other callers/processes cannot
+                # claim it. Do not listen: only the guest may satisfy the probe.
+                reservation = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                try:
+                    reservation.bind(("127.0.0.1", candidate))
+                except OSError:
+                    reservation.close()
+                    attempts.append(f"localhost:{candidate} is already in use")
+                    continue
                 try:
                     self._sdk.network.setup_local_port_forward(
                         vm_id=self._vm_id,
@@ -2580,6 +2591,7 @@ class SmolVM:
                             host_port=candidate,
                             guest_port=guest_port,
                             transport="nftables",
+                            port_reservation=reservation,
                         )
                         keep_nftables = True
                         logger.info(
@@ -2606,6 +2618,8 @@ class SmolVM:
                                 host_port=candidate,
                                 guest_port=guest_port,
                             )
+                    if not keep_nftables:
+                        reservation.close()
 
             qemu_hostfwd_configured = False
             keep_qemu_hostfwd = False
@@ -3950,14 +3964,20 @@ modprobe 9pnet_virtio""".strip()
                 forward.guest_port,
                 self._vm_id,
             )
+            if forward.port_reservation is not None:
+                forward.port_reservation.close()
             return
 
-        self._sdk.network.cleanup_local_port_forward(
-            vm_id=self._vm_id,
-            guest_ip=guest_ip,
-            host_port=forward.host_port,
-            guest_port=forward.guest_port,
-        )
+        try:
+            self._sdk.network.cleanup_local_port_forward(
+                vm_id=self._vm_id,
+                guest_ip=guest_ip,
+                host_port=forward.host_port,
+                guest_port=forward.guest_port,
+            )
+        finally:
+            if forward.port_reservation is not None:
+                forward.port_reservation.close()
 
     def _command_exec_remediation(self) -> str:
         """Return actionable guidance when command execution is unavailable."""

@@ -2134,6 +2134,13 @@ class TestQemuPolicyLifecycle:
     @pytest.fixture
     def qemu_policy(self, smol_vm, sample_config, monkeypatch, tmp_path):
         monkeypatch.setattr("smolvm.vm.sys.platform", "linux")
+        monkeypatch.setattr(smol_vm, "_materialize_rootfs", lambda config: config)
+        monkeypatch.setattr(
+            smol_vm, "_async_materialize_rootfs", AsyncMock(side_effect=lambda config: config)
+        )
+        monkeypatch.setattr(
+            smol_vm, "_find_qemu_img_binary", lambda: pytest.fail("Unit test invoked qemu-img")
+        )
         network = _attach_mock_network(smol_vm)
         config = sample_config.model_copy(
             update={

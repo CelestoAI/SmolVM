@@ -683,6 +683,10 @@ def test_restore_firecracker_disk_snapshot_boots_fresh_without_loading_vmstate(
 def test_restore_policy_failure_prevents_guest_execution(
     smol_vm, sample_config, monkeypatch, mode, backend
 ):
+    monkeypatch.setattr(smol_vm, "_materialize_rootfs", lambda config: config)
+    monkeypatch.setattr(
+        smol_vm, "_find_qemu_img_binary", lambda: pytest.fail("Unit test invoked qemu-img")
+    )
     monkeypatch.setattr("smolvm.vm.sys.platform", "linux")
     monkeypatch.setattr("smolvm.comm.select.platform.system", lambda: "Linux")
     settings = InternetSettings(
