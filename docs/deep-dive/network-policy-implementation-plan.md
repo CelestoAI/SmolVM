@@ -17,6 +17,8 @@ The E2E workflow has an opt-in `policy_release_validation` dispatch input. It bu
 
 The concurrency baseline exposed an existing auto-name collision (`VMAlreadyExistsError: sbx-crick`). The benchmark substitutes UUID-based names on both versions while retaining the normal automatic image configuration and startup path. This isolates network-policy measurements; it does not fix or validate production auto-name uniqueness, which remains a separate SDK follow-up.
 
+Restore timing uses the stopped original sandbox, retaining its network reservation. Deleting it between snapshot and restore would let another concurrent sample take the IP that the snapshot needs. Delete/restore correctness remains covered separately by the live lifecycle test. The release matrix collects 100 samples per serial case and 24 per concurrent case (three batches of eight).
+
 ## Shipping decision
 
 Ship one small release on Linux with Firecracker NAT networking. Include Linux QEMU TAP only if the same implementation passes the live tests; otherwise reject the new restricted modes there until it does. Keep unrestricted networking as the default.

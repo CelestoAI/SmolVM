@@ -74,10 +74,9 @@ def main() -> None:
             if args.restore:
                 snap = sandbox.snapshot(snapshot_type=SnapshotType.DISK)
                 snapshot_id = snap.snapshot_id
-                # Snapshot is complete; disposal is outside the measured spans.
+                # Keep the stopped VM's leases while restoring its identity.
+                # Deleting here lets another concurrent sample take its IP.
                 sandbox.stop(timeout=0)
-                sandbox.delete()
-                target = None  # The original is gone if restore fails.
                 started = time.monotonic()
                 target = SmolVM.from_snapshot(
                     snap.snapshot_id,
@@ -91,11 +90,10 @@ def main() -> None:
             return result
         finally:
             try:
-                if target is not None:
-                    try:
-                        target.stop(timeout=0)
-                    finally:
-                        target.delete()
+                try:
+                    target.stop(timeout=0)
+                finally:
+                    target.delete()
             finally:
                 if snapshot_id is not None:
                     sandbox._sdk.delete_snapshot(snapshot_id)
