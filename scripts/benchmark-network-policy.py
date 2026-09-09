@@ -13,8 +13,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse
+from uuid import uuid4
 
 from smolvm import SmolVM
+from smolvm import facade as _facade
 from smolvm.storage import MemoryStateManager
 from smolvm.types import SnapshotType
 
@@ -38,6 +40,10 @@ def main() -> None:
         parser.error("url must use http or https")
     import shlex
 
+    # Baseline auto-naming chooses from a small human-name pool without checking
+    # the shared inventory. Avoid name collisions in this load test without
+    # changing the create/start path or production code, on BOTH versions.
+    _facade.generate_sandbox_name = lambda _existing, prefix="sbx": f"{prefix}-{uuid4().hex[:16]}"
     inventory = MemoryStateManager(args.data_dir)
 
     def sample(index: int) -> dict:

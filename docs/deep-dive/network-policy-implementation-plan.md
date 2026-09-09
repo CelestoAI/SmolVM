@@ -15,6 +15,8 @@ Run `python scripts/benchmark-network-policy.py --help` for the measurement entr
 
 The E2E workflow has an opt-in `policy_release_validation` dispatch input. It builds baseline/candidate wheels, checks the documented examples against the candidate wheel, and saves raw timings and summaries as `network-policy-release-evidence`. Use `policy_samples=100` for release measurements; smaller values only smoke the harness. Baseline is `685b7bd52d0de8efb1c88fe8cf053d0d3b64d171`, immediately before PR #496. Both versions use the same image catalog, the default two virtual CPUs, 512 MiB RAM, and repeated baselines around each serial/concurrent matrix. Concurrency runs first. Completed samples are stopped immediately outside the measured spans; graceful-shutdown waiting is not part of this startup/restore benchmark.
 
+The concurrency baseline exposed an existing auto-name collision (`VMAlreadyExistsError: sbx-crick`). The benchmark substitutes UUID-based names on both versions while retaining the normal automatic image configuration and startup path. This isolates network-policy measurements; it does not fix or validate production auto-name uniqueness, which remains a separate SDK follow-up.
+
 ## Shipping decision
 
 Ship one small release on Linux with Firecracker NAT networking. Include Linux QEMU TAP only if the same implementation passes the live tests; otherwise reject the new restricted modes there until it does. Keep unrestricted networking as the default.

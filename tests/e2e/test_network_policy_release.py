@@ -80,6 +80,9 @@ def test_installed_examples_and_performance(policy_lab, tmp_path):  # noqa: F811
     summary = {}
     script = root / "scripts/benchmark-network-policy.py"
     for concurrency in (8, 1):
+        # The plan requires 100 serial samples; three batches are enough for
+        # the separate concurrency check without turning it into a load soak.
+        case_samples = samples if concurrency == 1 else min(samples, 24)
         # Bracket each matrix with baseline repeats to expose runner drift.
         cases = [
             ("baseline-before", "baseline", "open", []),
@@ -97,7 +100,7 @@ def test_installed_examples_and_performance(policy_lab, tmp_path):  # noqa: F811
         ]
         for label, version, mode, destinations in cases:
             name = f"{label}-c{concurrency}"
-            print(f"Measuring {name}: {samples} samples", flush=True)
+            print(f"Measuring {name}: {case_samples} samples", flush=True)
             output = results / f"{name}.jsonl"
             command = [
                 interpreters[version],
@@ -105,7 +108,7 @@ def test_installed_examples_and_performance(policy_lab, tmp_path):  # noqa: F811
                 "--mode",
                 mode,
                 "--samples",
-                str(samples),
+                str(case_samples),
                 "--concurrency",
                 str(concurrency),
                 "--restore",
@@ -129,7 +132,7 @@ def test_installed_examples_and_performance(policy_lab, tmp_path):  # noqa: F811
                     timeout=2400,
                 )
             rows = [json.loads(line) for line in output.read_text().splitlines()][1:]
-            assert len(rows) == samples
+            assert len(rows) == case_samples
             metrics = {"elapsed_seconds_including_warmup": time.monotonic() - started}
             for metric in rows[0].keys() - {"sample"}:
                 values = sorted(row[metric] for row in rows)
