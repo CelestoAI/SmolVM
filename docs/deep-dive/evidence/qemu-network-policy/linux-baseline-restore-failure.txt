@@ -1,6 +1,0 @@
-Runner: smolvm-qemu-policy-0909-01a084f7, GCP europe-west4-a, n2-standard-2, nested KVM.
-Baseline: unchanged v0.0.32 wheel captured before implementation.
-Command: sudo baseline-venv/bin/python scripts/benchmark-network-policy.py --vm-config linux-tap.json --samples 1 --restore --data-dir /tmp/linux-run/baseline-smoke-data --output /tmp/linux-run/baseline-smoke.jsonl
-Initial start reached the application. The warmup failed during restore_sample, after snapshotting and deleting the original VM, at wait_for_application(work["url"]):
-TimeoutError: Application did not become ready at http://172.16.0.2:18080/
-No timing samples recorded; this is not a baseline restore latency.
