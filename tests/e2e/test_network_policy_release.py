@@ -90,7 +90,8 @@ def test_installed_examples_and_performance(policy_lab, tmp_path):  # noqa: F811
                 "candidate-restricted-32",
                 "candidate",
                 "restricted",
-                [allowed, *(f"203.0.113.{n}/32" for n in range(1, 32))],
+                # Nonadjacent addresses stay at 32 entries after normalization.
+                [allowed, *(f"203.0.113.{2 * n}/32" for n in range(1, 32))],
             ),
             ("baseline-after", "baseline", "open", []),
         ]
