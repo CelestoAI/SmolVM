@@ -46,7 +46,6 @@ def main() -> None:
             "os": "alpine",
             "comm_channel": "vsock",
             "memory": 512,
-            "vcpu_count": 1,
             "data_dir": args.data_dir,
             "state_manager": inventory,
         }

@@ -13,7 +13,7 @@ Implementation decisions:
 
 Run `python scripts/benchmark-network-policy.py --help` for the measurement entry point. Use the same script and controlled endpoint against baseline and candidate checkouts on a disposable Linux runner.
 
-The E2E workflow has an opt-in `policy_release_validation` dispatch input. It builds baseline/candidate wheels, checks the documented examples against the candidate wheel, and saves raw timings and summaries as `network-policy-release-evidence`. Use `policy_samples=100` for release measurements; smaller values only smoke the harness. Baseline is `685b7bd52d0de8efb1c88fe8cf053d0d3b64d171`, immediately before PR #496. Both versions use the same image catalog, one virtual CPU, 512 MiB RAM, and repeated baselines around each serial/concurrent matrix.
+The E2E workflow has an opt-in `policy_release_validation` dispatch input. It builds baseline/candidate wheels, checks the documented examples against the candidate wheel, and saves raw timings and summaries as `network-policy-release-evidence`. Use `policy_samples=100` for release measurements; smaller values only smoke the harness. Baseline is `685b7bd52d0de8efb1c88fe8cf053d0d3b64d171`, immediately before PR #496. Both versions use the same image catalog, the default two virtual CPUs, 512 MiB RAM, and repeated baselines around each serial/concurrent matrix.
 
 ## Shipping decision
 
