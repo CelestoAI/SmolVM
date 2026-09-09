@@ -58,6 +58,8 @@ The `vsock` setting uses a direct connection to the sandbox for commands and fil
 
 The default mode is `open`, which enables internet access. Managed private networking blocks connections between sandboxes and to IPv4 link-local addresses, including the common cloud metadata address `169.254.169.254`. It does not block every private network or every cloud provider's metadata service.
 
+After upgrading, existing running sandboxes keep their current network rules until SmolVM repairs their networking or they restart. Restart them to apply the updated baseline isolation. To use `off` or `restricted`, create a new sandbox with those settings; reconnecting does not change an existing sandbox's policy.
+
 ## Allow specific IP addresses
 
 Use `restricted` with the IPv4 addresses or network ranges your task needs:

@@ -26,6 +26,15 @@ on:
     # 03:17 UTC nightly (off the top of the hour to dodge cron congestion).
     - cron: "17 3 * * *"
   workflow_dispatch:
+    inputs:
+      policy_release_validation:
+        description: Run installed-wheel smoke and the network-policy performance matrix
+        type: boolean
+        default: false
+      policy_samples:
+        description: Samples per case (100 for release evidence; smaller for a smoke run)
+        type: number
+        default: 100
 
 # A real-KVM run takes a runner slot for ~1.5 min; on stacked PR pushes, cancel
 # the in-flight run so only the newest commit is verified. Keyed per ref so PRs,
@@ -42,7 +51,7 @@ jobs:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: ${{ matrix.backend }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: ${{ inputs.policy_release_validation && 150 || 30 }}
     strategy:
       fail-fast: false
       matrix:
@@ -167,7 +176,54 @@ jobs:
       - name: Run e2e suite
         env:
           SMOLVM_IMAGES_RELEASE_TAG: ${{ steps.image_release_fallback.outputs.tag }}
-        run: sudo -n -E -u "$USER" -g kvm -- env "PATH=$PATH" "SMOLVM_IMAGES_RELEASE_TAG=${SMOLVM_IMAGES_RELEASE_TAG:-}" "$(command -v uv)" run pytest -m e2e tests/e2e -v --e2e-backend "${{ matrix.backend }}"
+          POLICY_RELEASE_VALIDATION: ${{ inputs.policy_release_validation }}
+        run: |
+          test_paths=(tests/e2e)
+          if [[ "$POLICY_RELEASE_VALIDATION" == "true" ]]; then
+            test_paths=(tests/e2e/test_network_policy.py)
+          fi
+          sudo -n -E -u "$USER" -g kvm -- env "PATH=$PATH" "SMOLVM_IMAGES_RELEASE_TAG=${SMOLVM_IMAGES_RELEASE_TAG:-}" "$(command -v uv)" run pytest -m e2e "${test_paths[@]}" -v --e2e-backend "${{ matrix.backend }}"
+
+      - name: Build baseline and candidate wheels
+        if: inputs.policy_release_validation && matrix.backend == 'firecracker'
+        run: |
+          # Parent of the network-policy merge: identical benchmark and image
+          # catalog are used on both versions on this same disposable runner.
+          git fetch origin 685b7bd52d0de8efb1c88fe8cf053d0d3b64d171
+          git worktree add --detach "$RUNNER_TEMP/policy-baseline" FETCH_HEAD
+          cp src/smolvm/images/published.py "$RUNNER_TEMP/policy-baseline/src/smolvm/images/published.py"
+          uv build --wheel --out-dir "$RUNNER_TEMP/policy-wheels/baseline" "$RUNNER_TEMP/policy-baseline"
+          uv build --wheel --out-dir "$RUNNER_TEMP/policy-wheels/candidate"
+          for version in baseline candidate; do
+            uv venv "$RUNNER_TEMP/policy-$version-venv"
+            uv pip install --python "$RUNNER_TEMP/policy-$version-venv/bin/python" \
+              "$RUNNER_TEMP/policy-wheels/$version/"*.whl
+          done
+
+      - name: Validate installed examples and measure network policy
+        if: inputs.policy_release_validation && matrix.backend == 'firecracker'
+        env:
+          SMOLVM_POLICY_BASELINE_PYTHON: ${{ runner.temp }}/policy-baseline-venv/bin/python
+          SMOLVM_POLICY_CANDIDATE_PYTHON: ${{ runner.temp }}/policy-candidate-venv/bin/python
+          SMOLVM_POLICY_RESULTS: ${{ runner.temp }}/policy-results
+          SMOLVM_POLICY_SAMPLES: ${{ inputs.policy_samples }}
+        run: |
+          mkdir -p "$SMOLVM_POLICY_RESULTS"
+          git rev-parse HEAD > "$SMOLVM_POLICY_RESULTS/candidate-sha.txt"
+          git -C "$RUNNER_TEMP/policy-baseline" rev-parse HEAD > "$SMOLVM_POLICY_RESULTS/baseline-sha.txt"
+          lscpu > "$SMOLVM_POLICY_RESULTS/runner.txt"
+          cp src/smolvm/images/published.py "$SMOLVM_POLICY_RESULTS/image-catalog.py"
+          uv pip freeze --python "$SMOLVM_POLICY_CANDIDATE_PYTHON" > "$SMOLVM_POLICY_RESULTS/candidate-packages.txt"
+          uv pip freeze --python "$SMOLVM_POLICY_BASELINE_PYTHON" > "$SMOLVM_POLICY_RESULTS/baseline-packages.txt"
+          sudo -n -E -u "$USER" -g kvm -- env "PATH=$PATH" "$(command -v uv)" run \
+            pytest -m e2e tests/e2e/test_network_policy_release.py -v -s --e2e-backend firecracker
+
+      - name: Upload network-policy release evidence
+        if: always() && inputs.policy_release_validation && matrix.backend == 'firecracker'
+        uses: actions/upload-artifact@v4
+        with:
+          name: network-policy-release-evidence
+          path: ${{ runner.temp }}/policy-results
 
       - name: Dump VM logs on failure
         if: failure()

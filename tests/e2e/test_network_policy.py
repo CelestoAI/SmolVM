@@ -46,7 +46,7 @@ def policy_lab(tmp_path: Path):
     gateway, allowed, denied = f"{prefix}.1", f"{prefix}.2", f"{prefix}.3"
     log = tmp_path / "requests.jsonl"
     server = tmp_path / "server.py"
-    server.write_text("""import http.server, json, socket, threading
+    server.write_text("""import http.server, json, socket, socketserver, threading
 from pathlib import Path
 import sys
 log = Path(sys.argv[1])
@@ -63,12 +63,19 @@ def udp():
     while True:
         data, addr = sock.recvfrom(4096)
         record(data.decode(errors="replace")); sock.sendto(data, addr)
-class V6Server(http.server.ThreadingHTTPServer):
+class Server(http.server.ThreadingHTTPServer):
+    def server_bind(self):
+        # HTTPServer normally resolves the machine's hostname at bind time.
+        # The isolated lab has no real DNS, so avoid that unrelated lookup.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = "policy-lab"
+        self.server_port = self.server_address[1]
+class V6Server(Server):
     address_family = socket.AF_INET6
 def serve6(): V6Server(("::", 18082), Handler).serve_forever()
 threading.Thread(target=serve6, daemon=True).start()
 threading.Thread(target=udp, daemon=True).start()
-http.server.ThreadingHTTPServer(("0.0.0.0", 18080), Handler).serve_forever()
+Server(("0.0.0.0", 18080), Handler).serve_forever()
 """)
     process = None
     forwarding_rules: list[tuple[str, str]] = []
@@ -367,6 +374,74 @@ def test_firecracker_policy_lifecycle(policy_lab, request, tmp_path, mode):
         target = restored or sandbox
         with suppress(Exception):
             target.stop()
+        with suppress(Exception):
+            target.delete()
+        if snapshot is not None:
+            with suppress(Exception):
+                target._sdk.delete_snapshot(snapshot.snapshot_id)
+
+
+@pytest.mark.parametrize("mode", ["off", "restricted"])
+def test_firecracker_policy_install_failure(policy_lab, request, tmp_path, monkeypatch, mode):
+    """An actual nft rejection prevents start/restore; removing the fault recovers."""
+    if selected_backend(request.config) == "qemu":
+        pytest.skip("Explicit policy currently ships on Firecracker only")
+    require_backend_available("firecracker", request.config, sandbox_name="policy-failure")
+    allowed, *_ = policy_lab
+    settings = {"mode": mode}
+    if mode == "restricted":
+        settings["allowed_cidrs"] = [allowed]
+    inventory = MemoryStateManager(tmp_path / "inventory")
+    sandbox = SmolVM(
+        backend="firecracker",
+        os="alpine",
+        comm_channel="vsock",
+        internet_settings=settings,
+        state_manager=inventory,
+    )
+    restored = snapshot = None
+    run_nft = NetworkManager._run_nft_script
+
+    def reject_policy(self, script):
+        if "smolvm_policy_" in script:
+            script += "\ninvalid nft syntax\n"
+        return run_nft(self, script)
+
+    def firecracker_pids():
+        return set(privileged("pgrep", "-x", "firecracker", check=False).stdout.split())
+
+    try:
+        before = firecracker_pids()
+        with monkeypatch.context() as patch:
+            patch.setattr(NetworkManager, "_run_nft_script", reject_policy)
+            with pytest.raises(SmolVMError):
+                sandbox.start(boot_timeout=BOOT_TIMEOUT)
+        assert firecracker_pids() == before, "Failed policy installation launched Firecracker"
+        sandbox.start(boot_timeout=BOOT_TIMEOUT)
+        assert sandbox.run("printf recovered").stdout == "recovered"
+        snapshot = sandbox.snapshot(snapshot_type=SnapshotType.DISK)
+        sandbox.stop()
+        sandbox.delete()
+        before = firecracker_pids()
+        with monkeypatch.context() as patch:
+            patch.setattr(NetworkManager, "_run_nft_script", reject_policy)
+            with pytest.raises(SmolVMError):
+                SmolVM.from_snapshot(
+                    snapshot.snapshot_id,
+                    backend="firecracker",
+                    resume_vm=True,
+                    state_manager=inventory,
+                )
+        assert firecracker_pids() == before, "Failed restore policy launched Firecracker"
+        restored = SmolVM.from_snapshot(
+            snapshot.snapshot_id,
+            backend="firecracker",
+            resume_vm=True,
+            state_manager=inventory,
+        )
+        assert restored.run("printf restored").stdout == "restored"
+    finally:
+        target = restored or sandbox
         with suppress(Exception):
             target.delete()
         if snapshot is not None:
