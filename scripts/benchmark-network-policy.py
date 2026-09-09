@@ -68,7 +68,8 @@ def main() -> None:
             if args.restore:
                 snap = sandbox.snapshot(snapshot_type=SnapshotType.DISK)
                 snapshot_id = snap.snapshot_id
-                sandbox.stop()
+                # Snapshot is complete; disposal is outside the measured spans.
+                sandbox.stop(timeout=0)
                 sandbox.delete()
                 started = time.monotonic()
                 target = SmolVM.from_snapshot(
@@ -83,7 +84,10 @@ def main() -> None:
             return result
         finally:
             try:
-                target.delete()
+                try:
+                    target.stop(timeout=0)
+                finally:
+                    target.delete()
             finally:
                 if snapshot_id is not None:
                     target._sdk.delete_snapshot(snapshot_id)

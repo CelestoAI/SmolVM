@@ -79,7 +79,7 @@ def test_installed_examples_and_performance(policy_lab, tmp_path):  # noqa: F811
 
     summary = {}
     script = root / "scripts/benchmark-network-policy.py"
-    for concurrency in (1, 8):
+    for concurrency in (8, 1):
         # Bracket each matrix with baseline repeats to expose runner drift.
         cases = [
             ("baseline-before", "baseline", "open", []),

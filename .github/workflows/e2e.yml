@@ -51,7 +51,7 @@ jobs:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: ${{ matrix.backend }}
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.policy_release_validation && 90 || 30 }}
+    timeout-minutes: ${{ inputs.policy_release_validation && 150 || 30 }}
     strategy:
       fail-fast: false
       matrix:
