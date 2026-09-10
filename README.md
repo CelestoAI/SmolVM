@@ -18,7 +18,7 @@
 
 ---
 
-SmolVM gives AI agents their own disposable computer. 
+SmolVM gives AI agents their own secure and persistent computer. 
 Each microVM boots in milliseconds, runs any code or software you throw at it, persists files and state across sessions, and disappears when you're done — ready to handle thousands of sandboxes in production.
 
 <br>
