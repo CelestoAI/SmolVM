@@ -2,7 +2,7 @@
 
 # SmolVM
 
-#### Secure, isolated computers that AI agents can use to browse, run code, and get real work done. 
+#### Secure, persistent computers that AI agents can use to browse, run code, and get real work done. 
 
 
 <img src="https://ik.imagekit.io/gradsflow/celestoai/logo/celesto%20cover%20low_vFigbRaJI.png">
@@ -18,7 +18,7 @@
 
 ---
 
-SmolVM gives AI agents their own disposable computer. 
+SmolVM gives AI agents their own secure and persistent computer. 
 Each microVM boots in milliseconds, runs any code or software you throw at it, persists files and state across sessions, and disappears when you're done — ready to handle thousands of sandboxes in production.
 
 <br>
