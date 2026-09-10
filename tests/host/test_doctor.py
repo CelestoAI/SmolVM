@@ -16,6 +16,7 @@
 
 import json
 import shlex
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -343,6 +344,21 @@ class TestDoctorQemu:
 
         assert checks["qemu-version"].status == "pass"
         assert checks["command:qemu-img"].status == "pass"
+        assert mock_run.call_args.kwargs["timeout"] == 15
+
+    @patch("smolvm.host.doctor.subprocess.run")
+    def test_qemu_version_timeout_has_actionable_warning(self, mock_run: MagicMock) -> None:
+        """A slow QEMU first launch should explain how to retry the check."""
+        from smolvm.host.doctor import _check_qemu_version
+
+        mock_run.side_effect = subprocess.TimeoutExpired("qemu-system-aarch64", 15)
+
+        check = _check_qemu_version(Path("/opt/homebrew/bin/qemu-system-aarch64"))
+
+        assert check.status == "warn"
+        assert check.detail == (
+            "QEMU did not report its version within 15 seconds. Run 'smolvm doctor' again."
+        )
 
     @patch("smolvm.host.doctor.platform.system", return_value="Linux")
     @patch("smolvm.host.doctor.subprocess.run")

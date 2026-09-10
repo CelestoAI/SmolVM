@@ -46,6 +46,11 @@ from smolvm.utils import run_command, which
 
 DoctorStatus = Literal["pass", "warn", "fail"]
 
+# The first launch of a Homebrew QEMU binary on macOS can spend several
+# seconds in Gatekeeper and dynamic-library validation.  A five-second probe
+# can therefore fail even though QEMU is installed and usable.
+_QEMU_PROBE_TIMEOUT_SECONDS = 15
+
 
 @dataclass(frozen=True)
 class DoctorCheck:
@@ -117,13 +122,16 @@ def _check_qemu_version(qemu_path: Path) -> DoctorCheck:
             capture_output=True,
             text=True,
             check=False,
-            timeout=5,
+            timeout=_QEMU_PROBE_TIMEOUT_SECONDS,
         )
-    except subprocess.TimeoutExpired as exc:
+    except subprocess.TimeoutExpired:
         return DoctorCheck(
             name="qemu-version",
             status="warn",
-            detail=f"could not probe QEMU version: {exc}",
+            detail=(
+                "QEMU did not report its version within "
+                f"{_QEMU_PROBE_TIMEOUT_SECONDS} seconds. Run 'smolvm doctor' again."
+            ),
         )
     except (FileNotFoundError, OSError) as exc:
         return DoctorCheck(
