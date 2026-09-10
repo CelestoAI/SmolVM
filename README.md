@@ -2,7 +2,7 @@
 
 # SmolVM
 
-#### Secure, isolated computers that AI agents can use to browse, run code, and get real work done. 
+#### Secure, persistent computers that AI agents can use to browse, run code, and get real work done. 
 
 
 <img src="https://ik.imagekit.io/gradsflow/celestoai/logo/celesto%20cover%20low_vFigbRaJI.png">
