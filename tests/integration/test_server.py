@@ -459,6 +459,18 @@ def test_exec_timeout_retries_cleanup_at_shutdown_when_delete_fails(app: FastAPI
 
 
 @pytest.mark.asyncio
+async def test_lifespan_deletes_session_owned_sandboxes(app: FastAPI) -> None:
+    create = _handler(app, "/sandboxes", "POST")
+
+    async with app.router.lifespan_context(app):
+        created = create(CreateSandboxRequest())
+
+    assert created.id in FakeSmolVM.deleted_ids
+    assert FakeSmolVM.close_calls == 1
+    assert app.state.sandboxes == {}
+
+
+@pytest.mark.asyncio
 async def test_file_download_rejects_oversized_guest_file_before_transfer(app: FastAPI) -> None:
     create = _handler(app, "/sandboxes", "POST")
     read = _handler(app, "/sandboxes/{sandbox_id}/files", "GET")

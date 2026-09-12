@@ -5,10 +5,13 @@ from __future__ import annotations
 import io
 import json
 import os
+import signal
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -79,3 +82,69 @@ def test_sdk_session_authenticates_and_exits_when_control_pipe_closes() -> None:
         os.close(write_fd)
 
     assert process.wait(timeout=10) == 0
+
+
+def test_sdk_session_exits_after_hard_parent_termination() -> None:
+    parent_script = """
+import json
+import os
+import subprocess
+import sys
+import time
+
+read_fd, write_fd = os.pipe()
+child = subprocess.Popen(
+    [sys.executable, "-c", (
+        "from smolvm.server.session import run_sdk_session; "
+        f"raise SystemExit(run_sdk_session(control_fd={read_fd}))"
+    )],
+    pass_fds=(read_fd,),
+    stdout=subprocess.PIPE,
+    text=True,
+)
+os.close(read_fd)
+os.write(write_fd, (json.dumps({"protocol_version": 1, "token": "a" * 43}) + "\\n").encode())
+ready = json.loads(child.stdout.readline())
+print(json.dumps({"server_pid": child.pid, "ready": ready}), flush=True)
+time.sleep(60)
+"""
+    parent = subprocess.Popen(
+        [sys.executable, "-c", parent_script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=Path(__file__).parents[2],
+    )
+    server_pid: int | None = None
+    try:
+        assert parent.stdout is not None
+        line = parent.stdout.readline()
+        if not line:
+            assert parent.stderr is not None
+            pytest.fail(parent.stderr.read())
+        record = json.loads(line)
+        server_pid = record["server_pid"]
+        ready = record["ready"]
+        url = f"http://127.0.0.1:{ready['port']}/sdk/v1/capabilities"
+
+        os.kill(parent.pid, signal.SIGKILL)
+        parent.wait(timeout=5)
+
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                urllib.request.urlopen(url, timeout=0.25)
+            except urllib.error.HTTPError:
+                pass
+            except (urllib.error.URLError, OSError):
+                break
+            if time.monotonic() >= deadline:
+                pytest.fail("SDK session remained reachable after its parent was killed")
+            time.sleep(0.05)
+    finally:
+        if parent.poll() is None:
+            parent.kill()
+            parent.wait(timeout=5)
+        if server_pid is not None:
+            with suppress(ProcessLookupError):
+                os.kill(server_pid, signal.SIGTERM)
