@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { extname, join, normalize, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
-import { createProxyServer } from "http-proxy";
+import httpProxy from "http-proxy";
 import { z } from "zod";
 import { ConversationManager } from "./manager.js";
 
@@ -12,7 +12,7 @@ const messageBody = z.object({ text: z.string().trim().min(1).max(8_000) });
 const approvalBody = z.object({ actionDigest: z.string().length(64), approved: z.boolean() });
 const resumeBody = z.object({ controlEpoch: z.string().min(12).max(200) });
 const sessions = new Map<string, string>();
-const proxy = createProxyServer({ ws: true, xfwd: false, changeOrigin: false });
+const proxy = httpProxy.createProxyServer({ ws: true, xfwd: false, changeOrigin: false });
 proxy.on("error", (_error, _request, response) => {
   if (response && "writeHead" in response) { response.writeHead(502); response.end("Live browser proxy unavailable"); }
 });
