@@ -83,9 +83,11 @@ async function route(manager: ConversationManager, staticRoot: string, request: 
   if (method === "POST" && tokenMatch) return sendJson(response, 200, manager.issueViewerNonce(tokenMatch[1]));
   const viewerMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/viewer\/(.+)$/);
   if (method === "GET" && viewerMatch) {
+    const target = manager.viewerTarget(viewerMatch[1]);
+    if (viewerMatch[2] === "package.json") return sendJson(response, 200, { name: "smolvm-novnc", version: "embedded" });
     const remainder = `/${viewerMatch[2]}${url.search}`;
     request.url = remainder;
-    proxy.web(request, response, { target: manager.viewerTarget(viewerMatch[1]) });
+    proxy.web(request, response, { target });
     return;
   }
   if (url.pathname.startsWith("/api/")) throw Object.assign(new Error("That Smol Agent route does not exist."), { status: 404 });
