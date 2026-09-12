@@ -928,10 +928,14 @@ def server() -> None:
 @server.command("start")
 @click.option("--host", default="127.0.0.1", show_default=True)
 @click.option("--port", default=8000, show_default=True, type=int)
-def server_start(host: str, port: int) -> Any:
+@click.option("--sdk-session", is_flag=True, hidden=True)
+@click.option("--control-fd", default=3, type=int, hidden=True)
+def server_start(host: str, port: int, sdk_session: bool, control_fd: int) -> Any:
     """Start the local API server."""
     _before_command()
-    return _handlers()._run_server_start(host=host, port=port)
+    return _handlers()._run_server_start(
+        host=host, port=port, sdk_session=sdk_session, control_fd=control_fd
+    )
 
 
 @sandbox.group(context_settings=CONTEXT_SETTINGS)

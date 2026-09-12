@@ -1,0 +1,57 @@
+[**@celestoai/smolvm**](../README.md)
+
+***
+
+[@celestoai/smolvm](../README.md) / CreateSandboxOptions
+
+# Interface: CreateSandboxOptions
+
+Configure the operating system, resources, image, and network for a new sandbox. MiB means mebibytes, a memory and disk-size unit.
+
+## Properties
+
+### backend?
+
+> `optional` **backend?**: `"firecracker"` \| `"qemu"` \| `"libkrun"` \| `"vz"`
+
+Override automatic backend selection.
+
+***
+
+### diskMiB?
+
+> `optional` **diskMiB?**: `number`
+
+Guest root disk size in MiB.
+
+***
+
+### image?
+
+> `optional` **image?**: `string`
+
+Custom local path, file URL, or remote image reference.
+
+***
+
+### memoryMiB?
+
+> `optional` **memoryMiB?**: `number`
+
+Guest memory in MiB.
+
+***
+
+### network?
+
+> `optional` **network?**: [`NetworkPolicy`](../type-aliases/NetworkPolicy.md)
+
+Outbound network access. Defaults to open.
+
+***
+
+### os?
+
+> `optional` **os?**: `"alpine"` \| `"ubuntu"`
+
+Guest operating system. Defaults to Ubuntu.

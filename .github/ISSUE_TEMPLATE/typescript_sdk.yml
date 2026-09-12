@@ -1,0 +1,42 @@
+name: TypeScript SDK problem
+description: Report an installation or integration blocker in @celestoai/smolvm
+title: "[TypeScript]: "
+labels: [bug, typescript]
+body:
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Failed stage
+      options: [Runtime install, Package install, Sandbox create, Command execution, Files, Cleanup, CI, Other]
+    validations:
+      required: true
+  - type: input
+    id: elapsed
+    attributes:
+      label: Elapsed time
+      description: How long did the attempted setup or operation take?
+      placeholder: e.g. 3 minutes 20 seconds
+    validations:
+      required: true
+  - type: textarea
+    id: versions
+    attributes:
+      label: Versions and platform
+      description: Include Node, SDK, SmolVM runtime, operating system, architecture, and backend.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      render: typescript
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Redacted diagnostics
+      description: Paste `await smolvm.diagnose()` output. Remove paths or values you consider sensitive.
+      render: json
+    validations:
+      required: true

@@ -23,18 +23,20 @@ error mapping, response shapes) without booting real VMs. This mirrors
 dependency.
 """
 
+import shlex
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 
 pytest.importorskip("fastapi")
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.routing import APIRoute
 
 from smolvm import server as server_pkg
-from smolvm.exceptions import SmolVMError, VMNotFoundError
-from smolvm.server.app import create_app
+from smolvm.exceptions import OperationTimeoutError, SmolVMError, VMNotFoundError
+from smolvm.server.app import _DownloadProgressEvents, create_app
 from smolvm.server.models import (
     CreateSandboxRequest,
     DesktopResponse,
@@ -54,9 +56,15 @@ class FakeSmolVM:
     existing_ids: set[str] = set()
     from_id_calls: int = 0
     desktop_endpoint: DesktopEndpoint | None = None
+    uploaded_files: dict[str, bytes] = {}
+    downloaded_files: list[str] = []
+    file_size_override: int | None = None
+    close_calls: int = 0
 
     def __init__(self, **kwargs: object) -> None:
-        FakeSmolVM.last_kwargs = kwargs
+        FakeSmolVM.last_kwargs = {
+            key: value for key, value in kwargs.items() if key != "on_download"
+        }
         self.vm_id = kwargs.get("vm_id") or "sbx-test"
         self.status = VMState.CREATED
 
@@ -91,6 +99,12 @@ class FakeSmolVM:
         FakeSmolVM.last_run_args = (command, timeout, shell)
         if FakeSmolVM.run_error is not None:
             raise FakeSmolVM.run_error
+        if command.startswith("stat -c %s -- "):
+            guest_path = shlex.split(command)[-1]
+            size = FakeSmolVM.file_size_override
+            if size is None:
+                size = len(FakeSmolVM.uploaded_files[guest_path])
+            return CommandResult(exit_code=0, stdout=f"{size}\n", stderr="")
         return FakeSmolVM.run_result
 
     delete_error: Exception | None = None
@@ -99,6 +113,16 @@ class FakeSmolVM:
         if FakeSmolVM.delete_error is not None:
             raise FakeSmolVM.delete_error
         FakeSmolVM.deleted_ids.add(self.vm_id)
+
+    def close(self) -> None:
+        FakeSmolVM.close_calls += 1
+
+    def upload_file(self, local_path: object, guest_path: str) -> None:
+        FakeSmolVM.uploaded_files[guest_path] = Path(local_path).read_bytes()  # type: ignore[arg-type]
+
+    def download_file(self, guest_path: str, local_path: object) -> None:
+        FakeSmolVM.downloaded_files.append(guest_path)
+        Path(local_path).write_bytes(FakeSmolVM.uploaded_files[guest_path])  # type: ignore[arg-type]
 
 
 def _handler(app: FastAPI, path: str, method: str) -> Callable:
@@ -123,6 +147,10 @@ def app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     FakeSmolVM.deleted_ids = set()
     FakeSmolVM.delete_error = None
     FakeSmolVM.desktop_endpoint = None
+    FakeSmolVM.uploaded_files = {}
+    FakeSmolVM.downloaded_files = []
+    FakeSmolVM.file_size_override = None
+    FakeSmolVM.close_calls = 0
     monkeypatch.setattr("smolvm.server.app.SmolVM", FakeSmolVM)
     return create_app()
 
@@ -137,6 +165,27 @@ def test_create_sandbox_returns_running_state(app: FastAPI) -> None:
     assert result.status is VMState.RUNNING
     # Only the fields the caller set are forwarded to the facade.
     assert FakeSmolVM.last_kwargs == {"os": "ubuntu", "memory": 1024}
+
+
+def test_download_progress_events_are_coalesced_but_keep_final_state() -> None:
+    progress = _DownloadProgressEvents(interval=1.0)
+
+    first = progress.update("ubuntu", 10, 100, now=1.0)
+    stale = progress.update("ubuntu", 10, 100, now=1.1)
+    current = progress.update("ubuntu", 10, 100, now=2.1)
+    final = progress.update("ubuntu", 70, 100, now=2.11)
+    duplicate_final = progress.update("ubuntu", 1, 100, now=3.0)
+
+    assert first == {
+        "type": "image.download",
+        "image": "ubuntu",
+        "receivedBytes": 10,
+        "totalBytes": 100,
+    }
+    assert stale is None
+    assert current is not None and current["receivedBytes"] == 30
+    assert final is not None and final["receivedBytes"] == 100
+    assert duplicate_final is None
 
 
 def test_get_sandbox_desktop_returns_sanitized_loopback_endpoint(app: FastAPI) -> None:
@@ -157,8 +206,31 @@ def test_create_sandbox_defaults_when_body_empty(app: FastAPI) -> None:
 
     create(CreateSandboxRequest())
 
-    # Nothing set -> no kwargs forwarded; the facade applies its defaults.
-    assert FakeSmolVM.last_kwargs == {}
+    assert FakeSmolVM.last_kwargs == {"os": "ubuntu"}
+
+
+def test_custom_remote_image_does_not_force_an_os(app: FastAPI) -> None:
+    create = _handler(app, "/sandboxes", "POST")
+
+    create(CreateSandboxRequest(image="s3://bucket/image/"))
+
+    assert FakeSmolVM.last_kwargs == {"image": "s3://bucket/image/"}
+
+
+def test_create_forwards_restricted_network_policy(app: FastAPI) -> None:
+    create = _handler(app, "/sandboxes", "POST")
+
+    create(
+        CreateSandboxRequest(network={"mode": "restricted", "allowed_cidrs": ["203.0.113.0/24"]})
+    )
+
+    assert FakeSmolVM.last_kwargs == {
+        "os": "ubuntu",
+        "internet_settings": {
+            "mode": "restricted",
+            "allowed_cidrs": ("203.0.113.0/24",),
+        },
+    }
 
 
 def test_create_sandbox_maps_facade_error_to_400(app: FastAPI) -> None:
@@ -170,6 +242,7 @@ def test_create_sandbox_maps_facade_error_to_400(app: FastAPI) -> None:
 
     assert exc_info.value.status_code == 400
     assert "image does not support SSH" in exc_info.value.detail
+    assert app.state.sandboxes == {}
 
 
 def test_get_sandbox_after_create(app: FastAPI) -> None:
@@ -269,6 +342,7 @@ def test_delete_maps_delete_failure_to_409(app: FastAPI) -> None:
         delete(created.id)
 
     assert exc_info.value.status_code == 409
+    assert exc_info.value.headers == {"X-SmolVM-Error-Code": "cleanup_failed"}
 
 
 def test_exec_command_returns_result(app: FastAPI) -> None:
@@ -285,6 +359,24 @@ def test_exec_command_returns_result(app: FastAPI) -> None:
     assert FakeSmolVM.last_run_args == ("echo hello", 30, "login")
 
 
+def test_exec_applies_working_directory_and_environment(app: FastAPI) -> None:
+    create = _handler(app, "/sandboxes", "POST")
+    exec_cmd = _handler(app, "/sandboxes/{sandbox_id}/exec", "POST")
+
+    created = create(CreateSandboxRequest())
+    exec_cmd(
+        created.id,
+        ExecRequest(command="printf '%s' \"$MODE\"", cwd="/workspace", env={"MODE": "a b"}),
+    )
+
+    command, timeout, shell = FakeSmolVM.last_run_args or ("", 0, "")
+    assert command.startswith("sh -c ")
+    assert "/workspace" in command
+    assert "MODE=" in command
+    assert timeout == 30
+    assert shell == "raw"
+
+
 def test_exec_command_nonzero_exit_is_still_200(app: FastAPI) -> None:
     # A command that runs and fails is a successful exec, not an HTTP error.
     create = _handler(app, "/sandboxes", "POST")
@@ -296,6 +388,38 @@ def test_exec_command_nonzero_exit_is_still_200(app: FastAPI) -> None:
 
     assert result.exit_code == 1
     assert result.stderr == "nope"
+
+
+@pytest.mark.asyncio
+async def test_file_content_endpoints_stream_bytes_without_host_paths(app: FastAPI) -> None:
+    create = _handler(app, "/sandboxes", "POST")
+    write = _handler(app, "/sandboxes/{sandbox_id}/files", "PUT")
+    read = _handler(app, "/sandboxes/{sandbox_id}/files", "GET")
+    created = create(CreateSandboxRequest())
+    chunks = iter(
+        [
+            {"type": "http.request", "body": b"hel", "more_body": True},
+            {"type": "http.request", "body": b"lo", "more_body": False},
+        ]
+    )
+
+    async def receive() -> dict[str, object]:
+        return next(chunks)
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "PUT",
+            "path": "/sandboxes/sbx-test/files",
+            "headers": [(b"content-length", b"5")],
+        },
+        receive,
+    )
+    response = await write(created.id, "/workspace/input.txt", request)
+    downloaded = await read(created.id, "/workspace/input.txt")
+
+    assert response.status_code == 204
+    assert downloaded.body == b"hello"
 
 
 def test_exec_command_maps_run_failure_to_409(app: FastAPI) -> None:
@@ -312,6 +436,74 @@ def test_exec_command_maps_run_failure_to_409(app: FastAPI) -> None:
     # internal exception text.
     assert "sbx-test" in exc_info.value.detail
     assert "could not run" in exc_info.value.detail
+
+
+def test_exec_timeout_deletes_and_evicts_the_sandbox(app: FastAPI) -> None:
+    create = _handler(app, "/sandboxes", "POST")
+    execute = _handler(app, "/sandboxes/{sandbox_id}/exec", "POST")
+    get = _handler(app, "/sandboxes/{sandbox_id}", "GET")
+    FakeSmolVM.run_error = OperationTimeoutError("command", 1)
+
+    created = create(CreateSandboxRequest())
+    with pytest.raises(HTTPException) as exc_info:
+        execute(created.id, ExecRequest(command="sleep 60", timeout=1))
+
+    assert exc_info.value.status_code == 408
+    assert exc_info.value.headers == {
+        "X-SmolVM-Error-Code": "command_timeout",
+        "X-SmolVM-Sandbox-Deleted": "true",
+    }
+    assert "was deleted" in exc_info.value.detail
+    assert created.id in FakeSmolVM.deleted_ids
+    with pytest.raises(HTTPException) as missing:
+        get(created.id)
+    assert missing.value.status_code == 404
+
+
+def test_exec_timeout_retries_cleanup_at_shutdown_when_delete_fails(app: FastAPI) -> None:
+    create = _handler(app, "/sandboxes", "POST")
+    execute = _handler(app, "/sandboxes/{sandbox_id}/exec", "POST")
+    FakeSmolVM.run_error = OperationTimeoutError("command", 1)
+    FakeSmolVM.delete_error = SmolVMError("disk is busy")
+
+    created = create(CreateSandboxRequest())
+    with pytest.raises(HTTPException) as exc_info:
+        execute(created.id, ExecRequest(command="sleep 60", timeout=1))
+
+    assert exc_info.value.status_code == 408
+    assert exc_info.value.headers == {
+        "X-SmolVM-Error-Code": "command_timeout",
+        "X-SmolVM-Sandbox-Deleted": "false",
+    }
+    assert "deletion could not be confirmed" in exc_info.value.detail
+    assert created.id in app.state.sandboxes
+    assert FakeSmolVM.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_lifespan_deletes_session_owned_sandboxes(app: FastAPI) -> None:
+    create = _handler(app, "/sandboxes", "POST")
+
+    async with app.router.lifespan_context(app):
+        created = create(CreateSandboxRequest())
+
+    assert created.id in FakeSmolVM.deleted_ids
+    assert FakeSmolVM.close_calls == 1
+    assert app.state.sandboxes == {}
+
+
+@pytest.mark.asyncio
+async def test_file_download_rejects_oversized_guest_file_before_transfer(app: FastAPI) -> None:
+    create = _handler(app, "/sandboxes", "POST")
+    read = _handler(app, "/sandboxes/{sandbox_id}/files", "GET")
+    FakeSmolVM.file_size_override = 16 * 1024 * 1024 + 1
+    created = create(CreateSandboxRequest())
+
+    with pytest.raises(HTTPException) as exc_info:
+        await read(created.id, "/workspace/too-large.bin")
+
+    assert exc_info.value.status_code == 413
+    assert FakeSmolVM.downloaded_files == []
 
 
 def test_exec_unknown_sandbox_returns_404(app: FastAPI) -> None:

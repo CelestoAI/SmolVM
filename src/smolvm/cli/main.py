@@ -3647,7 +3647,13 @@ def _render_ui_startup(
     console_stdout().print(Panel.fit("\n".join(lines), title="SmolVM UI", border_style="cyan"))
 
 
-def _run_server_start(host: str, port: int) -> int:
+def _run_server_start(
+    host: str,
+    port: int,
+    *,
+    sdk_session: bool = False,
+    control_fd: int = 3,
+) -> int:
     """Start the SmolVM HTTP API server (backs the TypeScript/other SDKs)."""
     try:
         uvicorn = importlib.import_module("uvicorn")
@@ -3657,8 +3663,23 @@ def _run_server_start(host: str, port: int) -> int:
             1,
             ImportError("HTTP server dependencies are not installed."),
             json_output=False,
-            hint="Install with: pip install 'smolvm[dashboard]'",
+            hint="Install with: pip install 'smolvm[server]'",
         )
+
+    if sdk_session:
+        if host not in {"127.0.0.1", "localhost", "::1"}:
+            return _emit_cli_error(
+                "server",
+                2,
+                ValueError("SDK sessions must bind to the local machine."),
+                json_output=False,
+            )
+        try:
+            from smolvm.server.session import run_sdk_session
+
+            return run_sdk_session(control_fd=control_fd)
+        except (OSError, ValueError) as exc:
+            return _emit_cli_error("server", 1, exc, json_output=False)
 
     if port < 1 or port > 65535:
         return _emit_cli_error(

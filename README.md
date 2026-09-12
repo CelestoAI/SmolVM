@@ -121,6 +121,41 @@ print(result)
 vm.stop()
 ```
 
+### Start a sandbox in TypeScript (alpha)
+
+The TypeScript SDK gives Node.js agents a disposable computer on the same machine. It starts the local runtime automatically, so there is no server command or cloud credential to configure.
+
+The alpha supports Node.js 20.4 or newer on Linux x64 and Apple Silicon macOS. After installing SmolVM above, install the preview package and `tsx`:
+
+```bash
+npm install https://github.com/CelestoAI/SmolVM/releases/download/typescript-v0.1.0-preview.1/celestoai-smolvm-0.1.0-preview.1.tgz
+npm install --save-dev tsx
+```
+
+```ts
+import { SmolVM } from "@celestoai/smolvm";
+
+async function main() {
+  const smolvm = new SmolVM({ onEvent: (event) => console.log(event.type) });
+  const sandbox = await smolvm.sandboxes.create({ network: { mode: "off" } });
+
+  try {
+    await sandbox.files.write("/workspace/input.txt", "hello");
+    const result = await sandbox.exec(
+      ["sh", "-c", "tr a-z A-Z < /workspace/input.txt"],
+      { timeoutMs: 30_000 },
+    );
+    console.log(result.stdout);
+  } finally {
+    await smolvm.close();
+  }
+}
+
+main().catch((error) => { console.error(error); process.exitCode = 1; });
+```
+
+Run it with `npx tsx quickstart.ts`. See the [TypeScript guide](docs/typescript/index.md) for files, network rules, cancellation, diagnostics, CI, and the current alpha limits.
+
 ### Start a sandbox from the CLI
 
 Create a sandbox, check that it's running, then stop it:

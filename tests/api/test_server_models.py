@@ -27,6 +27,7 @@ def test_create_request_accepts_supported_options() -> None:
         "memory": 1024,
         "disk_size": 4096,
         "backend": "qemu",
+        "network": {"mode": "open"},
     }
 
 
@@ -48,3 +49,8 @@ def test_public_response_models_validate_and_serialize() -> None:
     assert error.detail == "try again"
     assert request.shell == "raw"
     assert result.exit_code == 0
+
+
+def test_restricted_network_requires_an_ipv4_range() -> None:
+    with pytest.raises(ValidationError):
+        CreateSandboxRequest(network={"mode": "restricted", "allowed_cidrs": []})

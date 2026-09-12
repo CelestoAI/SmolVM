@@ -5,45 +5,69 @@ export type ClientOptions = {
 };
 
 /**
+ * CapabilitiesResponse
+ *
+ * Runtime protocol and feature discovery.
+ */
+export type CapabilitiesResponse = {
+    /**
+     * Protocol Version
+     */
+    protocol_version?: 1;
+    /**
+     * Capabilities
+     */
+    capabilities?: Array<string>;
+};
+
+/**
  * CreateSandboxRequest
  *
- * Request body for creating (and booting) a sandbox.
- *
- * Mirrors the auto-config arguments of the :class:`smolvm.SmolVM`
- * constructor. All fields are optional; omitting them boots the
- * default Alpine micro-VM.
+ * Create and boot an SDK-session sandbox.
  */
 export type CreateSandboxRequest = {
     /**
      * Image
      *
-     * Image reference to boot (S3 ref, file:// URI, or path). Omit to use the default built-in image.
+     * Image reference to boot. Omit to use the published image for the OS.
      */
     image?: string | null;
     /**
      * Os
      *
-     * Guest OS for auto-configured images: 'alpine', 'ubuntu', 'windows', or 'macos'.
+     * Guest OS. Ubuntu is the SDK default; Alpine is optional.
      */
-    os?: 'alpine' | 'ubuntu' | 'windows' | 'macos' | null;
+    os?: 'alpine' | 'ubuntu' | null;
     /**
      * Memory
      *
-     * Guest memory in MiB.
+     * Memory in MiB.
      */
     memory?: number | null;
     /**
      * Disk Size
      *
-     * Guest disk size in MiB.
+     * Root disk size in MiB.
      */
     disk_size?: number | null;
     /**
      * Backend
      *
-     * Runtime backend override: 'firecracker', 'qemu', 'libkrun', or 'vz'.
+     * Optional runtime backend override.
      */
     backend?: 'firecracker' | 'qemu' | 'libkrun' | 'vz' | null;
+    /**
+     * Network
+     *
+     * Outbound network policy.
+     */
+    network?: ({
+        mode: 'open';
+    } & OpenNetworkPolicy) | ({
+        mode: 'off';
+    } & OffNetworkPolicy) | ({
+        mode: 'restricted';
+    } & RestrictedNetworkPolicy);
 };
 
 /**
@@ -71,20 +95,47 @@ export type DesktopResponse = {
 };
 
 /**
+ * DiagnosticsResponse
+ *
+ * Safe local runtime facts suitable for a bug report.
+ */
+export type DiagnosticsResponse = {
+    /**
+     * Protocol Version
+     */
+    protocol_version?: 1;
+    /**
+     * Runtime Version
+     */
+    runtime_version: string;
+    /**
+     * Python Version
+     */
+    python_version: string;
+    /**
+     * Platform
+     */
+    platform: string;
+    /**
+     * Supported
+     */
+    supported: boolean;
+    /**
+     * Problems
+     */
+    problems?: Array<string>;
+};
+
+/**
  * ErrorResponse
  *
- * The body returned for a handled 4xx error.
- *
- * Mirrors FastAPI's :class:`~fastapi.HTTPException` shape (``{detail}``)
- * so the generated SDKs get a typed error surface distinct from the
- * 422 request-validation body, whose ``detail`` is a list of field
- * errors rather than a single string.
+ * The body returned for a handled API error.
  */
 export type ErrorResponse = {
     /**
      * Detail
      *
-     * Human-readable explanation of the error.
+     * Short explanation with a recovery action.
      */
     detail: string;
 };
@@ -92,39 +143,39 @@ export type ErrorResponse = {
 /**
  * ExecRequest
  *
- * Request body for running a command inside a sandbox.
- *
- * Mirrors the arguments of :meth:`smolvm.SmolVM.run`.
+ * Run one command inside a sandbox.
  */
 export type ExecRequest = {
     /**
      * Command
-     *
-     * Shell command to execute in the sandbox.
      */
     command: string;
     /**
      * Timeout
-     *
-     * Maximum seconds to wait for the command to finish.
      */
     timeout?: number;
     /**
      * Shell
-     *
-     * 'login' runs via the guest login shell; 'raw' executes the command directly with no shell wrapping.
      */
     shell?: 'login' | 'raw';
+    /**
+     * Cwd
+     *
+     * Absolute working directory in the guest.
+     */
+    cwd?: string | null;
+    /**
+     * Env
+     */
+    env?: {
+        [key: string]: string;
+    };
 };
 
 /**
  * ExecResponse
  *
- * The result of a command run inside a sandbox.
- *
- * Reuses the engine's :class:`~smolvm.types.CommandResult` (exit code,
- * stdout, stderr) under an API-owned name so the generated SDKs expose
- * a stable ``ExecResponse`` type rather than an engine-internal one.
+ * Captured command result. Non-zero exits are successful HTTP responses.
  */
 export type ExecResponse = {
     /**
@@ -139,6 +190,10 @@ export type ExecResponse = {
      * Stderr
      */
     stderr: string;
+    /**
+     * Duration Ms
+     */
+    duration_ms?: number;
 };
 
 /**
@@ -152,23 +207,55 @@ export type HttpValidationError = {
 };
 
 /**
+ * OffNetworkPolicy
+ *
+ * Block outbound network access.
+ */
+export type OffNetworkPolicy = {
+    /**
+     * Mode
+     */
+    mode: 'off';
+};
+
+/**
+ * OpenNetworkPolicy
+ *
+ * Allow all outbound network access.
+ */
+export type OpenNetworkPolicy = {
+    /**
+     * Mode
+     */
+    mode: 'open';
+};
+
+/**
+ * RestrictedNetworkPolicy
+ *
+ * Allow outbound access only to the supplied IPv4 ranges.
+ */
+export type RestrictedNetworkPolicy = {
+    /**
+     * Mode
+     */
+    mode: 'restricted';
+    /**
+     * Allowed Cidrs
+     */
+    allowed_cidrs: Array<string>;
+};
+
+/**
  * SandboxResponse
  *
- * A sandbox's public, client-safe state.
- *
- * Host-internal details (disk paths, PID, network device) are
- * intentionally omitted — clients address a sandbox only by ``id``.
+ * Public state for one session-owned sandbox.
  */
 export type SandboxResponse = {
     /**
      * Id
-     *
-     * Stable sandbox identifier.
      */
     id: string;
-    /**
-     * Current lifecycle state.
-     */
     status: VmState;
 };
 
@@ -207,6 +294,52 @@ export type ValidationError = {
     };
 };
 
+export type CapabilitiesSdkV1CapabilitiesGetData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/sdk/v1/capabilities';
+};
+
+export type CapabilitiesSdkV1CapabilitiesGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: CapabilitiesResponse;
+};
+
+export type CapabilitiesSdkV1CapabilitiesGetResponse = CapabilitiesSdkV1CapabilitiesGetResponses[keyof CapabilitiesSdkV1CapabilitiesGetResponses];
+
+export type EventsSdkV1EventsGetData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/sdk/v1/events';
+};
+
+export type EventsSdkV1EventsGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
+export type DiagnosticsSdkV1DiagnosticsGetData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/sdk/v1/diagnostics';
+};
+
+export type DiagnosticsSdkV1DiagnosticsGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: DiagnosticsResponse;
+};
+
+export type DiagnosticsSdkV1DiagnosticsGetResponse = DiagnosticsSdkV1DiagnosticsGetResponses[keyof DiagnosticsSdkV1DiagnosticsGetResponses];
+
 export type ListSandboxesData = {
     body?: never;
     path?: never;
@@ -234,7 +367,7 @@ export type CreateSandboxData = {
 
 export type CreateSandboxErrors = {
     /**
-     * The request was invalid or the sandbox failed to boot.
+     * Bad Request
      */
     400: ErrorResponse;
     /**
@@ -268,14 +401,6 @@ export type DeleteSandboxData = {
 
 export type DeleteSandboxErrors = {
     /**
-     * No sandbox with that id exists on the host.
-     */
-    404: ErrorResponse;
-    /**
-     * The sandbox could not be reconnected or deleted.
-     */
-    409: ErrorResponse;
-    /**
      * Validation Error
      */
     422: HttpValidationError;
@@ -305,14 +430,6 @@ export type GetSandboxData = {
 };
 
 export type GetSandboxErrors = {
-    /**
-     * No sandbox with that id exists on the host.
-     */
-    404: ErrorResponse;
-    /**
-     * The sandbox exists but could not be reconnected.
-     */
-    409: ErrorResponse;
     /**
      * Validation Error
      */
@@ -344,14 +461,6 @@ export type GetSandboxDesktopData = {
 
 export type GetSandboxDesktopErrors = {
     /**
-     * The sandbox was not found.
-     */
-    404: ErrorResponse;
-    /**
-     * No running desktop is available.
-     */
-    409: ErrorResponse;
-    /**
      * Validation Error
      */
     422: HttpValidationError;
@@ -368,6 +477,36 @@ export type GetSandboxDesktopResponses = {
 
 export type GetSandboxDesktopResponse = GetSandboxDesktopResponses[keyof GetSandboxDesktopResponses];
 
+export type CancelSandboxOperationSandboxesSandboxIdCancelPostData = {
+    body?: never;
+    path: {
+        /**
+         * Sandbox Id
+         */
+        sandbox_id: string;
+    };
+    query?: never;
+    url: '/sandboxes/{sandbox_id}/cancel';
+};
+
+export type CancelSandboxOperationSandboxesSandboxIdCancelPostErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CancelSandboxOperationSandboxesSandboxIdCancelPostError = CancelSandboxOperationSandboxesSandboxIdCancelPostErrors[keyof CancelSandboxOperationSandboxesSandboxIdCancelPostErrors];
+
+export type CancelSandboxOperationSandboxesSandboxIdCancelPostResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type CancelSandboxOperationSandboxesSandboxIdCancelPostResponse = CancelSandboxOperationSandboxesSandboxIdCancelPostResponses[keyof CancelSandboxOperationSandboxesSandboxIdCancelPostResponses];
+
 export type ExecCommandData = {
     body: ExecRequest;
     path: {
@@ -381,14 +520,6 @@ export type ExecCommandData = {
 };
 
 export type ExecCommandErrors = {
-    /**
-     * No sandbox with that id exists on the host.
-     */
-    404: ErrorResponse;
-    /**
-     * The sandbox could not be reconnected, or the command could not run.
-     */
-    409: ErrorResponse;
     /**
      * Validation Error
      */
@@ -405,3 +536,73 @@ export type ExecCommandResponses = {
 };
 
 export type ExecCommandResponse = ExecCommandResponses[keyof ExecCommandResponses];
+
+export type ReadFileSandboxesSandboxIdFilesGetData = {
+    body?: never;
+    path: {
+        /**
+         * Sandbox Id
+         */
+        sandbox_id: string;
+    };
+    query: {
+        /**
+         * Path
+         */
+        path: string;
+    };
+    url: '/sandboxes/{sandbox_id}/files';
+};
+
+export type ReadFileSandboxesSandboxIdFilesGetErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ReadFileSandboxesSandboxIdFilesGetError = ReadFileSandboxesSandboxIdFilesGetErrors[keyof ReadFileSandboxesSandboxIdFilesGetErrors];
+
+export type ReadFileSandboxesSandboxIdFilesGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: Blob | File;
+};
+
+export type ReadFileSandboxesSandboxIdFilesGetResponse = ReadFileSandboxesSandboxIdFilesGetResponses[keyof ReadFileSandboxesSandboxIdFilesGetResponses];
+
+export type WriteFileSandboxesSandboxIdFilesPutData = {
+    body?: never;
+    path: {
+        /**
+         * Sandbox Id
+         */
+        sandbox_id: string;
+    };
+    query: {
+        /**
+         * Path
+         */
+        path: string;
+    };
+    url: '/sandboxes/{sandbox_id}/files';
+};
+
+export type WriteFileSandboxesSandboxIdFilesPutErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WriteFileSandboxesSandboxIdFilesPutError = WriteFileSandboxesSandboxIdFilesPutErrors[keyof WriteFileSandboxesSandboxIdFilesPutErrors];
+
+export type WriteFileSandboxesSandboxIdFilesPutResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type WriteFileSandboxesSandboxIdFilesPutResponse = WriteFileSandboxesSandboxIdFilesPutResponses[keyof WriteFileSandboxesSandboxIdFilesPutResponses];

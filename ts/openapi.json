@@ -1,15 +1,64 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "SmolVM",
-    "summary": "Disposable computers for AI agents, over HTTP.",
-    "version": "0.1.0"
+    "title": "SmolVM SDK bridge",
+    "summary": "A private local bridge for SmolVM SDK clients.",
+    "version": "1"
   },
   "paths": {
+    "/sdk/v1/capabilities": {
+      "get": {
+        "summary": "Capabilities",
+        "operationId": "capabilities_sdk_v1_capabilities_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapabilitiesResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sdk/v1/events": {
+      "get": {
+        "summary": "Events",
+        "operationId": "events_sdk_v1_events_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/event-stream": {}
+            }
+          }
+        }
+      }
+    },
+    "/sdk/v1/diagnostics": {
+      "get": {
+        "summary": "Diagnostics",
+        "operationId": "diagnostics_sdk_v1_diagnostics_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiagnosticsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/sandboxes": {
       "get": {
         "summary": "List Sandboxes",
-        "description": "List the sandboxes discoverable on the host.\n\nReturns only sandboxes owned by this API process.",
         "operationId": "listSandboxes",
         "responses": {
           "200": {
@@ -30,7 +79,6 @@
       },
       "post": {
         "summary": "Create Sandbox",
-        "description": "Create, boot, and register a new sandbox.\n\nBuilds a :class:`~smolvm.SmolVM` from the request's auto-config\nfields, starts it, stores it in the registry under its id, and\nreturns the client-safe view.",
         "operationId": "createSandbox",
         "requestBody": {
           "content": {
@@ -54,7 +102,7 @@
             }
           },
           "400": {
-            "description": "The request was invalid or the sandbox failed to boot.",
+            "description": "Bad Request",
             "content": {
               "application/json": {
                 "schema": {
@@ -79,7 +127,6 @@
     "/sandboxes/{sandbox_id}": {
       "get": {
         "summary": "Get Sandbox",
-        "description": "Return the current state of a sandbox.\n\nA sandbox not owned by this API process yields a 404.",
         "operationId": "getSandbox",
         "parameters": [
           {
@@ -103,26 +150,6 @@
               }
             }
           },
-          "404": {
-            "description": "No sandbox with that id exists on the host.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "The sandbox exists but could not be reconnected.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -137,7 +164,6 @@
       },
       "delete": {
         "summary": "Delete Sandbox",
-        "description": "Stop the sandbox, release its resources, and forget it.\n\nEvicts the facade from the registry so its id stops resolving \u2014\nthe write-through delete the registry-as-cache model needs.",
         "operationId": "deleteSandbox",
         "parameters": [
           {
@@ -153,26 +179,6 @@
         "responses": {
           "204": {
             "description": "Successful Response"
-          },
-          "404": {
-            "description": "No sandbox with that id exists on the host.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "The sandbox could not be reconnected or deleted.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
           },
           "422": {
             "description": "Validation Error",
@@ -190,7 +196,6 @@
     "/sandboxes/{sandbox_id}/desktop": {
       "get": {
         "summary": "Get Sandbox Desktop",
-        "description": "Return a sanitized loopback desktop endpoint without opening it.",
         "operationId": "getSandboxDesktop",
         "parameters": [
           {
@@ -214,25 +219,38 @@
               }
             }
           },
-          "404": {
-            "description": "The sandbox was not found.",
+          "422": {
+            "description": "Validation Error",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
-          },
-          "409": {
-            "description": "No running desktop is available.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
+          }
+        }
+      }
+    },
+    "/sandboxes/{sandbox_id}/cancel": {
+      "post": {
+        "summary": "Cancel Sandbox Operation",
+        "description": "Stop an in-flight operation by deleting its session VM.",
+        "operationId": "cancel_sandbox_operation_sandboxes__sandbox_id__cancel_post",
+        "parameters": [
+          {
+            "name": "sandbox_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Sandbox Id"
             }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
           },
           "422": {
             "description": "Validation Error",
@@ -250,7 +268,6 @@
     "/sandboxes/{sandbox_id}/exec": {
       "post": {
         "summary": "Exec Command",
-        "description": "Run a command inside a sandbox and return its result.\n\nResolves the sandbox (reconnecting on a registry miss), then runs\nthe command over the facade's cached SSH channel.",
         "operationId": "execCommand",
         "parameters": [
           {
@@ -284,22 +301,90 @@
               }
             }
           },
-          "404": {
-            "description": "No sandbox with that id exists on the host.",
+          "422": {
+            "description": "Validation Error",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/sandboxes/{sandbox_id}/files": {
+      "put": {
+        "summary": "Write File",
+        "operationId": "write_file_sandboxes__sandbox_id__files_put",
+        "parameters": [
+          {
+            "name": "sandbox_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Sandbox Id"
+            }
           },
-          "409": {
-            "description": "The sandbox could not be reconnected, or the command could not run.",
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "Read File",
+        "operationId": "read_file_sandboxes__sandbox_id__files_get",
+        "parameters": [
+          {
+            "name": "sandbox_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Sandbox Id"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
                 }
               }
             }
@@ -320,6 +405,35 @@
   },
   "components": {
     "schemas": {
+      "CapabilitiesResponse": {
+        "properties": {
+          "protocol_version": {
+            "type": "integer",
+            "const": 1,
+            "title": "Protocol Version",
+            "default": 1
+          },
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Capabilities",
+            "default": [
+              "sandbox.create",
+              "sandbox.delete",
+              "sandbox.exec",
+              "files.read",
+              "files.write",
+              "events",
+              "diagnostics"
+            ]
+          }
+        },
+        "type": "object",
+        "title": "CapabilitiesResponse",
+        "description": "Runtime protocol and feature discovery."
+      },
       "CreateSandboxRequest": {
         "properties": {
           "image": {
@@ -332,7 +446,7 @@
               }
             ],
             "title": "Image",
-            "description": "Image reference to boot (S3 ref, file:// URI, or path). Omit to use the default built-in image."
+            "description": "Image reference to boot. Omit to use the published image for the OS."
           },
           "os": {
             "anyOf": [
@@ -340,9 +454,7 @@
                 "type": "string",
                 "enum": [
                   "alpine",
-                  "ubuntu",
-                  "windows",
-                  "macos"
+                  "ubuntu"
                 ]
               },
               {
@@ -350,7 +462,7 @@
               }
             ],
             "title": "Os",
-            "description": "Guest OS for auto-configured images: 'alpine', 'ubuntu', 'windows', or 'macos'."
+            "description": "Guest OS. Ubuntu is the SDK default; Alpine is optional."
           },
           "memory": {
             "anyOf": [
@@ -364,7 +476,7 @@
               }
             ],
             "title": "Memory",
-            "description": "Guest memory in MiB."
+            "description": "Memory in MiB."
           },
           "disk_size": {
             "anyOf": [
@@ -378,7 +490,7 @@
               }
             ],
             "title": "Disk Size",
-            "description": "Guest disk size in MiB."
+            "description": "Root disk size in MiB."
           },
           "backend": {
             "anyOf": [
@@ -396,12 +508,35 @@
               }
             ],
             "title": "Backend",
-            "description": "Runtime backend override: 'firecracker', 'qemu', 'libkrun', or 'vz'."
+            "description": "Optional runtime backend override."
+          },
+          "network": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/OpenNetworkPolicy"
+              },
+              {
+                "$ref": "#/components/schemas/OffNetworkPolicy"
+              },
+              {
+                "$ref": "#/components/schemas/RestrictedNetworkPolicy"
+              }
+            ],
+            "title": "Network",
+            "description": "Outbound network policy.",
+            "discriminator": {
+              "propertyName": "mode",
+              "mapping": {
+                "off": "#/components/schemas/OffNetworkPolicy",
+                "open": "#/components/schemas/OpenNetworkPolicy",
+                "restricted": "#/components/schemas/RestrictedNetworkPolicy"
+              }
+            }
           }
         },
         "type": "object",
         "title": "CreateSandboxRequest",
-        "description": "Request body for creating (and booting) a sandbox.\n\nMirrors the auto-config arguments of the :class:`smolvm.SmolVM`\nconstructor. All fields are optional; omitting them boots the\ndefault Alpine micro-VM."
+        "description": "Create and boot an SDK-session sandbox."
       },
       "DesktopResponse": {
         "properties": {
@@ -440,12 +575,55 @@
         "title": "DesktopResponse",
         "description": "A sanitized loopback display endpoint for a running sandbox."
       },
+      "DiagnosticsResponse": {
+        "properties": {
+          "protocol_version": {
+            "type": "integer",
+            "const": 1,
+            "title": "Protocol Version",
+            "default": 1
+          },
+          "runtime_version": {
+            "type": "string",
+            "title": "Runtime Version"
+          },
+          "python_version": {
+            "type": "string",
+            "title": "Python Version"
+          },
+          "platform": {
+            "type": "string",
+            "title": "Platform"
+          },
+          "supported": {
+            "type": "boolean",
+            "title": "Supported"
+          },
+          "problems": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Problems",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "runtime_version",
+          "python_version",
+          "platform",
+          "supported"
+        ],
+        "title": "DiagnosticsResponse",
+        "description": "Safe local runtime facts suitable for a bug report."
+      },
       "ErrorResponse": {
         "properties": {
           "detail": {
             "type": "string",
             "title": "Detail",
-            "description": "Human-readable explanation of the error."
+            "description": "Short explanation with a recovery action."
           }
         },
         "type": "object",
@@ -453,21 +631,19 @@
           "detail"
         ],
         "title": "ErrorResponse",
-        "description": "The body returned for a handled 4xx error.\n\nMirrors FastAPI's :class:`~fastapi.HTTPException` shape (``{detail}``)\nso the generated SDKs get a typed error surface distinct from the\n422 request-validation body, whose ``detail`` is a list of field\nerrors rather than a single string."
+        "description": "The body returned for a handled API error."
       },
       "ExecRequest": {
         "properties": {
           "command": {
             "type": "string",
-            "title": "Command",
-            "description": "Shell command to execute in the sandbox."
+            "title": "Command"
           },
           "timeout": {
             "type": "integer",
             "maximum": 3600.0,
             "minimum": 1.0,
             "title": "Timeout",
-            "description": "Maximum seconds to wait for the command to finish.",
             "default": 30
           },
           "shell": {
@@ -477,8 +653,26 @@
               "raw"
             ],
             "title": "Shell",
-            "description": "'login' runs via the guest login shell; 'raw' executes the command directly with no shell wrapping.",
             "default": "login"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cwd",
+            "description": "Absolute working directory in the guest."
+          },
+          "env": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Env"
           }
         },
         "type": "object",
@@ -486,7 +680,7 @@
           "command"
         ],
         "title": "ExecRequest",
-        "description": "Request body for running a command inside a sandbox.\n\nMirrors the arguments of :meth:`smolvm.SmolVM.run`."
+        "description": "Run one command inside a sandbox."
       },
       "ExecResponse": {
         "properties": {
@@ -501,6 +695,12 @@
           "stderr": {
             "type": "string",
             "title": "Stderr"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Duration Ms",
+            "default": 0
           }
         },
         "type": "object",
@@ -510,7 +710,7 @@
           "stderr"
         ],
         "title": "ExecResponse",
-        "description": "The result of a command run inside a sandbox.\n\nReuses the engine's :class:`~smolvm.types.CommandResult` (exit code,\nstdout, stderr) under an API-owned name so the generated SDKs expose\na stable ``ExecResponse`` type rather than an engine-internal one."
+        "description": "Captured command result. Non-zero exits are successful HTTP responses."
       },
       "HTTPValidationError": {
         "properties": {
@@ -525,16 +725,68 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
+      "OffNetworkPolicy": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "const": "off",
+            "title": "Mode"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mode"
+        ],
+        "title": "OffNetworkPolicy",
+        "description": "Block outbound network access."
+      },
+      "OpenNetworkPolicy": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "const": "open",
+            "title": "Mode"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mode"
+        ],
+        "title": "OpenNetworkPolicy",
+        "description": "Allow all outbound network access."
+      },
+      "RestrictedNetworkPolicy": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "const": "restricted",
+            "title": "Mode"
+          },
+          "allowed_cidrs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Allowed Cidrs"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mode",
+          "allowed_cidrs"
+        ],
+        "title": "RestrictedNetworkPolicy",
+        "description": "Allow outbound access only to the supplied IPv4 ranges."
+      },
       "SandboxResponse": {
         "properties": {
           "id": {
             "type": "string",
-            "title": "Id",
-            "description": "Stable sandbox identifier."
+            "title": "Id"
           },
           "status": {
-            "$ref": "#/components/schemas/VMState",
-            "description": "Current lifecycle state."
+            "$ref": "#/components/schemas/VMState"
           }
         },
         "type": "object",
@@ -543,7 +795,7 @@
           "status"
         ],
         "title": "SandboxResponse",
-        "description": "A sandbox's public, client-safe state.\n\nHost-internal details (disk paths, PID, network device) are\nintentionally omitted \u2014 clients address a sandbox only by ``id``."
+        "description": "Public state for one session-owned sandbox."
       },
       "VMState": {
         "type": "string",

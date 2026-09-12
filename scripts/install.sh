@@ -126,11 +126,11 @@ install_smolvm() {
     if uv tool list 2>/dev/null | grep -q '^smolvm '; then
         # Installed as a uv tool — upgrade in place
         info "smolvm is already installed (uv tool), upgrading …"
-        uv tool upgrade smolvm
+        uv tool install --upgrade 'smolvm[server]'
     else
         # Fresh install (or installed via pip/editable — uv tool install won't conflict)
         info "Installing smolvm …"
-        uv tool install smolvm
+        uv tool install 'smolvm[server]'
     fi
 
     # uv tool bin dir may not be on PATH yet in this session
