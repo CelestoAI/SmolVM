@@ -110,6 +110,17 @@ For golden-AMI builds, two-stage deploys, pinning the Firecracker version, and o
 
 </details>
 
+### Start a sandbox in Python
+
+```python
+from smolvm import SmolVM
+
+vm = SmolVM()
+result = vm.run("echo 'Hello from the sandbox!'")
+print(result)
+vm.stop()
+```
+
 ### Start a sandbox in TypeScript (alpha)
 
 The TypeScript SDK gives Node.js agents a disposable computer on the same machine. It starts the local runtime automatically, so there is no server command or cloud credential to configure.
@@ -144,17 +155,6 @@ main().catch((error) => { console.error(error); process.exitCode = 1; });
 ```
 
 Run it with `npx tsx quickstart.ts`. See the [TypeScript guide](docs/typescript/index.md) for files, network rules, cancellation, diagnostics, CI, and the current alpha limits.
-
-### Start a sandbox in Python
-
-```python
-from smolvm import SmolVM
-
-vm = SmolVM()
-result = vm.run("echo 'Hello from the sandbox!'")
-print(result)
-vm.stop()
-```
 
 ### Start a sandbox from the CLI
 
