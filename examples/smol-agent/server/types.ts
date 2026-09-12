@@ -32,4 +32,5 @@ export interface ConversationContext {
   agent?: Agent; smolvm?: SmolVMClient; browserSession?: BrowserSessionClient;
   playwright?: Browser; page?: Page; abortController?: AbortController;
   storefront?: StorefrontController; receipts: Map<string, string>;
+  lastBrowserError?: string;
 }

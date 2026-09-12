@@ -157,7 +157,9 @@ export class ConversationManager {
       context.abortController = new AbortController();
       await context.agent.prompt(text);
       if (context.agent.state.errorMessage) throw new Error(context.agent.state.errorMessage);
-      const textOutput = assistantText(context.agent).trim();
+      const textOutput = context.lastBrowserError
+        ? `I couldn't start the disposable browser: ${context.lastBrowserError}`
+        : assistantText(context.agent).trim();
       if (textOutput) {
         const message: Message = { id: randomUUID(), role: "assistant", text: textOutput, createdAt: new Date().toISOString() };
         context.messages.push(message);
@@ -177,7 +179,14 @@ export class ConversationManager {
   }
 
   private async ensureBrowser(context: ConversationContext): Promise<void> {
-    if (context.sessionLifecycle === "ready") return;
+    if (context.sessionLifecycle === "ready" && context.playwright?.isConnected() && context.page && !context.page.isClosed()) return;
+    if (context.sessionLifecycle === "ready" && context.browserSession) {
+      this.emit("browser.reconnecting", { summary: "Reconnecting browser automation" }, false);
+      await this.attachBrowser(context, context.browserSession.cdpUrl);
+      this.emit("browser.reconnected", { summary: "Browser automation reconnected" }, false);
+      return;
+    }
+    delete context.lastBrowserError;
     context.sessionLifecycle = "starting";
     context.runState = "tool_action";
     context.stateVersion += 1;
@@ -187,21 +196,29 @@ export class ConversationManager {
     try {
       const session = await smolvm.browsers.create({ mode: "live", profile: { mode: "ephemeral" }, viewport: { width: 1440, height: 900 }, network: { mode: "off" } });
       context.browserSession = session;
-      const browser = await chromium.connectOverCDP(session.cdpUrl);
-      context.playwright = browser;
-      const browserContext = browser.contexts()[0] ?? await browser.newContext();
-      browserContext.on("page", (newPage) => { if (context.page && newPage !== context.page) void newPage.close(); });
-      const page = browserContext.pages()[0] ?? await browserContext.newPage();
-      context.page = page;
-      context.storefront = await installStorefront(browserContext, page, { cart: context.cart, receipts: context.receipts });
+      await this.attachBrowser(context, session.cdpUrl);
       context.sessionLifecycle = "ready";
       context.stateVersion += 1;
       this.emit("browser.ready", { summary: "Disposable browser ready", sandboxId: session.sandboxId }, false);
     } catch (error) {
       context.sessionLifecycle = "error";
       await smolvm.close().catch(() => undefined);
+      const message = error instanceof Error ? error.message : "Browser startup failed.";
+      context.lastBrowserError = message;
+      console.error(`Smol Agent browser startup failed: ${message}`);
+      this.emit("browser.failed", { summary: message }, false);
       throw error;
     }
+  }
+
+  private async attachBrowser(context: ConversationContext, cdpUrl: string): Promise<void> {
+    const browser = await chromium.connectOverCDP(cdpUrl);
+    context.playwright = browser;
+    const browserContext = browser.contexts()[0] ?? await browser.newContext();
+    browserContext.on("page", (newPage) => { if (context.page && newPage !== context.page) void newPage.close(); });
+    const page = browserContext.pages().find((candidate) => !candidate.isClosed()) ?? await browserContext.newPage();
+    context.page = page;
+    context.storefront = await installStorefront(browserContext, page, { cart: context.cart, receipts: context.receipts });
   }
 
   private emit(type: string, payload: Record<string, unknown>, mutates = false): void {
