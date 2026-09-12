@@ -59,6 +59,8 @@ export class SmolVM implements SmolVMClient {
   private readonly debug: boolean;
   private negotiation?: Promise<void>;
   private closePromise?: Promise<void>;
+  private transportClosePromise?: Promise<void>;
+  private sessionClosed = false;
 
   constructor(options: SmolVMOptions = {}) {
     assertSupportedNode();
@@ -80,6 +82,25 @@ export class SmolVM implements SmolVMClient {
 
   private emit(event: SmolVMEvent): void {
     try { this.onEvent?.(event); } catch { /* Lifecycle observers never change VM behavior. */ }
+  }
+
+  private transitionSessionClosed(): void {
+    if (this.sessionClosed) return;
+    this.sessionClosed = true;
+    this.transportClosePromise ??= Promise.resolve();
+    for (const sandbox of [...this.active]) sandbox.markDeleted();
+    this.active.clear();
+  }
+
+  private async closeTransport(): Promise<void> {
+    if (!this.transportClosePromise) {
+      const attempt = this.transport.close().then(() => this.transitionSessionClosed());
+      this.transportClosePromise = attempt.catch((cause) => {
+        this.transportClosePromise = undefined;
+        throw cause;
+      });
+    }
+    return this.transportClosePromise;
   }
 
   private async negotiate(): Promise<void> {
@@ -110,24 +131,33 @@ export class SmolVM implements SmolVMClient {
     const network = options.network?.mode === "restricted"
       ? { mode: "restricted", allowed_cidrs: options.network.allowedCidrs }
       : options.network ?? { mode: "open" };
-    const wire = await this.transport.request<SandboxResponse>("/sandboxes", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        os: options.os ?? (options.image ? undefined : "ubuntu"),
-        memory: options.memoryMiB,
-        disk_size: options.diskMiB,
-        backend: options.backend,
-        image: options.image,
-        network,
-      }),
-    });
+    let wire: SandboxResponse;
+    try {
+      wire = await this.transport.request<SandboxResponse>("/sandboxes", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          os: options.os ?? (options.image ? undefined : "ubuntu"),
+          memory: options.memoryMiB,
+          disk_size: options.diskMiB,
+          backend: options.backend,
+          image: options.image,
+          network,
+        }),
+      });
+    } catch (cause) {
+      if (cause instanceof SmolVMError && cause.actual?.sessionClosed === true) {
+        this.transitionSessionClosed();
+      }
+      throw cause;
+    }
     const sandbox = Sandbox.create(
       wire.id,
       wire.status,
       this.transport,
       (event) => this.emit(event),
       (released) => this.active.delete(released),
+      () => this.closeTransport(),
       this.debug,
     );
     this.active.add(sandbox);
@@ -156,8 +186,7 @@ export class SmolVM implements SmolVMClient {
       await Promise.all([...this.active].map(async (sandbox) => {
         try { await sandbox.delete(); } catch (cause) { failures.push(cause); }
       }));
-      try { await this.transport.close(); } catch (cause) { failures.push(cause); }
-      this.active.clear();
+      try { await this.closeTransport(); } catch (cause) { failures.push(cause); }
       if (failures.length > 0) {
         throw new SmolVMError("cleanup_failed", "One or more sandboxes could not be deleted; the SDK session was closed.", {
           operation: "client.close",

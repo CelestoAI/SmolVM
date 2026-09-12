@@ -63,8 +63,23 @@ test("validates bridge request deadlines", () => {
   );
 });
 
-test("sandbox creation timeout closes its SDK session", async () => {
-  const server = createServer(() => { /* Keep the request open until its deadline. */ });
+test("sandbox creation timeout invalidates every handle in its SDK session", async () => {
+  let creations = 0;
+  const server = createServer((request, response) => {
+    if (request.url === "/sdk/v1/capabilities") {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({
+        protocol_version: 1,
+        capabilities: ["sandbox.create", "sandbox.delete", "sandbox.exec", "files.read", "files.write", "events"],
+      }));
+      return;
+    }
+    if (request.url === "/sandboxes" && ++creations <= 2) {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ id: `sbx-${creations}`, status: "running" }));
+    }
+    // Keep the third creation request open until its deadline.
+  });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
@@ -77,15 +92,29 @@ test("sandbox creation timeout closes its SDK session", async () => {
     baseUrl: `http://127.0.0.1:${address.port}`,
     token: "test-token",
   });
+  const deleted: string[] = [];
+  const client = new SmolVM({
+    transport,
+    onEvent: (event) => {
+      if (event.type === "sandbox.deleted") deleted.push(event.sandboxId);
+    },
+  });
+  const first = await client.sandboxes.create();
+  const second = await client.sandboxes.create();
 
   try {
     await assert.rejects(
-      () => transport.request("/sandboxes", { method: "POST" }),
+      () => client.sandboxes.create(),
       (error: unknown) => error instanceof SmolVMError
         && error.code === "sandbox_create_failed"
         && error.actual?.createTimeoutMs === 20
         && error.actual?.sessionClosed === true,
     );
+    assert.equal(first.status, "deleted");
+    assert.equal(second.status, "deleted");
+    assert.deepEqual(deleted, [first.id, second.id]);
+    await client.close();
+    assert.deepEqual(deleted, [first.id, second.id]);
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -196,6 +225,74 @@ test("timeout records the server-confirmed sandbox deletion", async () => {
       && error.actual?.sandboxDeleted === true,
   );
   assert.equal(sandbox.status, "deleted");
+});
+
+test("timeout session cleanup invalidates every active sandbox", async () => {
+  class TimeoutTransport extends FakeTransport {
+    override async request<T>(path: string, init?: RequestInit): Promise<T> {
+      if (path.endsWith("/exec")) {
+        throw new SmolVMError("command_timeout", "timed out without deletion", {
+          operation: "POST exec",
+          actual: { sandboxDeleted: false },
+        });
+      }
+      return super.request(path, init);
+    }
+  }
+  const transport = new TimeoutTransport();
+  const deleted: string[] = [];
+  const client = new SmolVM({
+    transport,
+    onEvent: (event) => {
+      if (event.type === "sandbox.deleted") deleted.push(event.sandboxId);
+    },
+  });
+  const first = await client.sandboxes.create();
+  const second = await client.sandboxes.create();
+
+  await assert.rejects(() => first.exec("sleep 60"), (error: unknown) =>
+    error instanceof SmolVMError
+      && error.code === "command_timeout"
+      && error.actual?.sessionClosed === true,
+  );
+  assert.equal(first.status, "deleted");
+  assert.equal(second.status, "deleted");
+  assert.deepEqual(deleted, [first.id, second.id]);
+  await client.close();
+  assert.equal(transport.closeCount, 1);
+  assert.deepEqual(deleted, [first.id, second.id]);
+});
+
+test("abort session cleanup invalidates every active sandbox", async () => {
+  class AbortCleanupTransport extends FakeTransport {
+    override async request<T>(path: string, init?: RequestInit): Promise<T> {
+      if (path.endsWith("/exec")) throw new DOMException("aborted", "AbortError");
+      if (path.endsWith("/cancel")) throw new Error("cancel confirmation failed");
+      return super.request(path, init);
+    }
+  }
+  const transport = new AbortCleanupTransport();
+  const deleted: string[] = [];
+  const client = new SmolVM({
+    transport,
+    onEvent: (event) => {
+      if (event.type === "sandbox.deleted") deleted.push(event.sandboxId);
+    },
+  });
+  const first = await client.sandboxes.create();
+  const second = await client.sandboxes.create();
+
+  await assert.rejects(() => first.exec(["sleep", "60"]), (error: unknown) =>
+    error instanceof SmolVMError
+      && error.code === "command_aborted"
+      && error.actual?.sessionClosed === true,
+  );
+  assert.equal(first.status, "deleted");
+  assert.equal(second.status, "deleted");
+  assert.deepEqual(deleted, [first.id, second.id]);
+  await client.close();
+  assert.equal(transport.closeCount, 1);
+  assert.deepEqual(deleted, [first.id, second.id]);
 });
 
 test("timeout keeps the sandbox active when session cleanup fails", async () => {

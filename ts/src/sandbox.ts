@@ -81,6 +81,7 @@ export class Sandbox implements SandboxClient {
     private readonly transport: SmolVMTransport,
     private readonly emit: (event: SmolVMEvent) => void,
     private readonly release: (sandbox: Sandbox) => void,
+    private readonly closeSession: () => Promise<void>,
     private readonly debug: boolean,
   ) {
     this.id = id;
@@ -95,9 +96,10 @@ export class Sandbox implements SandboxClient {
     transport: SmolVMTransport,
     emit: (event: SmolVMEvent) => void,
     release: (sandbox: Sandbox) => void,
+    closeSession: () => Promise<void>,
     debug: boolean,
   ): Sandbox {
-    return new Sandbox(id, status, transport, emit, release, debug);
+    return new Sandbox(id, status, transport, emit, release, closeSession, debug);
   }
 
   get status(): SandboxStatus {
@@ -109,14 +111,16 @@ export class Sandbox implements SandboxClient {
     cleanupCause?: unknown;
   }> {
     try {
-      await this.transport.close();
+      await this.closeSession();
       return { sessionClosed: true };
     } catch (cleanupCause) {
       return { sessionClosed: false, cleanupCause };
     }
   }
 
-  private markDeleted(): void {
+  /** @internal */
+  markDeleted(): void {
+    if (this.currentStatus === "deleted") return;
     this.currentStatus = "deleted";
     this.release(this);
     this.emit({ type: "sandbox.deleted", sandboxId: this.id });
@@ -166,7 +170,7 @@ export class Sandbox implements SandboxClient {
         const cleanup = sandboxDeleted
           ? { sessionClosed: false }
           : await this.closeSessionToConfirmStop();
-        if (sandboxDeleted || cleanup.sessionClosed) this.markDeleted();
+        if (sandboxDeleted) this.markDeleted();
         throw new SmolVMError(
           "command_timeout",
           sandboxDeleted
@@ -196,7 +200,7 @@ export class Sandbox implements SandboxClient {
         const cleanup = await this.closeSessionToConfirmStop();
         sessionClosed = cleanup.sessionClosed;
       }
-      if (sandboxDeleted || sessionClosed) this.markDeleted();
+      if (sandboxDeleted) this.markDeleted();
       throw new SmolVMError("command_aborted", sandboxDeleted
         ? `Command was aborted and sandbox '${this.id}' was deleted to confirm it stopped.`
         : sessionClosed
@@ -216,11 +220,7 @@ export class Sandbox implements SandboxClient {
     if (this.deletePromise) return this.deletePromise;
     this.deletePromise = this.transport.request<void>(`/sandboxes/${encodeURIComponent(this.id)}`, {
       method: "DELETE",
-    }).then(() => {
-      this.currentStatus = "deleted";
-      this.release(this);
-      this.emit({ type: "sandbox.deleted", sandboxId: this.id });
-    }).catch((cause) => {
+    }).then(() => this.markDeleted()).catch((cause) => {
       throw new SmolVMError("cleanup_failed", `Sandbox '${this.id}' could not be deleted; call smolvm.close() to end the complete session.`, {
         operation: "sandbox.delete",
         sandboxId: this.id,
