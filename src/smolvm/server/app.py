@@ -22,12 +22,13 @@ from collections.abc import Iterator
 from contextlib import asynccontextmanager, suppress
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path, PurePosixPath
+from queue import Empty, Full, Queue
 from typing import Literal, cast
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from smolvm.exceptions import OperationTimeoutError, SmolVMError
+from smolvm.exceptions import HostError, ImageError, OperationTimeoutError, SmolVMError
 from smolvm.facade import SmolVM
 from smolvm.server.models import (
     CapabilitiesResponse,
@@ -43,6 +44,21 @@ from smolvm.server.models import (
 logger = logging.getLogger(__name__)
 _MAX_FILE_BYTES = 16 * 1024 * 1024
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _sdk_error(
+    status_code: int,
+    code: str,
+    detail: str,
+    *,
+    headers: dict[str, str] | None = None,
+) -> HTTPException:
+    """Return an HTTP error with a stable SDK code outside the human message."""
+    return HTTPException(
+        status_code=status_code,
+        detail=detail,
+        headers={"X-SmolVM-Error-Code": code, **(headers or {})},
+    )
 
 
 def _runtime_version() -> str:
@@ -80,14 +96,20 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
     manually started development server backward compatible.
     """
     sandboxes: dict[str, SmolVM] = {}
-    event_subscribers: set[object] = set()
+    event_subscribers: set[Queue[dict[str, object]]] = set()
     event_lock = threading.Lock()
 
     def publish(event: dict[str, object]) -> None:
         with event_lock:
             subscribers = list(event_subscribers)
         for subscriber in subscribers:
-            subscriber.put(event)  # type: ignore[attr-defined]
+            try:
+                subscriber.put_nowait(event)
+            except Full:
+                with suppress(Empty):
+                    subscriber.get_nowait()
+                with suppress(Full):
+                    subscriber.put_nowait(event)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):  # type: ignore[no-untyped-def]
@@ -117,10 +139,9 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
             if not secrets.compare_digest(supplied, expected):
                 return JSONResponse(
                     status_code=401,
+                    headers={"X-SmolVM-Error-Code": "bridge_exit"},
                     content={
-                        "detail": (
-                            "SDK session authentication failed; create a new SmolVM client."
-                        )
+                        "detail": ("SDK session authentication failed; create a new SmolVM client.")
                     },
                 )
             return await call_next(request)
@@ -128,9 +149,10 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
     def resolve(sandbox_id: str) -> SmolVM:
         vm = sandboxes.get(sandbox_id)
         if vm is None:
-            raise HTTPException(
-                status_code=404,
-                detail=(
+            raise _sdk_error(
+                404,
+                "transport_failed",
+                (
                     f"Sandbox '{sandbox_id}' is not part of this SDK session; create it again "
                     "with smolvm.sandboxes.create()."
                 ),
@@ -141,11 +163,13 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
     def capabilities() -> CapabilitiesResponse:
         return CapabilitiesResponse()
 
-    @app.get("/sdk/v1/events")
+    @app.get(
+        "/sdk/v1/events",
+        response_class=StreamingResponse,
+        responses={200: {"content": {"text/event-stream": {}}}},
+    )
     def events() -> StreamingResponse:
-        from queue import Empty, Queue
-
-        subscriber: Queue[dict[str, object]] = Queue()
+        subscriber: Queue[dict[str, object]] = Queue(maxsize=1)
 
         def stream() -> Iterator[str]:
             with event_lock:
@@ -166,13 +190,12 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
 
     @app.get("/sdk/v1/diagnostics", response_model=DiagnosticsResponse)
     def diagnostics() -> DiagnosticsResponse:
-        supported = sys.platform.startswith("linux") or (
-            sys.platform == "darwin" and platform.machine() == "arm64"
+        machine = platform.machine().lower()
+        supported = (sys.platform.startswith("linux") and machine in {"amd64", "x86_64"}) or (
+            sys.platform == "darwin" and machine == "arm64"
         )
         problems = (
-            ()
-            if supported
-            else ("Runtime support is limited to Linux x64 and macOS arm64.",)
+            () if supported else ("Runtime support is limited to Linux x64 and macOS arm64.",)
         )
         return DiagnosticsResponse(
             runtime_version=_runtime_version(),
@@ -219,9 +242,17 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
                     sandbox.delete()
                 with suppress(Exception):
                     sandbox.close()
-            raise HTTPException(
-                status_code=400,
-                detail=f"Could not create the sandbox: {exc}. Fix the options and try again.",
+            code = (
+                "image_download_failed"
+                if isinstance(exc, ImageError)
+                else "backend_unavailable"
+                if isinstance(exc, HostError)
+                else "sandbox_create_failed"
+            )
+            raise _sdk_error(
+                400,
+                code,
+                f"Could not create the sandbox: {exc}. Fix the options and try again.",
             ) from exc
         sandboxes[sandbox.vm_id] = sandbox
         return SandboxResponse(id=sandbox.vm_id, status=sandbox.status)
@@ -250,9 +281,10 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
         vm.refresh()
         endpoint = vm.desktop_endpoint
         if endpoint is None:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Sandbox '{sandbox_id}' has no running desktop.",
+            raise _sdk_error(
+                409,
+                "transport_failed",
+                f"Sandbox '{sandbox_id}' has no running desktop.",
             )
         return DesktopResponse(
             protocol=endpoint.protocol,
@@ -264,18 +296,24 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
     @app.delete("/sandboxes/{sandbox_id}", status_code=204, operation_id="deleteSandbox")
     def delete_sandbox(sandbox_id: str) -> Response:
         vm = resolve(sandbox_id)
+        deleted = False
         try:
             vm.delete()
-            vm.close()
+            deleted = True
         except (ValueError, SmolVMError) as exc:
-            raise HTTPException(
-                status_code=409,
-                detail=(
+            raise _sdk_error(
+                409,
+                "cleanup_failed",
+                (
                     f"Sandbox '{sandbox_id}' could not be deleted; call sandbox.delete() again, "
                     "or close the SmolVM client to clean up its complete session."
                 ),
             ) from exc
-        sandboxes.pop(sandbox_id, None)
+        finally:
+            with suppress(Exception):
+                vm.close()
+        if deleted:
+            sandboxes.pop(sandbox_id, None)
         return Response(status_code=204)
 
     @app.post("/sandboxes/{sandbox_id}/cancel", status_code=204)
@@ -296,21 +334,37 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
             result = vm.run(command, body.timeout, shell)
             duration_ms = round((time.monotonic() - started) * 1000)
         except OperationTimeoutError as exc:
-            with suppress(Exception):
+            deleted = False
+            try:
                 vm.delete()
-                vm.close()
-            sandboxes.pop(sandbox_id, None)
-            raise HTTPException(
-                status_code=408,
-                detail=(
-                    f"Command timed out in sandbox '{sandbox_id}'; the sandbox was deleted "
-                    "to confirm the command stopped. Create a new sandbox and retry."
+                deleted = True
+            except Exception:
+                logger.exception("Could not delete timed-out SDK sandbox %s", sandbox_id)
+            finally:
+                with suppress(Exception):
+                    vm.close()
+            if deleted:
+                sandboxes.pop(sandbox_id, None)
+            raise _sdk_error(
+                408,
+                "command_timeout",
+                (
+                    f"Command timed out in sandbox '{sandbox_id}'; "
+                    + (
+                        "the sandbox was deleted to confirm the command stopped. "
+                        "Create a new sandbox and retry."
+                        if deleted
+                        else "deletion could not be confirmed, so close the SmolVM client "
+                        "to stop the complete session."
+                    )
                 ),
+                headers={"X-SmolVM-Sandbox-Deleted": str(deleted).lower()},
             ) from exc
         except (ValueError, SmolVMError) as exc:
-            raise HTTPException(
-                status_code=409,
-                detail=(
+            raise _sdk_error(
+                409,
+                "transport_failed",
+                (
                     f"Command could not run in sandbox '{sandbox_id}'; create a new sandbox "
                     "if the session is no longer usable."
                 ),
@@ -321,15 +375,15 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
     async def write_file(sandbox_id: str, path: str, request: Request) -> Response:
         vm = resolve(sandbox_id)
         if not PurePosixPath(path).is_absolute():
-            raise HTTPException(status_code=400, detail="Sandbox file path must be absolute.")
+            raise _sdk_error(400, "invalid_path", "Sandbox file path must be absolute.")
         try:
             declared_size = int(request.headers.get("content-length", "0"))
         except ValueError as exc:
-            raise HTTPException(
-                status_code=400, detail="File size header must be an integer."
+            raise _sdk_error(
+                400, "transport_failed", "File size header must be an integer."
             ) from exc
         if declared_size > _MAX_FILE_BYTES:
-            raise HTTPException(status_code=413, detail="File exceeds the 16 MiB SDK limit.")
+            raise _sdk_error(413, "transport_failed", "File exceeds the 16 MiB SDK limit.")
         temporary: Path | None = None
         try:
             with tempfile.NamedTemporaryFile(prefix="smolvm-sdk-upload-", delete=False) as handle:
@@ -338,48 +392,68 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
                 async for chunk in request.stream():
                     received += len(chunk)
                     if received > _MAX_FILE_BYTES:
-                        raise HTTPException(
-                            status_code=413, detail="File exceeds the 16 MiB SDK limit."
+                        raise _sdk_error(
+                            413, "transport_failed", "File exceeds the 16 MiB SDK limit."
                         )
                     handle.write(chunk)
             await asyncio.to_thread(vm.upload_file, temporary, path)
         except HTTPException:
             raise
         except (ValueError, SmolVMError) as exc:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Could not write '{path}' in sandbox '{sandbox_id}'; "
-                    "check the path and retry."
-                ),
+            raise _sdk_error(
+                409,
+                "transport_failed",
+                (f"Could not write '{path}' in sandbox '{sandbox_id}'; check the path and retry."),
             ) from exc
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
         return Response(status_code=204)
 
-    @app.get("/sandboxes/{sandbox_id}/files")
+    @app.get(
+        "/sandboxes/{sandbox_id}/files",
+        response_class=Response,
+        responses={
+            200: {
+                "content": {
+                    "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}
+                }
+            }
+        },
+    )
     async def read_file(sandbox_id: str, path: str) -> Response:
         vm = resolve(sandbox_id)
         if not PurePosixPath(path).is_absolute():
-            raise HTTPException(status_code=400, detail="Sandbox file path must be absolute.")
+            raise _sdk_error(400, "invalid_path", "Sandbox file path must be absolute.")
         temporary: Path | None = None
         try:
+            size_result = await asyncio.to_thread(
+                vm.run,
+                f"stat -c %s -- {shlex.quote(path)}",
+                30,
+                "raw",
+            )
+            if size_result.exit_code != 0:
+                raise SmolVMError(size_result.stderr.strip() or f"Could not inspect '{path}'.")
+            try:
+                guest_size = int(size_result.stdout.strip())
+            except ValueError as exc:
+                raise SmolVMError(f"Could not determine the size of '{path}'.") from exc
+            if guest_size > _MAX_FILE_BYTES:
+                raise _sdk_error(413, "transport_failed", "File exceeds the 16 MiB SDK limit.")
             with tempfile.NamedTemporaryFile(prefix="smolvm-sdk-download-", delete=False) as handle:
                 temporary = Path(handle.name)
             await asyncio.to_thread(vm.download_file, path, temporary)
+            if temporary.stat().st_size > _MAX_FILE_BYTES:
+                raise _sdk_error(413, "transport_failed", "File exceeds the 16 MiB SDK limit.")
             content = temporary.read_bytes()
-            if len(content) > _MAX_FILE_BYTES:
-                raise HTTPException(status_code=413, detail="File exceeds the 16 MiB SDK limit.")
         except HTTPException:
             raise
         except (ValueError, SmolVMError) as exc:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Could not read '{path}' from sandbox '{sandbox_id}'; "
-                    "check the path and retry."
-                ),
+            raise _sdk_error(
+                409,
+                "transport_failed",
+                (f"Could not read '{path}' from sandbox '{sandbox_id}'; check the path and retry."),
             ) from exc
         finally:
             if temporary is not None:

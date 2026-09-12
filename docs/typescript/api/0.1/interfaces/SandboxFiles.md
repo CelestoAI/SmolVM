@@ -6,6 +6,8 @@
 
 # Interface: SandboxFiles
 
+Read, write, upload, and download files for one sandbox.
+
 ## Methods
 
 ### download()
@@ -52,7 +54,7 @@ Read a UTF-8 text file from an absolute sandbox path.
 
 > **upload**(`localPath`, `sandboxPath`): `Promise`\<`void`\>
 
-Stream a host file into the sandbox.
+Stream a host file when the transport supports it; otherwise buffer the complete file before writing it.
 
 #### Parameters
 

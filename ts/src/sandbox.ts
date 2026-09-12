@@ -1,8 +1,9 @@
 import { createReadStream } from "node:fs";
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { SmolVMError } from "./errors.js";
+import type { ExecResponse } from "./client/types.gen.js";
 import type {
   ExecOptions,
   ExecResult,
@@ -12,13 +13,6 @@ import type {
   SmolVMEvent,
   SmolVMTransport,
 } from "./types.js";
-
-interface WireExecResult {
-  exit_code: number;
-  stdout: string;
-  stderr: string;
-  duration_ms: number;
-}
 
 function sandboxPath(path: string): string {
   if (!path.startsWith("/")) {
@@ -63,11 +57,18 @@ class Files implements SandboxFiles {
     const parent = dirname(localPath);
     await mkdir(parent, { recursive: true });
     const temporary = join(parent, `.${basename(localPath)}.smolvm-${randomUUID()}.tmp`);
-    await writeFile(temporary, bytes);
-    await rename(temporary, localPath);
+    try {
+      await writeFile(temporary, bytes);
+      await rename(temporary, localPath);
+    } finally {
+      await unlink(temporary).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+      });
+    }
   }
 }
 
+/** One disposable local computer with commands, files, status, and explicit deletion. */
 export class Sandbox implements SandboxClient {
   readonly id: string;
   readonly files: SandboxFiles;
@@ -120,7 +121,7 @@ export class Sandbox implements SandboxClient {
     }
     this.emit({ type: "command.started", sandboxId: this.id });
     try {
-      const wire = await this.transport.request<WireExecResult>(`/sandboxes/${encodeURIComponent(this.id)}/exec`, {
+      const wire = await this.transport.request<ExecResponse>(`/sandboxes/${encodeURIComponent(this.id)}/exec`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -137,22 +138,30 @@ export class Sandbox implements SandboxClient {
         exitCode: wire.exit_code,
         stdout: wire.stdout,
         stderr: wire.stderr,
-        durationMs: wire.duration_ms,
+        durationMs: wire.duration_ms ?? 0,
       };
       this.emit({ type: "command.completed", sandboxId: this.id, result });
       return result;
     } catch (cause) {
       if (cause instanceof SmolVMError && cause.code === "command_timeout") {
+        const sandboxDeleted = cause.actual?.sandboxDeleted === true;
+        let sessionClosed = false;
+        if (!sandboxDeleted) {
+          await this.transport.close();
+          sessionClosed = true;
+        }
         this.currentStatus = "deleted";
         this.release(this);
         this.emit({ type: "sandbox.deleted", sandboxId: this.id });
         throw new SmolVMError(
           "command_timeout",
-          `Command timed out and sandbox '${this.id}' was deleted to confirm it stopped.`,
+          sandboxDeleted
+            ? `Command timed out and sandbox '${this.id}' was deleted to confirm it stopped.`
+            : "Command timed out and the SDK session was closed to confirm it stopped.",
           {
             operation: "sandbox.exec",
             sandboxId: this.id,
-            actual: { sandboxDeleted: true },
+            actual: { sandboxDeleted, sessionClosed },
             cause,
             debug: this.debug,
           },

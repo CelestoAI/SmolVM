@@ -6,6 +6,8 @@
 
 # Interface: SandboxClient
 
+The mockable command, file, status, and deletion contract for one sandbox.
+
 ## Properties
 
 ### files

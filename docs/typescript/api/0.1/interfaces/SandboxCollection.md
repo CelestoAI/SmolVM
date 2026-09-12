@@ -6,6 +6,8 @@
 
 # Interface: SandboxCollection
 
+Creates sandboxes owned by one SmolVM client.
+
 ## Methods
 
 ### create()

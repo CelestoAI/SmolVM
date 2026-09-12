@@ -6,6 +6,8 @@
 
 # Interface: DiagnoseResult
 
+Reports whether this SDK and the installed local runtime can work together.
+
 ## Properties
 
 ### nodeVersion

@@ -23,6 +23,7 @@ error mapping, response shapes) without booting real VMs. This mirrors
 dependency.
 """
 
+import shlex
 from collections.abc import Callable
 from pathlib import Path
 
@@ -56,6 +57,9 @@ class FakeSmolVM:
     from_id_calls: int = 0
     desktop_endpoint: DesktopEndpoint | None = None
     uploaded_files: dict[str, bytes] = {}
+    downloaded_files: list[str] = []
+    file_size_override: int | None = None
+    close_calls: int = 0
 
     def __init__(self, **kwargs: object) -> None:
         FakeSmolVM.last_kwargs = {
@@ -95,6 +99,12 @@ class FakeSmolVM:
         FakeSmolVM.last_run_args = (command, timeout, shell)
         if FakeSmolVM.run_error is not None:
             raise FakeSmolVM.run_error
+        if command.startswith("stat -c %s -- "):
+            guest_path = shlex.split(command)[-1]
+            size = FakeSmolVM.file_size_override
+            if size is None:
+                size = len(FakeSmolVM.uploaded_files[guest_path])
+            return CommandResult(exit_code=0, stdout=f"{size}\n", stderr="")
         return FakeSmolVM.run_result
 
     delete_error: Exception | None = None
@@ -105,12 +115,13 @@ class FakeSmolVM:
         FakeSmolVM.deleted_ids.add(self.vm_id)
 
     def close(self) -> None:
-        pass
+        FakeSmolVM.close_calls += 1
 
     def upload_file(self, local_path: object, guest_path: str) -> None:
         FakeSmolVM.uploaded_files[guest_path] = Path(local_path).read_bytes()  # type: ignore[arg-type]
 
     def download_file(self, guest_path: str, local_path: object) -> None:
+        FakeSmolVM.downloaded_files.append(guest_path)
         Path(local_path).write_bytes(FakeSmolVM.uploaded_files[guest_path])  # type: ignore[arg-type]
 
 
@@ -137,6 +148,9 @@ def app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     FakeSmolVM.delete_error = None
     FakeSmolVM.desktop_endpoint = None
     FakeSmolVM.uploaded_files = {}
+    FakeSmolVM.downloaded_files = []
+    FakeSmolVM.file_size_override = None
+    FakeSmolVM.close_calls = 0
     monkeypatch.setattr("smolvm.server.app.SmolVM", FakeSmolVM)
     return create_app()
 
@@ -186,9 +200,7 @@ def test_create_forwards_restricted_network_policy(app: FastAPI) -> None:
     create = _handler(app, "/sandboxes", "POST")
 
     create(
-        CreateSandboxRequest(
-            network={"mode": "restricted", "allowed_cidrs": ["203.0.113.0/24"]}
-        )
+        CreateSandboxRequest(network={"mode": "restricted", "allowed_cidrs": ["203.0.113.0/24"]})
     )
 
     assert FakeSmolVM.last_kwargs == {
@@ -308,6 +320,7 @@ def test_delete_maps_delete_failure_to_409(app: FastAPI) -> None:
         delete(created.id)
 
     assert exc_info.value.status_code == 409
+    assert exc_info.value.headers == {"X-SmolVM-Error-Code": "cleanup_failed"}
 
 
 def test_exec_command_returns_result(app: FastAPI) -> None:
@@ -414,11 +427,49 @@ def test_exec_timeout_deletes_and_evicts_the_sandbox(app: FastAPI) -> None:
         execute(created.id, ExecRequest(command="sleep 60", timeout=1))
 
     assert exc_info.value.status_code == 408
+    assert exc_info.value.headers == {
+        "X-SmolVM-Error-Code": "command_timeout",
+        "X-SmolVM-Sandbox-Deleted": "true",
+    }
     assert "was deleted" in exc_info.value.detail
     assert created.id in FakeSmolVM.deleted_ids
     with pytest.raises(HTTPException) as missing:
         get(created.id)
     assert missing.value.status_code == 404
+
+
+def test_exec_timeout_retries_cleanup_at_shutdown_when_delete_fails(app: FastAPI) -> None:
+    create = _handler(app, "/sandboxes", "POST")
+    execute = _handler(app, "/sandboxes/{sandbox_id}/exec", "POST")
+    FakeSmolVM.run_error = OperationTimeoutError("command", 1)
+    FakeSmolVM.delete_error = SmolVMError("disk is busy")
+
+    created = create(CreateSandboxRequest())
+    with pytest.raises(HTTPException) as exc_info:
+        execute(created.id, ExecRequest(command="sleep 60", timeout=1))
+
+    assert exc_info.value.status_code == 408
+    assert exc_info.value.headers == {
+        "X-SmolVM-Error-Code": "command_timeout",
+        "X-SmolVM-Sandbox-Deleted": "false",
+    }
+    assert "deletion could not be confirmed" in exc_info.value.detail
+    assert created.id in app.state.sandboxes
+    assert FakeSmolVM.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_file_download_rejects_oversized_guest_file_before_transfer(app: FastAPI) -> None:
+    create = _handler(app, "/sandboxes", "POST")
+    read = _handler(app, "/sandboxes/{sandbox_id}/files", "GET")
+    FakeSmolVM.file_size_override = 16 * 1024 * 1024 + 1
+    created = create(CreateSandboxRequest())
+
+    with pytest.raises(HTTPException) as exc_info:
+        await read(created.id, "/workspace/too-large.bin")
+
+    assert exc_info.value.status_code == 413
+    assert FakeSmolVM.downloaded_files == []
 
 
 def test_exec_unknown_sandbox_returns_404(app: FastAPI) -> None:

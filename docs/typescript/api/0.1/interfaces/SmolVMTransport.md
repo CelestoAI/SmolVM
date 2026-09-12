@@ -6,7 +6,7 @@
 
 # Interface: SmolVMTransport
 
-Internal transport seam, exported so applications can provide test doubles.
+Sends private bridge requests; applications can implement it to test without a VM.
 
 ## Methods
 

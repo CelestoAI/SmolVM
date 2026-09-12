@@ -18,6 +18,8 @@ from smolvm.server.app import create_app
 
 def _read_handshake(control: BinaryIO) -> str:
     record = json.loads(control.readline(4097))
+    if not isinstance(record, dict):
+        raise ValueError("Invalid SDK control handshake.")
     token = record.get("token")
     if record.get("protocol_version") != 1 or not isinstance(token, str) or len(token) < 43:
         raise ValueError("Invalid SDK control handshake.")

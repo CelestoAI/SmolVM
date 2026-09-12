@@ -6,6 +6,8 @@
 
 # Interface: CreateSandboxOptions
 
+Configure the operating system, resources, image, and network for a new sandbox. MiB means mebibytes, a memory and disk-size unit.
+
 ## Properties
 
 ### backend?
@@ -50,6 +52,6 @@ Outbound network access. Defaults to open.
 
 ### os?
 
-> `optional` **os?**: `"ubuntu"` \| `"alpine"`
+> `optional` **os?**: `"alpine"` \| `"ubuntu"`
 
 Guest operating system. Defaults to Ubuntu.

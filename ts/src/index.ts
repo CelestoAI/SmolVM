@@ -3,10 +3,14 @@ import { SmolVMError } from "./errors.js";
 import { Sandbox } from "./sandbox.js";
 import { ProcessTransport } from "./transport.js";
 import type {
+  CapabilitiesResponse,
+  DiagnosticsResponse,
+  SandboxResponse,
+} from "./client/types.gen.js";
+import type {
   CreateSandboxOptions,
   DiagnoseResult,
   SandboxCollection,
-  SandboxStatus,
   SmolVMClient,
   SmolVMEvent,
   SmolVMOptions,
@@ -17,17 +21,6 @@ export { SmolVMError } from "./errors.js";
 export { Sandbox } from "./sandbox.js";
 export type { SmolVMErrorCode, SmolVMErrorOptions } from "./errors.js";
 export type * from "./types.js";
-
-interface WireSandbox { id: string; status: SandboxStatus }
-interface WireCapabilities { protocol_version: number; capabilities: string[] }
-interface WireDiagnostics {
-  protocol_version: number;
-  runtime_version: string;
-  python_version: string;
-  platform: string;
-  supported: boolean;
-  problems: string[];
-}
 
 const REQUIRED_CAPABILITIES = [
   "sandbox.create",
@@ -49,6 +42,14 @@ function assertSupportedNode(): void {
   }
 }
 
+function timeoutOption(value: number | undefined, fallback: number, name: string): number {
+  const timeout = value ?? fallback;
+  if (!Number.isInteger(timeout) || timeout < 1 || timeout > 3_600_000) {
+    throw new RangeError(`${name} must be an integer from 1 to 3,600,000.`);
+  }
+  return timeout;
+}
+
 /** Entry point for creating disposable local sandboxes. */
 export class SmolVM implements SmolVMClient {
   readonly sandboxes: SandboxCollection;
@@ -63,9 +64,12 @@ export class SmolVM implements SmolVMClient {
     assertSupportedNode();
     this.onEvent = options.onEvent;
     this.debug = options.debug ?? false;
+    const startupTimeoutMs = timeoutOption(options.startupTimeoutMs, 30_000, "startupTimeoutMs");
+    const requestTimeoutMs = timeoutOption(options.requestTimeoutMs, 30_000, "requestTimeoutMs");
     this.transport = options.transport ?? new ProcessTransport(
       options.runtimePath ?? process.env.SMOLVM_RUNTIME ?? "smolvm",
-      options.startupTimeoutMs ?? 30_000,
+      startupTimeoutMs,
+      requestTimeoutMs,
       this.debug,
       (event) => this.emit(event),
     );
@@ -78,15 +82,21 @@ export class SmolVM implements SmolVMClient {
 
   private async negotiate(): Promise<void> {
     if (!this.negotiation) {
-      this.negotiation = this.transport.request<WireCapabilities>("/sdk/v1/capabilities").then((result) => {
-        const missing = REQUIRED_CAPABILITIES.filter((capability) => !result.capabilities.includes(capability));
-        if (result.protocol_version !== 1 || missing.length > 0) {
+      const attempt = this.transport.request<CapabilitiesResponse>("/sdk/v1/capabilities").then((result) => {
+        const capabilities = Array.isArray(result.capabilities) ? result.capabilities : [];
+        const protocolVersion = result.protocol_version ?? -1;
+        const missing = REQUIRED_CAPABILITIES.filter((capability) => !capabilities.includes(capability));
+        if (protocolVersion !== 1 || missing.length > 0) {
           throw new SmolVMError("protocol_incompatible", "The installed SmolVM runtime is incompatible with this SDK.", {
             operation: "runtime.negotiate",
-            actual: { protocolVersion: result.protocol_version, missingCapabilities: missing.join(",") },
+            actual: { protocolVersion, missingCapabilities: missing.join(",") },
             recoveryCommand: "curl -sSL https://celesto.ai/install.sh | bash",
           });
         }
+      });
+      this.negotiation = attempt.catch((cause) => {
+        this.negotiation = undefined;
+        throw cause;
       });
     }
     return this.negotiation;
@@ -98,7 +108,7 @@ export class SmolVM implements SmolVMClient {
     const network = options.network?.mode === "restricted"
       ? { mode: "restricted", allowed_cidrs: options.network.allowedCidrs }
       : options.network ?? { mode: "open" };
-    const wire = await this.transport.request<WireSandbox>("/sandboxes", {
+    const wire = await this.transport.request<SandboxResponse>("/sandboxes", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -125,15 +135,15 @@ export class SmolVM implements SmolVMClient {
 
   async diagnose(): Promise<DiagnoseResult> {
     await this.negotiate();
-    const wire = await this.transport.request<WireDiagnostics>("/sdk/v1/diagnostics");
+    const wire = await this.transport.request<DiagnosticsResponse>("/sdk/v1/diagnostics");
     return {
-      protocolVersion: wire.protocol_version,
+      protocolVersion: wire.protocol_version ?? -1,
       runtimeVersion: wire.runtime_version,
       nodeVersion: process.versions.node,
       pythonVersion: wire.python_version,
       platform: wire.platform,
       supported: wire.supported,
-      problems: wire.problems,
+      problems: Array.isArray(wire.problems) ? wire.problems : [],
     };
   }
 

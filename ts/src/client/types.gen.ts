@@ -567,8 +567,10 @@ export type ReadFileSandboxesSandboxIdFilesGetResponses = {
     /**
      * Successful Response
      */
-    200: unknown;
+    200: Blob | File;
 };
+
+export type ReadFileSandboxesSandboxIdFilesGetResponse = ReadFileSandboxesSandboxIdFilesGetResponses[keyof ReadFileSandboxesSandboxIdFilesGetResponses];
 
 export type WriteFileSandboxesSandboxIdFilesPutData = {
     body?: never;

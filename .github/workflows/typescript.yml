@@ -38,11 +38,13 @@ jobs:
         run: |
           package="$(npm pack --silent)"
           fixture="$(mktemp -d)"
-          npm install --prefix "$fixture" "$PWD/$package" typescript @types/node
-          printf '%s\n' 'import { SmolVM } from "@celestoai/smolvm";' 'const vm = new SmolVM({ transport: { request: async () => ({}), requestBytes: async () => new Uint8Array(), close: async () => {} } });' 'void vm.close();' > "$fixture/esm.mts"
+          npm install --prefix "$fixture" "$PWD/$package" typescript@5.9.3 @types/node@20.19.43
+          printf '%s\n' 'import { SmolVM } from "@celestoai/smolvm";' 'const vm = new SmolVM({ transport: { request: async <T,>() => ({}) as T, requestBytes: async () => new Uint8Array(), close: async () => {} } });' 'void vm.close();' > "$fixture/esm.mts"
           printf '%s\n' 'const { SmolVM } = require("@celestoai/smolvm");' 'const vm = new SmolVM({ transport: { request: async () => ({}), requestBytes: async () => new Uint8Array(), close: async () => {} } });' 'void vm.close();' > "$fixture/commonjs.cjs"
           cp examples/quickstart.ts "$fixture/quickstart.mts"
           "$fixture/node_modules/.bin/tsc" --noEmit --strict --skipLibCheck --module nodenext --moduleResolution nodenext --target es2022 "$fixture/esm.mts" "$fixture/quickstart.mts"
+          "$fixture/node_modules/.bin/tsc" --strict --skipLibCheck --module nodenext --moduleResolution nodenext --target es2022 --outDir "$fixture/dist" "$fixture/esm.mts"
+          node "$fixture/dist/esm.mjs"
           node "$fixture/commonjs.cjs"
       - uses: actions/upload-artifact@v4
         if: matrix.os == 'ubuntu-latest'

@@ -15,14 +15,16 @@ class FakeTransport implements SmolVMTransport {
     if (path === "/sandboxes") return { id: "sbx-test", status: "running" } as T;
     if (path.endsWith("/exec")) return { exit_code: 7, stdout: "out", stderr: "err", duration_ms: 12 } as T;
     if (path.includes("/files") && init?.method === "PUT") {
-      this.files.set(path, init.body as Uint8Array);
+      const body = init.body;
+      if (body instanceof ArrayBuffer) this.files.set(path, new Uint8Array(body));
+      else if (body instanceof Uint8Array) this.files.set(path, body);
     }
     return undefined as T;
   }
 
   async requestBytes(path: string): Promise<Uint8Array> {
     this.calls.push({ path });
-    return new TextEncoder().encode("hello");
+    return this.files.get(path) ?? new Uint8Array();
   }
 
   async close(): Promise<void> { this.closeCount += 1; }
@@ -43,6 +45,13 @@ test("creates Ubuntu by default and maps command results", async () => {
   assert.equal(execBody.command, "'printf' '%s' 'a b'");
   assert.deepEqual(result, { ok: false, exitCode: 7, stdout: "out", stderr: "err", durationMs: 12 });
   assert.deepEqual(events, ["sandbox.starting", "sandbox.ready", "command.started", "command.completed"]);
+});
+
+test("validates bridge request deadlines", () => {
+  assert.throws(
+    () => new SmolVM({ transport: new FakeTransport(), requestTimeoutMs: 0 }),
+    /requestTimeoutMs must be an integer/,
+  );
 });
 
 test("file helpers use content endpoints and validate paths", async () => {
@@ -114,7 +123,10 @@ test("timeout records the server-confirmed sandbox deletion", async () => {
   class TimeoutTransport extends FakeTransport {
     override async request<T>(path: string, init?: RequestInit): Promise<T> {
       if (path.endsWith("/exec")) {
-        throw new SmolVMError("command_timeout", "timed out and deleted", { operation: "POST exec" });
+        throw new SmolVMError("command_timeout", "timed out and deleted", {
+          operation: "POST exec",
+          actual: { sandboxDeleted: true },
+        });
       }
       return super.request(path, init);
     }
@@ -127,6 +139,24 @@ test("timeout records the server-confirmed sandbox deletion", async () => {
       && error.actual?.sandboxDeleted === true,
   );
   assert.equal(sandbox.status, "deleted");
+});
+
+test("a failed capability request can be retried", async () => {
+  class RetryTransport extends FakeTransport {
+    attempts = 0;
+
+    override async request<T>(path: string, init?: RequestInit): Promise<T> {
+      if (path === "/sdk/v1/capabilities" && this.attempts++ === 0) {
+        throw new Error("bridge warming up");
+      }
+      return super.request(path, init);
+    }
+  }
+  const transport = new RetryTransport();
+  const client = new SmolVM({ transport });
+  await assert.rejects(() => client.sandboxes.create(), /bridge warming up/);
+  await client.sandboxes.create();
+  assert.equal(transport.attempts, 2);
 });
 
 test("close ends the transport even when sandbox cleanup fails", async () => {

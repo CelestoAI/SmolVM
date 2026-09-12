@@ -1,3 +1,4 @@
+/** Identifies a stable SDK failure category that application code can handle. */
 export type SmolVMErrorCode =
   | "unsupported_node"
   | "runtime_missing"
@@ -12,6 +13,7 @@ export type SmolVMErrorCode =
   | "cleanup_failed"
   | "transport_failed";
 
+/** Adds operation context and safe recovery details to a SmolVMError. */
 export interface SmolVMErrorOptions {
   operation: string;
   sandboxId?: string;

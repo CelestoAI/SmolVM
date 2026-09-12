@@ -6,6 +6,8 @@
 
 # Interface: SmolVMErrorOptions
 
+Adds operation context and safe recovery details to a SmolVMError.
+
 ## Properties
 
 ### actual?

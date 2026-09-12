@@ -6,6 +6,8 @@
 
 # Interface: SmolVMClient
 
+The mockable client contract for creating sandboxes, diagnosing setup, and cleaning up.
+
 ## Properties
 
 ### sandboxes

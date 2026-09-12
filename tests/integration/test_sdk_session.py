@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
@@ -14,6 +15,16 @@ import pytest
 
 pytest.importorskip("fastapi")
 pytest.importorskip("uvicorn")
+
+from smolvm.server.session import _read_handshake
+
+
+@pytest.mark.parametrize("payload", [[], "token", 1, None])
+def test_sdk_session_rejects_non_object_handshakes(payload: object) -> None:
+    control = io.BytesIO(f"{json.dumps(payload)}\n".encode())
+
+    with pytest.raises(ValueError, match="Invalid SDK control handshake"):
+        _read_handshake(control)
 
 
 def test_sdk_session_authenticates_and_exits_when_control_pipe_closes() -> None:
@@ -39,7 +50,7 @@ def test_sdk_session_authenticates_and_exits_when_control_pipe_closes() -> None:
     try:
         os.write(
             write_fd,
-            f'{json.dumps({"protocol_version": 1, "token": token})}\n'.encode(),
+            f"{json.dumps({'protocol_version': 1, 'token': token})}\n".encode(),
         )
         assert process.stdout is not None
         readiness_line = process.stdout.readline()
@@ -53,7 +64,7 @@ def test_sdk_session_authenticates_and_exits_when_control_pipe_closes() -> None:
             "host": "127.0.0.1",
             "port": ready["port"],
         }
-        url = f'http://127.0.0.1:{ready["port"]}/sdk/v1/capabilities'
+        url = f"http://127.0.0.1:{ready['port']}/sdk/v1/capabilities"
 
         with pytest.raises(urllib.error.HTTPError) as unauthorized:
             urllib.request.urlopen(url, timeout=5)

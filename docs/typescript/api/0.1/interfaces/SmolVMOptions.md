@@ -6,6 +6,8 @@
 
 # Interface: SmolVMOptions
 
+Configure runtime startup, lifecycle events, debugging, or a test transport.
+
 ## Properties
 
 ### debug?
@@ -31,6 +33,14 @@ Observe typed lifecycle events.
 #### Returns
 
 `void`
+
+***
+
+### requestTimeoutMs?
+
+> `optional` **requestTimeoutMs?**: `number`
+
+Time allowed for ordinary bridge requests that do not manage a VM lifecycle operation.
 
 ***
 

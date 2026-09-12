@@ -6,6 +6,8 @@
 
 # Interface: ExecOptions
 
+Choose where and how long a command runs, plus its environment and cancellation signal.
+
 ## Properties
 
 ### cwd?

@@ -6,6 +6,8 @@
 
 # Class: Sandbox
 
+One disposable local computer with commands, files, status, and explicit deletion.
+
 ## Implements
 
 - [`SandboxClient`](../interfaces/SandboxClient.md)

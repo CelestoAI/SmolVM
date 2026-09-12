@@ -8,4 +8,4 @@
 
 > **SandboxStatus** = `"created"` \| `"running"` \| `"paused"` \| `"stopped"` \| `"error"` \| `"deleted"`
 
-Lifecycle states reported by the local SmolVM runtime.
+The current lifecycle state of a sandbox, including local deletion.

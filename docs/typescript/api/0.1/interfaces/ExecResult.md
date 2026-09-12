@@ -6,6 +6,8 @@
 
 # Interface: ExecResult
 
+Captured output and exit information from a completed command.
+
 ## Properties
 
 ### durationMs
