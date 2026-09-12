@@ -1,0 +1,10 @@
+{
+  "entryPoints": ["src/index.ts"],
+  "plugin": ["typedoc-plugin-markdown"],
+  "out": "../docs/typescript/api/0.1",
+  "readme": "none",
+  "excludePrivate": true,
+  "excludeInternal": true,
+  "disableSources": true,
+  "githubPages": false
+}

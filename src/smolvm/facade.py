@@ -1000,6 +1000,8 @@ class SmolVM:
             For per-mount control, set
             :attr:`~smolvm.types.WorkspaceMount.writable` directly on
             ``config.workspace_mounts`` instead.
+        on_download: Optional callback for image download progress. Receives
+            the image label, downloaded chunk size, and total size when known.
 
     Raises:
         ValidationError: Invalid or unsupported network policy; details include field
@@ -1031,6 +1033,7 @@ class SmolVM:
         writable_mounts: bool = False,
         callbacks: list[Callback] | None = None,
         state_manager: StateManagerProtocol | None = None,
+        on_download: Callable[[str, int, int | None], None] | None = None,
     ) -> None:
         if internet_settings is not None:
             if vm_id is not None:
@@ -1144,16 +1147,19 @@ class SmolVM:
             else:
                 # S3 image mode
                 logger.info("Resolving image from %s...", image)
+                download_options = {"on_download": on_download} if on_download is not None else {}
                 config, ssh_key_path = _build_s3_image_config(
                     image=image,
                     backend=backend,
                     qemu_machine=qemu_machine,
                     memory=memory,
                     ssh_key_path=ssh_key_path,
+                    **download_options,
                 )
         elif config is None and vm_id is None:
             # Auto-configuration mode
             logger.info("No config provided; auto-configuring standard SSH VM...")
+            download_options = {"on_download": on_download} if on_download is not None else {}
             config, ssh_key_path = _build_auto_config(
                 os=os,
                 backend=backend,
@@ -1162,6 +1168,7 @@ class SmolVM:
                 disk_size_mib=disk_size,
                 ssh_key_path=ssh_key_path,
                 data_dir=data_dir,
+                **download_options,
             )
 
         if internet_settings is not None and config is not None:

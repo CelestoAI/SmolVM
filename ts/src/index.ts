@@ -1,177 +1,167 @@
-// Copyright 2026 Celesto AI
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
-/**
- * SmolVM TypeScript SDK.
- *
- * A thin, ergonomic wrapper over the generated client. The generated
- * functions in `./client` are correct but verbose (e.g.
- * `createSandboxSandboxesPost`); this layer exposes a friendly,
- * object-style API that mirrors the Python facade:
- *
- *     const smolvm = new Smolvm();
- *     const box = await smolvm.sandbox.create({ os: "ubuntu" });
- *     const same = await smolvm.sandbox.get(box.id);
- *
- * It talks to a local `smolvm server start` over HTTP.
- */
-
-import { createClient, createConfig } from "./client/client";
-import {
-  createSandbox,
-  deleteSandbox,
-  execCommand,
-  getSandbox,
-  getSandboxDesktop,
-  listSandboxes,
-} from "./client/sdk.gen";
+import process from "node:process";
+import { SmolVMError } from "./errors.js";
+import { Sandbox } from "./sandbox.js";
+import { ProcessTransport } from "./transport.js";
 import type {
-  CreateSandboxRequest,
-  DesktopResponse,
-  ExecRequest,
-  ExecResponse,
-  SandboxResponse,
-} from "./client/types.gen";
+  CreateSandboxOptions,
+  DiagnoseResult,
+  SandboxCollection,
+  SandboxStatus,
+  SmolVMClient,
+  SmolVMEvent,
+  SmolVMOptions,
+  SmolVMTransport,
+} from "./types.js";
 
-export type {
-  CreateSandboxRequest,
-  DesktopResponse,
-  ExecRequest,
-  ExecResponse,
-  SandboxResponse,
-} from "./client/types.gen";
+export { SmolVMError } from "./errors.js";
+export { Sandbox } from "./sandbox.js";
+export type { SmolVMErrorCode, SmolVMErrorOptions } from "./errors.js";
+export type * from "./types.js";
 
-/** Options for constructing a {@link Smolvm} client. */
-export interface SmolvmOptions {
-  /** Base URL of the SmolVM HTTP server. Defaults to http://127.0.0.1:8000. */
-  baseUrl?: string;
+interface WireSandbox { id: string; status: SandboxStatus }
+interface WireCapabilities { protocol_version: number; capabilities: string[] }
+interface WireDiagnostics {
+  protocol_version: number;
+  runtime_version: string;
+  python_version: string;
+  platform: string;
+  supported: boolean;
+  problems: string[];
 }
 
-const DEFAULT_BASE_URL = "http://127.0.0.1:8000";
+const REQUIRED_CAPABILITIES = [
+  "sandbox.create",
+  "sandbox.delete",
+  "sandbox.exec",
+  "files.read",
+  "files.write",
+  "events",
+] as const;
 
-/**
- * Turn a server error body into a single human-readable sentence.
- *
- * The server returns FastAPI's `{ detail }` shape: a plain string for
- * our own 4xx errors, or an array of `{ msg, loc }` entries for request
- * validation (422). Surface the curated message rather than dumping the
- * raw JSON wire shape at the caller.
- */
-function describeError(error: unknown): string {
-  const detail = (error as { detail?: unknown } | null)?.detail;
-  if (typeof detail === "string") {
-    return detail;
-  }
-  if (Array.isArray(detail)) {
-    const messages = detail
-      .map((item) => (item as { msg?: unknown })?.msg)
-      .filter((msg): msg is string => typeof msg === "string");
-    if (messages.length > 0) {
-      return messages.join("; ");
-    }
-  }
-  return typeof error === "string" ? error : JSON.stringify(error);
-}
-
-/** Sandbox operations, grouped under `smolvm.sandbox`. */
-class SandboxApi {
-  constructor(private readonly client: ReturnType<typeof createClient>) {}
-
-  /** Create and boot a new sandbox, returning its public state. */
-  async create(request: CreateSandboxRequest = {}): Promise<SandboxResponse> {
-    const { data, error } = await createSandbox({
-      client: this.client,
-      body: request,
+function assertSupportedNode(): void {
+  const [major = 0, minor = 0] = process.versions.node.split(".").map(Number);
+  if (major < 20 || (major === 20 && minor < 4)) {
+    throw new SmolVMError("unsupported_node", "@celestoai/smolvm requires Node.js 20.4 or newer.", {
+      operation: "client.create",
+      actual: { nodeVersion: process.versions.node },
+      recoveryCommand: "nvm install 20",
     });
-    if (error) {
-      throw new Error(`Failed to create sandbox: ${describeError(error)}`);
-    }
-    return data!;
-  }
-
-  /** Fetch the current state of an existing sandbox by id. */
-  async get(sandboxId: string): Promise<SandboxResponse> {
-    const { data, error } = await getSandbox({
-      client: this.client,
-      path: { sandbox_id: sandboxId },
-    });
-
-    if (error) {
-      throw new Error(`Failed to get sandbox ${sandboxId}: ${describeError(error)}`);
-    }
-    return data!;
-  }
-
-  /** List every sandbox that exists on the host. */
-  async list(): Promise<SandboxResponse[]> {
-    const { data, error } = await listSandboxes({ client: this.client });
-    if (error) {
-      throw new Error(`Failed to list sandboxes: ${describeError(error)}`);
-    }
-    return data!;
-  }
-
-  /** Stop a sandbox and release its resources. */
-  async delete(sandboxId: string): Promise<void> {
-    const { error } = await deleteSandbox({
-      client: this.client,
-      path: { sandbox_id: sandboxId },
-    });
-    if (error) {
-      throw new Error(`Failed to delete sandbox ${sandboxId}: ${describeError(error)}`);
-    }
-  }
-
-  /** Get the sandbox's desktop endpoint, for viewing its screen. */
-  async desktop(sandboxId: string): Promise<DesktopResponse> {
-    const { data, error } = await getSandboxDesktop({
-      client: this.client,
-      path: { sandbox_id: sandboxId },
-    });
-    if (error) {
-      throw new Error(
-        `Failed to get desktop for sandbox ${sandboxId}: ${describeError(error)}`,
-      );
-    }
-    return data!;
-  }
-
-  /** Run a command inside a sandbox and return its result. */
-  async exec(sandboxId: string, request: ExecRequest): Promise<ExecResponse> {
-    const { data, error } = await execCommand({
-      client: this.client,
-      path: { sandbox_id: sandboxId },
-      body: request,
-    });
-    if (error) {
-      throw new Error(
-        `Failed to run command in sandbox ${sandboxId}: ${describeError(error)}`,
-      );
-    }
-    return data!;
   }
 }
 
-/** Entry point to the SmolVM SDK. */
-export class Smolvm {
-  /** Sandbox lifecycle operations. */
-  readonly sandbox: SandboxApi;
+/** Entry point for creating disposable local sandboxes. */
+export class SmolVM implements SmolVMClient {
+  readonly sandboxes: SandboxCollection;
+  private readonly transport: SmolVMTransport;
+  private readonly active = new Set<Sandbox>();
+  private readonly onEvent?: (event: SmolVMEvent) => void;
+  private readonly debug: boolean;
+  private negotiation?: Promise<void>;
+  private closePromise?: Promise<void>;
 
-  constructor(options: SmolvmOptions = {}) {
-    const client = createClient(
-      createConfig({ baseUrl: options.baseUrl ?? DEFAULT_BASE_URL }),
+  constructor(options: SmolVMOptions = {}) {
+    assertSupportedNode();
+    this.onEvent = options.onEvent;
+    this.debug = options.debug ?? false;
+    this.transport = options.transport ?? new ProcessTransport(
+      options.runtimePath ?? process.env.SMOLVM_RUNTIME ?? "smolvm",
+      options.startupTimeoutMs ?? 30_000,
+      this.debug,
+      (event) => this.emit(event),
     );
-    this.sandbox = new SandboxApi(client);
+    this.sandboxes = { create: (createOptions) => this.createSandbox(createOptions) };
   }
+
+  private emit(event: SmolVMEvent): void {
+    try { this.onEvent?.(event); } catch { /* Lifecycle observers never change VM behavior. */ }
+  }
+
+  private async negotiate(): Promise<void> {
+    if (!this.negotiation) {
+      this.negotiation = this.transport.request<WireCapabilities>("/sdk/v1/capabilities").then((result) => {
+        const missing = REQUIRED_CAPABILITIES.filter((capability) => !result.capabilities.includes(capability));
+        if (result.protocol_version !== 1 || missing.length > 0) {
+          throw new SmolVMError("protocol_incompatible", "The installed SmolVM runtime is incompatible with this SDK.", {
+            operation: "runtime.negotiate",
+            actual: { protocolVersion: result.protocol_version, missingCapabilities: missing.join(",") },
+            recoveryCommand: "curl -sSL https://celesto.ai/install.sh | bash",
+          });
+        }
+      });
+    }
+    return this.negotiation;
+  }
+
+  private async createSandbox(options: CreateSandboxOptions = {}): Promise<Sandbox> {
+    await this.negotiate();
+    this.emit({ type: "sandbox.starting" });
+    const network = options.network?.mode === "restricted"
+      ? { mode: "restricted", allowed_cidrs: options.network.allowedCidrs }
+      : options.network ?? { mode: "open" };
+    const wire = await this.transport.request<WireSandbox>("/sandboxes", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        os: options.os ?? (options.image ? undefined : "ubuntu"),
+        memory: options.memoryMiB,
+        disk_size: options.diskMiB,
+        backend: options.backend,
+        image: options.image,
+        network,
+      }),
+    });
+    const sandbox = Sandbox.create(
+      wire.id,
+      wire.status,
+      this.transport,
+      (event) => this.emit(event),
+      (released) => this.active.delete(released),
+      this.debug,
+    );
+    this.active.add(sandbox);
+    this.emit({ type: "sandbox.ready", sandboxId: sandbox.id });
+    return sandbox;
+  }
+
+  async diagnose(): Promise<DiagnoseResult> {
+    await this.negotiate();
+    const wire = await this.transport.request<WireDiagnostics>("/sdk/v1/diagnostics");
+    return {
+      protocolVersion: wire.protocol_version,
+      runtimeVersion: wire.runtime_version,
+      nodeVersion: process.versions.node,
+      pythonVersion: wire.python_version,
+      platform: wire.platform,
+      supported: wire.supported,
+      problems: wire.problems,
+    };
+  }
+
+  async close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
+    this.closePromise = (async () => {
+      const failures: unknown[] = [];
+      await Promise.all([...this.active].map(async (sandbox) => {
+        try { await sandbox.delete(); } catch (cause) { failures.push(cause); }
+      }));
+      try { await this.transport.close(); } catch (cause) { failures.push(cause); }
+      this.active.clear();
+      if (failures.length > 0) {
+        throw new SmolVMError("cleanup_failed", "One or more sandboxes could not be deleted; the SDK session was closed.", {
+          operation: "client.close",
+          actual: { failures: failures.length },
+          cause: failures[0],
+          debug: this.debug,
+        });
+      }
+    })();
+    return this.closePromise;
+  }
+}
+
+const asyncDispose = (Symbol as typeof Symbol & { asyncDispose?: symbol }).asyncDispose;
+if (asyncDispose) {
+  Object.defineProperty(SmolVM.prototype, asyncDispose, {
+    value(this: SmolVM) { return this.close(); },
+  });
 }

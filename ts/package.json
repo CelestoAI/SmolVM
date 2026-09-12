@@ -1,26 +1,51 @@
 {
-  "name": "smolvm",
-  "version": "0.1.0",
-  "description": "TypeScript SDK for SmolVM — disposable computers for AI agents.",
+  "name": "@celestoai/smolvm",
+  "version": "0.1.0-preview.1",
+  "description": "Local disposable computers for TypeScript AI agents.",
   "license": "Apache-2.0",
   "type": "module",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
-  "exports": {
-    ".": "./src/index.ts"
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20.4"
   },
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/esm/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/esm/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "scripts": {
-    "dump-openapi": "uv run --project .. --extra dashboard python ../scripts/dump_openapi.py",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "dump-openapi": "uv run --project .. --extra server python ../scripts/dump_openapi.py",
     "generate": "openapi-ts",
     "sync": "npm run dump-openapi && npm run generate",
     "typecheck": "tsc --noEmit",
-    "build": "tsc",
-    "test:contracts": "tsc --noEmit --target es2022 --module esnext --moduleResolution bundler --strict --skipLibCheck fixtures/desktop-facade.contract.ts",
-    "test": "npm run typecheck && npm run test:contracts"
+    "build": "npm run clean && tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node scripts/write-cjs-package.mjs",
+    "test:unit": "tsx --test test/*.test.ts",
+    "test:contracts": "tsc --noEmit --target es2022 --module esnext --moduleResolution bundler --strict --skipLibCheck fixtures/*.ts",
+    "test:examples": "tsc --noEmit --target es2022 --module nodenext --moduleResolution nodenext --strict --skipLibCheck examples/*.ts scripts/release-benchmark.ts",
+    "docs": "typedoc",
+    "benchmark:release": "tsx scripts/release-benchmark.ts",
+    "test": "npm run typecheck && npm run test:unit && npm run test:contracts && npm run build && npm run test:examples"
   },
   "devDependencies": {
     "@hey-api/openapi-ts": "^0.99.0",
+    "@types/node": "^20.17.0",
+    "ai": "^7.0.99",
     "tsx": "^4.22.4",
-    "typescript": "^5.6.0"
+    "typedoc": "^0.28.0",
+    "typedoc-plugin-markdown": "^4.6.0",
+    "typescript": "^5.6.0",
+    "zod": "^4.6.2"
   }
 }

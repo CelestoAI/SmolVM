@@ -1,0 +1,74 @@
+name: TypeScript SDK
+
+on:
+  push:
+    branches: [main]
+    tags: ["typescript-v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.4"
+          cache: npm
+          cache-dependency-path: ts/package-lock.json
+      - run: npm ci
+        working-directory: ts
+      - run: npm test
+        working-directory: ts
+      - name: Check generated API reference
+        working-directory: ts
+        run: |
+          npm run docs
+          git diff --exit-code -- ../docs/typescript/api
+      - name: Pack and test ESM and CommonJS consumers
+        working-directory: ts
+        run: |
+          package="$(npm pack --silent)"
+          fixture="$(mktemp -d)"
+          npm install --prefix "$fixture" "$PWD/$package" typescript @types/node
+          printf '%s\n' 'import { SmolVM } from "@celestoai/smolvm";' 'const vm = new SmolVM({ transport: { request: async () => ({}), requestBytes: async () => new Uint8Array(), close: async () => {} } });' 'void vm.close();' > "$fixture/esm.mts"
+          printf '%s\n' 'const { SmolVM } = require("@celestoai/smolvm");' 'const vm = new SmolVM({ transport: { request: async () => ({}), requestBytes: async () => new Uint8Array(), close: async () => {} } });' 'void vm.close();' > "$fixture/commonjs.cjs"
+          cp examples/quickstart.ts "$fixture/quickstart.mts"
+          "$fixture/node_modules/.bin/tsc" --noEmit --strict --skipLibCheck --module nodenext --moduleResolution nodenext --target es2022 "$fixture/esm.mts" "$fixture/quickstart.mts"
+          node "$fixture/commonjs.cjs"
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'ubuntu-latest'
+        with:
+          name: typescript-package
+          path: ts/celestoai-smolvm-*.tgz
+
+  prerelease:
+    if: startsWith(github.ref, 'refs/tags/typescript-v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: typescript-package
+      - name: Verify tag and attach checksummed package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          archive="$(find . -name 'celestoai-smolvm-*.tgz' -print -quit)"
+          version="$(tar -xOf "$archive" package/package.json | node -e "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>console.log(JSON.parse(s).version))")"
+          expected="typescript-v${version}"
+          test "${GITHUB_REF_NAME}" = "$expected"
+          asset="$(basename "$archive")"
+          if [ "$archive" != "./$asset" ]; then mv "$archive" "$asset"; fi
+          shasum -a 256 "$asset" > SHA256SUMS
+          gh release create "${GITHUB_REF_NAME}" --prerelease --generate-notes "$asset" SHA256SUMS

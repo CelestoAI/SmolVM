@@ -2,46 +2,38 @@
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
-"""FastAPI application wrapping the SmolVM facade.
-
-The app keeps a process-level registry of live :class:`~smolvm.SmolVM`
-objects keyed by sandbox id. A later ``GET`` or ``exec`` finds the same
-object created by an earlier ``POST``. The API does not read the CLI's
-persistent sandbox inventory.
-
-It exposes the sandbox lifecycle:
-
-- ``POST   /sandboxes``           — create, boot, and register a sandbox.
-- ``GET    /sandboxes``           — list every sandbox on the host.
-- ``GET    /sandboxes/{id}``      — fetch a sandbox's state.
-- ``DELETE /sandboxes/{id}``      — stop the sandbox and forget it.
-- ``GET    /sandboxes/{id}/desktop`` — get a local desktop endpoint.
-- ``POST   /sandboxes/{id}/exec`` — run a command inside the sandbox.
-"""
+"""FastAPI application used by the private TypeScript SDK bridge."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import platform
+import re
+import secrets
+import shlex
+import sys
+import tempfile
+import threading
+import time
+from collections.abc import Iterator
 from contextlib import asynccontextmanager, suppress
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path, PurePosixPath
+from typing import Literal, cast
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse, StreamingResponse
 
-from smolvm.exceptions import SmolVMError
+from smolvm.exceptions import OperationTimeoutError, SmolVMError
 from smolvm.facade import SmolVM
 from smolvm.server.models import (
+    CapabilitiesResponse,
     CreateSandboxRequest,
     DesktopResponse,
+    DiagnosticsResponse,
     ErrorResponse,
     ExecRequest,
     ExecResponse,
@@ -49,24 +41,57 @@ from smolvm.server.models import (
 )
 
 logger = logging.getLogger(__name__)
+_MAX_FILE_BYTES = 16 * 1024 * 1024
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-def create_app() -> FastAPI:
-    """Build and return the SmolVM HTTP application.
+def _runtime_version() -> str:
+    try:
+        return version("smolvm")
+    except PackageNotFoundError:
+        return "source-checkout"
 
-    A factory (rather than a module-level ``app``) keeps the registry
-    scoped per-app, which makes the server testable: each test can spin
-    up a fresh app with an empty registry.
+
+def _command_with_context(body: ExecRequest) -> tuple[str, Literal["login", "raw"]]:
+    """Apply cwd and command-local environment without interpolating values."""
+    if body.cwd is not None and not PurePosixPath(body.cwd).is_absolute():
+        raise ValueError("Working directory must be an absolute sandbox path such as '/workspace'.")
+    invalid_names = sorted(name for name in body.env if not _ENV_NAME.fullmatch(name))
+    if invalid_names:
+        raise ValueError(f"Environment variable name is invalid: {invalid_names[0]!r}.")
+    if body.cwd is None and not body.env:
+        return body.command, body.shell
+
+    pieces: list[str] = []
+    if body.cwd is not None:
+        pieces.append(f"cd -- {shlex.quote(body.cwd)}")
+    environment = " ".join(
+        f"{name}={shlex.quote(value)}" for name, value in sorted(body.env.items())
+    )
+    command = f"env {environment} {body.command}" if environment else body.command
+    pieces.append(command)
+    return f"sh -c {shlex.quote(' && '.join(pieces))}", "raw"
+
+
+def create_app(*, auth_token: str | None = None) -> FastAPI:
+    """Build an app with an isolated, process-local sandbox inventory.
+
+    ``auth_token`` is required for SDK sessions. Omitting it keeps the
+    manually started development server backward compatible.
     """
-    # Live facade instances are the API's complete process-local inventory.
-    # The API deliberately does not read the CLI's SQLite registry.
     sandboxes: dict[str, SmolVM] = {}
+    event_subscribers: set[object] = set()
+    event_lock = threading.Lock()
+
+    def publish(event: dict[str, object]) -> None:
+        with event_lock:
+            subscribers = list(event_subscribers)
+        for subscriber in subscribers:
+            subscriber.put(event)  # type: ignore[attr-defined]
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):  # type: ignore[no-untyped-def]
         yield
-        # API-owned sandboxes are process-scoped. Graceful server shutdown
-        # tears them down instead of leaving undiscoverable child processes.
         for sandbox in list(sandboxes.values()):
             with suppress(Exception):
                 await asyncio.to_thread(sandbox.delete)
@@ -75,209 +100,290 @@ def create_app() -> FastAPI:
         sandboxes.clear()
 
     app = FastAPI(
-        title="SmolVM",
-        summary="Disposable computers for AI agents, over HTTP.",
-        version="0.1.0",
+        title="SmolVM SDK bridge",
+        summary="A private local bridge for SmolVM SDK clients.",
+        version="1",
         lifespan=lifespan,
     )
+    app.state.auth_token = auth_token
+    app.state.sandboxes = sandboxes
 
-    def _resolve(sandbox_id: str) -> SmolVM:
-        """Return the live facade for ``sandbox_id``, reconnecting on miss.
+    if auth_token is not None:
 
-        The registry is the API's source of truth. A sandbox created by
-        another process is intentionally invisible here.
+        @app.middleware("http")
+        async def authenticate(request: Request, call_next):  # type: ignore[no-untyped-def]
+            supplied = request.headers.get("authorization", "")
+            expected = f"Bearer {auth_token}"
+            if not secrets.compare_digest(supplied, expected):
+                return JSONResponse(
+                    status_code=401,
+                    content={
+                        "detail": (
+                            "SDK session authentication failed; create a new SmolVM client."
+                        )
+                    },
+                )
+            return await call_next(request)
 
-        Raises:
-            HTTPException: 404 if this API process does not own the ID.
-        """
+    def resolve(sandbox_id: str) -> SmolVM:
         vm = sandboxes.get(sandbox_id)
         if vm is None:
             raise HTTPException(
                 status_code=404,
                 detail=(
-                    f"Sandbox '{sandbox_id}' was not found; run GET /sandboxes "
-                    f"to list ids or POST /sandboxes to create one."
+                    f"Sandbox '{sandbox_id}' is not part of this SDK session; create it again "
+                    "with smolvm.sandboxes.create()."
                 ),
             )
         return vm
+
+    @app.get("/sdk/v1/capabilities", response_model=CapabilitiesResponse)
+    def capabilities() -> CapabilitiesResponse:
+        return CapabilitiesResponse()
+
+    @app.get("/sdk/v1/events")
+    def events() -> StreamingResponse:
+        from queue import Empty, Queue
+
+        subscriber: Queue[dict[str, object]] = Queue()
+
+        def stream() -> Iterator[str]:
+            with event_lock:
+                event_subscribers.add(subscriber)
+            try:
+                yield ": connected\n\n"
+                while True:
+                    try:
+                        event = subscriber.get(timeout=10)
+                        yield f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
+                    except Empty:
+                        yield ": keepalive\n\n"
+            finally:
+                with event_lock:
+                    event_subscribers.discard(subscriber)
+
+        return StreamingResponse(stream(), media_type="text/event-stream")
+
+    @app.get("/sdk/v1/diagnostics", response_model=DiagnosticsResponse)
+    def diagnostics() -> DiagnosticsResponse:
+        supported = sys.platform.startswith("linux") or (
+            sys.platform == "darwin" and platform.machine() == "arm64"
+        )
+        problems = (
+            ()
+            if supported
+            else ("Runtime support is limited to Linux x64 and macOS arm64.",)
+        )
+        return DiagnosticsResponse(
+            runtime_version=_runtime_version(),
+            python_version=platform.python_version(),
+            platform=f"{sys.platform}-{platform.machine()}",
+            supported=supported,
+            problems=problems,
+        )
 
     @app.post(
         "/sandboxes",
         response_model=SandboxResponse,
         status_code=201,
         operation_id="createSandbox",
-        responses={
-            400: {
-                "model": ErrorResponse,
-                "description": "The request was invalid or the sandbox failed to boot.",
-            },
-        },
+        responses={400: {"model": ErrorResponse}},
     )
     def create_sandbox(body: CreateSandboxRequest) -> SandboxResponse:
-        """Create, boot, and register a new sandbox.
+        values = body.model_dump(exclude_none=True, exclude={"network"})
+        if body.image is None and body.os is None:
+            values["os"] = "ubuntu"
+        network = body.network.model_dump()
+        if network["mode"] != "open":
+            values["internet_settings"] = network
+        sandbox: SmolVM | None = None
+        downloaded: dict[str, int] = {}
 
-        Builds a :class:`~smolvm.SmolVM` from the request's auto-config
-        fields, starts it, stores it in the registry under its id, and
-        returns the client-safe view.
-        """
+        def on_download(label: str, chunk: int, total: int | None) -> None:
+            downloaded[label] = downloaded.get(label, 0) + chunk
+            publish(
+                {
+                    "type": "image.download",
+                    "image": label,
+                    "receivedBytes": downloaded[label],
+                    **({"totalBytes": total} if total is not None else {}),
+                }
+            )
+
         try:
-            sandbox = SmolVM(**body.model_dump(exclude_none=True))
+            sandbox = SmolVM(**values, on_download=on_download)
             sandbox.start()
         except (ValueError, SmolVMError) as exc:
+            if sandbox is not None:
+                with suppress(Exception):
+                    sandbox.delete()
+                with suppress(Exception):
+                    sandbox.close()
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    f"Could not create the sandbox: {exc}. Fix the request and "
-                    f"POST it to /sandboxes again."
-                ),
+                detail=f"Could not create the sandbox: {exc}. Fix the options and try again.",
             ) from exc
-
         sandboxes[sandbox.vm_id] = sandbox
         return SandboxResponse(id=sandbox.vm_id, status=sandbox.status)
 
-    @app.get(
-        "/sandboxes/{sandbox_id}",
-        response_model=SandboxResponse,
-        operation_id="getSandbox",
-        responses={
-            404: {
-                "model": ErrorResponse,
-                "description": "No sandbox with that id exists on the host.",
-            },
-            409: {
-                "model": ErrorResponse,
-                "description": "The sandbox exists but could not be reconnected.",
-            },
-        },
-    )
-    def get_sandbox(sandbox_id: str) -> SandboxResponse:
-        """Return the current state of a sandbox.
+    @app.get("/sandboxes", response_model=list[SandboxResponse], operation_id="listSandboxes")
+    def list_sandboxes() -> list[SandboxResponse]:
+        result: list[SandboxResponse] = []
+        for sandbox_id, vm in sorted(sandboxes.items()):
+            vm.refresh()
+            result.append(SandboxResponse(id=sandbox_id, status=vm.status))
+        return result
 
-        A sandbox not owned by this API process yields a 404.
-        """
-        vm = _resolve(sandbox_id)
+    @app.get("/sandboxes/{sandbox_id}", response_model=SandboxResponse, operation_id="getSandbox")
+    def get_sandbox(sandbox_id: str) -> SandboxResponse:
+        vm = resolve(sandbox_id)
         vm.refresh()
         return SandboxResponse(id=vm.vm_id, status=vm.status)
-
-    @app.get(
-        "/sandboxes",
-        response_model=list[SandboxResponse],
-        operation_id="listSandboxes",
-    )
-    def list_sandboxes() -> list[SandboxResponse]:
-        """List the sandboxes discoverable on the host.
-
-        Returns only sandboxes owned by this API process.
-        """
-        responses: list[SandboxResponse] = []
-        for vm_id, vm in sorted(sandboxes.items()):
-            vm.refresh()
-            responses.append(SandboxResponse(id=vm_id, status=vm.status))
-        return responses
 
     @app.get(
         "/sandboxes/{sandbox_id}/desktop",
         response_model=DesktopResponse,
         operation_id="getSandboxDesktop",
-        responses={
-            404: {"model": ErrorResponse, "description": "The sandbox was not found."},
-            409: {"model": ErrorResponse, "description": "No running desktop is available."},
-        },
     )
     def get_sandbox_desktop(sandbox_id: str) -> DesktopResponse:
-        """Return a sanitized loopback desktop endpoint without opening it."""
-        vm = _resolve(sandbox_id)
+        vm = resolve(sandbox_id)
         vm.refresh()
         endpoint = vm.desktop_endpoint
         if endpoint is None:
             raise HTTPException(
                 status_code=409,
-                detail=(
-                    f"Sandbox '{sandbox_id}' has no running desktop; start it, then GET "
-                    f"/sandboxes/{sandbox_id}/desktop again."
-                ),
+                detail=f"Sandbox '{sandbox_id}' has no running desktop.",
             )
         return DesktopResponse(
             protocol=endpoint.protocol,
-            host=endpoint.host,
+            host=cast(Literal["127.0.0.1", "localhost", "::1"], endpoint.host),
             port=endpoint.port,
             viewer_url=endpoint.viewer_url,
         )
 
-    @app.delete(
-        "/sandboxes/{sandbox_id}",
-        status_code=204,
-        operation_id="deleteSandbox",
-        responses={
-            404: {
-                "model": ErrorResponse,
-                "description": "No sandbox with that id exists on the host.",
-            },
-            409: {
-                "model": ErrorResponse,
-                "description": "The sandbox could not be reconnected or deleted.",
-            },
-        },
-    )
+    @app.delete("/sandboxes/{sandbox_id}", status_code=204, operation_id="deleteSandbox")
     def delete_sandbox(sandbox_id: str) -> Response:
-        """Stop the sandbox, release its resources, and forget it.
-
-        Evicts the facade from the registry so its id stops resolving —
-        the write-through delete the registry-as-cache model needs.
-        """
-        vm = _resolve(sandbox_id)
+        vm = resolve(sandbox_id)
         try:
             vm.delete()
+            vm.close()
         except (ValueError, SmolVMError) as exc:
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"Sandbox '{sandbox_id}' could not be deleted; retry "
-                    f"DELETE /sandboxes/{sandbox_id}."
+                    f"Sandbox '{sandbox_id}' could not be deleted; call sandbox.delete() again, "
+                    "or close the SmolVM client to clean up its complete session."
                 ),
             ) from exc
-        sandboxes.pop(vm.vm_id, None)
+        sandboxes.pop(sandbox_id, None)
         return Response(status_code=204)
+
+    @app.post("/sandboxes/{sandbox_id}/cancel", status_code=204)
+    def cancel_sandbox_operation(sandbox_id: str) -> Response:
+        """Stop an in-flight operation by deleting its session VM."""
+        return delete_sandbox(sandbox_id)
 
     @app.post(
         "/sandboxes/{sandbox_id}/exec",
         response_model=ExecResponse,
         operation_id="execCommand",
-        responses={
-            404: {
-                "model": ErrorResponse,
-                "description": "No sandbox with that id exists on the host.",
-            },
-            409: {
-                "model": ErrorResponse,
-                "description": (
-                    "The sandbox could not be reconnected, or the command could not run."
-                ),
-            },
-        },
     )
     def exec_command(sandbox_id: str, body: ExecRequest) -> ExecResponse:
-        """Run a command inside a sandbox and return its result.
-
-        Resolves the sandbox (reconnecting on a registry miss), then runs
-        the command over the facade's cached SSH channel.
-        """
-
-        vm = _resolve(sandbox_id)
+        vm = resolve(sandbox_id)
         try:
-            result = vm.run(body.command, body.timeout, body.shell)
+            command, shell = _command_with_context(body)
+            started = time.monotonic()
+            result = vm.run(command, body.timeout, shell)
+            duration_ms = round((time.monotonic() - started) * 1000)
+        except OperationTimeoutError as exc:
+            with suppress(Exception):
+                vm.delete()
+                vm.close()
+            sandboxes.pop(sandbox_id, None)
+            raise HTTPException(
+                status_code=408,
+                detail=(
+                    f"Command timed out in sandbox '{sandbox_id}'; the sandbox was deleted "
+                    "to confirm the command stopped. Create a new sandbox and retry."
+                ),
+            ) from exc
         except (ValueError, SmolVMError) as exc:
-            # The sandbox exists but the command could not run (e.g. it is
-            # not running, or has no SSH-capable channel). A command that
-            # runs and exits non-zero is NOT an error — that is a
-            # successful exec returning a non-zero exit_code below.
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"Command could not run in sandbox '{sandbox_id}'; check it "
-                    f"is running with GET /sandboxes/{sandbox_id}."
+                    f"Command could not run in sandbox '{sandbox_id}'; create a new sandbox "
+                    "if the session is no longer usable."
                 ),
             ) from exc
-        return ExecResponse(**result.model_dump())
+        return ExecResponse(**result.model_dump(), duration_ms=duration_ms)
+
+    @app.put("/sandboxes/{sandbox_id}/files", status_code=204)
+    async def write_file(sandbox_id: str, path: str, request: Request) -> Response:
+        vm = resolve(sandbox_id)
+        if not PurePosixPath(path).is_absolute():
+            raise HTTPException(status_code=400, detail="Sandbox file path must be absolute.")
+        try:
+            declared_size = int(request.headers.get("content-length", "0"))
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail="File size header must be an integer."
+            ) from exc
+        if declared_size > _MAX_FILE_BYTES:
+            raise HTTPException(status_code=413, detail="File exceeds the 16 MiB SDK limit.")
+        temporary: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix="smolvm-sdk-upload-", delete=False) as handle:
+                temporary = Path(handle.name)
+                received = 0
+                async for chunk in request.stream():
+                    received += len(chunk)
+                    if received > _MAX_FILE_BYTES:
+                        raise HTTPException(
+                            status_code=413, detail="File exceeds the 16 MiB SDK limit."
+                        )
+                    handle.write(chunk)
+            await asyncio.to_thread(vm.upload_file, temporary, path)
+        except HTTPException:
+            raise
+        except (ValueError, SmolVMError) as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Could not write '{path}' in sandbox '{sandbox_id}'; "
+                    "check the path and retry."
+                ),
+            ) from exc
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        return Response(status_code=204)
+
+    @app.get("/sandboxes/{sandbox_id}/files")
+    async def read_file(sandbox_id: str, path: str) -> Response:
+        vm = resolve(sandbox_id)
+        if not PurePosixPath(path).is_absolute():
+            raise HTTPException(status_code=400, detail="Sandbox file path must be absolute.")
+        temporary: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix="smolvm-sdk-download-", delete=False) as handle:
+                temporary = Path(handle.name)
+            await asyncio.to_thread(vm.download_file, path, temporary)
+            content = temporary.read_bytes()
+            if len(content) > _MAX_FILE_BYTES:
+                raise HTTPException(status_code=413, detail="File exceeds the 16 MiB SDK limit.")
+        except HTTPException:
+            raise
+        except (ValueError, SmolVMError) as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Could not read '{path}' from sandbox '{sandbox_id}'; "
+                    "check the path and retry."
+                ),
+            ) from exc
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        return Response(content=content, media_type="application/octet-stream")
 
     return app

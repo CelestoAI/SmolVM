@@ -1,13 +1,19 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "declaration": true,
-    "outDir": "dist"
+    "declarationMap": true,
+    "stripInternal": true,
+    "sourceMap": true,
+    "outDir": "dist/esm",
+    "rootDir": "src",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"]
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": ["src/client"]
 }
