@@ -16,8 +16,8 @@ export function App() {
     let source: EventSource | undefined;
     void (async () => {
       try {
-        await api.bootstrap();
-        const created = await api.createConversation();
+        const { conversationId } = await api.bootstrap();
+        const created = conversationId ? await api.getConversation(conversationId) : await api.createConversation();
         setConversation(created);
         source = new EventSource(`/api/conversations/${created.id}/events`);
         source.onmessage = () => void refresh(created.id);

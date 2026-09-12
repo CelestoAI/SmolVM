@@ -17,6 +17,10 @@ export class ConversationManager {
 
   constructor(private readonly apiKey: string, private readonly model: string) {}
 
+  get activeConversationId(): string | undefined {
+    return this.context && !["stopped", "failed"].includes(this.context.runState) ? this.context.id : undefined;
+  }
+
   create(): ReturnType<ConversationManager["snapshot"]> {
     if (this.context && !["stopped", "failed"].includes(this.context.runState)) throw Object.assign(new Error("Stop the active conversation before starting another."), { status: 409 });
     this.context = {

@@ -8,10 +8,12 @@ export interface Conversation {
 }
 
 let csrfToken = "";
-export async function bootstrap(): Promise<void> {
+export async function bootstrap(): Promise<{ conversationId?: string }> {
   const response = await fetch("/api/bootstrap", { credentials: "same-origin" });
   if (!response.ok) throw new Error("Could not start the local Smol Agent session.");
-  csrfToken = (await response.json() as { csrfToken: string }).csrfToken;
+  const result = await response.json() as { csrfToken: string; conversationId?: string };
+  csrfToken = result.csrfToken;
+  return { conversationId: result.conversationId };
 }
 async function request<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   const response = await fetch(path, {

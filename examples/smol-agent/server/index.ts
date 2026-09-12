@@ -55,7 +55,7 @@ async function route(manager: ConversationManager, staticRoot: string, request: 
     const csrfToken = randomBytes(32).toString("base64url");
     sessions.set(capability, csrfToken);
     response.setHeader("set-cookie", `smol_agent_session=${capability}; HttpOnly; SameSite=Strict; Path=/`);
-    return sendJson(response, 200, { csrfToken });
+    return sendJson(response, 200, { csrfToken, conversationId: manager.activeConversationId });
   }
   if (method === "GET" && url.pathname === "/api/health") return sendJson(response, 200, { ready: true });
   if (url.pathname.startsWith("/api/") && !authenticated(request)) throw Object.assign(new Error("Reload Smol Agent to restore the local session."), { status: 401 });
