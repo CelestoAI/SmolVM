@@ -101,6 +101,9 @@ export class ProcessTransport implements SmolVMTransport {
         return;
       }
       this.control = control as NodeJS.WritableStream;
+      this.control.on("error", () => {
+        // The child close handler or startup deadline reports the actionable failure.
+      });
       this.control.write(`${JSON.stringify({ protocol_version: 1, token })}\n`);
 
       let settled = false;
