@@ -33,6 +33,11 @@ const ERROR_CODES: ReadonlySet<string> = new Set<SmolVMErrorCode>([
   "backend_unavailable",
   "image_download_failed",
   "sandbox_create_failed",
+  "browser_create_failed",
+  "browser_image_unavailable",
+  "browser_endpoint_unavailable",
+  "browser_deleted",
+  "profile_in_use",
   "invalid_path",
   "command_timeout",
   "command_aborted",
@@ -57,6 +62,7 @@ function codeFor(
     return "image_download_failed";
   }
   if (path === "/sandboxes") return "sandbox_create_failed";
+  if (path === "/browser-sessions") return "browser_create_failed";
   if (path.includes("/files") && status === 400) return "invalid_path";
   return "transport_failed";
 }
@@ -286,9 +292,11 @@ export class ProcessTransport implements SmolVMTransport {
     await this.start();
     let response: Response;
     const createsSandbox = path === "/sandboxes" && init.method === "POST";
+    const createsBrowser = path === "/browser-sessions" && init.method === "POST";
+    const createsResource = createsSandbox || createsBrowser;
     const executesCommand = path.endsWith("/exec");
     const callerSignal = init.signal;
-    const deadlineMs = createsSandbox
+    const deadlineMs = createsResource
       ? this.createTimeoutMs
       : executesCommand
         ? undefined
@@ -309,7 +317,7 @@ export class ProcessTransport implements SmolVMTransport {
       }
       if (deadlineSignal?.aborted) {
         let sessionClosed = false;
-        if (createsSandbox) {
+        if (createsResource) {
           try {
             await this.close();
             sessionClosed = true;
@@ -318,17 +326,17 @@ export class ProcessTransport implements SmolVMTransport {
           }
         }
         throw new SmolVMError(
-          createsSandbox ? "sandbox_create_failed" : "bridge_exit",
-          createsSandbox
+          createsBrowser ? "browser_create_failed" : createsSandbox ? "sandbox_create_failed" : "bridge_exit",
+          createsResource
             ? sessionClosed
-              ? "Sandbox creation timed out and the SDK session was closed to clean up partial work."
-              : "Sandbox creation timed out, but SmolVM could not confirm cleanup; close the client again."
+              ? `${createsBrowser ? "Browser session" : "Sandbox"} creation timed out and the SDK session was closed to clean up partial work.`
+              : `${createsBrowser ? "Browser session" : "Sandbox"} creation timed out, but SmolVM could not confirm cleanup; close the client again.`
             : "The local SmolVM bridge request timed out.", {
           operation: `${init.method ?? "GET"} ${path}`,
-          actual: createsSandbox
+          actual: createsResource
             ? { createTimeoutMs: this.createTimeoutMs, sessionClosed }
             : { requestTimeoutMs: this.requestTimeoutMs },
-          recoveryCommand: createsSandbox ? undefined : "smolvm doctor --strict",
+          recoveryCommand: createsResource ? undefined : "smolvm doctor --strict",
           cause,
           debug: this.debug,
         });

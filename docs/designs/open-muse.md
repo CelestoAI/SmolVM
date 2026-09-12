@@ -5,7 +5,7 @@ Open Muse is a local web app that accepts one personal goal, researches it insid
 Generated from the Open Muse office-hours session on 2026-09-12.  
 Branch: `codex/open-muse-handoff`  
 Repository: `CelestoAI/SmolVM`  
-Status: APPROVED
+Status: IMPLEMENTED — live OpenAI and release-host validation pending
 Mode: time-boxed open-source demo
 
 ## Outcome
@@ -32,8 +32,8 @@ Sources:
 - [Meta: Introducing Muse](https://about.fb.com/news/2026/09/introducing-muse-personal-ai-agent/)
 - [OpenClaw](https://github.com/openclaw/openclaw/blob/main/README.md)
 - [OpenManus](https://github.com/FoundationAgents/OpenManus/blob/main/README.md)
-- [AI SDK tool calling](https://ai-sdk.dev/docs/ai-sdk-core/tools-and-tool-calling)
-- [AI SDK loop control](https://ai-sdk.dev/docs/agents/loop-control)
+- [Pi agent core](https://github.com/earendil-works/pi/tree/main/packages/agent)
+- [Pi agent tool execution](https://github.com/earendil-works/pi/blob/main/packages/agent/README.md#tools)
 
 ## Product decisions
 
@@ -42,7 +42,7 @@ Sources:
 - Ship a local web app, not a hosted service or terminal-only program.
 - Use a React/Vite interface and a dedicated Node server. The Node server owns the agent loop and every SmolVM handle.
 - Support one trusted local operator and one active run at a time.
-- Use OpenAI as the first tested provider through the Vercel AI SDK. Keep the model ID configurable.
+- Use OpenAI as the first tested provider through the Pi agent harness. Keep the model ID configurable.
 - Allow public-web research, but give the model only purpose-built tools. Do not expose a general shell tool.
 - Keep accounts, purchases, email, persistent memory, background jobs, and remote access out of the first release.
 
@@ -151,7 +151,7 @@ Browser on 127.0.0.1
         ▼
 Node control server
   ├── run registry: one in-memory RunState
-  ├── ToolLoopAgent: capped model/tool loop
+  ├── Pi Agent: capped model/tool loop
   ├── purpose-built tool policy
   ├── artifact export and ZIP response
   └── SmolVM client: sole owner of sandbox lifecycle
@@ -256,9 +256,9 @@ Rules:
 
 ## Agent loop
 
-Use Vercel AI SDK's `ToolLoopAgent` with Zod schemas. Pin the AI SDK and provider package versions in `package-lock.json`. Configure:
+Use Pi's `Agent` from `@earendil-works/pi-agent-core`, its OpenAI provider from `@earendil-works/pi-ai`, and TypeBox schemas for every model tool. Pin both Pi packages in `package-lock.json`. Configure:
 
-- `stepCountIs(12)` as the hard model-step ceiling;
+- `shouldStopAfterTurn` with a 12-turn hard ceiling;
 - eight minutes as the total run deadline;
 - 30 seconds per VM command;
 - at most eight fetched sources;
@@ -276,7 +276,7 @@ Suggested phases:
 5. **Verify:** run the fixed packet verifier inside the VM. Give the model one structured correction opportunity if verification fails.
 6. **Export:** package the four allowed files in the VM, download the files and ZIP, and delete the VM.
 
-Use `prepareStep` or separate bounded agent calls to expose only the tools valid for the current phase. Separate calls are preferred if they make cancellation and phase reporting easier to test.
+Use separate bounded Pi agents to expose only the tools valid for the current phase. The first handles research tools; the second handles packet-building tools. This keeps cancellation and phase reporting easy to test.
 
 ## Tool policy
 
@@ -489,7 +489,7 @@ Exit test: entering the built-in goal returns one downloaded `brief.md` from a r
 
 ### Milestone 2: Bounded agent loop
 
-- Add `ToolLoopAgent`, OpenAI configuration, plan generation, and plan confirmation.
+- Add Pi `Agent`, OpenAI configuration, plan generation, and plan confirmation.
 - Implement the four purpose-built tools and fixed guest scripts.
 - Add run deadline, step cap, source cap, and cancellation.
 
@@ -521,11 +521,11 @@ The example remains in this repository and uses npm. Its README should lead with
 curl -sSL https://celesto.ai/install.sh | bash
 cd examples/open-muse
 cp .env.example .env.local
-npm install
+npm install --allow-remote=root
 npm run dev
 ```
 
-The example package should depend on the checksummed TypeScript preview tarball until registry publication. npm 12 blocks remote tarballs by default, so document the required per-command `--allow-remote` setting when installing that dependency.
+The example package depends on the checksummed TypeScript preview tarball until registry publication. npm 12 blocks remote tarballs by default, so use `npm install --allow-remote=root`; `root` permits only URL dependencies named directly by this package. Pi requires Node.js 22.19 or newer.
 
 CI must run typechecking, unit tests, production build, fake-runtime integration tests, packed-SDK install tests, and supported-host real-VM smoke tests. The demo has no separate deployment: users clone the repository and run it locally.
 

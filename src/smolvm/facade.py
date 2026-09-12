@@ -1255,6 +1255,7 @@ class SmolVM:
         viewport_height: int,
         record_video: bool,
         allow_downloads: bool,
+        internet_settings: InternetSettings | dict[str, Any] | None,
         env_vars: dict[str, str] | None,
         workspace_mounts: list[WorkspaceMount] | None,
         memory_mb: int,
@@ -1279,6 +1280,9 @@ class SmolVM:
         profile_mode: Literal["ephemeral", "persistent"] = (
             "persistent" if persistent or profile_id else "ephemeral"
         )
+        resolved_internet_settings = (
+            parse_network_policy(internet_settings) if internet_settings is not None else None
+        )
         config = BrowserSessionConfig(
             session_id=session_id,
             backend=backend,
@@ -1291,6 +1295,7 @@ class SmolVM:
             viewport_height=resolved_viewport.height,
             record_video=record_video,
             allow_downloads=allow_downloads,
+            internet_settings=resolved_internet_settings,
             env_vars=env_vars or {},
             workspace_mounts=workspace_mounts or [],
             mem_size_mib=memory_mb,
@@ -1327,6 +1332,7 @@ class SmolVM:
         viewport_height: int = 720,
         record_video: bool = False,
         allow_downloads: bool = True,
+        internet_settings: InternetSettings | dict[str, Any] | None = None,
         env_vars: dict[str, str] | None = None,
         workspace_mounts: list[WorkspaceMount] | None = None,
         memory_mb: int = 2048,
@@ -1358,6 +1364,7 @@ class SmolVM:
             viewport_height=viewport_height,
             record_video=record_video,
             allow_downloads=allow_downloads,
+            internet_settings=internet_settings,
             env_vars=env_vars,
             workspace_mounts=workspace_mounts,
             memory_mb=memory_mb,
@@ -1383,6 +1390,7 @@ class SmolVM:
         viewport_height: int = 720,
         record_video: bool = False,
         allow_downloads: bool = True,
+        internet_settings: InternetSettings | dict[str, Any] | None = None,
         env_vars: dict[str, str] | None = None,
         workspace_mounts: list[WorkspaceMount] | None = None,
         memory_mb: int = 2048,
@@ -1409,6 +1417,7 @@ class SmolVM:
             viewport_height=viewport_height,
             record_video=record_video,
             allow_downloads=allow_downloads,
+            internet_settings=internet_settings,
             env_vars=env_vars,
             workspace_mounts=workspace_mounts,
             memory_mb=memory_mb,

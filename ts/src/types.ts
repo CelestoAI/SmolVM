@@ -9,6 +9,15 @@ export type SandboxStatus =
   | "error"
   | "deleted";
 
+/** Lifecycle state of a browser session owned by this SDK client. */
+export type BrowserSessionStatus =
+  | "created"
+  | "starting"
+  | "ready"
+  | "stopping"
+  | "error"
+  | "deleted";
+
 /** Controls which outbound IPv4 connections a new sandbox may make. */
 export type NetworkPolicy =
   | { mode: "open" }
@@ -28,6 +37,21 @@ export interface CreateSandboxOptions {
   /** Custom local path, file URL, or remote image reference. */
   image?: string;
   /** Outbound network access. Defaults to open. */
+  network?: NetworkPolicy;
+}
+
+/** Configure an isolated Chromium session and its optional live viewer. */
+export interface CreateBrowserSessionOptions {
+  sessionId?: string;
+  mode?: "headless" | "live";
+  backend?: "firecracker" | "qemu" | "libkrun" | "auto";
+  profile?: { mode: "ephemeral" } | { mode: "persistent"; id: string };
+  timeoutMinutes?: number;
+  viewport?: { width: number; height: number };
+  recordVideo?: boolean;
+  allowDownloads?: boolean;
+  memoryMiB?: number;
+  diskMiB?: number;
   network?: NetworkPolicy;
 }
 
@@ -56,6 +80,10 @@ export type SmolVMEvent =
   | { type: "sandbox.starting" }
   | { type: "sandbox.ready"; sandboxId: string }
   | { type: "sandbox.deleted"; sandboxId: string }
+  | { type: "browser.starting"; sessionId: string }
+  | { type: "browser.ready"; sessionId: string; sandboxId: string }
+  | { type: "browser.stopping"; sessionId: string; sandboxId: string }
+  | { type: "browser.deleted"; sessionId: string; sandboxId: string }
   | { type: "command.started"; sandboxId: string }
   | { type: "command.completed"; sandboxId: string; result: ExecResult };
 
@@ -96,9 +124,26 @@ export interface SandboxCollection {
   create(options?: CreateSandboxOptions): Promise<SandboxClient>;
 }
 
+/** A ready Chromium session with private host-side automation and viewer endpoints. */
+export interface BrowserSessionClient {
+  readonly sessionId: string;
+  readonly sandboxId: string;
+  readonly status: BrowserSessionStatus;
+  readonly cdpUrl: string;
+  readonly viewerUrl?: string;
+  readonly profileId?: string;
+  delete(): Promise<void>;
+}
+
+/** Creates browser sessions owned by one SmolVM client. */
+export interface BrowserSessionCollection {
+  create(options?: CreateBrowserSessionOptions): Promise<BrowserSessionClient>;
+}
+
 /** The mockable client contract for creating sandboxes, diagnosing setup, and cleaning up. */
 export interface SmolVMClient {
   readonly sandboxes: SandboxCollection;
+  readonly browsers: BrowserSessionCollection;
   diagnose(): Promise<DiagnoseResult>;
   close(): Promise<void>;
 }

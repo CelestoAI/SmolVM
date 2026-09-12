@@ -56,6 +56,86 @@
         }
       }
     },
+    "/browser-sessions": {
+      "post": {
+        "summary": "Create Browser Session",
+        "operationId": "createBrowserSession",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateBrowserSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserSessionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/browser-sessions/{session_id}": {
+      "delete": {
+        "summary": "Delete Browser Session",
+        "operationId": "deleteBrowserSession",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/sandboxes": {
       "get": {
         "summary": "List Sandboxes",
@@ -405,6 +485,89 @@
   },
   "components": {
     "schemas": {
+      "BrowserSessionResponse": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "sandbox_id": {
+            "type": "string",
+            "title": "Sandbox Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/BrowserSessionState"
+          },
+          "cdp_url": {
+            "type": "string",
+            "title": "Cdp Url"
+          },
+          "viewer_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Viewer Url"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "sandbox_id",
+          "status",
+          "cdp_url"
+        ],
+        "title": "BrowserSessionResponse",
+        "description": "Ready browser session endpoints returned only to the owning SDK client."
+      },
+      "BrowserSessionState": {
+        "type": "string",
+        "enum": [
+          "created",
+          "starting",
+          "ready",
+          "stopping",
+          "error"
+        ],
+        "title": "BrowserSessionState",
+        "description": "Browser session lifecycle states."
+      },
+      "BrowserViewportRequest": {
+        "properties": {
+          "width": {
+            "type": "integer",
+            "maximum": 7680.0,
+            "minimum": 640.0,
+            "title": "Width",
+            "default": 1280
+          },
+          "height": {
+            "type": "integer",
+            "maximum": 4320.0,
+            "minimum": 480.0,
+            "title": "Height",
+            "default": 720
+          }
+        },
+        "type": "object",
+        "title": "BrowserViewportRequest",
+        "description": "Requested browser viewport in CSS pixels."
+      },
       "CapabilitiesResponse": {
         "properties": {
           "protocol_version": {
@@ -425,6 +588,10 @@
               "sandbox.exec",
               "files.read",
               "files.write",
+              "browser.create",
+              "browser.delete",
+              "browser.endpoints",
+              "browser.events",
               "events",
               "diagnostics"
             ]
@@ -433,6 +600,122 @@
         "type": "object",
         "title": "CapabilitiesResponse",
         "description": "Runtime protocol and feature discovery."
+      },
+      "CreateBrowserSessionRequest": {
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "headless",
+              "live"
+            ],
+            "title": "Mode",
+            "default": "headless"
+          },
+          "backend": {
+            "type": "string",
+            "enum": [
+              "firecracker",
+              "qemu",
+              "libkrun",
+              "auto"
+            ],
+            "title": "Backend",
+            "default": "auto"
+          },
+          "profile_mode": {
+            "type": "string",
+            "enum": [
+              "ephemeral",
+              "persistent"
+            ],
+            "title": "Profile Mode",
+            "default": "ephemeral"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "timeout_minutes": {
+            "type": "integer",
+            "maximum": 240.0,
+            "minimum": 1.0,
+            "title": "Timeout Minutes",
+            "default": 30
+          },
+          "viewport": {
+            "$ref": "#/components/schemas/BrowserViewportRequest"
+          },
+          "record_video": {
+            "type": "boolean",
+            "title": "Record Video",
+            "default": false
+          },
+          "allow_downloads": {
+            "type": "boolean",
+            "title": "Allow Downloads",
+            "default": true
+          },
+          "memory": {
+            "type": "integer",
+            "maximum": 16384.0,
+            "minimum": 512.0,
+            "title": "Memory",
+            "default": 2048
+          },
+          "disk_size": {
+            "type": "integer",
+            "maximum": 16384.0,
+            "minimum": 2048.0,
+            "title": "Disk Size",
+            "default": 4096
+          },
+          "network": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/OpenNetworkPolicy"
+              },
+              {
+                "$ref": "#/components/schemas/OffNetworkPolicy"
+              },
+              {
+                "$ref": "#/components/schemas/RestrictedNetworkPolicy"
+              }
+            ],
+            "title": "Network",
+            "discriminator": {
+              "propertyName": "mode",
+              "mapping": {
+                "off": "#/components/schemas/OffNetworkPolicy",
+                "open": "#/components/schemas/OpenNetworkPolicy",
+                "restricted": "#/components/schemas/RestrictedNetworkPolicy"
+              }
+            }
+          }
+        },
+        "type": "object",
+        "title": "CreateBrowserSessionRequest",
+        "description": "Create and boot a browser session owned by one SDK client."
       },
       "CreateSandboxRequest": {
         "properties": {

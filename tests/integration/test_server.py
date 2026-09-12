@@ -26,6 +26,7 @@ dependency.
 import shlex
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -38,12 +39,35 @@ from smolvm import server as server_pkg
 from smolvm.exceptions import OperationTimeoutError, SmolVMError, VMNotFoundError
 from smolvm.server.app import _DownloadProgressEvents, create_app
 from smolvm.server.models import (
+    BrowserSessionResponse,
+    CreateBrowserSessionRequest,
     CreateSandboxRequest,
     DesktopResponse,
     ExecRequest,
     SandboxResponse,
 )
-from smolvm.types import CommandResult, DesktopEndpoint, VMState
+from smolvm.types import BrowserSessionState, CommandResult, DesktopEndpoint, VMState
+
+
+class FakeBrowserSession:
+    """Ready browser session returned by the facade stub."""
+
+    delete_calls = 0
+    close_calls = 0
+
+    def __init__(self, session_id: str, profile_id: str | None = None) -> None:
+        self.session_id = session_id
+        self.vm_id = f"vm-{session_id}"
+        self.status = BrowserSessionState.READY
+        self.cdp_url = "http://127.0.0.1:9222"
+        self.viewer_url = "http://127.0.0.1:6080/vnc.html?autoconnect=1"
+        self.info = SimpleNamespace(profile_id=profile_id)
+
+    def delete(self) -> None:
+        FakeBrowserSession.delete_calls += 1
+
+    def close(self) -> None:
+        FakeBrowserSession.close_calls += 1
 
 
 class FakeSmolVM:
@@ -67,6 +91,14 @@ class FakeSmolVM:
         }
         self.vm_id = kwargs.get("vm_id") or "sbx-test"
         self.status = VMState.CREATED
+
+    @classmethod
+    def browser(cls, **kwargs: object) -> FakeBrowserSession:
+        cls.last_kwargs = dict(kwargs)
+        return FakeBrowserSession(
+            str(kwargs.get("session_id") or "browser-test"),
+            kwargs.get("profile_id") if isinstance(kwargs.get("profile_id"), str) else None,
+        )
 
     from_id_error: Exception | None = None
 
@@ -151,6 +183,8 @@ def app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     FakeSmolVM.downloaded_files = []
     FakeSmolVM.file_size_override = None
     FakeSmolVM.close_calls = 0
+    FakeBrowserSession.delete_calls = 0
+    FakeBrowserSession.close_calls = 0
     monkeypatch.setattr("smolvm.server.app.SmolVM", FakeSmolVM)
     return create_app()
 
@@ -165,6 +199,36 @@ def test_create_sandbox_returns_running_state(app: FastAPI) -> None:
     assert result.status is VMState.RUNNING
     # Only the fields the caller set are forwarded to the facade.
     assert FakeSmolVM.last_kwargs == {"os": "ubuntu", "memory": 1024}
+
+
+def test_create_and_delete_live_browser_session(app: FastAPI) -> None:
+    create = _handler(app, "/browser-sessions", "POST")
+    delete = _handler(app, "/browser-sessions/{session_id}", "DELETE")
+
+    result = create(
+        CreateBrowserSessionRequest(
+            session_id="browser-demo",
+            mode="live",
+            backend="qemu",
+            allow_downloads=False,
+            network={"mode": "off"},
+        )
+    )
+
+    assert isinstance(result, BrowserSessionResponse)
+    assert result.session_id == "browser-demo"
+    assert result.sandbox_id == "vm-browser-demo"
+    assert result.status is BrowserSessionState.READY
+    assert result.viewer_url is not None
+    assert FakeSmolVM.last_kwargs is not None
+    assert FakeSmolVM.last_kwargs["headless"] is False
+    assert FakeSmolVM.last_kwargs["internet_settings"] == {"mode": "off"}
+
+    response = delete("browser-demo")
+    assert response.status_code == 204
+    assert FakeBrowserSession.delete_calls == 1
+    assert FakeBrowserSession.close_calls == 1
+    assert delete("browser-demo").status_code == 204
 
 
 def test_download_progress_events_are_coalesced_but_keep_final_state() -> None:

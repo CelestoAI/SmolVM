@@ -5,6 +5,58 @@ export type ClientOptions = {
 };
 
 /**
+ * BrowserSessionResponse
+ *
+ * Ready browser session endpoints returned only to the owning SDK client.
+ */
+export type BrowserSessionResponse = {
+    /**
+     * Session Id
+     */
+    session_id: string;
+    /**
+     * Sandbox Id
+     */
+    sandbox_id: string;
+    status: BrowserSessionState;
+    /**
+     * Cdp Url
+     */
+    cdp_url: string;
+    /**
+     * Viewer Url
+     */
+    viewer_url?: string | null;
+    /**
+     * Profile Id
+     */
+    profile_id?: string | null;
+};
+
+/**
+ * BrowserSessionState
+ *
+ * Browser session lifecycle states.
+ */
+export type BrowserSessionState = 'created' | 'starting' | 'ready' | 'stopping' | 'error';
+
+/**
+ * BrowserViewportRequest
+ *
+ * Requested browser viewport in CSS pixels.
+ */
+export type BrowserViewportRequest = {
+    /**
+     * Width
+     */
+    width?: number;
+    /**
+     * Height
+     */
+    height?: number;
+};
+
+/**
  * CapabilitiesResponse
  *
  * Runtime protocol and feature discovery.
@@ -18,6 +70,65 @@ export type CapabilitiesResponse = {
      * Capabilities
      */
     capabilities?: Array<string>;
+};
+
+/**
+ * CreateBrowserSessionRequest
+ *
+ * Create and boot a browser session owned by one SDK client.
+ */
+export type CreateBrowserSessionRequest = {
+    /**
+     * Session Id
+     */
+    session_id?: string | null;
+    /**
+     * Mode
+     */
+    mode?: 'headless' | 'live';
+    /**
+     * Backend
+     */
+    backend?: 'firecracker' | 'qemu' | 'libkrun' | 'auto';
+    /**
+     * Profile Mode
+     */
+    profile_mode?: 'ephemeral' | 'persistent';
+    /**
+     * Profile Id
+     */
+    profile_id?: string | null;
+    /**
+     * Timeout Minutes
+     */
+    timeout_minutes?: number;
+    viewport?: BrowserViewportRequest;
+    /**
+     * Record Video
+     */
+    record_video?: boolean;
+    /**
+     * Allow Downloads
+     */
+    allow_downloads?: boolean;
+    /**
+     * Memory
+     */
+    memory?: number;
+    /**
+     * Disk Size
+     */
+    disk_size?: number;
+    /**
+     * Network
+     */
+    network?: ({
+        mode: 'open';
+    } & OpenNetworkPolicy) | ({
+        mode: 'off';
+    } & OffNetworkPolicy) | ({
+        mode: 'restricted';
+    } & RestrictedNetworkPolicy);
 };
 
 /**
@@ -339,6 +450,65 @@ export type DiagnosticsSdkV1DiagnosticsGetResponses = {
 };
 
 export type DiagnosticsSdkV1DiagnosticsGetResponse = DiagnosticsSdkV1DiagnosticsGetResponses[keyof DiagnosticsSdkV1DiagnosticsGetResponses];
+
+export type CreateBrowserSessionData = {
+    body: CreateBrowserSessionRequest;
+    path?: never;
+    query?: never;
+    url: '/browser-sessions';
+};
+
+export type CreateBrowserSessionErrors = {
+    /**
+     * Bad Request
+     */
+    400: ErrorResponse;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CreateBrowserSessionError = CreateBrowserSessionErrors[keyof CreateBrowserSessionErrors];
+
+export type CreateBrowserSessionResponses = {
+    /**
+     * Successful Response
+     */
+    201: BrowserSessionResponse;
+};
+
+export type CreateBrowserSessionResponse = CreateBrowserSessionResponses[keyof CreateBrowserSessionResponses];
+
+export type DeleteBrowserSessionData = {
+    body?: never;
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/browser-sessions/{session_id}';
+};
+
+export type DeleteBrowserSessionErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type DeleteBrowserSessionError = DeleteBrowserSessionErrors[keyof DeleteBrowserSessionErrors];
+
+export type DeleteBrowserSessionResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type DeleteBrowserSessionResponse = DeleteBrowserSessionResponses[keyof DeleteBrowserSessionResponses];
 
 export type ListSandboxesData = {
     body?: never;

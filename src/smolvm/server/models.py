@@ -7,9 +7,9 @@
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
-from smolvm.types import CommandResult, VMState
+from smolvm.types import BrowserSessionState, CommandResult, VMState
 
 
 class OpenNetworkPolicy(BaseModel):
@@ -75,6 +75,49 @@ class SandboxResponse(BaseModel):
     status: VMState
 
 
+class BrowserViewportRequest(BaseModel):
+    """Requested browser viewport in CSS pixels."""
+
+    width: int = Field(default=1280, ge=640, le=7680)
+    height: int = Field(default=720, ge=480, le=4320)
+
+
+class CreateBrowserSessionRequest(BaseModel):
+    """Create and boot a browser session owned by one SDK client."""
+
+    session_id: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$")
+    mode: Literal["headless", "live"] = "headless"
+    backend: Literal["firecracker", "qemu", "libkrun", "auto"] = "auto"
+    profile_mode: Literal["ephemeral", "persistent"] = "ephemeral"
+    profile_id: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$")
+    timeout_minutes: int = Field(default=30, ge=1, le=240)
+    viewport: BrowserViewportRequest = Field(default_factory=BrowserViewportRequest)
+    record_video: bool = False
+    allow_downloads: bool = True
+    memory: int = Field(default=2048, ge=512, le=16384)
+    disk_size: int = Field(default=4096, ge=2048, le=16384)
+    network: NetworkPolicy = Field(default_factory=lambda: OpenNetworkPolicy(mode="open"))
+
+    @model_validator(mode="after")
+    def validate_browser_options(self) -> "CreateBrowserSessionRequest":
+        if self.profile_mode == "persistent" and self.profile_id is None:
+            raise ValueError("profile_id is required when profile_mode='persistent'")
+        if self.record_video and self.mode != "live":
+            raise ValueError("record_video requires mode='live'")
+        return self
+
+
+class BrowserSessionResponse(BaseModel):
+    """Ready browser session endpoints returned only to the owning SDK client."""
+
+    session_id: str
+    sandbox_id: str
+    status: BrowserSessionState
+    cdp_url: str
+    viewer_url: str | None = None
+    profile_id: str | None = None
+
+
 class DesktopResponse(BaseModel):
     """A sanitized loopback display endpoint for a running sandbox."""
 
@@ -110,6 +153,10 @@ class CapabilitiesResponse(BaseModel):
         "sandbox.exec",
         "files.read",
         "files.write",
+        "browser.create",
+        "browser.delete",
+        "browser.endpoints",
+        "browser.events",
         "events",
         "diagnostics",
     )

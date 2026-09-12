@@ -1,4 +1,6 @@
 import process from "node:process";
+import { randomUUID } from "node:crypto";
+import { BrowserSession, type BrowserSessionResponse } from "./browser-session.js";
 import { SmolVMError } from "./errors.js";
 import { Sandbox } from "./sandbox.js";
 import { ProcessTransport } from "./transport.js";
@@ -9,6 +11,8 @@ import type {
 } from "./client/types.gen.js";
 import type {
   CreateSandboxOptions,
+  CreateBrowserSessionOptions,
+  BrowserSessionCollection,
   DiagnoseResult,
   SandboxCollection,
   SmolVMClient,
@@ -19,6 +23,7 @@ import type {
 
 export { SmolVMError } from "./errors.js";
 export { Sandbox } from "./sandbox.js";
+export { BrowserSession } from "./browser-session.js";
 export type { SmolVMErrorCode, SmolVMErrorOptions } from "./errors.js";
 export type * from "./types.js";
 
@@ -29,6 +34,13 @@ const REQUIRED_CAPABILITIES = [
   "files.read",
   "files.write",
   "events",
+] as const;
+
+const REQUIRED_BROWSER_CAPABILITIES = [
+  "browser.create",
+  "browser.delete",
+  "browser.endpoints",
+  "browser.events",
 ] as const;
 
 function assertSupportedNode(): void {
@@ -53,11 +65,13 @@ function timeoutOption(value: number | undefined, fallback: number, name: string
 /** Entry point for creating disposable local sandboxes. */
 export class SmolVM implements SmolVMClient {
   readonly sandboxes: SandboxCollection;
+  readonly browsers: BrowserSessionCollection;
   private readonly transport: SmolVMTransport;
   private readonly active = new Set<Sandbox>();
+  private readonly activeBrowsers = new Set<BrowserSession>();
   private readonly onEvent?: (event: SmolVMEvent) => void;
   private readonly debug: boolean;
-  private negotiation?: Promise<void>;
+  private negotiation?: Promise<ReadonlySet<string>>;
   private closePromise?: Promise<void>;
   private transportClosePromise?: Promise<void>;
   private sessionClosed = false;
@@ -78,6 +92,7 @@ export class SmolVM implements SmolVMClient {
       (event) => this.emit(event),
     );
     this.sandboxes = { create: (createOptions) => this.createSandbox(createOptions) };
+    this.browsers = { create: (createOptions) => this.createBrowser(createOptions) };
   }
 
   private emit(event: SmolVMEvent): void {
@@ -90,6 +105,8 @@ export class SmolVM implements SmolVMClient {
     this.transportClosePromise ??= Promise.resolve();
     for (const sandbox of [...this.active]) sandbox.markDeleted();
     this.active.clear();
+    for (const browser of [...this.activeBrowsers]) browser.markDeleted();
+    this.activeBrowsers.clear();
   }
 
   private async closeTransport(): Promise<void> {
@@ -103,26 +120,34 @@ export class SmolVM implements SmolVMClient {
     return this.transportClosePromise;
   }
 
-  private async negotiate(): Promise<void> {
+  private async negotiate(required: readonly string[] = REQUIRED_CAPABILITIES): Promise<void> {
     if (!this.negotiation) {
       const attempt = this.transport.request<CapabilitiesResponse>("/sdk/v1/capabilities").then((result) => {
         const capabilities = Array.isArray(result.capabilities) ? result.capabilities : [];
         const protocolVersion = result.protocol_version ?? -1;
-        const missing = REQUIRED_CAPABILITIES.filter((capability) => !capabilities.includes(capability));
-        if (protocolVersion !== 1 || missing.length > 0) {
+        if (protocolVersion !== 1) {
           throw new SmolVMError("protocol_incompatible", "The installed SmolVM runtime is incompatible with this SDK.", {
             operation: "runtime.negotiate",
-            actual: { protocolVersion, missingCapabilities: missing.join(",") },
+            actual: { protocolVersion },
             recoveryCommand: "curl -sSL https://celesto.ai/install.sh | bash",
           });
         }
+        return new Set(capabilities);
       });
       this.negotiation = attempt.catch((cause) => {
         this.negotiation = undefined;
         throw cause;
       });
     }
-    return this.negotiation;
+    const capabilities = await this.negotiation;
+    const missing = required.filter((capability) => !capabilities.has(capability));
+    if (missing.length > 0) {
+      throw new SmolVMError("protocol_incompatible", "The installed SmolVM runtime is incompatible with this SDK.", {
+        operation: "runtime.negotiate",
+        actual: { protocolVersion: 1, missingCapabilities: missing.join(",") },
+        recoveryCommand: "curl -sSL https://celesto.ai/install.sh | bash",
+      });
+    }
   }
 
   private async createSandbox(options: CreateSandboxOptions = {}): Promise<Sandbox> {
@@ -165,6 +190,51 @@ export class SmolVM implements SmolVMClient {
     return sandbox;
   }
 
+  private async createBrowser(options: CreateBrowserSessionOptions = {}): Promise<BrowserSession> {
+    await this.negotiate([...REQUIRED_CAPABILITIES, ...REQUIRED_BROWSER_CAPABILITIES]);
+    const requestedSessionId = options.sessionId ?? `browser-${randomUUID().slice(0, 8)}`;
+    this.emit({ type: "browser.starting", sessionId: requestedSessionId });
+    const network = options.network?.mode === "restricted"
+      ? { mode: "restricted", allowed_cidrs: options.network.allowedCidrs }
+      : options.network ?? { mode: "open" };
+    const profile = options.profile ?? { mode: "ephemeral" as const };
+    let wire: BrowserSessionResponse;
+    try {
+      wire = await this.transport.request<BrowserSessionResponse>("/browser-sessions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          session_id: requestedSessionId,
+          mode: options.mode ?? "headless",
+          backend: options.backend ?? "auto",
+          profile_mode: profile.mode,
+          profile_id: profile.mode === "persistent" ? profile.id : undefined,
+          timeout_minutes: options.timeoutMinutes,
+          viewport: options.viewport,
+          record_video: options.recordVideo,
+          allow_downloads: options.allowDownloads,
+          memory: options.memoryMiB,
+          disk_size: options.diskMiB,
+          network,
+        }),
+      });
+    } catch (cause) {
+      if (cause instanceof SmolVMError && cause.actual?.sessionClosed === true) {
+        this.transitionSessionClosed();
+      }
+      throw cause;
+    }
+    const browser = BrowserSession.create(
+      wire,
+      this.transport,
+      (event) => this.emit(event),
+      (released) => this.activeBrowsers.delete(released),
+    );
+    this.activeBrowsers.add(browser);
+    this.emit({ type: "browser.ready", sessionId: browser.sessionId, sandboxId: browser.sandboxId });
+    return browser;
+  }
+
   async diagnose(): Promise<DiagnoseResult> {
     await this.negotiate();
     const wire = await this.transport.request<DiagnosticsResponse>("/sdk/v1/diagnostics");
@@ -185,6 +255,9 @@ export class SmolVM implements SmolVMClient {
       const failures: unknown[] = [];
       await Promise.all([...this.active].map(async (sandbox) => {
         try { await sandbox.delete(); } catch (cause) { failures.push(cause); }
+      }));
+      await Promise.all([...this.activeBrowsers].map(async (browser) => {
+        try { await browser.delete(); } catch (cause) { failures.push(cause); }
       }));
       try { await this.closeTransport(); } catch (cause) { failures.push(cause); }
       if (failures.length > 0) {

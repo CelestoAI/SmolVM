@@ -2,7 +2,7 @@
 
 import { client } from './client.gen.js';
 import type { Client, ClientMeta, Options as Options2, RequestResult, ServerSentEventsResult, TDataShape } from './client/index.js';
-import type { CancelSandboxOperationSandboxesSandboxIdCancelPostData, CancelSandboxOperationSandboxesSandboxIdCancelPostErrors, CancelSandboxOperationSandboxesSandboxIdCancelPostResponses, CapabilitiesSdkV1CapabilitiesGetData, CapabilitiesSdkV1CapabilitiesGetResponses, CreateSandboxData, CreateSandboxErrors, CreateSandboxResponses, DeleteSandboxData, DeleteSandboxErrors, DeleteSandboxResponses, DiagnosticsSdkV1DiagnosticsGetData, DiagnosticsSdkV1DiagnosticsGetResponses, EventsSdkV1EventsGetData, EventsSdkV1EventsGetResponses, ExecCommandData, ExecCommandErrors, ExecCommandResponses, GetSandboxData, GetSandboxDesktopData, GetSandboxDesktopErrors, GetSandboxDesktopResponses, GetSandboxErrors, GetSandboxResponses, ListSandboxesData, ListSandboxesResponses, ReadFileSandboxesSandboxIdFilesGetData, ReadFileSandboxesSandboxIdFilesGetErrors, ReadFileSandboxesSandboxIdFilesGetResponses, WriteFileSandboxesSandboxIdFilesPutData, WriteFileSandboxesSandboxIdFilesPutErrors, WriteFileSandboxesSandboxIdFilesPutResponses } from './types.gen.js';
+import type { CancelSandboxOperationSandboxesSandboxIdCancelPostData, CancelSandboxOperationSandboxesSandboxIdCancelPostErrors, CancelSandboxOperationSandboxesSandboxIdCancelPostResponses, CapabilitiesSdkV1CapabilitiesGetData, CapabilitiesSdkV1CapabilitiesGetResponses, CreateBrowserSessionData, CreateBrowserSessionErrors, CreateBrowserSessionResponses, CreateSandboxData, CreateSandboxErrors, CreateSandboxResponses, DeleteBrowserSessionData, DeleteBrowserSessionErrors, DeleteBrowserSessionResponses, DeleteSandboxData, DeleteSandboxErrors, DeleteSandboxResponses, DiagnosticsSdkV1DiagnosticsGetData, DiagnosticsSdkV1DiagnosticsGetResponses, EventsSdkV1EventsGetData, EventsSdkV1EventsGetResponses, ExecCommandData, ExecCommandErrors, ExecCommandResponses, GetSandboxData, GetSandboxDesktopData, GetSandboxDesktopErrors, GetSandboxDesktopResponses, GetSandboxErrors, GetSandboxResponses, ListSandboxesData, ListSandboxesResponses, ReadFileSandboxesSandboxIdFilesGetData, ReadFileSandboxesSandboxIdFilesGetErrors, ReadFileSandboxesSandboxIdFilesGetResponses, WriteFileSandboxesSandboxIdFilesPutData, WriteFileSandboxesSandboxIdFilesPutErrors, WriteFileSandboxesSandboxIdFilesPutResponses } from './types.gen.js';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -32,6 +32,23 @@ export const eventsSdkV1EventsGet = <ThrowOnError extends boolean = false>(optio
  * Diagnostics
  */
 export const diagnosticsSdkV1DiagnosticsGet = <ThrowOnError extends boolean = false>(options?: Options<DiagnosticsSdkV1DiagnosticsGetData, ThrowOnError>): RequestResult<DiagnosticsSdkV1DiagnosticsGetResponses, unknown, ThrowOnError> => (options?.client ?? client).get<DiagnosticsSdkV1DiagnosticsGetResponses, unknown, ThrowOnError>({ url: '/sdk/v1/diagnostics', ...options });
+
+/**
+ * Create Browser Session
+ */
+export const createBrowserSession = <ThrowOnError extends boolean = false>(options: Options<CreateBrowserSessionData, ThrowOnError>): RequestResult<CreateBrowserSessionResponses, CreateBrowserSessionErrors, ThrowOnError> => (options.client ?? client).post<CreateBrowserSessionResponses, CreateBrowserSessionErrors, ThrowOnError>({
+    url: '/browser-sessions',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Delete Browser Session
+ */
+export const deleteBrowserSession = <ThrowOnError extends boolean = false>(options: Options<DeleteBrowserSessionData, ThrowOnError>): RequestResult<DeleteBrowserSessionResponses, DeleteBrowserSessionErrors, ThrowOnError> => (options.client ?? client).delete<DeleteBrowserSessionResponses, DeleteBrowserSessionErrors, ThrowOnError>({ url: '/browser-sessions/{session_id}', ...options });
 
 /**
  * List Sandboxes

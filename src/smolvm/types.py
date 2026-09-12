@@ -814,6 +814,7 @@ class BrowserSessionConfig(BaseModel):
     viewport: BrowserViewport | None = None
     record_video: bool = False
     allow_downloads: bool = True
+    internet_settings: InternetSettings | None = None
     network_policy_id: str | None = None
     env_vars: dict[str, str] = {}
     workspace_mounts: list[WorkspaceMount] = []
