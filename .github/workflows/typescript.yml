@@ -66,6 +66,7 @@ jobs:
       - name: Verify tag and attach checksummed package
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           archive="$(find . -name 'celestoai-smolvm-*.tgz' -print -quit)"
           version="$(tar -xOf "$archive" package/package.json | node -e "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>console.log(JSON.parse(s).version))")"
