@@ -27,6 +27,8 @@ This source-checkout example uses `file:../../ts` so it can exercise the unrelea
 (cd ../../ts && npm install && npm run build)
 ```
 
+On macOS, the runtime wrapper uses the ARM64 Linux guest-agent binary pinned and checksum-verified by this SmolVM checkout. This avoids requiring a system-wide Linux cross-linker just to run the example.
+
 Before publishing the example, replace the file dependency with an immutable `@celestoai/smolvm` release containing `SmolVM.browsers.create()`.
 
 ## Architecture
