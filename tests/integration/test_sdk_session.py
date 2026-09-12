@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import selectors
 import signal
 import subprocess
 import sys
@@ -20,6 +21,27 @@ pytest.importorskip("fastapi")
 pytest.importorskip("uvicorn")
 
 from smolvm.server.session import _read_handshake
+
+
+def _read_json_line(process: subprocess.Popen[str], *, timeout: float = 10) -> dict:
+    """Read one bounded readiness record from a child process."""
+    assert process.stdout is not None
+    selector = selectors.DefaultSelector()
+    try:
+        selector.register(process.stdout, selectors.EVENT_READ)
+        if not selector.select(timeout):
+            raise AssertionError(f"SDK session did not become ready within {timeout:g} seconds")
+    finally:
+        selector.close()
+    line = process.stdout.readline()
+    if not line:
+        stderr = (
+            process.stderr.read()
+            if process.stderr is not None and process.poll() is not None
+            else ""
+        )
+        raise AssertionError(f"SDK session exited without a readiness record: {stderr.strip()}")
+    return json.loads(line)
 
 
 @pytest.mark.parametrize("payload", [[], "token", 1, None])
@@ -51,37 +73,37 @@ def test_sdk_session_authenticates_and_exits_when_control_pipe_closes() -> None:
     os.close(read_fd)
     token = "a" * 43
     try:
-        os.write(
-            write_fd,
-            f"{json.dumps({'protocol_version': 1, 'token': token})}\n".encode(),
-        )
-        assert process.stdout is not None
-        readiness_line = process.stdout.readline()
-        if not readiness_line:
-            assert process.stderr is not None
-            pytest.fail(process.stderr.read())
-        ready = json.loads(readiness_line)
-        assert ready == {
-            "type": "smolvm.sdk.ready",
-            "protocol_version": 1,
-            "host": "127.0.0.1",
-            "port": ready["port"],
-        }
-        url = f"http://127.0.0.1:{ready['port']}/sdk/v1/capabilities"
+        try:
+            os.write(
+                write_fd,
+                f"{json.dumps({'protocol_version': 1, 'token': token})}\n".encode(),
+            )
+            ready = _read_json_line(process)
+            assert ready == {
+                "type": "smolvm.sdk.ready",
+                "protocol_version": 1,
+                "host": "127.0.0.1",
+                "port": ready["port"],
+            }
+            url = f"http://127.0.0.1:{ready['port']}/sdk/v1/capabilities"
 
-        with pytest.raises(urllib.error.HTTPError) as unauthorized:
-            urllib.request.urlopen(url, timeout=5)
-        assert unauthorized.value.code == 401
+            with pytest.raises(urllib.error.HTTPError) as unauthorized:
+                urllib.request.urlopen(url, timeout=5)
+            assert unauthorized.value.code == 401
 
-        request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-        with urllib.request.urlopen(request, timeout=5) as response:
-            payload = json.load(response)
-        assert payload["protocol_version"] == 1
-        assert "sandbox.create" in payload["capabilities"]
+            request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+            with urllib.request.urlopen(request, timeout=5) as response:
+                payload = json.load(response)
+            assert payload["protocol_version"] == 1
+            assert "sandbox.create" in payload["capabilities"]
+        finally:
+            os.close(write_fd)
+
+        assert process.wait(timeout=10) == 0
     finally:
-        os.close(write_fd)
-
-    assert process.wait(timeout=10) == 0
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
 
 
 def test_sdk_session_exits_after_hard_parent_termination() -> None:
@@ -117,12 +139,7 @@ time.sleep(60)
     )
     server_pid: int | None = None
     try:
-        assert parent.stdout is not None
-        line = parent.stdout.readline()
-        if not line:
-            assert parent.stderr is not None
-            pytest.fail(parent.stderr.read())
-        record = json.loads(line)
+        record = _read_json_line(parent)
         server_pid = record["server_pid"]
         ready = record["ready"]
         url = f"http://127.0.0.1:{ready['port']}/sdk/v1/capabilities"

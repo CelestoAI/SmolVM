@@ -43,6 +43,7 @@ from smolvm.server.models import (
 
 logger = logging.getLogger(__name__)
 _MAX_FILE_BYTES = 16 * 1024 * 1024
+_DOWNLOAD_EVENT_INTERVAL_SECONDS = 1.0
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -87,6 +88,43 @@ def _command_with_context(body: ExecRequest) -> tuple[str, Literal["login", "raw
     command = f"env {environment} {body.command}" if environment else body.command
     pieces.append(command)
     return f"sh -c {shlex.quote(' && '.join(pieces))}", "raw"
+
+
+class _DownloadProgressEvents:
+    """Coalesce chunk callbacks into useful human-scale progress events."""
+
+    def __init__(self, interval: float = _DOWNLOAD_EVENT_INTERVAL_SECONDS) -> None:
+        self._interval = interval
+        self._received: dict[str, int] = {}
+        self._last_published: dict[str, float] = {}
+        self._completed: set[str] = set()
+
+    def update(
+        self,
+        label: str,
+        chunk: int,
+        total: int | None,
+        *,
+        now: float | None = None,
+    ) -> dict[str, object] | None:
+        received = self._received.get(label, 0) + chunk
+        self._received[label] = received
+        if label in self._completed:
+            return None
+        timestamp = time.monotonic() if now is None else now
+        final = total is not None and received >= total
+        last_published = self._last_published.get(label)
+        if not final and last_published is not None and timestamp - last_published < self._interval:
+            return None
+        self._last_published[label] = timestamp
+        if final:
+            self._completed.add(label)
+        return {
+            "type": "image.download",
+            "image": label,
+            "receivedBytes": received,
+            **({"totalBytes": total} if total is not None else {}),
+        }
 
 
 def create_app(*, auth_token: str | None = None) -> FastAPI:
@@ -220,21 +258,16 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
         if network["mode"] != "open":
             values["internet_settings"] = network
         sandbox: SmolVM | None = None
-        downloaded: dict[str, int] = {}
+        download_events = _DownloadProgressEvents()
 
         def on_download(label: str, chunk: int, total: int | None) -> None:
-            downloaded[label] = downloaded.get(label, 0) + chunk
-            publish(
-                {
-                    "type": "image.download",
-                    "image": label,
-                    "receivedBytes": downloaded[label],
-                    **({"totalBytes": total} if total is not None else {}),
-                }
-            )
+            event = download_events.update(label, chunk, total)
+            if event is not None:
+                publish(event)
 
         try:
             sandbox = SmolVM(**values, on_download=on_download)
+            sandboxes[sandbox.vm_id] = sandbox
             sandbox.start()
         except (ValueError, SmolVMError) as exc:
             if sandbox is not None:
@@ -242,6 +275,7 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
                     sandbox.delete()
                 with suppress(Exception):
                     sandbox.close()
+                sandboxes.pop(sandbox.vm_id, None)
             code = (
                 "image_download_failed"
                 if isinstance(exc, ImageError)
@@ -254,7 +288,6 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
                 code,
                 f"Could not create the sandbox: {exc}. Fix the options and try again.",
             ) from exc
-        sandboxes[sandbox.vm_id] = sandbox
         return SandboxResponse(id=sandbox.vm_id, status=sandbox.status)
 
     @app.get("/sandboxes", response_model=list[SandboxResponse], operation_id="listSandboxes")

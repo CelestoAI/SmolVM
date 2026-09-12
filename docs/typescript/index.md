@@ -36,6 +36,8 @@ try {
 
 `sandbox.delete()` and `smolvm.close()` are idempotent. `Symbol.asyncDispose` is also installed when the running Node version supports it, but the alpha documentation uses `try/finally` for compatibility and clarity.
 
+The first sandbox may need to download an image. Creation has a 10-minute deadline by default; set `createTimeoutMs` on `SmolVM` when a slower connection needs more time.
+
 ## Run commands
 
 Pass an argv array when every argument is already known. It avoids adding an extra login-shell wrapper:
@@ -110,6 +112,8 @@ console.log(await smolvm.diagnose());
 ```
 
 Diagnostics contain versions, platform support, and protocol compatibility. They never include the bridge credential. Construct the client with `{ debug: true }` to retain non-enumerable error causes during local development.
+
+If the installed runtime predates TypeScript SDK sessions, startup fails with `protocol_incompatible` and points to the installer command instead of reporting a generic bridge crash.
 
 ## Use in CI
 

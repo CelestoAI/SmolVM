@@ -104,6 +104,24 @@ export class Sandbox implements SandboxClient {
     return this.currentStatus;
   }
 
+  private async closeSessionToConfirmStop(): Promise<{
+    sessionClosed: boolean;
+    cleanupCause?: unknown;
+  }> {
+    try {
+      await this.transport.close();
+      return { sessionClosed: true };
+    } catch (cleanupCause) {
+      return { sessionClosed: false, cleanupCause };
+    }
+  }
+
+  private markDeleted(): void {
+    this.currentStatus = "deleted";
+    this.release(this);
+    this.emit({ type: "sandbox.deleted", sandboxId: this.id });
+  }
+
   async exec(command: string | readonly string[], options: ExecOptions = {}): Promise<ExecResult> {
     if (this.currentStatus === "deleted") {
       throw new SmolVMError("transport_failed", `Sandbox '${this.id}' has been deleted.`, {
@@ -145,24 +163,24 @@ export class Sandbox implements SandboxClient {
     } catch (cause) {
       if (cause instanceof SmolVMError && cause.code === "command_timeout") {
         const sandboxDeleted = cause.actual?.sandboxDeleted === true;
-        let sessionClosed = false;
-        if (!sandboxDeleted) {
-          await this.transport.close();
-          sessionClosed = true;
-        }
-        this.currentStatus = "deleted";
-        this.release(this);
-        this.emit({ type: "sandbox.deleted", sandboxId: this.id });
+        const cleanup = sandboxDeleted
+          ? { sessionClosed: false }
+          : await this.closeSessionToConfirmStop();
+        if (sandboxDeleted || cleanup.sessionClosed) this.markDeleted();
         throw new SmolVMError(
           "command_timeout",
           sandboxDeleted
             ? `Command timed out and sandbox '${this.id}' was deleted to confirm it stopped.`
-            : "Command timed out and the SDK session was closed to confirm it stopped.",
+            : cleanup.sessionClosed
+              ? "Command timed out and the SDK session was closed to confirm it stopped."
+              : "Command timed out, but SmolVM could not confirm that it stopped; call smolvm.close() again.",
           {
             operation: "sandbox.exec",
             sandboxId: this.id,
-            actual: { sandboxDeleted, sessionClosed },
-            cause,
+            actual: { sandboxDeleted, sessionClosed: cleanup.sessionClosed },
+            cause: cleanup.cleanupCause === undefined
+              ? cause
+              : new AggregateError([cause, cleanup.cleanupCause], "Command timeout cleanup failed"),
             debug: this.debug,
           },
         );
@@ -175,14 +193,15 @@ export class Sandbox implements SandboxClient {
         await this.transport.request<void>(`/sandboxes/${encodeURIComponent(this.id)}/cancel`, { method: "POST" });
         sandboxDeleted = true;
       } catch {
-        await this.transport.close();
-        sessionClosed = true;
+        const cleanup = await this.closeSessionToConfirmStop();
+        sessionClosed = cleanup.sessionClosed;
       }
-      this.currentStatus = "deleted";
-      this.release(this);
+      if (sandboxDeleted || sessionClosed) this.markDeleted();
       throw new SmolVMError("command_aborted", sandboxDeleted
         ? `Command was aborted and sandbox '${this.id}' was deleted to confirm it stopped.`
-        : "Command was aborted and the SDK session was closed to confirm it stopped.", {
+        : sessionClosed
+          ? "Command was aborted and the SDK session was closed to confirm it stopped."
+          : "Command was aborted, but SmolVM could not confirm that it stopped; call smolvm.close() again.", {
         operation: "sandbox.exec",
         sandboxId: this.id,
         actual: { sandboxDeleted, sessionClosed },

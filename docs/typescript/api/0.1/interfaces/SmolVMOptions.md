@@ -10,6 +10,14 @@ Configure runtime startup, lifecycle events, debugging, or a test transport.
 
 ## Properties
 
+### createTimeoutMs?
+
+> `optional` **createTimeoutMs?**: `number`
+
+Time allowed to download an image and create a sandbox.
+
+***
+
 ### debug?
 
 > `optional` **debug?**: `boolean`

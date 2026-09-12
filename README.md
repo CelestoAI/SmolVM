@@ -124,19 +124,23 @@ npm install --save-dev tsx
 ```ts
 import { SmolVM } from "@celestoai/smolvm";
 
-const smolvm = new SmolVM({ onEvent: (event) => console.log(event.type) });
-const sandbox = await smolvm.sandboxes.create({ network: { mode: "off" } });
+async function main() {
+  const smolvm = new SmolVM({ onEvent: (event) => console.log(event.type) });
+  const sandbox = await smolvm.sandboxes.create({ network: { mode: "off" } });
 
-try {
-  await sandbox.files.write("/workspace/input.txt", "hello");
-  const result = await sandbox.exec(
-    ["sh", "-c", "tr a-z A-Z < /workspace/input.txt"],
-    { timeoutMs: 30_000 },
-  );
-  console.log(result.stdout);
-} finally {
-  await smolvm.close();
+  try {
+    await sandbox.files.write("/workspace/input.txt", "hello");
+    const result = await sandbox.exec(
+      ["sh", "-c", "tr a-z A-Z < /workspace/input.txt"],
+      { timeoutMs: 30_000 },
+    );
+    console.log(result.stdout);
+  } finally {
+    await smolvm.close();
+  }
 }
+
+main().catch((error) => { console.error(error); process.exitCode = 1; });
 ```
 
 Run it with `npx tsx quickstart.ts`. See the [TypeScript guide](docs/typescript/index.md) for files, network rules, cancellation, diagnostics, CI, and the current alpha limits.

@@ -65,10 +65,12 @@ export class SmolVM implements SmolVMClient {
     this.onEvent = options.onEvent;
     this.debug = options.debug ?? false;
     const startupTimeoutMs = timeoutOption(options.startupTimeoutMs, 30_000, "startupTimeoutMs");
+    const createTimeoutMs = timeoutOption(options.createTimeoutMs, 600_000, "createTimeoutMs");
     const requestTimeoutMs = timeoutOption(options.requestTimeoutMs, 30_000, "requestTimeoutMs");
     this.transport = options.transport ?? new ProcessTransport(
       options.runtimePath ?? process.env.SMOLVM_RUNTIME ?? "smolvm",
       startupTimeoutMs,
+      createTimeoutMs,
       requestTimeoutMs,
       this.debug,
       (event) => this.emit(event),

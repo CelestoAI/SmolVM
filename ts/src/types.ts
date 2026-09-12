@@ -123,6 +123,8 @@ export interface SmolVMOptions {
   runtimePath?: string;
   /** Time allowed for the local bridge to start. */
   startupTimeoutMs?: number;
+  /** Time allowed to download an image and create a sandbox. */
+  createTimeoutMs?: number;
   /** Time allowed for ordinary bridge requests that do not manage a VM lifecycle operation. */
   requestTimeoutMs?: number;
   /** Retain non-enumerable causes on SmolVMError instances. */

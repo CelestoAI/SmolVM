@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { SmolVM, SmolVMError } from "../src/index.js";
+import { ProcessTransport } from "../src/transport.js";
 import type { SmolVMTransport } from "../src/index.js";
 
 class FakeTransport implements SmolVMTransport {
@@ -52,6 +57,39 @@ test("validates bridge request deadlines", () => {
     () => new SmolVM({ transport: new FakeTransport(), requestTimeoutMs: 0 }),
     /requestTimeoutMs must be an integer/,
   );
+  assert.throws(
+    () => new SmolVM({ transport: new FakeTransport(), createTimeoutMs: 0 }),
+    /createTimeoutMs must be an integer/,
+  );
+});
+
+test("sandbox creation timeout closes its SDK session", async () => {
+  const server = createServer(() => { /* Keep the request open until its deadline. */ });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  assert(address && typeof address === "object");
+  const transport = new ProcessTransport("unused", 1_000, 20, 1_000, false, () => {});
+  Object.assign(transport, {
+    startPromise: Promise.resolve(),
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    token: "test-token",
+  });
+
+  try {
+    await assert.rejects(
+      () => transport.request("/sandboxes", { method: "POST" }),
+      (error: unknown) => error instanceof SmolVMError
+        && error.code === "sandbox_create_failed"
+        && error.actual?.createTimeoutMs === 20
+        && error.actual?.sessionClosed === true,
+    );
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });
 
 test("file helpers use content endpoints and validate paths", async () => {
@@ -101,6 +139,25 @@ test("rejects an incompatible runtime protocol with a stable error", async () =>
   );
 });
 
+test("recognizes an installed runtime that predates SDK sessions", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "smolvm-old-runtime-"));
+  const runtime = join(directory, "smolvm");
+  await writeFile(runtime, "#!/bin/sh\necho \"Error: No such option '--sdk-session'.\" >&2\nexit 2\n");
+  await chmod(runtime, 0o755);
+  const transport = new ProcessTransport(runtime, 1_000, 1_000, 1_000, false, () => {});
+
+  try {
+    await assert.rejects(() => transport.request("/sdk/v1/capabilities"), (error: unknown) =>
+      error instanceof SmolVMError
+        && error.code === "protocol_incompatible"
+        && error.recoveryCommand === "curl -sSL https://celesto.ai/install.sh | bash",
+    );
+  } finally {
+    await transport.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("abort confirms sandbox deletion before rejecting", async () => {
   class AbortTransport extends FakeTransport {
     override async request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -139,6 +196,40 @@ test("timeout records the server-confirmed sandbox deletion", async () => {
       && error.actual?.sandboxDeleted === true,
   );
   assert.equal(sandbox.status, "deleted");
+});
+
+test("timeout keeps the sandbox active when session cleanup fails", async () => {
+  class CleanupFailureTransport extends FakeTransport {
+    override async request<T>(path: string, init?: RequestInit): Promise<T> {
+      if (path.endsWith("/exec")) {
+        throw new SmolVMError("command_timeout", "timed out without deletion", {
+          operation: "POST exec",
+          actual: { sandboxDeleted: false },
+        });
+      }
+      return super.request(path, init);
+    }
+
+    override async close(): Promise<void> {
+      this.closeCount += 1;
+      if (this.closeCount === 1) throw new Error("bridge still running");
+    }
+  }
+  const transport = new CleanupFailureTransport();
+  const client = new SmolVM({ transport });
+  const sandbox = await client.sandboxes.create();
+
+  await assert.rejects(() => sandbox.exec("sleep 60"), (error: unknown) =>
+    error instanceof SmolVMError
+      && error.code === "command_timeout"
+      && error.actual?.sandboxDeleted === false
+      && error.actual?.sessionClosed === false,
+  );
+  assert.equal(sandbox.status, "running");
+
+  await sandbox.delete();
+  await client.close();
+  assert.equal(transport.closeCount, 2);
 });
 
 test("a failed capability request can be retried", async () => {

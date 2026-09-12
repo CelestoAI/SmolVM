@@ -13,16 +13,20 @@ npm install --save-dev tsx
 ```ts
 import { SmolVM } from "@celestoai/smolvm";
 
-const smolvm = new SmolVM();
-const sandbox = await smolvm.sandboxes.create({ network: { mode: "off" } });
+async function main() {
+  const smolvm = new SmolVM();
+  const sandbox = await smolvm.sandboxes.create({ network: { mode: "off" } });
 
-try {
-  await sandbox.files.write("/workspace/input.txt", "hello");
-  const result = await sandbox.exec(["cat", "/workspace/input.txt"]);
-  console.log(result.stdout);
-} finally {
-  await smolvm.close();
+  try {
+    await sandbox.files.write("/workspace/input.txt", "hello");
+    const result = await sandbox.exec(["cat", "/workspace/input.txt"]);
+    console.log(result.stdout);
+  } finally {
+    await smolvm.close();
+  }
 }
+
+main().catch((error) => { console.error(error); process.exitCode = 1; });
 ```
 
 See the TypeScript guide in the source repository for lifecycle, files, network policy, cancellation, diagnostics, and CI examples.

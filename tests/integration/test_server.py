@@ -36,7 +36,7 @@ from fastapi.routing import APIRoute
 
 from smolvm import server as server_pkg
 from smolvm.exceptions import OperationTimeoutError, SmolVMError, VMNotFoundError
-from smolvm.server.app import create_app
+from smolvm.server.app import _DownloadProgressEvents, create_app
 from smolvm.server.models import (
     CreateSandboxRequest,
     DesktopResponse,
@@ -167,6 +167,27 @@ def test_create_sandbox_returns_running_state(app: FastAPI) -> None:
     assert FakeSmolVM.last_kwargs == {"os": "ubuntu", "memory": 1024}
 
 
+def test_download_progress_events_are_coalesced_but_keep_final_state() -> None:
+    progress = _DownloadProgressEvents(interval=1.0)
+
+    first = progress.update("ubuntu", 10, 100, now=1.0)
+    stale = progress.update("ubuntu", 10, 100, now=1.1)
+    current = progress.update("ubuntu", 10, 100, now=2.1)
+    final = progress.update("ubuntu", 70, 100, now=2.11)
+    duplicate_final = progress.update("ubuntu", 1, 100, now=3.0)
+
+    assert first == {
+        "type": "image.download",
+        "image": "ubuntu",
+        "receivedBytes": 10,
+        "totalBytes": 100,
+    }
+    assert stale is None
+    assert current is not None and current["receivedBytes"] == 30
+    assert final is not None and final["receivedBytes"] == 100
+    assert duplicate_final is None
+
+
 def test_get_sandbox_desktop_returns_sanitized_loopback_endpoint(app: FastAPI) -> None:
     FakeSmolVM.desktop_endpoint = DesktopEndpoint(port=5901)
     create = _handler(app, "/sandboxes", "POST")
@@ -221,6 +242,7 @@ def test_create_sandbox_maps_facade_error_to_400(app: FastAPI) -> None:
 
     assert exc_info.value.status_code == 400
     assert "image does not support SSH" in exc_info.value.detail
+    assert app.state.sandboxes == {}
 
 
 def test_get_sandbox_after_create(app: FastAPI) -> None:

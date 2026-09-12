@@ -73,6 +73,7 @@ export class ProcessTransport implements SmolVMTransport {
   constructor(
     private readonly runtimePath: string,
     private readonly startupTimeoutMs: number,
+    private readonly createTimeoutMs: number,
     private readonly requestTimeoutMs: number,
     private readonly debug: boolean,
     private readonly emit: (event: SmolVMEvent) => void,
@@ -167,20 +168,24 @@ export class ProcessTransport implements SmolVMTransport {
           debug: this.debug,
         }));
       });
-      child.once("exit", (exitCode) => {
+      child.once("close", (exitCode) => {
         if (settled) return;
         settled = true;
         this.baseUrl = undefined;
         clearTimeout(timer);
         const dependenciesMissing = stderr.includes("server dependencies are not installed");
+        const runtimeTooOld = stderr.includes("No such option '--sdk-session'")
+          || stderr.includes("No such command 'server'");
         reject(new SmolVMError(
-          dependenciesMissing ? "runtime_missing" : "bridge_exit",
+          dependenciesMissing ? "runtime_missing" : runtimeTooOld ? "protocol_incompatible" : "bridge_exit",
           dependenciesMissing
             ? "SmolVM is installed without its local SDK server dependencies."
+            : runtimeTooOld
+              ? "The installed SmolVM runtime is too old for this TypeScript SDK."
             : "The local SmolVM runtime exited before it was ready.", {
           operation: "runtime.start",
           actual: { exitCode: exitCode ?? -1 },
-          recoveryCommand: dependenciesMissing
+          recoveryCommand: dependenciesMissing || runtimeTooOld
             ? "curl -sSL https://celesto.ai/install.sh | bash"
             : "smolvm doctor --strict",
           cause: new Error(stderr.replaceAll(token, "[redacted]")),
@@ -277,12 +282,15 @@ export class ProcessTransport implements SmolVMTransport {
   private async fetch(path: string, init: RequestInit): Promise<Response> {
     await this.start();
     let response: Response;
-    const managesVmLifecycle = (path === "/sandboxes" && init.method === "POST")
-      || path.endsWith("/exec");
+    const createsSandbox = path === "/sandboxes" && init.method === "POST";
+    const executesCommand = path.endsWith("/exec");
     const callerSignal = init.signal;
-    const deadlineSignal = managesVmLifecycle
-      ? undefined
-      : AbortSignal.timeout(this.requestTimeoutMs);
+    const deadlineMs = createsSandbox
+      ? this.createTimeoutMs
+      : executesCommand
+        ? undefined
+        : this.requestTimeoutMs;
+    const deadlineSignal = deadlineMs === undefined ? undefined : AbortSignal.timeout(deadlineMs);
     const signal = callerSignal && deadlineSignal
       ? AbortSignal.any([callerSignal, deadlineSignal])
       : callerSignal ?? deadlineSignal;
@@ -297,10 +305,27 @@ export class ProcessTransport implements SmolVMTransport {
         throw cause;
       }
       if (deadlineSignal?.aborted) {
-        throw new SmolVMError("bridge_exit", "The local SmolVM bridge request timed out.", {
+        let sessionClosed = false;
+        if (createsSandbox) {
+          try {
+            await this.close();
+            sessionClosed = true;
+          } catch {
+            // The error below retains the failed cleanup outcome for the caller.
+          }
+        }
+        throw new SmolVMError(
+          createsSandbox ? "sandbox_create_failed" : "bridge_exit",
+          createsSandbox
+            ? sessionClosed
+              ? "Sandbox creation timed out and the SDK session was closed to clean up partial work."
+              : "Sandbox creation timed out, but SmolVM could not confirm cleanup; close the client again."
+            : "The local SmolVM bridge request timed out.", {
           operation: `${init.method ?? "GET"} ${path}`,
-          actual: { requestTimeoutMs: this.requestTimeoutMs },
-          recoveryCommand: "smolvm doctor --strict",
+          actual: createsSandbox
+            ? { createTimeoutMs: this.createTimeoutMs, sessionClosed }
+            : { requestTimeoutMs: this.requestTimeoutMs },
+          recoveryCommand: createsSandbox ? undefined : "smolvm doctor --strict",
           cause,
           debug: this.debug,
         });
