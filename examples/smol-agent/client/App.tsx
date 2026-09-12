@@ -32,6 +32,7 @@ export function App() {
     if (!conversation?.viewerReady || viewerPath) return;
     void api.viewerToken(conversation.id).then(({ viewerPath: path }) => setViewerPath(path)).catch((caught) => setError(String(caught)));
   }, [conversation?.viewerReady, conversation?.id, viewerPath]);
+  useEffect(() => { if (conversation?.runState === "stopped") setViewerPath(""); }, [conversation?.runState]);
 
   const submit = async (value = text) => {
     if (!conversation || !value.trim()) return;
@@ -76,9 +77,9 @@ export function App() {
         <div className="composer-wrap">{error && <div className="error">{error}</div>}<div className="composer"><textarea value={text} onChange={(event) => setText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} placeholder="Message Smol Agent…" disabled={!conversation || conversation.runState === "stopped"}/><button aria-label="Send" onClick={() => void submit()} disabled={!text.trim()}>↑</button></div><div className="hint">Enter to send · SmolVM is deleted when you stop</div></div>
       </section>
       <section className="computer-pane">
-        <div className="computer-head"><div><div className="eyebrow">Isolated workspace</div><h2>Agent’s computer</h2></div><div className="computer-actions">{conversation?.controlOwner === "human" ? <button onClick={() => void returnControl()}>Return control</button> : <button className="secondary" onClick={() => void takeControl()} disabled={!conversation?.viewerReady}>Take control</button>}</div></div>
+        <div className="computer-head"><div><div className="eyebrow">Isolated workspace</div><h2>Agent’s computer</h2></div><div className="computer-actions">{conversation?.runState !== "stopped" && (conversation?.controlOwner === "human" ? <button onClick={() => void returnControl()}>Return control</button> : <button className="secondary" onClick={() => void takeControl()} disabled={!conversation?.viewerReady}>Take control</button>)}</div></div>
         <div className="screen">
-          {viewerPath ? <iframe title="Live SmolVM browser" src={viewerPath}/> : <div className="screen-empty"><div className="orbit"><span>S</span></div><h3>{conversation?.sessionLifecycle === "starting" ? "Booting the computer…" : "The computer is asleep"}</h3><p>It starts only when the agent needs a browser.</p></div>}
+          {viewerPath ? <iframe title="Live SmolVM browser" src={viewerPath}/> : <div className="screen-empty"><div className="orbit"><span>S</span></div><h3>{conversation?.runState === "stopped" ? "Computer deleted" : conversation?.sessionLifecycle === "starting" ? "Booting the computer…" : "The computer is asleep"}</h3><p>{conversation?.runState === "stopped" ? "Start a new conversation to get a fresh VM." : "It starts only when the agent needs a browser."}</p></div>}
           {viewerPath && conversation?.controlOwner !== "human" && <div className="input-shield"><span><i></i> LIVE · Agent controlling</span><button onClick={() => void takeControl()}>Take control</button></div>}
         </div>
         <div className="activity"><div className="activity-title"><span>Live activity</span><span>{activities.length ? "Current session" : "Waiting"}</span></div>{!activities.length ? <div className="activity-empty">Browser actions will appear here.</div> : activities.map((event) => <div className="activity-row" key={event.id}><span className="activity-icon"></span><div><strong>{String(event.payload.summary ?? event.type.replaceAll(".", " "))}</strong><small>{new Date(event.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</small></div></div>)}</div>
