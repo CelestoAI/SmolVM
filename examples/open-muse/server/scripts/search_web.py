@@ -7,6 +7,12 @@ import urllib.request
 from html.parser import HTMLParser
 
 MAX_BYTES = 1024 * 1024
+USER_AGENT = " ".join(
+    [
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+        "Chrome/140.0.0.0 Safari/537.36",
+    ]
+)
 
 
 class ResultsParser(HTMLParser):
@@ -22,7 +28,7 @@ class ResultsParser(HTMLParser):
             if href.startswith("//"):
                 href = "https:" + href
             parsed = urllib.parse.urlsplit(href)
-            if parsed.hostname and parsed.hostname.endswith("duckduckgo.com"):
+            if parsed.hostname in {"duckduckgo.com", "html.duckduckgo.com"}:
                 href = urllib.parse.parse_qs(parsed.query).get("uddg", [""])[0]
             if href.startswith("https://"):
                 self.current = {"url": href, "title": ""}
@@ -58,7 +64,7 @@ def main():
     url = "https://html.duckduckgo.com/html/?" + urllib.parse.urlencode({"q": query})
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36"},
+        headers={"User-Agent": USER_AGENT},
     )
     with urllib.request.urlopen(request, timeout=10) as response:
         body = response.read(MAX_BYTES + 1)

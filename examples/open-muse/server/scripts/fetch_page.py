@@ -111,14 +111,16 @@ def main():
     else:
         parser = TextExtractor()
         parser.feed(decoded)
-        title = " ".join(parser.title_parts) or urllib.parse.urlsplit(final_url).hostname or "Untitled"
+        title = (
+            " ".join(parser.title_parts) or urllib.parse.urlsplit(final_url).hostname or "Untitled"
+        )
         text = "\n".join(parser.parts)
     text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", html.unescape(text))[:20000]
     result = {
         "url": url,
         "finalUrl": final_url,
         "title": title[:300],
-        "retrievedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "retrievedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),  # noqa: UP017
         "contentSha256": hashlib.sha256(body).hexdigest(),
         "truncated": truncated,
         "text": text,
