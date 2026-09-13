@@ -183,6 +183,7 @@ def _build_browser_vm_config(
         env_vars=browser_config.env_vars,
         port_forwards=port_forwards,
         workspace_mounts=browser_config.workspace_mounts,
+        internet_settings=browser_config.internet_settings,
         ssh_public_key=public_key_text,
     )
     return config, resolved_ssh_key_path

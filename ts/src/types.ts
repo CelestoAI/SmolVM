@@ -9,6 +9,15 @@ export type SandboxStatus =
   | "error"
   | "deleted";
 
+/** See when a browser computer is ready for commands or has stopped. A browser-session status is its current lifecycle state. */
+export type BrowserSessionStatus =
+  | "created"
+  | "starting"
+  | "ready"
+  | "stopping"
+  | "error"
+  | "deleted";
+
 /** Controls which outbound IPv4 connections a new sandbox may make. */
 export type NetworkPolicy =
   | { mode: "open" }
@@ -28,6 +37,21 @@ export interface CreateSandboxOptions {
   /** Custom local path, file URL, or remote image reference. */
   image?: string;
   /** Outbound network access. Defaults to open. */
+  network?: NetworkPolicy;
+}
+
+/** Start an isolated browser computer with the resources and live view you need. Chromium is the browser engine running inside it. */
+export interface CreateBrowserSessionOptions {
+  sessionId?: string;
+  mode?: "headless" | "live";
+  backend?: "firecracker" | "qemu" | "libkrun" | "auto";
+  profile?: { mode: "ephemeral" } | { mode: "persistent"; id: string };
+  timeoutMinutes?: number;
+  viewport?: { width: number; height: number };
+  recordVideo?: boolean;
+  allowDownloads?: boolean;
+  memoryMiB?: number;
+  diskMiB?: number;
   network?: NetworkPolicy;
 }
 
@@ -56,6 +80,10 @@ export type SmolVMEvent =
   | { type: "sandbox.starting" }
   | { type: "sandbox.ready"; sandboxId: string }
   | { type: "sandbox.deleted"; sandboxId: string }
+  | { type: "browser.starting"; sessionId: string }
+  | { type: "browser.ready"; sessionId: string; sandboxId: string }
+  | { type: "browser.stopping"; sessionId: string; sandboxId: string }
+  | { type: "browser.deleted"; sessionId: string; sandboxId: string }
   | { type: "command.started"; sandboxId: string }
   | { type: "command.completed"; sandboxId: string; result: ExecResult };
 
@@ -96,9 +124,28 @@ export interface SandboxCollection {
   create(options?: CreateSandboxOptions): Promise<SandboxClient>;
 }
 
+/** Control a ready browser computer through private automation and viewing addresses. An endpoint is a local address used to connect to that computer. */
+export interface BrowserSessionClient {
+  readonly sessionId: string;
+  readonly sandboxId: string;
+  readonly status: BrowserSessionStatus;
+  readonly cdpUrl: string;
+  readonly viewerUrl?: string;
+  readonly profileId?: string;
+  /** Run a command as the unprivileged agent user inside this browser VM. */
+  exec(command: string | readonly string[], options?: ExecOptions): Promise<ExecResult>;
+  delete(): Promise<void>;
+}
+
+/** Create browser computers that this SmolVM client will clean up. A browser session is one isolated Chromium environment. */
+export interface BrowserSessionCollection {
+  create(options?: CreateBrowserSessionOptions): Promise<BrowserSessionClient>;
+}
+
 /** The mockable client contract for creating sandboxes, diagnosing setup, and cleaning up. */
 export interface SmolVMClient {
   readonly sandboxes: SandboxCollection;
+  readonly browsers: BrowserSessionCollection;
   diagnose(): Promise<DiagnoseResult>;
   close(): Promise<void>;
 }

@@ -6,12 +6,16 @@ The SmolVM SDK lets a Node.js application create a disposable local computer, ru
 
 ## Classes
 
+- [BrowserSession](classes/BrowserSession.md)
 - [Sandbox](classes/Sandbox.md)
 - [SmolVM](classes/SmolVM.md)
 - [SmolVMError](classes/SmolVMError.md)
 
 ## Interfaces
 
+- [BrowserSessionClient](interfaces/BrowserSessionClient.md)
+- [BrowserSessionCollection](interfaces/BrowserSessionCollection.md)
+- [CreateBrowserSessionOptions](interfaces/CreateBrowserSessionOptions.md)
 - [CreateSandboxOptions](interfaces/CreateSandboxOptions.md)
 - [DiagnoseResult](interfaces/DiagnoseResult.md)
 - [ExecOptions](interfaces/ExecOptions.md)
@@ -26,6 +30,7 @@ The SmolVM SDK lets a Node.js application create a disposable local computer, ru
 
 ## Type Aliases
 
+- [BrowserSessionStatus](type-aliases/BrowserSessionStatus.md)
 - [NetworkPolicy](type-aliases/NetworkPolicy.md)
 - [SandboxStatus](type-aliases/SandboxStatus.md)
 - [SmolVMErrorCode](type-aliases/SmolVMErrorCode.md)

@@ -129,6 +129,8 @@ celerybeat.pid
 
 # Environments
 .env
+examples/open-muse/.env.local
+examples/smol-agent/.env.local
 .venv
 env/
 venv/

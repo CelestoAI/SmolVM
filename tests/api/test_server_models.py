@@ -9,6 +9,8 @@ pytest.importorskip("fastapi")
 from pydantic import ValidationError
 
 from smolvm.server.models import (
+    BrowserSessionResponse,
+    CreateBrowserSessionRequest,
     CreateSandboxRequest,
     DesktopResponse,
     ErrorResponse,
@@ -16,7 +18,7 @@ from smolvm.server.models import (
     ExecResponse,
     SandboxResponse,
 )
-from smolvm.types import VMState
+from smolvm.types import BrowserSessionState, VMState
 
 
 def test_create_request_accepts_supported_options() -> None:
@@ -54,3 +56,36 @@ def test_public_response_models_validate_and_serialize() -> None:
 def test_restricted_network_requires_an_ipv4_range() -> None:
     with pytest.raises(ValidationError):
         CreateSandboxRequest(network={"mode": "restricted", "allowed_cidrs": []})
+
+
+def test_browser_request_validates_profile_and_live_video() -> None:
+    with pytest.raises(ValidationError, match="profile_id is required"):
+        CreateBrowserSessionRequest(profile_mode="persistent")
+    with pytest.raises(ValidationError, match="record_video requires"):
+        CreateBrowserSessionRequest(record_video=True)
+    with pytest.raises(ValidationError):
+        CreateBrowserSessionRequest(session_id="Browser-Demo")
+    with pytest.raises(ValidationError):
+        CreateBrowserSessionRequest(profile_id="browser-")
+
+    request = CreateBrowserSessionRequest(
+        session_id="browser-demo",
+        mode="live",
+        backend="qemu",
+        viewport={"width": 1440, "height": 900},
+        allow_downloads=False,
+        network={"mode": "off"},
+    )
+    assert request.viewport.width == 1440
+    assert request.network.mode == "off"
+
+
+def test_browser_response_requires_ready_endpoints() -> None:
+    response = BrowserSessionResponse(
+        session_id="browser-demo",
+        sandbox_id="browser-demo",
+        status=BrowserSessionState.READY,
+        cdp_url="http://127.0.0.1:9222",
+        viewer_url="http://127.0.0.1:6080/vnc.html",
+    )
+    assert response.status is BrowserSessionState.READY

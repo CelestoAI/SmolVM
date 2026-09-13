@@ -814,6 +814,7 @@ class BrowserSessionConfig(BaseModel):
     viewport: BrowserViewport | None = None
     record_video: bool = False
     allow_downloads: bool = True
+    internet_settings: InternetSettings | None = None
     network_policy_id: str | None = None
     env_vars: dict[str, str] = {}
     workspace_mounts: list[WorkspaceMount] = []
@@ -1099,6 +1100,11 @@ class DisplaySandboxProtocol(Protocol):
     @property
     def info(self) -> BrowserSessionInfo:
         """Current persisted sandbox info."""
+        ...
+
+    @property
+    def vm(self) -> Any:
+        """Underlying VM used for session-scoped guest commands."""
         ...
 
     @property

@@ -10,6 +10,12 @@ The mockable client contract for creating sandboxes, diagnosing setup, and clean
 
 ## Properties
 
+### browsers
+
+> `readonly` **browsers**: [`BrowserSessionCollection`](BrowserSessionCollection.md)
+
+***
+
 ### sandboxes
 
 > `readonly` **sandboxes**: [`SandboxCollection`](SandboxCollection.md)

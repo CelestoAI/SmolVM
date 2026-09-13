@@ -121,6 +121,20 @@ def test_smolvm_browser_factory_starts_visible_sandbox(mock_sandbox_cls: MagicMo
     sandbox.start.assert_called_once_with(boot_timeout=90.0, on_progress=None)
 
 
+@patch("smolvm.browser._BrowserSandbox")
+def test_smolvm_browser_factory_forwards_network_policy(mock_sandbox_cls: MagicMock) -> None:
+    """Browser network restrictions should reach the underlying VM config."""
+    sandbox = MagicMock()
+    mock_sandbox_cls.return_value = sandbox
+
+    SmolVM.browser(internet_settings={"mode": "off"})
+
+    config = mock_sandbox_cls.call_args.args[0]
+    assert config.internet_settings is not None
+    assert config.internet_settings.mode == "off"
+    sandbox.start.assert_called_once_with(boot_timeout=90.0, on_progress=None)
+
+
 @patch("smolvm.browser._DesktopSandbox")
 def test_smolvm_desktop_factory_starts_visible_sandbox(mock_sandbox_cls: MagicMock) -> None:
     """SmolVM.desktop() should start a visible desktop sandbox."""
@@ -295,6 +309,7 @@ def test_build_browser_vm_config_passes_workspace_mounts_and_selects_qemu(
         session_id="browser-mounted",
         backend="auto",
         workspace_mounts=[mount],
+        internet_settings={"mode": "off"},
     )
 
     vm_config, _ = _build_browser_vm_config(
@@ -304,6 +319,8 @@ def test_build_browser_vm_config_passes_workspace_mounts_and_selects_qemu(
 
     assert vm_config.backend == "qemu"
     assert vm_config.workspace_mounts == [mount]
+    assert vm_config.internet_settings is not None
+    assert vm_config.internet_settings.mode == "off"
     assert (
         mock_builder.build_browser_rootfs.call_args.kwargs["kernel_url"]
         == "https://example.invalid/kernel.image"

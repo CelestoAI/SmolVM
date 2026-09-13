@@ -15,9 +15,17 @@ class FakeTransport implements SmolVMTransport {
 
   async request<T>(path: string, init?: RequestInit): Promise<T> {
     this.calls.push({ path, init });
-    if (path === "/sdk/v1/capabilities") return { protocol_version: 1, capabilities: ["sandbox.create", "sandbox.delete", "sandbox.exec", "files.read", "files.write", "events"] } as T;
+    if (path === "/sdk/v1/capabilities") return { protocol_version: 1, capabilities: ["sandbox.create", "sandbox.delete", "sandbox.exec", "files.read", "files.write", "browser.create", "browser.delete", "browser.endpoints", "browser.exec", "browser.events", "events"] } as T;
     if (path === "/sdk/v1/diagnostics") return { protocol_version: 1, runtime_version: "test", python_version: "3.13", platform: "darwin-arm64", supported: true, problems: [] } as T;
     if (path === "/sandboxes") return { id: "sbx-test", status: "running" } as T;
+    if (path === "/browser-sessions") return {
+      session_id: "browser-test",
+      sandbox_id: "vm-browser-test",
+      status: "ready",
+      cdp_url: "http://127.0.0.1:9222",
+      viewer_url: "http://127.0.0.1:6080/vnc.html",
+      profile_id: null,
+    } as T;
     if (path.endsWith("/exec")) return { exit_code: 7, stdout: "out", stderr: "err", duration_ms: 12 } as T;
     if (path.includes("/files") && init?.method === "PUT") {
       const body = init.body;
@@ -50,6 +58,96 @@ test("creates Ubuntu by default and maps command results", async () => {
   assert.equal(execBody.command, "'printf' '%s' 'a b'");
   assert.deepEqual(result, { ok: false, exitCode: 7, stdout: "out", stderr: "err", durationMs: 12 });
   assert.deepEqual(events, ["sandbox.starting", "sandbox.ready", "command.started", "command.completed"]);
+});
+
+test("creates a ready live browser session and deletes it once", async () => {
+  const transport = new FakeTransport();
+  const events: string[] = [];
+  const client = new SmolVM({ transport, onEvent: (event) => events.push(event.type) });
+  const browser = await client.browsers.create({
+    sessionId: "browser-test",
+    mode: "live",
+    backend: "qemu",
+    viewport: { width: 1440, height: 900 },
+    allowDownloads: false,
+    network: { mode: "off" },
+  });
+
+  const body = JSON.parse(String(transport.calls.find((call) => call.path === "/browser-sessions")?.init?.body));
+  assert.deepEqual(body.viewport, { width: 1440, height: 900 });
+  assert.deepEqual(body.network, { mode: "off" });
+  assert.equal(body.allow_downloads, false);
+  assert.equal(browser.status, "ready");
+  assert.equal(browser.cdpUrl, "http://127.0.0.1:9222");
+  assert.equal(browser.viewerUrl, "http://127.0.0.1:6080/vnc.html");
+
+  const execResult = await browser.exec(["printf", "%s", "hello world"]);
+  const execBody = JSON.parse(String(transport.calls.find((call) => call.path === "/browser-sessions/browser-test/exec")?.init?.body));
+  assert.equal(execBody.shell, "raw");
+  assert.equal(execBody.command, "'printf' '%s' 'hello world'");
+  assert.deepEqual(execResult, { ok: false, exitCode: 7, stdout: "out", stderr: "err", durationMs: 12 });
+
+  const deletion = browser.delete();
+  assert.equal(browser.status, "stopping");
+  await assert.rejects(() => browser.exec("echo too-late"), /not ready/);
+  await Promise.all([deletion, browser.delete()]);
+  assert.equal(browser.status, "deleted");
+  assert.equal(transport.calls.filter((call) => call.path === "/browser-sessions/browser-test" && call.init?.method === "DELETE").length, 1);
+  assert.deepEqual(events, ["browser.starting", "browser.ready", "command.started", "command.completed", "browser.stopping", "browser.deleted"]);
+});
+
+test("browser timeout records the server-confirmed session deletion", async () => {
+  class BrowserTimeoutTransport extends FakeTransport {
+    override async request<T>(path: string, init?: RequestInit): Promise<T> {
+      if (path.includes("/browser-sessions/") && path.endsWith("/exec")) {
+        throw new SmolVMError("command_timeout", "timed out and deleted", {
+          operation: "POST browser exec",
+          actual: { sandboxDeleted: true },
+        });
+      }
+      return super.request(path, init);
+    }
+  }
+  const events: string[] = [];
+  const client = new SmolVM({
+    transport: new BrowserTimeoutTransport(),
+    onEvent: (event) => events.push(event.type),
+  });
+  const browser = await client.browsers.create();
+
+  await assert.rejects(
+    () => browser.exec("sleep 60"),
+    (error: unknown) => error instanceof SmolVMError
+      && error.code === "command_timeout"
+      && error.actual?.sandboxDeleted === true,
+  );
+
+  assert.equal(browser.status, "deleted");
+  assert.equal(events.at(-1), "browser.deleted");
+  await assert.rejects(
+    () => browser.exec("echo retry"),
+    (error: unknown) => error instanceof SmolVMError && error.code === "browser_deleted",
+  );
+});
+
+test("browser sessions require browser runtime capabilities without breaking sandboxes", async () => {
+  class SandboxOnlyTransport extends FakeTransport {
+    override async request<T>(path: string, init?: RequestInit): Promise<T> {
+      if (path === "/sdk/v1/capabilities") return {
+        protocol_version: 1,
+        capabilities: ["sandbox.create", "sandbox.delete", "sandbox.exec", "files.read", "files.write", "events"],
+      } as T;
+      return super.request(path, init);
+    }
+  }
+  const client = new SmolVM({ transport: new SandboxOnlyTransport() });
+  assert.equal((await client.sandboxes.create()).status, "running");
+  await assert.rejects(
+    () => client.browsers.create(),
+    (error: unknown) => error instanceof SmolVMError
+      && error.code === "protocol_incompatible"
+      && String(error.actual?.missingCapabilities).includes("browser.create"),
+  );
 });
 
 test("validates bridge request deadlines", () => {

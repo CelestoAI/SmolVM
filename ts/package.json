@@ -34,7 +34,7 @@
     "test:unit": "tsx --test test/*.test.ts",
     "test:contracts": "tsc --noEmit --target es2022 --module esnext --moduleResolution bundler --strict --skipLibCheck fixtures/*.ts",
     "test:examples": "tsc --noEmit --target es2022 --module nodenext --moduleResolution nodenext --strict --skipLibCheck examples/*.ts scripts/release-benchmark.ts",
-    "docs": "typedoc",
+    "docs": "typedoc && node scripts/fix-typedoc-order.mjs",
     "benchmark:release": "tsx scripts/release-benchmark.ts",
     "test": "npm run typecheck && npm run test:unit && npm run test:contracts && npm run build && npm run test:examples"
   },
