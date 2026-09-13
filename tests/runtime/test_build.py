@@ -483,6 +483,12 @@ class TestBrowserImageBuilder:
             assert "process.exit(1)" in kwargs["extra_files"]["smolvm-browser-runner"]
             assert "process.exitCode" not in kwargs["extra_files"]["smolvm-browser-runner"]
             helper_script = kwargs["extra_files"]["smolvm-browser-session"]
+            ownership_command = helper_script.split("chown -R browser:browser", 1)[1].split(
+                "if [", 1
+            )[0]
+            assert '"$profile_dir" "$download_dir" "$artifacts_dir"' in ownership_command
+            assert '"$RUNTIME_DIR"' not in ownership_command
+            assert '"$LOG_DIR"' not in ownership_command
             assert "127.0.0.1:5900" in helper_script
             assert '"${mode}" = "desktop"' in helper_script
             assert "start_cdp_proxy" in helper_script

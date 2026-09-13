@@ -23,7 +23,7 @@ export interface BrowserSessionResponse {
   profile_id?: string | null;
 }
 
-/** A ready browser sandbox owned by one SmolVM client. */
+/** Run commands in an isolated browser computer owned by one SmolVM client. A browser session is the disposable Chromium environment and its private connection endpoints. */
 export class BrowserSession implements BrowserSessionClient {
   readonly sessionId: string;
   readonly sandboxId: string;
@@ -69,8 +69,8 @@ export class BrowserSession implements BrowserSessionClient {
   }
 
   async exec(command: string | readonly string[], options: ExecOptions = {}): Promise<ExecResult> {
-    if (this.currentStatus === "deleted") {
-      throw new SmolVMError("browser_deleted", `Browser session '${this.sessionId}' has been deleted.`, {
+    if (this.currentStatus !== "ready") {
+      throw new SmolVMError("browser_deleted", `Browser session '${this.sessionId}' is not ready.`, {
         operation: "browser.exec", sandboxId: this.sandboxId,
       });
     }

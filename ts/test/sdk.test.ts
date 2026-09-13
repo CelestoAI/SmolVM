@@ -87,7 +87,10 @@ test("creates a ready live browser session and deletes it once", async () => {
   assert.equal(execBody.command, "'printf' '%s' 'hello world'");
   assert.deepEqual(execResult, { ok: false, exitCode: 7, stdout: "out", stderr: "err", durationMs: 12 });
 
-  await Promise.all([browser.delete(), browser.delete()]);
+  const deletion = browser.delete();
+  assert.equal(browser.status, "stopping");
+  await assert.rejects(() => browser.exec("echo too-late"), /not ready/);
+  await Promise.all([deletion, browser.delete()]);
   assert.equal(browser.status, "deleted");
   assert.equal(transport.calls.filter((call) => call.path === "/browser-sessions/browser-test" && call.init?.method === "DELETE").length, 1);
   assert.deepEqual(events, ["browser.starting", "browser.ready", "command.started", "command.completed", "browser.stopping", "browser.deleted"]);

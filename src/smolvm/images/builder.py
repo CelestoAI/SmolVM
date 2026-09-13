@@ -1062,7 +1062,7 @@ start_session() {
     mkdir -p "$profile_dir" "$download_dir" "$artifacts_dir" "$RUNTIME_DIR" "$LOG_DIR"
     write_preferences "$profile_dir" "$download_dir"
     chown -R browser:browser \
-        "$profile_dir" "$download_dir" "$artifacts_dir" "$RUNTIME_DIR" "$LOG_DIR"
+        "$profile_dir" "$download_dir" "$artifacts_dir"
     if [ "${downloads_enabled}" = "1" ]; then
         chmod 700 "$download_dir"
     else

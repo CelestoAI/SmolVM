@@ -11,6 +11,8 @@ from pydantic import BaseModel, Field, model_validator
 
 from smolvm.types import BrowserSessionState, CommandResult, VMState
 
+_IDENTIFIER_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$|^[a-z0-9]$"
+
 
 class OpenNetworkPolicy(BaseModel):
     """Allow all outbound network access."""
@@ -85,11 +87,11 @@ class BrowserViewportRequest(BaseModel):
 class CreateBrowserSessionRequest(BaseModel):
     """Create and boot a browser session owned by one SDK client."""
 
-    session_id: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$")
+    session_id: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
     mode: Literal["headless", "live"] = "headless"
     backend: Literal["firecracker", "qemu", "libkrun", "auto"] = "auto"
     profile_mode: Literal["ephemeral", "persistent"] = "ephemeral"
-    profile_id: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$")
+    profile_id: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
     timeout_minutes: int = Field(default=30, ge=1, le=240)
     viewport: BrowserViewportRequest = Field(default_factory=BrowserViewportRequest)
     record_video: bool = False

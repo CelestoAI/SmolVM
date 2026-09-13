@@ -6,7 +6,7 @@
 
 # Interface: CreateBrowserSessionOptions
 
-Configure an isolated Chromium session and its optional live viewer.
+Start an isolated browser computer with the resources and live view you need. Chromium is the browser engine running inside it.
 
 ## Properties
 

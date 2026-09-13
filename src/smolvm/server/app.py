@@ -309,8 +309,16 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
                 memory_mb=body.memory,
                 disk_size_mb=body.disk_size,
             )
-            browser_sessions[session_id] = browser
             result = browser_response(browser)
+            browser_sessions[session_id] = browser
+        except HTTPException:
+            browser_sessions.pop(session_id, None)
+            if browser is not None:
+                with suppress(Exception):
+                    browser.delete()
+                with suppress(Exception):
+                    browser.close()
+            raise
         except (ValueError, SmolVMError) as exc:
             if browser is not None:
                 with suppress(Exception):

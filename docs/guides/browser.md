@@ -56,6 +56,12 @@ with SmolVM.browser() as browser:
 
 The source checkout contains the browser-session API planned for the next TypeScript preview. Until that preview is published, install the local `ts/` package rather than `0.1.0-preview.1`.
 
+Install the browser automation client before running the example:
+
+```bash
+npm install playwright-core
+```
+
 ```ts
 import { chromium } from "playwright-core";
 import { SmolVM } from "@celestoai/smolvm";

@@ -63,6 +63,10 @@ def test_browser_request_validates_profile_and_live_video() -> None:
         CreateBrowserSessionRequest(profile_mode="persistent")
     with pytest.raises(ValidationError, match="record_video requires"):
         CreateBrowserSessionRequest(record_video=True)
+    with pytest.raises(ValidationError):
+        CreateBrowserSessionRequest(session_id="Browser-Demo")
+    with pytest.raises(ValidationError):
+        CreateBrowserSessionRequest(profile_id="browser-")
 
     request = CreateBrowserSessionRequest(
         session_id="browser-demo",

@@ -6,7 +6,7 @@
 
 # Class: BrowserSession
 
-A ready browser sandbox owned by one SmolVM client.
+Run commands in an isolated browser computer owned by one SmolVM client. A browser session is the disposable Chromium environment and its private connection endpoints.
 
 ## Implements
 

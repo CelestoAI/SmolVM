@@ -94,6 +94,7 @@ class FakeSmolVM:
     downloaded_files: list[str] = []
     file_size_override: int | None = None
     close_calls: int = 0
+    browser_endpoint_available = True
 
     def __init__(self, **kwargs: object) -> None:
         FakeSmolVM.last_kwargs = {
@@ -105,10 +106,13 @@ class FakeSmolVM:
     @classmethod
     def browser(cls, **kwargs: object) -> FakeBrowserSession:
         cls.last_kwargs = dict(kwargs)
-        return FakeBrowserSession(
+        browser = FakeBrowserSession(
             str(kwargs.get("session_id") or "browser-test"),
             kwargs.get("profile_id") if isinstance(kwargs.get("profile_id"), str) else None,
         )
+        if not cls.browser_endpoint_available:
+            browser.cdp_url = None
+        return browser
 
     from_id_error: Exception | None = None
 
@@ -193,6 +197,7 @@ def app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     FakeSmolVM.downloaded_files = []
     FakeSmolVM.file_size_override = None
     FakeSmolVM.close_calls = 0
+    FakeSmolVM.browser_endpoint_available = True
     FakeBrowserSession.delete_calls = 0
     FakeBrowserSession.close_calls = 0
     monkeypatch.setattr("smolvm.server.app.SmolVM", FakeSmolVM)
@@ -239,6 +244,19 @@ def test_create_and_delete_live_browser_session(app: FastAPI) -> None:
     assert FakeBrowserSession.delete_calls == 1
     assert FakeBrowserSession.close_calls == 1
     assert delete("browser-demo").status_code == 204
+
+
+def test_failed_browser_response_closes_and_does_not_register_session(app: FastAPI) -> None:
+    create = _handler(app, "/browser-sessions", "POST")
+    FakeSmolVM.browser_endpoint_available = False
+
+    with pytest.raises(HTTPException) as exc_info:
+        create(CreateBrowserSessionRequest(session_id="browser-demo"))
+
+    assert exc_info.value.status_code == 409
+    assert app.state.browser_sessions == {}
+    assert FakeBrowserSession.delete_calls == 1
+    assert FakeBrowserSession.close_calls == 1
 
 
 def test_browser_command_runs_as_unprivileged_agent(app: FastAPI) -> None:

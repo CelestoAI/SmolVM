@@ -6,7 +6,7 @@
 
 # Interface: BrowserSessionClient
 
-A ready Chromium session with private host-side automation and viewer endpoints.
+Control a ready browser computer through private automation and viewing addresses. An endpoint is a local address used to connect to that computer.
 
 ## Properties
 

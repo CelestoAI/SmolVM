@@ -6,7 +6,7 @@
 
 # Interface: BrowserSessionCollection
 
-Creates browser sessions owned by one SmolVM client.
+Create browser computers that this SmolVM client will clean up. A browser session is one isolated Chromium environment.
 
 ## Methods
 

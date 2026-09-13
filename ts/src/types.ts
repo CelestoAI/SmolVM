@@ -9,7 +9,7 @@ export type SandboxStatus =
   | "error"
   | "deleted";
 
-/** Lifecycle state of a browser session owned by this SDK client. */
+/** See when a browser computer is ready for commands or has stopped. A browser-session status is its current lifecycle state. */
 export type BrowserSessionStatus =
   | "created"
   | "starting"
@@ -40,7 +40,7 @@ export interface CreateSandboxOptions {
   network?: NetworkPolicy;
 }
 
-/** Configure an isolated Chromium session and its optional live viewer. */
+/** Start an isolated browser computer with the resources and live view you need. Chromium is the browser engine running inside it. */
 export interface CreateBrowserSessionOptions {
   sessionId?: string;
   mode?: "headless" | "live";
@@ -124,7 +124,7 @@ export interface SandboxCollection {
   create(options?: CreateSandboxOptions): Promise<SandboxClient>;
 }
 
-/** A ready Chromium session with private host-side automation and viewer endpoints. */
+/** Control a ready browser computer through private automation and viewing addresses. An endpoint is a local address used to connect to that computer. */
 export interface BrowserSessionClient {
   readonly sessionId: string;
   readonly sandboxId: string;
@@ -137,7 +137,7 @@ export interface BrowserSessionClient {
   delete(): Promise<void>;
 }
 
-/** Creates browser sessions owned by one SmolVM client. */
+/** Create browser computers that this SmolVM client will clean up. A browser session is one isolated Chromium environment. */
 export interface BrowserSessionCollection {
   create(options?: CreateBrowserSessionOptions): Promise<BrowserSessionClient>;
 }
