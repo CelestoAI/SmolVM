@@ -30,6 +30,16 @@ Entry point for creating disposable local sandboxes.
 
 ## Properties
 
+### browsers
+
+> `readonly` **browsers**: [`BrowserSessionCollection`](../interfaces/BrowserSessionCollection.md)
+
+#### Implementation of
+
+[`SmolVMClient`](../interfaces/SmolVMClient.md).[`browsers`](../interfaces/SmolVMClient.md#browsers)
+
+***
+
 ### sandboxes
 
 > `readonly` **sandboxes**: [`SandboxCollection`](../interfaces/SandboxCollection.md)

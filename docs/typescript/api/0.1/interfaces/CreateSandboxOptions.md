@@ -52,6 +52,6 @@ Outbound network access. Defaults to open.
 
 ### os?
 
-> `optional` **os?**: `"alpine"` \| `"ubuntu"`
+> `optional` **os?**: `"ubuntu"` \| `"alpine"`
 
 Guest operating system. Defaults to Ubuntu.
