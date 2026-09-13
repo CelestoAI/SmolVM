@@ -9,7 +9,9 @@ export function App() {
   const [error, setError] = useState("");
   const [viewerPath, setViewerPath] = useState("");
   const [controlEpoch, setControlEpoch] = useState("");
+  const [approvalPending, setApprovalPending] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
+  const approvalPendingRef = useRef(false);
 
   const refresh = async (id = conversation?.id) => { if (id) setConversation(await api.getConversation(id)); };
   useEffect(() => {
@@ -24,7 +26,7 @@ export function App() {
         source = new EventSource(`/api/conversations/${created.id}/events`);
         source.onmessage = () => void refresh(created.id);
         source.addEventListener("message.completed", () => void refresh(created.id));
-        for (const name of ["browser.starting", "browser.ready", "agent.started", "agent.completed", "agent.failed", "approval.requested", "approval.resolved", "approval.invalidated", "control.changed", "cart.updated", "conversation.stopped"]) source.addEventListener(name, () => void refresh(created.id));
+        for (const name of ["browser.starting", "browser.ready", "agent.started", "agent.completed", "agent.failed", "tool.failed", "approval.requested", "approval.resolved", "approval.invalidated", "control.changed", "cart.updated", "conversation.stopped"]) source.addEventListener(name, () => void refresh(created.id));
       } catch (caught) { if (!cancelled) setError(caught instanceof Error ? caught.message : "Could not start OpenMuse."); }
     })();
     return () => { cancelled = true; source?.close(); };
@@ -53,12 +55,22 @@ export function App() {
     catch (caught) { setError(caught instanceof Error ? caught.message : "Could not return control."); }
   };
   const resolve = async (approved: boolean) => {
-    if (!conversation?.pendingApproval) return;
-    try { setConversation(await api.resolveApproval(conversation.id, conversation.pendingApproval, approved)); }
-    catch (caught) { setError(caught instanceof Error ? caught.message : "Approval failed."); }
+    if (!conversation?.pendingApproval || approvalPendingRef.current) return;
+    const { id, pendingApproval } = conversation;
+    approvalPendingRef.current = true;
+    setApprovalPending(true);
+    setError("");
+    try { setConversation(await api.resolveApproval(id, pendingApproval, approved)); }
+    catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Approval failed.");
+      await refresh(id).catch(() => undefined);
+    } finally {
+      approvalPendingRef.current = false;
+      setApprovalPending(false);
+    }
   };
 
-  const busy = conversation?.runState === "model_turn" || conversation?.runState === "tool_action";
+  const busy = approvalPending || conversation?.runState === "model_turn" || conversation?.runState === "tool_action";
   const status = conversation?.runState === "stopped" ? "Stopped" : conversation?.controlOwner === "human" ? "You have control" : busy ? "Agent working" : conversation?.runState === "waiting_for_approval" ? "Waiting for you" : "Ready";
   const activities = [...(conversation?.events ?? [])].reverse().filter((event) => !["message.completed", "conversation.created"].includes(event.type)).slice(0, 8);
 
@@ -72,7 +84,7 @@ export function App() {
         <div className="chat-scroll">
           {!conversation?.messages.length && <div className="welcome"><div className="eyebrow">A computer coworker in a disposable VM</div><h1>What should we<br/>get done?</h1><p>Ask naturally. It can operate public websites in its own browser, while you watch, approve interactions, or take control.</p><button className="suggestion" onClick={() => void submit(SUGGESTION)}><span>Try a public web task</span><strong>{SUGGESTION}</strong><b>→</b></button></div>}
           <div className="messages">{conversation?.messages.map((message) => <article key={message.id} className={`message ${message.role}`}><div className="avatar">{message.role === "user" ? "Y" : "M"}</div><div><div className="message-role">{message.role === "user" ? "You" : "OpenMuse"}</div><p>{message.text}</p></div></article>)}</div>
-          {conversation?.pendingApproval && <aside className="approval"><div className="eyebrow">Approval required</div><h3>Allow this website interaction?</h3><p>{conversation.pendingApproval.reason}</p><div><button onClick={() => void resolve(true)}>Approve once</button><button className="secondary" onClick={() => void resolve(false)}>Not now</button></div></aside>}
+          {conversation?.pendingApproval && <aside className="approval"><div className="eyebrow">Approval required</div><h3>Allow this website interaction?</h3><p>{conversation.pendingApproval.reason}</p><div><button disabled={approvalPending} onClick={() => void resolve(true)}>{approvalPending ? "Running…" : "Approve once"}</button><button className="secondary" disabled={approvalPending} onClick={() => void resolve(false)}>Not now</button></div></aside>}
           {busy && <div className="thinking"><i></i><i></i><i></i> Working in the browser</div>}
           <div ref={endRef}></div>
         </div>

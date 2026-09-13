@@ -86,3 +86,114 @@ test("takeover waits for an approved browser action to finish", async () => {
   assert.ok(control.controlEpoch);
   await manager.stop(created.id);
 });
+
+test("approved browser results resume the agent without requesting another observation", async () => {
+  const manager = new ConversationManager("", "gpt-5-mini");
+  const created = await manager.create();
+  const internals = manager as unknown as {
+    context: ConversationContext;
+    turnQueue: Promise<void>;
+    runTurn: (context: ConversationContext, text: string) => Promise<void>;
+  };
+  const prompts: string[] = [];
+  internals.runTurn = async (_context, text) => { prompts.push(text); };
+  internals.context.sessionLifecycle = "ready";
+  internals.context.browserSession = {
+    status: "ready", sessionId: "browser-test", sandboxId: "sandbox-test", cdpUrl: "http://127.0.0.1:9222",
+    exec: async () => ({
+      ok: true, exitCode: 0,
+      stdout: 'SMOLVM_BROWSER_RESULT={"ok":true,"value":{"title":"Amazon.in","price":"₹59,900"}}',
+      stderr: "", durationMs: 1,
+    }),
+    delete: async () => undefined,
+  };
+  internals.context.pendingApproval = {
+    kind: "browser_program", approvalId: "approval-result", actionDigest: "b".repeat(64),
+    reason: "Read the current price", expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    program: "return { title: await page.title() };",
+  };
+
+  await manager.approve(created.id, "approval-result", "b".repeat(64), true);
+  await internals.turnQueue;
+
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0], /"title":"Amazon\.in","price":"₹59,900"/);
+  assert.match(prompts[0], /without calling browser_run again/);
+  assert.doesNotMatch(prompts[0], /Re-observe/);
+  assert.equal(manager.snapshot(created.id).pendingApproval, undefined);
+  await manager.stop(created.id);
+});
+
+test("duplicate approval submissions share one browser action", async () => {
+  const manager = new ConversationManager("", "gpt-5-mini");
+  const created = await manager.create();
+  const internals = manager as unknown as {
+    context: ConversationContext;
+    turnQueue: Promise<void>;
+    runTurn: (context: ConversationContext, text: string) => Promise<void>;
+  };
+  internals.runTurn = async () => undefined;
+  let finishAction!: () => void;
+  const actionFinished = new Promise<void>((resolve) => { finishAction = resolve; });
+  let executions = 0;
+  internals.context.sessionLifecycle = "ready";
+  internals.context.browserSession = {
+    status: "ready", sessionId: "browser-test", sandboxId: "sandbox-test", cdpUrl: "http://127.0.0.1:9222",
+    exec: async () => {
+      executions += 1;
+      await actionFinished;
+      return { ok: true, exitCode: 0, stdout: 'SMOLVM_BROWSER_RESULT={"ok":true,"value":{}}', stderr: "", durationMs: 1 };
+    },
+    delete: async () => undefined,
+  };
+  internals.context.pendingApproval = {
+    kind: "browser_program", approvalId: "approval-duplicate", actionDigest: "c".repeat(64),
+    reason: "Read the page", expiresAt: new Date(Date.now() + 60_000).toISOString(), program: "return {};",
+  };
+
+  const first = manager.approve(created.id, "approval-duplicate", "c".repeat(64), true);
+  const duplicate = manager.approve(created.id, "approval-duplicate", "c".repeat(64), true);
+  finishAction();
+  const [firstSnapshot, duplicateSnapshot] = await Promise.all([first, duplicate]);
+
+  assert.equal(executions, 1);
+  assert.deepEqual(duplicateSnapshot, firstSnapshot);
+  await manager.stop(created.id);
+});
+
+test("failed approved browser actions return an actionable error and clear stale approval state", async () => {
+  const manager = new ConversationManager("", "gpt-5-mini");
+  const created = await manager.create();
+  const context = (manager as unknown as { context: ConversationContext }).context;
+  context.sessionLifecycle = "ready";
+  context.browserSession = {
+    status: "ready", sessionId: "browser-test", sandboxId: "sandbox-test", cdpUrl: "http://127.0.0.1:9222",
+    exec: async () => ({ ok: false, exitCode: 1, stdout: "", stderr: "locator timed out", durationMs: 30_000 }),
+    delete: async () => undefined,
+  };
+  context.pendingApproval = {
+    kind: "browser_program", approvalId: "approval-failed", actionDigest: "d".repeat(64),
+    reason: "Read the page", expiresAt: new Date(Date.now() + 60_000).toISOString(), program: "return {};",
+  };
+  const originalError = console.error;
+  const logs: unknown[][] = [];
+  console.error = (...args: unknown[]) => { logs.push(args); };
+
+  try {
+    await assert.rejects(
+      manager.approve(created.id, "approval-failed", "d".repeat(64), true),
+      (error: unknown) => (error as { status?: number; message?: string }).status === 422
+        && (error as Error).message.includes("retry using the current page"),
+    );
+  } finally {
+    console.error = originalError;
+  }
+
+  const snapshot = manager.snapshot(created.id);
+  assert.equal(snapshot.pendingApproval, undefined);
+  assert.equal(snapshot.runState, "idle");
+  assert.equal(snapshot.events.at(-1)?.type, "tool.failed");
+  assert.match(String(snapshot.events.at(-1)?.payload.summary), /retry using the current page/);
+  assert.match(String(logs[0]?.[0]), /locator timed out/);
+  await manager.stop(created.id);
+});
