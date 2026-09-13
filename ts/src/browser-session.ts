@@ -81,30 +81,41 @@ export class BrowserSession implements BrowserSessionClient {
       throw new RangeError("timeoutMs must be an integer from 1 to 3,600,000.");
     }
     this.emit({ type: "command.started", sandboxId: this.sandboxId });
-    const wire = await this.transport.request<ExecResponse>(
-      `/browser-sessions/${encodeURIComponent(this.sessionId)}/exec`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          command: normalized,
-          shell: typeof command === "string" ? "login" : "raw",
-          timeout: Math.ceil(timeoutMs / 1000),
-          cwd: options.cwd,
-          env: options.env ?? {},
-        }),
-        signal: options.signal,
-      },
-    );
-    const result: ExecResult = {
-      ok: wire.exit_code === 0,
-      exitCode: wire.exit_code,
-      stdout: wire.stdout,
-      stderr: wire.stderr,
-      durationMs: wire.duration_ms ?? 0,
-    };
-    this.emit({ type: "command.completed", sandboxId: this.sandboxId, result });
-    return result;
+    try {
+      const wire = await this.transport.request<ExecResponse>(
+        `/browser-sessions/${encodeURIComponent(this.sessionId)}/exec`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            command: normalized,
+            shell: typeof command === "string" ? "login" : "raw",
+            timeout: Math.ceil(timeoutMs / 1000),
+            cwd: options.cwd,
+            env: options.env ?? {},
+          }),
+          signal: options.signal,
+        },
+      );
+      const result: ExecResult = {
+        ok: wire.exit_code === 0,
+        exitCode: wire.exit_code,
+        stdout: wire.stdout,
+        stderr: wire.stderr,
+        durationMs: wire.duration_ms ?? 0,
+      };
+      this.emit({ type: "command.completed", sandboxId: this.sandboxId, result });
+      return result;
+    } catch (cause) {
+      if (
+        cause instanceof SmolVMError
+        && cause.code === "command_timeout"
+        && cause.actual?.sandboxDeleted === true
+      ) {
+        this.markDeleted();
+      }
+      throw cause;
+    }
   }
 
   /** @internal */

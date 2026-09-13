@@ -2,9 +2,9 @@
 
 Open Muse is a local web app that accepts one personal goal, researches it inside a disposable computer, and returns a small packet of useful files. The first demo plans a three-day Bengaluru trip for two people under ₹40,000, showing each stage of the work before deleting the temporary computer.
 
-Generated from the Open Muse office-hours session on 2026-09-12.  
-Branch: `codex/open-muse-handoff`  
-Repository: `CelestoAI/SmolVM`  
+Generated from the Open Muse office-hours session on 2026-09-12.
+Branch: `codex/open-muse-handoff`
+Repository: `CelestoAI/SmolVM`
 Status: IMPLEMENTED — live OpenAI and release-host validation pending
 Mode: time-boxed open-source demo
 

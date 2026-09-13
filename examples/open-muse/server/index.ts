@@ -46,11 +46,13 @@ async function route(manager: RunManager, staticRoot: string, request: IncomingM
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
   if (method === "GET" && url.pathname === "/api/health") return sendJson(response, 200, { ready: true });
   if (method === "POST" && url.pathname === "/api/plans") {
+    assertMutationRequest(request, true);
     const body = parseRequest(planBody, await readJson(request));
     const plan = await manager.createPlan(body.goal, body.constraints);
     return sendJson(response, 201, { planId: plan.id, goal: plan.goal, constraints: plan.constraints, steps: plan.steps });
   }
   if (method === "POST" && url.pathname === "/api/runs") {
+    assertMutationRequest(request, true);
     const body = parseRequest(runBody, await readJson(request));
     return sendJson(response, 202, manager.start(body.planId));
   }
@@ -65,11 +67,15 @@ async function route(manager: RunManager, staticRoot: string, request: IncomingM
   if (method === "GET" && eventsMatch) return streamEvents(manager, eventsMatch[1], request, response);
   const constraintMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/constraints$/);
   if (method === "POST" && constraintMatch) {
+    assertMutationRequest(request, true);
     const body = parseRequest(constraintBody, await readJson(request));
     return sendJson(response, 200, manager.addConstraint(constraintMatch[1], body.constraint));
   }
   const cancelMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/cancel$/);
-  if (method === "POST" && cancelMatch) return sendJson(response, 202, manager.cancel(cancelMatch[1]));
+  if (method === "POST" && cancelMatch) {
+    assertMutationRequest(request, true);
+    return sendJson(response, 202, manager.cancel(cancelMatch[1]));
+  }
   const artifactMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/artifacts\/([^/]+)$/);
   if (method === "GET" && artifactMatch) {
     const name = validateArtifactName(decodeURIComponent(artifactMatch[2]));
@@ -102,6 +108,20 @@ function parseRequest<T>(schema: z.ZodType<T>, value: unknown): T {
   } catch (error) {
     if (error instanceof z.ZodError) throw new PublicError("Check the goal and constraints and try again.", 400);
     throw error;
+  }
+}
+
+function assertMutationRequest(request: Pick<IncomingMessage, "headers">, expectsJson: boolean): void {
+  if (expectsJson && request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+    throw Object.assign(new Error("Request body must use application/json."), { status: 415 });
+  }
+  const origin = request.headers.origin;
+  const host = request.headers.host;
+  if (origin && (!host || origin !== `http://${host}`)) {
+    throw Object.assign(new Error("Cross-site requests are not allowed."), { status: 403 });
+  }
+  if (request.headers["sec-fetch-site"] === "cross-site") {
+    throw Object.assign(new Error("Cross-site requests are not allowed."), { status: 403 });
   }
 }
 
@@ -198,4 +218,4 @@ async function main(): Promise<void> {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) void main();
 
-export const _test = { parseRequest, toHttpError };
+export const _test = { assertMutationRequest, parseRequest, toHttpError };

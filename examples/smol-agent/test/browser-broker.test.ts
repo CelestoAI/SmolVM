@@ -90,3 +90,55 @@ test("read-only mode rejects active Playwright methods", async () => {
   );
   assert.equal(programs.length, 0);
 });
+
+test("browser programs reject empty, oversized, failed, and malformed runner results", async () => {
+  const { broker, context } = harness();
+
+  await assert.rejects(() => broker.runProgram(" ", false, "Empty"), /1 to 20,000 bytes/);
+  await assert.rejects(
+    () => broker.runProgram("x".repeat(20_001), false, "Oversized"),
+    /1 to 20,000 bytes/,
+  );
+
+  context.browserSession!.exec = async () => ({
+    ok: false, exitCode: 1, stdout: "", stderr: "page crashed", durationMs: 1,
+  });
+  await assert.rejects(
+    () => broker.runProgram("return true;", false, "Failing runner"),
+    /page crashed/,
+  );
+
+  context.browserSession!.exec = async () => ({
+    ok: true, exitCode: 0, stdout: "unexpected output", stderr: "", durationMs: 1,
+  });
+  await assert.rejects(
+    () => broker.runProgram("return true;", false, "Malformed runner"),
+    /invalid result/,
+  );
+});
+
+test("website approvals can be denied and stale approvals cannot execute", async () => {
+  const denied = harness();
+  await denied.broker.runProgram("await page.locator('button').click();", true, "Click once");
+  const pending = denied.context.pendingApproval!;
+
+  assert.deepEqual(
+    await denied.broker.resolveApproval(pending.approvalId, pending.actionDigest, false),
+    { resumeAgent: false },
+  );
+  assert.equal(denied.programs.length, 0);
+  assert.equal(denied.context.runState, "idle");
+
+  const stale = harness();
+  await stale.broker.runProgram("await page.locator('button').click();", true, "Click once");
+  stale.context.pendingApproval!.expiresAt = new Date(Date.now() - 1).toISOString();
+  await assert.rejects(
+    () => stale.broker.resolveApproval(
+      stale.context.pendingApproval!.approvalId,
+      stale.context.pendingApproval!.actionDigest,
+      true,
+    ),
+    (error: unknown) => (error as { status?: number }).status === 409,
+  );
+  assert.equal(stale.programs.length, 0);
+});

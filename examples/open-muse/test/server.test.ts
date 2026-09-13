@@ -15,3 +15,24 @@ test("labels request validation errors without masking internal Zod errors", () 
   assert.equal(publicError.status, 500);
   assert.equal(publicError.message, "Open Muse could not finish this research packet.");
 });
+
+test("mutation requests require JSON and reject cross-site browser origins", () => {
+  assert.throws(
+    () => serverTest.assertMutationRequest({ headers: { host: "127.0.0.1:5173", "content-type": "text/plain" } }, true),
+    (error: unknown) => (error as { status?: number }).status === 415,
+  );
+  assert.throws(
+    () => serverTest.assertMutationRequest({ headers: {
+      host: "127.0.0.1:5173",
+      origin: "https://attacker.example",
+      "content-type": "application/json",
+    } }, true),
+    (error: unknown) => (error as { status?: number }).status === 403,
+  );
+  assert.doesNotThrow(() => serverTest.assertMutationRequest({ headers: {
+    host: "127.0.0.1:5173",
+    origin: "http://127.0.0.1:5173",
+    "content-type": "application/json; charset=utf-8",
+    "sec-fetch-site": "same-origin",
+  } }, true));
+});

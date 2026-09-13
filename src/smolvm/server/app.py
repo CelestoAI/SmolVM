@@ -389,15 +389,31 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
             result = browser.vm.run(guest_command, body.timeout, "raw")
             duration_ms = round((time.monotonic() - started) * 1000)
         except OperationTimeoutError as exc:
-            with suppress(Exception):
+            deleted = False
+            try:
                 browser.delete()
-            browser_sessions.pop(session_id, None)
+                deleted = True
+            except Exception:
+                logger.exception("Could not delete timed-out browser session %s", session_id)
+            finally:
+                with suppress(Exception):
+                    browser.close()
+            if deleted:
+                browser_sessions.pop(session_id, None)
             raise _sdk_error(
                 408,
                 "command_timeout",
-                f"Browser command timed out and session '{session_id}' was deleted; "
-                "create a new browser session and retry.",
-                headers={"X-SmolVM-Sandbox-Deleted": "true"},
+                (
+                    f"Browser command timed out in session '{session_id}'; "
+                    + (
+                        "the session was deleted to confirm the command stopped. "
+                        "Create a new browser session and retry."
+                        if deleted
+                        else "deletion could not be confirmed, so close the SmolVM client "
+                        "to stop the complete session."
+                    )
+                ),
+                headers={"X-SmolVM-Sandbox-Deleted": str(deleted).lower()},
             ) from exc
         except (ValueError, SmolVMError) as exc:
             raise _sdk_error(

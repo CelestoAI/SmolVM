@@ -73,6 +73,8 @@ class FakeBrowserSession:
 
     def delete(self) -> None:
         FakeBrowserSession.delete_calls += 1
+        if FakeSmolVM.delete_error is not None:
+            raise FakeSmolVM.delete_error
 
     def close(self) -> None:
         FakeBrowserSession.close_calls += 1
@@ -256,6 +258,73 @@ def test_browser_command_runs_as_unprivileged_agent(app: FastAPI) -> None:
     assert "printf" in command
     assert timeout == 12
     assert shell == "raw"
+
+
+def test_browser_command_timeout_deletes_and_evicts_session(app: FastAPI) -> None:
+    create = _handler(app, "/browser-sessions", "POST")
+    execute = _handler(app, "/browser-sessions/{session_id}/exec", "POST")
+    FakeSmolVM.run_error = OperationTimeoutError("command", 1)
+    create(CreateBrowserSessionRequest(session_id="browser-demo"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        execute("browser-demo", ExecRequest(command="sleep 60", timeout=1))
+
+    assert exc_info.value.status_code == 408
+    assert exc_info.value.headers == {
+        "X-SmolVM-Error-Code": "command_timeout",
+        "X-SmolVM-Sandbox-Deleted": "true",
+    }
+    assert FakeBrowserSession.delete_calls == 1
+    assert app.state.browser_sessions == {}
+    with pytest.raises(HTTPException) as missing:
+        execute("browser-demo", ExecRequest(command="echo retry"))
+    assert missing.value.status_code == 404
+
+
+def test_browser_command_timeout_retains_session_when_delete_fails(app: FastAPI) -> None:
+    create = _handler(app, "/browser-sessions", "POST")
+    execute = _handler(app, "/browser-sessions/{session_id}/exec", "POST")
+    FakeSmolVM.run_error = OperationTimeoutError("command", 1)
+    FakeSmolVM.delete_error = SmolVMError("disk is busy")
+    create(CreateBrowserSessionRequest(session_id="browser-demo"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        execute("browser-demo", ExecRequest(command="sleep 60", timeout=1))
+
+    assert exc_info.value.status_code == 408
+    assert exc_info.value.headers == {
+        "X-SmolVM-Error-Code": "command_timeout",
+        "X-SmolVM-Sandbox-Deleted": "false",
+    }
+    assert "deletion could not be confirmed" in exc_info.value.detail
+    assert "browser-demo" in app.state.browser_sessions
+    assert FakeBrowserSession.close_calls == 1
+
+
+def test_browser_command_maps_transport_failure_to_409(app: FastAPI) -> None:
+    create = _handler(app, "/browser-sessions", "POST")
+    execute = _handler(app, "/browser-sessions/{session_id}/exec", "POST")
+    FakeSmolVM.run_error = SmolVMError("control channel unavailable")
+    create(CreateBrowserSessionRequest(session_id="browser-demo"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        execute("browser-demo", ExecRequest(command="echo hi"))
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.headers == {"X-SmolVM-Error-Code": "transport_failed"}
+    assert "browser-demo" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_lifespan_deletes_session_owned_browser_sessions(app: FastAPI) -> None:
+    create = _handler(app, "/browser-sessions", "POST")
+
+    async with app.router.lifespan_context(app):
+        create(CreateBrowserSessionRequest(session_id="browser-demo"))
+
+    assert FakeBrowserSession.delete_calls == 1
+    assert FakeBrowserSession.close_calls == 1
+    assert app.state.browser_sessions == {}
 
 
 def test_download_progress_events_are_coalesced_but_keep_final_state() -> None:

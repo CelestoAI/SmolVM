@@ -158,7 +158,7 @@ Run it with `npx tsx quickstart.ts`. See the [TypeScript guide](docs/typescript/
 
 To see the SDK inside a complete local agent app, try [Open Muse](examples/open-muse/README.md). It researches a three-day trip in a temporary VM and exports a sourced itinerary, budget, and ZIP packet.
 
-For a free-flow chat experience with a live computer pane, try [Smol Agent](examples/smol-agent/README.md). It uses Pi, a disposable offline browser, and an intent-aware action broker to demonstrate observable computer use without touching a real account.
+For a free-flow chat experience with a live computer pane, try [Smol Agent](examples/smol-agent/README.md). It uses Pi and an ephemeral, open-network browser with approval-gated interactions. An offline fixture mode is available for deterministic testing without a real account.
 
 ### Start a sandbox from the CLI
 

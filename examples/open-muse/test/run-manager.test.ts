@@ -83,6 +83,51 @@ test("rejects a second active run and cancellation cleans up exactly once", asyn
   assert.equal(client.closeCount, 1);
 });
 
+test("workflow failures preserve a public failure event and still clean up", async () => {
+  const client = new MemoryClient();
+  const workflow: Workflow = {
+    plan: async () => ["Gather current evidence", "Compare walkable areas", "Verify the packet"],
+    run: async () => { throw new Error("private workflow detail"); },
+  };
+  const manager = new RunManager(workflow, () => client, scripts);
+  const plan = await manager.createPlan(goal, []);
+  const started = manager.start(plan.id);
+  const failed = await waitFor(manager, started.id, "failed");
+
+  assert.equal(failed.cleanupConfirmed, true);
+  assert.equal(client.closeCount, 1);
+  assert.equal(
+    failed.events.find((event) => event.type === "run.failed")?.type,
+    "run.failed",
+  );
+});
+
+test("cleanup retries once before marking a successful run complete", async () => {
+  class RetryCleanupClient extends MemoryClient {
+    override async close() {
+      this.closeCount += 1;
+      if (this.closeCount === 1) throw new Error("busy");
+      await this.sandbox.delete();
+    }
+  }
+  const client = new RetryCleanupClient();
+  const workflow: Workflow = {
+    plan: async () => ["Gather current evidence", "Compare walkable areas", "Verify the packet"],
+    run: async (_goal, _constraints, _plan, state) => {
+      for (const [name, value] of Object.entries({
+        "brief.md": "brief", "itinerary.md": "itinerary", "budget.csv": "budget", "sources.json": "[]",
+      })) await state.sandbox.files.write(`/workspace/open-muse/output/${name}`, value);
+    },
+  };
+  const manager = new RunManager(workflow, () => client, scripts);
+  const plan = await manager.createPlan(goal, []);
+  const started = manager.start(plan.id);
+  const complete = await waitFor(manager, started.id, "complete");
+
+  assert.equal(complete.cleanupConfirmed, true);
+  assert.equal(client.closeCount, 2);
+});
+
 async function waitFor(manager: RunManager, id: string, phase: string) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const run = manager.get(id)!;

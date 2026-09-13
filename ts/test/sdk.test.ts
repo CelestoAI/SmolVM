@@ -93,6 +93,40 @@ test("creates a ready live browser session and deletes it once", async () => {
   assert.deepEqual(events, ["browser.starting", "browser.ready", "command.started", "command.completed", "browser.stopping", "browser.deleted"]);
 });
 
+test("browser timeout records the server-confirmed session deletion", async () => {
+  class BrowserTimeoutTransport extends FakeTransport {
+    override async request<T>(path: string, init?: RequestInit): Promise<T> {
+      if (path.includes("/browser-sessions/") && path.endsWith("/exec")) {
+        throw new SmolVMError("command_timeout", "timed out and deleted", {
+          operation: "POST browser exec",
+          actual: { sandboxDeleted: true },
+        });
+      }
+      return super.request(path, init);
+    }
+  }
+  const events: string[] = [];
+  const client = new SmolVM({
+    transport: new BrowserTimeoutTransport(),
+    onEvent: (event) => events.push(event.type),
+  });
+  const browser = await client.browsers.create();
+
+  await assert.rejects(
+    () => browser.exec("sleep 60"),
+    (error: unknown) => error instanceof SmolVMError
+      && error.code === "command_timeout"
+      && error.actual?.sandboxDeleted === true,
+  );
+
+  assert.equal(browser.status, "deleted");
+  assert.equal(events.at(-1), "browser.deleted");
+  await assert.rejects(
+    () => browser.exec("echo retry"),
+    (error: unknown) => error instanceof SmolVMError && error.code === "browser_deleted",
+  );
+});
+
 test("browser sessions require browser runtime capabilities without breaking sandboxes", async () => {
   class SandboxOnlyTransport extends FakeTransport {
     override async request<T>(path: string, init?: RequestInit): Promise<T> {
