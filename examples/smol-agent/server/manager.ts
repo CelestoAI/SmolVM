@@ -15,7 +15,7 @@ export class ConversationManager {
   private turnQueue: Promise<void> = Promise.resolve();
   private viewerNonces = new Map<string, { conversationId: string; expiresAt: number }>();
 
-  constructor(private readonly apiKey: string, private readonly model: string) {}
+  constructor(private readonly apiKey: string, private readonly model: string, private readonly fixtureStore = false) {}
 
   get activeConversationId(): string | undefined {
     return this.context && !["stopped", "failed"].includes(this.context.runState) ? this.context.id : undefined;
@@ -38,7 +38,8 @@ export class ConversationManager {
       id: context.id, stateVersion: context.stateVersion, controlOwner: context.controlOwner,
       runState: context.runState, sessionLifecycle: context.sessionLifecycle,
       messages: context.messages, grants: context.grants.map(({ id: grantId, state, expiresAt }) => ({ id: grantId, state, expiresAt })),
-      pendingApproval: context.pendingApproval, viewerReady: context.sessionLifecycle === "ready" && Boolean(context.browserSession?.viewerUrl),
+      pendingApproval: context.pendingApproval ? (({ program: _program, ...approval }) => approval)(context.pendingApproval) : undefined,
+      viewerReady: context.sessionLifecycle === "ready" && Boolean(context.browserSession?.viewerUrl),
       events: context.events,
     };
   }
@@ -56,6 +57,10 @@ export class ConversationManager {
     if (context.runState === "stopped" || context.runState === "stopping") throw Object.assign(new Error("This conversation is stopped. Start a new one to continue."), { status: 409 });
     context.agent?.abort();
     for (const grant of context.grants) if (grant.state === "available" || grant.state === "reserved") grant.state = "cancelled";
+    if (context.pendingApproval) {
+      delete context.pendingApproval;
+      this.emit("approval.invalidated", { summary: "Approval cleared because the request changed" }, false);
+    }
     const message: Message = { id: randomUUID(), role: "user", text, createdAt: new Date().toISOString() };
     context.messages.push(message);
     const grant = groundAddIntent(message.id, text);
@@ -70,7 +75,13 @@ export class ConversationManager {
   async approve(id: string, approvalId: string, actionDigest: string, approved: boolean): Promise<ReturnType<ConversationManager["snapshot"]>> {
     const context = this.require(id);
     const broker = this.broker(context);
-    await broker.resolveApproval(approvalId, actionDigest, approved);
+    const { resumeAgent } = await broker.resolveApproval(approvalId, actionDigest, approved);
+    if (resumeAgent) {
+      this.turnQueue = this.turnQueue.catch(() => undefined).then(() => this.runTurn(
+        context,
+        "The user approved and the browser interaction completed. Re-observe the current page with interaction=false, then report the outcome without repeating the interaction.",
+      ));
+    }
     return this.snapshot(id);
   }
 
@@ -78,6 +89,10 @@ export class ConversationManager {
     const context = this.require(id);
     if (context.controlOwner === "human") return { controlEpoch: context.controlEpoch!, stateVersion: context.stateVersion };
     context.controlOwner = "pause_requested";
+    if (context.pendingApproval) {
+      delete context.pendingApproval;
+      this.emit("approval.invalidated", { summary: "Approval cleared when you took control" }, false);
+    }
     context.stateVersion += 1;
     this.emit("control.changed", { owner: "pause_requested", summary: "Pausing agent control" }, false);
     context.agent?.abort();
@@ -153,7 +168,7 @@ export class ConversationManager {
     context.stateVersion += 1;
     this.emit("agent.started", { summary: "Smol Agent is thinking" }, false);
     try {
-      context.agent ??= createAgent(this.apiKey, this.model, this.broker(context));
+      context.agent ??= createAgent(this.apiKey, this.model, this.broker(context), this.fixtureStore);
       context.abortController = new AbortController();
       await context.agent.prompt(text);
       if (context.agent.state.errorMessage) throw new Error(context.agent.state.errorMessage);
@@ -179,8 +194,8 @@ export class ConversationManager {
   }
 
   private async ensureBrowser(context: ConversationContext): Promise<void> {
-    if (context.sessionLifecycle === "ready" && context.playwright?.isConnected() && context.page && !context.page.isClosed()) return;
-    if (context.sessionLifecycle === "ready" && context.browserSession) {
+    if (context.sessionLifecycle === "ready" && context.browserSession && (!this.fixtureStore || (context.playwright?.isConnected() && context.page && !context.page.isClosed()))) return;
+    if (this.fixtureStore && context.sessionLifecycle === "ready" && context.browserSession) {
       this.emit("browser.reconnecting", { summary: "Reconnecting browser automation" }, false);
       await this.attachBrowser(context, context.browserSession.cdpUrl);
       this.emit("browser.reconnected", { summary: "Browser automation reconnected" }, false);
@@ -194,9 +209,9 @@ export class ConversationManager {
     const smolvm = new SmolVM({ createTimeoutMs: 180_000 });
     context.smolvm = smolvm;
     try {
-      const session = await smolvm.browsers.create({ mode: "live", profile: { mode: "ephemeral" }, viewport: { width: 1440, height: 900 }, network: { mode: "off" } });
+      const session = await smolvm.browsers.create({ mode: "live", profile: { mode: "ephemeral" }, viewport: { width: 1440, height: 900 }, network: { mode: this.fixtureStore ? "off" : "open" } });
       context.browserSession = session;
-      await this.attachBrowser(context, session.cdpUrl);
+      if (this.fixtureStore) await this.attachBrowser(context, session.cdpUrl);
       context.sessionLifecycle = "ready";
       context.stateVersion += 1;
       this.emit("browser.ready", { summary: "Disposable browser ready", sandboxId: session.sandboxId }, false);

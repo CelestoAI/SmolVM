@@ -1012,7 +1012,7 @@ start_live_stack() {
 
     mkdir -p "$artifacts_dir"
 
-    nohup Xvfb :99 -screen 0 "${width}x${height}x24" \
+    nohup Xvfb :99 -screen 0 "${width}x${height}x24" -ac \
         >"${LOG_DIR}/xvfb.log" 2>&1 &
     echo $! >"${RUNTIME_DIR}/xvfb.pid"
 
@@ -1059,14 +1059,16 @@ start_session() {
     downloads_enabled="$9"
     artifacts_dir="${10}"
 
-    mkdir -p "$profile_dir" "$download_dir" "$artifacts_dir"
+    mkdir -p "$profile_dir" "$download_dir" "$artifacts_dir" "$RUNTIME_DIR" "$LOG_DIR"
+    write_preferences "$profile_dir" "$download_dir"
+    chown -R browser:browser \
+        "$profile_dir" "$download_dir" "$artifacts_dir" "$RUNTIME_DIR" "$LOG_DIR"
     if [ "${downloads_enabled}" = "1" ]; then
         chmod 700 "$download_dir"
     else
         chmod 500 "$download_dir"
     fi
 
-    write_preferences "$profile_dir" "$download_dir"
     stop_session
 
     if [ "$debug_port" -gt 65534 ]; then
@@ -1089,7 +1091,7 @@ start_session() {
     browser_bin="$(find_browser_bin)"
 
     if [ "${mode}" = "headless" ]; then
-        nohup "$browser_bin" \
+        nohup runuser -u browser -- env HOME=/home/browser "$browser_bin" \
             --headless=new \
             --no-sandbox \
             --disable-dev-shm-usage \
@@ -1109,7 +1111,7 @@ start_session() {
             about:blank \
             >"${LOG_DIR}/chromium.log" 2>&1 &
     else
-        DISPLAY=:99 HOME=/root nohup "$browser_bin" \
+        nohup runuser -u browser -- env DISPLAY=:99 HOME=/home/browser "$browser_bin" \
             --no-sandbox \
             --disable-dev-shm-usage \
             --disable-gpu \
@@ -1175,6 +1177,61 @@ while time.monotonic() < deadline:
 raise SystemExit(1)
 """
 
+        browser_runner_js = r"""#!/usr/bin/env node
+"use strict";
+
+const { chromium } = require("/opt/smolvm-browser-runner/node_modules/playwright-core");
+
+function bounded(value, depth = 0) {
+  if (depth > 6) return "[depth limit]";
+  if (value === null || ["string", "number", "boolean"].includes(typeof value)) {
+    return typeof value === "string" && value.length > 16000 ? `${value.slice(0, 16000)}…` : value;
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, 200).map((item) => bounded(item, depth + 1));
+  }
+  if (typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).slice(0, 200).map(([key, item]) => [key, bounded(item, depth + 1)]),
+    );
+  }
+  return String(value);
+}
+
+async function main() {
+  const encoded = process.argv[2];
+  if (!encoded) throw new Error("A base64url Playwright program is required.");
+  const source = Buffer.from(encoded, "base64url").toString("utf8");
+  if (Buffer.byteLength(source) > 20000) {
+    throw new Error("Playwright program exceeds 20,000 bytes.");
+  }
+  const browser = await chromium.connectOverCDP("http://127.0.0.1:9222");
+  const context = browser.contexts()[0];
+  if (!context) throw new Error("Browser context is unavailable.");
+  const pages = context.pages();
+  const page = pages.find((candidate) => !candidate.isClosed()) || await context.newPage();
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const program = new AsyncFunction(
+    "page", "context", "browser", "pages", `"use strict";\n${source}`,
+  );
+  const value = await Promise.race([
+    program(page, context, browser, pages),
+    new Promise((_, reject) => setTimeout(
+      () => reject(new Error("Playwright program exceeded 30 seconds.")),
+      30000,
+    )),
+  ]);
+  const output = JSON.stringify({ ok: true, value: bounded(value) });
+  if (Buffer.byteLength(output) > 262144) throw new Error("Playwright result exceeds 256 KiB.");
+  process.stdout.write(`SMOLVM_BROWSER_RESULT=${output}\n`, () => process.exit(0));
+}
+
+main().catch((error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`${message}\n`, () => process.exit(1));
+});
+"""
+
         dockerfile_content = f"""
 FROM {base_image}
 
@@ -1187,6 +1244,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     bash \\
     ca-certificates \\
     python3 \\
+    nodejs \\
+    npm \\
     chromium \\
     xvfb \\
     x11vnc \\
@@ -1213,11 +1272,24 @@ RUN rm -f /etc/ssh/ssh_host_* && \\
 RUN mkdir -p \\
     /opt/smolvm-browser/profiles \\
     /opt/smolvm-browser/downloads \\
-    /opt/smolvm-browser/artifacts
+    /opt/smolvm-browser/artifacts \\
+    /opt/smolvm-browser-runner && \\
+    useradd --system --create-home --home-dir /home/browser browser && \\
+    useradd --system --create-home --home-dir /home/agent agent && \\
+    chown -R browser:browser /opt/smolvm-browser
+
+RUN cd /opt/smolvm-browser-runner && \\
+    npm init -y >/dev/null && \\
+    npm install --omit=dev playwright-core@1.55.0 >/dev/null && \\
+    npm cache clean --force >/dev/null 2>&1
 
 COPY smolvm-browser-session /usr/local/bin/smolvm-browser-session
 COPY smolvm-browser-wait-port /usr/local/bin/smolvm-browser-wait-port
-RUN chmod +x /usr/local/bin/smolvm-browser-session /usr/local/bin/smolvm-browser-wait-port
+COPY smolvm-browser-runner /usr/local/bin/smolvm-browser-runner
+RUN chmod +x \
+    /usr/local/bin/smolvm-browser-session \
+    /usr/local/bin/smolvm-browser-wait-port \
+    /usr/local/bin/smolvm-browser-runner
 
 COPY init /init
 RUN chmod +x /init
@@ -1232,9 +1304,10 @@ RUN chmod +x /init
                 "kernel_url": resolved_kernel_url,
                 "kernel_profile": kernel_profile.value,
                 "base_image": base_image,
-                "image_type": "browser-chromium-v4",
+                "image_type": "browser-chromium-v5",
                 "_browser_session_sha256": hashlib.sha256(browser_session_sh.encode()).hexdigest(),
                 "_wait_port_sha256": hashlib.sha256(wait_port_py.encode()).hexdigest(),
+                "_browser_runner_sha256": hashlib.sha256(browser_runner_js.encode()).hexdigest(),
             },
             dockerfile_content,
             init_script,
@@ -1266,6 +1339,7 @@ RUN chmod +x /init
                 extra_files={
                     "smolvm-browser-session": browser_session_sh,
                     "smolvm-browser-wait-port": wait_port_py,
+                    "smolvm-browser-runner": browser_runner_js,
                 },
                 kernel_url=resolved_kernel_url,
                 fingerprint_data=fingerprint_data,

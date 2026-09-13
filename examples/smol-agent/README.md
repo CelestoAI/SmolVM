@@ -1,25 +1,36 @@
 # Smol Agent
 
-Smol Agent is a conversational computer coworker built with Pi and SmolVM. You chat on the left and watch the agent use a real disposable browser on the right. The first demo is deliberately offline: it shops in a local fake store, can add one item only when your message authorizes that exact action, and asks before opening checkout review.
+Smol Agent is a chat-based computer coworker that can operate public websites inside a disposable SmolVM. You chat on the left and watch its real browser on the right.
 
-Nothing in this milestone can place an order, use a real account, reach the public internet, run shell commands, or read host files. The OpenAI API key stays in the host Node process and is never copied into the VM.
+The agent can browse any ordinary public website without a site-specific adapter. Read-only work runs immediately. Clicking, typing, selecting, or otherwise interacting with a site displays a one-time approval before the Playwright program runs.
+
+The OpenAI API key stays in the host Node process. Model-written Playwright runs as an unprivileged user inside the browser VM, not in the host process.
 
 ## Run it
 
-From this directory:
+Install the packages:
+
+```bash
+npm install
+```
+
+Create the local environment file:
 
 ```bash
 cp .env.example .env.local
-# Add OPENAI_API_KEY to .env.local
-npm install
+```
+
+Add `OPENAI_API_KEY` to `.env.local`, then start the app:
+
+```bash
 npm run dev
 ```
 
-Open [http://127.0.0.1:5174](http://127.0.0.1:5174). Try:
+Open [http://127.0.0.1:5174](http://127.0.0.1:5174) and try:
 
-> Add the best value wireless headphones under ₹8,000
+> Open https://example.com and tell me what the page says.
 
-The first browser action may take a little while because SmolVM boots a fresh browser image. The computer remains warm between chat turns and is deleted when you click **Stop**, stop the server, or close the process.
+The first browser action may take a little while because SmolVM boots a fresh browser image. The computer remains warm between chat turns and is deleted when you click **Stop** or stop the server.
 
 This source-checkout example uses `file:../../ts` so it can exercise the unreleased browser-session API. Build that package once before installing if its `dist/` folder is absent:
 
@@ -27,20 +38,34 @@ This source-checkout example uses `file:../../ts` so it can exercise the unrelea
 (cd ../../ts && npm install && npm run build)
 ```
 
-On macOS, the runtime wrapper uses the ARM64 Linux guest-agent binary pinned and checksum-verified by this SmolVM checkout. This avoids requiring a system-wide Linux cross-linker just to run the example.
+On macOS, the runtime wrapper downloads the checksum-verified ARM64 Linux guest-agent binary pinned by this checkout. This avoids requiring a Linux cross-linker just to run the example.
 
-Before publishing the example, replace the file dependency with an immutable `@celestoai/smolvm` release containing `SmolVM.browsers.create()`.
+## How it works
 
-## Architecture
+- Pi is the conversational agent harness.
+- `@celestoai/smolvm` creates a live, ephemeral browser VM with public web access.
+- Pi writes a short JavaScript Playwright program for each browser step.
+- `browser_run` executes that program through the runner installed inside the VM.
+- The real browser display is streamed through SmolVM's noVNC viewer into the right pane.
+- **Take control** pauses Pi and lets you use the browser directly.
 
-- Pi is the host-side agent harness.
-- `@celestoai/smolvm` creates a live, ephemeral, network-off browser session.
-- Playwright connects from the host over the private CDP endpoint.
-- A deterministic action broker checks short-lived grants grounded from the user's message.
-- The browser renders through SmolVM's real noVNC display and a same-origin viewer proxy.
-- **Take control** pauses Pi before removing the input shield. **Return control** gives the browser back to the agent.
+Observation and navigation programs run immediately. Programs that click, type, select, press keys, or use other active browser controls create an approval card. Approval is currently bound to the complete proposed program, not to a site-specific semantic promise such as an exact cart total.
 
-The model only receives semantic browser tools. It never receives raw Playwright, CDP, JavaScript evaluation, a shell, or filesystem access. See [the approved design](../../docs/designs/smol-agent.md) for the threat model and later authenticated-browser milestone.
+The initial general-web implementation uses SmolVM's open network mode. The approved follow-up design adds a public-only egress proxy that blocks private and metadata destinations before this example should be treated as a hardened browsing boundary.
+
+See [the approved general-web design](../../docs/designs/smol-agent-general-web.md) for the staged security model. The original [fixture-store design](../../docs/designs/smol-agent.md) documents the UI, lifecycle, and takeover flow.
+
+## Offline fixture mode
+
+The synthetic `shop.smol.test` store remains available for deterministic development and CI. It is generated in memory and never resolves through DNS.
+
+Start the app in fixture mode:
+
+```bash
+SMOL_AGENT_FIXTURE_STORE=1 npm run dev
+```
+
+Fixture mode disables browser networking and restores the original catalog-specific tools and checkout-review approval.
 
 ## Checks
 

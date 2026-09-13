@@ -1103,6 +1103,11 @@ class DisplaySandboxProtocol(Protocol):
         ...
 
     @property
+    def vm(self) -> Any:
+        """Underlying VM used for session-scoped guest commands."""
+        ...
+
+    @property
     def status(self) -> BrowserSessionState:
         """Current sandbox lifecycle state."""
         ...

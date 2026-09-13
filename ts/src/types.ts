@@ -132,6 +132,8 @@ export interface BrowserSessionClient {
   readonly cdpUrl: string;
   readonly viewerUrl?: string;
   readonly profileId?: string;
+  /** Run a command as the unprivileged agent user inside this browser VM. */
+  exec(command: string | readonly string[], options?: ExecOptions): Promise<ExecResult>;
   delete(): Promise<void>;
 }
 

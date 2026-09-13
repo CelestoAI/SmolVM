@@ -510,6 +510,36 @@ export type DeleteBrowserSessionResponses = {
 
 export type DeleteBrowserSessionResponse = DeleteBrowserSessionResponses[keyof DeleteBrowserSessionResponses];
 
+export type ExecBrowserCommandData = {
+    body: ExecRequest;
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/browser-sessions/{session_id}/exec';
+};
+
+export type ExecBrowserCommandErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ExecBrowserCommandError = ExecBrowserCommandErrors[keyof ExecBrowserCommandErrors];
+
+export type ExecBrowserCommandResponses = {
+    /**
+     * Successful Response
+     */
+    200: ExecResponse;
+};
+
+export type ExecBrowserCommandResponse = ExecBrowserCommandResponses[keyof ExecBrowserCommandResponses];
+
 export type ListSandboxesData = {
     body?: never;
     path?: never;

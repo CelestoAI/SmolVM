@@ -145,7 +145,11 @@ async function main(): Promise<void> {
   try { process.loadEnvFile(".env.local"); } catch { /* optional */ }
   const host = process.env.SMOL_AGENT_HOST ?? "127.0.0.1"; const port = Number(process.env.SMOL_AGENT_PORT ?? 4318);
   if (host !== "127.0.0.1") throw new Error("Smol Agent only listens locally. Set SMOL_AGENT_HOST=127.0.0.1.");
-  const manager = new ConversationManager(process.env.OPENAI_API_KEY ?? "", process.env.OPENAI_MODEL ?? "gpt-5-mini");
+  const manager = new ConversationManager(
+    process.env.OPENAI_API_KEY ?? "",
+    process.env.OPENAI_MODEL ?? "gpt-5-mini",
+    process.env.SMOL_AGENT_FIXTURE_STORE === "1",
+  );
   const server = createApp(manager); let closing = false;
   const shutdown = async () => { if (closing) return; closing = true; server.close(); await manager.close(); };
   process.once("SIGINT", () => void shutdown()); process.once("SIGTERM", () => void shutdown());

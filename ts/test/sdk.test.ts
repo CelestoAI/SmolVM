@@ -15,7 +15,7 @@ class FakeTransport implements SmolVMTransport {
 
   async request<T>(path: string, init?: RequestInit): Promise<T> {
     this.calls.push({ path, init });
-    if (path === "/sdk/v1/capabilities") return { protocol_version: 1, capabilities: ["sandbox.create", "sandbox.delete", "sandbox.exec", "files.read", "files.write", "browser.create", "browser.delete", "browser.endpoints", "browser.events", "events"] } as T;
+    if (path === "/sdk/v1/capabilities") return { protocol_version: 1, capabilities: ["sandbox.create", "sandbox.delete", "sandbox.exec", "files.read", "files.write", "browser.create", "browser.delete", "browser.endpoints", "browser.exec", "browser.events", "events"] } as T;
     if (path === "/sdk/v1/diagnostics") return { protocol_version: 1, runtime_version: "test", python_version: "3.13", platform: "darwin-arm64", supported: true, problems: [] } as T;
     if (path === "/sandboxes") return { id: "sbx-test", status: "running" } as T;
     if (path === "/browser-sessions") return {
@@ -81,10 +81,16 @@ test("creates a ready live browser session and deletes it once", async () => {
   assert.equal(browser.cdpUrl, "http://127.0.0.1:9222");
   assert.equal(browser.viewerUrl, "http://127.0.0.1:6080/vnc.html");
 
+  const execResult = await browser.exec(["printf", "%s", "hello world"]);
+  const execBody = JSON.parse(String(transport.calls.find((call) => call.path === "/browser-sessions/browser-test/exec")?.init?.body));
+  assert.equal(execBody.shell, "raw");
+  assert.equal(execBody.command, "'printf' '%s' 'hello world'");
+  assert.deepEqual(execResult, { ok: false, exitCode: 7, stdout: "out", stderr: "err", durationMs: 12 });
+
   await Promise.all([browser.delete(), browser.delete()]);
   assert.equal(browser.status, "deleted");
   assert.equal(transport.calls.filter((call) => call.path === "/browser-sessions/browser-test" && call.init?.method === "DELETE").length, 1);
-  assert.deepEqual(events, ["browser.starting", "browser.ready", "browser.stopping", "browser.deleted"]);
+  assert.deepEqual(events, ["browser.starting", "browser.ready", "command.started", "command.completed", "browser.stopping", "browser.deleted"]);
 });
 
 test("browser sessions require browser runtime capabilities without breaking sandboxes", async () => {

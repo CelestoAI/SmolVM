@@ -136,6 +136,55 @@
         }
       }
     },
+    "/browser-sessions/{session_id}/exec": {
+      "post": {
+        "summary": "Exec Browser Command",
+        "operationId": "execBrowserCommand",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/sandboxes": {
       "get": {
         "summary": "List Sandboxes",
@@ -591,6 +640,7 @@
               "browser.create",
               "browser.delete",
               "browser.endpoints",
+              "browser.exec",
               "browser.events",
               "events",
               "diagnostics"

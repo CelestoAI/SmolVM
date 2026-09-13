@@ -259,7 +259,8 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
             raise _sdk_error(
                 409,
                 "browser_endpoint_unavailable",
-                f"Browser session '{browser.session_id}' has no automation endpoint; delete it and create the session again.",
+                f"Browser session '{browser.session_id}' has no automation endpoint; "
+                "delete it and create the session again.",
             )
         return BrowserSessionResponse(
             session_id=browser.session_id,
@@ -269,6 +270,16 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
             viewer_url=browser.viewer_url,
             profile_id=browser.info.profile_id,
         )
+
+    def resolve_browser(session_id: str) -> DisplaySandboxProtocol:
+        browser = browser_sessions.get(session_id)
+        if browser is None:
+            raise _sdk_error(
+                404,
+                "browser_deleted",
+                f"Browser session '{session_id}' is unavailable; create a new browser session.",
+            )
+        return browser
 
     @app.post(
         "/browser-sessions",
@@ -314,7 +325,8 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
             raise _sdk_error(
                 400,
                 code,
-                f"Could not create browser session '{session_id}': {exc}. Fix the options and try again.",
+                f"Could not create browser session '{session_id}': {exc}. "
+                "Fix the options and try again.",
             ) from exc
         publish(
             {
@@ -347,7 +359,8 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
             raise _sdk_error(
                 409,
                 "cleanup_failed",
-                f"Browser session '{session_id}' could not be deleted; call browser.delete() again, or close the SmolVM client.",
+                f"Browser session '{session_id}' could not be deleted; call "
+                "browser.delete() again, or close the SmolVM client.",
             ) from exc
         finally:
             with suppress(Exception):
@@ -361,6 +374,39 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
             }
         )
         return Response(status_code=204)
+
+    @app.post(
+        "/browser-sessions/{session_id}/exec",
+        response_model=ExecResponse,
+        operation_id="execBrowserCommand",
+    )
+    def exec_browser_command(session_id: str, body: ExecRequest) -> ExecResponse:
+        browser = resolve_browser(session_id)
+        try:
+            command, _shell = _command_with_context(body)
+            guest_command = f"runuser -u agent -- sh -c {shlex.quote(command)}"
+            started = time.monotonic()
+            result = browser.vm.run(guest_command, body.timeout, "raw")
+            duration_ms = round((time.monotonic() - started) * 1000)
+        except OperationTimeoutError as exc:
+            with suppress(Exception):
+                browser.delete()
+            browser_sessions.pop(session_id, None)
+            raise _sdk_error(
+                408,
+                "command_timeout",
+                f"Browser command timed out and session '{session_id}' was deleted; "
+                "create a new browser session and retry.",
+                headers={"X-SmolVM-Sandbox-Deleted": "true"},
+            ) from exc
+        except (ValueError, SmolVMError) as exc:
+            raise _sdk_error(
+                409,
+                "transport_failed",
+                f"Command could not run in browser session '{session_id}'; create a new "
+                "browser session if it is no longer usable.",
+            ) from exc
+        return ExecResponse(**result.model_dump(), duration_ms=duration_ms)
 
     @app.post(
         "/sandboxes",

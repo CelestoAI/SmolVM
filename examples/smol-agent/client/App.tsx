@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import * as api from "./api";
 
-const SUGGESTION = "Add the best value wireless headphones under ₹8,000";
+const SUGGESTION = "Open https://example.com and tell me what the page says";
 
 export function App() {
   const [conversation, setConversation] = useState<api.Conversation>();
@@ -22,7 +22,7 @@ export function App() {
         source = new EventSource(`/api/conversations/${created.id}/events`);
         source.onmessage = () => void refresh(created.id);
         source.addEventListener("message.completed", () => void refresh(created.id));
-        for (const name of ["browser.starting", "browser.ready", "agent.started", "agent.completed", "agent.failed", "approval.requested", "approval.resolved", "control.changed", "cart.updated", "conversation.stopped"]) source.addEventListener(name, () => void refresh(created.id));
+        for (const name of ["browser.starting", "browser.ready", "agent.started", "agent.completed", "agent.failed", "approval.requested", "approval.resolved", "approval.invalidated", "control.changed", "cart.updated", "conversation.stopped"]) source.addEventListener(name, () => void refresh(created.id));
       } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not start Smol Agent."); }
     })();
     return () => source?.close();
@@ -68,9 +68,9 @@ export function App() {
     <section className="workspace">
       <section className="chat-pane">
         <div className="chat-scroll">
-          {!conversation?.messages.length && <div className="welcome"><div className="eyebrow">A computer coworker in a disposable VM</div><h1>What should we<br/>get done?</h1><p>Ask naturally. Watch the browser work, step in when you want, and approve consequential actions at the boundary.</p><button className="suggestion" onClick={() => void submit(SUGGESTION)}><span>Try an offline shopping task</span><strong>{SUGGESTION}</strong><b>→</b></button></div>}
+          {!conversation?.messages.length && <div className="welcome"><div className="eyebrow">A computer coworker in a disposable VM</div><h1>What should we<br/>get done?</h1><p>Ask naturally. It can operate public websites in its own browser, while you watch, approve interactions, or take control.</p><button className="suggestion" onClick={() => void submit(SUGGESTION)}><span>Try a public web task</span><strong>{SUGGESTION}</strong><b>→</b></button></div>}
           <div className="messages">{conversation?.messages.map((message) => <article key={message.id} className={`message ${message.role}`}><div className="avatar">{message.role === "user" ? "Y" : "S"}</div><div><div className="message-role">{message.role === "user" ? "You" : "Smol Agent"}</div><p>{message.text}</p></div></article>)}</div>
-          {conversation?.pendingApproval && <aside className="approval"><div className="eyebrow">Approval required</div><h3>Open checkout review?</h3><p>{conversation.pendingApproval.reason}</p><div><button onClick={() => void resolve(true)}>Approve once</button><button className="secondary" onClick={() => void resolve(false)}>Not now</button></div></aside>}
+          {conversation?.pendingApproval && <aside className="approval"><div className="eyebrow">Approval required</div><h3>Allow this website interaction?</h3><p>{conversation.pendingApproval.reason}</p><div><button onClick={() => void resolve(true)}>Approve once</button><button className="secondary" onClick={() => void resolve(false)}>Not now</button></div></aside>}
           {busy && <div className="thinking"><i></i><i></i><i></i> Working in the browser</div>}
           <div ref={endRef}></div>
         </div>

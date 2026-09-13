@@ -14,6 +14,53 @@ export class ActionBroker {
     return this.context.storefront;
   }
 
+  private async readyBrowser() {
+    if (this.context.controlOwner !== "agent") throw new Error("Browser control is paused. Wait until the user returns control.");
+    await this.ensureBrowser();
+    if (!this.context.browserSession) throw new Error("The disposable browser is not ready.");
+    return this.context.browserSession;
+  }
+
+  async runProgram(program: string, interaction: boolean, summary: string): Promise<Record<string, unknown>> {
+    await this.readyBrowser();
+    if (!program.trim() || Buffer.byteLength(program) > 20_000) throw new Error("Playwright program must contain 1 to 20,000 bytes.");
+    const active = /\.(click|dblclick|fill|type|press|selectOption|check|uncheck|setInputFiles|dragTo|dispatchEvent|evaluate|evaluateHandle|addInitScript|route|unroute|request)\s*\(/;
+    const requiresApproval = active.test(program) || /\b(keyboard|mouse|touchscreen)\s*\./.test(program);
+    if (!requiresApproval) return this.executeProgram(program, summary);
+    if (!interaction) {
+      throw new Error("This program can interact with the website. Run it with interaction=true so the user can approve it.");
+    }
+    if (this.context.pendingApproval) return { approvalRequired: true, ...this.publicApproval(this.context.pendingApproval) };
+    const action = { kind: "browser_program", summary: summary.trim().slice(0, 240), programHash: createHash("sha256").update(program).digest("hex") };
+    const pending: PendingApproval = {
+      kind: "browser_program", approvalId: `approval-${randomUUID()}`,
+      actionDigest: createHash("sha256").update(JSON.stringify(action)).digest("hex"),
+      reason: action.summary || "Allow this website interaction once?",
+      expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(), program,
+    };
+    this.context.pendingApproval = pending;
+    this.context.runState = "waiting_for_approval";
+    this.emit("approval.requested", { ...this.publicApproval(pending), summary: pending.reason }, true);
+    return { approvalRequired: true, ...this.publicApproval(pending) };
+  }
+
+  private publicApproval(pending: PendingApproval): Record<string, unknown> {
+    return { kind: pending.kind, approvalId: pending.approvalId, actionDigest: pending.actionDigest, reason: pending.reason, expiresAt: pending.expiresAt };
+  }
+
+  private async executeProgram(program: string, summary: string): Promise<Record<string, unknown>> {
+    const browser = await this.readyBrowser();
+    const encoded = Buffer.from(program).toString("base64url");
+    this.emit("tool.started", { tool: "browser_run", summary: summary || "Running Playwright in the disposable browser" });
+    const command = await browser.exec(["/usr/local/bin/smolvm-browser-runner", encoded], { timeoutMs: 40_000 });
+    if (!command.ok) throw new Error(command.stderr.trim() || "The Playwright program failed inside the disposable browser.");
+    const marker = command.stdout.split("\n").reverse().find((line: string) => line.startsWith("SMOLVM_BROWSER_RESULT="));
+    if (!marker) throw new Error("The browser runner returned an invalid result.");
+    const parsed = JSON.parse(marker.slice("SMOLVM_BROWSER_RESULT=".length)) as { ok: boolean; value?: unknown };
+    this.emit("tool.completed", { tool: "browser_run", summary: summary || "Playwright program completed" });
+    return { completed: true, result: parsed.value };
+  }
+
   async observe(): Promise<Record<string, unknown>> {
     await this.ready();
     this.context.observationId = `obs-${randomUUID()}`;
@@ -87,6 +134,7 @@ export class ActionBroker {
     const cartReceipt = `cart-r${this.context.commerceRevision}`;
     const action = { kind: "begin_checkout", storefrontVersion: STOREFRONT_VERSION, cartReceipt, totalPriceMinor, currency: "INR", commerceRevision: this.context.commerceRevision };
     const pending: PendingApproval = {
+      kind: "checkout_review",
       approvalId: `approval-${randomUUID()}`,
       actionDigest: createHash("sha256").update(JSON.stringify(action)).digest("hex"),
       reason: `Open the fake checkout review for ${formatInr(totalPriceMinor)}. This cannot place an order.`,
@@ -99,16 +147,27 @@ export class ActionBroker {
     return pending;
   }
 
-  async resolveApproval(approvalId: string, actionDigest: string, approved: boolean): Promise<void> {
+  async resolveApproval(approvalId: string, actionDigest: string, approved: boolean): Promise<{ resumeAgent: boolean }> {
     const pending = this.context.pendingApproval;
     if (!pending || pending.approvalId !== approvalId || pending.actionDigest !== actionDigest) throw Object.assign(new Error("That approval is no longer current."), { status: 409 });
-    if (Date.parse(pending.expiresAt) <= Date.now() || pending.commerceRevision !== this.context.commerceRevision) throw Object.assign(new Error("That approval expired or the cart changed."), { status: 409 });
+    if (Date.parse(pending.expiresAt) <= Date.now() || (pending.kind === "checkout_review" && pending.commerceRevision !== this.context.commerceRevision)) throw Object.assign(new Error("That approval expired or the page changed."), { status: 409 });
     delete this.context.pendingApproval;
-    if (approved) {
-      const storefront = await this.ready();
-      await storefront.navigate("/review");
-      this.emit("approval.resolved", { approved: true, summary: "Opened order review; no order can be placed." }, true);
-    } else this.emit("approval.resolved", { approved: false, summary: "Checkout review was not opened." }, true);
-    this.context.runState = "idle";
+    let resumeAgent = false;
+    try {
+      if (approved) {
+        if (pending.kind === "browser_program") {
+          await this.executeProgram(pending.program!, pending.reason);
+          this.emit("approval.resolved", { approved: true, summary: "Approved website interaction completed" }, true);
+          resumeAgent = true;
+        } else {
+          const storefront = await this.ready();
+          await storefront.navigate("/review");
+          this.emit("approval.resolved", { approved: true, summary: "Opened order review; no order can be placed." }, true);
+        }
+      } else this.emit("approval.resolved", { approved: false, summary: "Website interaction was not approved." }, true);
+    } finally {
+      this.context.runState = "idle";
+    }
+    return { resumeAgent };
   }
 }

@@ -62,6 +62,14 @@ class FakeBrowserSession:
         self.cdp_url = "http://127.0.0.1:9222"
         self.viewer_url = "http://127.0.0.1:6080/vnc.html?autoconnect=1"
         self.info = SimpleNamespace(profile_id=profile_id)
+        self.vm = SimpleNamespace(run=self._run)
+
+    @staticmethod
+    def _run(command: str, timeout: int, shell: str) -> CommandResult:
+        FakeSmolVM.last_run_args = (command, timeout, shell)
+        if FakeSmolVM.run_error is not None:
+            raise FakeSmolVM.run_error
+        return FakeSmolVM.run_result
 
     def delete(self) -> None:
         FakeBrowserSession.delete_calls += 1
@@ -229,6 +237,25 @@ def test_create_and_delete_live_browser_session(app: FastAPI) -> None:
     assert FakeBrowserSession.delete_calls == 1
     assert FakeBrowserSession.close_calls == 1
     assert delete("browser-demo").status_code == 204
+
+
+def test_browser_command_runs_as_unprivileged_agent(app: FastAPI) -> None:
+    create = _handler(app, "/browser-sessions", "POST")
+    execute = _handler(app, "/browser-sessions/{session_id}/exec", "POST")
+    create(CreateBrowserSessionRequest(session_id="browser-demo"))
+
+    result = execute(
+        "browser-demo",
+        ExecRequest(command="printf '%s' hello", shell="raw", timeout=12),
+    )
+
+    assert result.stdout == "ok"
+    assert FakeSmolVM.last_run_args is not None
+    command, timeout, shell = FakeSmolVM.last_run_args
+    assert command.startswith("runuser -u agent -- sh -c ")
+    assert "printf" in command
+    assert timeout == 12
+    assert shell == "raw"
 
 
 def test_download_progress_events_are_coalesced_but_keep_final_state() -> None:

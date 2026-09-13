@@ -477,7 +477,11 @@ class TestBrowserImageBuilder:
             # kernel_url override via _build_auto_config.
             assert kwargs["kernel_url"] == BASE_KERNELS["amd64"].elf_url
             assert kwargs["fingerprint_data"]["kernel_profile"] == "microvm_direct"
-            assert kwargs["fingerprint_data"]["image_type"] == "browser-chromium-v4"
+            assert kwargs["fingerprint_data"]["image_type"] == "browser-chromium-v5"
+            assert "smolvm-browser-runner" in kwargs["extra_files"]
+            assert "playwright-core" in kwargs["extra_files"]["smolvm-browser-runner"]
+            assert "process.exit(1)" in kwargs["extra_files"]["smolvm-browser-runner"]
+            assert "process.exitCode" not in kwargs["extra_files"]["smolvm-browser-runner"]
             helper_script = kwargs["extra_files"]["smolvm-browser-session"]
             assert "127.0.0.1:5900" in helper_script
             assert '"${mode}" = "desktop"' in helper_script

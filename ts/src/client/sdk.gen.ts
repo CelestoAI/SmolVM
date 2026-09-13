@@ -2,7 +2,7 @@
 
 import { client } from './client.gen.js';
 import type { Client, ClientMeta, Options as Options2, RequestResult, ServerSentEventsResult, TDataShape } from './client/index.js';
-import type { CancelSandboxOperationSandboxesSandboxIdCancelPostData, CancelSandboxOperationSandboxesSandboxIdCancelPostErrors, CancelSandboxOperationSandboxesSandboxIdCancelPostResponses, CapabilitiesSdkV1CapabilitiesGetData, CapabilitiesSdkV1CapabilitiesGetResponses, CreateBrowserSessionData, CreateBrowserSessionErrors, CreateBrowserSessionResponses, CreateSandboxData, CreateSandboxErrors, CreateSandboxResponses, DeleteBrowserSessionData, DeleteBrowserSessionErrors, DeleteBrowserSessionResponses, DeleteSandboxData, DeleteSandboxErrors, DeleteSandboxResponses, DiagnosticsSdkV1DiagnosticsGetData, DiagnosticsSdkV1DiagnosticsGetResponses, EventsSdkV1EventsGetData, EventsSdkV1EventsGetResponses, ExecCommandData, ExecCommandErrors, ExecCommandResponses, GetSandboxData, GetSandboxDesktopData, GetSandboxDesktopErrors, GetSandboxDesktopResponses, GetSandboxErrors, GetSandboxResponses, ListSandboxesData, ListSandboxesResponses, ReadFileSandboxesSandboxIdFilesGetData, ReadFileSandboxesSandboxIdFilesGetErrors, ReadFileSandboxesSandboxIdFilesGetResponses, WriteFileSandboxesSandboxIdFilesPutData, WriteFileSandboxesSandboxIdFilesPutErrors, WriteFileSandboxesSandboxIdFilesPutResponses } from './types.gen.js';
+import type { CancelSandboxOperationSandboxesSandboxIdCancelPostData, CancelSandboxOperationSandboxesSandboxIdCancelPostErrors, CancelSandboxOperationSandboxesSandboxIdCancelPostResponses, CapabilitiesSdkV1CapabilitiesGetData, CapabilitiesSdkV1CapabilitiesGetResponses, CreateBrowserSessionData, CreateBrowserSessionErrors, CreateBrowserSessionResponses, CreateSandboxData, CreateSandboxErrors, CreateSandboxResponses, DeleteBrowserSessionData, DeleteBrowserSessionErrors, DeleteBrowserSessionResponses, DeleteSandboxData, DeleteSandboxErrors, DeleteSandboxResponses, DiagnosticsSdkV1DiagnosticsGetData, DiagnosticsSdkV1DiagnosticsGetResponses, EventsSdkV1EventsGetData, EventsSdkV1EventsGetResponses, ExecBrowserCommandData, ExecBrowserCommandErrors, ExecBrowserCommandResponses, ExecCommandData, ExecCommandErrors, ExecCommandResponses, GetSandboxData, GetSandboxDesktopData, GetSandboxDesktopErrors, GetSandboxDesktopResponses, GetSandboxErrors, GetSandboxResponses, ListSandboxesData, ListSandboxesResponses, ReadFileSandboxesSandboxIdFilesGetData, ReadFileSandboxesSandboxIdFilesGetErrors, ReadFileSandboxesSandboxIdFilesGetResponses, WriteFileSandboxesSandboxIdFilesPutData, WriteFileSandboxesSandboxIdFilesPutErrors, WriteFileSandboxesSandboxIdFilesPutResponses } from './types.gen.js';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -49,6 +49,18 @@ export const createBrowserSession = <ThrowOnError extends boolean = false>(optio
  * Delete Browser Session
  */
 export const deleteBrowserSession = <ThrowOnError extends boolean = false>(options: Options<DeleteBrowserSessionData, ThrowOnError>): RequestResult<DeleteBrowserSessionResponses, DeleteBrowserSessionErrors, ThrowOnError> => (options.client ?? client).delete<DeleteBrowserSessionResponses, DeleteBrowserSessionErrors, ThrowOnError>({ url: '/browser-sessions/{session_id}', ...options });
+
+/**
+ * Exec Browser Command
+ */
+export const execBrowserCommand = <ThrowOnError extends boolean = false>(options: Options<ExecBrowserCommandData, ThrowOnError>): RequestResult<ExecBrowserCommandResponses, ExecBrowserCommandErrors, ThrowOnError> => (options.client ?? client).post<ExecBrowserCommandResponses, ExecBrowserCommandErrors, ThrowOnError>({
+    url: '/browser-sessions/{session_id}/exec',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
 
 /**
  * List Sandboxes

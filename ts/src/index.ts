@@ -40,6 +40,7 @@ const REQUIRED_BROWSER_CAPABILITIES = [
   "browser.create",
   "browser.delete",
   "browser.endpoints",
+  "browser.exec",
   "browser.events",
 ] as const;
 

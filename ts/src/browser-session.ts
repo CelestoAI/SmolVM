@@ -2,9 +2,17 @@ import { SmolVMError } from "./errors.js";
 import type {
   BrowserSessionClient,
   BrowserSessionStatus,
+  ExecOptions,
+  ExecResult,
   SmolVMEvent,
   SmolVMTransport,
 } from "./types.js";
+import type { ExecResponse } from "./client/types.gen.js";
+
+function quoteArg(value: string): string {
+  if (value.length === 0) return "''";
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
 
 export interface BrowserSessionResponse {
   session_id: string;
@@ -58,6 +66,45 @@ export class BrowserSession implements BrowserSessionClient {
 
   get status(): BrowserSessionStatus {
     return this.currentStatus;
+  }
+
+  async exec(command: string | readonly string[], options: ExecOptions = {}): Promise<ExecResult> {
+    if (this.currentStatus === "deleted") {
+      throw new SmolVMError("browser_deleted", `Browser session '${this.sessionId}' has been deleted.`, {
+        operation: "browser.exec", sandboxId: this.sandboxId,
+      });
+    }
+    if (Array.isArray(command) && command.length === 0) throw new TypeError("Command argv must contain at least one item.");
+    const normalized = typeof command === "string" ? command : command.map(quoteArg).join(" ");
+    const timeoutMs = options.timeoutMs ?? 30_000;
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3_600_000) {
+      throw new RangeError("timeoutMs must be an integer from 1 to 3,600,000.");
+    }
+    this.emit({ type: "command.started", sandboxId: this.sandboxId });
+    const wire = await this.transport.request<ExecResponse>(
+      `/browser-sessions/${encodeURIComponent(this.sessionId)}/exec`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          command: normalized,
+          shell: typeof command === "string" ? "login" : "raw",
+          timeout: Math.ceil(timeoutMs / 1000),
+          cwd: options.cwd,
+          env: options.env ?? {},
+        }),
+        signal: options.signal,
+      },
+    );
+    const result: ExecResult = {
+      ok: wire.exit_code === 0,
+      exitCode: wire.exit_code,
+      stdout: wire.stdout,
+      stderr: wire.stderr,
+      durationMs: wire.duration_ms ?? 0,
+    };
+    this.emit({ type: "command.completed", sandboxId: this.sandboxId, result });
+    return result;
   }
 
   /** @internal */

@@ -156,6 +156,7 @@ class CapabilitiesResponse(BaseModel):
         "browser.create",
         "browser.delete",
         "browser.endpoints",
+        "browser.exec",
         "browser.events",
         "events",
         "diagnostics",
