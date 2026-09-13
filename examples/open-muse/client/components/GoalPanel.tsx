@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 interface Props {
   goal: string;
@@ -17,6 +17,8 @@ interface Props {
 
 export function GoalPanel(props: Props) {
   const [nextConstraint, setNextConstraint] = useState("");
+  const [addingConstraint, setAddingConstraint] = useState(false);
+  const constraintPending = useRef(false);
   return <section className="goal-panel" aria-labelledby="goal-heading">
     <div className="goal-copy">
       <p className="eyebrow">Your goal</p>
@@ -34,9 +36,21 @@ export function GoalPanel(props: Props) {
       {props.canStart && !props.running && <button className="primary" disabled={props.busy} onClick={props.onStart}>Start research <span aria-hidden>→</span></button>}
       {props.running && <button className="danger" onClick={props.onStop}>Stop research</button>}
     </div>
-    {props.running && <form className="constraint-row" onSubmit={async (event) => { event.preventDefault(); if (!nextConstraint.trim()) return; if (await props.onAddConstraint(nextConstraint.trim())) setNextConstraint(""); }}>
+    {props.running && <form className="constraint-row" onSubmit={async (event) => {
+      event.preventDefault();
+      const constraint = nextConstraint.trim();
+      if (!constraint || constraintPending.current) return;
+      constraintPending.current = true;
+      setAddingConstraint(true);
+      try {
+        if (await props.onAddConstraint(constraint)) setNextConstraint("");
+      } finally {
+        constraintPending.current = false;
+        setAddingConstraint(false);
+      }
+    }}>
       <label htmlFor="next-constraint">Add a constraint for the next phase</label>
-      <div><input id="next-constraint" value={nextConstraint} maxLength={300} onChange={(event) => setNextConstraint(event.target.value)} placeholder="Keep mornings unhurried" /><button type="submit">Send</button></div>
+      <div><input id="next-constraint" value={nextConstraint} maxLength={300} disabled={addingConstraint} onChange={(event) => setNextConstraint(event.target.value)} placeholder="Keep mornings unhurried" /><button type="submit" disabled={addingConstraint}>{addingConstraint ? "Sending…" : "Send"}</button></div>
     </form>}
     <p className="privacy"><span aria-hidden>◉</span> Your OpenAI key stays on the control server and never enters the VM.</p>
   </section>;

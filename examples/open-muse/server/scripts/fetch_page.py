@@ -16,6 +16,7 @@ from html.parser import HTMLParser
 
 MAX_BYTES = 500 * 1024
 ALLOWED_TYPES = {"text/html", "text/plain", "application/xhtml+xml"}
+PINNED_ADDRESS_ATTRIBUTE = "_open_muse_pinned_address"
 
 
 def bounded_body(body):
@@ -64,7 +65,9 @@ class PinnedHTTPSConnection(http.client.HTTPSConnection):
 
 class PinnedHTTPSHandler(urllib.request.HTTPSHandler):
     def https_open(self, request):
-        pinned_address = validate_url(request.full_url)
+        pinned_address = getattr(request, PINNED_ADDRESS_ATTRIBUTE, None)
+        if pinned_address is None:
+            pinned_address = validate_url(request.full_url)
 
         def connection(host, **kwargs):
             return PinnedHTTPSConnection(host, pinned_address, **kwargs)
@@ -79,7 +82,11 @@ class RedirectHandler(urllib.request.HTTPRedirectHandler):
         self.redirects += 1
         if self.redirects > 3:
             raise ValueError("The page redirected more than three times.")
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        pinned_address = validate_url(newurl)
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None:
+            setattr(redirected, PINNED_ADDRESS_ATTRIBUTE, pinned_address)
+        return redirected
 
 
 class TextExtractor(HTMLParser):
