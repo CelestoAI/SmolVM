@@ -1,66 +1,35 @@
-export type ArtifactName = "brief.md" | "itinerary.md" | "budget.csv" | "sources.json";
-export type RunPhase = "starting_sandbox" | "researching" | "building_packet" | "verifying" | "exporting" | "cleaning_up" | "complete" | "cancelled" | "failed";
-
-export interface RunEvent {
-  id: number;
-  type: string;
-  at: string;
-  phase?: RunPhase;
-  name?: string;
-  progress?: number;
-  tool?: string;
-  purpose?: string;
-  durationMs?: number;
-  summary?: string;
-  source?: { id: string; url: string; title: string };
-  bytes?: number;
-  message?: string;
-  recovery?: string;
+export interface Message { id: string; role: "user" | "assistant"; text: string; createdAt: string }
+export interface Approval { kind: "checkout_review" | "browser_program"; approvalId: string; actionDigest: string; reason: string; expiresAt: string; totalPriceMinor?: number }
+export interface Event { id: number; type: string; createdAt: string; payload: Record<string, unknown> }
+export interface Conversation {
+  id: string; stateVersion: number; controlOwner: "agent" | "pause_requested" | "human";
+  runState: string; sessionLifecycle: string; messages: Message[]; pendingApproval?: Approval;
+  viewerReady: boolean; events: Event[];
 }
 
-export interface Run {
-  id: string;
-  phase: RunPhase;
-  goal: string;
-  constraints: string[];
-  plan: string[];
-  startedAt: string;
-  events: RunEvent[];
-  artifacts: Array<{ name: ArtifactName; bytes: number }>;
-  cleanupConfirmed: boolean;
+let csrfToken = "";
+export async function bootstrap(): Promise<{ conversationId?: string }> {
+  const response = await fetch("/api/bootstrap", { credentials: "same-origin" });
+  if (!response.ok) throw new Error("Could not start the local OpenMuse session.");
+  const result = await response.json() as { csrfToken: string; conversationId?: string };
+  csrfToken = result.csrfToken;
+  return { conversationId: result.conversationId };
 }
-
-async function json<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   const response = await fetch(path, {
-    ...init,
-    headers: { "content-type": "application/json", ...init?.headers },
+    method, credentials: "same-origin",
+    headers: method === "GET" ? undefined : { "content-type": "application/json", "x-smol-csrf": csrfToken },
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
-  const body = await response.json() as T & { error?: string; recovery?: string };
-  if (!response.ok) throw new Error([body.error, body.recovery].filter(Boolean).join(" "));
-  return body;
+  const data = await response.json().catch(() => ({})) as T & { error?: string };
+  if (!response.ok) throw new Error(data.error ?? "OpenMuse request failed.");
+  return data;
 }
-
-export function createPlan(goal: string, constraints: string[]) {
-  return json<{ planId: string; goal: string; constraints: string[]; steps: string[] }>("/api/plans", {
-    method: "POST",
-    body: JSON.stringify({ goal, constraints }),
-  });
-}
-
-export function startRun(planId: string) {
-  return json<Run>("/api/runs", { method: "POST", body: JSON.stringify({ planId }) });
-}
-
-export function getRun(id: string) { return json<Run>(`/api/runs/${id}`); }
-export function cancelRun(id: string) { return json<Run>(`/api/runs/${id}/cancel`, { method: "POST", body: "{}" }); }
-export function addConstraint(id: string, constraint: string) { return json<Run>(`/api/runs/${id}/constraints`, { method: "POST", body: JSON.stringify({ constraint }) }); }
-export function artifactUrl(id: string, name: ArtifactName) { return `/api/runs/${id}/artifacts/${encodeURIComponent(name)}`; }
-export function packetUrl(id: string) { return `/api/runs/${id}/packet.zip`; }
-
-export function watchRun(id: string, onEvent: (event: RunEvent) => void, onDisconnect: () => void): () => void {
-  const source = new EventSource(`/api/runs/${id}/events`);
-  const names = ["run.phase", "vm.lifecycle", "tool.started", "tool.completed", "source.saved", "artifact.ready", "run.warning", "run.failed", "run.completed"];
-  for (const name of names) source.addEventListener(name, (message) => onEvent(JSON.parse((message as MessageEvent).data)));
-  source.onerror = onDisconnect;
-  return () => source.close();
-}
+export const createConversation = () => request<Conversation>("/api/conversations", "POST", {});
+export const getConversation = (id: string) => request<Conversation>(`/api/conversations/${id}`);
+export const sendMessage = (id: string, text: string) => request(`/api/conversations/${id}/messages`, "POST", { text });
+export const stopConversation = (id: string) => request(`/api/conversations/${id}/stop`, "POST", {});
+export const takeOver = (id: string) => request<{ controlEpoch: string }>(`/api/conversations/${id}/takeover`, "POST", {});
+export const resume = (id: string, controlEpoch: string) => request<Conversation>(`/api/conversations/${id}/resume`, "POST", { controlEpoch });
+export const resolveApproval = (id: string, approval: Approval, approved: boolean) => request<Conversation>(`/api/conversations/${id}/approvals/${approval.approvalId}`, "POST", { actionDigest: approval.actionDigest, approved });
+export const viewerToken = (id: string) => request<{ viewerPath: string }>(`/api/conversations/${id}/viewer-token`, "POST", {});

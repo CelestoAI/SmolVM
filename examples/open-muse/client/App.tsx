@@ -1,132 +1,91 @@
-import { useEffect, useMemo, useState } from "react";
-import { addConstraint, artifactUrl, cancelRun, createPlan, getRun, startRun, watchRun, type ArtifactName, type Run, type RunEvent } from "./api";
-import { ArtifactPanel } from "./components/ArtifactPanel";
-import { ComputerEvidence } from "./components/ComputerEvidence";
-import { GoalPanel } from "./components/GoalPanel";
-import { WorkTimeline } from "./components/WorkTimeline";
+import { useEffect, useRef, useState } from "react";
+import * as api from "./api";
 
-const DEFAULT_GOAL = "Plan a three-day Bengaluru trip for two under ₹40,000. Prioritize local food, architecture, and walkable neighborhoods. No nightlife.";
-const DEFAULT_CONSTRAINTS = "Two travelers\nTotal budget at or below ₹40,000\nLocal food and architecture\nWalkable neighborhoods\nNo nightlife";
-const terminal = new Set(["complete", "cancelled", "failed"]);
+const SUGGESTION = "Open https://example.com and tell me what the page says";
 
 export function App() {
-  const [goal, setGoal] = useState(DEFAULT_GOAL);
-  const [constraintsText, setConstraintsText] = useState(DEFAULT_CONSTRAINTS);
-  const [plan, setPlan] = useState<{ id: string; steps: string[] }>();
-  const [run, setRun] = useState<Run>();
-  const [events, setEvents] = useState<RunEvent[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
-  const [preview, setPreview] = useState<{ name: ArtifactName; content: string }>();
-  const [finalSnapshotRetry, setFinalSnapshotRetry] = useState(0);
-  const [finalSnapshotError, setFinalSnapshotError] = useState<string>();
-  const [now, setNow] = useState(Date.now());
-  const constraints = useMemo(() => constraintsText.split("\n").map((value) => value.trim()).filter(Boolean), [constraintsText]);
-  const running = Boolean(run && !terminal.has(run.phase));
+  const [conversation, setConversation] = useState<api.Conversation>();
+  const [text, setText] = useState("");
+  const [error, setError] = useState("");
+  const [viewerPath, setViewerPath] = useState("");
+  const [controlEpoch, setControlEpoch] = useState("");
+  const endRef = useRef<HTMLDivElement>(null);
 
+  const refresh = async (id = conversation?.id) => { if (id) setConversation(await api.getConversation(id)); };
   useEffect(() => {
-    if (!run || terminal.has(run.phase)) return;
-    const stop = watchRun(run.id, (event) => {
-      setEvents((current) => current.some((item) => item.id === event.id) ? current : [...current, event]);
-      if (event.type === "run.phase" && event.phase) {
-        setRun((current) => current ? { ...current, phase: event.phase! } : current);
-      }
-      if (event.type === "run.failed") setError([event.message, event.recovery].filter(Boolean).join(" "));
-    }, () => {});
-    return stop;
-  }, [run?.id, running]);
-
-  useEffect(() => {
-    if (!run || !terminal.has(run.phase)) return;
     let cancelled = false;
-    let retryTimer: number | undefined;
-    const refreshFinalSnapshot = async () => {
+    let source: EventSource | undefined;
+    void (async () => {
       try {
-        const latest = await getRun(run.id);
-        if (!cancelled) {
-          setRun(latest);
-          setFinalSnapshotError(undefined);
-        }
-      } catch {
+        const { conversationId } = await api.bootstrap();
+        const created = conversationId ? await api.getConversation(conversationId) : await api.createConversation();
         if (cancelled) return;
-        setFinalSnapshotError("The final artifact list could not be loaded. Retry now, or leave this page open for an automatic retry.");
-        retryTimer = window.setTimeout(() => void refreshFinalSnapshot(), 2_000);
-      }
-    };
-    void refreshFinalSnapshot();
-    return () => { cancelled = true; if (retryTimer !== undefined) window.clearTimeout(retryTimer); };
-  }, [run?.id, run?.phase, finalSnapshotRetry]);
-
+        setConversation(created);
+        source = new EventSource(`/api/conversations/${created.id}/events`);
+        source.onmessage = () => void refresh(created.id);
+        source.addEventListener("message.completed", () => void refresh(created.id));
+        for (const name of ["browser.starting", "browser.ready", "agent.started", "agent.completed", "agent.failed", "approval.requested", "approval.resolved", "approval.invalidated", "control.changed", "cart.updated", "conversation.stopped"]) source.addEventListener(name, () => void refresh(created.id));
+      } catch (caught) { if (!cancelled) setError(caught instanceof Error ? caught.message : "Could not start OpenMuse."); }
+    })();
+    return () => { cancelled = true; source?.close(); };
+  }, []);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [conversation?.messages.length]);
   useEffect(() => {
-    if (!running) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [running]);
+    if (!conversation?.viewerReady || viewerPath) return;
+    void api.viewerToken(conversation.id).then(({ viewerPath: path }) => setViewerPath(path)).catch((caught) => setError(String(caught)));
+  }, [conversation?.viewerReady, conversation?.id, viewerPath]);
+  useEffect(() => { if (conversation?.runState === "stopped") setViewerPath(""); }, [conversation?.runState]);
 
-  const elapsed = run ? formatElapsed(now - Date.parse(run.startedAt)) : "00:00";
-  const ready = useMemo(() => {
-    return [...new Set(run?.artifacts.map((item) => item.name) ?? [])];
-  }, [run?.artifacts]);
+  const submit = async (value = text) => {
+    if (!conversation || !value.trim()) return;
+    setError(""); setText("");
+    try { await api.sendMessage(conversation.id, value.trim()); await refresh(); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Could not send message."); }
+  };
+  const takeControl = async () => {
+    if (!conversation) return;
+    try { const result = await api.takeOver(conversation.id); setControlEpoch(result.controlEpoch); await refresh(); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Could not take control."); }
+  };
+  const returnControl = async () => {
+    if (!conversation) return;
+    try { setConversation(await api.resume(conversation.id, controlEpoch)); setControlEpoch(""); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Could not return control."); }
+  };
+  const resolve = async (approved: boolean) => {
+    if (!conversation?.pendingApproval) return;
+    try { setConversation(await api.resolveApproval(conversation.id, conversation.pendingApproval, approved)); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Approval failed."); }
+  };
 
-  async function prepare() {
-    setBusy(true); setError(undefined); setFinalSnapshotError(undefined); setPreview(undefined);
-    try {
-      const result = await createPlan(goal, constraints);
-      setPlan({ id: result.planId, steps: result.steps });
-    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
-    finally { setBusy(false); }
-  }
+  const busy = conversation?.runState === "model_turn" || conversation?.runState === "tool_action";
+  const status = conversation?.runState === "stopped" ? "Stopped" : conversation?.controlOwner === "human" ? "You have control" : busy ? "Agent working" : conversation?.runState === "waiting_for_approval" ? "Waiting for you" : "Ready";
+  const activities = [...(conversation?.events ?? [])].reverse().filter((event) => !["message.completed", "conversation.created"].includes(event.type)).slice(0, 8);
 
-  async function start() {
-    if (!plan) return;
-    setBusy(true); setError(undefined); setFinalSnapshotError(undefined); setEvents([]);
-    try {
-      const started = await startRun(plan.id);
-      setPlan(undefined); setRun(started); setEvents(started.events); setNow(Date.now());
-    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
-    finally { setBusy(false); }
-  }
-
-  async function stop() {
-    if (!run) return;
-    try { await cancelRun(run.id); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
-  }
-
-  async function showPreview(name: ArtifactName) {
-    if (!run) return;
-    const response = await fetch(artifactUrl(run.id, name));
-    if (!response.ok) return setError("That artifact is not ready yet.");
-    setPreview({ name, content: await response.text() });
-  }
-
-  async function queueConstraint(value: string) {
-    if (!run) return false;
-    try {
-      const latest = await addConstraint(run.id, value);
-      setRun(latest);
-      return true;
-    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); return false; }
-  }
-
-  return <main className="shell">
-    <header className="app-header"><div className="brand"><span className="brand-mark">M</span><strong>Open Muse</strong></div><div className="local-status"><span />{running ? `Running locally · ${run?.phase.replaceAll("_", " ")}` : "Local demo · ready"}</div></header>
-    <GoalPanel goal={goal} constraints={constraintsText} plan={plan?.steps ?? (running ? run?.plan : undefined)} canStart={Boolean(plan)} busy={busy} running={running} onGoal={(value) => { setGoal(value); setPlan(undefined); }} onConstraints={(value) => { setConstraintsText(value); setPlan(undefined); }} onPlan={prepare} onStart={start} onStop={stop} onAddConstraint={queueConstraint} />
+  return <main className="app-shell">
+    <header className="topbar">
+      <div className="brand"><span className="brandmark">M</span><span>OpenMuse</span><span className="preview">PREVIEW</span></div>
+      <div className="top-actions"><span className={`status-dot ${busy ? "working" : ""}`}></span><span>{status}</span>{conversation && conversation.runState !== "stopped" && <button className="quiet danger" onClick={() => void api.stopConversation(conversation.id)}>Stop</button>}</div>
+    </header>
     <section className="workspace">
-      <header className="workspace-header"><div><p className="eyebrow">Isolated workspace</p><h2>Muse's computer</h2></div><div className={`phase-pill ${running ? "active" : ""}`}><span />{run?.phase.replaceAll("_", " ") ?? "ready"}</div></header>
-      {error && <div className="error-banner" role="alert"><strong>Open Muse needs attention</strong><span>{error}</span><button onClick={() => setError(undefined)}>Dismiss</button></div>}
-      {finalSnapshotError && <div className="error-banner" role="alert"><strong>Open Muse needs attention</strong><span>{finalSnapshotError}</span><button onClick={() => setFinalSnapshotRetry((value) => value + 1)}>Retry</button></div>}
-      <div className="work-grid">
-        <ComputerEvidence events={events} />
-        <WorkTimeline events={events} phase={run?.phase} elapsed={elapsed} />
-      </div>
-      <ArtifactPanel runId={run?.id} ready={ready} onPreview={showPreview} />
-      {preview && <div className="preview" role="dialog" aria-modal="true" aria-labelledby="preview-title"><div className="preview-sheet"><header><h2 id="preview-title">{preview.name}</h2><button aria-label="Close preview" onClick={() => setPreview(undefined)}>×</button></header><pre>{preview.content}</pre></div></div>}
+      <section className="chat-pane">
+        <div className="chat-scroll">
+          {!conversation?.messages.length && <div className="welcome"><div className="eyebrow">A computer coworker in a disposable VM</div><h1>What should we<br/>get done?</h1><p>Ask naturally. It can operate public websites in its own browser, while you watch, approve interactions, or take control.</p><button className="suggestion" onClick={() => void submit(SUGGESTION)}><span>Try a public web task</span><strong>{SUGGESTION}</strong><b>→</b></button></div>}
+          <div className="messages">{conversation?.messages.map((message) => <article key={message.id} className={`message ${message.role}`}><div className="avatar">{message.role === "user" ? "Y" : "M"}</div><div><div className="message-role">{message.role === "user" ? "You" : "OpenMuse"}</div><p>{message.text}</p></div></article>)}</div>
+          {conversation?.pendingApproval && <aside className="approval"><div className="eyebrow">Approval required</div><h3>Allow this website interaction?</h3><p>{conversation.pendingApproval.reason}</p><div><button onClick={() => void resolve(true)}>Approve once</button><button className="secondary" onClick={() => void resolve(false)}>Not now</button></div></aside>}
+          {busy && <div className="thinking"><i></i><i></i><i></i> Working in the browser</div>}
+          <div ref={endRef}></div>
+        </div>
+        <div className="composer-wrap">{error && <div className="error">{error}</div>}<div className="composer"><textarea value={text} onChange={(event) => setText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} placeholder="Message OpenMuse…" disabled={!conversation || conversation.runState === "stopped"}/><button aria-label="Send" onClick={() => void submit()} disabled={!text.trim()}>↑</button></div><div className="hint">Enter to send · SmolVM is deleted when you stop</div></div>
+      </section>
+      <section className="computer-pane">
+        <div className="computer-head"><div><div className="eyebrow">Isolated workspace</div><h2>Agent’s computer</h2></div><div className="computer-actions">{conversation?.runState !== "stopped" && (conversation?.controlOwner === "human" ? <button onClick={() => void returnControl()}>Return control</button> : <button className="secondary" onClick={() => void takeControl()} disabled={!conversation?.viewerReady}>Take control</button>)}</div></div>
+        <div className="screen">
+          {viewerPath ? <iframe title="Live SmolVM browser" src={viewerPath}/> : <div className="screen-empty"><div className="orbit"><span>S</span></div><h3>{conversation?.runState === "stopped" ? "Computer deleted" : conversation?.sessionLifecycle === "starting" ? "Booting the computer…" : "The computer is asleep"}</h3><p>{conversation?.runState === "stopped" ? "Start a new conversation to get a fresh VM." : "It starts only when the agent needs a browser."}</p></div>}
+          {viewerPath && conversation?.controlOwner !== "human" && <div className="input-shield"><span><i></i> LIVE · Agent controlling</span><button onClick={() => void takeControl()}>Take control</button></div>}
+        </div>
+        <div className="activity"><div className="activity-title"><span>Live activity</span><span>{activities.length ? "Current session" : "Waiting"}</span></div>{!activities.length ? <div className="activity-empty">Browser actions will appear here.</div> : activities.map((event) => <div className="activity-row" key={event.id}><span className="activity-icon"></span><div><strong>{String(event.payload.summary ?? event.type.replaceAll(".", " "))}</strong><small>{new Date(event.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</small></div></div>)}</div>
+      </section>
     </section>
   </main>;
-}
-
-function formatElapsed(milliseconds: number): string {
-  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
-  return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 }

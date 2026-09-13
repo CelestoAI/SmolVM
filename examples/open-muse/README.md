@@ -1,97 +1,74 @@
-# Open Muse
+# OpenMuse
 
-Open Muse turns one travel goal into a sourced itinerary, budget, and research packet. The AI works inside a temporary SmolVM, copies out the finished files, and deletes the temporary computer.
+OpenMuse is a chat-based computer coworker that can operate public websites inside a disposable SmolVM. You chat on the left and watch its real browser on the right.
 
-This is a focused local demo, not a general personal assistant. It supports one operator, one run at a time, and the built-in three-day Bengaluru trip workflow.
+The agent can browse any ordinary public website without a site-specific adapter. Every model-proposed Playwright program, including observation and navigation, displays a one-time approval before it runs.
 
-## Run the demo
+The OpenAI API key stays in the host Node process. Model-written Playwright runs as an unprivileged user inside the browser VM, not in the host process.
 
-You need Node.js 22.19 or newer, an OpenAI API key, and a working SmolVM installation.
+## Run it
 
-Install and check SmolVM first:
-
-```bash
-curl -sSL https://celesto.ai/install.sh | bash
-smolvm doctor
-```
-
-Then install the example. `--allow-remote=root` lets npm 12 fetch the SmolVM release archive named directly in this package.
+Install the packages:
 
 ```bash
-cd examples/open-muse
-npm install --allow-remote=root
+npm install
 ```
 
-Create your local configuration:
+Create the local environment file:
 
 ```bash
 cp .env.example .env.local
 ```
 
-Add your API key to `.env.local`:
-
-```dotenv
-OPENAI_API_KEY=your-key-here
-```
-
-Start the app:
+Add `OPENAI_API_KEY` to `.env.local`, then start the app:
 
 ```bash
 npm run dev
 ```
 
-If the TypeScript SDK reports that the installed SmolVM runtime is too old while developing from this repository, use the source runtime:
+Open [http://127.0.0.1:5174](http://127.0.0.1:5174) and try:
 
-```dotenv
-SMOLVM_RUNTIME=./scripts/source-smolvm-runtime.sh
+> Open https://example.com and tell me what the page says.
+
+The first browser action may take a little while because SmolVM boots a fresh browser image. The computer remains warm between chat turns and is deleted when you click **Stop** or stop the server.
+
+This source-checkout example uses `file:../../ts` so it can exercise the unreleased browser-session API. Build that package once before installing if its `dist/` folder is absent:
+
+```bash
+(cd ../../ts && npm install && npm run build)
 ```
 
-Open [http://127.0.0.1:5173](http://127.0.0.1:5173). Prepare the built-in plan, review its three steps, then select **Start research**.
+On macOS, the runtime wrapper downloads the checksum-verified ARM64 Linux guest-agent binary pinned by this checkout. This avoids requiring a Linux cross-linker just to run the example.
 
-## What you receive
+## How it works
 
-- `brief.md` summarizes the recommendation, assumptions, and unverified details.
-- `itinerary.md` groups three days of activities into walkable neighborhoods.
-- `budget.csv` itemizes costs in INR and adds a 10% contingency.
-- `sources.json` records each source URL, retrieval time, title, and content hash.
-- `Open-Muse-packet.zip` contains all four files.
+- Pi is the conversational agent harness.
+- `@celestoai/smolvm` creates a live, ephemeral browser VM with public web access.
+- Pi writes a short JavaScript Playwright program for each browser step.
+- `browser_run` creates a one-time approval, then executes the approved program through the runner installed inside the VM.
+- The real browser display is streamed through SmolVM's noVNC viewer into the right pane.
+- **Take control** pauses Pi and lets you use the browser directly.
 
-Open Muse keeps verified files in server memory after it deletes the VM. Stopping the Node server removes those in-memory results.
+Approval is currently bound to the complete proposed program, not to a site-specific semantic promise such as an exact cart total. Requiring approval for read-only programs is a conservative temporary policy until the runner can enforce the design's finer operation-level boundary.
 
-## Safety boundaries
+The initial general-web implementation uses SmolVM's open network mode. The approved follow-up design adds a public-only egress proxy that blocks private and metadata destinations before this example should be treated as a hardened browsing boundary.
 
-The Pi agent harness receives only four purpose-built tools: fetch a public page, record a finding, calculate a budget, and write an approved artifact. It never receives a shell tool. Each operation validates its input on the host and runs a fixed script inside the VM with an argument array.
+See [the approved general-web design](../../docs/designs/open-muse-general-web.md) for the staged security model. The original [fixture-store design](../../docs/designs/open-muse.md) documents the UI, lifecycle, and takeover flow.
 
-The OpenAI API key stays in the Node server. The VM receives no host folders, cookies, browser profile, SSH keys, cloud credentials, or model credentials. The server listens on `127.0.0.1` and rejects non-loopback configuration.
+## Offline fixture mode
 
-The VM uses public-web network access for research. Treat the downloaded packet as AI-generated material and verify important prices before booking.
+The synthetic `shop.smol.test` store remains available for deterministic development and CI. It is generated in memory and never resolves through DNS.
 
-## Configuration
+Start the app in fixture mode:
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `OPENAI_API_KEY` | none | Authorizes the server's OpenAI requests. |
-| `OPENAI_MODEL` | `gpt-5-mini` | Selects a model from the pinned Pi catalog. |
-| `OPEN_MUSE_HOST` | `127.0.0.1` | Loopback address for the control server. Other addresses are rejected. |
-| `OPEN_MUSE_PORT` | `4317` | Port used by the control server. |
+```bash
+OPEN_MUSE_FIXTURE_STORE=1 npm run dev
+```
 
-## Verify changes
+Fixture mode disables browser networking and restores the original catalog-specific tools and checkout-review approval.
 
-Run the complete local check without a VM or model request:
+## Checks
 
 ```bash
 npm run check
 ```
-
-The tests use structural fake SmolVM and workflow implementations. They cover artifact validation, URL policy, planning output, one-run enforcement, cancellation, export, and cleanup.
-
-## Current limits
-
-- The live workflow is tuned for the built-in Bengaluru trip goal.
-- Results are not persisted after the server stops.
-- A run can fetch at most eight public HTTPS pages and lasts at most eight minutes.
-- Completed artifacts remain available for download for 15 minutes, then the server releases them.
-- Logged-in sites, purchases, forms, messages, host files, and arbitrary commands are unavailable.
-- The real-VM and live-model release smoke tests remain manual because normal CI must not depend on travel websites or paid model calls.
-
-See the [implementation handoff](../../docs/designs/open-muse.md) for the product contract, architecture, and remaining release work.
