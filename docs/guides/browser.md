@@ -52,6 +52,35 @@ with SmolVM.browser() as browser:
     page.goto("https://example.com")
 ```
 
+## Use it from TypeScript
+
+The source checkout contains the browser-session API planned for the next TypeScript preview. Until that preview is published, install the local `ts/` package rather than `0.1.0-preview.1`.
+
+```ts
+import { chromium } from "playwright-core";
+import { SmolVM } from "@celestoai/smolvm";
+
+const smolvm = new SmolVM();
+const session = await smolvm.browsers.create({
+  mode: "live",
+  profile: { mode: "ephemeral" },
+});
+
+try {
+  const browser = await chromium.connectOverCDP(session.cdpUrl);
+  const context = browser.contexts()[0];
+  if (!context) throw new Error("Browser context is unavailable.");
+  const page = context.pages()[0] ?? await context.newPage();
+  await page.goto("https://example.com");
+  console.log(session.viewerUrl);
+  await browser.close();
+} finally {
+  await smolvm.close();
+}
+```
+
+The automation and viewer endpoints are loopback-only. Keep them in the trusted Node process rather than sending them to browser JavaScript or a remote client.
+
 ## Implementation notes
 
-Browser sessions, profile IDs, local viewer endpoints, artifacts, and Playwright connections are implemented in [`src/smolvm/browser.py`](../../src/smolvm/browser.py). Their public configuration types are in [`src/smolvm/types.py`](../../src/smolvm/types.py), with coverage in [`tests/test_browser.py`](../../tests/test_browser.py).
+Python browser sessions, profile IDs, local viewer endpoints, artifacts, and Playwright connections are implemented in [`src/smolvm/browser.py`](../../src/smolvm/browser.py). The TypeScript session wrapper is in [`ts/src/browser-session.ts`](../../ts/src/browser-session.ts), and the private bridge routes are in [`src/smolvm/server/app.py`](../../src/smolvm/server/app.py). Public configuration types are in [`src/smolvm/types.py`](../../src/smolvm/types.py) and [`ts/src/types.ts`](../../ts/src/types.ts), with coverage in [`tests/test_browser.py`](../../tests/test_browser.py), [`tests/integration/test_server.py`](../../tests/integration/test_server.py), and [`ts/test/sdk.test.ts`](../../ts/test/sdk.test.ts).
