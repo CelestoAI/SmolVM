@@ -86,3 +86,40 @@ test("takeover waits for an approved browser action to finish", async () => {
   assert.ok(control.controlEpoch);
   await manager.stop(created.id);
 });
+
+test("approved browser results resume the agent without requesting another observation", async () => {
+  const manager = new ConversationManager("", "gpt-5-mini");
+  const created = await manager.create();
+  const internals = manager as unknown as {
+    context: ConversationContext;
+    turnQueue: Promise<void>;
+    runTurn: (context: ConversationContext, text: string) => Promise<void>;
+  };
+  const prompts: string[] = [];
+  internals.runTurn = async (_context, text) => { prompts.push(text); };
+  internals.context.sessionLifecycle = "ready";
+  internals.context.browserSession = {
+    status: "ready", sessionId: "browser-test", sandboxId: "sandbox-test", cdpUrl: "http://127.0.0.1:9222",
+    exec: async () => ({
+      ok: true, exitCode: 0,
+      stdout: 'SMOLVM_BROWSER_RESULT={"ok":true,"value":{"title":"Amazon.in","price":"₹59,900"}}',
+      stderr: "", durationMs: 1,
+    }),
+    delete: async () => undefined,
+  };
+  internals.context.pendingApproval = {
+    kind: "browser_program", approvalId: "approval-result", actionDigest: "b".repeat(64),
+    reason: "Read the current price", expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    program: "return { title: await page.title() };",
+  };
+
+  await manager.approve(created.id, "approval-result", "b".repeat(64), true);
+  await internals.turnQueue;
+
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0], /"title":"Amazon\.in","price":"₹59,900"/);
+  assert.match(prompts[0], /without calling browser_run again/);
+  assert.doesNotMatch(prompts[0], /Re-observe/);
+  assert.equal(manager.snapshot(created.id).pendingApproval, undefined);
+  await manager.stop(created.id);
+});

@@ -157,18 +157,21 @@ export class ActionBroker {
     return pending;
   }
 
-  async resolveApproval(approvalId: string, actionDigest: string, approved: boolean): Promise<{ resumeAgent: boolean }> {
+  async resolveApproval(
+    approvalId: string,
+    actionDigest: string,
+    approved: boolean,
+  ): Promise<{ resumeAgent: false } | { resumeAgent: true; browserResult: unknown }> {
     const pending = this.context.pendingApproval;
     if (!pending || pending.approvalId !== approvalId || pending.actionDigest !== actionDigest) throw Object.assign(new Error("That approval is no longer current."), { status: 409 });
     if (Date.parse(pending.expiresAt) <= Date.now() || (pending.kind === "checkout_review" && pending.commerceRevision !== this.context.commerceRevision)) throw Object.assign(new Error("That approval expired or the page changed."), { status: 409 });
     delete this.context.pendingApproval;
-    let resumeAgent = false;
+    let browserResult: unknown;
     try {
       if (approved) {
         if (pending.kind === "browser_program") {
-          await this.executeProgram(pending.program!, pending.reason);
+          ({ result: browserResult } = await this.executeProgram(pending.program!, pending.reason));
           this.emit("approval.resolved", { approved: true, summary: "Approved website interaction completed" }, true);
-          resumeAgent = true;
         } else {
           const controlEpoch = this.context.controlEpoch;
           const storefront = await this.ready();
@@ -181,6 +184,8 @@ export class ActionBroker {
     } finally {
       this.context.runState = "idle";
     }
-    return { resumeAgent };
+    return pending.kind === "browser_program" && approved
+      ? { resumeAgent: true, browserResult }
+      : { resumeAgent: false };
   }
 }
