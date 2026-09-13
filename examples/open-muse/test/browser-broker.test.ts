@@ -64,7 +64,7 @@ test("active browser programs wait for one-time approval", async () => {
     true,
   );
 
-  assert.deepEqual(outcome, { resumeAgent: true });
+  assert.deepEqual(outcome, { resumeAgent: true, browserResult: { title: "Example Domain" } });
   assert.equal(programs.length, 1);
   assert.equal(context.pendingApproval, undefined);
 });
