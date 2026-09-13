@@ -1,0 +1,26 @@
+name: OpenMuse Research example
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.19"
+          cache: npm
+          cache-dependency-path: examples/open-muse-research/package-lock.json
+      - run: npm ci --allow-remote=root
+        working-directory: examples/open-muse-research
+      - run: npm run check
+        working-directory: examples/open-muse-research

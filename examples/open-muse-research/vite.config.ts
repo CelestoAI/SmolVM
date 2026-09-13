@@ -6,10 +6,13 @@ export const API_PROXY_PATTERN = "^/api(?:/|$)";
 export default defineConfig({
   root: "client",
   plugins: [react()],
-  build: { outDir: "../dist/client", emptyOutDir: false },
+  build: {
+    outDir: "../dist/client",
+    emptyOutDir: false,
+  },
   server: {
     host: "127.0.0.1",
-    port: 5174,
-    proxy: { [API_PROXY_PATTERN]: { target: "http://127.0.0.1:4318", ws: true } },
+    port: 5173,
+    proxy: { [API_PROXY_PATTERN]: "http://127.0.0.1:4317" },
   },
 });

@@ -1,4 +1,4 @@
-name: Open Muse example
+name: OpenMuse example
 
 on:
   push:
@@ -19,8 +19,14 @@ jobs:
         with:
           node-version: "22.19"
           cache: npm
-          cache-dependency-path: examples/open-muse/package-lock.json
-      - run: npm ci --allow-remote=root
+          cache-dependency-path: |
+            ts/package-lock.json
+            examples/open-muse/package-lock.json
+      - run: npm ci
+        working-directory: ts
+      - run: npm run build
+        working-directory: ts
+      - run: npm ci
         working-directory: examples/open-muse
       - run: npm run check
         working-directory: examples/open-muse
