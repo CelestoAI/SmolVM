@@ -2,7 +2,7 @@
 import csv
 import json
 import sys
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 
 
 def money(value):
@@ -18,7 +18,16 @@ def main():
     for item in items:
         total = money(item["quantity"]) * money(item["unitCostInr"])
         subtotal += total
-        rows.append([item["category"], item["item"], item["quantity"], money(item["unitCostInr"]), total, item["sourceId"]])
+        rows.append(
+            [
+                item["category"],
+                item["item"],
+                item["quantity"],
+                money(item["unitCostInr"]),
+                total,
+                item["sourceId"],
+            ]
+        )
     contingency = money(subtotal * Decimal("0.10"))
     rows.append(["contingency", "10% contingency", 1, contingency, contingency, ""])
     with open(output, "w", newline="", encoding="utf-8") as handle:

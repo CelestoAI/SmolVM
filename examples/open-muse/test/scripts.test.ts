@@ -34,6 +34,11 @@ test("fixed guest scripts calculate and verify a valid four-file packet", async 
     assert.equal(bounded.stdout.trim(), "512000 True");
     const searchParser = await run("python3", ["-c", `import json,runpy; module=runpy.run_path(${JSON.stringify(join(scripts, "search_web.py"))}); sample='<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Ftrip">Trip guide</a>'; print(json.dumps(module["parse_results"](sample)))`]);
     assert.deepEqual(JSON.parse(searchParser.stdout), [{ title: "Trip guide", url: "https://example.com/trip" }]);
+    const lookalikeParser = await run("python3", ["-c", `import json,runpy; module=runpy.run_path(${JSON.stringify(join(scripts, "search_web.py"))}); sample='<a class="result__a" href="https://evilduckduckgo.com/l/?uddg=https%3A%2F%2Finternal.example%2Fsecret">Lookalike</a>'; print(json.dumps(module["parse_results"](sample)))`]);
+    assert.deepEqual(JSON.parse(lookalikeParser.stdout), [{
+      title: "Lookalike",
+      url: "https://evilduckduckgo.com/l/?uddg=https%3A%2F%2Finternal.example%2Fsecret",
+    }]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
