@@ -120,6 +120,16 @@ test("browser programs reject empty, oversized, failed, and malformed runner res
       (error: unknown) => (error as { status?: number }).status === 422
         && (error as { cause?: Error }).cause?.message === "The browser runner returned an invalid result.",
     );
+
+    context.browserSession!.exec = async () => ({
+      ok: true, exitCode: 0, stdout: 'SMOLVM_BROWSER_RESULT={"ok":false}\n', stderr: "", durationMs: 1,
+    });
+    await broker.runProgram("return true;", false, "Unsuccessful runner result");
+    await assert.rejects(
+      () => broker.resolveApproval(context.pendingApproval!.approvalId, context.pendingApproval!.actionDigest, true),
+      (error: unknown) => (error as { status?: number }).status === 422
+        && (error as { cause?: Error }).cause?.message === "The browser runner returned an unsuccessful result.",
+    );
   } finally {
     console.error = originalError;
   }

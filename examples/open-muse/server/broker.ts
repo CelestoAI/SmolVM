@@ -56,7 +56,8 @@ export class ActionBroker {
       if (!command.ok) throw new Error(command.stderr.trim() || "The Playwright program failed inside the disposable browser.");
       const marker = command.stdout.split("\n").reverse().find((line: string) => line.startsWith("SMOLVM_BROWSER_RESULT="));
       if (!marker) throw new Error("The browser runner returned an invalid result.");
-      const parsed = JSON.parse(marker.slice("SMOLVM_BROWSER_RESULT=".length)) as { ok: boolean; value?: unknown };
+      const parsed = JSON.parse(marker.slice("SMOLVM_BROWSER_RESULT=".length)) as { ok?: unknown; value?: unknown } | null;
+      if (parsed?.ok !== true) throw new Error("The browser runner returned an unsuccessful result.");
       this.emit("tool.completed", { tool: "browser_run", summary: summary || "Playwright program completed" });
       return { completed: true, result: parsed.value };
     } catch (error) {
