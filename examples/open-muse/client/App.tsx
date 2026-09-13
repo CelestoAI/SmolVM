@@ -18,6 +18,8 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [preview, setPreview] = useState<{ name: ArtifactName; content: string }>();
+  const [finalSnapshotRetry, setFinalSnapshotRetry] = useState(0);
+  const [finalSnapshotError, setFinalSnapshotError] = useState<string>();
   const [now, setNow] = useState(Date.now());
   const constraints = useMemo(() => constraintsText.split("\n").map((value) => value.trim()).filter(Boolean), [constraintsText]);
   const running = Boolean(run && !terminal.has(run.phase));
@@ -28,13 +30,32 @@ export function App() {
       setEvents((current) => current.some((item) => item.id === event.id) ? current : [...current, event]);
       if (event.type === "run.phase" && event.phase) {
         setRun((current) => current ? { ...current, phase: event.phase! } : current);
-        if (terminal.has(event.phase)) void getRun(run.id).then((latest) => setRun(latest));
       }
       if (event.type === "run.failed") setError([event.message, event.recovery].filter(Boolean).join(" "));
-      if (event.type === "run.completed") void getRun(run.id).then((latest) => setRun(latest));
     }, () => {});
     return stop;
   }, [run?.id, running]);
+
+  useEffect(() => {
+    if (!run || !terminal.has(run.phase)) return;
+    let cancelled = false;
+    let retryTimer: number | undefined;
+    const refreshFinalSnapshot = async () => {
+      try {
+        const latest = await getRun(run.id);
+        if (!cancelled) {
+          setRun(latest);
+          setFinalSnapshotError(undefined);
+        }
+      } catch {
+        if (cancelled) return;
+        setFinalSnapshotError("The final artifact list could not be loaded. Retry now, or leave this page open for an automatic retry.");
+        retryTimer = window.setTimeout(() => void refreshFinalSnapshot(), 2_000);
+      }
+    };
+    void refreshFinalSnapshot();
+    return () => { cancelled = true; if (retryTimer !== undefined) window.clearTimeout(retryTimer); };
+  }, [run?.id, run?.phase, finalSnapshotRetry]);
 
   useEffect(() => {
     if (!running) return;
@@ -48,7 +69,7 @@ export function App() {
   }, [run?.artifacts]);
 
   async function prepare() {
-    setBusy(true); setError(undefined); setPreview(undefined);
+    setBusy(true); setError(undefined); setFinalSnapshotError(undefined); setPreview(undefined);
     try {
       const result = await createPlan(goal, constraints);
       setPlan({ id: result.planId, steps: result.steps });
@@ -58,7 +79,7 @@ export function App() {
 
   async function start() {
     if (!plan) return;
-    setBusy(true); setError(undefined); setEvents([]);
+    setBusy(true); setError(undefined); setFinalSnapshotError(undefined); setEvents([]);
     try {
       const started = await startRun(plan.id);
       setPlan(undefined); setRun(started); setEvents(started.events); setNow(Date.now());
@@ -80,11 +101,12 @@ export function App() {
   }
 
   async function queueConstraint(value: string) {
-    if (!run) return;
+    if (!run) return false;
     try {
       const latest = await addConstraint(run.id, value);
       setRun(latest);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+      return true;
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); return false; }
   }
 
   return <main className="shell">
@@ -93,6 +115,7 @@ export function App() {
     <section className="workspace">
       <header className="workspace-header"><div><p className="eyebrow">Isolated workspace</p><h2>Muse's computer</h2></div><div className={`phase-pill ${running ? "active" : ""}`}><span />{run?.phase.replaceAll("_", " ") ?? "ready"}</div></header>
       {error && <div className="error-banner" role="alert"><strong>Open Muse needs attention</strong><span>{error}</span><button onClick={() => setError(undefined)}>Dismiss</button></div>}
+      {finalSnapshotError && <div className="error-banner" role="alert"><strong>Open Muse needs attention</strong><span>{finalSnapshotError}</span><button onClick={() => setFinalSnapshotRetry((value) => value + 1)}>Retry</button></div>}
       <div className="work-grid">
         <ComputerEvidence events={events} />
         <WorkTimeline events={events} phase={run?.phase} elapsed={elapsed} />

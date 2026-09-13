@@ -16,6 +16,7 @@ const planBody = z.object({
 });
 const runBody = z.object({ planId: z.string().uuid() });
 const constraintBody = z.object({ constraint: z.string().trim().min(1).max(300) });
+const loopbackHosts = new Set(["127.0.0.1", "localhost", "::1"]);
 
 const securityHeaders = {
   "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
@@ -117,6 +118,12 @@ function assertMutationRequest(request: Pick<IncomingMessage, "headers">, expect
   }
   const origin = request.headers.origin;
   const host = request.headers.host;
+  let hostname = "";
+  try { hostname = new URL(`http://${host ?? ""}`).hostname.replace(/^\[|\]$/g, "").toLowerCase(); }
+  catch { /* Rejected below. */ }
+  if (!loopbackHosts.has(hostname)) {
+    throw Object.assign(new Error("Open Muse only accepts requests from this computer."), { status: 403 });
+  }
   if (origin && (!host || origin !== `http://${host}`)) {
     throw Object.assign(new Error("Cross-site requests are not allowed."), { status: 403 });
   }

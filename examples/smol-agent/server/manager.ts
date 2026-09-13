@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { SmolVM } from "@celestoai/smolvm";
 import { chromium } from "playwright-core";
 import { ActionBroker } from "./broker.js";
-import { assistantText, createAgent } from "./agent.js";
+import { assistantText, createAgent, resetAgentTurnLimit } from "./agent.js";
 import { groundAddIntent } from "./intent.js";
 import { installStorefront } from "./storefront.js";
 import type { ConversationContext, ConversationEvent, Message } from "./types.js";
@@ -13,6 +13,7 @@ export class ConversationManager {
   private context?: ConversationContext;
   private listeners = new Set<Listener>();
   private turnQueue: Promise<void> = Promise.resolve();
+  private activeAction?: Promise<void>;
   private viewerNonces = new Map<string, { conversationId: string; expiresAt: number }>();
 
   constructor(private readonly apiKey: string, private readonly model: string, private readonly fixtureStore = false) {}
@@ -21,10 +22,14 @@ export class ConversationManager {
     return this.context && !["stopped", "failed"].includes(this.context.runState) ? this.context.id : undefined;
   }
 
-  create(): ReturnType<ConversationManager["snapshot"]> {
+  async create(): Promise<ReturnType<ConversationManager["snapshot"]>> {
     if (this.context && !["stopped", "failed"].includes(this.context.runState)) throw Object.assign(new Error("Stop the active conversation before starting another."), { status: 409 });
+    if (this.context?.runState === "failed") {
+      await this.activeAction;
+      await this.stop(this.context.id);
+    }
     this.context = {
-      id: randomUUID(), stateVersion: 1, controlOwner: "agent", runState: "idle", sessionLifecycle: "absent",
+      id: randomUUID(), stateVersion: 1, controlOwner: "agent", controlEpoch: randomBytes(18).toString("base64url"), runState: "idle", sessionLifecycle: "absent",
       messages: [], events: [], grants: [], cart: [], receipts: new Map(), commerceRevision: 0,
       observationId: "", lastActivityAt: Date.now(),
     };
@@ -74,8 +79,17 @@ export class ConversationManager {
 
   async approve(id: string, approvalId: string, actionDigest: string, approved: boolean): Promise<ReturnType<ConversationManager["snapshot"]>> {
     const context = this.require(id);
+    if (this.activeAction) throw Object.assign(new Error("Another approved browser action is still running."), { status: 409 });
     const broker = this.broker(context);
-    const { resumeAgent } = await broker.resolveApproval(approvalId, actionDigest, approved);
+    const operation = broker.resolveApproval(approvalId, actionDigest, approved);
+    const lease = operation.then(() => undefined, () => undefined);
+    this.activeAction = lease;
+    let resumeAgent: boolean;
+    try {
+      ({ resumeAgent } = await operation);
+    } finally {
+      if (this.activeAction === lease) this.activeAction = undefined;
+    }
     if (resumeAgent) {
       this.turnQueue = this.turnQueue.catch(() => undefined).then(() => this.runTurn(
         context,
@@ -88,15 +102,18 @@ export class ConversationManager {
   async takeover(id: string): Promise<{ controlEpoch: string; stateVersion: number }> {
     const context = this.require(id);
     if (context.controlOwner === "human") return { controlEpoch: context.controlEpoch!, stateVersion: context.stateVersion };
-    context.controlOwner = "pause_requested";
     if (context.pendingApproval) {
       delete context.pendingApproval;
       this.emit("approval.invalidated", { summary: "Approval cleared when you took control" }, false);
     }
+    context.agent?.abort();
+    await this.activeAction;
+    if (this.context !== context || context.controlOwner !== "agent") throw Object.assign(new Error("Browser control changed. Take control again and retry."), { status: 409 });
+    context.controlOwner = "pause_requested";
     context.stateVersion += 1;
     this.emit("control.changed", { owner: "pause_requested", summary: "Pausing agent control" }, false);
-    context.agent?.abort();
     await context.agent?.waitForIdle();
+    if (this.context !== context || context.controlOwner !== "pause_requested") throw Object.assign(new Error("Browser control changed. Take control again and retry."), { status: 409 });
     context.controlOwner = "human";
     context.controlEpoch = randomBytes(18).toString("base64url");
     context.runState = "idle";
@@ -109,7 +126,7 @@ export class ConversationManager {
     const context = this.require(id);
     if (context.controlOwner !== "human" || context.controlEpoch !== controlEpoch) throw Object.assign(new Error("Browser control changed. Take control again and retry."), { status: 409 });
     context.controlOwner = "agent";
-    delete context.controlEpoch;
+    context.controlEpoch = randomBytes(18).toString("base64url");
     context.stateVersion += 1;
     this.emit("control.changed", { owner: "agent", summary: "Agent control restored; it will re-observe before acting." }, false);
     return this.snapshot(id);
@@ -125,6 +142,11 @@ export class ConversationManager {
     await context.playwright?.close().catch(() => undefined);
     await context.browserSession?.delete().catch(() => undefined);
     await context.smolvm?.close().catch(() => undefined);
+    delete context.playwright;
+    delete context.page;
+    delete context.storefront;
+    delete context.browserSession;
+    delete context.smolvm;
     context.runState = "stopped";
     context.sessionLifecycle = "deleted";
     context.stateVersion += 1;
@@ -169,6 +191,7 @@ export class ConversationManager {
     this.emit("agent.started", { summary: "Smol Agent is thinking" }, false);
     try {
       context.agent ??= createAgent(this.apiKey, this.model, this.broker(context), this.fixtureStore);
+      resetAgentTurnLimit(context.agent);
       context.abortController = new AbortController();
       await context.agent.prompt(text);
       if (context.agent.state.errorMessage) throw new Error(context.agent.state.errorMessage);

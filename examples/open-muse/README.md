@@ -90,6 +90,7 @@ The tests use structural fake SmolVM and workflow implementations. They cover ar
 - The live workflow is tuned for the built-in Bengaluru trip goal.
 - Results are not persisted after the server stops.
 - A run can fetch at most eight public HTTPS pages and lasts at most eight minutes.
+- Completed artifacts remain available for download for 15 minutes, then the server releases them.
 - Logged-in sites, purchases, forms, messages, host files, and arbitrary commands are unavailable.
 - The real-VM and live-model release smoke tests remain manual because normal CI must not depend on travel websites or paid model calls.
 

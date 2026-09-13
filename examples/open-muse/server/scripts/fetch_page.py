@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import hashlib
 import html
+import http.client
 import ipaddress
 import json
 import re
@@ -38,11 +39,37 @@ def validate_url(value):
     except ValueError as exc:
         if str(exc) == "Literal IP addresses are not allowed.":
             raise
-    for info in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM):
+    port = parsed.port or 443
+    addresses = []
+    for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM):
         address = ipaddress.ip_address(info[4][0])
         if not address.is_global:
             raise ValueError("The URL resolves to a private network address.")
-    return value
+        addresses.append(str(address))
+    if not addresses:
+        raise ValueError("The URL hostname did not resolve.")
+    return addresses[0]
+
+
+class PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, host, pinned_address, **kwargs):
+        super().__init__(host, **kwargs)
+        create_connection = self._create_connection
+
+        def pinned_connection(address, timeout, source_address):
+            return create_connection((pinned_address, address[1]), timeout, source_address)
+
+        self._create_connection = pinned_connection
+
+
+class PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, request):
+        pinned_address = validate_url(request.full_url)
+
+        def connection(host, **kwargs):
+            return PinnedHTTPSConnection(host, pinned_address, **kwargs)
+
+        return self.do_open(connection, request)
 
 
 class RedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -52,7 +79,6 @@ class RedirectHandler(urllib.request.HTTPRedirectHandler):
         self.redirects += 1
         if self.redirects > 3:
             raise ValueError("The page redirected more than three times.")
-        validate_url(newurl)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -88,10 +114,11 @@ class TextExtractor(HTMLParser):
 
 def main():
     url, output = sys.argv[1], sys.argv[2]
-    validate_url(url)
     signal.signal(signal.SIGALRM, operation_timed_out)
     signal.alarm(15)
-    opener = urllib.request.build_opener(RedirectHandler())
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}), RedirectHandler(), PinnedHTTPSHandler()
+    )
     request = urllib.request.Request(url, headers={"User-Agent": "Open-Muse/0.1"})
     try:
         with opener.open(request, timeout=10) as response:
@@ -100,7 +127,6 @@ def main():
                 raise ValueError(f"Unsupported content type: {content_type}")
             body, truncated = bounded_body(response.read(MAX_BYTES + 1))
             final_url = response.geturl()
-            validate_url(final_url)
             charset = response.headers.get_content_charset() or "utf-8"
     finally:
         signal.alarm(0)

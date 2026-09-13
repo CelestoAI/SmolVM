@@ -32,6 +32,8 @@ test("fixed guest scripts calculate and verify a valid four-file packet", async 
     assert.deepEqual(Buffer.from(await readFile(encoded, "utf8"), "base64"), await readFile(zip));
     const bounded = await run("python3", ["-c", `import runpy; module=runpy.run_path(${JSON.stringify(join(scripts, "fetch_page.py"))}); body,truncated=module["bounded_body"](b"x"*(module["MAX_BYTES"]+1)); print(len(body), truncated)`]);
     assert.equal(bounded.stdout.trim(), "512000 True");
+    const pinned = await run("python3", ["-c", `import runpy; module=runpy.run_path(${JSON.stringify(join(scripts, "fetch_page.py"))}); calls=[]; module["PinnedHTTPSConnection"].__init__.__globals__["socket"].create_connection=lambda address,timeout,source_address: calls.append(address) or object(); connection=module["PinnedHTTPSConnection"]("example.com", "93.184.216.34", timeout=1); connection._create_connection(("example.com",443),1,None); print(calls[0][0])`]);
+    assert.equal(pinned.stdout.trim(), "93.184.216.34");
     const searchParser = await run("python3", ["-c", `import json,runpy; module=runpy.run_path(${JSON.stringify(join(scripts, "search_web.py"))}); sample='<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Ftrip">Trip guide</a>'; print(json.dumps(module["parse_results"](sample)))`]);
     assert.deepEqual(JSON.parse(searchParser.stdout), [{ title: "Trip guide", url: "https://example.com/trip" }]);
     const lookalikeParser = await run("python3", ["-c", `import json,runpy; module=runpy.run_path(${JSON.stringify(join(scripts, "search_web.py"))}); sample='<a class="result__a" href="https://evilduckduckgo.com/l/?uddg=https%3A%2F%2Finternal.example%2Fsecret">Lookalike</a>'; print(json.dumps(module["parse_results"](sample)))`]);

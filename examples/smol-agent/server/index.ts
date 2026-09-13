@@ -61,7 +61,7 @@ async function route(manager: ConversationManager, staticRoot: string, request: 
   if (url.pathname.startsWith("/api/") && !authenticated(request)) throw Object.assign(new Error("Reload Smol Agent to restore the local session."), { status: 401 });
 
   if (method === "POST") assertMutation(request);
-  if (method === "POST" && url.pathname === "/api/conversations") return sendJson(response, 201, manager.create());
+  if (method === "POST" && url.pathname === "/api/conversations") return sendJson(response, 201, await manager.create());
   const snapshotMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)$/);
   if (method === "GET" && snapshotMatch) return sendJson(response, 200, manager.snapshot(snapshotMatch[1]));
   const messagesMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
@@ -78,7 +78,11 @@ async function route(manager: ConversationManager, staticRoot: string, request: 
   const resumeMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/resume$/);
   if (method === "POST" && resumeMatch) return sendJson(response, 200, manager.resume(resumeMatch[1], resumeBody.parse(await readJson(request)).controlEpoch));
   const stopMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/stop$/);
-  if (method === "POST" && stopMatch) { void manager.stop(stopMatch[1]); return sendJson(response, 202, { stopping: true }); }
+  if (method === "POST" && stopMatch) {
+    manager.snapshot(stopMatch[1]);
+    void manager.stop(stopMatch[1]).catch((error) => console.error(error instanceof Error ? error.message : error));
+    return sendJson(response, 202, { stopping: true });
+  }
   const tokenMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/viewer-token$/);
   if (method === "POST" && tokenMatch) return sendJson(response, 200, manager.issueViewerNonce(tokenMatch[1]));
   const viewerMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/viewer\/(.+)$/);

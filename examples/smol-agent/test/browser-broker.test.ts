@@ -10,6 +10,7 @@ function harness() {
     id: "conversation-test",
     stateVersion: 1,
     controlOwner: "agent",
+    controlEpoch: "agent-control-test",
     runState: "idle",
     sessionLifecycle: "ready",
     messages: [],
@@ -37,14 +38,14 @@ function harness() {
   return { broker, context, programs, events };
 }
 
-test("read-only browser programs execute immediately inside the browser session", async () => {
+test("read-only browser programs wait for one-time approval", async () => {
   const { broker, programs, events } = harness();
 
-  const result = await broker.runProgram("return { title: await page.title() };", false, "Read the title");
+  const pending = await broker.runProgram("return { title: await page.title() };", false, "Read the title");
 
-  assert.deepEqual(result, { completed: true, result: { title: "Example Domain" } });
-  assert.deepEqual(programs, ["return { title: await page.title() };"]);
-  assert.deepEqual(events, ["tool.started", "tool.completed"]);
+  assert.equal(pending.approvalRequired, true);
+  assert.equal(programs.length, 0);
+  assert.deepEqual(events, ["approval.requested"]);
 });
 
 test("active browser programs wait for one-time approval", async () => {
@@ -68,27 +69,23 @@ test("active browser programs wait for one-time approval", async () => {
   assert.equal(context.pendingApproval, undefined);
 });
 
-test("navigation executes immediately even when the model over-classifies it", async () => {
-  const { broker, programs } = harness();
+test("navigation programs also require approval", async () => {
+  const { broker, context, programs } = harness();
 
-  const result = await broker.runProgram(
+  const pending = await broker.runProgram(
     "await page.goto('https://www.amazon.in'); return { title: await page.title() };",
     true,
     "Open Amazon India and read its title",
   );
 
-  assert.deepEqual(result, { completed: true, result: { title: "Example Domain" } });
-  assert.equal(programs.length, 1);
-});
-
-test("read-only mode rejects active Playwright methods", async () => {
-  const { broker, programs } = harness();
-
-  await assert.rejects(
-    () => broker.runProgram("await page.locator('button').click();", false, "Click a button"),
-    /interaction=true/,
-  );
+  assert.equal(pending.approvalRequired, true);
   assert.equal(programs.length, 0);
+  await broker.resolveApproval(
+    context.pendingApproval!.approvalId,
+    context.pendingApproval!.actionDigest,
+    true,
+  );
+  assert.equal(programs.length, 1);
 });
 
 test("browser programs reject empty, oversized, failed, and malformed runner results", async () => {
@@ -103,16 +100,18 @@ test("browser programs reject empty, oversized, failed, and malformed runner res
   context.browserSession!.exec = async () => ({
     ok: false, exitCode: 1, stdout: "", stderr: "page crashed", durationMs: 1,
   });
+  await broker.runProgram("return true;", false, "Failing runner");
   await assert.rejects(
-    () => broker.runProgram("return true;", false, "Failing runner"),
+    () => broker.resolveApproval(context.pendingApproval!.approvalId, context.pendingApproval!.actionDigest, true),
     /page crashed/,
   );
 
   context.browserSession!.exec = async () => ({
     ok: true, exitCode: 0, stdout: "unexpected output", stderr: "", durationMs: 1,
   });
+  await broker.runProgram("return true;", false, "Malformed runner");
   await assert.rejects(
-    () => broker.runProgram("return true;", false, "Malformed runner"),
+    () => broker.resolveApproval(context.pendingApproval!.approvalId, context.pendingApproval!.actionDigest, true),
     /invalid result/,
   );
 });

@@ -13,19 +13,21 @@ export function App() {
 
   const refresh = async (id = conversation?.id) => { if (id) setConversation(await api.getConversation(id)); };
   useEffect(() => {
+    let cancelled = false;
     let source: EventSource | undefined;
     void (async () => {
       try {
         const { conversationId } = await api.bootstrap();
         const created = conversationId ? await api.getConversation(conversationId) : await api.createConversation();
+        if (cancelled) return;
         setConversation(created);
         source = new EventSource(`/api/conversations/${created.id}/events`);
         source.onmessage = () => void refresh(created.id);
         source.addEventListener("message.completed", () => void refresh(created.id));
         for (const name of ["browser.starting", "browser.ready", "agent.started", "agent.completed", "agent.failed", "approval.requested", "approval.resolved", "approval.invalidated", "control.changed", "cart.updated", "conversation.stopped"]) source.addEventListener(name, () => void refresh(created.id));
-      } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not start Smol Agent."); }
+      } catch (caught) { if (!cancelled) setError(caught instanceof Error ? caught.message : "Could not start Smol Agent."); }
     })();
-    return () => source?.close();
+    return () => { cancelled = true; source?.close(); };
   }, []);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [conversation?.messages.length]);
   useEffect(() => {

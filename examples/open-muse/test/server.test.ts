@@ -9,6 +9,14 @@ test("labels request validation errors without masking internal Zod errors", () 
     () => serverTest.parseRequest(z.object({ goal: z.string().min(10) }), { goal: "short" }),
     (error) => error instanceof PublicError && error.status === 400 && /goal and constraints/.test(error.message),
   );
+  assert.throws(
+    () => serverTest.assertMutationRequest({ headers: {
+      host: "attacker.example:5173",
+      origin: "http://attacker.example:5173",
+      "content-type": "application/json",
+    } }, true),
+    (error: unknown) => (error as { status?: number }).status === 403,
+  );
 
   const internal = new z.ZodError([]);
   const publicError = serverTest.toHttpError(internal);

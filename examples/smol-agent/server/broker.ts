@@ -24,12 +24,7 @@ export class ActionBroker {
   async runProgram(program: string, interaction: boolean, summary: string): Promise<Record<string, unknown>> {
     await this.readyBrowser();
     if (!program.trim() || Buffer.byteLength(program) > 20_000) throw new Error("Playwright program must contain 1 to 20,000 bytes.");
-    const active = /\.(click|dblclick|fill|type|press|selectOption|check|uncheck|setInputFiles|dragTo|dispatchEvent|evaluate|evaluateHandle|addInitScript|route|unroute|request)\s*\(/;
-    const requiresApproval = active.test(program) || /\b(keyboard|mouse|touchscreen)\s*\./.test(program);
-    if (!requiresApproval) return this.executeProgram(program, summary);
-    if (!interaction) {
-      throw new Error("This program can interact with the website. Run it with interaction=true so the user can approve it.");
-    }
+    void interaction;
     if (this.context.pendingApproval) return { approvalRequired: true, ...this.publicApproval(this.context.pendingApproval) };
     const action = { kind: "browser_program", summary: summary.trim().slice(0, 240), programHash: createHash("sha256").update(program).digest("hex") };
     const pending: PendingApproval = {
@@ -49,16 +44,25 @@ export class ActionBroker {
   }
 
   private async executeProgram(program: string, summary: string): Promise<Record<string, unknown>> {
+    const controlEpoch = this.context.controlEpoch;
     const browser = await this.readyBrowser();
+    this.assertAgentControl(controlEpoch);
     const encoded = Buffer.from(program).toString("base64url");
     this.emit("tool.started", { tool: "browser_run", summary: summary || "Running Playwright in the disposable browser" });
     const command = await browser.exec(["/usr/local/bin/smolvm-browser-runner", encoded], { timeoutMs: 40_000 });
+    this.assertAgentControl(controlEpoch);
     if (!command.ok) throw new Error(command.stderr.trim() || "The Playwright program failed inside the disposable browser.");
     const marker = command.stdout.split("\n").reverse().find((line: string) => line.startsWith("SMOLVM_BROWSER_RESULT="));
     if (!marker) throw new Error("The browser runner returned an invalid result.");
     const parsed = JSON.parse(marker.slice("SMOLVM_BROWSER_RESULT=".length)) as { ok: boolean; value?: unknown };
     this.emit("tool.completed", { tool: "browser_run", summary: summary || "Playwright program completed" });
     return { completed: true, result: parsed.value };
+  }
+
+  private assertAgentControl(controlEpoch: string | undefined): void {
+    if (this.context.controlOwner !== "agent" || this.context.controlEpoch !== controlEpoch) {
+      throw Object.assign(new Error("Browser control changed before the action completed."), { status: 409 });
+    }
   }
 
   async observe(): Promise<Record<string, unknown>> {
@@ -85,6 +89,12 @@ export class ActionBroker {
     await storefront.navigate(route);
     this.emit("tool.completed", { tool: "browser_navigate", summary: `Opened ${route}` });
     return { route };
+  }
+
+  async scroll(direction: "up" | "down"): Promise<void> {
+    await this.ready();
+    await this.context.page!.mouse.wheel(0, direction === "down" ? 600 : -600);
+    this.emit("tool.completed", { tool: "browser_scroll", summary: `Scrolled ${direction}` });
   }
 
   async click(ref: string): Promise<Record<string, unknown>> {
@@ -160,8 +170,11 @@ export class ActionBroker {
           this.emit("approval.resolved", { approved: true, summary: "Approved website interaction completed" }, true);
           resumeAgent = true;
         } else {
+          const controlEpoch = this.context.controlEpoch;
           const storefront = await this.ready();
+          this.assertAgentControl(controlEpoch);
           await storefront.navigate("/review");
+          this.assertAgentControl(controlEpoch);
           this.emit("approval.resolved", { approved: true, summary: "Opened order review; no order can be placed." }, true);
         }
       } else this.emit("approval.resolved", { approved: false, summary: "Website interaction was not approved." }, true);

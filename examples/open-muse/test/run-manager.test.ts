@@ -128,6 +128,27 @@ test("cleanup retries once before marking a successful run complete", async () =
   assert.equal(client.closeCount, 2);
 });
 
+test("releases terminal artifacts after the download window", async () => {
+  const client = new MemoryClient();
+  const workflow: Workflow = {
+    plan: async () => ["Gather current evidence", "Compare walkable areas", "Verify the packet"],
+    run: async (_goal, _constraints, _plan, state) => {
+      await state.sandbox.files.write("/workspace/open-muse/output/brief.md", "brief");
+    },
+  };
+  const manager = new RunManager(workflow, () => client, scripts, 20);
+  const plan = await manager.createPlan(goal, []);
+  const started = manager.start(plan.id);
+  await waitFor(manager, started.id, "complete");
+  assert.ok(manager.artifact(started.id, "brief.md"));
+
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  assert.equal(manager.get(started.id), undefined);
+  assert.equal(manager.artifact(started.id, "brief.md"), undefined);
+  assert.equal(manager.packet(started.id), undefined);
+});
+
 async function waitFor(manager: RunManager, id: string, phase: string) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const run = manager.get(id)!;

@@ -2,7 +2,7 @@
 
 Smol Agent is a chat-based computer coworker that can operate public websites inside a disposable SmolVM. You chat on the left and watch its real browser on the right.
 
-The agent can browse any ordinary public website without a site-specific adapter. Read-only work runs immediately. Clicking, typing, selecting, or otherwise interacting with a site displays a one-time approval before the Playwright program runs.
+The agent can browse any ordinary public website without a site-specific adapter. Every model-proposed Playwright program, including observation and navigation, displays a one-time approval before it runs.
 
 The OpenAI API key stays in the host Node process. Model-written Playwright runs as an unprivileged user inside the browser VM, not in the host process.
 
@@ -45,11 +45,11 @@ On macOS, the runtime wrapper downloads the checksum-verified ARM64 Linux guest-
 - Pi is the conversational agent harness.
 - `@celestoai/smolvm` creates a live, ephemeral browser VM with public web access.
 - Pi writes a short JavaScript Playwright program for each browser step.
-- `browser_run` executes that program through the runner installed inside the VM.
+- `browser_run` creates a one-time approval, then executes the approved program through the runner installed inside the VM.
 - The real browser display is streamed through SmolVM's noVNC viewer into the right pane.
 - **Take control** pauses Pi and lets you use the browser directly.
 
-Observation and navigation programs run immediately. Programs that click, type, select, press keys, or use other active browser controls create an approval card. Approval is currently bound to the complete proposed program, not to a site-specific semantic promise such as an exact cart total.
+Approval is currently bound to the complete proposed program, not to a site-specific semantic promise such as an exact cart total. Requiring approval for read-only programs is a conservative temporary policy until the runner can enforce the design's finer operation-level boundary.
 
 The initial general-web implementation uses SmolVM's open network mode. The approved follow-up design adds a public-only egress proxy that blocks private and metadata destinations before this example should be treated as a hardened browsing boundary.
 

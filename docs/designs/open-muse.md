@@ -97,6 +97,8 @@ Do not render chain-of-thought, model tokens, bearer credentials, complete envir
 
 When verification passes, show a preview for each artifact and enable **Download packet**. Keep the result available after the VM has been deleted. The final timeline entry must say either:
 
+The server keeps completed artifacts available for download for 15 minutes, then releases the ZIP, files, and retained event history.
+
 - `Temporary computer deleted`, or
 - `Cleanup needs attention. Run: <exact recovery command>`.
 
@@ -105,8 +107,8 @@ When verification passes, show a preview for each artifact and enable **Download
 Keep completed artifacts visible when a later phase fails. Show one short fact and one action. Examples:
 
 - `Open Muse could not start a private computer. Run 'smolvm doctor' and try again.`
-- `Research stopped after 8 minutes. Try again with fewer constraints.`
-- `The model did not produce a valid budget. Retry the verification step.`
+- `Research stopped after 8 minutes. Remove one constraint, then select Prepare plan.`
+- `The model did not produce a valid budget. Select Start research to run verification again.`
 
 ## Approved layout
 

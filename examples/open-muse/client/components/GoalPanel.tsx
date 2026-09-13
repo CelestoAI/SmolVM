@@ -12,7 +12,7 @@ interface Props {
   onPlan: () => void;
   onStart: () => void;
   onStop: () => void;
-  onAddConstraint: (value: string) => Promise<void>;
+  onAddConstraint: (value: string) => Promise<boolean>;
 }
 
 export function GoalPanel(props: Props) {
@@ -34,7 +34,7 @@ export function GoalPanel(props: Props) {
       {props.canStart && !props.running && <button className="primary" disabled={props.busy} onClick={props.onStart}>Start research <span aria-hidden>→</span></button>}
       {props.running && <button className="danger" onClick={props.onStop}>Stop research</button>}
     </div>
-    {props.running && <form className="constraint-row" onSubmit={async (event) => { event.preventDefault(); if (!nextConstraint.trim()) return; await props.onAddConstraint(nextConstraint.trim()); setNextConstraint(""); }}>
+    {props.running && <form className="constraint-row" onSubmit={async (event) => { event.preventDefault(); if (!nextConstraint.trim()) return; if (await props.onAddConstraint(nextConstraint.trim())) setNextConstraint(""); }}>
       <label htmlFor="next-constraint">Add a constraint for the next phase</label>
       <div><input id="next-constraint" value={nextConstraint} maxLength={300} onChange={(event) => setNextConstraint(event.target.value)} placeholder="Keep mornings unhurried" /><button type="submit">Send</button></div>
     </form>}

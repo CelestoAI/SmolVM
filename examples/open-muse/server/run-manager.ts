@@ -30,7 +30,10 @@ interface RunContext {
   listeners: Set<(event: RunEvent) => void>;
   cleanupConfirmed: boolean;
   task?: Promise<void>;
+  retentionTimer?: ReturnType<typeof setTimeout>;
 }
+
+const DOWNLOAD_WINDOW_MS = 15 * 60_000;
 
 export type SmolVMFactory = (onEvent: (event: SmolVMEvent) => void) => SmolVMClient;
 
@@ -45,6 +48,7 @@ export class RunManager {
     private readonly workflow: Workflow,
     private readonly clientFactory: SmolVMFactory = (onEvent) => new SmolVM({ onEvent, createTimeoutMs: 600_000 }),
     private readonly scriptLoader: () => Promise<Record<string, string>> = loadScripts,
+    private readonly retentionMs = DOWNLOAD_WINDOW_MS,
   ) {}
 
   async createPlan(goal: string, constraints: string[]): Promise<PlanRecord> {
@@ -185,6 +189,7 @@ export class RunManager {
       this.phase(context, "failed");
       this.emit(context, { type: "run.failed", message: failure?.message ?? "Open Muse could not finish this research packet.", recovery: failure?.recovery });
     }
+    this.scheduleRelease(context);
   }
 
   private async cleanup(context: RunContext): Promise<void> {
@@ -261,6 +266,20 @@ export class RunManager {
       }),
       cleanupConfirmed: context.cleanupConfirmed,
     };
+  }
+
+  private scheduleRelease(context: RunContext): void {
+    context.retentionTimer = setTimeout(() => {
+      if (this.runs.get(context.id) !== context) return;
+      context.listeners.clear();
+      context.events.length = 0;
+      context.artifacts = {};
+      delete context.zip;
+      delete context.task;
+      this.runs.delete(context.id);
+      if (this.active === context) this.active = undefined;
+    }, this.retentionMs);
+    context.retentionTimer.unref?.();
   }
 
   private required(id: string): RunContext {

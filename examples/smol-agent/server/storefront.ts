@@ -67,12 +67,18 @@ export async function installStorefront(context: BrowserContext, page: Page, sta
     page,
     async add(productId, idempotencyKey) {
       pendingKey = idempotencyKey;
-      await page.evaluate((key) => { (window as typeof window & { __smolActionKey?: string }).__smolActionKey = key; }, idempotencyKey);
-      await page.locator(`[data-add="${productId}"]`).click();
-      pendingKey = undefined;
-      const receipt = state.receipts.get(idempotencyKey);
-      if (!receipt) throw new Error("The fixture did not confirm the cart update.");
-      return { receipt };
+      try {
+        await page.evaluate((key) => { (window as typeof window & { __smolActionKey?: string }).__smolActionKey = key; }, idempotencyKey);
+        const cartResponse = page.waitForResponse((response) => response.url() === `${ORIGIN}/api/cart` && response.request().method() === "POST");
+        await page.locator(`[data-add="${productId}"]`).click();
+        const response = await cartResponse;
+        if (!response.ok()) throw new Error("The fixture rejected the cart update.");
+        const receipt = state.receipts.get(idempotencyKey);
+        if (!receipt) throw new Error("The fixture did not confirm the cart update.");
+        return { receipt };
+      } finally {
+        pendingKey = undefined;
+      }
     },
     async navigate(route) {
       const allowed = route === "/" || route === "/cart" || route === "/review" || /^\/products\/[a-z0-9-]+$/.test(route);
