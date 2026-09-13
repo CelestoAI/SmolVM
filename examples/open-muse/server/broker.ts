@@ -3,6 +3,7 @@ import { CATALOG, STOREFRONT_VERSION, formatInr, productById } from "./catalog.j
 import type { ConversationContext, IntentGrant, PendingApproval } from "./types.js";
 
 type Emit = (type: string, payload: Record<string, unknown>, mutates?: boolean) => void;
+const BROWSER_ACTION_FAILED = "The website action did not finish. Type ‘retry using the current page’ in chat and press Enter.";
 
 export class ActionBroker {
   constructor(private readonly context: ConversationContext, private readonly ensureBrowser: () => Promise<void>, private readonly emit: Emit) {}
@@ -44,19 +45,26 @@ export class ActionBroker {
   }
 
   private async executeProgram(program: string, summary: string): Promise<Record<string, unknown>> {
-    const controlEpoch = this.context.controlEpoch;
-    const browser = await this.readyBrowser();
-    this.assertAgentControl(controlEpoch);
-    const encoded = Buffer.from(program).toString("base64url");
-    this.emit("tool.started", { tool: "browser_run", summary: summary || "Running Playwright in the disposable browser" });
-    const command = await browser.exec(["/usr/local/bin/smolvm-browser-runner", encoded], { timeoutMs: 40_000 });
-    this.assertAgentControl(controlEpoch);
-    if (!command.ok) throw new Error(command.stderr.trim() || "The Playwright program failed inside the disposable browser.");
-    const marker = command.stdout.split("\n").reverse().find((line: string) => line.startsWith("SMOLVM_BROWSER_RESULT="));
-    if (!marker) throw new Error("The browser runner returned an invalid result.");
-    const parsed = JSON.parse(marker.slice("SMOLVM_BROWSER_RESULT=".length)) as { ok: boolean; value?: unknown };
-    this.emit("tool.completed", { tool: "browser_run", summary: summary || "Playwright program completed" });
-    return { completed: true, result: parsed.value };
+    try {
+      const controlEpoch = this.context.controlEpoch;
+      const browser = await this.readyBrowser();
+      this.assertAgentControl(controlEpoch);
+      const encoded = Buffer.from(program).toString("base64url");
+      this.emit("tool.started", { tool: "browser_run", summary: summary || "Running Playwright in the disposable browser" });
+      const command = await browser.exec(["/usr/local/bin/smolvm-browser-runner", encoded], { timeoutMs: 40_000 });
+      this.assertAgentControl(controlEpoch);
+      if (!command.ok) throw new Error(command.stderr.trim() || "The Playwright program failed inside the disposable browser.");
+      const marker = command.stdout.split("\n").reverse().find((line: string) => line.startsWith("SMOLVM_BROWSER_RESULT="));
+      if (!marker) throw new Error("The browser runner returned an invalid result.");
+      const parsed = JSON.parse(marker.slice("SMOLVM_BROWSER_RESULT=".length)) as { ok: boolean; value?: unknown };
+      this.emit("tool.completed", { tool: "browser_run", summary: summary || "Playwright program completed" });
+      return { completed: true, result: parsed.value };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.error(`OpenMuse website action failed: ${detail}`);
+      this.emit("tool.failed", { tool: "browser_run", summary: BROWSER_ACTION_FAILED });
+      throw Object.assign(new Error(BROWSER_ACTION_FAILED), { status: 422, cause: error });
+    }
   }
 
   private assertAgentControl(controlEpoch: string | undefined): void {

@@ -101,19 +101,28 @@ test("browser programs reject empty, oversized, failed, and malformed runner res
     ok: false, exitCode: 1, stdout: "", stderr: "page crashed", durationMs: 1,
   });
   await broker.runProgram("return true;", false, "Failing runner");
-  await assert.rejects(
-    () => broker.resolveApproval(context.pendingApproval!.approvalId, context.pendingApproval!.actionDigest, true),
-    /page crashed/,
-  );
+  const originalError = console.error;
+  console.error = () => undefined;
+  try {
+    await assert.rejects(
+      () => broker.resolveApproval(context.pendingApproval!.approvalId, context.pendingApproval!.actionDigest, true),
+      (error: unknown) => (error as { status?: number }).status === 422
+        && (error as Error).message.includes("retry using the current page")
+        && (error as { cause?: Error }).cause?.message === "page crashed",
+    );
 
-  context.browserSession!.exec = async () => ({
-    ok: true, exitCode: 0, stdout: "unexpected output", stderr: "", durationMs: 1,
-  });
-  await broker.runProgram("return true;", false, "Malformed runner");
-  await assert.rejects(
-    () => broker.resolveApproval(context.pendingApproval!.approvalId, context.pendingApproval!.actionDigest, true),
-    /invalid result/,
-  );
+    context.browserSession!.exec = async () => ({
+      ok: true, exitCode: 0, stdout: "unexpected output", stderr: "", durationMs: 1,
+    });
+    await broker.runProgram("return true;", false, "Malformed runner");
+    await assert.rejects(
+      () => broker.resolveApproval(context.pendingApproval!.approvalId, context.pendingApproval!.actionDigest, true),
+      (error: unknown) => (error as { status?: number }).status === 422
+        && (error as { cause?: Error }).cause?.message === "The browser runner returned an invalid result.",
+    );
+  } finally {
+    console.error = originalError;
+  }
 });
 
 test("website approvals can be denied and stale approvals cannot execute", async () => {
