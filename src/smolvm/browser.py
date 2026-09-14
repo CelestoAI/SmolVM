@@ -481,8 +481,8 @@ class _BrowserSandbox:
                         "xdotool search --onlyvisible --class chromium >/dev/null; "
                         "probe=/workspace/.smolvm-ready-$$; "
                         "trap 'rm -f \"$probe\"' EXIT; "
-                        "printf ready >\"$probe\"; "
-                        "test \"$(cat \"$probe\")\" = ready"
+                        'printf ready >"$probe"; '
+                        'test "$(cat "$probe")" = ready'
                     ),
                     timeout=30,
                     shell="raw",
@@ -719,8 +719,10 @@ class _BrowserSandbox:
         )
         result = self._vm.run(command, timeout=60)
         if not result.ok:
+            resource = "computer" if self._session_config.mode == "computer" else "browser"
             raise SmolVMError(
-                f"Failed to launch Chromium: {result.stderr.strip() or result.stdout}"
+                f"Chromium did not open in {resource} '{self.session_id}'; "
+                f"run 'smolvm {resource} logs {self.session_id}', then retry."
             )
 
     def _resolve_browser_host_port(self, guest_port: int, *, guest_loopback: bool) -> int:

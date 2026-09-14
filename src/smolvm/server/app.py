@@ -620,6 +620,14 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
         "/computers/{computer_id}/files",
         status_code=204,
         operation_id="writeComputerFile",
+        openapi_extra={
+            "requestBody": {
+                "required": True,
+                "content": {
+                    "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}
+                },
+            }
+        },
     )
     async def write_computer_file(computer_id: str, path: str, request: Request) -> Response:
         computer = resolve_computer(computer_id)
@@ -656,6 +664,13 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
         operation_id="readComputerFile",
     )
     async def read_computer_file(computer_id: str, path: str) -> Response:
+        if not PurePosixPath(path).is_absolute():
+            raise _sdk_error(
+                400,
+                "invalid_path",
+                f"File path for computer '{computer_id}' must be absolute; "
+                "retry files.read('/workspace/file').",
+            )
         computer = resolve_computer(computer_id)
         try:
             size_result = await asyncio.to_thread(

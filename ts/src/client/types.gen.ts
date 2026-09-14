@@ -766,7 +766,7 @@ export type ReadComputerFileResponses = {
 };
 
 export type WriteComputerFileData = {
-    body?: never;
+    body: Blob | File;
     path: {
         /**
          * Computer Id

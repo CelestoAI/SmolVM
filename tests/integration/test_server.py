@@ -346,7 +346,8 @@ def test_create_and_delete_live_browser_session(app: FastAPI) -> None:
     assert response.status_code == 204
     assert FakeBrowserSession.delete_calls == 1
     assert FakeBrowserSession.close_calls == 1
-    assert delete("browser-demo").status_code == 204
+    deleted_again = delete("browser-demo")
+    assert deleted_again.status_code == 204
 
 
 def test_create_run_and_delete_linux_computer(app: FastAPI) -> None:
@@ -372,10 +373,12 @@ def test_create_run_and_delete_linux_computer(app: FastAPI) -> None:
     assert command.stdout == "ok"
     assert FakeSmolVM.last_run_args == ("whoami", 10, "login")
 
-    assert delete("computer-demo").status_code == 204
+    deleted = delete("computer-demo")
+    assert deleted.status_code == 204
     assert FakeComputer.delete_calls == 1
     assert FakeComputer.close_calls == 1
-    assert delete("computer-demo").status_code == 204
+    deleted_again = delete("computer-demo")
+    assert deleted_again.status_code == 204
 
 
 def test_failed_computer_delete_keeps_live_handle_for_retry(app: FastAPI) -> None:
@@ -392,10 +395,12 @@ def test_failed_computer_delete_keeps_live_handle_for_retry(app: FastAPI) -> Non
     assert FakeComputer.close_calls == 0
 
     FakeSmolVM.delete_error = None
-    assert delete("computer-demo").status_code == 204
+    deleted = delete("computer-demo")
+    assert deleted.status_code == 204
     assert FakeComputer.close_calls == 1
     assert FakeComputer.delete_calls == 2
-    assert delete("computer-demo").status_code == 204
+    deleted_again = delete("computer-demo")
+    assert deleted_again.status_code == 204
 
 
 def test_duplicate_computer_name_is_rejected_without_replacing_the_owner(app: FastAPI) -> None:
@@ -449,7 +454,8 @@ def test_computer_timeout_keeps_cleanup_retryable_when_delete_fails(app: FastAPI
 
     FakeSmolVM.delete_error = None
     delete = _handler(app, "/computers/{computer_id}", "DELETE")
-    assert delete("computer-demo").status_code == 204
+    deleted = delete("computer-demo")
+    assert deleted.status_code == 204
     assert "computer-demo" not in app.state.computer_sessions
     assert FakeComputer.close_calls == 1
 
@@ -579,6 +585,11 @@ async def test_computer_file_endpoints_reject_relative_and_oversized_files(app: 
         await write("computer-demo", "workspace/file.txt", request)
     assert relative.value.status_code == 400
     assert relative.value.headers == {"X-SmolVM-Error-Code": "invalid_path"}
+
+    with pytest.raises(HTTPException) as relative_read:
+        await read("computer-demo", "workspace/file.txt")
+    assert relative_read.value.status_code == 400
+    assert relative_read.value.headers == {"X-SmolVM-Error-Code": "invalid_path"}
 
     FakeSmolVM.run_result = CommandResult(
         exit_code=0,

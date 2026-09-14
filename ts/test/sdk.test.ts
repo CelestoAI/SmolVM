@@ -290,17 +290,10 @@ test("computer timeout records server-confirmed deletion", async () => {
   assert.equal(computer.status, "deleted");
 });
 
-test("aborting a computer command deletes it through the cancel route", async () => {
-  class ComputerAbortTransport extends FakeTransport {
-    override async request<T>(path: string, init?: RequestInit): Promise<T> {
-      if (path === "/computers/computer-test/exec") {
-        throw new DOMException("aborted", "AbortError");
-      }
-      return super.request(path, init);
-    }
-  }
-  const transport = new ComputerAbortTransport();
-  const client = new SmolVM({ transport });
+test("an already-aborted computer command does not start or delete the computer", async () => {
+  const transport = new FakeTransport();
+  const events: string[] = [];
+  const client = new SmolVM({ transport, onEvent: (event) => events.push(event.type) });
   const computer = await client.computers.create({ name: "computer-test" });
   const controller = new AbortController();
   controller.abort();
@@ -309,10 +302,10 @@ test("aborting a computer command deletes it through the cancel route", async ()
     () => computer.exec("sleep 60", { signal: controller.signal }),
     (error: unknown) => error instanceof SmolVMError && error.code === "command_aborted",
   );
-  assert.equal(computer.status, "deleted");
-  assert.ok(transport.calls.some((call) =>
-    call.path === "/computers/computer-test/cancel" && call.init?.method === "POST"
-  ));
+  assert.equal(computer.status, "ready");
+  assert.equal(transport.calls.some((call) => call.path.endsWith("/exec")), false);
+  assert.equal(transport.calls.some((call) => call.path.endsWith("/cancel")), false);
+  assert.deepEqual(events, ["computer.starting", "computer.ready"]);
 });
 
 test("browser computers upload and atomically download files", async () => {

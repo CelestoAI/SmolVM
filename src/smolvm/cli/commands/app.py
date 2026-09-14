@@ -66,6 +66,29 @@ def _ns(**values: Any) -> SimpleNamespace:
     return SimpleNamespace(**values)
 
 
+def _computer_range(minimum: int, maximum: int, example: int) -> Any:
+    """Validate one computer size option with an actionable recovery command."""
+
+    def validate(
+        ctx: click.Context,
+        param: click.Parameter,
+        value: int | None,
+    ) -> int | None:
+        if value is not None and not minimum <= value <= maximum:
+            option = (
+                next(iter(param.opts), f"--{param.name}") if isinstance(param, click.Option) else ""
+            )
+            raise click.BadParameter(
+                f"choose a value from {minimum} to {maximum}; run "
+                f"'smolvm computer start {option} {example}'.",
+                ctx=ctx,
+                param=param,
+            )
+        return value
+
+    return validate
+
+
 def _mounts(values: tuple[str, ...]) -> list[str] | None:
     return list(values) or None
 
@@ -1501,10 +1524,28 @@ def computer() -> None:
     show_default=True,
     help="Virtualization backend.",
 )
-@click.option("--width", type=int, default=1440, show_default=True)
-@click.option("--height", type=int, default=900, show_default=True)
-@click.option("--memory", "memory_mib", type=int, default=2048, show_default=True)
-@click.option("--disk-size", "disk_size_mib", type=int, default=8192, show_default=True)
+@click.option(
+    "--width", type=int, default=1440, show_default=True, callback=_computer_range(640, 7680, 1440)
+)
+@click.option(
+    "--height", type=int, default=900, show_default=True, callback=_computer_range(480, 4320, 900)
+)
+@click.option(
+    "--memory",
+    "memory_mib",
+    type=int,
+    default=2048,
+    show_default=True,
+    callback=_computer_range(512, 16384, 2048),
+)
+@click.option(
+    "--disk-size",
+    "disk_size_mib",
+    type=int,
+    default=8192,
+    show_default=True,
+    callback=_computer_range(2048, 16384, 8192),
+)
 @boot_timeout_option
 @json_option
 def computer_start(

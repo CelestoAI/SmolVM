@@ -321,6 +321,17 @@ class BrowserRow(TypedDict):
     profile_id: str | None
 
 
+class ComputerRow(TypedDict):
+    """Machine-readable data for a listed computer."""
+
+    computer_id: str
+    sandbox_id: str
+    status: str
+    cdp_url: str | None
+    viewer_url: str | None
+    display_url: str | None
+
+
 class BrowserListFiltersPayload(TypedDict):
     """Filter metadata included with browser list output."""
 
@@ -3786,6 +3797,21 @@ def _browser_rows(sessions: Sequence[BrowserSessionInfo]) -> list[BrowserRow]:
     return rows
 
 
+def _computer_rows(sessions: Sequence[BrowserSessionInfo]) -> list[ComputerRow]:
+    """Normalize computer info objects without leaking browser identifiers."""
+    return [
+        {
+            "computer_id": session.session_id,
+            "sandbox_id": session.vm_id,
+            "status": session.status.value,
+            "cdp_url": session.cdp_url,
+            "viewer_url": session.live_url,
+            "display_url": session.vnc_url,
+        }
+        for session in sessions
+    ]
+
+
 def _render_browser_list(
     rows: list[BrowserRow],
     *,
@@ -3811,6 +3837,27 @@ def _render_browser_list(
     console = console_stdout()
     console.print(table)
     console.print(f"Total: {len(rows)} {resource_label.lower()}(s).")
+
+
+def _render_computer_list(rows: list[ComputerRow]) -> None:
+    """Render computer rows using the computer identifier contract."""
+    table = Table(title="SmolVM Computers")
+    table.add_column("Computer")
+    table.add_column("Status")
+    table.add_column("Sandbox")
+    table.add_column("Viewer URL")
+    table.add_column("Display URL")
+    for row in rows:
+        table.add_row(
+            row["computer_id"],
+            Text(row["status"], style=status_style(row["status"])),
+            row["sandbox_id"],
+            row["viewer_url"] or "-",
+            row["display_url"] or "-",
+        )
+    console = console_stdout()
+    console.print(table)
+    console.print(f"Total: {len(rows)} computer(s).")
 
 
 def _display_sessions_for_mode(state: Any, mode: str) -> list[BrowserSessionInfo]:
@@ -4178,17 +4225,13 @@ def _run_computer(args: SimpleNamespace) -> int:
     if action == "list":
         try:
             sessions = _display_sessions_for_mode(state, "computer")
-            rows = _browser_rows(sessions)
+            rows = _computer_rows(sessions)
             if json_output:
                 emit_json(command_name, 0, data={"computers": rows})
             elif not rows:
                 render_empty("SmolVM Computers", "No computers found.")
             else:
-                _render_browser_list(
-                    rows,
-                    title="SmolVM Computers",
-                    resource_label="Computer",
-                )
+                _render_computer_list(rows)
             return 0
         except Exception as exc:
             return _emit_cli_error(command_name, 1, exc, json_output=json_output)

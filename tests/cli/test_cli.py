@@ -3036,6 +3036,58 @@ class TestCliComputer:
         assert payload["data"]["display"]["viewer_url"].startswith("http://127.0.0.1")
         assert payload["data"]["browser"]["cdp_url"] == "http://127.0.0.1:9222"
 
+    @pytest.mark.parametrize(
+        ("option", "value", "example"),
+        [
+            ("--width", "639", "--width 1440"),
+            ("--height", "4321", "--height 900"),
+            ("--memory", "511", "--memory 2048"),
+            ("--disk-size", "16385", "--disk-size 8192"),
+        ],
+    )
+    def test_computer_start_rejects_invalid_sizes(
+        self,
+        option: str,
+        value: str,
+        example: str,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        ret = main(["computer", "start", option, value])
+
+        assert ret == 2
+        assert f"smolvm computer start {example}" in capsys.readouterr().err
+
+    @patch("smolvm.vm.resolve_data_dir", return_value=Path("/tmp"))
+    @patch("smolvm.cli.state.create_cli_state_manager")
+    def test_computer_list_json_uses_computer_identifiers(
+        self,
+        mock_state_manager_cls: MagicMock,
+        _mock_resolve_data_dir: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        state_manager = MagicMock()
+        session = MagicMock(
+            session_id="computer-demo",
+            vm_id="vm-computer-demo",
+            status=BrowserSessionState.READY,
+            cdp_url="http://127.0.0.1:9222",
+            live_url="http://127.0.0.1:6080/vnc.html",
+            vnc_url="vnc://127.0.0.1:5900",
+        )
+        state_manager.list_browser_sessions.return_value = [session]
+        state_manager.get_browser_session_config.return_value.mode = "computer"
+        mock_state_manager_cls.return_value = state_manager
+
+        ret = main(["computer", "list", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        row = payload["data"]["computers"][0]
+        assert row["computer_id"] == "computer-demo"
+        assert row["sandbox_id"] == "vm-computer-demo"
+        assert "session_id" not in row
+        assert "vm_id" not in row
+
     def test_computer_templates(self, capsys: pytest.CaptureFixture) -> None:
         ret = main(["computer", "templates", "--json"])
 

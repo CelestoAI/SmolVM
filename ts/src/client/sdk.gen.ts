@@ -77,7 +77,15 @@ export const readComputerFile = <ThrowOnError extends boolean = false>(options: 
 /**
  * Write Computer File
  */
-export const writeComputerFile = <ThrowOnError extends boolean = false>(options: Options<WriteComputerFileData, ThrowOnError>): RequestResult<WriteComputerFileResponses, WriteComputerFileErrors, ThrowOnError> => (options.client ?? client).put<WriteComputerFileResponses, WriteComputerFileErrors, ThrowOnError>({ url: '/computers/{computer_id}/files', ...options });
+export const writeComputerFile = <ThrowOnError extends boolean = false>(options: Options<WriteComputerFileData, ThrowOnError>): RequestResult<WriteComputerFileResponses, WriteComputerFileErrors, ThrowOnError> => (options.client ?? client).put<WriteComputerFileResponses, WriteComputerFileErrors, ThrowOnError>({
+    bodySerializer: null,
+    url: '/computers/{computer_id}/files',
+    ...options,
+    headers: {
+        'Content-Type': 'application/octet-stream',
+        ...options.headers
+    }
+});
 
 /**
  * Launch Computer Browser

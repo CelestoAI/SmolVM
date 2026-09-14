@@ -49,6 +49,10 @@ class ComputerBrowser:
 
     @property
     def status(self) -> Literal["ready", "closed", "error"]:
+        if self._computer.status == BrowserSessionState.ERROR:
+            return "error"
+        if self._computer.status != BrowserSessionState.READY:
+            return "closed"
         url = self._computer.cdp_url
         if url is None:
             return "closed"
@@ -96,8 +100,7 @@ class ComputerFiles:
             local_path = Path(handle.name)
         try:
             stage_command = "runuser -u agent -- sh -c " + shlex.quote(
-                f"install -m 0600 -- {shlex.quote(str(guest_path))} "
-                f"{shlex.quote(guest_temporary)}"
+                f"install -m 0600 -- {shlex.quote(str(guest_path))} {shlex.quote(guest_temporary)}"
             )
             staged = self._computer.vm.run(stage_command, timeout=30, shell="raw")
             if not staged.ok:
@@ -202,18 +205,22 @@ class _ComputerSandbox(_BrowserSandbox):
 
     def delete(self) -> None:
         """Delete every owned resource while keeping failed cleanup retryable."""
+        if self._vm is None:
+            raise SmolVMError(
+                f"Computer '{self.session_id}' cannot be deleted because it is unavailable; "
+                f"run 'smolvm computer delete {self.session_id}' to try again."
+            )
         with suppress(BrowserSessionNotFoundError):
             self._info = self._state.update_browser_session(
                 self.session_id,
                 status=BrowserSessionState.STOPPING,
             )
-        if self._vm is not None:
-            if self._vm.status == VMState.RUNNING:
-                with suppress(Exception):
-                    self._vm.run("/usr/local/bin/smolvm-browser-session stop", timeout=30)
-                with suppress(Exception):
-                    self.collect_artifacts()
-            self._vm.delete()
+        if self._vm.status == VMState.RUNNING:
+            with suppress(Exception):
+                self._vm.run("/usr/local/bin/smolvm-browser-session stop", timeout=30)
+            with suppress(Exception):
+                self.collect_artifacts()
+        self._vm.delete()
         with suppress(BrowserSessionNotFoundError):
             self._state.delete_browser_session(self.session_id)
         self._info = self._info.model_copy(update={"status": BrowserSessionState.DELETED})

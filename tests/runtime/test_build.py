@@ -586,6 +586,7 @@ class TestBrowserImageBuilder:
             name="computer-linux-desktop",
             desktop=True,
         )
+        mock_do_build.assert_called_once()
 
     @patch("smolvm.images.builder.subprocess.run")
     @patch("smolvm.images.builder.run_command")

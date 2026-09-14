@@ -184,7 +184,7 @@ SmolVM itself does not arbitrate human-versus-agent input in the first release. 
 - `starting`: the VM or graphical session is still booting. Endpoints are not returned as usable.
 - `ready`: display, VNC, Chromium CDP, command execution, and files have all passed readiness checks.
 - `error`: startup failed, diagnostic logs remain available, and best-effort cleanup ran. The error names the exact delete and retry commands.
-- `deleting`: new operations are rejected while cleanup runs.
+- `stopping`: new operations are rejected while cleanup runs.
 - `deleted`: the computer and ephemeral state are gone. Repeated deletion succeeds.
 
 A partly ready computer must never be returned. For example, an available VNC port with a dead window manager is a creation failure, not success.
@@ -225,7 +225,7 @@ type ComputerTemplate = "linux-desktop";
 type ComputerSessionStatus =
   | "ready"
   | "error"
-  | "deleting"
+  | "stopping"
   | "deleted";
 type ComputerCapability =
   | "display.viewer"
@@ -256,7 +256,7 @@ interface ComputerSession {
     readonly vncUrl: string;
   };
   readonly browser: {
-    readonly status: "ready" | "closed" | "starting" | "error";
+    readonly status: "ready" | "closed" | "error";
     readonly cdpUrl: string | null;
     launch(): Promise<void>;
   };
@@ -353,7 +353,7 @@ Every public failure states the fact and the exact recovery for the surface that
 | Python create failure, cleanup complete | `Linux computer 'demo' did not start Chromium; fix the reported problem and call SmolVM.computer() again.` |
 | SDK deleted handle | `Computer 'demo' has been deleted; create another computer before retrying this operation.` |
 | SDK delete incomplete | `Computer 'demo' was not fully deleted; call computer.delete() again.` |
-| Unsupported runtime | `This SmolVM runtime cannot create computers; run 'curl -sSL https://celesto.ai/install.sh | bash' to update it.` |
+| Unsupported runtime | `This SmolVM runtime cannot create computers; run 'curl -sSL https://celesto.ai/install.sh \| bash' to update it.` |
 
 If SDK cleanup cannot finish before its owner exits normally, it promotes the existing ownership-journal entry—with only unresolved resource IDs and a redacted diagnostic path—to the CLI inventory as an `error` record. After an abrupt crash, the next SDK or CLI startup performs that promotion from the pre-existing journal. The surfaced error names `smolvm computer delete <id>` as the recovery. `logs`, `delete`, and `templates` ship in v1, so those exceptional recovery commands exist.
 
@@ -457,8 +457,7 @@ The public event payload is:
 type ComputerEvent =
   | { type: "computer.starting"; computerId: string }
   | { type: "computer.ready"; computerId: string; sandboxId: string }
-  | { type: "computer.error"; computerId: string; code: string }
-  | { type: "computer.deleting"; computerId: string; sandboxId?: string }
+  | { type: "computer.stopping"; computerId: string; sandboxId?: string }
   | { type: "computer.deleted"; computerId: string; sandboxId?: string };
 ```
 
@@ -511,11 +510,11 @@ Creation writes the CLI inventory record before VM allocation and blocks until e
 
 Chromium, the panel, terminal, file manager, and editor are applications rather than the computer's lifecycle. A person may close them without destroying the computer. If Chromium closes, `computer.status` remains `ready`, `computer.browser.status` becomes `closed`, and `cdpUrl` becomes `null`. Calling `computer.browser.launch()` starts or focuses Chromium idempotently and restores CDP. The root-owned supervisor may restart Tint2 after an accidental panel crash, but never reopens a user-closed application without an explicit launch call.
 
-Computer events are `computer.starting`, `computer.ready`, `computer.error`, `computer.deleting`, and `computer.deleted`. Each includes `computerId`; `computer.error` also includes a stable error code but no endpoint or guest output. Events are ordered per owner process, best-effort, not replayed, and may omit intermediate states when an observer reconnects. The current handle status or a reconciled CLI `computer list` is authoritative. Observer exceptions never change computer behavior.
+Computer events are `computer.starting`, `computer.ready`, `computer.stopping`, and `computer.deleted`. Each includes `computerId`. Events are ordered per owner process, best-effort, not replayed, and may omit intermediate states when an observer reconnects. The current handle status or a reconciled CLI `computer list` is authoritative. Observer exceptions never change computer behavior.
 
 Deletion proceeds in a fixed, retryable order:
 
-1. mark the record `deleting` and reject new work;
+1. mark the record `stopping` and reject new work;
 2. capture the latest root-owned startup and process logs;
 3. close CDP, VNC, and noVNC forwards;
 4. stop the graphical session and VM;

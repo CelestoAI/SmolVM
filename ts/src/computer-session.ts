@@ -139,6 +139,13 @@ export class ComputerSession implements ComputerSessionClient {
 
   async exec(command: string | readonly string[], options: ExecOptions = {}): Promise<ExecResult> {
     this.assertReady("computer.exec");
+    if (options.signal?.aborted) {
+      throw new SmolVMError(
+        "command_aborted",
+        `Computer '${this.computerId}' did not start the command because its AbortSignal was already aborted.`,
+        { operation: "computer.exec", sandboxId: this.sandboxId },
+      );
+    }
     if (Array.isArray(command) && command.length === 0) {
       throw new TypeError("Command argv must contain at least one item.");
     }

@@ -275,6 +275,7 @@ def test_computer_files_write_reports_unwritable_destination() -> None:
 def test_computer_browser_launches_only_when_chromium_is_closed() -> None:
     """Relaunch should preserve the computer and wait for the new CDP endpoint."""
     computer = MagicMock()
+    computer.status = BrowserSessionState.READY
     computer.cdp_url = "http://127.0.0.1:9222"
     computer._wait_for_cdp_http.side_effect = [False, True, True]
     browser = ComputerBrowser(computer)
@@ -288,6 +289,7 @@ def test_computer_browser_launches_only_when_chromium_is_closed() -> None:
 def test_computer_browser_launch_is_a_noop_when_chromium_is_ready() -> None:
     """Calling launch on a ready browser should not start a duplicate Chromium process."""
     computer = MagicMock()
+    computer.status = BrowserSessionState.READY
     computer.cdp_url = "http://127.0.0.1:9222"
     computer._wait_for_cdp_http.return_value = True
 
@@ -299,6 +301,7 @@ def test_computer_browser_launch_is_a_noop_when_chromium_is_ready() -> None:
 def test_computer_browser_reports_failed_relaunch() -> None:
     """A Chromium relaunch without a ready CDP endpoint should remain recoverable."""
     computer = MagicMock()
+    computer.status = BrowserSessionState.READY
     computer.computer_id = "computer-demo"
     computer.cdp_url = "http://127.0.0.1:9222"
     computer._wait_for_cdp_http.return_value = False
@@ -308,6 +311,53 @@ def test_computer_browser_reports_failed_relaunch() -> None:
         browser.launch()
 
     computer._launch_guest_browser.assert_called_once_with()
+
+
+def test_computer_browser_launch_error_hides_guest_output() -> None:
+    """Launch failures should name the recovery command without exposing guest output."""
+    computer = object.__new__(_BrowserSandbox)
+    computer._info = MagicMock(session_id="computer-demo")
+    computer._session_config = MagicMock(
+        mode="computer",
+        viewport_width=1440,
+        viewport_height=900,
+        allow_downloads=True,
+    )
+    computer._vm = MagicMock()
+    computer._vm.run.return_value = CommandResult(
+        exit_code=1,
+        stdout="private stdout",
+        stderr="private stderr",
+    )
+    computer._guest_profile_dir = MagicMock(return_value="/profile")
+    computer._guest_download_dir = MagicMock(return_value="/downloads")
+
+    with pytest.raises(SmolVMError) as exc_info:
+        computer._launch_guest_browser()
+
+    message = str(exc_info.value)
+    assert "smolvm computer logs computer-demo" in message
+    assert "private stdout" not in message
+    assert "private stderr" not in message
+
+
+@pytest.mark.parametrize(
+    ("computer_status", "browser_status"),
+    [
+        (BrowserSessionState.ERROR, "error"),
+        (BrowserSessionState.STOPPING, "closed"),
+        (BrowserSessionState.DELETED, "closed"),
+    ],
+)
+def test_computer_browser_status_follows_computer_lifecycle(
+    computer_status: BrowserSessionState,
+    browser_status: str,
+) -> None:
+    """A non-ready computer must not be reported ready from a stale CDP endpoint."""
+    computer = MagicMock(status=computer_status, cdp_url="http://127.0.0.1:9222")
+
+    assert ComputerBrowser(computer).status == browser_status
+    computer._wait_for_cdp_http.assert_not_called()
 
 
 def test_computer_delete_keeps_failed_cleanup_retryable() -> None:
@@ -335,6 +385,20 @@ def test_computer_delete_keeps_failed_cleanup_retryable() -> None:
     computer._state.delete_browser_session.assert_called_once_with("computer-demo")
     assert computer._info is deleted_info
     computer.close.assert_called_once_with()
+
+
+def test_computer_delete_without_vm_preserves_persisted_state() -> None:
+    """A detached SDK handle must not erase the record for a VM it cannot delete."""
+    computer = object.__new__(_ComputerSandbox)
+    computer._state = MagicMock()
+    computer._info = MagicMock(session_id="computer-demo")
+    computer._vm = None
+
+    with pytest.raises(SmolVMError, match="smolvm computer delete computer-demo"):
+        computer.delete()
+
+    computer._state.update_browser_session.assert_not_called()
+    computer._state.delete_browser_session.assert_not_called()
 
 
 @patch("smolvm.browser._BrowserSandbox")
