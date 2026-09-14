@@ -15,6 +15,7 @@ SmolVM gives an AI agent a disposable computer for running code, using a browser
 - [Agent presets](guides/agent-presets.md) — start Codex, Claude Code, Pi, Hermes, OpenClaw, or OpenCode in a sandbox.
 - [OpenClaw dashboard](guides/agent-presets.md#open-openclaws-dashboard) — start OpenClaw, open its private dashboard, and safely replace an older sandbox.
 - [Browser sandboxes](guides/browser.md) — run Chromium and connect with a browser or Playwright.
+- [Linux computers](guides/computers.md) — run a visible desktop with Chromium, a terminal, files, and a text editor.
 - [Snapshots](guides/snapshots.md) — save and restore supported sandbox state.
 - [Networking](guides/networking.md) — share a local port, limit outbound domains, or connect a sandbox to an existing bridge.
 - [macOS desktops](guides/macos.md) — open a disposable Mac desktop on Apple Silicon.

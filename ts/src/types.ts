@@ -55,6 +55,27 @@ export interface CreateBrowserSessionOptions {
   network?: NetworkPolicy;
 }
 
+/** Start a complete Linux desktop with a display, Chromium, files, and commands. */
+export interface CreateComputerOptions {
+  name?: string;
+  template?: "linux-desktop";
+  backend?: "firecracker" | "qemu" | "auto";
+  display?: { width: number; height: number };
+  resources?: { memoryMiB?: number; diskMiB?: number; vcpus?: 2 };
+  network?: NetworkPolicy;
+  workspace?: readonly {
+    hostPath: string;
+    guestPath?: string;
+    writable?: boolean;
+  }[];
+}
+
+/** Whether a complete desktop computer is usable or has been deleted. */
+export type ComputerSessionStatus = "ready" | "stopping" | "error" | "deleted";
+
+/** Whether Chromium inside a computer is ready for automation. */
+export type ComputerBrowserStatus = "ready" | "closed" | "error";
+
 /** Choose where and how long a command runs, plus its environment and cancellation signal. */
 export interface ExecOptions {
   cwd?: string;
@@ -84,6 +105,11 @@ export type SmolVMEvent =
   | { type: "browser.ready"; sessionId: string; sandboxId: string }
   | { type: "browser.stopping"; sessionId: string; sandboxId: string }
   | { type: "browser.deleted"; sessionId: string; sandboxId: string }
+  | { type: "computer.starting"; computerId: string }
+  | { type: "computer.ready"; computerId: string; sandboxId: string }
+  | { type: "computer.error"; computerId: string; sandboxId: string; process: string; message: string }
+  | { type: "computer.stopping"; computerId: string; sandboxId: string }
+  | { type: "computer.deleted"; computerId: string; sandboxId: string }
   | { type: "command.started"; sandboxId: string }
   | { type: "command.completed"; sandboxId: string; result: ExecResult };
 
@@ -110,14 +136,17 @@ export interface SandboxFiles {
   download(sandboxPath: string, localPath: string): Promise<void>;
 }
 
-/** Run commands and exchange files with one disposable computer. */
-export interface ComputerClient {
+/** Run commands and exchange files with one disposable environment. */
+export interface CommandFilesClient {
   readonly files: SandboxFiles;
   exec(command: string | readonly string[], options?: ExecOptions): Promise<ExecResult>;
 }
 
+/** @deprecated Use CommandFilesClient for the shared command-and-files contract. */
+export type ComputerClient = CommandFilesClient;
+
 /** The mockable command, file, status, and deletion contract for one sandbox. */
-export interface SandboxClient extends ComputerClient {
+export interface SandboxClient extends CommandFilesClient {
   readonly id: string;
   readonly status: SandboxStatus;
   delete(): Promise<void>;
@@ -129,7 +158,7 @@ export interface SandboxCollection {
 }
 
 /** Control a ready browser computer through private automation and viewing addresses. An endpoint is a local address used to connect to that computer. */
-export interface BrowserSessionClient extends ComputerClient {
+export interface BrowserSessionClient extends CommandFilesClient {
   readonly sessionId: string;
   readonly sandboxId: string;
   readonly status: BrowserSessionStatus;
@@ -145,10 +174,41 @@ export interface BrowserSessionCollection {
   create(options?: CreateBrowserSessionOptions): Promise<BrowserSessionClient>;
 }
 
+/** Addresses for watching and controlling the visible Linux desktop. */
+export interface ComputerDisplayClient {
+  readonly viewerUrl: string;
+  readonly vncUrl: string;
+}
+
+/** Chromium included in a Linux computer, with automation available when it is open. */
+export interface ComputerBrowserClient {
+  readonly status: ComputerBrowserStatus;
+  readonly cdpUrl: string | null;
+  launch(): Promise<void>;
+}
+
+/** A complete Linux desktop grouped by display, browser, files, and commands. */
+export interface ComputerSessionClient extends CommandFilesClient {
+  readonly computerId: string;
+  readonly sandboxId: string;
+  readonly template: "linux-desktop";
+  readonly status: ComputerSessionStatus;
+  readonly capabilities: readonly string[];
+  readonly display: ComputerDisplayClient;
+  readonly browser: ComputerBrowserClient;
+  delete(): Promise<void>;
+}
+
+/** Create complete desktop computers owned by one SmolVM client. */
+export interface ComputerCollection {
+  create(options?: CreateComputerOptions): Promise<ComputerSessionClient>;
+}
+
 /** The mockable client contract for creating sandboxes, diagnosing setup, and cleaning up. */
 export interface SmolVMClient {
   readonly sandboxes: SandboxCollection;
   readonly browsers: BrowserSessionCollection;
+  readonly computers: ComputerCollection;
   diagnose(): Promise<DiagnoseResult>;
   close(): Promise<void>;
 }

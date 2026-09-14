@@ -16,6 +16,12 @@ The mockable client contract for creating sandboxes, diagnosing setup, and clean
 
 ***
 
+### computers
+
+> `readonly` **computers**: [`ComputerCollection`](ComputerCollection.md)
+
+***
+
 ### sandboxes
 
 > `readonly` **sandboxes**: [`SandboxCollection`](SandboxCollection.md)

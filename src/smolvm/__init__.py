@@ -47,6 +47,8 @@ from smolvm.ssh import SSHClient
 from smolvm.types import (
     BrowserViewport,
     CommandResult,
+    ComputerEvent,
+    ComputerSandboxProtocol,
     DesktopEndpoint,
     DisplaySandboxProtocol,
     GuestFlushPolicy,
@@ -110,6 +112,8 @@ __all__ = [
     "SnapshotType",
     "GuestFlushPolicy",
     "CommandResult",
+    "ComputerEvent",
+    "ComputerSandboxProtocol",
     "DesktopEndpoint",
     "DisplaySandboxProtocol",
     "BrowserViewport",

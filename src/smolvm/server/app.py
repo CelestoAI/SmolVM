@@ -33,7 +33,11 @@ from smolvm.facade import SmolVM
 from smolvm.server.models import (
     BrowserSessionResponse,
     CapabilitiesResponse,
+    ComputerBrowserResponse,
+    ComputerDisplayResponse,
+    ComputerResponse,
     CreateBrowserSessionRequest,
+    CreateComputerRequest,
     CreateSandboxRequest,
     DesktopResponse,
     DiagnosticsResponse,
@@ -42,7 +46,7 @@ from smolvm.server.models import (
     ExecResponse,
     SandboxResponse,
 )
-from smolvm.types import DisplaySandboxProtocol
+from smolvm.types import ComputerEvent, ComputerSandboxProtocol, DisplaySandboxProtocol
 
 logger = logging.getLogger(__name__)
 _MAX_FILE_BYTES = 16 * 1024 * 1024
@@ -138,6 +142,10 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
     """
     sandboxes: dict[str, SmolVM] = {}
     browser_sessions: dict[str, DisplaySandboxProtocol] = {}
+    computer_sessions: dict[str, ComputerSandboxProtocol] = {}
+    computer_states: dict[str, Literal["ready", "stopping", "error"]] = {}
+    computer_creating: set[str] = set()
+    computer_lock = threading.Lock()
     event_subscribers: set[Queue[dict[str, object]]] = set()
     event_lock = threading.Lock()
 
@@ -156,6 +164,13 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):  # type: ignore[no-untyped-def]
         yield
+        for computer in list(computer_sessions.values()):
+            with suppress(Exception):
+                await asyncio.to_thread(computer.delete)
+            with suppress(Exception):
+                computer.close()
+        computer_sessions.clear()
+        computer_states.clear()
         for browser in list(browser_sessions.values()):
             with suppress(Exception):
                 await asyncio.to_thread(browser.delete)
@@ -178,6 +193,35 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
     app.state.auth_token = auth_token
     app.state.sandboxes = sandboxes
     app.state.browser_sessions = browser_sessions
+    app.state.computer_sessions = computer_sessions
+    app.state.computer_states = computer_states
+    app.state.computer_creating = computer_creating
+    app.state.event_subscribers = event_subscribers
+
+    def handle_computer_event(event: ComputerEvent) -> None:
+        if event["type"] != "computer.error":
+            return
+        computer_id = event["computer_id"]
+        with computer_lock:
+            computer = computer_sessions.get(computer_id)
+            if (
+                computer is None
+                or computer.sandbox_id != event["sandbox_id"]
+                or computer_states.get(computer_id) != "ready"
+            ):
+                return
+            computer_states[computer_id] = "error"
+        publish(
+            {
+                "type": "computer.error",
+                "computerId": computer_id,
+                "sandboxId": event["sandbox_id"],
+                "process": event["process"],
+                "message": event["message"],
+            }
+        )
+
+    app.state.handle_computer_event = handle_computer_event
 
     if auth_token is not None:
 
@@ -281,6 +325,46 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
                 f"Browser session '{session_id}' is unavailable; create a new browser session.",
             )
         return browser
+
+    def computer_response(computer: ComputerSandboxProtocol) -> ComputerResponse:
+        return ComputerResponse(
+            computer_id=computer.computer_id,
+            sandbox_id=computer.sandbox_id,
+            template="linux-desktop",
+            status="ready",
+            capabilities=computer.capabilities,
+            display=ComputerDisplayResponse(
+                viewer_url=computer.display.viewer_url,
+                vnc_url=computer.display.vnc_url,
+            ),
+            browser=ComputerBrowserResponse(
+                status=computer.browser.status,
+                cdp_url=computer.browser.cdp_url,
+            ),
+        )
+
+    def resolve_computer(computer_id: str) -> ComputerSandboxProtocol:
+        with computer_lock:
+            computer = computer_sessions.get(computer_id)
+            state = computer_states.get(computer_id)
+        if computer is None:
+            raise _sdk_error(
+                404,
+                "computer_deleted",
+                f"Computer '{computer_id}' is unavailable; create a new computer.",
+            )
+        if state != "ready":
+            recovery = (
+                "wait for deletion to finish"
+                if state == "stopping"
+                else "call computer.delete() again"
+            )
+            raise _sdk_error(
+                409,
+                "computer_not_ready",
+                f"Computer '{computer_id}' is {state or 'not ready'}; {recovery}.",
+            )
+        return computer
 
     async def write_vm_file(
         vm: SmolVM,
@@ -407,6 +491,337 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
         return Response(content=content, media_type="application/octet-stream")
+
+    @app.post(
+        "/computers",
+        response_model=ComputerResponse,
+        status_code=201,
+        operation_id="createComputer",
+        responses={400: {"model": ErrorResponse}},
+    )
+    def create_computer(body: CreateComputerRequest) -> ComputerResponse:
+        computer_id = body.computer_id or f"computer-{secrets.token_hex(4)}"
+        with computer_lock:
+            if computer_id in computer_sessions or computer_id in computer_creating:
+                raise _sdk_error(
+                    409,
+                    "computer_already_exists",
+                    f"Computer '{computer_id}' already exists; delete it or choose another name.",
+                )
+            computer_creating.add(computer_id)
+        publish({"type": "computer.starting", "computerId": computer_id})
+        computer: ComputerSandboxProtocol | None = None
+        network = body.network.model_dump()
+        internet_settings = None if network["mode"] == "open" else network
+        try:
+            computer = SmolVM.computer(
+                template=body.template,
+                name=computer_id,
+                backend=body.backend,
+                display=body.display.model_dump(),
+                resources=body.resources.model_dump(),
+                network=internet_settings,
+                workspace=body.workspace,
+            )
+            result = computer_response(computer)
+            with computer_lock:
+                computer_sessions[computer_id] = computer
+                computer_states[computer_id] = "ready"
+            enable_events = getattr(computer, "enable_events", None)
+            if callable(enable_events):
+                enable_events(handle_computer_event)
+        except HTTPException:
+            with computer_lock:
+                if computer is not None and computer_sessions.get(computer_id) is computer:
+                    computer_sessions.pop(computer_id, None)
+                    computer_states.pop(computer_id, None)
+            if computer is not None:
+                with suppress(Exception):
+                    computer.delete()
+                with suppress(Exception):
+                    computer.close()
+            raise
+        except (ValueError, SmolVMError) as exc:
+            with computer_lock:
+                if computer is not None and computer_sessions.get(computer_id) is computer:
+                    computer_sessions.pop(computer_id, None)
+                    computer_states.pop(computer_id, None)
+            if computer is not None:
+                with suppress(Exception):
+                    computer.delete()
+                with suppress(Exception):
+                    computer.close()
+            code = (
+                "computer_image_unavailable"
+                if isinstance(exc, ImageError)
+                else "computer_create_failed"
+            )
+            raise _sdk_error(
+                400,
+                code,
+                f"Could not create computer '{computer_id}': {exc}. Fix the options and try again.",
+            ) from exc
+        finally:
+            with computer_lock:
+                computer_creating.discard(computer_id)
+        publish(
+            {
+                "type": "computer.ready",
+                "computerId": computer_id,
+                "sandboxId": result.sandbox_id,
+            }
+        )
+        return result
+
+    @app.delete("/computers/{computer_id}", status_code=204, operation_id="deleteComputer")
+    def delete_computer(computer_id: str) -> Response:
+        with computer_lock:
+            computer = computer_sessions.get(computer_id)
+            creating = computer_id in computer_creating
+            state = computer_states.get(computer_id)
+            if computer is not None and state != "stopping":
+                computer_states[computer_id] = "stopping"
+        if computer is None:
+            if creating:
+                raise _sdk_error(
+                    409,
+                    "computer_not_ready",
+                    f"Computer '{computer_id}' is still starting; wait for creation to finish, "
+                    "then call computer.delete() again.",
+                )
+            return Response(status_code=204)
+        if state == "stopping":
+            raise _sdk_error(
+                409,
+                "computer_not_ready",
+                f"Computer '{computer_id}' is stopping; wait for deletion to finish.",
+            )
+        publish(
+            {
+                "type": "computer.stopping",
+                "computerId": computer_id,
+                "sandboxId": computer.sandbox_id,
+            }
+        )
+        try:
+            computer.delete()
+        except Exception as exc:
+            with computer_lock:
+                if computer_sessions.get(computer_id) is computer:
+                    computer_states[computer_id] = "error"
+            raise _sdk_error(
+                409,
+                "cleanup_failed",
+                f"Computer '{computer_id}' could not be deleted; call computer.delete() again.",
+            ) from exc
+        with suppress(Exception):
+            computer.close()
+        with computer_lock:
+            if computer_sessions.get(computer_id) is computer:
+                computer_sessions.pop(computer_id, None)
+                computer_states.pop(computer_id, None)
+        publish(
+            {
+                "type": "computer.deleted",
+                "computerId": computer_id,
+                "sandboxId": computer.sandbox_id,
+            }
+        )
+        return Response(status_code=204)
+
+    @app.post("/computers/{computer_id}/cancel", status_code=204)
+    def cancel_computer_operation(computer_id: str) -> Response:
+        """Stop an in-flight operation by deleting its computer VM."""
+        return delete_computer(computer_id)
+
+    @app.post(
+        "/computers/{computer_id}/exec",
+        response_model=ExecResponse,
+        operation_id="execComputerCommand",
+    )
+    def exec_computer_command(computer_id: str, body: ExecRequest) -> ExecResponse:
+        computer = resolve_computer(computer_id)
+        try:
+            command, shell = _command_with_context(body)
+            started = time.monotonic()
+            result = computer.run(command, body.timeout, shell)
+            duration_ms = round((time.monotonic() - started) * 1000)
+        except OperationTimeoutError as exc:
+            deleted = False
+            with computer_lock:
+                owns_computer = computer_sessions.get(computer_id) is computer
+                if owns_computer:
+                    computer_states[computer_id] = "stopping"
+            if owns_computer:
+                publish(
+                    {
+                        "type": "computer.stopping",
+                        "computerId": computer_id,
+                        "sandboxId": computer.sandbox_id,
+                    }
+                )
+            try:
+                computer.delete()
+                deleted = True
+            except Exception:
+                logger.exception("Could not delete timed-out SDK computer %s", computer_id)
+            if deleted:
+                with suppress(Exception):
+                    computer.close()
+                with computer_lock:
+                    if computer_sessions.get(computer_id) is computer:
+                        computer_sessions.pop(computer_id, None)
+                        computer_states.pop(computer_id, None)
+                if owns_computer:
+                    publish(
+                        {
+                            "type": "computer.deleted",
+                            "computerId": computer_id,
+                            "sandboxId": computer.sandbox_id,
+                        }
+                    )
+            elif owns_computer:
+                with computer_lock:
+                    if computer_sessions.get(computer_id) is computer:
+                        computer_states[computer_id] = "error"
+            raise _sdk_error(
+                408,
+                "command_timeout",
+                (
+                    f"Command timed out in computer '{computer_id}'; "
+                    + (
+                        "the computer was deleted to confirm the command stopped. "
+                        "Create a new computer and retry."
+                        if deleted
+                        else "deletion could not be confirmed, so close the SmolVM client "
+                        "to stop the complete session."
+                    )
+                ),
+                headers={"X-SmolVM-Sandbox-Deleted": str(deleted).lower()},
+            ) from exc
+        except (ValueError, SmolVMError) as exc:
+            raise _sdk_error(
+                409,
+                "transport_failed",
+                f"Command could not run in computer '{computer_id}'; delete it and create another.",
+            ) from exc
+        return ExecResponse(**result.model_dump(), duration_ms=duration_ms)
+
+    @app.put(
+        "/computers/{computer_id}/files",
+        status_code=204,
+        operation_id="writeComputerFile",
+        openapi_extra={
+            "requestBody": {
+                "required": True,
+                "content": {
+                    "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}
+                },
+            }
+        },
+    )
+    async def write_computer_file(computer_id: str, path: str, request: Request) -> Response:
+        computer = resolve_computer(computer_id)
+        if not PurePosixPath(path).is_absolute():
+            raise _sdk_error(
+                400,
+                "invalid_path",
+                f"File path for computer '{computer_id}' must be absolute; "
+                "retry files.write('/workspace/file', content).",
+            )
+        content = bytearray()
+        async for chunk in request.stream():
+            content.extend(chunk)
+            if len(content) > _MAX_FILE_BYTES:
+                raise _sdk_error(
+                    413,
+                    "file_too_large",
+                    f"File for computer '{computer_id}' exceeds the 16 MiB SDK limit; "
+                    "retry with a smaller file.",
+                )
+        try:
+            await asyncio.to_thread(computer.files.write, path, bytes(content))
+        except (ValueError, SmolVMError) as exc:
+            raise _sdk_error(
+                409,
+                "transport_failed",
+                f"Could not write '{path}' in computer '{computer_id}'; check the path and retry.",
+            ) from exc
+        return Response(status_code=204)
+
+    @app.get(
+        "/computers/{computer_id}/files",
+        response_class=Response,
+        operation_id="readComputerFile",
+    )
+    async def read_computer_file(computer_id: str, path: str) -> Response:
+        if not PurePosixPath(path).is_absolute():
+            raise _sdk_error(
+                400,
+                "invalid_path",
+                f"File path for computer '{computer_id}' must be absolute; "
+                "retry files.read('/workspace/file').",
+            )
+        computer = resolve_computer(computer_id)
+        try:
+            size_result = await asyncio.to_thread(
+                computer.run,
+                f"stat -c %s -- {shlex.quote(path)}",
+                30,
+                "raw",
+            )
+            if not size_result.ok:
+                raise SmolVMError(size_result.stderr.strip() or f"Could not inspect '{path}'.")
+            size = int(size_result.stdout.strip())
+            if size > _MAX_FILE_BYTES:
+                raise _sdk_error(
+                    413,
+                    "file_too_large",
+                    f"File in computer '{computer_id}' exceeds the 16 MiB SDK limit; "
+                    "choose a smaller file.",
+                )
+            content = await asyncio.to_thread(
+                computer.files.read,
+                path,
+                max_bytes=_MAX_FILE_BYTES,
+            )
+        except HTTPException:
+            raise
+        except (ValueError, SmolVMError) as exc:
+            raise _sdk_error(
+                409,
+                "transport_failed",
+                f"Could not read '{path}' from computer '{computer_id}'; check the path and retry.",
+            ) from exc
+        if len(content) > _MAX_FILE_BYTES:
+            raise _sdk_error(
+                413,
+                "file_too_large",
+                f"File in computer '{computer_id}' exceeds the 16 MiB SDK limit; "
+                "choose a smaller file.",
+            )
+        return Response(content=content, media_type="application/octet-stream")
+
+    @app.post(
+        "/computers/{computer_id}/browser/launch",
+        response_model=ComputerBrowserResponse,
+        operation_id="launchComputerBrowser",
+    )
+    def launch_computer_browser(computer_id: str) -> ComputerBrowserResponse:
+        computer = resolve_computer(computer_id)
+        try:
+            computer.browser.launch()
+        except (ValueError, SmolVMError) as exc:
+            raise _sdk_error(
+                409,
+                "browser_launch_failed",
+                f"Chromium did not open in computer '{computer_id}'; "
+                "inspect its logs and try again.",
+            ) from exc
+        return ComputerBrowserResponse(
+            status=computer.browser.status,
+            cdp_url=computer.browser.cdp_url,
+        )
 
     @app.post(
         "/browser-sessions",

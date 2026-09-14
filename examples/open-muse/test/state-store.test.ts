@@ -374,9 +374,25 @@ test("approved browser actions clear approval data before the next durable turn"
   internals.context.sessionLifecycle = "ready";
   internals.context.computer = {
     status: "ready",
-    sessionId: "browser-test",
+    computerId: "computer-test",
     sandboxId: "sandbox-test",
-    cdpUrl: "http://127.0.0.1:9222",
+    template: "linux-desktop",
+    capabilities: [],
+    display: {
+      viewerUrl: "http://127.0.0.1:6080/vnc.html",
+      vncUrl: "vnc://127.0.0.1:5900",
+    },
+    browser: {
+      status: "ready",
+      cdpUrl: "http://127.0.0.1:9222",
+      launch: async () => undefined,
+    },
+    files: {
+      read: async () => "",
+      write: async () => undefined,
+      upload: async () => undefined,
+      download: async () => undefined,
+    },
     exec: async () => ({
       ok: true,
       exitCode: 0,

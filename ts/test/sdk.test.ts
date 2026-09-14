@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { SmolVM, SmolVMError } from "../src/index.js";
+import { ComputerSession, SmolVM, SmolVMError } from "../src/index.js";
 import { ProcessTransport } from "../src/transport.js";
 import type { SmolVMTransport } from "../src/index.js";
 
@@ -15,7 +15,7 @@ class FakeTransport implements SmolVMTransport {
 
   async request<T>(path: string, init?: RequestInit): Promise<T> {
     this.calls.push({ path, init });
-    if (path === "/sdk/v1/capabilities") return { protocol_version: 1, capabilities: ["sandbox.create", "sandbox.delete", "sandbox.exec", "files.read", "files.write", "browser.create", "browser.delete", "browser.endpoints", "browser.exec", "browser.files", "browser.events", "events"] } as T;
+    if (path === "/sdk/v1/capabilities") return { protocol_version: 1, capabilities: ["sandbox.create", "sandbox.delete", "sandbox.exec", "files.read", "files.write", "browser.create", "browser.delete", "browser.endpoints", "browser.exec", "browser.files", "browser.events", "computer.create", "computer.delete", "computer.endpoints", "computer.exec", "computer.files", "computer.browser", "computer.events", "events"] } as T;
     if (path === "/sdk/v1/diagnostics") return { protocol_version: 1, runtime_version: "test", python_version: "3.13", platform: "darwin-arm64", supported: true, problems: [] } as T;
     if (path === "/sandboxes") return { id: "sbx-test", status: "running" } as T;
     if (path === "/browser-sessions") return {
@@ -27,6 +27,21 @@ class FakeTransport implements SmolVMTransport {
       display_url: "vnc://127.0.0.1:5900",
       profile_id: null,
     } as T;
+    if (path === "/computers") return {
+      computer_id: "computer-test",
+      sandbox_id: "vm-computer-test",
+      template: "linux-desktop",
+      status: "ready",
+      capabilities: ["display.viewer", "display.vnc", "browser.cdp", "sandbox.exec", "sandbox.files"],
+      display: {
+        viewer_url: "http://127.0.0.1:6081/vnc.html",
+        vnc_url: "vnc://127.0.0.1:5901",
+      },
+      browser: { status: "ready", cdp_url: "http://127.0.0.1:9223" },
+    } as T;
+    if (path.endsWith("/browser/launch")) {
+      return { status: "ready", cdp_url: "http://127.0.0.1:9223" } as T;
+    }
     if (path.endsWith("/exec")) return { exit_code: 7, stdout: "out", stderr: "err", duration_ms: 12 } as T;
     if (path.includes("/files") && init?.method === "PUT") {
       const body = init.body;
@@ -119,6 +134,240 @@ test("creates a ready live browser session and deletes it once", async () => {
   assert.deepEqual(events, ["browser.starting", "browser.ready", "command.started", "command.completed", "browser.stopping", "browser.deleted"]);
 });
 
+test("creates a Linux computer with grouped display and browser access", async () => {
+  const transport = new FakeTransport();
+  const events: string[] = [];
+  const client = new SmolVM({ transport, onEvent: (event) => events.push(event.type) });
+  const computer = await client.computers.create({
+    name: "computer-test",
+    display: { width: 1440, height: 900 },
+    resources: { memoryMiB: 4096, diskMiB: 12288, vcpus: 2 },
+    network: { mode: "off" },
+    workspace: [{ hostPath: "/tmp/project", guestPath: "/workspace", writable: false }],
+  });
+
+  const body = JSON.parse(String(
+    transport.calls.find((call) => call.path === "/computers")?.init?.body,
+  ));
+  assert.equal(body.template, "linux-desktop");
+  assert.deepEqual(body.resources, { memory_mib: 4096, disk_mib: 12288, vcpus: 2 });
+  assert.deepEqual(body.workspace, [{
+    host_path: "/tmp/project",
+    guest_path: "/workspace",
+    writable: false,
+  }]);
+  assert.equal(computer.display.viewerUrl, "http://127.0.0.1:6081/vnc.html");
+  assert.equal(computer.display.vncUrl, "vnc://127.0.0.1:5901");
+  assert.equal(computer.browser.cdpUrl, "http://127.0.0.1:9223");
+  await computer.browser.launch();
+  assert.ok(transport.calls.some((call) => call.path.endsWith("/browser/launch")));
+
+  const result = await computer.exec(["printf", "%s", "desktop"]);
+  assert.equal(result.exitCode, 7);
+  await computer.delete();
+  assert.equal(computer.status, "deleted");
+  assert.deepEqual(events, [
+    "computer.starting",
+    "computer.ready",
+    "command.started",
+    "command.completed",
+    "computer.stopping",
+    "computer.deleted",
+  ]);
+});
+
+test("computer cleanup stays retryable when the first delete fails", async () => {
+  class RetryDeleteTransport extends FakeTransport {
+    attempts = 0;
+    override async request<T>(path: string, init?: RequestInit): Promise<T> {
+      if (path === "/computers/computer-test" && init?.method === "DELETE") {
+        this.calls.push({ path, init });
+        if (this.attempts++ === 0) {
+          throw new SmolVMError("cleanup_failed", "busy", { operation: "computer.delete" });
+        }
+        return undefined as T;
+      }
+      return super.request(path, init);
+    }
+  }
+  const transport = new RetryDeleteTransport();
+  const client = new SmolVM({ transport });
+  const computer = await client.computers.create({ name: "computer-test" });
+
+  await assert.rejects(() => client.close(), /not fully deleted/);
+  assert.equal(computer.status, "error");
+  assert.equal(transport.closeCount, 0);
+
+  await client.close();
+  assert.equal(computer.status, "deleted");
+  assert.equal(transport.closeCount, 1);
+  assert.equal(transport.attempts, 2);
+});
+
+test("computer creation rejects a response without a usable display", async () => {
+  class MissingDisplayTransport extends FakeTransport {
+    override async request<T>(path: string, init?: RequestInit): Promise<T> {
+      if (path === "/computers") {
+        return {
+          computer_id: "computer-test",
+          sandbox_id: "vm-computer-test",
+          template: "linux-desktop",
+          status: "ready",
+          capabilities: [],
+          display: { viewer_url: "", vnc_url: "" },
+          browser: { status: "closed", cdp_url: null },
+        } as T;
+      }
+      return super.request(path, init);
+    }
+  }
+  const client = new SmolVM({ transport: new MissingDisplayTransport() });
+
+  await assert.rejects(
+    () => client.computers.create(),
+    (error: unknown) => error instanceof SmolVMError
+      && error.code === "computer_endpoint_unavailable",
+  );
+});
+
+test("deleted computers reject commands, files, and browser relaunch", async () => {
+  const client = new SmolVM({ transport: new FakeTransport() });
+  const computer = await client.computers.create({ name: "computer-test" });
+  await computer.delete();
+
+  await assert.rejects(() => computer.exec("echo late"), /not ready/);
+  await assert.rejects(() => computer.files.read("/workspace/late.txt"), /not ready/);
+  await assert.rejects(() => computer.browser.launch(), /not ready/);
+  await client.close();
+});
+
+test("required desktop process failures move the computer to error", async () => {
+  const client = new SmolVM({ transport: new FakeTransport() });
+  const computer = await client.computers.create({ name: "computer-test" });
+
+  assert.ok(computer instanceof ComputerSession);
+  computer.markError();
+
+  assert.equal(computer.status, "error");
+  assert.equal(computer.browser.status, "error");
+  assert.equal(computer.browser.cdpUrl, null);
+  await assert.rejects(() => computer.exec("whoami"), /not ready/);
+  await computer.delete();
+});
+
+test("computer files round trip text through the grouped file API", async () => {
+  const transport = new FakeTransport();
+  const client = new SmolVM({ transport });
+  const computer = await client.computers.create({ name: "computer-test" });
+
+  await computer.files.write("/workspace/note.txt", "desktop");
+  assert.equal(await computer.files.read("/workspace/note.txt"), "desktop");
+  assert.ok(transport.calls.some((call) =>
+    call.path.startsWith("/computers/computer-test/files?")
+  ));
+  await client.close();
+});
+
+test("computer commands reject empty argv and invalid timeouts before transport", async () => {
+  const transport = new FakeTransport();
+  const client = new SmolVM({ transport });
+  const computer = await client.computers.create({ name: "computer-test" });
+  const callsBefore = transport.calls.length;
+
+  await assert.rejects(() => computer.exec([]), /at least one item/);
+  await assert.rejects(() => computer.exec("echo late", { timeoutMs: 0 }), /1 to 3,600,000/);
+  assert.equal(transport.calls.length, callsBefore);
+  await client.close();
+});
+
+test("computer timeout records server-confirmed deletion", async () => {
+  class ComputerTimeoutTransport extends FakeTransport {
+    override async request<T>(path: string, init?: RequestInit): Promise<T> {
+      if (path === "/computers/computer-test/exec") {
+        throw new SmolVMError("command_timeout", "timed out and deleted", {
+          operation: "computer.exec",
+          actual: { sandboxDeleted: true },
+        });
+      }
+      return super.request(path, init);
+    }
+  }
+  const client = new SmolVM({ transport: new ComputerTimeoutTransport() });
+  const computer = await client.computers.create({ name: "computer-test" });
+
+  await assert.rejects(
+    () => computer.exec("sleep 60"),
+    (error: unknown) => error instanceof SmolVMError
+      && error.code === "command_timeout"
+      && error.actual?.computerDeleted === true,
+  );
+  assert.equal(computer.status, "deleted");
+});
+
+test("an already-aborted computer command does not start or delete the computer", async () => {
+  const transport = new FakeTransport();
+  const events: string[] = [];
+  const client = new SmolVM({ transport, onEvent: (event) => events.push(event.type) });
+  const computer = await client.computers.create({ name: "computer-test" });
+  const controller = new AbortController();
+  controller.abort();
+
+  await assert.rejects(
+    () => computer.exec("sleep 60", { signal: controller.signal }),
+    (error: unknown) => error instanceof SmolVMError && error.code === "command_aborted",
+  );
+  assert.equal(computer.status, "ready");
+  assert.equal(transport.calls.some((call) => call.path.endsWith("/exec")), false);
+  assert.equal(transport.calls.some((call) => call.path.endsWith("/cancel")), false);
+  assert.deepEqual(events, ["computer.starting", "computer.ready"]);
+});
+
+test("aborting an in-flight computer command cancels it and deletes the computer", async () => {
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  class InFlightAbortTransport extends FakeTransport {
+    override async request<T>(path: string, init?: RequestInit): Promise<T> {
+      if (path === "/computers/computer-test/exec") {
+        this.calls.push({ path, init });
+        markStarted();
+        return await new Promise<T>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("aborted", "AbortError")),
+            { once: true },
+          );
+        });
+      }
+      return super.request(path, init);
+    }
+  }
+  const transport = new InFlightAbortTransport();
+  const events: string[] = [];
+  const client = new SmolVM({ transport, onEvent: (event) => events.push(event.type) });
+  const computer = await client.computers.create({ name: "computer-test" });
+  const controller = new AbortController();
+
+  const command = computer.exec("sleep 60", { signal: controller.signal });
+  await started;
+  controller.abort();
+
+  await assert.rejects(
+    command,
+    (error: unknown) => error instanceof SmolVMError
+      && error.code === "command_aborted"
+      && error.actual?.computerDeleted === true,
+  );
+  assert.equal(transport.calls.some((call) => call.path.endsWith("/exec")), true);
+  assert.equal(transport.calls.some((call) => call.path.endsWith("/cancel")), true);
+  assert.equal(computer.status, "deleted");
+  assert.deepEqual(events, [
+    "computer.starting",
+    "computer.ready",
+    "command.started",
+    "computer.deleted",
+  ]);
+});
+
 test("browser computers upload and atomically download files", async () => {
   const directory = await mkdtemp(join(tmpdir(), "smolvm-browser-files-"));
   const localInput = join(directory, "input.bin");
@@ -202,6 +451,39 @@ test("validates bridge request deadlines", () => {
     () => new SmolVM({ transport: new FakeTransport(), createTimeoutMs: 0 }),
     /createTimeoutMs must be an integer/,
   );
+});
+
+test("process transport preserves computer error codes from the runtime", async () => {
+  const server = createServer((_request, response) => {
+    response.statusCode = 409;
+    response.setHeader("content-type", "application/json");
+    response.setHeader("x-smolvm-error-code", "computer_already_exists");
+    response.end(JSON.stringify({ detail: "Computer 'computer-demo' already exists." }));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  assert(address && typeof address === "object");
+  const transport = new ProcessTransport("unused", 1_000, 1_000, 1_000, false, () => {});
+  Object.assign(transport, {
+    startPromise: Promise.resolve(),
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    token: "test-token",
+  });
+
+  try {
+    await assert.rejects(
+      () => transport.request("/computers", { method: "POST" }),
+      (error: unknown) => error instanceof SmolVMError
+        && error.code === "computer_already_exists",
+    );
+  } finally {
+    await transport.close();
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });
 
 test("sandbox creation timeout invalidates every handle in its SDK session", async () => {

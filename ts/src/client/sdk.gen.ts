@@ -2,7 +2,7 @@
 
 import { client } from './client.gen.js';
 import type { Client, ClientMeta, Options as Options2, RequestResult, ServerSentEventsResult, TDataShape } from './client/index.js';
-import type { CancelSandboxOperationSandboxesSandboxIdCancelPostData, CancelSandboxOperationSandboxesSandboxIdCancelPostErrors, CancelSandboxOperationSandboxesSandboxIdCancelPostResponses, CapabilitiesSdkV1CapabilitiesGetData, CapabilitiesSdkV1CapabilitiesGetResponses, CreateBrowserSessionData, CreateBrowserSessionErrors, CreateBrowserSessionResponses, CreateSandboxData, CreateSandboxErrors, CreateSandboxResponses, DeleteBrowserSessionData, DeleteBrowserSessionErrors, DeleteBrowserSessionResponses, DeleteSandboxData, DeleteSandboxErrors, DeleteSandboxResponses, DiagnosticsSdkV1DiagnosticsGetData, DiagnosticsSdkV1DiagnosticsGetResponses, EventsSdkV1EventsGetData, EventsSdkV1EventsGetResponses, ExecBrowserCommandData, ExecBrowserCommandErrors, ExecBrowserCommandResponses, ExecCommandData, ExecCommandErrors, ExecCommandResponses, GetSandboxData, GetSandboxDesktopData, GetSandboxDesktopErrors, GetSandboxDesktopResponses, GetSandboxErrors, GetSandboxResponses, ListSandboxesData, ListSandboxesResponses, ReadBrowserFileData, ReadBrowserFileErrors, ReadBrowserFileResponses, ReadFileSandboxesSandboxIdFilesGetData, ReadFileSandboxesSandboxIdFilesGetErrors, ReadFileSandboxesSandboxIdFilesGetResponses, WriteBrowserFileData, WriteBrowserFileErrors, WriteBrowserFileResponses, WriteFileSandboxesSandboxIdFilesPutData, WriteFileSandboxesSandboxIdFilesPutErrors, WriteFileSandboxesSandboxIdFilesPutResponses } from './types.gen.js';
+import type { CancelComputerOperationComputersComputerIdCancelPostData, CancelComputerOperationComputersComputerIdCancelPostErrors, CancelComputerOperationComputersComputerIdCancelPostResponses, CancelSandboxOperationSandboxesSandboxIdCancelPostData, CancelSandboxOperationSandboxesSandboxIdCancelPostErrors, CancelSandboxOperationSandboxesSandboxIdCancelPostResponses, CapabilitiesSdkV1CapabilitiesGetData, CapabilitiesSdkV1CapabilitiesGetResponses, CreateBrowserSessionData, CreateBrowserSessionErrors, CreateBrowserSessionResponses, CreateComputerData, CreateComputerErrors, CreateComputerResponses, CreateSandboxData, CreateSandboxErrors, CreateSandboxResponses, DeleteBrowserSessionData, DeleteBrowserSessionErrors, DeleteBrowserSessionResponses, DeleteComputerData, DeleteComputerErrors, DeleteComputerResponses, DeleteSandboxData, DeleteSandboxErrors, DeleteSandboxResponses, DiagnosticsSdkV1DiagnosticsGetData, DiagnosticsSdkV1DiagnosticsGetResponses, EventsSdkV1EventsGetData, EventsSdkV1EventsGetResponses, ExecBrowserCommandData, ExecBrowserCommandErrors, ExecBrowserCommandResponses, ExecCommandData, ExecCommandErrors, ExecCommandResponses, ExecComputerCommandData, ExecComputerCommandErrors, ExecComputerCommandResponses, GetSandboxData, GetSandboxDesktopData, GetSandboxDesktopErrors, GetSandboxDesktopResponses, GetSandboxErrors, GetSandboxResponses, LaunchComputerBrowserData, LaunchComputerBrowserErrors, LaunchComputerBrowserResponses, ListSandboxesData, ListSandboxesResponses, ReadBrowserFileData, ReadBrowserFileErrors, ReadBrowserFileResponses, ReadComputerFileData, ReadComputerFileErrors, ReadComputerFileResponses, ReadFileSandboxesSandboxIdFilesGetData, ReadFileSandboxesSandboxIdFilesGetErrors, ReadFileSandboxesSandboxIdFilesGetResponses, WriteBrowserFileData, WriteBrowserFileErrors, WriteBrowserFileResponses, WriteComputerFileData, WriteComputerFileErrors, WriteComputerFileResponses, WriteFileSandboxesSandboxIdFilesPutData, WriteFileSandboxesSandboxIdFilesPutErrors, WriteFileSandboxesSandboxIdFilesPutResponses } from './types.gen.js';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -32,6 +32,65 @@ export const eventsSdkV1EventsGet = <ThrowOnError extends boolean = false>(optio
  * Diagnostics
  */
 export const diagnosticsSdkV1DiagnosticsGet = <ThrowOnError extends boolean = false>(options?: Options<DiagnosticsSdkV1DiagnosticsGetData, ThrowOnError>): RequestResult<DiagnosticsSdkV1DiagnosticsGetResponses, unknown, ThrowOnError> => (options?.client ?? client).get<DiagnosticsSdkV1DiagnosticsGetResponses, unknown, ThrowOnError>({ url: '/sdk/v1/diagnostics', ...options });
+
+/**
+ * Create Computer
+ */
+export const createComputer = <ThrowOnError extends boolean = false>(options: Options<CreateComputerData, ThrowOnError>): RequestResult<CreateComputerResponses, CreateComputerErrors, ThrowOnError> => (options.client ?? client).post<CreateComputerResponses, CreateComputerErrors, ThrowOnError>({
+    url: '/computers',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Delete Computer
+ */
+export const deleteComputer = <ThrowOnError extends boolean = false>(options: Options<DeleteComputerData, ThrowOnError>): RequestResult<DeleteComputerResponses, DeleteComputerErrors, ThrowOnError> => (options.client ?? client).delete<DeleteComputerResponses, DeleteComputerErrors, ThrowOnError>({ url: '/computers/{computer_id}', ...options });
+
+/**
+ * Cancel Computer Operation
+ *
+ * Stop an in-flight operation by deleting its computer VM.
+ */
+export const cancelComputerOperationComputersComputerIdCancelPost = <ThrowOnError extends boolean = false>(options: Options<CancelComputerOperationComputersComputerIdCancelPostData, ThrowOnError>): RequestResult<CancelComputerOperationComputersComputerIdCancelPostResponses, CancelComputerOperationComputersComputerIdCancelPostErrors, ThrowOnError> => (options.client ?? client).post<CancelComputerOperationComputersComputerIdCancelPostResponses, CancelComputerOperationComputersComputerIdCancelPostErrors, ThrowOnError>({ url: '/computers/{computer_id}/cancel', ...options });
+
+/**
+ * Exec Computer Command
+ */
+export const execComputerCommand = <ThrowOnError extends boolean = false>(options: Options<ExecComputerCommandData, ThrowOnError>): RequestResult<ExecComputerCommandResponses, ExecComputerCommandErrors, ThrowOnError> => (options.client ?? client).post<ExecComputerCommandResponses, ExecComputerCommandErrors, ThrowOnError>({
+    url: '/computers/{computer_id}/exec',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Read Computer File
+ */
+export const readComputerFile = <ThrowOnError extends boolean = false>(options: Options<ReadComputerFileData, ThrowOnError>): RequestResult<ReadComputerFileResponses, ReadComputerFileErrors, ThrowOnError> => (options.client ?? client).get<ReadComputerFileResponses, ReadComputerFileErrors, ThrowOnError>({ url: '/computers/{computer_id}/files', ...options });
+
+/**
+ * Write Computer File
+ */
+export const writeComputerFile = <ThrowOnError extends boolean = false>(options: Options<WriteComputerFileData, ThrowOnError>): RequestResult<WriteComputerFileResponses, WriteComputerFileErrors, ThrowOnError> => (options.client ?? client).put<WriteComputerFileResponses, WriteComputerFileErrors, ThrowOnError>({
+    bodySerializer: null,
+    url: '/computers/{computer_id}/files',
+    ...options,
+    headers: {
+        'Content-Type': 'application/octet-stream',
+        ...options.headers
+    }
+});
+
+/**
+ * Launch Computer Browser
+ */
+export const launchComputerBrowser = <ThrowOnError extends boolean = false>(options: Options<LaunchComputerBrowserData, ThrowOnError>): RequestResult<LaunchComputerBrowserResponses, LaunchComputerBrowserErrors, ThrowOnError> => (options.client ?? client).post<LaunchComputerBrowserResponses, LaunchComputerBrowserErrors, ThrowOnError>({ url: '/computers/{computer_id}/browser/launch', ...options });
 
 /**
  * Create Browser Session

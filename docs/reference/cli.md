@@ -74,11 +74,13 @@ The first time you start a sandbox or agent, SmolVM downloads the files it boots
 
 Images are stored in `~/.smolvm/images`. To keep them somewhere else, set the `SMOLVM_IMAGE_DIR` environment variable — sandboxes read it too, so images you pull are found when a sandbox starts. The `--image-dir` option points a single `smolvm image` command at a different folder; sandboxes do not read that folder.
 
-## Browser, local services, and Windows
+## Browsers, computers, local services, and Windows
 
 | Command | Use it to |
 | --- | --- |
 | `smolvm browser start` / `open` / `list` / `logs` / `stop` | Manage browser sandboxes. |
+| `smolvm computer start` / `open` / `list` / `logs` / `delete` | Manage complete Linux desktop computers. |
+| `smolvm computer templates` | List the available desktop templates. |
 | `smolvm ui` | Start the local dashboard. |
 | `smolvm server start` | Start the local HTTP API. |
 | `smolvm windows build-image` | Build a Windows qcow2 image. |

@@ -2894,9 +2894,33 @@ class TestCliBrowser:
 
         assert ret == 1
         error = capsys.readouterr().err
-        assert "smolvm browser" in error
-        assert "stop browser-001" in error
+        compact_error = " ".join(error.replace("│", " ").split())
+        assert "smolvm browser stop browser-001" in compact_error
         assert "internal failure" not in error
+
+    @patch("smolvm.browser._BrowserSandbox")
+    @patch("smolvm.cli.state.create_cli_state_manager")
+    def test_browser_stop_computer_names_computer_delete_recovery(
+        self,
+        mock_state_manager_cls: MagicMock,
+        mock_browser_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Stopping a computer through browser commands should name the right command."""
+        session = MagicMock()
+        session._session_config.mode = "computer"
+        mock_browser_cls.from_id.return_value = session
+
+        ret = main(["browser", "stop", "computer-demo"])
+
+        assert ret == 1
+        mock_browser_cls.from_id.assert_called_once_with(
+            "computer-demo", state_manager=mock_state_manager_cls.return_value
+        )
+        error = capsys.readouterr().err
+        compact_error = " ".join(error.replace("│", " ").split())
+        assert "smolvm computer delete computer-demo" in compact_error
+        session.stop.assert_not_called()
 
     @patch("smolvm.vm.resolve_data_dir", return_value=Path("/tmp"))
     @patch("smolvm.cli.state.create_cli_state_manager")
@@ -2979,6 +3003,97 @@ class TestCliBrowser:
             side_effect=importlib.metadata.PackageNotFoundError("smolvm"),
         ):
             assert _current_version_is_prerelease() is False
+
+
+class TestCliComputer:
+    """Tests for complete desktop computer commands."""
+
+    @patch("smolvm.computer._ComputerSandbox")
+    def test_computer_start_json(
+        self,
+        mock_computer_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        computer = MagicMock()
+        computer.computer_id = "computer-demo"
+        computer.sandbox_id = "computer-demo"
+        computer.template = "linux-desktop"
+        computer.display.viewer_url = "http://127.0.0.1:6080/vnc.html"
+        computer.display.vnc_url = "vnc://127.0.0.1:5900"
+        computer.browser.status = "ready"
+        computer.browser.cdp_url = "http://127.0.0.1:9222"
+        mock_computer_cls.return_value = computer
+
+        ret = main(["computer", "start", "--name", "computer-demo", "--json"])
+
+        assert ret == 0
+        config = mock_computer_cls.call_args.args[0]
+        assert config.mode == "computer"
+        assert config.disk_size_mib == 8192
+        computer.start.assert_called_once_with(boot_timeout=30.0)
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["command"] == "computer.start"
+        assert payload["data"]["display"]["viewer_url"].startswith("http://127.0.0.1")
+        assert payload["data"]["browser"]["cdp_url"] == "http://127.0.0.1:9222"
+
+    @pytest.mark.parametrize(
+        ("option", "value", "example"),
+        [
+            ("--width", "639", "--width 1440"),
+            ("--height", "4321", "--height 900"),
+            ("--memory", "511", "--memory 2048"),
+            ("--disk-size", "16385", "--disk-size 8192"),
+        ],
+    )
+    def test_computer_start_rejects_invalid_sizes(
+        self,
+        option: str,
+        value: str,
+        example: str,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        ret = main(["computer", "start", option, value])
+
+        assert ret == 2
+        assert f"smolvm computer start {example}" in capsys.readouterr().err
+
+    @patch("smolvm.vm.resolve_data_dir", return_value=Path("/tmp"))
+    @patch("smolvm.cli.state.create_cli_state_manager")
+    def test_computer_list_json_uses_computer_identifiers(
+        self,
+        mock_state_manager_cls: MagicMock,
+        _mock_resolve_data_dir: MagicMock,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        state_manager = MagicMock()
+        session = MagicMock(
+            session_id="computer-demo",
+            vm_id="vm-computer-demo",
+            status=BrowserSessionState.READY,
+            cdp_url="http://127.0.0.1:9222",
+            live_url="http://127.0.0.1:6080/vnc.html",
+            vnc_url="vnc://127.0.0.1:5900",
+        )
+        state_manager.list_browser_sessions.return_value = [session]
+        state_manager.get_browser_session_config.return_value.mode = "computer"
+        mock_state_manager_cls.return_value = state_manager
+
+        ret = main(["computer", "list", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        row = payload["data"]["computers"][0]
+        assert row["computer_id"] == "computer-demo"
+        assert row["sandbox_id"] == "vm-computer-demo"
+        assert "session_id" not in row
+        assert "vm_id" not in row
+
+    def test_computer_templates(self, capsys: pytest.CaptureFixture) -> None:
+        ret = main(["computer", "templates", "--json"])
+
+        assert ret == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["data"]["templates"][0]["name"] == "linux-desktop"
 
 
 class TestCliUi:

@@ -96,6 +96,25 @@ try {
 
 Use `mode: "headless"` when no live viewer is needed. A browser session also provides `exec(...)` for running a command as the unprivileged `agent` user inside that browser VM. On timeout, SmolVM attempts to delete the affected session and reports whether cleanup was confirmed.
 
+## Start a complete Linux computer
+
+Use a computer when the agent needs a visible desktop with Chromium, a terminal, a file manager, and a text editor. The grouped properties keep screen control separate from browser automation:
+
+```ts
+const computer = await smolvm.computers.create();
+
+console.log(computer.display.viewerUrl);
+console.log(computer.browser.cdpUrl);
+```
+
+Closing Chromium does not delete the computer. Open it again explicitly:
+
+```ts
+await computer.browser.launch();
+```
+
+The computer also provides `exec(...)` and `files`. See the [Linux computers guide](../guides/computers.md) for the complete lifecycle and resource chooser.
+
 ## Limit network access
 
 The default is `{ mode: "open" }`. Security-focused agents can turn access off or allow only IPv4 ranges:
