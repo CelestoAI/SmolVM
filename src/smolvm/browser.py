@@ -127,6 +127,7 @@ def _build_browser_vm_config(
     session_id: str,
     browser_config: BrowserSessionConfig,
     ssh_key_path: str | None = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> tuple[VMConfig, str | None]:
     """Build the underlying VM config for a browser sandbox."""
     from smolvm.images.builder import ImageBuilder
@@ -181,7 +182,29 @@ def _build_browser_vm_config(
         }
         vmm = vmm_by_backend[resolved_backend]
         published_arch: Arch = "arm64" if image_arch == "aarch64" else "amd64"
-        local_image = ensure_published_image("linux-desktop", published_arch, vmm)
+        if on_progress is not None:
+            on_progress("Preparing the Linux desktop image...")
+
+        def report_download(_name: str, downloaded: int, total: int | None) -> None:
+            if on_progress is None:
+                return
+            downloaded_mib = downloaded // (1024 * 1024)
+            if total is None:
+                on_progress(f"Downloading the Linux desktop image: {downloaded_mib} MiB.")
+            else:
+                total_mib = total // (1024 * 1024)
+                on_progress(
+                    f"Downloading the Linux desktop image: {downloaded_mib} of {total_mib} MiB."
+                )
+
+        local_image = ensure_published_image(
+            "linux-desktop",
+            published_arch,
+            vmm,
+            on_download=report_download if on_progress is not None else None,
+        )
+        if on_progress is not None:
+            on_progress("The Linux desktop image is ready.")
         kernel, rootfs = local_image.kernel_path, local_image.rootfs_path
         grow_filesystem = browser_config.disk_size_mib > _PUBLISHED_COMPUTER_DISK_SIZE_MIB
     else:
@@ -235,6 +258,7 @@ class _BrowserSandbox:
         socket_dir: Path | None = None,
         ssh_key_path: str | None = None,
         state_manager: StateManagerProtocol | None = None,
+        on_progress: Callable[[str], None] | None = None,
     ) -> None:
         if config is not None and session_id is not None:
             raise ValueError("Provide either config or session_id, not both.")
@@ -256,7 +280,7 @@ class _BrowserSandbox:
             config = BrowserSessionConfig()
 
         if config is not None:
-            self._init_new_session(config)
+            self._init_new_session(config, on_progress=on_progress)
         else:
             assert session_id is not None
             self._attach_existing_session(session_id)
@@ -280,7 +304,12 @@ class _BrowserSandbox:
             state_manager=state_manager,
         )
 
-    def _init_new_session(self, config: BrowserSessionConfig) -> None:
+    def _init_new_session(
+        self,
+        config: BrowserSessionConfig,
+        *,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> None:
         session_id = config.session_id or _generate_browser_session_id()
         session_config = (
             config if config.session_id else config.model_copy(update={"session_id": session_id})
@@ -294,6 +323,7 @@ class _BrowserSandbox:
                 session_id=session_id,
                 browser_config=session_config,
                 ssh_key_path=self._ssh_key_path,
+                on_progress=on_progress,
             )
             self._ssh_key_path = resolved_ssh_key_path
             vm = SmolVM(

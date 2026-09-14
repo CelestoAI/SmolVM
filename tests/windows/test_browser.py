@@ -15,6 +15,7 @@
 """Tests for browser session orchestration."""
 
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -105,6 +106,7 @@ def test_smolvm_browser_factory_starts_headless_sandbox(mock_sandbox_cls: MagicM
         "data_dir": None,
         "socket_dir": None,
         "ssh_key_path": None,
+        "on_progress": None,
     }
     sandbox.start.assert_called_once_with(boot_timeout=12.5, on_progress=None)
 
@@ -160,12 +162,14 @@ def test_smolvm_computer_factory_starts_linux_desktop(mock_sandbox_cls: MagicMoc
     sandbox = MagicMock(spec=_ComputerSandbox)
     mock_sandbox_cls.return_value = sandbox
     events: list[dict[str, object]] = []
+    progress = MagicMock()
 
     result = SmolVM.computer(
         name="computer-demo",
         backend="qemu",
         display={"width": 1440, "height": 900},
         resources={"memory_mib": 3072, "disk_mib": 8192, "vcpus": 2},
+        on_progress=progress,
         on_event=events.append,  # type: ignore[arg-type]
     )
 
@@ -178,7 +182,8 @@ def test_smolvm_computer_factory_starts_linux_desktop(mock_sandbox_cls: MagicMoc
     assert config.viewport_height == 900
     assert config.mem_size_mib == 3072
     assert config.disk_size_mib == 8192
-    sandbox.start.assert_called_once_with(boot_timeout=90.0, on_progress=None)
+    assert mock_sandbox_cls.call_args.kwargs["on_progress"] is progress
+    sandbox.start.assert_called_once_with(boot_timeout=90.0, on_progress=progress)
     assert events == [{"type": "computer.starting", "computer_id": "computer-demo"}]
     sandbox.enable_events.assert_called_once_with(events.append)
 
@@ -711,7 +716,9 @@ def test_build_computer_vm_config_uses_published_linux_desktop(
         ),
     )
 
-    mock_ensure_published_image.assert_called_once_with("linux-desktop", "amd64", "qemu")
+    mock_ensure_published_image.assert_called_once_with(
+        "linux-desktop", "amd64", "qemu", on_download=None
+    )
     mock_builder_cls.assert_not_called()
     assert vm_config.kernel_path == kernel
     assert vm_config.rootfs_path == rootfs
@@ -748,10 +755,24 @@ def test_build_computer_vm_config_resolves_arm64_and_grows_published_desktop(
     private_key.touch()
     public_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMock user@test\n")
     mock_ensure_ssh_key.return_value = (private_key, public_key)
-    mock_ensure_published_image.return_value = SimpleNamespace(
+    local_image = SimpleNamespace(
         kernel_path=kernel,
         rootfs_path=rootfs,
     )
+    progress: list[str] = []
+
+    def ensure_image(
+        _preset: str,
+        _arch: str,
+        _vmm: str,
+        *,
+        on_download: Callable[[str, int, int | None], None] | None,
+    ) -> SimpleNamespace:
+        assert on_download is not None
+        on_download("rootfs", 1024 * 1024, 2 * 1024 * 1024)
+        return local_image
+
+    mock_ensure_published_image.side_effect = ensure_image
 
     vm_config, _ = _build_browser_vm_config(
         session_id="computer-arm64",
@@ -761,11 +782,19 @@ def test_build_computer_vm_config_resolves_arm64_and_grows_published_desktop(
             mode="computer",
             disk_size_mib=12288,
         ),
+        on_progress=progress.append,
     )
 
-    mock_ensure_published_image.assert_called_once_with(
-        "linux-desktop", "arm64", "firecracker"
+    assert mock_ensure_published_image.call_args.args == (
+        "linux-desktop",
+        "arm64",
+        "firecracker",
     )
+    assert progress == [
+        "Preparing the Linux desktop image...",
+        "Downloading the Linux desktop image: 1 of 2 MiB.",
+        "The Linux desktop image is ready.",
+    ]
     mock_builder_cls.assert_not_called()
     assert vm_config.disk_size_mib == 12288
     assert vm_config.grow_filesystem is True
