@@ -1,5 +1,6 @@
 export interface Message { id: string; role: "user" | "assistant"; text: string; createdAt: string }
-export interface Approval { kind: "checkout_review" | "browser_program"; approvalId: string; actionDigest: string; reason: string; expiresAt: string; totalPriceMinor?: number; fallbackCurrentPage?: boolean }
+export interface BrowserOperation { kind: string; url?: string; direction?: string; key?: string; value?: string; label?: string; target?: { role: string; name: string } }
+export interface Approval { kind: "checkout_review" | "browser_program" | "browser_operation"; approvalId: string; actionDigest: string; reason: string; expiresAt: string; totalPriceMinor?: number; fallbackCurrentPage?: boolean; operation?: BrowserOperation; pageUrl?: string }
 export interface Event { id: number; type: string; createdAt: string; payload: Record<string, unknown> }
 export interface Conversation {
   id: string; stateVersion: number; controlOwner: "agent" | "pause_requested" | "human";

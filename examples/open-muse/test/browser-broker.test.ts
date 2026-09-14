@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ActionBroker, MAX_BROWSER_PROGRAM_BYTES } from "../server/broker.js";
+import { operationProgram } from "../server/browser-operations.js";
 import { ConversationManager } from "../server/manager.js";
 import type { ConversationContext } from "../server/types.js";
 
 function harness() {
   const programs: string[] = [];
   const events: string[] = [];
+  const eventPayloads: Record<string, unknown>[] = [];
   const context = {
     id: "conversation-test",
     stateVersion: 1,
@@ -29,18 +31,22 @@ function harness() {
       cdpUrl: "http://127.0.0.1:9222",
       async exec(command: string | readonly string[]) {
         const encoded = Array.isArray(command) ? command[1] : "";
-        programs.push(Buffer.from(encoded, "base64url").toString("utf8"));
+        const program = Buffer.from(encoded, "base64url").toString("utf8");
+        programs.push(program);
+        const programResult = program.includes("pageBindingRawUrl")
+          ? { binding: "https://example.com", display: "https://example.com" }
+          : { title: "Example Domain" };
         return {
           ok: true, exitCode: 0,
-          stdout: 'SMOLVM_BROWSER_RESULT={"ok":true,"value":{"programResult":{"title":"Example Domain"},"page":{"title":"Example Domain","url":"https://example.com"}}}\n',
+          stdout: `SMOLVM_BROWSER_RESULT=${JSON.stringify({ ok: true, value: { programResult, page: { title: "Example Domain", url: "https://example.com" } } })}\n`,
           stderr: "", durationMs: 1,
         };
       },
       async delete() {},
     },
   } as ConversationContext;
-  const broker = new ActionBroker(context, async () => undefined, (type) => events.push(type));
-  return { broker, context, programs, events };
+  const broker = new ActionBroker(context, async () => undefined, (type, payload) => { events.push(type); eventPayloads.push(payload); });
+  return { broker, context, programs, events, eventPayloads };
 }
 
 test("read-only browser programs wait for one-time approval", async () => {
@@ -99,6 +105,162 @@ test("navigation programs also require approval", async () => {
     true,
   );
   assert.equal(programs.length, 1);
+});
+
+test("passive browser operations run without approval", async () => {
+  const { broker, context, programs, events } = harness();
+
+  const observed = await broker.runWebOperation({ kind: "observe" });
+  await broker.runWebOperation({ kind: "scroll", direction: "down" });
+
+  assert.equal(context.pendingApproval, undefined);
+  assert.equal(programs.length, 2);
+  assert.match(programs[0], /main, \[role=main\]/);
+  assert.match(programs[0], /\[email redacted\]/);
+  assert.doesNotMatch(programs[0], /locator\('body'\)/);
+  assert.match(programs[1], /mouse\.wheel\(0, 600\)/);
+  assert.deepEqual(observed.page, { title: "Example Domain", url: "https://example.com" });
+  assert.deepEqual(events, ["tool.started", "tool.completed", "tool.started", "tool.completed"]);
+});
+
+test("active browser operations create page-bound one-shot approvals", async () => {
+  const { broker, context, programs, events } = harness();
+
+  const pending = await broker.runWebOperation({
+    kind: "click",
+    target: { role: "button", name: "Add to cart" },
+  });
+
+  assert.equal(pending.approvalRequired, true);
+  assert.equal(pending.pageUrl, "https://example.com");
+  assert.equal("pageBinding" in pending, false);
+  assert.deepEqual(pending.operation, { kind: "click", target: { role: "button", name: "Add to cart" } });
+  assert.equal(programs.length, 1);
+  assert.equal(context.runState, "waiting_for_approval");
+  assert.equal(events.at(-1), "approval.requested");
+
+  const approval = context.pendingApproval!;
+  const outcome = await broker.resolveApproval(approval.approvalId, approval.actionDigest, true);
+
+  assert.equal(programs.length, 2);
+  assert.match(programs[1], /currentPage !== "https:\/\/example\.com"/);
+  assert.match(programs[1], /getByRole\("button", \{ name: "Add to cart", exact: true \}\)/);
+  assert.match(programs[1], /target\.count\(\) !== 1/);
+  assert.equal(context.pendingApproval, undefined);
+  assert.equal(context.runState, "idle");
+  assert.equal("browserResult" in outcome, true);
+});
+
+test("operation programs serialize model fields as data", () => {
+  const program = operationProgram({
+    kind: "fill",
+    target: { role: "textbox", name: "Name\"; process.exit(1); //" },
+    value: "hello\nworld\"; throw new Error('injected'); //",
+  }, "https://example.com/form");
+
+  assert.match(program, /getByRole\("textbox"/);
+  assert.match(program, /Name\\\"; process\.exit/);
+  assert.match(program, /hello\\nworld\\\"; throw/);
+  assert.doesNotMatch(program, /name: "Name"; process/);
+  assert.match(program, /fieldSafety\.type === 'password'/);
+  assert.match(program, /cc-\|current-password\|new-password\|one-time-code/);
+  assert.match(operationProgram({ kind: "click", target: { role: "button", name: "Open" } }, "about:blank"), /: currentRawUrl/);
+});
+
+test("operation policy rejects private navigation and sensitive fields", async () => {
+  const { broker, programs } = harness();
+
+  await assert.rejects(() => broker.runWebOperation({ kind: "navigate", url: "http://127.0.0.1/admin" }), /private or local/);
+  await assert.rejects(() => broker.runWebOperation({ kind: "navigate", url: "http://169.254.169.254/latest/meta-data" }), /private or local/);
+  await assert.rejects(() => broker.runWebOperation({ kind: "navigate", url: "http://[::1]/admin" }), /private or local/);
+  await assert.rejects(() => broker.runWebOperation({ kind: "navigate", url: "file:///etc/passwd" }), /public HTTP or HTTPS/);
+  await assert.rejects(() => broker.runWebOperation({ kind: "fill", target: { role: "textbox", name: "Password" }, value: "secret" }), /Take control/);
+  await assert.rejects(() => broker.runWebOperation({ kind: "click", target: { role: "button", name: 42 } } as never), /supported role/);
+  await assert.rejects(() => broker.runWebOperation({ kind: "select", target: { role: "combobox", name: "Size" } } as never), /option label/);
+  assert.equal(programs.length, 0);
+});
+
+test("operation approvals bind URL queries without exposing them in the approval card", async () => {
+  const { broker, context, programs } = harness();
+  context.computer!.exec = async (command: string | readonly string[]) => {
+    const encoded = Array.isArray(command) ? command[1] : "";
+    const program = Buffer.from(encoded, "base64url").toString("utf8");
+    programs.push(program);
+    const programResult = program.includes("pageBindingRawUrl")
+      ? { binding: "https://example.com/search?q=private#results", display: "https://example.com/search" }
+      : { clicked: true };
+    return {
+      ok: true, exitCode: 0,
+      stdout: `SMOLVM_BROWSER_RESULT=${JSON.stringify({ ok: true, value: { programResult, page: { title: "Search", url: "https://example.com/search" } } })}\n`,
+      stderr: "", durationMs: 1,
+    };
+  };
+
+  const pending = await broker.runWebOperation({ kind: "click", target: { role: "button", name: "Open" } });
+
+  assert.equal(pending.pageUrl, "https://example.com/search");
+  assert.equal(JSON.stringify(pending).includes("q=private"), false);
+  assert.equal(context.pendingApproval?.pageBinding, "https://example.com/search?q=private#results");
+
+  await broker.resolveApproval(context.pendingApproval!.approvalId, context.pendingApproval!.actionDigest, true);
+  assert.match(programs[1], /https:\/\/example\.com\/search\?q=private#results/);
+});
+
+test("concurrent active operations share the first pending approval", async () => {
+  const { broker, context } = harness();
+  const originalExec = context.computer!.exec.bind(context.computer);
+  context.computer!.exec = async (command: string | readonly string[], options?: { timeoutMs?: number }) => {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    return originalExec(command, options);
+  };
+
+  const [first, second] = await Promise.all([
+    broker.runWebOperation({ kind: "click", target: { role: "button", name: "First" } }),
+    broker.runWebOperation({ kind: "click", target: { role: "button", name: "Second" } }),
+  ]);
+
+  assert.equal(first.approvalId, second.approvalId);
+  assert.deepEqual(context.pendingApproval?.operation, { kind: "click", target: { role: "button", name: "First" } });
+});
+
+test("approval events do not retain browser field values", async () => {
+  const { broker, context, eventPayloads } = harness();
+
+  const pending = await broker.runWebOperation({
+    kind: "fill",
+    target: { role: "textbox", name: "Email" },
+    value: "person@example.com",
+  });
+
+  assert.equal(JSON.stringify(pending).includes("person@example.com"), false);
+  assert.equal(JSON.stringify(eventPayloads.at(-1)).includes("person@example.com"), false);
+  assert.equal(context.pendingApproval?.operation?.kind, "fill");
+  assert.equal(context.pendingApproval?.operation?.kind === "fill" ? context.pendingApproval.operation.value : undefined, "person@example.com");
+});
+
+test("conversation snapshots hide private page bindings and fill values", async () => {
+  const manager = new ConversationManager("", "gpt-5-mini");
+  const created = await manager.create();
+  const context = (manager as unknown as { context: ConversationContext }).context;
+  context.pendingApproval = {
+    kind: "browser_operation",
+    approvalId: "approval-test",
+    actionDigest: "digest-test",
+    reason: "Fill textbox “Email”",
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    operation: { kind: "fill", target: { role: "textbox", name: "Email" }, value: "person@example.com" },
+    pageUrl: "https://example.com/search",
+    pageBinding: "https://example.com/search?q=private#results",
+  };
+
+  const snapshot = manager.snapshot(created.id);
+
+  assert.equal(snapshot.pendingApproval?.pageUrl, "https://example.com/search");
+  assert.deepEqual(snapshot.pendingApproval?.operation, { kind: "fill", target: { role: "textbox", name: "Email" } });
+  assert.equal(context.pendingApproval.operation?.kind === "fill" ? context.pendingApproval.operation.value : undefined, "person@example.com");
+  assert.equal("pageBinding" in snapshot.pendingApproval!, false);
+  assert.equal(JSON.stringify(snapshot).includes("q=private"), false);
+  assert.equal(JSON.stringify(snapshot).includes("person@example.com"), false);
 });
 
 test("browser programs return the current page when generated automation stops early", async () => {

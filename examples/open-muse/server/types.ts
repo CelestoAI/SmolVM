@@ -2,6 +2,7 @@ import type { Browser, Page } from "playwright-core";
 import type { Agent } from "@earendil-works/pi-agent-core";
 import type { ComputerSessionClient, SmolVMClient } from "@celestoai/smolvm";
 import type { StorefrontController } from "./storefront.js";
+import type { BrowserOperation } from "./browser-operations.js";
 
 export type ControlOwner = "agent" | "pause_requested" | "human";
 export type RunState = "idle" | "model_turn" | "tool_action" | "waiting_for_approval" | "interrupted" | "stopping" | "stopped" | "failed";
@@ -19,10 +20,11 @@ export interface IntentGrant {
   expiresAt: string; state: "available" | "reserved" | "committed" | "consumed" | "cancelled";
 }
 export interface PendingApproval {
-  kind: "checkout_review" | "browser_program";
+  kind: "checkout_review" | "browser_program" | "browser_operation";
   approvalId: string; actionDigest: string; reason: string; expiresAt: string;
   totalPriceMinor?: number; cartReceipt?: string; commerceRevision?: number;
   program?: string; fallbackCurrentPage?: boolean;
+  operation?: BrowserOperation; pageUrl?: string; pageBinding?: string;
 }
 export interface CartLine { productId: string; variantId: string; quantity: 1; unitPriceMinor: number }
 
