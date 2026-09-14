@@ -1,6 +1,6 @@
 import type { Browser, Page } from "playwright-core";
 import type { Agent } from "@earendil-works/pi-agent-core";
-import type { BrowserSessionClient, SmolVMClient } from "@celestoai/smolvm";
+import type { ComputerSessionClient, SmolVMClient } from "@celestoai/smolvm";
 import type { StorefrontController } from "./storefront.js";
 
 export type ControlOwner = "agent" | "pause_requested" | "human";
@@ -31,7 +31,7 @@ export interface ConversationContext {
   sessionLifecycle: SessionLifecycle; messages: Message[]; events: ConversationEvent[];
   grants: IntentGrant[]; cart: CartLine[]; commerceRevision: number; observationId: string;
   pendingApproval?: PendingApproval; controlEpoch?: string; lastActivityAt: number;
-  agent?: Agent; smolvm?: SmolVMClient; computer?: BrowserSessionClient;
+  agent?: Agent; smolvm?: SmolVMClient; computer?: ComputerSessionClient;
   playwright?: Browser; page?: Page; abortController?: AbortController;
   storefront?: StorefrontController; receipts: Map<string, string>;
   lastBrowserError?: string;

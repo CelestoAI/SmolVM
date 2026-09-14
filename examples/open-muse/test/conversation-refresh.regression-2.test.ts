@@ -60,7 +60,9 @@ test("takeover waits for an approved browser action to finish", async () => {
   const actionFinished = new Promise<void>((resolve) => { finishAction = resolve; });
   context.sessionLifecycle = "ready";
   context.computer = {
-    status: "ready", sessionId: "browser-test", sandboxId: "sandbox-test", cdpUrl: "http://127.0.0.1:9222",
+    status: "ready", computerId: "computer-test", sandboxId: "sandbox-test",
+    display: { viewerUrl: "http://127.0.0.1:6080/vnc.html" },
+    browser: { status: "ready", cdpUrl: "http://127.0.0.1:9222" },
     exec: async () => {
       await actionFinished;
       return { ok: true, exitCode: 0, stdout: 'SMOLVM_BROWSER_RESULT={"ok":true,"value":{"programResult":{},"page":{"title":"","url":"about:blank","visibleText":""}}}', stderr: "", durationMs: 1 };
@@ -99,7 +101,9 @@ test("approved browser results resume the agent without requesting another obser
   internals.runTurn = async (_context, text) => { prompts.push(text); };
   internals.context.sessionLifecycle = "ready";
   internals.context.computer = {
-    status: "ready", sessionId: "browser-test", sandboxId: "sandbox-test", cdpUrl: "http://127.0.0.1:9222",
+    status: "ready", computerId: "computer-test", sandboxId: "sandbox-test",
+    display: { viewerUrl: "http://127.0.0.1:6080/vnc.html" },
+    browser: { status: "ready", cdpUrl: "http://127.0.0.1:9222" },
     exec: async () => ({
       ok: true, exitCode: 0,
       stdout: 'SMOLVM_BROWSER_RESULT={"ok":true,"value":{"programResult":{"title":"Amazon.in","price":"₹59,900"},"page":{"title":"Amazon.in","url":"https://amazon.in","visibleText":"iPhone ₹59,900"}}}',
@@ -139,7 +143,9 @@ test("duplicate approval submissions share one browser action", async () => {
   let executions = 0;
   internals.context.sessionLifecycle = "ready";
   internals.context.computer = {
-    status: "ready", sessionId: "browser-test", sandboxId: "sandbox-test", cdpUrl: "http://127.0.0.1:9222",
+    status: "ready", computerId: "computer-test", sandboxId: "sandbox-test",
+    display: { viewerUrl: "http://127.0.0.1:6080/vnc.html" },
+    browser: { status: "ready", cdpUrl: "http://127.0.0.1:9222" },
     exec: async () => {
       executions += 1;
       await actionFinished;
@@ -168,7 +174,9 @@ test("failed approved browser actions return an actionable error and clear stale
   const context = (manager as unknown as { context: ConversationContext }).context;
   context.sessionLifecycle = "ready";
   context.computer = {
-    status: "ready", sessionId: "browser-test", sandboxId: "sandbox-test", cdpUrl: "http://127.0.0.1:9222",
+    status: "ready", computerId: "computer-test", sandboxId: "sandbox-test",
+    display: { viewerUrl: "http://127.0.0.1:6080/vnc.html" },
+    browser: { status: "ready", cdpUrl: "http://127.0.0.1:9222" },
     exec: async () => ({ ok: false, exitCode: 1, stdout: "", stderr: "locator timed out", durationMs: 30_000 }),
     delete: async () => undefined,
   };

@@ -56,6 +56,287 @@
         }
       }
     },
+    "/computers": {
+      "post": {
+        "summary": "Create Computer",
+        "operationId": "createComputer",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateComputerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/computers/{computer_id}": {
+      "delete": {
+        "summary": "Delete Computer",
+        "operationId": "deleteComputer",
+        "parameters": [
+          {
+            "name": "computer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Computer Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/computers/{computer_id}/cancel": {
+      "post": {
+        "summary": "Cancel Computer Operation",
+        "description": "Stop an in-flight operation by deleting its computer VM.",
+        "operationId": "cancel_computer_operation_computers__computer_id__cancel_post",
+        "parameters": [
+          {
+            "name": "computer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Computer Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/computers/{computer_id}/exec": {
+      "post": {
+        "summary": "Exec Computer Command",
+        "operationId": "execComputerCommand",
+        "parameters": [
+          {
+            "name": "computer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Computer Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/computers/{computer_id}/files": {
+      "put": {
+        "summary": "Write Computer File",
+        "operationId": "writeComputerFile",
+        "parameters": [
+          {
+            "name": "computer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Computer Id"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "Read Computer File",
+        "operationId": "readComputerFile",
+        "parameters": [
+          {
+            "name": "computer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Computer Id"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/computers/{computer_id}/browser/launch": {
+      "post": {
+        "summary": "Launch Computer Browser",
+        "operationId": "launchComputerBrowser",
+        "parameters": [
+          {
+            "name": "computer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Computer Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerBrowserResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/browser-sessions": {
       "post": {
         "summary": "Create Browser Session",
@@ -721,7 +1002,8 @@
           "starting",
           "ready",
           "stopping",
-          "error"
+          "error",
+          "deleted"
         ],
         "title": "BrowserSessionState",
         "description": "Browser session lifecycle states."
@@ -773,6 +1055,13 @@
               "browser.exec",
               "browser.files",
               "browser.events",
+              "computer.create",
+              "computer.delete",
+              "computer.endpoints",
+              "computer.exec",
+              "computer.files",
+              "computer.browser",
+              "computer.events",
               "events",
               "diagnostics"
             ]
@@ -781,6 +1070,137 @@
         "type": "object",
         "title": "CapabilitiesResponse",
         "description": "Runtime protocol and feature discovery."
+      },
+      "ComputerBrowserResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "closed",
+              "error"
+            ],
+            "title": "Status"
+          },
+          "cdp_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cdp Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "cdp_url"
+        ],
+        "title": "ComputerBrowserResponse",
+        "description": "State and automation address for Chromium inside a computer."
+      },
+      "ComputerDisplayResponse": {
+        "properties": {
+          "viewer_url": {
+            "type": "string",
+            "title": "Viewer Url"
+          },
+          "vnc_url": {
+            "type": "string",
+            "title": "Vnc Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "viewer_url",
+          "vnc_url"
+        ],
+        "title": "ComputerDisplayResponse",
+        "description": "Addresses for watching or controlling a computer display."
+      },
+      "ComputerResourcesRequest": {
+        "properties": {
+          "memory_mib": {
+            "type": "integer",
+            "maximum": 16384.0,
+            "minimum": 512.0,
+            "title": "Memory Mib",
+            "default": 2048
+          },
+          "disk_mib": {
+            "type": "integer",
+            "maximum": 16384.0,
+            "minimum": 2048.0,
+            "title": "Disk Mib",
+            "default": 8192
+          },
+          "vcpus": {
+            "type": "integer",
+            "const": 2,
+            "title": "Vcpus",
+            "default": 2
+          }
+        },
+        "type": "object",
+        "title": "ComputerResourcesRequest",
+        "description": "CPU, memory, and disk requested for a Linux computer."
+      },
+      "ComputerResponse": {
+        "properties": {
+          "computer_id": {
+            "type": "string",
+            "title": "Computer Id"
+          },
+          "sandbox_id": {
+            "type": "string",
+            "title": "Sandbox Id"
+          },
+          "template": {
+            "type": "string",
+            "const": "linux-desktop",
+            "title": "Template"
+          },
+          "status": {
+            "type": "string",
+            "const": "ready",
+            "title": "Status"
+          },
+          "capabilities": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "display.viewer",
+                "display.vnc",
+                "browser.cdp",
+                "sandbox.exec",
+                "sandbox.files"
+              ]
+            },
+            "type": "array",
+            "title": "Capabilities"
+          },
+          "display": {
+            "$ref": "#/components/schemas/ComputerDisplayResponse"
+          },
+          "browser": {
+            "$ref": "#/components/schemas/ComputerBrowserResponse"
+          }
+        },
+        "type": "object",
+        "required": [
+          "computer_id",
+          "sandbox_id",
+          "template",
+          "status",
+          "capabilities",
+          "display",
+          "browser"
+        ],
+        "title": "ComputerResponse",
+        "description": "A ready Linux computer and its grouped application endpoints."
       },
       "CreateBrowserSessionRequest": {
         "properties": {
@@ -897,6 +1317,76 @@
         "type": "object",
         "title": "CreateBrowserSessionRequest",
         "description": "Create and boot a browser session owned by one SDK client."
+      },
+      "CreateComputerRequest": {
+        "properties": {
+          "computer_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$|^[a-z0-9]$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Computer Id"
+          },
+          "template": {
+            "type": "string",
+            "const": "linux-desktop",
+            "title": "Template",
+            "default": "linux-desktop"
+          },
+          "backend": {
+            "type": "string",
+            "enum": [
+              "firecracker",
+              "qemu",
+              "auto"
+            ],
+            "title": "Backend",
+            "default": "auto"
+          },
+          "display": {
+            "$ref": "#/components/schemas/BrowserViewportRequest"
+          },
+          "resources": {
+            "$ref": "#/components/schemas/ComputerResourcesRequest"
+          },
+          "network": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/OpenNetworkPolicy"
+              },
+              {
+                "$ref": "#/components/schemas/OffNetworkPolicy"
+              },
+              {
+                "$ref": "#/components/schemas/RestrictedNetworkPolicy"
+              }
+            ],
+            "title": "Network",
+            "discriminator": {
+              "propertyName": "mode",
+              "mapping": {
+                "off": "#/components/schemas/OffNetworkPolicy",
+                "open": "#/components/schemas/OpenNetworkPolicy",
+                "restricted": "#/components/schemas/RestrictedNetworkPolicy"
+              }
+            }
+          },
+          "workspace": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceMount"
+            },
+            "type": "array",
+            "title": "Workspace"
+          }
+        },
+        "type": "object",
+        "title": "CreateComputerRequest",
+        "description": "Create a ready Linux computer owned by one SDK client."
       },
       "CreateSandboxRequest": {
         "properties": {
@@ -1312,6 +1802,42 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "WorkspaceMount": {
+        "properties": {
+          "host_path": {
+            "type": "string",
+            "format": "path",
+            "title": "Host Path"
+          },
+          "guest_path": {
+            "type": "string",
+            "title": "Guest Path",
+            "default": "/workspace"
+          },
+          "mount_tag": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mount Tag"
+          },
+          "writable": {
+            "type": "boolean",
+            "title": "Writable",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "host_path"
+        ],
+        "title": "WorkspaceMount",
+        "description": "Host directory to mount inside the guest via virtio-9p.\n\nBy default the host directory is exposed read-only through QEMU's\nvirtio-9p passthrough, with an overlayfs layer on top so the guest\ncan read and write freely \u2014 changes stay inside the VM and never\ntouch the host.\n\nWhen ``writable`` is True the host directory is exposed read-write\nand mounted directly at ``guest_path`` (no overlay), so writes from\nthe guest are visible on the host.\n\nAttributes:\n    host_path: Absolute path to a directory on the host.\n    guest_path: Mount point inside the guest (default ``/workspace``).\n    mount_tag: 9p mount tag passed to QEMU.  Auto-generated when omitted.\n    writable: When True, guest writes propagate to the host directory.\n        Default False (read-only host, writable overlay in guest)."
       }
     }
   }

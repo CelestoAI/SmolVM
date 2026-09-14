@@ -9,7 +9,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from smolvm.types import BrowserSessionState, CommandResult, VMState
+from smolvm.types import BrowserSessionState, CommandResult, VMState, WorkspaceMount
 
 _IDENTIFIER_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$|^[a-z0-9]$"
 
@@ -121,6 +121,63 @@ class BrowserSessionResponse(BaseModel):
     profile_id: str | None = None
 
 
+class ComputerResourcesRequest(BaseModel):
+    """CPU, memory, and disk requested for a Linux computer."""
+
+    memory_mib: int = Field(default=2048, ge=512, le=16384)
+    disk_mib: int = Field(default=8192, ge=2048, le=16384)
+    vcpus: Literal[2] = 2
+
+
+class CreateComputerRequest(BaseModel):
+    """Create a ready Linux computer owned by one SDK client."""
+
+    computer_id: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
+    template: Literal["linux-desktop"] = "linux-desktop"
+    backend: Literal["firecracker", "qemu", "auto"] = "auto"
+    display: BrowserViewportRequest = Field(
+        default_factory=lambda: BrowserViewportRequest(width=1440, height=900)
+    )
+    resources: ComputerResourcesRequest = Field(default_factory=ComputerResourcesRequest)
+    network: NetworkPolicy = Field(default_factory=lambda: OpenNetworkPolicy(mode="open"))
+    workspace: list[WorkspaceMount] = Field(default_factory=list)
+
+
+class ComputerDisplayResponse(BaseModel):
+    """Addresses for watching or controlling a computer display."""
+
+    viewer_url: str
+    vnc_url: str
+
+
+class ComputerBrowserResponse(BaseModel):
+    """State and automation address for Chromium inside a computer."""
+
+    status: Literal["ready", "closed", "error"]
+    cdp_url: str | None
+
+
+class ComputerResponse(BaseModel):
+    """A ready Linux computer and its grouped application endpoints."""
+
+    computer_id: str
+    sandbox_id: str
+    template: Literal["linux-desktop"]
+    status: Literal["ready"]
+    capabilities: tuple[
+        Literal[
+            "display.viewer",
+            "display.vnc",
+            "browser.cdp",
+            "sandbox.exec",
+            "sandbox.files",
+        ],
+        ...,
+    ]
+    display: ComputerDisplayResponse
+    browser: ComputerBrowserResponse
+
+
 class DesktopResponse(BaseModel):
     """A sanitized loopback display endpoint for a running sandbox."""
 
@@ -162,6 +219,13 @@ class CapabilitiesResponse(BaseModel):
         "browser.exec",
         "browser.files",
         "browser.events",
+        "computer.create",
+        "computer.delete",
+        "computer.endpoints",
+        "computer.exec",
+        "computer.files",
+        "computer.browser",
+        "computer.events",
         "events",
         "diagnostics",
     )

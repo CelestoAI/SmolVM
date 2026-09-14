@@ -483,14 +483,14 @@ class TestBrowserImageBuilder:
             assert "process.exit(1)" in kwargs["extra_files"]["smolvm-browser-runner"]
             assert "process.exitCode" not in kwargs["extra_files"]["smolvm-browser-runner"]
             helper_script = kwargs["extra_files"]["smolvm-browser-session"]
-            ownership_command = helper_script.split("chown -R browser:browser", 1)[1].split(
-                "if [", 1
-            )[0]
+            ownership_command = helper_script.rsplit(
+                'chown -R "${browser_user}:${browser_user}"', 1
+            )[1].split("if [", 1)[0]
             assert '"$profile_dir" "$download_dir" "$artifacts_dir"' in ownership_command
             assert '"$RUNTIME_DIR"' not in ownership_command
             assert '"$LOG_DIR"' not in ownership_command
             assert "127.0.0.1:5900" in helper_script
-            assert '"${mode}" = "desktop"' in helper_script
+            assert '"${mode}" = "computer"' in helper_script
             assert "start_cdp_proxy" in helper_script
             assert 'ThreadingServer(("0.0.0.0", listen_port)' in helper_script
             assert "--remote-debugging-address=127.0.0.1" in helper_script
@@ -548,6 +548,44 @@ class TestBrowserImageBuilder:
         )
 
         assert mock_do_build.call_count == 2
+
+    @patch.object(ImageBuilder, "_host_arch_key", return_value="x86_64")
+    @patch.object(ImageBuilder, "check_docker", return_value=True)
+    @patch.object(ImageBuilder, "_do_build")
+    def test_build_computer_rootfs_adds_desktop_apps(
+        self,
+        mock_do_build: MagicMock,
+        _mock_check_docker: MagicMock,
+        _mock_host_arch_key: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Computer images should add desktop applications without changing browser images."""
+        builder = ImageBuilder(cache_dir=tmp_path / "images")
+
+        def _fake_do_build(
+            _name: str,
+            dockerfile_content: str,
+            _init_script: str,
+            _image_dir: Path,
+            kernel_path: Path,
+            rootfs_path: Path,
+            _rootfs_size_mb: int,
+            **kwargs: object,
+        ) -> None:
+            assert "tint2 lxterminal pcmanfm mousepad" in dockerfile_content
+            assert "xdotool" in dockerfile_content
+            assert kwargs["fingerprint_data"]["image_type"] == "computer-linux-desktop-v1"  # type: ignore[index]
+            assert "computer-menu.xml" in kwargs["extra_files"]  # type: ignore[operator]
+            kernel_path.touch()
+            rootfs_path.touch()
+
+        mock_do_build.side_effect = _fake_do_build
+
+        builder.build_browser_rootfs(
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKey user@test",
+            name="computer-linux-desktop",
+            desktop=True,
+        )
 
     @patch("smolvm.images.builder.subprocess.run")
     @patch("smolvm.images.builder.run_command")

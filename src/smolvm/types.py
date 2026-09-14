@@ -46,6 +46,7 @@ class BrowserSessionState(str, Enum):
     READY = "ready"
     STOPPING = "stopping"
     ERROR = "error"
+    DELETED = "deleted"
 
 
 class GuestOS(str, Enum):
@@ -802,7 +803,7 @@ class BrowserSessionConfig(BaseModel):
     ] = None
     backend: Literal["firecracker", "qemu", "libkrun", "auto"] = "auto"
     browser: Literal["chromium"] = "chromium"
-    mode: Literal["headless", "live", "desktop"] = "headless"
+    mode: Literal["headless", "live", "desktop", "computer"] = "headless"
     profile_mode: Literal["ephemeral", "persistent"] = "ephemeral"
     profile_id: Annotated[
         str | None,
@@ -1138,7 +1139,7 @@ class DisplaySandboxProtocol(Protocol):
         ...
 
     def connect_playwright(self) -> Any:
-        """Connect Playwright when the sandbox supports browser automation."""
+        """Connect Playwright when browser automation is available."""
         ...
 
     def screenshot(
@@ -1157,6 +1158,64 @@ class DisplaySandboxProtocol(Protocol):
     def __exit__(self, *args: object) -> None:
         """Exit the context manager."""
         ...
+
+
+class ComputerDisplayProtocol(Protocol):
+    """Addresses for watching or controlling a computer display."""
+
+    @property
+    def viewer_url(self) -> str: ...
+
+    @property
+    def vnc_url(self) -> str: ...
+
+
+class ComputerBrowserProtocol(Protocol):
+    """Chromium application available inside a computer."""
+
+    @property
+    def status(self) -> Literal["ready", "closed", "error"]: ...
+
+    @property
+    def cdp_url(self) -> str | None: ...
+
+    def launch(self) -> None: ...
+
+    def connect_playwright(self) -> Any: ...
+
+
+class ComputerFilesProtocol(Protocol):
+    """Files accessed as the desktop user."""
+
+    def read(self, path: str, *, max_bytes: int | None = None) -> bytes: ...
+
+    def write(self, path: str, content: str | bytes) -> None: ...
+
+
+class ComputerSandboxProtocol(DisplaySandboxProtocol, Protocol):
+    """A ready graphical computer and its included applications."""
+
+    @property
+    def computer_id(self) -> str: ...
+
+    @property
+    def sandbox_id(self) -> str: ...
+
+    @property
+    def display(self) -> ComputerDisplayProtocol: ...
+
+    @property
+    def browser(self) -> ComputerBrowserProtocol: ...
+
+    @property
+    def files(self) -> ComputerFilesProtocol: ...
+
+    def run(
+        self,
+        command: str,
+        timeout: int | float | None = ...,
+        shell: Literal["login", "raw"] = ...,
+    ) -> "CommandResult": ...
 
 
 class CommandResult(BaseModel):

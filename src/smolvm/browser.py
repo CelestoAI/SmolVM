@@ -99,7 +99,7 @@ def _qemu_browser_port_forwards(config: BrowserSessionConfig) -> list[PortForwar
     debug_port = _allocate_browser_host_port(reserved)
     reserved.add(debug_port)
     forwards = [PortForwardConfig(host_port=debug_port, guest_port=_BROWSER_DEBUG_PORT)]
-    if config.mode in {"live", "desktop"}:
+    if config.mode in {"live", "desktop", "computer"}:
         live_port = _allocate_browser_host_port(reserved)
         reserved.add(live_port)
         vnc_port = _allocate_browser_host_port(reserved)
@@ -155,7 +155,10 @@ def _build_browser_vm_config(
     # can select alternative engines (for example Lightpanda) without changing
     # the surrounding session lifecycle or backend abstractions.
     image_arch = "aarch64" if platform.machine().lower() in {"arm64", "aarch64"} else "x86_64"
-    image_name = f"browser-chromium-{image_arch}"
+    is_computer = browser_config.mode == "computer"
+    image_name = (
+        f"computer-linux-desktop-{image_arch}" if is_computer else f"browser-chromium-{image_arch}"
+    )
     port_forwards: list[PortForwardConfig] = []
     if resolved_backend == BACKEND_QEMU:
         image_name = f"{image_name}-qemu"
@@ -169,11 +172,12 @@ def _build_browser_vm_config(
         rootfs_size_mb=browser_config.disk_size_mib,
         kernel_profile=_BROWSER_KERNEL_PROFILE,
         kernel_url=kernel_url,
+        desktop=is_computer,
     )
 
     config = VMConfig(
         vm_id=_browser_vm_id(session_id, browser_config),
-        vcpu_count=1,
+        vcpu_count=2 if is_computer else 1,
         memory=browser_config.mem_size_mib,
         kernel_path=kernel,
         rootfs_path=rootfs,
@@ -408,7 +412,7 @@ class _BrowserSandbox:
             self._vm.wait_for_ready(timeout=boot_timeout)
 
             expects_browser = self._session_config.mode != "desktop"
-            expects_display = self._session_config.mode in {"live", "desktop"}
+            expects_display = self._session_config.mode in {"live", "desktop", "computer"}
             debug_ready = (
                 self._wait_for_guest_port(_BROWSER_DEBUG_PORT, timeout=1.0)
                 if expects_browser
@@ -463,6 +467,31 @@ class _BrowserSandbox:
                     guest_loopback=True,
                 )
                 vnc_url = f"vnc://127.0.0.1:{vnc_host_port}"
+
+            if self._session_config.mode == "computer":
+                desktop_probe = self._vm.run(
+                    "runuser -u agent -- sh -c "
+                    + shlex.quote(
+                        "set -eu; export DISPLAY=:99; "
+                        "pgrep -x Xvfb >/dev/null && "
+                        "pgrep -x openbox >/dev/null && "
+                        "pgrep -x tint2 >/dev/null && "
+                        "pgrep -x chromium >/dev/null && "
+                        "xdotool search --onlyvisible --classname tint2 >/dev/null && "
+                        "xdotool search --onlyvisible --class chromium >/dev/null; "
+                        "probe=/workspace/.smolvm-ready-$$; "
+                        "trap 'rm -f \"$probe\"' EXIT; "
+                        "printf ready >\"$probe\"; "
+                        "test \"$(cat \"$probe\")\" = ready"
+                    ),
+                    timeout=30,
+                    shell="raw",
+                )
+                if not desktop_probe.ok:
+                    raise SmolVMError(
+                        f"Computer '{self.session_id}' did not finish starting; "
+                        f"inspect it with 'smolvm computer logs {self.session_id}'."
+                    )
 
             self._info = self._state.update_browser_session(
                 self.session_id,
@@ -669,6 +698,29 @@ class _BrowserSandbox:
         if not result.ok:
             raise SmolVMError(
                 f"Failed to launch guest browser: {result.stderr.strip() or result.stdout}"
+            )
+
+    def _launch_guest_browser(self) -> None:
+        """Launch only Chromium, preserving the running graphical desktop."""
+        if self._vm is None:
+            raise SmolVMError("Browser sandbox VM is unavailable.")
+        command = " ".join(
+            [
+                "/usr/local/bin/smolvm-browser-session",
+                "launch-browser",
+                shlex.quote(self._session_config.mode),
+                str(self._session_config.viewport_width),
+                str(self._session_config.viewport_height),
+                str(_BROWSER_DEBUG_PORT),
+                shlex.quote(self._guest_profile_dir()),
+                shlex.quote(self._guest_download_dir()),
+                "1" if self._session_config.allow_downloads else "0",
+            ]
+        )
+        result = self._vm.run(command, timeout=60)
+        if not result.ok:
+            raise SmolVMError(
+                f"Failed to launch Chromium: {result.stderr.strip() or result.stdout}"
             )
 
     def _resolve_browser_host_port(self, guest_port: int, *, guest_loopback: bool) -> int:

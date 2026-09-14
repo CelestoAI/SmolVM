@@ -36,6 +36,7 @@ import shlex
 import socket
 import subprocess
 import time
+import uuid
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -101,6 +102,7 @@ from smolvm.types import (
     BrowserSessionConfig,
     BrowserViewport,
     CommandResult,
+    ComputerSandboxProtocol,
     DesktopEndpoint,
     DisplaySandboxProtocol,
     GuestFlushPolicy,
@@ -1244,7 +1246,7 @@ class SmolVM:
         cls,
         sandbox_cls: type[_DisplaySandboxT],
         *,
-        mode: Literal["headless", "live", "desktop"],
+        mode: Literal["headless", "live", "desktop", "computer"],
         session_id: str | None,
         backend: Literal["firecracker", "qemu", "libkrun", "auto"],
         profile_id: str | None,
@@ -1422,6 +1424,65 @@ class SmolVM:
             workspace_mounts=workspace_mounts,
             memory_mb=memory_mb,
             disk_size_mb=disk_size_mb,
+            data_dir=data_dir,
+            socket_dir=socket_dir,
+            ssh_key_path=ssh_key_path,
+            boot_timeout=boot_timeout,
+            on_progress=on_progress,
+        )
+
+    @classmethod
+    def computer(
+        cls,
+        *,
+        template: Literal["linux-desktop"] = "linux-desktop",
+        name: str | None = None,
+        backend: Literal["firecracker", "qemu", "auto"] = "auto",
+        display: BrowserViewport | dict[str, Any] | None = None,
+        resources: dict[str, int] | None = None,
+        network: InternetSettings | dict[str, Any] | None = None,
+        workspace: list[WorkspaceMount] | None = None,
+        data_dir: Path | None = None,
+        socket_dir: Path | None = None,
+        ssh_key_path: str | None = None,
+        boot_timeout: float = _DEFAULT_DISPLAY_SANDBOX_BOOT_TIMEOUT,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> ComputerSandboxProtocol:
+        """Start a ready Linux computer with a desktop and Chromium.
+
+        Use :meth:`browser` for web-only automation and the regular
+        :class:`SmolVM` constructor when no graphical interface is needed.
+        """
+        if template != "linux-desktop":
+            raise ValueError(f"Computer template '{template}' is unavailable; use 'linux-desktop'.")
+        values = resources or {}
+        unknown = sorted(set(values) - {"memory_mib", "disk_mib", "vcpus"})
+        if unknown:
+            raise ValueError(f"Unknown computer resource option: {unknown[0]}")
+        if values.get("vcpus", 2) != 2:
+            raise ValueError("Linux computers currently require resources={'vcpus': 2}.")
+
+        from smolvm.computer import _ComputerSandbox
+
+        viewport = _normalize_display_viewport(display, width=1440, height=900)
+        return cls._start_display_sandbox(
+            _ComputerSandbox,
+            mode="computer",
+            session_id=name or f"computer-{uuid.uuid4().hex[:8]}",
+            backend=backend,
+            profile_id=None,
+            persistent=False,
+            timeout_minutes=30,
+            viewport=viewport,
+            viewport_width=viewport.width,
+            viewport_height=viewport.height,
+            record_video=False,
+            allow_downloads=True,
+            internet_settings=network,
+            env_vars=None,
+            workspace_mounts=workspace,
+            memory_mb=values.get("memory_mib", 2048),
+            disk_size_mb=values.get("disk_mib", 8192),
             data_dir=data_dir,
             socket_dir=socket_dir,
             ssh_key_path=ssh_key_path,

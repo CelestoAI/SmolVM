@@ -310,9 +310,8 @@ smolvm browser start --live
 
 Use `SmolVM.browser(headless=True)` for browser automation only; it gives you
 `cdp_url` and no visible viewer. Use `SmolVM.browser(headless=False)` for a
-visible browser; it gives you `cdp_url`, `viewer_url`, and `display_url`. Use
-`SmolVM.desktop()` for a full desktop display; it gives you `viewer_url` and
-`display_url`, and may not provide a browser automation endpoint.
+visible browser; it gives you `cdp_url`, `viewer_url`, and `display_url`. A
+browser sandbox is still a focused Chromium environment, not a general desktop.
 
 Open the viewer URL to watch the browser in real time, or give the display URL to a computer-use agent or VNC client. When you're done, list and stop sandboxes:
 
@@ -322,6 +321,35 @@ smolvm browser stop sess_a1b2c3
 ```
 
 See [examples/browser_sandbox.py](examples/browser_sandbox.py) for a complete Python example.
+
+
+## Linux computer
+
+Use a Linux computer when an agent needs a visible desktop with more than a browser. The built-in template includes Chromium, a terminal, a file manager, and a text editor.
+
+During this preview, the first computer start builds its image locally and requires Docker. Later starts reuse the cached image.
+
+```python
+from smolvm import SmolVM
+
+with SmolVM.computer() as computer:
+    print(computer.display.viewer_url)
+    print(computer.browser.cdp_url)
+    computer.files.write("/workspace/task.txt", "Review this file")
+    print(computer.run("ls -la /workspace").stdout)
+```
+
+The API groups the screen under `computer.display` and Chromium under `computer.browser`. If Chromium is closed while the desktop remains open, call `computer.browser.launch()`.
+
+From the CLI:
+
+```bash
+smolvm computer start --name assistant
+smolvm computer open assistant
+smolvm computer delete assistant
+```
+
+Choose a normal sandbox for command-only work, a browser sandbox for web-only automation, and a Linux computer for work across desktop applications. See the [Linux computer guide](docs/guides/computers.md) for Python and TypeScript examples.
 
 
 ## Network controls

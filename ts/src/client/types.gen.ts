@@ -42,7 +42,7 @@ export type BrowserSessionResponse = {
  *
  * Browser session lifecycle states.
  */
-export type BrowserSessionState = 'created' | 'starting' | 'ready' | 'stopping' | 'error';
+export type BrowserSessionState = 'created' | 'starting' | 'ready' | 'stopping' | 'error' | 'deleted';
 
 /**
  * BrowserViewportRequest
@@ -74,6 +74,88 @@ export type CapabilitiesResponse = {
      * Capabilities
      */
     capabilities?: Array<string>;
+};
+
+/**
+ * ComputerBrowserResponse
+ *
+ * State and automation address for Chromium inside a computer.
+ */
+export type ComputerBrowserResponse = {
+    /**
+     * Status
+     */
+    status: 'ready' | 'closed' | 'error';
+    /**
+     * Cdp Url
+     */
+    cdp_url: string | null;
+};
+
+/**
+ * ComputerDisplayResponse
+ *
+ * Addresses for watching or controlling a computer display.
+ */
+export type ComputerDisplayResponse = {
+    /**
+     * Viewer Url
+     */
+    viewer_url: string;
+    /**
+     * Vnc Url
+     */
+    vnc_url: string;
+};
+
+/**
+ * ComputerResourcesRequest
+ *
+ * CPU, memory, and disk requested for a Linux computer.
+ */
+export type ComputerResourcesRequest = {
+    /**
+     * Memory Mib
+     */
+    memory_mib?: number;
+    /**
+     * Disk Mib
+     */
+    disk_mib?: number;
+    /**
+     * Vcpus
+     */
+    vcpus?: 2;
+};
+
+/**
+ * ComputerResponse
+ *
+ * A ready Linux computer and its grouped application endpoints.
+ */
+export type ComputerResponse = {
+    /**
+     * Computer Id
+     */
+    computer_id: string;
+    /**
+     * Sandbox Id
+     */
+    sandbox_id: string;
+    /**
+     * Template
+     */
+    template: 'linux-desktop';
+    /**
+     * Status
+     */
+    status: 'ready';
+    /**
+     * Capabilities
+     */
+    capabilities: Array<'display.viewer' | 'display.vnc' | 'browser.cdp' | 'sandbox.exec' | 'sandbox.files'>;
+    display: ComputerDisplayResponse;
+    browser: ComputerBrowserResponse;
 };
 
 /**
@@ -133,6 +215,42 @@ export type CreateBrowserSessionRequest = {
     } & OffNetworkPolicy) | ({
         mode: 'restricted';
     } & RestrictedNetworkPolicy);
+};
+
+/**
+ * CreateComputerRequest
+ *
+ * Create a ready Linux computer owned by one SDK client.
+ */
+export type CreateComputerRequest = {
+    /**
+     * Computer Id
+     */
+    computer_id?: string | null;
+    /**
+     * Template
+     */
+    template?: 'linux-desktop';
+    /**
+     * Backend
+     */
+    backend?: 'firecracker' | 'qemu' | 'auto';
+    display?: BrowserViewportRequest;
+    resources?: ComputerResourcesRequest;
+    /**
+     * Network
+     */
+    network?: ({
+        mode: 'open';
+    } & OpenNetworkPolicy) | ({
+        mode: 'off';
+    } & OffNetworkPolicy) | ({
+        mode: 'restricted';
+    } & RestrictedNetworkPolicy);
+    /**
+     * Workspace
+     */
+    workspace?: Array<WorkspaceMount>;
 };
 
 /**
@@ -409,6 +527,46 @@ export type ValidationError = {
     };
 };
 
+/**
+ * WorkspaceMount
+ *
+ * Host directory to mount inside the guest via virtio-9p.
+ *
+ * By default the host directory is exposed read-only through QEMU's
+ * virtio-9p passthrough, with an overlayfs layer on top so the guest
+ * can read and write freely — changes stay inside the VM and never
+ * touch the host.
+ *
+ * When ``writable`` is True the host directory is exposed read-write
+ * and mounted directly at ``guest_path`` (no overlay), so writes from
+ * the guest are visible on the host.
+ *
+ * Attributes:
+ * host_path: Absolute path to a directory on the host.
+ * guest_path: Mount point inside the guest (default ``/workspace``).
+ * mount_tag: 9p mount tag passed to QEMU.  Auto-generated when omitted.
+ * writable: When True, guest writes propagate to the host directory.
+ * Default False (read-only host, writable overlay in guest).
+ */
+export type WorkspaceMount = {
+    /**
+     * Host Path
+     */
+    host_path: string;
+    /**
+     * Guest Path
+     */
+    guest_path?: string;
+    /**
+     * Mount Tag
+     */
+    mount_tag?: string | null;
+    /**
+     * Writable
+     */
+    writable?: boolean;
+};
+
 export type CapabilitiesSdkV1CapabilitiesGetData = {
     body?: never;
     path?: never;
@@ -454,6 +612,223 @@ export type DiagnosticsSdkV1DiagnosticsGetResponses = {
 };
 
 export type DiagnosticsSdkV1DiagnosticsGetResponse = DiagnosticsSdkV1DiagnosticsGetResponses[keyof DiagnosticsSdkV1DiagnosticsGetResponses];
+
+export type CreateComputerData = {
+    body: CreateComputerRequest;
+    path?: never;
+    query?: never;
+    url: '/computers';
+};
+
+export type CreateComputerErrors = {
+    /**
+     * Bad Request
+     */
+    400: ErrorResponse;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CreateComputerError = CreateComputerErrors[keyof CreateComputerErrors];
+
+export type CreateComputerResponses = {
+    /**
+     * Successful Response
+     */
+    201: ComputerResponse;
+};
+
+export type CreateComputerResponse = CreateComputerResponses[keyof CreateComputerResponses];
+
+export type DeleteComputerData = {
+    body?: never;
+    path: {
+        /**
+         * Computer Id
+         */
+        computer_id: string;
+    };
+    query?: never;
+    url: '/computers/{computer_id}';
+};
+
+export type DeleteComputerErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type DeleteComputerError = DeleteComputerErrors[keyof DeleteComputerErrors];
+
+export type DeleteComputerResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type DeleteComputerResponse = DeleteComputerResponses[keyof DeleteComputerResponses];
+
+export type CancelComputerOperationComputersComputerIdCancelPostData = {
+    body?: never;
+    path: {
+        /**
+         * Computer Id
+         */
+        computer_id: string;
+    };
+    query?: never;
+    url: '/computers/{computer_id}/cancel';
+};
+
+export type CancelComputerOperationComputersComputerIdCancelPostErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CancelComputerOperationComputersComputerIdCancelPostError = CancelComputerOperationComputersComputerIdCancelPostErrors[keyof CancelComputerOperationComputersComputerIdCancelPostErrors];
+
+export type CancelComputerOperationComputersComputerIdCancelPostResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type CancelComputerOperationComputersComputerIdCancelPostResponse = CancelComputerOperationComputersComputerIdCancelPostResponses[keyof CancelComputerOperationComputersComputerIdCancelPostResponses];
+
+export type ExecComputerCommandData = {
+    body: ExecRequest;
+    path: {
+        /**
+         * Computer Id
+         */
+        computer_id: string;
+    };
+    query?: never;
+    url: '/computers/{computer_id}/exec';
+};
+
+export type ExecComputerCommandErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ExecComputerCommandError = ExecComputerCommandErrors[keyof ExecComputerCommandErrors];
+
+export type ExecComputerCommandResponses = {
+    /**
+     * Successful Response
+     */
+    200: ExecResponse;
+};
+
+export type ExecComputerCommandResponse = ExecComputerCommandResponses[keyof ExecComputerCommandResponses];
+
+export type ReadComputerFileData = {
+    body?: never;
+    path: {
+        /**
+         * Computer Id
+         */
+        computer_id: string;
+    };
+    query: {
+        /**
+         * Path
+         */
+        path: string;
+    };
+    url: '/computers/{computer_id}/files';
+};
+
+export type ReadComputerFileErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ReadComputerFileError = ReadComputerFileErrors[keyof ReadComputerFileErrors];
+
+export type ReadComputerFileResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
+export type WriteComputerFileData = {
+    body?: never;
+    path: {
+        /**
+         * Computer Id
+         */
+        computer_id: string;
+    };
+    query: {
+        /**
+         * Path
+         */
+        path: string;
+    };
+    url: '/computers/{computer_id}/files';
+};
+
+export type WriteComputerFileErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WriteComputerFileError = WriteComputerFileErrors[keyof WriteComputerFileErrors];
+
+export type WriteComputerFileResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type WriteComputerFileResponse = WriteComputerFileResponses[keyof WriteComputerFileResponses];
+
+export type LaunchComputerBrowserData = {
+    body?: never;
+    path: {
+        /**
+         * Computer Id
+         */
+        computer_id: string;
+    };
+    query?: never;
+    url: '/computers/{computer_id}/browser/launch';
+};
+
+export type LaunchComputerBrowserErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type LaunchComputerBrowserError = LaunchComputerBrowserErrors[keyof LaunchComputerBrowserErrors];
+
+export type LaunchComputerBrowserResponses = {
+    /**
+     * Successful Response
+     */
+    200: ComputerBrowserResponse;
+};
+
+export type LaunchComputerBrowserResponse = LaunchComputerBrowserResponses[keyof LaunchComputerBrowserResponses];
 
 export type CreateBrowserSessionData = {
     body: CreateBrowserSessionRequest;

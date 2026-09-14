@@ -37,6 +37,12 @@ const ERROR_CODES: ReadonlySet<string> = new Set<SmolVMErrorCode>([
   "browser_image_unavailable",
   "browser_endpoint_unavailable",
   "browser_deleted",
+  "computer_create_failed",
+  "computer_image_unavailable",
+  "computer_endpoint_unavailable",
+  "computer_deleted",
+  "computer_already_exists",
+  "browser_launch_failed",
   "profile_in_use",
   "invalid_path",
   "command_timeout",
@@ -293,7 +299,8 @@ export class ProcessTransport implements SmolVMTransport {
     let response: Response;
     const createsSandbox = path === "/sandboxes" && init.method === "POST";
     const createsBrowser = path === "/browser-sessions" && init.method === "POST";
-    const createsResource = createsSandbox || createsBrowser;
+    const createsComputer = path === "/computers" && init.method === "POST";
+    const createsResource = createsSandbox || createsBrowser || createsComputer;
     const executesCommand = path.endsWith("/exec");
     const callerSignal = init.signal;
     const deadlineMs = createsResource
@@ -326,11 +333,17 @@ export class ProcessTransport implements SmolVMTransport {
           }
         }
         throw new SmolVMError(
-          createsBrowser ? "browser_create_failed" : createsSandbox ? "sandbox_create_failed" : "bridge_exit",
+          createsBrowser
+            ? "browser_create_failed"
+            : createsComputer
+              ? "computer_create_failed"
+              : createsSandbox
+                ? "sandbox_create_failed"
+                : "bridge_exit",
           createsResource
             ? sessionClosed
-              ? `${createsBrowser ? "Browser session" : "Sandbox"} creation timed out and the SDK session was closed to clean up partial work.`
-              : `${createsBrowser ? "Browser session" : "Sandbox"} creation timed out, but SmolVM could not confirm cleanup; close the client again.`
+              ? `${createsBrowser ? "Browser session" : createsComputer ? "Computer" : "Sandbox"} creation timed out and the SDK session was closed to clean up partial work.`
+              : `${createsBrowser ? "Browser session" : createsComputer ? "Computer" : "Sandbox"} creation timed out, but SmolVM could not confirm cleanup; close the client again.`
             : "The local SmolVM bridge request timed out.", {
           operation: `${init.method ?? "GET"} ${path}`,
           actual: createsResource

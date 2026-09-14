@@ -25,6 +25,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import uuid
 import webbrowser
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, suppress
@@ -3785,10 +3786,15 @@ def _browser_rows(sessions: Sequence[BrowserSessionInfo]) -> list[BrowserRow]:
     return rows
 
 
-def _render_browser_list(rows: list[BrowserRow]) -> None:
-    """Render the human-facing browser sandbox list."""
-    table = Table(title="SmolVM Browser Sandboxes")
-    table.add_column("Sandbox")
+def _render_browser_list(
+    rows: list[BrowserRow],
+    *,
+    title: str = "SmolVM Browser Sandboxes",
+    resource_label: str = "Sandbox",
+) -> None:
+    """Render a human-facing graphical-session list."""
+    table = Table(title=title)
+    table.add_column(resource_label)
     table.add_column("Status")
     table.add_column("VM")
     table.add_column("Viewer URL")
@@ -3804,7 +3810,33 @@ def _render_browser_list(rows: list[BrowserRow]) -> None:
 
     console = console_stdout()
     console.print(table)
-    console.print(f"Total: {len(rows)} sandbox(es).")
+    console.print(f"Total: {len(rows)} {resource_label.lower()}(s).")
+
+
+def _display_sessions_for_mode(state: Any, mode: str) -> list[BrowserSessionInfo]:
+    """Keep browser and complete-computer inventory views distinct."""
+    sessions = state.list_browser_sessions()
+    if mode == "computer":
+        return [
+            info
+            for info in sessions
+            if state.get_browser_session_config(info.session_id).mode == "computer"
+        ]
+    return [
+        info
+        for info in sessions
+        if state.get_browser_session_config(info.session_id).mode != "computer"
+    ]
+
+
+def _require_display_session_mode(state: Any, session_id: str, mode: str) -> None:
+    actual = state.get_browser_session_config(session_id).mode
+    if actual != mode:
+        noun = "computer" if mode == "computer" else "browser session"
+        command = "computer" if mode == "computer" else "browser"
+        raise ValueError(
+            f"'{session_id}' is not a {noun}; run 'smolvm {command} list' to choose one."
+        )
 
 
 def _run_windows(args: SimpleNamespace) -> int:
@@ -3937,7 +3969,7 @@ def _run_browser(args: SimpleNamespace) -> int:
         if args.all:
             state = _cli_state_manager()
             try:
-                sessions = state.list_browser_sessions()
+                sessions = _display_sessions_for_mode(state, "browser")
             except Exception as exc:
                 return _emit_cli_error(command_name, 1, exc, json_output=False)
 
@@ -3977,16 +4009,25 @@ def _run_browser(args: SimpleNamespace) -> int:
         session: _BrowserSandbox | None = None
         try:
             assert args.session_id is not None
-            session = _BrowserSandbox.from_id(args.session_id, state_manager=_cli_state_manager())
+            state = _cli_state_manager()
+            session = _BrowserSandbox.from_id(args.session_id, state_manager=state)
+            if session._session_config.mode == "computer":
+                raise ValueError(
+                    f"'{args.session_id}' is a computer; run "
+                    f"'smolvm computer delete {args.session_id}' instead."
+                )
             session.stop()
             print(f"Stopped browser sandbox '{args.session_id}'.")
             return 0
-        except Exception:
-            render_error(
-                f"Failed to stop browser sandbox {args.session_id}; "
-                f"to fix, run: `smolvm browser stop {args.session_id}`."
-            )
-            return 1
+        except Exception as exc:
+            if isinstance(exc, ValueError):
+                reported_error = exc
+            else:
+                reported_error = RuntimeError(
+                    f"Browser sandbox '{args.session_id}' could not be stopped; run "
+                    f"'smolvm browser stop {args.session_id}' to try again."
+                )
+            return _emit_cli_error(command_name, 1, reported_error, json_output=json_output)
         finally:
             if session is not None:
                 session.close()
@@ -3995,6 +4036,11 @@ def _run_browser(args: SimpleNamespace) -> int:
         session: _BrowserSandbox | None = None
         try:
             session = _BrowserSandbox.from_id(args.session_id, state_manager=_cli_state_manager())
+            if session._session_config.mode == "computer":
+                raise ValueError(
+                    f"'{args.session_id}' is a computer; run "
+                    f"'smolvm computer open {args.session_id}' instead."
+                )
             if session.viewer_url is None:
                 raise RuntimeError(
                     f"Browser sandbox '{args.session_id}' does not have a viewer_url."
@@ -4015,6 +4061,11 @@ def _run_browser(args: SimpleNamespace) -> int:
         session: _BrowserSandbox | None = None
         try:
             session = _BrowserSandbox.from_id(args.session_id, state_manager=_cli_state_manager())
+            if session._session_config.mode == "computer":
+                raise ValueError(
+                    f"'{args.session_id}' is a computer; run "
+                    f"'smolvm computer logs {args.session_id}' instead."
+                )
             output = session.logs(tail=args.tail)
             if output:
                 print(output)
@@ -4028,7 +4079,11 @@ def _run_browser(args: SimpleNamespace) -> int:
     state = _cli_state_manager()
     try:
         status = BrowserSessionState(args.status) if args.status else None
-        sessions = state.list_browser_sessions(status=status)
+        sessions = [
+            info
+            for info in _display_sessions_for_mode(state, "browser")
+            if status is None or info.status == status
+        ]
         rows = _browser_rows(sessions)
         data: BrowserListPayload = {
             "filters": {
@@ -4050,6 +4105,121 @@ def _run_browser(args: SimpleNamespace) -> int:
         return _emit_cli_error(command_name, 1, exc, json_output=json_output)
 
 
+def _run_computer(args: SimpleNamespace) -> int:
+    """Handle ``smolvm computer`` commands."""
+    from smolvm.computer import _ComputerSandbox
+    from smolvm.types import BrowserSessionConfig
+
+    action = args.computer_action
+    command_name = f"computer.{action}"
+    json_output = getattr(args, "json", False)
+
+    if action == "templates":
+        templates = [
+            {
+                "name": "linux-desktop",
+                "description": "Linux desktop with Chromium, a terminal, files, and a text editor.",
+            }
+        ]
+        if json_output:
+            emit_json(command_name, 0, data={"templates": templates})
+        else:
+            table = Table(title="SmolVM Computer Templates")
+            table.add_column("Template")
+            table.add_column("Includes")
+            table.add_row(templates[0]["name"], templates[0]["description"])
+            console_stdout().print(table)
+        return 0
+
+    if action == "start":
+        computer: _ComputerSandbox | None = None
+        try:
+            config = BrowserSessionConfig(
+                session_id=args.name or f"computer-{uuid.uuid4().hex[:8]}",
+                backend=args.backend,
+                mode="computer",
+                viewport_width=args.width,
+                viewport_height=args.height,
+                viewport={"width": args.width, "height": args.height},
+                mem_size_mib=args.memory_mib,
+                disk_size_mib=args.disk_size_mib,
+            )
+            computer = _ComputerSandbox(config, state_manager=_cli_state_manager())
+            computer.start(boot_timeout=args.boot_timeout)
+            data = {
+                "computer_id": computer.computer_id,
+                "sandbox_id": computer.sandbox_id,
+                "template": computer.template,
+                "status": "ready",
+                "display": {
+                    "viewer_url": computer.display.viewer_url,
+                    "vnc_url": computer.display.vnc_url,
+                },
+                "browser": {
+                    "status": computer.browser.status,
+                    "cdp_url": computer.browser.cdp_url,
+                },
+            }
+            if json_output:
+                emit_json(command_name, 0, data=data)
+            else:
+                print(f"Started computer '{computer.computer_id}'.")
+                print(f"  Viewer URL: {computer.display.viewer_url}")
+                print(f"  VNC URL: {computer.display.vnc_url}")
+                print(f"  Chromium CDP URL: {computer.browser.cdp_url or 'closed'}")
+            return 0
+        except Exception as exc:
+            return _emit_cli_error(command_name, 1, exc, json_output=json_output)
+        finally:
+            if computer is not None:
+                computer.close()
+
+    state = _cli_state_manager()
+    if action == "list":
+        try:
+            sessions = _display_sessions_for_mode(state, "computer")
+            rows = _browser_rows(sessions)
+            if json_output:
+                emit_json(command_name, 0, data={"computers": rows})
+            elif not rows:
+                render_empty("SmolVM Computers", "No computers found.")
+            else:
+                _render_browser_list(
+                    rows,
+                    title="SmolVM Computers",
+                    resource_label="Computer",
+                )
+            return 0
+        except Exception as exc:
+            return _emit_cli_error(command_name, 1, exc, json_output=json_output)
+
+    computer: _ComputerSandbox | None = None
+    try:
+        _require_display_session_mode(state, args.computer_id, "computer")
+        computer = _ComputerSandbox.from_id(args.computer_id, state_manager=state)
+        if action == "delete":
+            computer.delete()
+            print(f"Deleted computer '{args.computer_id}'.")
+        elif action == "open":
+            if not computer.open_viewer():
+                print(f"Open this URL manually: {computer.display.viewer_url}")
+            else:
+                print(f"Opened {computer.display.viewer_url}")
+        elif action == "logs":
+            output = computer.logs(tail=args.tail)
+            if output:
+                print(output)
+        else:
+            render_error("Usage: smolvm computer {start,delete,list,open,logs,templates} ...")
+            return 2
+        return 0
+    except Exception as exc:
+        return _emit_cli_error(command_name, 1, exc, json_output=json_output)
+    finally:
+        if computer is not None:
+            computer.close()
+
+
 def _command_name_from_argv(args: Sequence[str]) -> str:
     """Best-effort command name for parse-time JSON errors."""
     tokens = [arg for arg in args if not arg.startswith("-")]
@@ -4065,6 +4235,7 @@ def _command_name_from_argv(args: Sequence[str]) -> str:
         "sandbox",
         "windows",
         "browser",
+        "computer",
         "server",
         "image",
         "codex",

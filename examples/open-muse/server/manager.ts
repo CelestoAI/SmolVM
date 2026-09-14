@@ -48,7 +48,7 @@ export class ConversationManager {
       runState: context.runState, sessionLifecycle: context.sessionLifecycle,
       messages: context.messages, grants: context.grants.map(({ id: grantId, state, expiresAt }) => ({ id: grantId, state, expiresAt })),
       pendingApproval: context.pendingApproval ? (({ program: _program, ...approval }) => approval)(context.pendingApproval) : undefined,
-      viewerReady: context.sessionLifecycle === "ready" && Boolean(context.computer?.viewerUrl),
+      viewerReady: context.sessionLifecycle === "ready" && Boolean(context.computer?.display.viewerUrl),
       events: context.events,
     };
   }
@@ -175,7 +175,7 @@ export class ConversationManager {
 
   issueViewerNonce(id: string): { viewerPath: string; expiresAt: string } {
     const context = this.require(id);
-    if (!context.computer?.viewerUrl) throw Object.assign(new Error("The live computer is not ready yet."), { status: 409 });
+    if (!context.computer?.display.viewerUrl) throw Object.assign(new Error("The live computer is not ready yet."), { status: 409 });
     const nonce = randomBytes(32).toString("base64url");
     const expiresAt = Date.now() + 60_000;
     this.viewerNonces.set(nonce, { conversationId: id, expiresAt });
@@ -190,7 +190,7 @@ export class ConversationManager {
   }
 
   viewerTarget(id: string): string {
-    const url = this.require(id).computer?.viewerUrl;
+    const url = this.require(id).computer?.display.viewerUrl;
     if (!url) throw Object.assign(new Error("The live computer is not ready."), { status: 409 });
     return new URL(url).origin;
   }
@@ -240,7 +240,7 @@ export class ConversationManager {
     if (context.sessionLifecycle === "ready" && context.computer && (!this.fixtureStore || (context.playwright?.isConnected() && context.page && !context.page.isClosed()))) return;
     if (this.fixtureStore && context.sessionLifecycle === "ready" && context.computer) {
       this.emit("browser.reconnecting", { summary: "Reconnecting browser automation" }, false);
-      await this.attachBrowser(context, context.computer.cdpUrl);
+      await this.attachBrowser(context, await this.browserCdpUrl(context.computer));
       this.emit("browser.reconnected", { summary: "Browser automation reconnected" }, false);
       return;
     }
@@ -252,9 +252,12 @@ export class ConversationManager {
     const smolvm = new SmolVM({ createTimeoutMs: 180_000 });
     context.smolvm = smolvm;
     try {
-      const computer = await smolvm.browsers.create({ mode: "live", profile: { mode: "ephemeral" }, viewport: { width: 1440, height: 900 }, network: { mode: this.fixtureStore ? "off" : "open" } });
+      const computer = await smolvm.computers.create({
+        display: { width: 1440, height: 900 },
+        network: { mode: this.fixtureStore ? "off" : "open" },
+      });
       context.computer = computer;
-      if (this.fixtureStore) await this.attachBrowser(context, computer.cdpUrl);
+      if (this.fixtureStore) await this.attachBrowser(context, await this.browserCdpUrl(computer));
       context.sessionLifecycle = "ready";
       context.stateVersion += 1;
       this.emit("browser.ready", { summary: "Disposable computer ready", sandboxId: computer.sandboxId }, false);
@@ -277,6 +280,13 @@ export class ConversationManager {
     const page = browserContext.pages().find((candidate) => !candidate.isClosed()) ?? await browserContext.newPage();
     context.page = page;
     context.storefront = await installStorefront(browserContext, page, { cart: context.cart, receipts: context.receipts });
+  }
+
+  private async browserCdpUrl(computer: NonNullable<ConversationContext["computer"]>): Promise<string> {
+    if (!computer.browser.cdpUrl) await computer.browser.launch();
+    const cdpUrl = computer.browser.cdpUrl;
+    if (!cdpUrl) throw new Error("Chromium has no automation address; start it again with computer.browser.launch().");
+    return cdpUrl;
   }
 
   private emit(type: string, payload: Record<string, unknown>, mutates = false): void {

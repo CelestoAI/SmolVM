@@ -1481,6 +1481,108 @@ def browser_logs(session_id: str, tail: int) -> Any:
     return _handlers()._run_browser(_ns(browser_action="logs", session_id=session_id, tail=tail))
 
 
+@cli.group(context_settings=CONTEXT_SETTINGS)
+def computer() -> None:
+    """Manage complete desktop computers."""
+
+
+@computer.command("start")
+@click.option(
+    "--template",
+    type=click.Choice(["linux-desktop"]),
+    default="linux-desktop",
+    show_default=True,
+)
+@click.option("--name", default=None, help="Name for the computer.")
+@click.option(
+    "--backend",
+    type=click.Choice(["auto", "qemu", "firecracker"]),
+    default="auto",
+    show_default=True,
+    help="Virtualization backend.",
+)
+@click.option("--width", type=int, default=1440, show_default=True)
+@click.option("--height", type=int, default=900, show_default=True)
+@click.option("--memory", "memory_mib", type=int, default=2048, show_default=True)
+@click.option("--disk-size", "disk_size_mib", type=int, default=8192, show_default=True)
+@boot_timeout_option
+@json_option
+def computer_start(
+    template: str,
+    name: str | None,
+    backend: str,
+    width: int,
+    height: int,
+    memory_mib: int,
+    disk_size_mib: int,
+    boot_timeout: float,
+    json_output: bool,
+) -> Any:
+    """Start a Linux desktop with Chromium, a terminal, and files."""
+    _before_command(json_output=json_output)
+    return _handlers()._run_computer(
+        _ns(
+            computer_action="start",
+            template=template,
+            name=name,
+            backend=backend,
+            width=width,
+            height=height,
+            memory_mib=memory_mib,
+            disk_size_mib=disk_size_mib,
+            boot_timeout=boot_timeout,
+            json=json_output,
+        )
+    )
+
+
+@computer.command("delete")
+@click.argument("computer_id", metavar="computer", shell_complete=complete_browser_session_names)
+def computer_delete(computer_id: str) -> Any:
+    """Delete a computer and its files."""
+    _before_command()
+    return _handlers()._run_computer(
+        _ns(computer_action="delete", computer_id=computer_id, json=False)
+    )
+
+
+@computer.command("list")
+@json_option
+def computer_list(json_output: bool) -> Any:
+    """List desktop computers."""
+    _before_command(json_output=json_output)
+    return _handlers()._run_computer(_ns(computer_action="list", json=json_output))
+
+
+@computer.command("open")
+@click.argument("computer_id", metavar="computer", shell_complete=complete_browser_session_names)
+def computer_open(computer_id: str) -> Any:
+    """Open a computer's desktop view."""
+    _before_command()
+    return _handlers()._run_computer(
+        _ns(computer_action="open", computer_id=computer_id, json=False)
+    )
+
+
+@computer.command("logs")
+@click.argument("computer_id", metavar="computer", shell_complete=complete_browser_session_names)
+@click.option("--tail", type=int, default=100, show_default=True)
+def computer_logs(computer_id: str, tail: int) -> Any:
+    """Show recent computer output."""
+    _before_command()
+    return _handlers()._run_computer(
+        _ns(computer_action="logs", computer_id=computer_id, tail=tail, json=False)
+    )
+
+
+@computer.command("templates")
+@json_option
+def computer_templates(json_output: bool) -> Any:
+    """List available computer templates."""
+    _before_command(json_output=json_output)
+    return _handlers()._run_computer(_ns(computer_action="templates", json=json_output))
+
+
 def _register_preset_commands() -> None:
     from smolvm.presets import list_presets
 

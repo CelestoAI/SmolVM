@@ -1,6 +1,7 @@
 import process from "node:process";
 import { randomUUID } from "node:crypto";
 import { BrowserSession, type BrowserSessionResponse } from "./browser-session.js";
+import { ComputerSession, type ComputerResponse } from "./computer-session.js";
 import { SmolVMError } from "./errors.js";
 import { Sandbox } from "./sandbox.js";
 import { ProcessTransport } from "./transport.js";
@@ -12,7 +13,9 @@ import type {
 import type {
   CreateSandboxOptions,
   CreateBrowserSessionOptions,
+  CreateComputerOptions,
   BrowserSessionCollection,
+  ComputerCollection,
   DiagnoseResult,
   SandboxCollection,
   SmolVMClient,
@@ -24,6 +27,7 @@ import type {
 export { SmolVMError } from "./errors.js";
 export { Sandbox } from "./sandbox.js";
 export { BrowserSession } from "./browser-session.js";
+export { ComputerSession } from "./computer-session.js";
 export type { SmolVMErrorCode, SmolVMErrorOptions } from "./errors.js";
 export type * from "./types.js";
 
@@ -43,6 +47,16 @@ const REQUIRED_BROWSER_CAPABILITIES = [
   "browser.exec",
   "browser.files",
   "browser.events",
+] as const;
+
+const REQUIRED_COMPUTER_CAPABILITIES = [
+  "computer.create",
+  "computer.delete",
+  "computer.endpoints",
+  "computer.exec",
+  "computer.files",
+  "computer.browser",
+  "computer.events",
 ] as const;
 
 function assertSupportedNode(): void {
@@ -68,9 +82,11 @@ function timeoutOption(value: number | undefined, fallback: number, name: string
 export class SmolVM implements SmolVMClient {
   readonly sandboxes: SandboxCollection;
   readonly browsers: BrowserSessionCollection;
+  readonly computers: ComputerCollection;
   private readonly transport: SmolVMTransport;
   private readonly active = new Set<Sandbox>();
   private readonly activeBrowsers = new Set<BrowserSession>();
+  private readonly activeComputers = new Set<ComputerSession>();
   private readonly onEvent?: (event: SmolVMEvent) => void;
   private readonly debug: boolean;
   private negotiation?: Promise<ReadonlySet<string>>;
@@ -95,6 +111,7 @@ export class SmolVM implements SmolVMClient {
     );
     this.sandboxes = { create: (createOptions) => this.createSandbox(createOptions) };
     this.browsers = { create: (createOptions) => this.createBrowser(createOptions) };
+    this.computers = { create: (createOptions) => this.createComputer(createOptions) };
   }
 
   private emit(event: SmolVMEvent): void {
@@ -109,6 +126,8 @@ export class SmolVM implements SmolVMClient {
     this.active.clear();
     for (const browser of [...this.activeBrowsers]) browser.markDeleted();
     this.activeBrowsers.clear();
+    for (const computer of [...this.activeComputers]) computer.markDeleted();
+    this.activeComputers.clear();
   }
 
   private async closeTransport(): Promise<void> {
@@ -237,6 +256,59 @@ export class SmolVM implements SmolVMClient {
     return browser;
   }
 
+  private async createComputer(options: CreateComputerOptions = {}): Promise<ComputerSession> {
+    await this.negotiate([...REQUIRED_CAPABILITIES, ...REQUIRED_COMPUTER_CAPABILITIES]);
+    const requestedComputerId = options.name ?? `computer-${randomUUID().slice(0, 8)}`;
+    this.emit({ type: "computer.starting", computerId: requestedComputerId });
+    const network = options.network?.mode === "restricted"
+      ? { mode: "restricted", allowed_cidrs: options.network.allowedCidrs }
+      : options.network ?? { mode: "open" };
+    let wire: ComputerResponse;
+    try {
+      wire = await this.transport.request<ComputerResponse>("/computers", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          computer_id: requestedComputerId,
+          template: options.template ?? "linux-desktop",
+          backend: options.backend ?? "auto",
+          display: options.display,
+          resources: options.resources && {
+            memory_mib: options.resources.memoryMiB,
+            disk_mib: options.resources.diskMiB,
+            vcpus: options.resources.vcpus,
+          },
+          network,
+          workspace: options.workspace?.map((mount) => ({
+            host_path: mount.hostPath,
+            guest_path: mount.guestPath,
+            writable: mount.writable,
+          })),
+        }),
+      });
+    } catch (cause) {
+      if (cause instanceof SmolVMError && cause.actual?.sessionClosed === true) {
+        this.transitionSessionClosed();
+      }
+      throw cause;
+    }
+    const computer = ComputerSession.create(
+      wire,
+      this.transport,
+      (event) => this.emit(event),
+      (released) => this.activeComputers.delete(released),
+      () => this.closeTransport(),
+      this.debug,
+    );
+    this.activeComputers.add(computer);
+    this.emit({
+      type: "computer.ready",
+      computerId: computer.computerId,
+      sandboxId: computer.sandboxId,
+    });
+    return computer;
+  }
+
   async diagnose(): Promise<DiagnoseResult> {
     await this.negotiate();
     const wire = await this.transport.request<DiagnosticsResponse>("/sdk/v1/diagnostics");
@@ -253,7 +325,7 @@ export class SmolVM implements SmolVMClient {
 
   async close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
-    this.closePromise = (async () => {
+    const attempt = (async () => {
       const failures: unknown[] = [];
       await Promise.all([...this.active].map(async (sandbox) => {
         try { await sandbox.delete(); } catch (cause) { failures.push(cause); }
@@ -261,6 +333,21 @@ export class SmolVM implements SmolVMClient {
       await Promise.all([...this.activeBrowsers].map(async (browser) => {
         try { await browser.delete(); } catch (cause) { failures.push(cause); }
       }));
+      await Promise.all([...this.activeComputers].map(async (computer) => {
+        try { await computer.delete(); } catch (cause) { failures.push(cause); }
+      }));
+      if (this.activeComputers.size > 0) {
+        throw new SmolVMError(
+          "cleanup_failed",
+          "One or more computers were not fully deleted; call computer.delete() or smolvm.close() again.",
+          {
+            operation: "client.close",
+            actual: { failures: failures.length },
+            cause: failures[0],
+            debug: this.debug,
+          },
+        );
+      }
       try { await this.closeTransport(); } catch (cause) { failures.push(cause); }
       if (failures.length > 0) {
         throw new SmolVMError("cleanup_failed", "One or more sandboxes could not be deleted; the SDK session was closed.", {
@@ -271,6 +358,10 @@ export class SmolVM implements SmolVMClient {
         });
       }
     })();
+    this.closePromise = attempt.catch((cause) => {
+      this.closePromise = undefined;
+      throw cause;
+    });
     return this.closePromise;
   }
 }
