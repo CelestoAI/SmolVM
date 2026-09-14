@@ -5,35 +5,26 @@ import { basename, dirname, join } from "node:path";
 import { SmolVMError } from "./errors.js";
 import type { SandboxFiles, SmolVMTransport } from "./types.js";
 
-function absoluteSandboxPath(path: string): string {
-  if (!path.startsWith("/")) {
-    throw new SmolVMError("invalid_path", "Sandbox paths must be absolute and start with '/'.", {
-      operation: "files.path",
-      actual: { path },
-    });
-  }
-  return path;
-}
-
 /** @internal */
 export class RemoteFiles implements SandboxFiles {
   constructor(
     private readonly transport: SmolVMTransport,
     private readonly resourcePath: string,
+    private readonly resourceName: string,
     private readonly assertAvailable: () => void,
   ) {}
 
   async read(path: string): Promise<string> {
-    return new TextDecoder().decode(await this.readBytes(absoluteSandboxPath(path)));
+    return new TextDecoder().decode(await this.readBytes(this.absolutePath(path, "files.read('/workspace/file')")));
   }
 
   async write(path: string, content: string | Uint8Array): Promise<void> {
     const bytes = typeof content === "string" ? new TextEncoder().encode(content) : content;
-    await this.writeBytes(absoluteSandboxPath(path), bytes);
+    await this.writeBytes(this.absolutePath(path, "files.write('/workspace/file', content)"), bytes);
   }
 
   async upload(localPath: string, targetPath: string): Promise<void> {
-    const path = absoluteSandboxPath(targetPath);
+    const path = this.absolutePath(targetPath, "files.upload(localPath, '/workspace/file')");
     this.assertAvailable();
     if (!this.transport.requestStream) {
       await this.write(path, await readFile(localPath));
@@ -48,7 +39,9 @@ export class RemoteFiles implements SandboxFiles {
   }
 
   async download(sourcePath: string, localPath: string): Promise<void> {
-    const bytes = await this.readBytes(absoluteSandboxPath(sourcePath));
+    const bytes = await this.readBytes(
+      this.absolutePath(sourcePath, "files.download('/workspace/file', localPath)"),
+    );
     const parent = dirname(localPath);
     await mkdir(parent, { recursive: true });
     const temporary = join(parent, `.${basename(localPath)}.smolvm-${randomUUID()}.tmp`);
@@ -64,6 +57,17 @@ export class RemoteFiles implements SandboxFiles {
 
   private fileUrl(path: string): string {
     return `${this.resourcePath}/files?path=${encodeURIComponent(path)}`;
+  }
+
+  private absolutePath(path: string, recoveryCall: string): string {
+    if (!path.startsWith("/")) {
+      throw new SmolVMError(
+        "invalid_path",
+        `${this.resourceName} paths must be absolute; call ${recoveryCall}.`,
+        { operation: "files.path", actual: { path } },
+      );
+    }
+    return path;
   }
 
   private async readBytes(path: string): Promise<Uint8Array> {

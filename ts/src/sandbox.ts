@@ -37,6 +37,7 @@ export class Sandbox implements SandboxClient {
     this.files = new RemoteFiles(
       transport,
       `/sandboxes/${encodeURIComponent(id)}`,
+      `Sandbox '${id}' file`,
       () => this.assertFilesAvailable(),
     );
   }
@@ -80,7 +81,7 @@ export class Sandbox implements SandboxClient {
 
   async exec(command: string | readonly string[], options: ExecOptions = {}): Promise<ExecResult> {
     if (this.currentStatus === "deleted") {
-      throw new SmolVMError("transport_failed", `Sandbox '${this.id}' has been deleted.`, {
+      throw new SmolVMError("transport_failed", `Sandbox '${this.id}' has been deleted; call smolvm.sandboxes.create() to create a replacement.`, {
         operation: "sandbox.exec",
         sandboxId: this.id,
       });
@@ -187,7 +188,7 @@ export class Sandbox implements SandboxClient {
 
   private assertFilesAvailable(): void {
     if (this.currentStatus === "deleted") {
-      throw new SmolVMError("transport_failed", `Sandbox '${this.id}' has been deleted.`, {
+      throw new SmolVMError("transport_failed", `Sandbox '${this.id}' has been deleted; call smolvm.sandboxes.create() to create a replacement.`, {
         operation: "files.access",
         sandboxId: this.id,
       });

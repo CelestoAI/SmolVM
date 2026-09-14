@@ -291,15 +291,28 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
         request: Request,
     ) -> Response:
         if not PurePosixPath(path).is_absolute():
-            raise _sdk_error(400, "invalid_path", "Sandbox file path must be absolute.")
+            raise _sdk_error(
+                400,
+                "invalid_path",
+                f"File path for {resource_kind} '{resource_id}' must be absolute; "
+                "retry files.write('/workspace/file', content).",
+            )
         try:
             declared_size = int(request.headers.get("content-length", "0"))
         except ValueError as exc:
             raise _sdk_error(
-                400, "transport_failed", "File size header must be an integer."
+                400,
+                "transport_failed",
+                f"File size for {resource_kind} '{resource_id}' must be an integer; "
+                "retry the same files.write() call.",
             ) from exc
         if declared_size > _MAX_FILE_BYTES:
-            raise _sdk_error(413, "transport_failed", "File exceeds the 16 MiB SDK limit.")
+            raise _sdk_error(
+                413,
+                "transport_failed",
+                f"File for {resource_kind} '{resource_id}' exceeds the 16 MiB SDK limit; "
+                "retry files.write() with a smaller file.",
+            )
         temporary: Path | None = None
         try:
             with tempfile.NamedTemporaryFile(prefix="smolvm-sdk-upload-", delete=False) as handle:
@@ -309,7 +322,10 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
                     received += len(chunk)
                     if received > _MAX_FILE_BYTES:
                         raise _sdk_error(
-                            413, "transport_failed", "File exceeds the 16 MiB SDK limit."
+                            413,
+                            "transport_failed",
+                            f"File for {resource_kind} '{resource_id}' exceeds the 16 MiB SDK "
+                            "limit; retry files.write() with a smaller file.",
                         )
                     handle.write(chunk)
             await asyncio.to_thread(vm.upload_file, temporary, path)
@@ -320,7 +336,7 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
                 409,
                 "transport_failed",
                 f"Could not write '{path}' in {resource_kind} '{resource_id}'; "
-                "check the path and retry.",
+                "check the path and retry the same files.write() call.",
             ) from exc
         finally:
             if temporary is not None:
@@ -335,7 +351,12 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
         path: str,
     ) -> Response:
         if not PurePosixPath(path).is_absolute():
-            raise _sdk_error(400, "invalid_path", "Sandbox file path must be absolute.")
+            raise _sdk_error(
+                400,
+                "invalid_path",
+                f"File path for {resource_kind} '{resource_id}' must be absolute; "
+                "retry files.read('/workspace/file').",
+            )
         temporary: Path | None = None
         try:
             size_result = await asyncio.to_thread(
@@ -351,12 +372,27 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
             except ValueError as exc:
                 raise SmolVMError(f"Could not determine the size of '{path}'.") from exc
             if guest_size > _MAX_FILE_BYTES:
-                raise _sdk_error(413, "transport_failed", "File exceeds the 16 MiB SDK limit.")
+                raise _sdk_error(
+                    413,
+                    "transport_failed",
+                    f"File in {resource_kind} '{resource_id}' exceeds the 16 MiB SDK limit; "
+                    "choose a smaller file and retry files.read().",
+                )
             with tempfile.NamedTemporaryFile(prefix="smolvm-sdk-download-", delete=False) as handle:
                 temporary = Path(handle.name)
-            await asyncio.to_thread(vm.download_file, path, temporary)
+            await asyncio.to_thread(
+                vm.download_file,
+                path,
+                temporary,
+                max_bytes=_MAX_FILE_BYTES,
+            )
             if temporary.stat().st_size > _MAX_FILE_BYTES:
-                raise _sdk_error(413, "transport_failed", "File exceeds the 16 MiB SDK limit.")
+                raise _sdk_error(
+                    413,
+                    "transport_failed",
+                    f"File in {resource_kind} '{resource_id}' exceeds the 16 MiB SDK limit; "
+                    "choose a smaller file and retry files.read().",
+                )
             content = temporary.read_bytes()
         except HTTPException:
             raise
@@ -365,7 +401,7 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
                 409,
                 "transport_failed",
                 f"Could not read '{path}' from {resource_kind} '{resource_id}'; "
-                "check the path and retry.",
+                "check the path and retry the same files.read() call.",
             ) from exc
         finally:
             if temporary is not None:
@@ -527,6 +563,15 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
         "/browser-sessions/{session_id}/files",
         status_code=204,
         operation_id="writeBrowserFile",
+        responses={404: {"model": ErrorResponse}},
+        openapi_extra={
+            "requestBody": {
+                "required": True,
+                "content": {
+                    "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}
+                },
+            }
+        },
     )
     async def write_browser_file(session_id: str, path: str, request: Request) -> Response:
         browser = resolve_browser(session_id)
@@ -546,7 +591,8 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
                 "content": {
                     "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}
                 }
-            }
+            },
+            404: {"model": ErrorResponse},
         },
         operation_id="readBrowserFile",
     )

@@ -2,9 +2,9 @@ import { SmolVM } from "@celestoai/smolvm";
 
 async function main() {
   const smolvm = new SmolVM();
-  const computer = await smolvm.browsers.create({ mode: "live" });
 
   try {
+    const computer = await smolvm.browsers.create({ mode: "live" });
     await computer.files.write("/workspace/task.txt", "visit example.com");
     console.log({
       sandboxId: computer.sandboxId,
@@ -18,6 +18,7 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(error);
+  const detail = error instanceof Error ? error.message : "Browser computer failed.";
+  console.error(`${detail} Run 'npx tsx examples/browser-computer.ts' to retry.`);
   process.exitCode = 1;
 });

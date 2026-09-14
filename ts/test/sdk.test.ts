@@ -108,7 +108,10 @@ test("creates a ready live browser session and deletes it once", async () => {
 
   const deletion = browser.delete();
   assert.equal(browser.status, "stopping");
-  await assert.rejects(() => browser.exec("echo too-late"), /not ready/);
+  await assert.rejects(
+    () => browser.exec("echo too-late"),
+    /call smolvm\.browsers\.create\(\) to create a replacement/,
+  );
   await assert.rejects(() => browser.files.read("/workspace/input.txt"), /not ready/);
   await Promise.all([deletion, browser.delete()]);
   assert.equal(browser.status, "deleted");
@@ -264,7 +267,13 @@ test("file helpers use content endpoints and validate paths", async () => {
   const sandbox = await client.sandboxes.create();
   await sandbox.files.write("/workspace/input.txt", "hello");
   assert.equal(await sandbox.files.read("/workspace/input.txt"), "hello");
-  await assert.rejects(() => sandbox.files.read("relative.txt"), (error: unknown) => error instanceof SmolVMError && error.code === "invalid_path");
+  await assert.rejects(
+    () => sandbox.files.read("relative.txt"),
+    (error: unknown) => error instanceof SmolVMError
+      && error.code === "invalid_path"
+      && error.message.includes(`Sandbox '${sandbox.id}'`)
+      && error.message.includes("files.read('/workspace/file')"),
+  );
 });
 
 test("a custom image does not receive an implicit OS override", async () => {

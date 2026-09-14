@@ -87,8 +87,14 @@ class FakeBrowserSession:
         FakeSmolVM.uploaded_files[guest_path] = Path(local_path).read_bytes()  # type: ignore[arg-type]
 
     @staticmethod
-    def _download_file(guest_path: str, local_path: object) -> None:
+    def _download_file(
+        guest_path: str,
+        local_path: object,
+        *,
+        max_bytes: int | None = None,
+    ) -> None:
         FakeSmolVM.downloaded_files.append(guest_path)
+        FakeSmolVM.last_download_max_bytes = max_bytes
         Path(local_path).write_bytes(FakeSmolVM.uploaded_files[guest_path])  # type: ignore[arg-type]
 
     def delete(self) -> None:
@@ -112,6 +118,7 @@ class FakeSmolVM:
     desktop_endpoint: DesktopEndpoint | None = None
     uploaded_files: dict[str, bytes] = {}
     downloaded_files: list[str] = []
+    last_download_max_bytes: int | None = None
     file_size_override: int | None = None
     close_calls: int = 0
     browser_endpoint_available = True
@@ -189,8 +196,15 @@ class FakeSmolVM:
     def upload_file(self, local_path: object, guest_path: str) -> None:
         FakeSmolVM.uploaded_files[guest_path] = Path(local_path).read_bytes()  # type: ignore[arg-type]
 
-    def download_file(self, guest_path: str, local_path: object) -> None:
+    def download_file(
+        self,
+        guest_path: str,
+        local_path: object,
+        *,
+        max_bytes: int | None = None,
+    ) -> None:
         FakeSmolVM.downloaded_files.append(guest_path)
+        FakeSmolVM.last_download_max_bytes = max_bytes
         Path(local_path).write_bytes(FakeSmolVM.uploaded_files[guest_path])  # type: ignore[arg-type]
 
 
@@ -218,6 +232,7 @@ def app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     FakeSmolVM.desktop_endpoint = None
     FakeSmolVM.uploaded_files = {}
     FakeSmolVM.downloaded_files = []
+    FakeSmolVM.last_download_max_bytes = None
     FakeSmolVM.file_size_override = None
     FakeSmolVM.close_calls = 0
     FakeSmolVM.browser_endpoint_available = True
@@ -398,6 +413,7 @@ async def test_browser_file_endpoints_use_the_browser_vm(app: FastAPI) -> None:
 
     assert response.status_code == 204
     assert downloaded.body == b"hello"
+    assert FakeSmolVM.last_download_max_bytes == 16 * 1024 * 1024
 
 
 @pytest.mark.asyncio
@@ -783,6 +799,18 @@ def test_openapi_exposes_clean_operation_ids(app: FastAPI) -> None:
         "writeBrowserFile",
         "readBrowserFile",
     } <= operation_ids
+
+    browser_files = spec["paths"]["/browser-sessions/{session_id}/files"]
+    assert browser_files["put"]["requestBody"] == {
+        "required": True,
+        "content": {"application/octet-stream": {"schema": {"type": "string", "format": "binary"}}},
+    }
+    assert browser_files["put"]["responses"]["404"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ErrorResponse"
+    }
+    assert browser_files["get"]["responses"]["404"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ErrorResponse"
+    }
 
 
 def test_package_exports_create_app() -> None:

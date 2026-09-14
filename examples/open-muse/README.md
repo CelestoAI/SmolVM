@@ -47,8 +47,8 @@ On macOS, the runtime wrapper downloads the checksum-verified ARM64 Linux guest-
 - That computer exposes commands and files alongside its browser connections. OpenMuse uses `exec()` for its approved runner today; future tools can use `files` for uploads, downloads, and artifacts without creating another sandbox.
 - Pi writes a short JavaScript Playwright program for each browser step.
 - `browser_run` creates a one-time approval, then executes the approved program through the runner installed inside the VM.
-- The real browser display is streamed through SmolVM's noVNC viewer into the right pane.
-- The trusted Node server keeps the CDP and raw VNC addresses private. It gives the client only a short-lived path to the noVNC viewer.
+- The real browser display is streamed through SmolVM's noVNC viewer, a browser-based remote-display client, into the right pane.
+- The trusted Node server keeps the Chrome DevTools Protocol (CDP) automation address and raw VNC remote-display address private. It gives the client only a short-lived path to the noVNC viewer.
 - **Take control** pauses Pi and lets you use the browser directly. Return control before sending another chat message.
 
 Approval is currently bound to the complete proposed program, not to a site-specific semantic promise such as an exact cart total. Requiring approval for read-only programs is a conservative temporary policy until the runner can enforce the design's finer operation-level boundary.

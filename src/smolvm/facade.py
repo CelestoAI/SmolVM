@@ -2188,6 +2188,7 @@ class SmolVM:
         local_path: str | Path,
         *,
         make_dirs: bool = True,
+        max_bytes: int | None = None,
     ) -> str:
         """Download one file from a running VM to the host machine.
 
@@ -2200,6 +2201,7 @@ class SmolVM:
                 filename is appended.
             make_dirs: Create the destination parent directory on the
                 host if it is missing.
+            max_bytes: Stop the transfer if the file exceeds this size.
 
         Returns:
             The resolved local destination path.
@@ -2213,6 +2215,8 @@ class SmolVM:
         """
         if not guest_path:
             raise ValueError("Source path in the sandbox cannot be empty.")
+        if max_bytes is not None and max_bytes < 1:
+            raise ValueError("max_bytes must be a positive integer.")
         if not guest_path.startswith("/") and not _is_windows_guest_path(guest_path):
             raise ValueError(
                 f"Source path in the sandbox must be absolute "
@@ -2241,7 +2245,10 @@ class SmolVM:
             )
 
         channel = self._ensure_control_for_file_transfer()
-        channel.get_file(guest_path, destination)
+        if max_bytes is None:
+            channel.get_file(guest_path, destination)
+        else:
+            channel.get_file(guest_path, destination, max_bytes=max_bytes)
         return str(destination)
 
     def wait_for_ready(

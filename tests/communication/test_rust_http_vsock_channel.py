@@ -569,6 +569,31 @@ def test_raw_file_download_rejects_declared_size_over_cap(tmp_path: Path) -> Non
         channel.get_file("/tmp/source.txt", destination)
 
 
+def test_get_file_honors_a_lower_caller_receive_limit(tmp_path: Path) -> None:
+    destination = tmp_path / "download.txt"
+
+    def _raw_get(method: str, path: str, body: bytes) -> tuple[int, bytes, dict[str, str]]:
+        assert method == "GET"
+        assert path == "/files/content?path=%2Ftmp%2Fsource.txt"
+        assert body == b""
+        return (200, b"payload", {"x-smolvm-file-size": "7"})
+
+    channel = FakeRustChannel(
+        [
+            _capabilities(
+                {"file_raw": True},
+                limits={"max_stream_size_bytes": 1024},
+            ),
+            _raw_get,
+        ]
+    )
+
+    with pytest.raises(SmolVMError, match="exceeded 4 bytes"):
+        channel.get_file("/tmp/source.txt", destination, max_bytes=4)
+
+    assert not destination.exists()
+
+
 def test_directory_transfer_requires_tar_capability(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()

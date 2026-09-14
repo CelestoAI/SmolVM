@@ -3798,6 +3798,23 @@ class TestVMFileDownload:
         ssh.get_file.assert_called_once_with("/tmp/note.txt", expected)
 
     @patch("smolvm.facade.SmolVMManager")
+    def test_download_file_passes_receive_limit_to_control_channel(
+        self,
+        mock_sdk_cls: MagicMock,
+        sample_config: VMConfig,
+        tmp_path: Path,
+    ) -> None:
+        ssh = MagicMock()
+        vm = self._running_vm(sample_config, mock_sdk_cls)
+        vm._ssh = ssh
+        vm._ssh_ready = True
+        target = tmp_path / "note.txt"
+
+        vm.download_file("/tmp/note.txt", target, max_bytes=1024)
+
+        ssh.get_file.assert_called_once_with("/tmp/note.txt", target, max_bytes=1024)
+
+    @patch("smolvm.facade.SmolVMManager")
     def test_download_file_appends_name_when_local_path_is_existing_dir(
         self,
         mock_sdk_cls: MagicMock,

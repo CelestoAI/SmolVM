@@ -1,7 +1,14 @@
 import { SmolVM, SmolVMError } from "../src/index.js";
+import type { WriteBrowserFileData } from "../src/client/index.js";
 import type { BrowserSessionClient, ComputerClient, SandboxClient, SmolVMClient } from "../src/index.js";
 
 const client: SmolVMClient = new SmolVM({ onEvent: (event) => console.log(event.type) });
+const browserFileWrite: WriteBrowserFileData = {
+  body: new Blob(["hello"]),
+  path: { session_id: "browser-demo" },
+  query: { path: "/workspace/hello.txt" },
+  url: "/browser-sessions/{session_id}/files",
+};
 
 async function run(sandbox: SandboxClient): Promise<void> {
   const result = await sandbox.exec(["printf", "%s", "hello"], { timeoutMs: 1_000 });
@@ -21,3 +28,4 @@ async function useBrowser(browser: BrowserSessionClient): Promise<void> {
 
 void client.sandboxes.create().then(run).finally(() => client.close());
 void client.browsers.create({ mode: "live" }).then(useBrowser).finally(() => client.close());
+void browserFileWrite;

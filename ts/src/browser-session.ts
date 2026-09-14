@@ -47,7 +47,7 @@ export class BrowserSession implements BrowserSessionClient {
     if (wire.status !== "ready" || !wire.cdp_url) {
       throw new SmolVMError(
         "browser_endpoint_unavailable",
-        `Browser session '${wire.session_id}' did not return ready automation endpoints.`,
+        `Browser session '${wire.session_id}' did not return ready automation endpoints; call smolvm.browsers.create() to create a replacement.`,
         { operation: "browser.create", sandboxId: wire.sandbox_id },
       );
     }
@@ -61,6 +61,7 @@ export class BrowserSession implements BrowserSessionClient {
     this.files = new RemoteFiles(
       transport,
       `/browser-sessions/${encodeURIComponent(this.sessionId)}`,
+      `Browser session '${this.sessionId}' file`,
       () => this.assertReady("files.access"),
     );
   }
@@ -127,10 +128,11 @@ export class BrowserSession implements BrowserSessionClient {
 
   private assertReady(operation: string): void {
     if (this.currentStatus !== "ready") {
-      throw new SmolVMError("browser_deleted", `Browser session '${this.sessionId}' is not ready.`, {
-        operation,
-        sandboxId: this.sandboxId,
-      });
+      throw new SmolVMError(
+        "browser_deleted",
+        `Browser session '${this.sessionId}' is not ready; call smolvm.browsers.create() to create a replacement.`,
+        { operation, sandboxId: this.sandboxId },
+      );
     }
   }
 

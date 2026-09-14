@@ -553,3 +553,47 @@ class TestPutFileDirectoryDestination:
 
         # Fresh destination — stat raises ENOENT, path is used as-is.
         sftp.put.assert_called_once_with(str(source), "/tmp/new.md")
+
+
+class TestGetFileLimit:
+    """Caller byte limits stop SFTP downloads before the next chunk is written."""
+
+    @staticmethod
+    def _client_with_sftp(sftp: MagicMock) -> SSHClient:
+        paramiko_client = MagicMock()
+        paramiko_client.open_sftp.return_value = sftp
+        client = SSHClient("172.16.0.2")
+        client._ensure_connected = MagicMock(return_value=paramiko_client)  # type: ignore[method-assign]
+        return client
+
+    def test_rejects_a_known_oversized_file_before_transfer(self, tmp_path) -> None:
+        destination = tmp_path / "download.bin"
+        sftp = MagicMock()
+        sftp.stat.return_value = MagicMock(st_size=5)
+        client = self._client_with_sftp(sftp)
+
+        with pytest.raises(SmolVMError, match="exceeded 4 bytes"):
+            client.get_file("/tmp/source.bin", destination, max_bytes=4)
+
+        assert not destination.exists()
+        sftp.getfo.assert_not_called()
+        sftp.close.assert_called_once_with()
+
+    def test_removes_partial_download_when_limit_is_exceeded(self, tmp_path) -> None:
+        destination = tmp_path / "download.bin"
+        sftp = MagicMock()
+        sftp.stat.return_value = MagicMock(st_size=4)
+
+        def transfer(_remote_path, writer, *, prefetch):
+            assert prefetch is False
+            writer.write(b"1234")
+            writer.write(b"5")
+
+        sftp.getfo.side_effect = transfer
+        client = self._client_with_sftp(sftp)
+
+        with pytest.raises(SmolVMError, match="exceeded 4 bytes"):
+            client.get_file("/tmp/source.bin", destination, max_bytes=4)
+
+        assert not destination.exists()
+        sftp.close.assert_called_once_with()

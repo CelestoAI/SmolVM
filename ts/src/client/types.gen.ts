@@ -563,6 +563,10 @@ export type ReadBrowserFileData = {
 
 export type ReadBrowserFileErrors = {
     /**
+     * Not Found
+     */
+    404: ErrorResponse;
+    /**
      * Validation Error
      */
     422: HttpValidationError;
@@ -580,7 +584,7 @@ export type ReadBrowserFileResponses = {
 export type ReadBrowserFileResponse = ReadBrowserFileResponses[keyof ReadBrowserFileResponses];
 
 export type WriteBrowserFileData = {
-    body?: never;
+    body: Blob | File;
     path: {
         /**
          * Session Id
@@ -597,6 +601,10 @@ export type WriteBrowserFileData = {
 };
 
 export type WriteBrowserFileErrors = {
+    /**
+     * Not Found
+     */
+    404: ErrorResponse;
     /**
      * Validation Error
      */

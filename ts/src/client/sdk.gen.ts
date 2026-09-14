@@ -70,7 +70,15 @@ export const readBrowserFile = <ThrowOnError extends boolean = false>(options: O
 /**
  * Write Browser File
  */
-export const writeBrowserFile = <ThrowOnError extends boolean = false>(options: Options<WriteBrowserFileData, ThrowOnError>): RequestResult<WriteBrowserFileResponses, WriteBrowserFileErrors, ThrowOnError> => (options.client ?? client).put<WriteBrowserFileResponses, WriteBrowserFileErrors, ThrowOnError>({ url: '/browser-sessions/{session_id}/files', ...options });
+export const writeBrowserFile = <ThrowOnError extends boolean = false>(options: Options<WriteBrowserFileData, ThrowOnError>): RequestResult<WriteBrowserFileResponses, WriteBrowserFileErrors, ThrowOnError> => (options.client ?? client).put<WriteBrowserFileResponses, WriteBrowserFileErrors, ThrowOnError>({
+    bodySerializer: null,
+    url: '/browser-sessions/{session_id}/files',
+    ...options,
+    headers: {
+        'Content-Type': 'application/octet-stream',
+        ...options.headers
+    }
+});
 
 /**
  * List Sandboxes

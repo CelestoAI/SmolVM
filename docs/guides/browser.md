@@ -62,6 +62,8 @@ Install the browser automation client before running the example:
 npm install playwright-core
 ```
 
+Playwright connects through CDP, the Chrome DevTools Protocol used to automate Chromium.
+
 ```ts
 import { chromium } from "playwright-core";
 import { SmolVM } from "@celestoai/smolvm";
@@ -91,9 +93,9 @@ try {
 }
 ```
 
-The returned browser session is also the sandbox computer. Use `session.exec()` for commands and `session.files` for file transfer. In live mode, `viewerUrl` opens the complete graphical display in a web browser and `displayUrl` connects a VNC client or computer-use agent. The display is a minimal Openbox desktop containing Chromium, not a full GNOME or XFCE installation.
+The returned browser session is also the sandbox computer. Use `session.exec()` for commands and `session.files` for file transfer. In live mode, `viewerUrl` opens the complete graphical display through noVNC, a browser-based remote-display client. `displayUrl` connects a VNC client or computer-use agent directly to that remote display. The display uses Openbox, a lightweight desktop window manager, and contains Chromium rather than a full GNOME or XFCE installation.
 
-The automation, viewer, and display endpoints are loopback-only. Keep them in the trusted Node process rather than sending them to browser JavaScript or a remote client.
+The automation, viewer, and display endpoints are loopback-only, meaning they accept connections only from the same machine. Keep them in the trusted Node process rather than sending them to browser JavaScript or a remote client.
 
 ## Implementation notes
 
