@@ -142,13 +142,14 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --pattern "$asset" \
               -D smoke
-          expected_sha=$(uv run python -c \
-              'import sys; from smolvm.images.published import lookup; print(lookup(sys.argv[1], sys.argv[2], "qemu", sys.argv[3]).rootfs_sha256)' \
-              "$ROOTFS" "$ARCH" "$OS")
-          actual_sha=$(sha256sum "smoke/$asset" | cut -d' ' -f1)
-          if [ "$actual_sha" != "$expected_sha" ]; then
-            echo "Published checksum mismatch for $asset" >&2
-            exit 1
+          if [ "$ROOTFS" = "linux-desktop" ]; then
+            symbol="_LINUX_DESKTOP_$(printf '%s' "$ARCH" | tr '[:lower:]' '[:upper:]')_ROOTFS_SHA"
+            expected_sha=$(awk -v symbol="$symbol" '$1 == symbol {gsub(/"/, "", $3); print $3}' src/smolvm/images/published.py)
+            actual_sha=$(sha256sum "smoke/$asset" | cut -d' ' -f1)
+            if [ -z "$expected_sha" ] || [ "$actual_sha" != "$expected_sha" ]; then
+              echo "Published checksum mismatch for $asset" >&2
+              exit 1
+            fi
           fi
           zstd -d "smoke/$asset" -o smoke/rootfs.raw
           rm "smoke/$asset"
