@@ -80,7 +80,9 @@ test("operation validation rejects malformed, local, and sensitive actions", () 
   assert.throws(() => validateBrowserOperation(null as never), /operation is invalid/);
   assert.throws(() => validateBrowserOperation({ kind: "scroll", direction: "sideways" } as never), /up or down/);
   assert.throws(() => validateBrowserOperation({ kind: "navigate", url: "not a url" }), /address is invalid/);
-  assert.throws(() => validateBrowserOperation({ kind: "navigate", url: "https://user:secret@example.com" }), /ordinary public HTTP or HTTPS/);
+  const credentialedUrl = new URL("https://example.com");
+  credentialedUrl.username = "test-user";
+  assert.throws(() => validateBrowserOperation({ kind: "navigate", url: credentialedUrl.href }), /ordinary public HTTP or HTTPS/);
   assert.throws(() => validateBrowserOperation({ kind: "keypress", key: "Meta+A" } as never), /key is not available/);
   assert.throws(() => validateBrowserOperation({ kind: "click", target: { role: "dialog", name: "Save" } } as never), /supported role/);
   assert.throws(() => validateBrowserOperation({ kind: "click", target: { role: "button", name: "   " } }), /supported role/);
