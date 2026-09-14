@@ -1,6 +1,6 @@
 <div align="center">
 
-# SmolVM
+# Celesto Computer
 
 #### Secure, persistent computers that AI agents can use to browse, run code, and get real work done. 
 
