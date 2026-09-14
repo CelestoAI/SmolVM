@@ -142,6 +142,14 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --pattern "$asset" \
               -D smoke
+          expected_sha=$(uv run python -c \
+              'import sys; from smolvm.images.published import lookup; print(lookup(sys.argv[1], sys.argv[2], "qemu", sys.argv[3]).rootfs_sha256)' \
+              "$ROOTFS" "$ARCH" "$OS")
+          actual_sha=$(sha256sum "smoke/$asset" | cut -d' ' -f1)
+          if [ "$actual_sha" != "$expected_sha" ]; then
+            echo "Published checksum mismatch for $asset" >&2
+            exit 1
+          fi
           zstd -d "smoke/$asset" -o smoke/rootfs.raw
           rm "smoke/$asset"
 
@@ -238,6 +246,7 @@ jobs:
                            pgrep -x x11vnc >/dev/null &&
                            pgrep -f websockify >/dev/null &&
                            pgrep -f chromium >/dev/null &&
+                           python3 -c '\''import urllib.request; urllib.request.urlopen("http://127.0.0.1:6080/vnc.html", timeout=2).read()'\'' &&
                            python3 -c '\''import urllib.request; urllib.request.urlopen("http://127.0.0.1:9222/json/version", timeout=2).read()'\''; then
                           exit 0
                         fi

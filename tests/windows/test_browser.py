@@ -725,6 +725,52 @@ def test_build_computer_vm_config_uses_published_linux_desktop(
     assert mock_allocate_host_port.call_count == 3
 
 
+@patch("smolvm.browser.platform.machine", return_value="arm64")
+@patch("smolvm.browser.resolve_backend", return_value="firecracker")
+@patch("smolvm.utils.ensure_ssh_key")
+@patch("smolvm.images.builder.ImageBuilder")
+@patch("smolvm.images.published.ensure_published_image")
+def test_build_computer_vm_config_resolves_arm64_and_grows_published_desktop(
+    mock_ensure_published_image: MagicMock,
+    mock_builder_cls: MagicMock,
+    mock_ensure_ssh_key: MagicMock,
+    _mock_resolve_backend: MagicMock,
+    _mock_machine: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """Larger ARM computers should grow an isolated published desktop disk."""
+    kernel = tmp_path / "kernel"
+    rootfs = tmp_path / "rootfs.ext4"
+    private_key = tmp_path / "id_ed25519"
+    public_key = tmp_path / "id_ed25519.pub"
+    kernel.touch()
+    rootfs.touch()
+    private_key.touch()
+    public_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMock user@test\n")
+    mock_ensure_ssh_key.return_value = (private_key, public_key)
+    mock_ensure_published_image.return_value = SimpleNamespace(
+        kernel_path=kernel,
+        rootfs_path=rootfs,
+    )
+
+    vm_config, _ = _build_browser_vm_config(
+        session_id="computer-arm64",
+        browser_config=BrowserSessionConfig(
+            session_id="computer-arm64",
+            backend="auto",
+            mode="computer",
+            disk_size_mib=12288,
+        ),
+    )
+
+    mock_ensure_published_image.assert_called_once_with(
+        "linux-desktop", "arm64", "firecracker"
+    )
+    mock_builder_cls.assert_not_called()
+    assert vm_config.disk_size_mib == 12288
+    assert vm_config.grow_filesystem is True
+
+
 @patch("smolvm.utils.ensure_ssh_key")
 @patch("smolvm.images.published.ensure_published_image")
 def test_build_computer_vm_config_rejects_disk_smaller_than_published_image(
