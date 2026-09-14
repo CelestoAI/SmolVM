@@ -26,12 +26,12 @@ test("conversation creation and human control use single-owner state transitions
   const takeover = await manager.takeover(created.id);
   assert.equal(manager.snapshot(created.id).controlOwner, "human");
   assert.deepEqual(await manager.takeover(created.id), takeover);
-  assert.throws(
-    () => manager.resume(created.id, "wrong-control-epoch"),
+  await assert.rejects(
+    manager.resume(created.id, "wrong-control-epoch"),
     (error: unknown) => (error as { status?: number }).status === 409,
   );
 
-  const resumed = manager.resume(created.id, takeover.controlEpoch);
+  const resumed = await manager.resume(created.id, takeover.controlEpoch);
   assert.equal(resumed.controlOwner, "agent");
   await manager.stop(created.id);
 });

@@ -65,7 +65,7 @@ async function route(manager: ConversationManager, staticRoot: string, request: 
   const snapshotMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)$/);
   if (method === "GET" && snapshotMatch) return sendJson(response, 200, manager.snapshot(snapshotMatch[1]));
   const messagesMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
-  if (method === "POST" && messagesMatch) return sendJson(response, 202, manager.send(messagesMatch[1], messageBody.parse(await readJson(request)).text));
+  if (method === "POST" && messagesMatch) return sendJson(response, 202, await manager.send(messagesMatch[1], messageBody.parse(await readJson(request)).text));
   const eventsMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/events$/);
   if (method === "GET" && eventsMatch) return streamEvents(manager, eventsMatch[1], request, response);
   const approvalMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/approvals\/([^/]+)$/);
@@ -76,7 +76,11 @@ async function route(manager: ConversationManager, staticRoot: string, request: 
   const takeoverMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/takeover$/);
   if (method === "POST" && takeoverMatch) return sendJson(response, 200, await manager.takeover(takeoverMatch[1]));
   const resumeMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/resume$/);
-  if (method === "POST" && resumeMatch) return sendJson(response, 200, manager.resume(resumeMatch[1], resumeBody.parse(await readJson(request)).controlEpoch));
+  if (method === "POST" && resumeMatch) return sendJson(response, 200, await manager.resume(resumeMatch[1], resumeBody.parse(await readJson(request)).controlEpoch));
+  const continueMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/continue$/);
+  if (method === "POST" && continueMatch) return sendJson(response, 202, await manager.continueInterrupted(continueMatch[1]));
+  const startOverMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/start-over$/);
+  if (method === "POST" && startOverMatch) return sendJson(response, 201, await manager.startOver(startOverMatch[1]));
   const stopMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/stop$/);
   if (method === "POST" && stopMatch) {
     manager.snapshot(stopMatch[1]);
@@ -149,7 +153,7 @@ async function main(): Promise<void> {
   try { process.loadEnvFile(".env.local"); } catch { /* optional */ }
   const host = process.env.OPEN_MUSE_HOST ?? "127.0.0.1"; const port = Number(process.env.OPEN_MUSE_PORT ?? 4318);
   if (host !== "127.0.0.1") throw new Error("OpenMuse only listens locally. Set OPEN_MUSE_HOST=127.0.0.1.");
-  const manager = new ConversationManager(
+  const manager = await ConversationManager.open(
     process.env.OPENAI_API_KEY ?? "",
     process.env.OPENAI_MODEL ?? "gpt-5-mini",
     process.env.OPEN_MUSE_FIXTURE_STORE === "1",
@@ -159,6 +163,11 @@ async function main(): Promise<void> {
   process.once("SIGINT", () => void shutdown()); process.once("SIGTERM", () => void shutdown());
   server.listen(port, host, () => console.log(`OpenMuse is ready at http://${host}:${port}`));
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) void main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  void main().catch((error) => {
+    console.error(error instanceof Error ? error.message : "OpenMuse could not start.");
+    process.exitCode = 1;
+  });
+}
 
 export const _test = { assertLoopbackRequest };

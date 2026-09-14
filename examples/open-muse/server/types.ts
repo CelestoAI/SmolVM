@@ -4,7 +4,7 @@ import type { BrowserSessionClient, SmolVMClient } from "@celestoai/smolvm";
 import type { StorefrontController } from "./storefront.js";
 
 export type ControlOwner = "agent" | "pause_requested" | "human";
-export type RunState = "idle" | "model_turn" | "tool_action" | "waiting_for_approval" | "stopping" | "stopped" | "failed";
+export type RunState = "idle" | "model_turn" | "tool_action" | "waiting_for_approval" | "interrupted" | "stopping" | "stopped" | "failed";
 export type SessionLifecycle = "absent" | "starting" | "ready" | "stopping" | "deleted" | "error";
 
 export interface Message { id: string; role: "user" | "assistant"; text: string; createdAt: string }

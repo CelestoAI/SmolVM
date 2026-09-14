@@ -31,5 +31,7 @@ export const sendMessage = (id: string, text: string) => request(`/api/conversat
 export const stopConversation = (id: string) => request(`/api/conversations/${id}/stop`, "POST", {});
 export const takeOver = (id: string) => request<{ controlEpoch: string }>(`/api/conversations/${id}/takeover`, "POST", {});
 export const resume = (id: string, controlEpoch: string) => request<Conversation>(`/api/conversations/${id}/resume`, "POST", { controlEpoch });
+export const continueConversation = (id: string) => request<Conversation>(`/api/conversations/${id}/continue`, "POST", {});
+export const startOver = (id: string) => request<Conversation>(`/api/conversations/${id}/start-over`, "POST", {});
 export const resolveApproval = (id: string, approval: Approval, approved: boolean) => request<Conversation>(`/api/conversations/${id}/approvals/${approval.approvalId}`, "POST", { actionDigest: approval.actionDigest, approved });
 export const viewerToken = (id: string) => request<{ viewerPath: string }>(`/api/conversations/${id}/viewer-token`, "POST", {});
