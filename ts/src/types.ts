@@ -110,12 +110,16 @@ export interface SandboxFiles {
   download(sandboxPath: string, localPath: string): Promise<void>;
 }
 
-/** The mockable command, file, status, and deletion contract for one sandbox. */
-export interface SandboxClient {
-  readonly id: string;
-  readonly status: SandboxStatus;
+/** Run commands and exchange files with one disposable computer. */
+export interface ComputerClient {
   readonly files: SandboxFiles;
   exec(command: string | readonly string[], options?: ExecOptions): Promise<ExecResult>;
+}
+
+/** The mockable command, file, status, and deletion contract for one sandbox. */
+export interface SandboxClient extends ComputerClient {
+  readonly id: string;
+  readonly status: SandboxStatus;
   delete(): Promise<void>;
 }
 
@@ -125,15 +129,14 @@ export interface SandboxCollection {
 }
 
 /** Control a ready browser computer through private automation and viewing addresses. An endpoint is a local address used to connect to that computer. */
-export interface BrowserSessionClient {
+export interface BrowserSessionClient extends ComputerClient {
   readonly sessionId: string;
   readonly sandboxId: string;
   readonly status: BrowserSessionStatus;
   readonly cdpUrl: string;
   readonly viewerUrl?: string;
+  readonly displayUrl?: string;
   readonly profileId?: string;
-  /** Run a command as the unprivileged agent user inside this browser VM. */
-  exec(command: string | readonly string[], options?: ExecOptions): Promise<ExecResult>;
   delete(): Promise<void>;
 }
 

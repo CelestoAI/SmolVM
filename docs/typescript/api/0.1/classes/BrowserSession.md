@@ -24,6 +24,26 @@ Run commands in an isolated browser computer owned by one SmolVM client. A brows
 
 ***
 
+### displayUrl?
+
+> `readonly` `optional` **displayUrl?**: `string`
+
+#### Implementation of
+
+[`BrowserSessionClient`](../interfaces/BrowserSessionClient.md).[`displayUrl`](../interfaces/BrowserSessionClient.md#displayurl)
+
+***
+
+### files
+
+> `readonly` **files**: [`SandboxFiles`](../interfaces/SandboxFiles.md)
+
+#### Implementation of
+
+[`BrowserSessionClient`](../interfaces/BrowserSessionClient.md).[`files`](../interfaces/BrowserSessionClient.md#files)
+
+***
+
 ### profileId?
 
 > `readonly` `optional` **profileId?**: `string`
@@ -97,8 +117,6 @@ Run commands in an isolated browser computer owned by one SmolVM client. A brows
 ### exec()
 
 > **exec**(`command`, `options?`): `Promise`\<[`ExecResult`](../interfaces/ExecResult.md)\>
-
-Run a command as the unprivileged agent user inside this browser VM.
 
 #### Parameters
 

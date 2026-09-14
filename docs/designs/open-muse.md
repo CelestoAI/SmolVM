@@ -121,21 +121,24 @@ session.sandboxId;
 session.status;
 session.cdpUrl;       // host-side automation endpoint
 session.viewerUrl;    // loopback noVNC endpoint
+session.displayUrl;   // loopback VNC endpoint
+await session.exec("uname -a");
+await session.files.write("/workspace/task.txt", "hello");
 await session.delete();
 ```
 
 Freeze the preview contract before the example lands:
 
 - `SmolVM.browsers.create()` creates and starts a session owned by that SDK client. Its promise resolves only at `ready`, after both CDP and viewer readiness probes succeed and the returned endpoints are usable. Startup timeout rejects with a typed creation error only after bounded cleanup; callers never receive a half-ready handle.
-- `BrowserSessionClient` exposes `sessionId`, `sandboxId`, `status`, `cdpUrl`, `viewerUrl`, and idempotent `delete()`. Status is `created | starting | ready | stopping | deleted | error`.
+- `BrowserSessionClient` exposes `sessionId`, `sandboxId`, `status`, `cdpUrl`, `viewerUrl`, `displayUrl`, `exec()`, `files`, and idempotent `delete()`. Status is `created | starting | ready | stopping | deleted | error`.
 - The SDK does not depend on Playwright. The example installs Playwright and calls `chromium.connectOverCDP(session.cdpUrl)` on the host.
 - `SmolVM.close()` invokes idempotent `delete()` for every owned browser session as well as ordinary sandboxes. Milestone 1 removes all session data.
 - Lifecycle events add `browser.starting`, `browser.ready`, `browser.stopping`, and `browser.deleted`, with session and sandbox IDs. Endpoint URLs do not appear in generic logs or error telemetry.
-- Runtime negotiation requires `browser.create`, `browser.delete`, `browser.endpoints`, and `browser.events`. An older runtime fails with `protocol_incompatible` and the exact recovery command `curl -sSL https://celesto.ai/install.sh | bash`.
+- Runtime negotiation requires `browser.create`, `browser.delete`, `browser.endpoints`, `browser.exec`, `browser.files`, and `browser.events`. An older runtime fails with `protocol_incompatible` and the exact recovery command `curl -sSL https://celesto.ai/install.sh | bash`.
 - Creation failures use stable codes `browser_create_failed`, `browser_image_unavailable`, `browser_endpoint_unavailable`, and `profile_in_use`; deletion failures use `cleanup_failed`. Endpoint access after deletion uses `browser_deleted`.
 - `get()` and process-independent attach are not in the preview SDK. The creating client owns the in-memory handle; `delete()` and `close()` are the only stop paths.
 
-The private Python bridge adds session-scoped create and delete routes backed by the existing `BrowserSessionConfig` and `_BrowserSandbox`. It maintains a browser-session ownership registry separate from CLI state and cleans every owned handle on pipe close. Exec/files are deliberately absent from milestone 1. For orphan reconciliation it atomically writes a private lease record containing session ID, hashed owner capability, bridge PID and process-start identity, host boot ID, heartbeat/expiry, and cleanup state. Startup takes an exclusive reconciliation lock, removes records from a prior boot, and deletes expired sessions whose recorded process identity no longer exists.
+The private Python bridge adds session-scoped create, delete, command, and file routes backed by the existing `BrowserSessionConfig` and `_BrowserSandbox`. It maintains a browser-session ownership registry separate from CLI state and cleans every owned handle on pipe close. Commands run as the unprivileged `agent` user, and file transfer is available only to the trusted host SDK. OpenMuse uses the command route only to launch its approval-gated browser runner; it does not expose raw shell or file tools to Pi. For orphan reconciliation the bridge atomically writes a private lease record containing session ID, hashed owner capability, bridge PID and process-start identity, host boot ID, heartbeat/expiry, and cleanup state. Startup takes an exclusive reconciliation lock, removes records from a prior boot, and deletes expired sessions whose recorded process identity no longer exists.
 
 The current Python implementation persists an entire root disk under a stable ID. Do not use that disk for an authenticated milestone. Milestone 2 first introduces a dedicated profile artifact with an explicit format/image version, current-user-only host permissions, exclusive locking by `profileId`, atomic save, and user-confirmed reset. The UI says **Browser profile saved; VM stopped** only after both operations are confirmed. A version mismatch returns a short reset or migration recovery action rather than silently creating an empty profile.
 

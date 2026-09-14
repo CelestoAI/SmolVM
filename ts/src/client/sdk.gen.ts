@@ -2,7 +2,7 @@
 
 import { client } from './client.gen.js';
 import type { Client, ClientMeta, Options as Options2, RequestResult, ServerSentEventsResult, TDataShape } from './client/index.js';
-import type { CancelSandboxOperationSandboxesSandboxIdCancelPostData, CancelSandboxOperationSandboxesSandboxIdCancelPostErrors, CancelSandboxOperationSandboxesSandboxIdCancelPostResponses, CapabilitiesSdkV1CapabilitiesGetData, CapabilitiesSdkV1CapabilitiesGetResponses, CreateBrowserSessionData, CreateBrowserSessionErrors, CreateBrowserSessionResponses, CreateSandboxData, CreateSandboxErrors, CreateSandboxResponses, DeleteBrowserSessionData, DeleteBrowserSessionErrors, DeleteBrowserSessionResponses, DeleteSandboxData, DeleteSandboxErrors, DeleteSandboxResponses, DiagnosticsSdkV1DiagnosticsGetData, DiagnosticsSdkV1DiagnosticsGetResponses, EventsSdkV1EventsGetData, EventsSdkV1EventsGetResponses, ExecBrowserCommandData, ExecBrowserCommandErrors, ExecBrowserCommandResponses, ExecCommandData, ExecCommandErrors, ExecCommandResponses, GetSandboxData, GetSandboxDesktopData, GetSandboxDesktopErrors, GetSandboxDesktopResponses, GetSandboxErrors, GetSandboxResponses, ListSandboxesData, ListSandboxesResponses, ReadFileSandboxesSandboxIdFilesGetData, ReadFileSandboxesSandboxIdFilesGetErrors, ReadFileSandboxesSandboxIdFilesGetResponses, WriteFileSandboxesSandboxIdFilesPutData, WriteFileSandboxesSandboxIdFilesPutErrors, WriteFileSandboxesSandboxIdFilesPutResponses } from './types.gen.js';
+import type { CancelSandboxOperationSandboxesSandboxIdCancelPostData, CancelSandboxOperationSandboxesSandboxIdCancelPostErrors, CancelSandboxOperationSandboxesSandboxIdCancelPostResponses, CapabilitiesSdkV1CapabilitiesGetData, CapabilitiesSdkV1CapabilitiesGetResponses, CreateBrowserSessionData, CreateBrowserSessionErrors, CreateBrowserSessionResponses, CreateSandboxData, CreateSandboxErrors, CreateSandboxResponses, DeleteBrowserSessionData, DeleteBrowserSessionErrors, DeleteBrowserSessionResponses, DeleteSandboxData, DeleteSandboxErrors, DeleteSandboxResponses, DiagnosticsSdkV1DiagnosticsGetData, DiagnosticsSdkV1DiagnosticsGetResponses, EventsSdkV1EventsGetData, EventsSdkV1EventsGetResponses, ExecBrowserCommandData, ExecBrowserCommandErrors, ExecBrowserCommandResponses, ExecCommandData, ExecCommandErrors, ExecCommandResponses, GetSandboxData, GetSandboxDesktopData, GetSandboxDesktopErrors, GetSandboxDesktopResponses, GetSandboxErrors, GetSandboxResponses, ListSandboxesData, ListSandboxesResponses, ReadBrowserFileData, ReadBrowserFileErrors, ReadBrowserFileResponses, ReadFileSandboxesSandboxIdFilesGetData, ReadFileSandboxesSandboxIdFilesGetErrors, ReadFileSandboxesSandboxIdFilesGetResponses, WriteBrowserFileData, WriteBrowserFileErrors, WriteBrowserFileResponses, WriteFileSandboxesSandboxIdFilesPutData, WriteFileSandboxesSandboxIdFilesPutErrors, WriteFileSandboxesSandboxIdFilesPutResponses } from './types.gen.js';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -58,6 +58,24 @@ export const execBrowserCommand = <ThrowOnError extends boolean = false>(options
     ...options,
     headers: {
         'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Read Browser File
+ */
+export const readBrowserFile = <ThrowOnError extends boolean = false>(options: Options<ReadBrowserFileData, ThrowOnError>): RequestResult<ReadBrowserFileResponses, ReadBrowserFileErrors, ThrowOnError> => (options.client ?? client).get<ReadBrowserFileResponses, ReadBrowserFileErrors, ThrowOnError>({ url: '/browser-sessions/{session_id}/files', ...options });
+
+/**
+ * Write Browser File
+ */
+export const writeBrowserFile = <ThrowOnError extends boolean = false>(options: Options<WriteBrowserFileData, ThrowOnError>): RequestResult<WriteBrowserFileResponses, WriteBrowserFileErrors, ThrowOnError> => (options.client ?? client).put<WriteBrowserFileResponses, WriteBrowserFileErrors, ThrowOnError>({
+    bodySerializer: null,
+    url: '/browser-sessions/{session_id}/files',
+    ...options,
+    headers: {
+        'Content-Type': 'application/octet-stream',
         ...options.headers
     }
 });

@@ -1,8 +1,5 @@
-import { createReadStream } from "node:fs";
-import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
-import { randomUUID } from "node:crypto";
 import { SmolVMError } from "./errors.js";
+import { RemoteFiles } from "./remote-files.js";
 import type { ExecResponse } from "./client/types.gen.js";
 import type {
   ExecOptions,
@@ -14,58 +11,9 @@ import type {
   SmolVMTransport,
 } from "./types.js";
 
-function sandboxPath(path: string): string {
-  if (!path.startsWith("/")) {
-    throw new SmolVMError("invalid_path", "Sandbox paths must be absolute and start with '/'.", {
-      operation: "files.path",
-      actual: { path },
-    });
-  }
-  return path;
-}
-
 function quoteArg(value: string): string {
   if (value.length === 0) return "''";
   return `'${value.replaceAll("'", `'"'"'`)}'`;
-}
-
-class Files implements SandboxFiles {
-  constructor(private readonly sandbox: Sandbox) {}
-
-  async read(path: string): Promise<string> {
-    const bytes = await this.sandbox.readBytes(sandboxPath(path));
-    return new TextDecoder().decode(bytes);
-  }
-
-  async write(path: string, content: string | Uint8Array): Promise<void> {
-    const bytes = typeof content === "string" ? new TextEncoder().encode(content) : content;
-    await this.sandbox.writeBytes(sandboxPath(path), bytes);
-  }
-
-  async upload(localPath: string, targetPath: string): Promise<void> {
-    const requestStream = this.sandbox.streamUpload;
-    if (!requestStream) {
-      await this.write(targetPath, await readFile(localPath));
-      return;
-    }
-    const metadata = await stat(localPath);
-    await requestStream(sandboxPath(targetPath), createReadStream(localPath), metadata.size);
-  }
-
-  async download(sourcePath: string, localPath: string): Promise<void> {
-    const bytes = await this.sandbox.readBytes(sandboxPath(sourcePath));
-    const parent = dirname(localPath);
-    await mkdir(parent, { recursive: true });
-    const temporary = join(parent, `.${basename(localPath)}.smolvm-${randomUUID()}.tmp`);
-    try {
-      await writeFile(temporary, bytes);
-      await rename(temporary, localPath);
-    } finally {
-      await unlink(temporary).catch((error: NodeJS.ErrnoException) => {
-        if (error.code !== "ENOENT") throw error;
-      });
-    }
-  }
 }
 
 /** One disposable local computer with commands, files, status, and explicit deletion. */
@@ -86,7 +34,12 @@ export class Sandbox implements SandboxClient {
   ) {
     this.id = id;
     this.currentStatus = status;
-    this.files = new Files(this);
+    this.files = new RemoteFiles(
+      transport,
+      `/sandboxes/${encodeURIComponent(id)}`,
+      `Sandbox '${id}' file`,
+      () => this.assertFilesAvailable(),
+    );
   }
 
   /** @internal */
@@ -128,7 +81,7 @@ export class Sandbox implements SandboxClient {
 
   async exec(command: string | readonly string[], options: ExecOptions = {}): Promise<ExecResult> {
     if (this.currentStatus === "deleted") {
-      throw new SmolVMError("transport_failed", `Sandbox '${this.id}' has been deleted.`, {
+      throw new SmolVMError("transport_failed", `Sandbox '${this.id}' has been deleted; call smolvm.sandboxes.create() to create a replacement.`, {
         operation: "sandbox.exec",
         sandboxId: this.id,
       });
@@ -233,30 +186,12 @@ export class Sandbox implements SandboxClient {
     return this.deletePromise;
   }
 
-  /** @internal */
-  async readBytes(path: string): Promise<Uint8Array> {
-    return this.transport.requestBytes(
-      `/sandboxes/${encodeURIComponent(this.id)}/files?path=${encodeURIComponent(path)}`,
-    );
-  }
-
-  /** @internal */
-  async writeBytes(path: string, content: Uint8Array): Promise<void> {
-    const body = new ArrayBuffer(content.byteLength);
-    new Uint8Array(body).set(content);
-    await this.transport.request<void>(
-      `/sandboxes/${encodeURIComponent(this.id)}/files?path=${encodeURIComponent(path)}`,
-      { method: "PUT", headers: { "content-type": "application/octet-stream" }, body },
-    );
-  }
-
-  /** @internal */
-  get streamUpload(): ((path: string, content: AsyncIterable<Uint8Array>, size: number) => Promise<void>) | undefined {
-    if (!this.transport.requestStream) return undefined;
-    return (path, content, size) => this.transport.requestStream!(
-      `/sandboxes/${encodeURIComponent(this.id)}/files?path=${encodeURIComponent(path)}`,
-      content,
-      size,
-    );
+  private assertFilesAvailable(): void {
+    if (this.currentStatus === "deleted") {
+      throw new SmolVMError("transport_failed", `Sandbox '${this.id}' has been deleted; call smolvm.sandboxes.create() to create a replacement.`, {
+        operation: "files.access",
+        sandboxId: this.id,
+      });
+    }
   }
 }

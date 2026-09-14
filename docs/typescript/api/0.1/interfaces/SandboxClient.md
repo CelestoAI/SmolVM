@@ -8,11 +8,19 @@
 
 The mockable command, file, status, and deletion contract for one sandbox.
 
+## Extends
+
+- [`ComputerClient`](ComputerClient.md)
+
 ## Properties
 
 ### files
 
 > `readonly` **files**: [`SandboxFiles`](SandboxFiles.md)
+
+#### Inherited from
+
+[`ComputerClient`](ComputerClient.md).[`files`](ComputerClient.md#files)
 
 ***
 
@@ -55,3 +63,7 @@ The mockable command, file, status, and deletion contract for one sandbox.
 #### Returns
 
 `Promise`\<[`ExecResult`](ExecResult.md)\>
+
+#### Inherited from
+
+[`ComputerClient`](ComputerClient.md).[`exec`](ComputerClient.md#exec)

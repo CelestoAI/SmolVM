@@ -28,6 +28,10 @@ export type BrowserSessionResponse = {
      */
     viewer_url?: string | null;
     /**
+     * Display Url
+     */
+    display_url?: string | null;
+    /**
      * Profile Id
      */
     profile_id?: string | null;
@@ -539,6 +543,84 @@ export type ExecBrowserCommandResponses = {
 };
 
 export type ExecBrowserCommandResponse = ExecBrowserCommandResponses[keyof ExecBrowserCommandResponses];
+
+export type ReadBrowserFileData = {
+    body?: never;
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+    };
+    query: {
+        /**
+         * Path
+         */
+        path: string;
+    };
+    url: '/browser-sessions/{session_id}/files';
+};
+
+export type ReadBrowserFileErrors = {
+    /**
+     * Not Found
+     */
+    404: ErrorResponse;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ReadBrowserFileError = ReadBrowserFileErrors[keyof ReadBrowserFileErrors];
+
+export type ReadBrowserFileResponses = {
+    /**
+     * Successful Response
+     */
+    200: Blob | File;
+};
+
+export type ReadBrowserFileResponse = ReadBrowserFileResponses[keyof ReadBrowserFileResponses];
+
+export type WriteBrowserFileData = {
+    body: Blob | File;
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+    };
+    query: {
+        /**
+         * Path
+         */
+        path: string;
+    };
+    url: '/browser-sessions/{session_id}/files';
+};
+
+export type WriteBrowserFileErrors = {
+    /**
+     * Not Found
+     */
+    404: ErrorResponse;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WriteBrowserFileError = WriteBrowserFileErrors[keyof WriteBrowserFileErrors];
+
+export type WriteBrowserFileResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type WriteBrowserFileResponse = WriteBrowserFileResponses[keyof WriteBrowserFileResponses];
 
 export type ListSandboxesData = {
     body?: never;

@@ -67,7 +67,13 @@ class CommChannel(Protocol):
         """Upload a local file to *remote_path* in the guest."""
         ...
 
-    def get_file(self, remote_path: str, local_path: str | Path) -> Path:
+    def get_file(
+        self,
+        remote_path: str,
+        local_path: str | Path,
+        *,
+        max_bytes: int | None = None,
+    ) -> Path:
         """Download *remote_path* from the guest to *local_path*."""
         ...
 

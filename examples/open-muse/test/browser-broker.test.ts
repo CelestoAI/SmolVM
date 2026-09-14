@@ -22,7 +22,7 @@ function harness() {
     observationId: "",
     lastActivityAt: Date.now(),
     receipts: new Map(),
-    browserSession: {
+    computer: {
       sessionId: "browser-test",
       sandboxId: "vm-test",
       status: "ready",
@@ -104,7 +104,7 @@ test("navigation programs also require approval", async () => {
 test("browser programs return the current page when generated automation stops early", async () => {
   const { broker, context, programs, events } = harness();
   let executions = 0;
-  context.browserSession!.exec = async (command: string | readonly string[]) => {
+  context.computer!.exec = async (command: string | readonly string[]) => {
     const encoded = Array.isArray(command) ? command[1] : "";
     programs.push(Buffer.from(encoded, "base64url").toString("utf8"));
     executions += 1;
@@ -183,7 +183,7 @@ test("browser programs reject empty, oversized, failed, malformed, and empty run
     /1 to 18,000 bytes/,
   );
 
-  context.browserSession!.exec = async () => ({
+  context.computer!.exec = async () => ({
     ok: false, exitCode: 1, stdout: "", stderr: "page crashed", durationMs: 1,
   });
   await broker.runProgram("return true;", false, "Failing runner");
@@ -197,7 +197,7 @@ test("browser programs reject empty, oversized, failed, malformed, and empty run
         && (error as { cause?: Error }).cause?.message === "page crashed",
     );
 
-    context.browserSession!.exec = async () => ({
+    context.computer!.exec = async () => ({
       ok: true, exitCode: 0, stdout: "unexpected output", stderr: "", durationMs: 1,
     });
     await broker.runProgram("return true;", false, "Malformed runner");
@@ -207,7 +207,7 @@ test("browser programs reject empty, oversized, failed, malformed, and empty run
         && (error as { cause?: Error }).cause?.message === "The browser runner returned an invalid result.",
     );
 
-    context.browserSession!.exec = async () => ({
+    context.computer!.exec = async () => ({
       ok: true, exitCode: 0, stdout: "SMOLVM_BROWSER_RESULT={not-json}\n", stderr: "", durationMs: 1,
     });
     await broker.runProgram("return true;", false, "Invalid JSON runner result");
@@ -217,7 +217,7 @@ test("browser programs reject empty, oversized, failed, malformed, and empty run
         && (error as { cause?: Error }).cause instanceof SyntaxError,
     );
 
-    context.browserSession!.exec = async () => ({
+    context.computer!.exec = async () => ({
       ok: true, exitCode: 0, stdout: 'SMOLVM_BROWSER_RESULT={"ok":false}\n', stderr: "", durationMs: 1,
     });
     await broker.runProgram("return true;", false, "Unsuccessful runner result");
@@ -228,7 +228,7 @@ test("browser programs reject empty, oversized, failed, malformed, and empty run
     );
 
     let fallbackExecutions = 0;
-    context.browserSession!.exec = async () => {
+    context.computer!.exec = async () => {
       fallbackExecutions += 1;
       return fallbackExecutions === 1
         ? { ok: false, exitCode: 1, stdout: "", stderr: "locator timed out", durationMs: 1 }
@@ -245,7 +245,7 @@ test("browser programs reject empty, oversized, failed, malformed, and empty run
         && (error as { cause?: Error }).cause?.message === "locator timed out",
     );
 
-    context.browserSession!.exec = async () => ({
+    context.computer!.exec = async () => ({
       ok: true, exitCode: 0,
       stdout: 'SMOLVM_BROWSER_RESULT={"ok":true,"value":{"programResult":"undefined","page":{"title":"","url":"about:blank","visibleText":""}}}\n',
       stderr: "", durationMs: 1,

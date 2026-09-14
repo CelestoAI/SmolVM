@@ -61,15 +61,41 @@ class FakeBrowserSession:
         self.status = BrowserSessionState.READY
         self.cdp_url = "http://127.0.0.1:9222"
         self.viewer_url = "http://127.0.0.1:6080/vnc.html?autoconnect=1"
+        self.display_url = "vnc://127.0.0.1:5900"
         self.info = SimpleNamespace(profile_id=profile_id)
-        self.vm = SimpleNamespace(run=self._run)
+        self.vm = SimpleNamespace(
+            run=self._run,
+            upload_file=self._upload_file,
+            download_file=self._download_file,
+        )
 
     @staticmethod
     def _run(command: str, timeout: int, shell: str) -> CommandResult:
         FakeSmolVM.last_run_args = (command, timeout, shell)
         if FakeSmolVM.run_error is not None:
             raise FakeSmolVM.run_error
+        if command.startswith("stat -c %s -- "):
+            guest_path = shlex.split(command)[-1]
+            size = FakeSmolVM.file_size_override
+            if size is None:
+                size = len(FakeSmolVM.uploaded_files[guest_path])
+            return CommandResult(exit_code=0, stdout=f"{size}\n", stderr="")
         return FakeSmolVM.run_result
+
+    @staticmethod
+    def _upload_file(local_path: object, guest_path: str) -> None:
+        FakeSmolVM.uploaded_files[guest_path] = Path(local_path).read_bytes()  # type: ignore[arg-type]
+
+    @staticmethod
+    def _download_file(
+        guest_path: str,
+        local_path: object,
+        *,
+        max_bytes: int | None = None,
+    ) -> None:
+        FakeSmolVM.downloaded_files.append(guest_path)
+        FakeSmolVM.last_download_max_bytes = max_bytes
+        Path(local_path).write_bytes(FakeSmolVM.uploaded_files[guest_path])  # type: ignore[arg-type]
 
     def delete(self) -> None:
         FakeBrowserSession.delete_calls += 1
@@ -92,6 +118,7 @@ class FakeSmolVM:
     desktop_endpoint: DesktopEndpoint | None = None
     uploaded_files: dict[str, bytes] = {}
     downloaded_files: list[str] = []
+    last_download_max_bytes: int | None = None
     file_size_override: int | None = None
     close_calls: int = 0
     browser_endpoint_available = True
@@ -110,6 +137,9 @@ class FakeSmolVM:
             str(kwargs.get("session_id") or "browser-test"),
             kwargs.get("profile_id") if isinstance(kwargs.get("profile_id"), str) else None,
         )
+        if kwargs.get("headless") is True:
+            browser.viewer_url = None
+            browser.display_url = None
         if not cls.browser_endpoint_available:
             browser.cdp_url = None
         return browser
@@ -166,8 +196,15 @@ class FakeSmolVM:
     def upload_file(self, local_path: object, guest_path: str) -> None:
         FakeSmolVM.uploaded_files[guest_path] = Path(local_path).read_bytes()  # type: ignore[arg-type]
 
-    def download_file(self, guest_path: str, local_path: object) -> None:
+    def download_file(
+        self,
+        guest_path: str,
+        local_path: object,
+        *,
+        max_bytes: int | None = None,
+    ) -> None:
         FakeSmolVM.downloaded_files.append(guest_path)
+        FakeSmolVM.last_download_max_bytes = max_bytes
         Path(local_path).write_bytes(FakeSmolVM.uploaded_files[guest_path])  # type: ignore[arg-type]
 
 
@@ -195,6 +232,7 @@ def app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     FakeSmolVM.desktop_endpoint = None
     FakeSmolVM.uploaded_files = {}
     FakeSmolVM.downloaded_files = []
+    FakeSmolVM.last_download_max_bytes = None
     FakeSmolVM.file_size_override = None
     FakeSmolVM.close_calls = 0
     FakeSmolVM.browser_endpoint_available = True
@@ -235,6 +273,7 @@ def test_create_and_delete_live_browser_session(app: FastAPI) -> None:
     assert result.sandbox_id == "vm-browser-demo"
     assert result.status is BrowserSessionState.READY
     assert result.viewer_url is not None
+    assert result.display_url == "vnc://127.0.0.1:5900"
     assert FakeSmolVM.last_kwargs is not None
     assert FakeSmolVM.last_kwargs["headless"] is False
     assert FakeSmolVM.last_kwargs["internet_settings"] == {"mode": "off"}
@@ -244,6 +283,16 @@ def test_create_and_delete_live_browser_session(app: FastAPI) -> None:
     assert FakeBrowserSession.delete_calls == 1
     assert FakeBrowserSession.close_calls == 1
     assert delete("browser-demo").status_code == 204
+
+
+def test_headless_browser_session_omits_display_endpoints(app: FastAPI) -> None:
+    create = _handler(app, "/browser-sessions", "POST")
+
+    result = create(CreateBrowserSessionRequest(session_id="browser-headless"))
+
+    assert result.cdp_url == "http://127.0.0.1:9222"
+    assert result.viewer_url is None
+    assert result.display_url is None
 
 
 def test_failed_browser_response_closes_and_does_not_register_session(app: FastAPI) -> None:
@@ -331,6 +380,51 @@ def test_browser_command_maps_transport_failure_to_409(app: FastAPI) -> None:
     assert exc_info.value.status_code == 409
     assert exc_info.value.headers == {"X-SmolVM-Error-Code": "transport_failed"}
     assert "browser-demo" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_browser_file_endpoints_use_the_browser_vm(app: FastAPI) -> None:
+    create = _handler(app, "/browser-sessions", "POST")
+    write = _handler(app, "/browser-sessions/{session_id}/files", "PUT")
+    read = _handler(app, "/browser-sessions/{session_id}/files", "GET")
+    create(CreateBrowserSessionRequest(session_id="browser-demo"))
+    chunks = iter(
+        [
+            {"type": "http.request", "body": b"hel", "more_body": True},
+            {"type": "http.request", "body": b"lo", "more_body": False},
+        ]
+    )
+
+    async def receive() -> dict[str, object]:
+        return next(chunks)
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "PUT",
+            "path": "/browser-sessions/browser-demo/files",
+            "headers": [(b"content-length", b"5")],
+        },
+        receive,
+    )
+
+    response = await write("browser-demo", "/workspace/input.txt", request)
+    downloaded = await read("browser-demo", "/workspace/input.txt")
+
+    assert response.status_code == 204
+    assert downloaded.body == b"hello"
+    assert FakeSmolVM.last_download_max_bytes == 16 * 1024 * 1024
+
+
+@pytest.mark.asyncio
+async def test_browser_file_endpoint_rejects_missing_sessions(app: FastAPI) -> None:
+    read = _handler(app, "/browser-sessions/{session_id}/files", "GET")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await read("missing", "/workspace/input.txt")
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.headers == {"X-SmolVM-Error-Code": "browser_deleted"}
 
 
 @pytest.mark.asyncio
@@ -702,7 +796,21 @@ def test_openapi_exposes_clean_operation_ids(app: FastAPI) -> None:
         "listSandboxes",
         "deleteSandbox",
         "execCommand",
+        "writeBrowserFile",
+        "readBrowserFile",
     } <= operation_ids
+
+    browser_files = spec["paths"]["/browser-sessions/{session_id}/files"]
+    assert browser_files["put"]["requestBody"] == {
+        "required": True,
+        "content": {"application/octet-stream": {"schema": {"type": "string", "format": "binary"}}},
+    }
+    assert browser_files["put"]["responses"]["404"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ErrorResponse"
+    }
+    assert browser_files["get"]["responses"]["404"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ErrorResponse"
+    }
 
 
 def test_package_exports_create_app() -> None:

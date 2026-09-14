@@ -30,7 +30,7 @@ import time
 import warnings
 from contextlib import suppress
 from pathlib import Path
-from typing import Literal
+from typing import BinaryIO, Literal
 
 import paramiko
 
@@ -38,6 +38,23 @@ from smolvm.exceptions import OperationTimeoutError, SmolVMError
 from smolvm.types import CommandResult
 
 logger = logging.getLogger(__name__)
+
+
+class _LimitedWriter:
+    """Reject a download chunk before it would exceed the caller's byte limit."""
+
+    def __init__(self, handle: BinaryIO, max_bytes: int, remote_path: str) -> None:
+        self._handle = handle
+        self._max_bytes = max_bytes
+        self._remote_path = remote_path
+        self._received = 0
+
+    def write(self, data: bytes) -> int:
+        self._received += len(data)
+        if self._received > self._max_bytes:
+            raise SmolVMError(f"Guest file '{self._remote_path}' exceeded {self._max_bytes} bytes.")
+        return self._handle.write(data)
+
 
 # Silence paramiko's Transport thread logger.
 #
@@ -250,10 +267,18 @@ class SSHClient:
                 self._client.close()
             self._client = None
 
-    def get_file(self, remote_path: str, local_path: str | Path) -> Path:
+    def get_file(
+        self,
+        remote_path: str,
+        local_path: str | Path,
+        *,
+        max_bytes: int | None = None,
+    ) -> Path:
         """Download a file from the guest VM using SFTP."""
         if not remote_path:
             raise ValueError("remote_path cannot be empty")
+        if max_bytes is not None and max_bytes < 1:
+            raise ValueError("max_bytes must be a positive integer")
 
         destination = Path(local_path)
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -261,8 +286,22 @@ class SSHClient:
         client = self._ensure_connected()
         sftp = client.open_sftp()
         try:
-            sftp.get(remote_path, str(destination))
+            if max_bytes is None:
+                sftp.get(remote_path, str(destination))
+            else:
+                if sftp.stat(remote_path).st_size > max_bytes:
+                    raise SmolVMError(f"Guest file '{remote_path}' exceeded {max_bytes} bytes.")
+                with destination.open("wb") as handle:
+                    sftp.getfo(
+                        remote_path,
+                        _LimitedWriter(handle, max_bytes, remote_path),
+                        prefetch=False,
+                    )
+        except SmolVMError:
+            destination.unlink(missing_ok=True)
+            raise
         except Exception as e:
+            destination.unlink(missing_ok=True)
             raise SmolVMError(f"Failed to download guest file '{remote_path}': {e}") from e
         finally:
             sftp.close()

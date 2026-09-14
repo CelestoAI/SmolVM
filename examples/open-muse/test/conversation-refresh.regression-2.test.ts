@@ -43,13 +43,13 @@ test("replacing a failed conversation releases its disposable resources", async 
   const closed: string[] = [];
   context.runState = "failed";
   context.playwright = { close: async () => { closed.push("playwright"); } } as ConversationContext["playwright"];
-  context.browserSession = { delete: async () => { closed.push("browser"); } } as ConversationContext["browserSession"];
+  context.computer = { delete: async () => { closed.push("computer"); } } as ConversationContext["computer"];
   context.smolvm = { close: async () => { closed.push("smolvm"); } } as ConversationContext["smolvm"];
 
   const replacement = await manager.create();
 
   assert.notEqual(replacement.id, created.id);
-  assert.deepEqual(closed, ["playwright", "browser", "smolvm"]);
+  assert.deepEqual(closed, ["playwright", "computer", "smolvm"]);
 });
 
 test("takeover waits for an approved browser action to finish", async () => {
@@ -59,7 +59,7 @@ test("takeover waits for an approved browser action to finish", async () => {
   let finishAction!: () => void;
   const actionFinished = new Promise<void>((resolve) => { finishAction = resolve; });
   context.sessionLifecycle = "ready";
-  context.browserSession = {
+  context.computer = {
     status: "ready", sessionId: "browser-test", sandboxId: "sandbox-test", cdpUrl: "http://127.0.0.1:9222",
     exec: async () => {
       await actionFinished;
@@ -98,7 +98,7 @@ test("approved browser results resume the agent without requesting another obser
   const prompts: string[] = [];
   internals.runTurn = async (_context, text) => { prompts.push(text); };
   internals.context.sessionLifecycle = "ready";
-  internals.context.browserSession = {
+  internals.context.computer = {
     status: "ready", sessionId: "browser-test", sandboxId: "sandbox-test", cdpUrl: "http://127.0.0.1:9222",
     exec: async () => ({
       ok: true, exitCode: 0,
@@ -138,7 +138,7 @@ test("duplicate approval submissions share one browser action", async () => {
   const actionFinished = new Promise<void>((resolve) => { finishAction = resolve; });
   let executions = 0;
   internals.context.sessionLifecycle = "ready";
-  internals.context.browserSession = {
+  internals.context.computer = {
     status: "ready", sessionId: "browser-test", sandboxId: "sandbox-test", cdpUrl: "http://127.0.0.1:9222",
     exec: async () => {
       executions += 1;
@@ -167,7 +167,7 @@ test("failed approved browser actions return an actionable error and clear stale
   const created = await manager.create();
   const context = (manager as unknown as { context: ConversationContext }).context;
   context.sessionLifecycle = "ready";
-  context.browserSession = {
+  context.computer = {
     status: "ready", sessionId: "browser-test", sandboxId: "sandbox-test", cdpUrl: "http://127.0.0.1:9222",
     exec: async () => ({ ok: false, exitCode: 1, stdout: "", stderr: "locator timed out", durationMs: 30_000 }),
     delete: async () => undefined,

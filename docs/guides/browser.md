@@ -62,6 +62,8 @@ Install the browser automation client before running the example:
 npm install playwright-core
 ```
 
+Playwright connects through CDP, the Chrome DevTools Protocol used to automate Chromium.
+
 ```ts
 import { chromium } from "playwright-core";
 import { SmolVM } from "@celestoai/smolvm";
@@ -73,19 +75,27 @@ const session = await smolvm.browsers.create({
 });
 
 try {
+  await session.files.write("/workspace/task.txt", "visit example.com");
   const browser = await chromium.connectOverCDP(session.cdpUrl);
   const context = browser.contexts()[0];
   if (!context) throw new Error("Browser context is unavailable.");
   const page = context.pages()[0] ?? await context.newPage();
   await page.goto("https://example.com");
-  console.log(session.viewerUrl);
+  console.log({
+    sandboxId: session.sandboxId,
+    cdpUrl: session.cdpUrl,
+    viewerUrl: session.viewerUrl,
+    displayUrl: session.displayUrl,
+  });
   await browser.close();
 } finally {
   await smolvm.close();
 }
 ```
 
-The automation and viewer endpoints are loopback-only. Keep them in the trusted Node process rather than sending them to browser JavaScript or a remote client.
+The returned browser session is also the sandbox computer. Use `session.exec()` for commands and `session.files` for file transfer. In live mode, `viewerUrl` opens the complete graphical display through noVNC, a browser-based remote-display client. `displayUrl` connects a VNC client or computer-use agent directly to that remote display. The display uses Openbox, a lightweight desktop window manager, and contains Chromium rather than a full GNOME or XFCE installation.
+
+The automation, viewer, and display endpoints are loopback-only, meaning they accept connections only from the same machine. Keep them in the trusted Node process rather than sending them to browser JavaScript or a remote client.
 
 ## Implementation notes
 

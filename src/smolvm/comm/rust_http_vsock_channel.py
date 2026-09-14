@@ -823,20 +823,31 @@ class RustHttpVsockChannel:
                 f"Failed to upload file to guest '{remote_path}': {decoded.get('error')}"
             )
 
-    def get_file(self, remote_path: str, local_path: str | Path) -> Path:
+    def get_file(
+        self,
+        remote_path: str,
+        local_path: str | Path,
+        *,
+        max_bytes: int | None = None,
+    ) -> Path:
         if not remote_path:
             raise ValueError("remote_path cannot be empty")
+        if max_bytes is not None and max_bytes < 1:
+            raise ValueError("max_bytes must be a positive integer")
         destination = Path(local_path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         self._require_feature("fast file transfer", "file_raw", "files.stream")
         query = urllib.parse.urlencode({"path": remote_path})
+        stream_limit = self._limit_bytes(
+            "max_stream_size_bytes",
+            _DEFAULT_MAX_STREAM_SIZE_BYTES,
+        )
+        if max_bytes is not None:
+            stream_limit = min(stream_limit, max_bytes)
         resp, data = self._request_bytes(
             "GET",
             f"/files/content?{query}",
-            max_bytes=self._limit_bytes(
-                "max_stream_size_bytes",
-                _DEFAULT_MAX_STREAM_SIZE_BYTES,
-            ),
+            max_bytes=stream_limit,
         )
         expected_size = resp.getheader("x-smolvm-file-size")
         if expected_size is not None and int(expected_size) != len(data):

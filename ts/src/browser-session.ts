@@ -1,4 +1,5 @@
 import { SmolVMError } from "./errors.js";
+import { RemoteFiles } from "./remote-files.js";
 import type {
   BrowserSessionClient,
   BrowserSessionStatus,
@@ -6,6 +7,7 @@ import type {
   ExecResult,
   SmolVMEvent,
   SmolVMTransport,
+  SandboxFiles,
 } from "./types.js";
 import type { ExecResponse } from "./client/types.gen.js";
 
@@ -20,6 +22,7 @@ export interface BrowserSessionResponse {
   status: Exclude<BrowserSessionStatus, "deleted">;
   cdp_url: string;
   viewer_url?: string | null;
+  display_url?: string | null;
   profile_id?: string | null;
 }
 
@@ -29,7 +32,9 @@ export class BrowserSession implements BrowserSessionClient {
   readonly sandboxId: string;
   readonly cdpUrl: string;
   readonly viewerUrl?: string;
+  readonly displayUrl?: string;
   readonly profileId?: string;
+  readonly files: SandboxFiles;
   private currentStatus: BrowserSessionStatus;
   private deletePromise?: Promise<void>;
 
@@ -42,7 +47,7 @@ export class BrowserSession implements BrowserSessionClient {
     if (wire.status !== "ready" || !wire.cdp_url) {
       throw new SmolVMError(
         "browser_endpoint_unavailable",
-        `Browser session '${wire.session_id}' did not return ready automation endpoints.`,
+        `Browser session '${wire.session_id}' did not return ready automation endpoints; call smolvm.browsers.create() to create a replacement.`,
         { operation: "browser.create", sandboxId: wire.sandbox_id },
       );
     }
@@ -51,7 +56,14 @@ export class BrowserSession implements BrowserSessionClient {
     this.currentStatus = wire.status;
     this.cdpUrl = wire.cdp_url;
     this.viewerUrl = wire.viewer_url ?? undefined;
+    this.displayUrl = wire.display_url ?? undefined;
     this.profileId = wire.profile_id ?? undefined;
+    this.files = new RemoteFiles(
+      transport,
+      `/browser-sessions/${encodeURIComponent(this.sessionId)}`,
+      `Browser session '${this.sessionId}' file`,
+      () => this.assertReady("files.access"),
+    );
   }
 
   /** @internal */
@@ -69,11 +81,7 @@ export class BrowserSession implements BrowserSessionClient {
   }
 
   async exec(command: string | readonly string[], options: ExecOptions = {}): Promise<ExecResult> {
-    if (this.currentStatus !== "ready") {
-      throw new SmolVMError("browser_deleted", `Browser session '${this.sessionId}' is not ready.`, {
-        operation: "browser.exec", sandboxId: this.sandboxId,
-      });
-    }
+    this.assertReady("browser.exec");
     if (Array.isArray(command) && command.length === 0) throw new TypeError("Command argv must contain at least one item.");
     const normalized = typeof command === "string" ? command : command.map(quoteArg).join(" ");
     const timeoutMs = options.timeoutMs ?? 30_000;
@@ -115,6 +123,16 @@ export class BrowserSession implements BrowserSessionClient {
         this.markDeleted();
       }
       throw cause;
+    }
+  }
+
+  private assertReady(operation: string): void {
+    if (this.currentStatus !== "ready") {
+      throw new SmolVMError(
+        "browser_deleted",
+        `Browser session '${this.sessionId}' is not ready; call smolvm.browsers.create() to create a replacement.`,
+        { operation, sandboxId: this.sandboxId },
+      );
     }
   }
 
