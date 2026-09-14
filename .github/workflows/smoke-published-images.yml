@@ -7,8 +7,8 @@
 # Each cell tests a *real* published SmolVM image (including the Alpine
 # OpenCode image), exactly how the runtime boots them:
 #   - Downloads the published kernel + ``<rootfs>-<arch>-rootfs.ext4.zst``
-#     from the release and decompresses it (no SHA pinning — we test what
-#     CI just produced, not what's pinned in the manifest).
+#     from the release, verifies the rootfs against the bundled manifest,
+#     and decompresses it.
 #   - Boots qemu-system-<arch> with the kernel + rootfs as virtio-blk,
 #     using the production boot args: ``init=/init`` (every SmolVM image
 #     boots /init, not systemd) and ``root=/dev/vda`` (single ext4). The
