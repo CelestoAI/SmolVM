@@ -49,7 +49,7 @@ On macOS, the runtime wrapper downloads the checksum-verified ARM64 Linux guest-
 - The display and Chromium automation address are grouped separately. OpenMuse streams `computer.display` to the right pane and uses `computer.browser` for Playwright.
 - The computer also exposes commands and files. OpenMuse uses `exec()` for its approved runner today; future tools can use `files` without creating another sandbox.
 - Pi normally chooses a structured browser operation. OpenMuse builds the corresponding Playwright itself so the model controls arguments, not executable code.
-- The broker runs bounded observation and scrolling directly. Active operations create a one-time approval bound to the current page, exact operation arguments, and uniquely named target.
+- The broker runs bounded observation and scrolling directly. Active operations create a one-time approval bound to the current page, exact operation arguments, and, when applicable, a uniquely named target.
 - `browser_run` remains an approved compatibility fallback for work the structured operations cannot express.
 - The real browser display is streamed through SmolVM's noVNC viewer, a browser-based remote-display client, into the right pane.
 - The trusted Node server keeps the Chrome DevTools Protocol (CDP) automation address and raw VNC remote-display address private. It gives the client only a short-lived path to the noVNC viewer.
