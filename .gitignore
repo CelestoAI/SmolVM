@@ -224,3 +224,6 @@ play.ipynb
 notes/
 *.iso
 .gstack/
+
+# OpenMuse local conversation checkpoint
+examples/open-muse/.open-muse/

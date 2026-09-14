@@ -267,8 +267,8 @@ test("messages are rejected while the user controls the browser", async () => {
   const context = (manager as unknown as { context: ConversationContext }).context;
   context.controlOwner = "pause_requested";
 
-  assert.throws(
-    () => manager.send(created.id, "try again"),
+  await assert.rejects(
+    manager.send(created.id, "try again"),
     (error: unknown) => (error as { status?: number }).status === 409
       && (error as Error).message === "Wait for browser control to finish transferring, then send the message again.",
   );
@@ -276,8 +276,8 @@ test("messages are rejected while the user controls the browser", async () => {
   context.controlOwner = "agent";
   await manager.takeover(created.id);
 
-  assert.throws(
-    () => manager.send(created.id, "try again"),
+  await assert.rejects(
+    manager.send(created.id, "try again"),
     (error: unknown) => (error as { status?: number }).status === 409
       && (error as Error).message === "Select Return control before sending a message to OpenMuse.",
   );
