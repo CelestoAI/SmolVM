@@ -124,7 +124,7 @@ test("browser programs return the current page when generated automation stops e
         ok: true,
         value: {
           title: "Amazon.com : iPhone",
-          url: "https://www.amazon.com/s?k=iPhone",
+          url: "https://www.amazon.com/s",
           visibleText: "Results iPhone $799.00 $899.00",
         },
       })}\n`,
@@ -151,6 +151,9 @@ test("browser programs return the current page when generated automation stops e
   assert.doesNotMatch(programs[0], /visibleText/);
   assert.match(programs[1], /innerText\(\{ timeout: 5_000 \}\)/);
   assert.match(programs[1], /pages\.find/);
+  assert.match(programs[1], /parsedUrl\.origin.*parsedUrl\.pathname/);
+  assert.match(programs[1], /primary\.first\(\)/);
+  assert.doesNotMatch(programs[1], /page\.locator\('body'\)/);
   assert.match(programs[1], /account\|auth\|billing\|checkout/);
   assert.match(programs[1], /\[email redacted\]/);
   assert.deepEqual(outcome, {
@@ -161,7 +164,7 @@ test("browser programs return the current page when generated automation stops e
       programError: "Locator wait exceeded the per-operation limit.",
       page: {
         title: "Amazon.com : iPhone",
-        url: "https://www.amazon.com/s?k=iPhone",
+        url: "https://www.amazon.com/s",
         visibleText: "Results iPhone $799.00 $899.00",
       },
     },
@@ -261,6 +264,16 @@ test("browser programs reject empty, oversized, failed, malformed, and empty run
 test("messages are rejected while the user controls the browser", async () => {
   const manager = new ConversationManager("", "gpt-5-mini");
   const created = await manager.create();
+  const context = (manager as unknown as { context: ConversationContext }).context;
+  context.controlOwner = "pause_requested";
+
+  assert.throws(
+    () => manager.send(created.id, "try again"),
+    (error: unknown) => (error as { status?: number }).status === 409
+      && (error as Error).message === "Wait for browser control to finish transferring, then send the message again.",
+  );
+
+  context.controlOwner = "agent";
   await manager.takeover(created.id);
 
   assert.throws(
