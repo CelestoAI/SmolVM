@@ -164,8 +164,8 @@ def _build_browser_vm_config(
     is_computer = browser_config.mode == "computer"
     if is_computer and browser_config.disk_size_mib < _PUBLISHED_COMPUTER_DISK_SIZE_MIB:
         raise ValueError(
-            "Linux computers need at least 8192 MiB of disk; "
-            "set resources={'disk_mib': 8192} or remove the custom disk setting."
+            f"Linux computer '{session_id}' needs at least 8192 MiB of disk; run "
+            f"'smolvm computer start --name {session_id} --disk-size 8192'."
         )
     port_forwards: list[PortForwardConfig] = []
     if resolved_backend == BACKEND_QEMU:
@@ -186,6 +186,7 @@ def _build_browser_vm_config(
             on_progress("Preparing the Linux desktop image...")
 
         def report_download(_name: str, downloaded: int, total: int | None) -> None:
+            """Report image download progress in whole MiB."""
             if on_progress is None:
                 return
             downloaded_mib = downloaded // (1024 * 1024)
@@ -310,6 +311,7 @@ class _BrowserSandbox:
         *,
         on_progress: Callable[[str], None] | None = None,
     ) -> None:
+        """Create an isolated VM and save its new browser session."""
         session_id = config.session_id or _generate_browser_session_id()
         session_config = (
             config if config.session_id else config.model_copy(update={"session_id": session_id})

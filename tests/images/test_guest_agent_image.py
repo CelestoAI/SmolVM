@@ -152,10 +152,14 @@ def test_published_image_workflow_builds_and_smokes_linux_desktop() -> None:
     assert "rootfs_size_mb=8192" in build
     assert "desktop=True" in build
     assert "linux-desktop-amd64-rootfs.ext4.zst" not in build
+    assert "inputs.presets != 'linux-desktop'" not in build
+    assert "contains(format(',{0},', inputs.presets), ',codex,')" in build
     assert "smolvm-browser-session start computer" in smoke
     assert "command -v lxterminal" in smoke
     assert "command -v pcmanfm" in smoke
     assert "command -v mousepad" in smoke
+    assert 'gh release view "$TAG"' in smoke
+    assert 'if [ -n "$manifest_sha" ]' in smoke
 
 
 def test_published_image_workflow_uploads_guest_agent_binaries() -> None:

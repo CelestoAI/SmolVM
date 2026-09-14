@@ -56,7 +56,14 @@ jobs:
   # Skipped when only a custom image is requested — neither custom builder
   # consumes the layered base, so building it would waste runner time.
   base-rootfs:
-    if: ${{ inputs.presets != 'openclaw' && inputs.presets != 'linux-desktop' }}
+    if: >-
+      ${{ inputs.presets == 'all' ||
+          contains(format(',{0},', inputs.presets), ',codex,') ||
+          contains(format(',{0},', inputs.presets), ',claude-code,') ||
+          contains(format(',{0},', inputs.presets), ',hermes,') ||
+          contains(format(',{0},', inputs.presets), ',opencode,') ||
+          contains(format(',{0},', inputs.presets), ',pi,') ||
+          contains(format(',{0},', inputs.presets), ',ubuntu,') }}
     strategy:
       fail-fast: false
       matrix:

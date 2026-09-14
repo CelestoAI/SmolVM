@@ -768,6 +768,7 @@ def test_build_computer_vm_config_resolves_arm64_and_grows_published_desktop(
         *,
         on_download: Callable[[str, int, int | None], None] | None,
     ) -> SimpleNamespace:
+        """Simulate one progress update from the published image cache."""
         assert on_download is not None
         on_download("rootfs", 1024 * 1024, 2 * 1024 * 1024)
         return local_image
@@ -814,7 +815,13 @@ def test_build_computer_vm_config_rejects_disk_smaller_than_published_image(
     public_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMock user@test\n")
     mock_ensure_ssh_key.return_value = (private_key, public_key)
 
-    with pytest.raises(ValueError, match="at least 8192 MiB"):
+    with pytest.raises(
+        ValueError,
+        match=(
+            "Linux computer 'computer-small' needs at least 8192 MiB of disk; run "
+            "'smolvm computer start --name computer-small --disk-size 8192'"
+        ),
+    ):
         _build_browser_vm_config(
             session_id="computer-small",
             browser_config=BrowserSessionConfig(

@@ -142,14 +142,27 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --pattern "$asset" \
               -D smoke
-          if [ "$ROOTFS" = "linux-desktop" ]; then
-            symbol="_LINUX_DESKTOP_$(printf '%s' "$ARCH" | tr '[:lower:]' '[:upper:]')_ROOTFS_SHA"
-            expected_sha=$(awk -v symbol="$symbol" '$1 == symbol {gsub(/"/, "", $3); print $3}' src/smolvm/images/published.py)
-            actual_sha=$(sha256sum "smoke/$asset" | cut -d' ' -f1)
-            if [ -z "$expected_sha" ] || [ "$actual_sha" != "$expected_sha" ]; then
-              echo "Published checksum mismatch for $asset" >&2
-              exit 1
-            fi
+          release_digest=$(gh release view "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json assets \
+              --jq ".assets[] | select(.name == \"$asset\") | .digest")
+          release_sha=${release_digest#sha256:}
+          actual_sha=$(sha256sum "smoke/$asset" | cut -d' ' -f1)
+          if [ -z "$release_sha" ] || [ "$actual_sha" != "$release_sha" ]; then
+            echo "Published checksum mismatch for $asset" >&2
+            exit 1
+          fi
+
+          preset_symbol=$(printf '%s' "$ROOTFS" | tr '[:lower:]-' '[:upper:]_')
+          if [ "$OS" = "alpine" ]; then
+            symbol="_${preset_symbol}_${ARCH^^}_ALPINE_ROOTFS_SHA"
+          else
+            symbol="_${preset_symbol}_${ARCH^^}_ROOTFS_SHA"
+          fi
+          manifest_sha=$(awk -v symbol="$symbol" '$1 == symbol {gsub(/"/, "", $3); print $3}' src/smolvm/images/published.py)
+          if [ -n "$manifest_sha" ] && [ "$actual_sha" != "$manifest_sha" ]; then
+            echo "Manifest checksum mismatch for $asset" >&2
+            exit 1
           fi
           zstd -d "smoke/$asset" -o smoke/rootfs.raw
           rm "smoke/$asset"
