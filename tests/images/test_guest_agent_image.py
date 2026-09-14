@@ -137,9 +137,25 @@ def test_ci_build_preset_preinstalls_stable_opencode() -> None:
 def test_published_image_smoke_matrix_includes_opencode() -> None:
     workflow = (_REPO_ROOT / ".github" / "workflows" / "smoke-published-images.yml").read_text()
 
-    assert "rootfs: [openclaw, opencode, ubuntu]" in workflow
+    assert "rootfs: [openclaw, opencode, ubuntu, linux-desktop]" in workflow
     assert "os: [ubuntu, alpine]" in workflow
     assert 'suffix="-alpine"' in workflow
+
+
+def test_published_image_workflow_builds_and_smokes_linux_desktop() -> None:
+    """The computer image should be published and boot-tested like other presets."""
+    build = (_REPO_ROOT / ".github" / "workflows" / "build-published-images.yml").read_text()
+    smoke = (_REPO_ROOT / ".github" / "workflows" / "smoke-published-images.yml").read_text()
+
+    assert "linux-desktop:" in build
+    assert 'name = f"linux-desktop-{arch}"' in build
+    assert "rootfs_size_mb=8192" in build
+    assert "desktop=True" in build
+    assert "linux-desktop-amd64-rootfs.ext4.zst" not in build
+    assert "smolvm-browser-session start computer" in smoke
+    assert "command -v lxterminal" in smoke
+    assert "command -v pcmanfm" in smoke
+    assert "command -v mousepad" in smoke
 
 
 def test_published_image_workflow_uploads_guest_agent_binaries() -> None:

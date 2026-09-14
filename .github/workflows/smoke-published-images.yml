@@ -62,12 +62,14 @@ jobs:
       fail-fast: false
       matrix:
         arch: [amd64, arm64]
-        rootfs: [openclaw, opencode, ubuntu]
+        rootfs: [openclaw, opencode, ubuntu, linux-desktop]
         os: [ubuntu, alpine]
         exclude:
           - rootfs: openclaw
             os: alpine
           - rootfs: ubuntu
+            os: alpine
+          - rootfs: linux-desktop
             os: alpine
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     timeout-minutes: 20
@@ -215,6 +217,38 @@ jobs:
                    'test -x /usr/local/bin/smolvm-guest-agent && pgrep -f smolvm-guest-agent >/dev/null'; then
               echo "guest agent present and running"
               agent_ok=1
+            fi
+            if [ "$ROOTFS" = "linux-desktop" ] && [ "$agent_ok" -eq 1 ]; then
+              if ssh -p 2223 -i smoke/id_ed25519 \
+                     -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+                     -o ConnectTimeout=10 root@127.0.0.1 \
+                     'set -eu
+                      test -x /usr/local/bin/smolvm-browser-session
+                      command -v chromium >/dev/null
+                      command -v openbox >/dev/null
+                      command -v tint2 >/dev/null
+                      command -v lxterminal >/dev/null
+                      command -v pcmanfm >/dev/null
+                      command -v mousepad >/dev/null
+                      /usr/local/bin/smolvm-browser-session start computer 1280 720 9222 6080 /opt/smolvm-browser/profiles/smoke /opt/smolvm-browser/downloads/smoke 0 1 /opt/smolvm-browser/artifacts/smoke
+                      for _attempt in $(seq 1 60); do
+                        if pgrep -x Xvfb >/dev/null &&
+                           pgrep -x openbox >/dev/null &&
+                           pgrep -x tint2 >/dev/null &&
+                           pgrep -x x11vnc >/dev/null &&
+                           pgrep -f websockify >/dev/null &&
+                           pgrep -f chromium >/dev/null &&
+                           python3 -c '\''import urllib.request; urllib.request.urlopen("http://127.0.0.1:9222/json/version", timeout=2).read()'\''; then
+                          exit 0
+                        fi
+                        sleep 1
+                      done
+                      exit 1'; then
+                echo "Linux desktop applications and services are ready"
+              else
+                echo "Linux desktop applications or services did not become ready"
+                agent_ok=0
+              fi
             fi
           fi
           sudo kill "$QPID" 2>/dev/null || true
