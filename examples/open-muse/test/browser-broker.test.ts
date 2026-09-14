@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ActionBroker } from "../server/broker.js";
+import { ActionBroker, MAX_BROWSER_PROGRAM_BYTES } from "../server/broker.js";
+import { ConversationManager } from "../server/manager.js";
 import type { ConversationContext } from "../server/types.js";
 
 function harness() {
@@ -29,7 +30,11 @@ function harness() {
       async exec(command: string | readonly string[]) {
         const encoded = Array.isArray(command) ? command[1] : "";
         programs.push(Buffer.from(encoded, "base64url").toString("utf8"));
-        return { ok: true, exitCode: 0, stdout: 'SMOLVM_BROWSER_RESULT={"ok":true,"value":{"title":"Example Domain"}}\n', stderr: "", durationMs: 1 };
+        return {
+          ok: true, exitCode: 0,
+          stdout: 'SMOLVM_BROWSER_RESULT={"ok":true,"value":{"programResult":{"title":"Example Domain"},"page":{"title":"Example Domain","url":"https://example.com"}}}\n',
+          stderr: "", durationMs: 1,
+        };
       },
       async delete() {},
     },
@@ -64,8 +69,16 @@ test("active browser programs wait for one-time approval", async () => {
     true,
   );
 
-  assert.deepEqual(outcome, { resumeAgent: true, browserResult: { title: "Example Domain" } });
+  assert.deepEqual(outcome, {
+    resumeAgent: true,
+    browserResult: {
+      programResult: { title: "Example Domain" },
+      page: { title: "Example Domain", url: "https://example.com" },
+    },
+  });
   assert.equal(programs.length, 1);
+  assert.doesNotMatch(programs[0], /visibleText/);
+  assert.match(programs[0], /parsedUrl\.origin.*parsedUrl\.pathname/);
   assert.equal(context.pendingApproval, undefined);
 });
 
@@ -88,13 +101,86 @@ test("navigation programs also require approval", async () => {
   assert.equal(programs.length, 1);
 });
 
-test("browser programs reject empty, oversized, failed, and malformed runner results", async () => {
+test("browser programs return the current page when generated automation stops early", async () => {
+  const { broker, context, programs, events } = harness();
+  let executions = 0;
+  context.browserSession!.exec = async (command: string | readonly string[]) => {
+    const encoded = Array.isArray(command) ? command[1] : "";
+    programs.push(Buffer.from(encoded, "base64url").toString("utf8"));
+    executions += 1;
+    if (executions === 1) {
+      return {
+        ok: false,
+        exitCode: 1,
+        stdout: "",
+        stderr: "Locator wait exceeded the per-operation limit.",
+        durationMs: 10_000,
+      };
+    }
+    return {
+      ok: true,
+      exitCode: 0,
+      stdout: `SMOLVM_BROWSER_RESULT=${JSON.stringify({
+        ok: true,
+        value: {
+          title: "Amazon.com : iPhone",
+          url: "https://www.amazon.com/s",
+          visibleText: "Results iPhone $799.00 $899.00",
+        },
+      })}\n`,
+      stderr: "",
+      durationMs: 20_000,
+    };
+  };
+
+  await broker.runProgram(
+    "await page.goto('https://www.amazon.com'); await page.waitForSelector('#missing'); return [];",
+    false,
+    "Search Amazon for iPhone prices",
+    true,
+  );
+  const outcome = await broker.resolveApproval(
+    context.pendingApproval!.approvalId,
+    context.pendingApproval!.actionDigest,
+    true,
+  );
+
+  assert.match(programs[0], /setDefaultTimeout\(10_000\)/);
+  assert.match(programs[0], /setDefaultNavigationTimeout\(15_000\)/);
+  assert.doesNotMatch(programs[0], /Promise\.race/);
+  assert.doesNotMatch(programs[0], /visibleText/);
+  assert.match(programs[1], /innerText\(\{ timeout: 5_000 \}\)/);
+  assert.match(programs[1], /pages\.find/);
+  assert.match(programs[1], /parsedUrl\.origin.*parsedUrl\.pathname/);
+  assert.match(programs[1], /primary\.first\(\)/);
+  assert.doesNotMatch(programs[1], /page\.locator\('body'\)/);
+  assert.match(programs[1], /account\|auth\|billing\|checkout/);
+  assert.match(programs[1], /\[email redacted\]/);
+  assert.deepEqual(outcome, {
+    resumeAgent: true,
+    browserResult: {
+      completed: false,
+      programResult: null,
+      programError: "Locator wait exceeded the per-operation limit.",
+      page: {
+        title: "Amazon.com : iPhone",
+        url: "https://www.amazon.com/s",
+        visibleText: "Results iPhone $799.00 $899.00",
+      },
+    },
+  });
+  assert.equal(events.at(-2), "tool.completed");
+  assert.equal(events.at(-1), "approval.resolved");
+  assert.equal(context.runState, "idle");
+});
+
+test("browser programs reject empty, oversized, failed, malformed, and empty runner results", async () => {
   const { broker, context } = harness();
 
-  await assert.rejects(() => broker.runProgram(" ", false, "Empty"), /1 to 20,000 bytes/);
+  await assert.rejects(() => broker.runProgram(" ", false, "Empty"), /1 to 18,000 bytes/);
   await assert.rejects(
-    () => broker.runProgram("x".repeat(20_001), false, "Oversized"),
-    /1 to 20,000 bytes/,
+    () => broker.runProgram("x".repeat(MAX_BROWSER_PROGRAM_BYTES + 1), false, "Oversized"),
+    /1 to 18,000 bytes/,
   );
 
   context.browserSession!.exec = async () => ({
@@ -122,6 +208,16 @@ test("browser programs reject empty, oversized, failed, and malformed runner res
     );
 
     context.browserSession!.exec = async () => ({
+      ok: true, exitCode: 0, stdout: "SMOLVM_BROWSER_RESULT={not-json}\n", stderr: "", durationMs: 1,
+    });
+    await broker.runProgram("return true;", false, "Invalid JSON runner result");
+    await assert.rejects(
+      () => broker.resolveApproval(context.pendingApproval!.approvalId, context.pendingApproval!.actionDigest, true),
+      (error: unknown) => (error as { status?: number }).status === 422
+        && (error as { cause?: Error }).cause instanceof SyntaxError,
+    );
+
+    context.browserSession!.exec = async () => ({
       ok: true, exitCode: 0, stdout: 'SMOLVM_BROWSER_RESULT={"ok":false}\n', stderr: "", durationMs: 1,
     });
     await broker.runProgram("return true;", false, "Unsuccessful runner result");
@@ -130,9 +226,63 @@ test("browser programs reject empty, oversized, failed, and malformed runner res
       (error: unknown) => (error as { status?: number }).status === 422
         && (error as { cause?: Error }).cause?.message === "The browser runner returned an unsuccessful result.",
     );
+
+    let fallbackExecutions = 0;
+    context.browserSession!.exec = async () => {
+      fallbackExecutions += 1;
+      return fallbackExecutions === 1
+        ? { ok: false, exitCode: 1, stdout: "", stderr: "locator timed out", durationMs: 1 }
+        : {
+            ok: true, exitCode: 0,
+            stdout: 'SMOLVM_BROWSER_RESULT={"ok":true,"value":{"title":"","url":"about:blank","visibleText":""}}\n',
+            stderr: "", durationMs: 1,
+          };
+    };
+    await broker.runProgram("return true;", false, "No useful page fallback", true);
+    await assert.rejects(
+      () => broker.resolveApproval(context.pendingApproval!.approvalId, context.pendingApproval!.actionDigest, true),
+      (error: unknown) => (error as { status?: number }).status === 422
+        && (error as { cause?: Error }).cause?.message === "locator timed out",
+    );
+
+    context.browserSession!.exec = async () => ({
+      ok: true, exitCode: 0,
+      stdout: 'SMOLVM_BROWSER_RESULT={"ok":true,"value":{"programResult":"undefined","page":{"title":"","url":"about:blank","visibleText":""}}}\n',
+      stderr: "", durationMs: 1,
+    });
+    await broker.runProgram("async function unused() { return true; }", false, "No-op runner result");
+    await assert.rejects(
+      () => broker.resolveApproval(context.pendingApproval!.approvalId, context.pendingApproval!.actionDigest, true),
+      (error: unknown) => (error as { status?: number }).status === 422
+        && (error as { cause?: Error }).cause?.message === "The Playwright program finished without returning data.",
+    );
   } finally {
     console.error = originalError;
   }
+});
+
+test("messages are rejected while the user controls the browser", async () => {
+  const manager = new ConversationManager("", "gpt-5-mini");
+  const created = await manager.create();
+  const context = (manager as unknown as { context: ConversationContext }).context;
+  context.controlOwner = "pause_requested";
+
+  assert.throws(
+    () => manager.send(created.id, "try again"),
+    (error: unknown) => (error as { status?: number }).status === 409
+      && (error as Error).message === "Wait for browser control to finish transferring, then send the message again.",
+  );
+
+  context.controlOwner = "agent";
+  await manager.takeover(created.id);
+
+  assert.throws(
+    () => manager.send(created.id, "try again"),
+    (error: unknown) => (error as { status?: number }).status === 409
+      && (error as Error).message === "Select Return control before sending a message to OpenMuse.",
+  );
+  assert.deepEqual(manager.snapshot(created.id).messages, []);
+  await manager.stop(created.id);
 });
 
 test("website approvals can be denied and stale approvals cannot execute", async () => {

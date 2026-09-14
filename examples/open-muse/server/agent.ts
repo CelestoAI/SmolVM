@@ -3,9 +3,19 @@ import { createModels, type Api, type AssistantMessage, type Model } from "@eare
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { Type } from "typebox";
 import { z } from "zod";
-import type { ActionBroker } from "./broker.js";
+import { MAX_BROWSER_PROGRAM_BYTES, type ActionBroker } from "./broker.js";
 
 const turnCounters = new WeakMap<Agent, { turns: number }>();
+const BROWSER_PROGRAM_GUIDANCE = [
+  "The program is the body of an async function, not a complete function.",
+  "Write statements directly, use top-level await, and finish with an explicit return of JSON-serializable data.",
+  "Do not wrap the program in a function, arrow function, or unreturned async IIFE.",
+  "Browser globals such as document and window are unavailable in the runner; use Playwright locators or access them only inside page.evaluate or locator.evaluateAll callbacks.",
+  "After navigation, wait for DOM content and a stable page element before extracting data.",
+  "Set fallbackCurrentPage to true only when the task needs recovery from a failed program; the approval card then tells the user that OpenMuse may read the page's main visible text.",
+  "Successful programs return only their explicit result plus the final title and URL.",
+  "Example: await page.goto('https://example.com'); return { title: await page.title(), url: page.url() };",
+].join(" ");
 
 function result<T>(value: T): AgentToolResult<T> {
   return { content: [{ type: "text", text: JSON.stringify(value) }], details: value };
@@ -40,17 +50,18 @@ export function createAgent(apiKey: string, modelId: string, broker: ActionBroke
     {
       name: "browser_run",
       label: "Run Playwright in SmolVM",
-      description: "Propose a JavaScript Playwright program to run inside the disposable browser VM after user approval. Available variables are page, context, browser, and pages. Return a JSON-serializable value.",
+      description: `Propose a JavaScript Playwright program to run inside the disposable browser VM after user approval. Available variables are page, context, browser, and pages. ${BROWSER_PROGRAM_GUIDANCE}`,
       parameters: Type.Object({
-        program: Type.String({ minLength: 1, maxLength: 20_000 }),
+        program: Type.String({ minLength: 1, maxLength: MAX_BROWSER_PROGRAM_BYTES }),
         interaction: Type.Boolean(),
+        fallbackCurrentPage: Type.Boolean(),
         summary: Type.String({ minLength: 1, maxLength: 240 }),
       }),
       executionMode: "sequential",
       replay: "never",
       execute: async (_id, params) => {
-        const value = z.object({ program: z.string(), interaction: z.boolean(), summary: z.string() }).parse(params);
-        return result(await broker.runProgram(value.program, value.interaction, value.summary));
+        const value = z.object({ program: z.string(), interaction: z.boolean(), fallbackCurrentPage: z.boolean(), summary: z.string() }).parse(params);
+        return result(await broker.runProgram(value.program, value.interaction, value.summary, value.fallbackCurrentPage));
       },
     },
   ];
@@ -67,6 +78,7 @@ export function createAgent(apiKey: string, modelId: string, broker: ActionBroke
         "The broker enforces user authorization. Never claim an action succeeded unless its tool returns success.",
         fixtureStore ? "You may choose one matching product when the user delegates selection. Explain your choice briefly." : "Keep programs short. Observe the current page before interacting and return bounded title, URL, and relevant text or element details.",
         fixtureStore ? "Adding an item is allowed only by browser_click with an add ref. Checkout requires request_approval." : "Use browser_run to propose browser work. Every proposed program requires one-time user approval; browser_run creates the approval card, so do not ask separately in chat.",
+        fixtureStore ? "" : BROWSER_PROGRAM_GUIDANCE,
         fixtureStore ? "There is no place-order capability. Say so if asked. Do not request passwords or payment data." : "Never read cookies, storage, passwords, payment fields, or tokens. Ask the user to take control for login, payment, or CAPTCHA.",
       ].join(" "),
       model: model as Model<Api>, thinkingLevel: "low", tools,

@@ -1,5 +1,5 @@
 export interface Message { id: string; role: "user" | "assistant"; text: string; createdAt: string }
-export interface Approval { kind: "checkout_review" | "browser_program"; approvalId: string; actionDigest: string; reason: string; expiresAt: string; totalPriceMinor?: number }
+export interface Approval { kind: "checkout_review" | "browser_program"; approvalId: string; actionDigest: string; reason: string; expiresAt: string; totalPriceMinor?: number; fallbackCurrentPage?: boolean }
 export interface Event { id: number; type: string; createdAt: string; payload: Record<string, unknown> }
 export interface Conversation {
   id: string; stateVersion: number; controlOwner: "agent" | "pause_requested" | "human";

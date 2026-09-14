@@ -96,7 +96,7 @@ Chromium → Xvfb :99 → x11vnc :5900 → websockify/noVNC :6080 → iframe
 
 This is a live pixel stream with real page transitions, typing, scrolling, dialogs, and cursor movement. It is not a periodic screenshot loop and does not reconstruct the DOM in React. Screenshots remain model observations and test artifacts only.
 
-The app draws its own header, status, Stop/Take control action, and activity timeline around the iframe. While Pi owns control, a transparent overlay intercepts pointer and keyboard input and the iframe is labeled **LIVE · Agent controlling**. Clicking **Take control** requests a cooperative pause. The broker finishes at most the currently committed atomic browser action, blocks new tool dispatch, reports **You have control**, and only then removes the overlay. **Return control to agent** restores the overlay, records a takeover event in the conversation, asks Pi to re-observe the page, and resumes the loop.
+The app draws its own header, status, Stop/Take control action, and activity timeline around the iframe. While Pi owns control, a transparent overlay intercepts pointer and keyboard input and the iframe is labeled **LIVE · Agent controlling**. Clicking **Take control** requests a cooperative pause. The broker finishes at most the currently committed atomic browser action, blocks new tool dispatch, reports **You have control**, and only then removes the overlay. While the human owns control, the chat composer is disabled and the server rejects new messages with the exact **Select Return control** recovery. **Return control to agent** restores the overlay, records a takeover event in the conversation, asks Pi to re-observe the page, and resumes the loop.
 
 On `GET /api/bootstrap`, the app verifies a loopback Host plus `Sec-Fetch-Site: same-origin|none`, creates a random 256-bit session capability, sets it in an `HttpOnly`, `SameSite=Strict` cookie, and returns a separate CSRF token. Every mutation requires the cookie, exact loopback `Origin`, CSRF token, and JSON content type. A protected viewer-token endpoint issues a single-use 60-second nonce; the viewer websocket presents it in its negotiated subprotocol and the server consumes it before proxying. The app sends no CORS headers and emits `Cache-Control: no-store`.
 
@@ -313,7 +313,7 @@ Each event has a monotonic integer `id`, `conversationId`, `stateVersion`, times
 ### Lifecycle and failure behavior
 
 - Reject a second active conversation with HTTP `409` in the first example.
-- Defaults are: 120 seconds per model turn, 90 seconds for browser startup after an image is available, 10 seconds per browser action/fixture receipt, 15 seconds for takeover acknowledgement, and 15 minutes idle between turns. A model or browser-action timeout marks the conversation failed and cleans the session; startup timeout reports the exact browser-log recovery command and cleans; takeover timeout leaves the input overlay in place and offers **Stop**; idle timeout stops cleanly.
+- Defaults are: 120 seconds per model turn, 90 seconds for browser startup after an image is available, 10 seconds per Playwright operation or fixture receipt, 15 seconds per navigation, 30 seconds per approved browser program with a 35-second command deadline, 10 seconds for an approved current-page fallback, 15 seconds for takeover acknowledgement, and 15 minutes idle between turns. A browser program that stops early returns bounded current-page evidence only when the approval disclosed that fallback and the page passes the sensitive-path checks; otherwise the action fails with the exact chat retry instruction and is never retried automatically. Model and startup failures clean the session; takeover timeout leaves the input overlay in place and offers **Stop**; idle timeout stops cleanly.
 - On client refresh, reconstruct chat and activity from bounded in-memory state and reconnect SSE. Conversation recovery after a Node restart is out of scope, but orphan cleanup is not.
 - On browser disconnect, pause Pi, retry the CDP connection once, then show one fact plus an exact recovery action.
 - On noVNC failure with healthy CDP, keep the agent paused until the user explicitly chooses **Continue without live view** or stops. Do not silently operate an invisible authenticated browser.
@@ -332,8 +332,9 @@ The serialized transition rules are:
 | `tool_action` | `takeover` | set `pause_requested`; finish only the already-dispatched atomic action, then transfer to `human` |
 | `waiting_for_approval` | `takeover` | cancel the pending approval as stale, then transfer to `human` |
 | `human` | `takeover` | idempotently acknowledge current ownership |
-| `human` | message/approval | retain in queue; do not start Pi until `resume` |
-| `human` | `resume` | transfer to `agent`, invalidate refs, re-observe, then process queued message |
+| `human` | message | reject with **Select Return control** and preserve the unsent composer text |
+| `human` | approval | reject as stale because takeover invalidates pending approval |
+| `human` | `resume` | transfer to `agent`, invalidate refs, and re-observe before accepting later messages |
 | session `stopping/deleted/error` or run `stopped/failed` | takeover/approval/resume/tool result | reject as stale; keep overlay; never revive the session |
 
 Stop prevents future dispatch; it cannot undo an effect already committed by the browser. Consequential validation therefore completes before dispatch, and UI copy never promises rollback.

@@ -9,7 +9,7 @@ Status: APPROVED
 Mode: Builder
 Supersedes: `docs/designs/open-muse.md` for the browser-tool and network scope; the existing document remains authoritative for the chat UI, live viewer, lifecycle, and takeover flow.
 
-> **Current implementation:** The example temporarily requires one-time approval for every general-web `browser_run` program, including observation and navigation. This is stricter than the risk-based policy below and keeps the current unrestricted runner behind a human gate until operation-level enforcement is implemented.
+> **Current implementation:** The example temporarily requires one-time approval for every general-web `browser_run` program, including observation and navigation. This is stricter than the risk-based policy below and keeps the current unrestricted runner behind a human gate until operation-level enforcement is implemented. A proposed program may also request a separately disclosed, bounded current-page fallback; if the approved script stops early, the fallback can return redacted visible text from a non-sensitive path without replaying the original action.
 
 ## Problem Statement
 
