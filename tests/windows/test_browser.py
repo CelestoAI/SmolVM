@@ -673,6 +673,86 @@ def test_build_browser_vm_config_allocates_qemu_live_port_forwards(
     assert mock_allocate_host_port.call_count == 3
 
 
+@patch("smolvm.browser.platform.machine", return_value="x86_64")
+@patch("smolvm.browser._allocate_browser_host_port", side_effect=[39101, 39102, 39103])
+@patch("smolvm.utils.ensure_ssh_key")
+@patch("smolvm.images.builder.ImageBuilder")
+@patch("smolvm.images.published.ensure_published_image")
+def test_build_computer_vm_config_uses_published_linux_desktop(
+    mock_ensure_published_image: MagicMock,
+    mock_builder_cls: MagicMock,
+    mock_ensure_ssh_key: MagicMock,
+    mock_allocate_host_port: MagicMock,
+    _mock_machine: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """Computer sessions should download the published desktop instead of building it."""
+    kernel = tmp_path / "kernel"
+    rootfs = tmp_path / "rootfs.ext4"
+    private_key = tmp_path / "id_ed25519"
+    public_key = tmp_path / "id_ed25519.pub"
+    kernel.touch()
+    rootfs.touch()
+    private_key.touch()
+    public_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMock user@test\n")
+    mock_ensure_ssh_key.return_value = (private_key, public_key)
+    mock_ensure_published_image.return_value = SimpleNamespace(
+        kernel_path=kernel,
+        rootfs_path=rootfs,
+    )
+
+    vm_config, _ = _build_browser_vm_config(
+        session_id="computer-published",
+        browser_config=BrowserSessionConfig(
+            session_id="computer-published",
+            backend="qemu",
+            mode="computer",
+            disk_size_mib=8192,
+        ),
+    )
+
+    mock_ensure_published_image.assert_called_once_with("linux-desktop", "amd64", "qemu")
+    mock_builder_cls.assert_not_called()
+    assert vm_config.kernel_path == kernel
+    assert vm_config.rootfs_path == rootfs
+    assert vm_config.disk_size_mib == 8192
+    assert vm_config.grow_filesystem is False
+    assert [(forward.host_port, forward.guest_port) for forward in vm_config.port_forwards] == [
+        (39101, 9222),
+        (39102, 6080),
+        (39103, 5900),
+    ]
+    assert mock_allocate_host_port.call_count == 3
+
+
+@patch("smolvm.utils.ensure_ssh_key")
+@patch("smolvm.images.published.ensure_published_image")
+def test_build_computer_vm_config_rejects_disk_smaller_than_published_image(
+    mock_ensure_published_image: MagicMock,
+    mock_ensure_ssh_key: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """A computer disk cannot be smaller than its published desktop filesystem."""
+    private_key = tmp_path / "id_ed25519"
+    public_key = tmp_path / "id_ed25519.pub"
+    private_key.touch()
+    public_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMock user@test\n")
+    mock_ensure_ssh_key.return_value = (private_key, public_key)
+
+    with pytest.raises(ValueError, match="at least 8192 MiB"):
+        _build_browser_vm_config(
+            session_id="computer-small",
+            browser_config=BrowserSessionConfig(
+                session_id="computer-small",
+                backend="qemu",
+                mode="computer",
+                disk_size_mib=4096,
+            ),
+        )
+
+    mock_ensure_published_image.assert_not_called()
+
+
 @patch("smolvm.utils.ensure_ssh_key")
 @patch("smolvm.images.builder.ImageBuilder")
 def test_build_browser_vm_config_passes_pubkey_to_vmconfig(

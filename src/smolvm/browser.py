@@ -20,7 +20,13 @@ from typing import Any
 
 from smolvm.exceptions import BrowserSessionNotFoundError, SmolVMError
 from smolvm.facade import SmolVM
-from smolvm.runtime.backends import BACKEND_AUTO, BACKEND_QEMU, resolve_backend
+from smolvm.runtime.backends import (
+    BACKEND_AUTO,
+    BACKEND_FIRECRACKER,
+    BACKEND_LIBKRUN,
+    BACKEND_QEMU,
+    resolve_backend,
+)
 from smolvm.runtime.boot_profiles import (
     KernelBootProfile,
     get_boot_profile_spec,
@@ -48,6 +54,7 @@ _BROWSER_GUEST_DOWNLOAD_ROOT = f"{_BROWSER_GUEST_ROOT}/downloads"
 _BROWSER_GUEST_ARTIFACT_ROOT = f"{_BROWSER_GUEST_ROOT}/artifacts"
 _BROWSER_GUEST_LOG_ROOT = "/var/log/smolvm-browser"
 _BROWSER_KERNEL_PROFILE = KernelBootProfile.MICROVM_DIRECT
+_PUBLISHED_COMPUTER_DISK_SIZE_MIB = 8192
 _LOCAL_HTTP_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
@@ -149,31 +156,52 @@ def _build_browser_vm_config(
             f"`ssh-keygen -y -f {private_arg} > {public_arg}`."
         ) from exc
 
-    builder = ImageBuilder()
-    kernel_url = builder.qemu_kernel_url_for_host() if resolved_backend == BACKEND_QEMU else None
     # TODO: Make the browser runtime pluggable so BrowserSessionConfig.browser
     # can select alternative engines (for example Lightpanda) without changing
     # the surrounding session lifecycle or backend abstractions.
     image_arch = "aarch64" if platform.machine().lower() in {"arm64", "aarch64"} else "x86_64"
     is_computer = browser_config.mode == "computer"
-    image_name = (
-        f"computer-linux-desktop-{image_arch}" if is_computer else f"browser-chromium-{image_arch}"
-    )
+    if is_computer and browser_config.disk_size_mib < _PUBLISHED_COMPUTER_DISK_SIZE_MIB:
+        raise ValueError(
+            "Linux computers need at least 8192 MiB of disk; "
+            "set resources={'disk_mib': 8192} or remove the custom disk setting."
+        )
     port_forwards: list[PortForwardConfig] = []
     if resolved_backend == BACKEND_QEMU:
-        image_name = f"{image_name}-qemu"
         port_forwards = _qemu_browser_port_forwards(browser_config)
-    if browser_config.disk_size_mib != 4096:
-        image_name = f"{image_name}-{browser_config.disk_size_mib}m"
 
-    kernel, rootfs = builder.build_browser_rootfs(
-        public_key_text,
-        name=image_name,
-        rootfs_size_mb=browser_config.disk_size_mib,
-        kernel_profile=_BROWSER_KERNEL_PROFILE,
-        kernel_url=kernel_url,
-        desktop=is_computer,
-    )
+    grow_filesystem = False
+    if is_computer:
+        from smolvm.images.published import Arch, Vmm, ensure_published_image
+
+        vmm_by_backend: dict[str, Vmm] = {
+            BACKEND_FIRECRACKER: "firecracker",
+            BACKEND_QEMU: "qemu",
+            BACKEND_LIBKRUN: "libkrun",
+        }
+        vmm = vmm_by_backend[resolved_backend]
+        published_arch: Arch = "arm64" if image_arch == "aarch64" else "amd64"
+        local_image = ensure_published_image("linux-desktop", published_arch, vmm)
+        kernel, rootfs = local_image.kernel_path, local_image.rootfs_path
+        grow_filesystem = browser_config.disk_size_mib > _PUBLISHED_COMPUTER_DISK_SIZE_MIB
+    else:
+        builder = ImageBuilder()
+        kernel_url = (
+            builder.qemu_kernel_url_for_host() if resolved_backend == BACKEND_QEMU else None
+        )
+        image_name = f"browser-chromium-{image_arch}"
+        if resolved_backend == BACKEND_QEMU:
+            image_name = f"{image_name}-qemu"
+        if browser_config.disk_size_mib != 4096:
+            image_name = f"{image_name}-{browser_config.disk_size_mib}m"
+        kernel, rootfs = builder.build_browser_rootfs(
+            public_key_text,
+            name=image_name,
+            rootfs_size_mb=browser_config.disk_size_mib,
+            kernel_profile=_BROWSER_KERNEL_PROFILE,
+            kernel_url=kernel_url,
+            desktop=False,
+        )
 
     config = VMConfig(
         vm_id=_browser_vm_id(session_id, browser_config),
@@ -189,6 +217,8 @@ def _build_browser_vm_config(
         workspace_mounts=browser_config.workspace_mounts,
         internet_settings=browser_config.internet_settings,
         ssh_public_key=public_key_text,
+        disk_size_mib=browser_config.disk_size_mib if is_computer else None,
+        grow_filesystem=grow_filesystem,
     )
     return config, resolved_ssh_key_path
 
