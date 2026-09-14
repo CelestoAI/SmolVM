@@ -40,6 +40,10 @@ export function App() {
 
   const submit = async (value = text) => {
     if (!conversation || !value.trim()) return;
+    if (conversation.controlOwner !== "agent") {
+      setError("Select Return control before sending a message to OpenMuse.");
+      return;
+    }
     setError(""); setText("");
     try { await api.sendMessage(conversation.id, value.trim()); await refresh(); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Could not send message."); }
@@ -88,7 +92,7 @@ export function App() {
           {busy && <div className="thinking"><i></i><i></i><i></i> Working in the browser</div>}
           <div ref={endRef}></div>
         </div>
-        <div className="composer-wrap">{error && <div className="error">{error}</div>}<div className="composer"><textarea value={text} onChange={(event) => setText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} placeholder="Message OpenMuse…" disabled={!conversation || conversation.runState === "stopped"}/><button aria-label="Send" onClick={() => void submit()} disabled={!text.trim()}>↑</button></div><div className="hint">Enter to send · SmolVM is deleted when you stop</div></div>
+        <div className="composer-wrap">{error && <div className="error">{error}</div>}<div className="composer"><textarea value={text} onChange={(event) => setText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} placeholder={conversation?.controlOwner === "human" ? "Return control to message OpenMuse…" : "Message OpenMuse…"} disabled={!conversation || conversation.runState === "stopped" || conversation.controlOwner !== "agent"}/><button aria-label="Send" onClick={() => void submit()} disabled={!text.trim() || conversation?.controlOwner !== "agent"}>↑</button></div><div className="hint">{conversation?.controlOwner === "human" ? "Return control to continue chatting" : "Enter to send · SmolVM is deleted when you stop"}</div></div>
       </section>
       <section className="computer-pane">
         <div className="computer-head"><div><div className="eyebrow">Isolated workspace</div><h2>Agent’s computer</h2></div><div className="computer-actions">{conversation?.runState !== "stopped" && (conversation?.controlOwner === "human" ? <button onClick={() => void returnControl()}>Return control</button> : <button className="secondary" onClick={() => void takeControl()} disabled={!conversation?.viewerReady}>Take control</button>)}</div></div>

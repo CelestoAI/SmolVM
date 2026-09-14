@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ActionBroker } from "../server/broker.js";
+import { ConversationManager } from "../server/manager.js";
 import type { ConversationContext } from "../server/types.js";
 
 function harness() {
@@ -29,7 +30,11 @@ function harness() {
       async exec(command: string | readonly string[]) {
         const encoded = Array.isArray(command) ? command[1] : "";
         programs.push(Buffer.from(encoded, "base64url").toString("utf8"));
-        return { ok: true, exitCode: 0, stdout: 'SMOLVM_BROWSER_RESULT={"ok":true,"value":{"title":"Example Domain"}}\n', stderr: "", durationMs: 1 };
+        return {
+          ok: true, exitCode: 0,
+          stdout: 'SMOLVM_BROWSER_RESULT={"ok":true,"value":{"programResult":{"title":"Example Domain"},"page":{"title":"Example Domain","url":"https://example.com","visibleText":"Example Domain"}}}\n',
+          stderr: "", durationMs: 1,
+        };
       },
       async delete() {},
     },
@@ -64,8 +69,15 @@ test("active browser programs wait for one-time approval", async () => {
     true,
   );
 
-  assert.deepEqual(outcome, { resumeAgent: true, browserResult: { title: "Example Domain" } });
+  assert.deepEqual(outcome, {
+    resumeAgent: true,
+    browserResult: {
+      programResult: { title: "Example Domain" },
+      page: { title: "Example Domain", url: "https://example.com", visibleText: "Example Domain" },
+    },
+  });
   assert.equal(programs.length, 1);
+  assert.match(programs[0], /visibleText/);
   assert.equal(context.pendingApproval, undefined);
 });
 
@@ -88,7 +100,7 @@ test("navigation programs also require approval", async () => {
   assert.equal(programs.length, 1);
 });
 
-test("browser programs reject empty, oversized, failed, and malformed runner results", async () => {
+test("browser programs reject empty, oversized, failed, malformed, and empty runner results", async () => {
   const { broker, context } = harness();
 
   await assert.rejects(() => broker.runProgram(" ", false, "Empty"), /1 to 20,000 bytes/);
@@ -130,9 +142,35 @@ test("browser programs reject empty, oversized, failed, and malformed runner res
       (error: unknown) => (error as { status?: number }).status === 422
         && (error as { cause?: Error }).cause?.message === "The browser runner returned an unsuccessful result.",
     );
+
+    context.browserSession!.exec = async () => ({
+      ok: true, exitCode: 0,
+      stdout: 'SMOLVM_BROWSER_RESULT={"ok":true,"value":{"programResult":"undefined","page":{"title":"","url":"about:blank","visibleText":""}}}\n',
+      stderr: "", durationMs: 1,
+    });
+    await broker.runProgram("async function unused() { return true; }", false, "No-op runner result");
+    await assert.rejects(
+      () => broker.resolveApproval(context.pendingApproval!.approvalId, context.pendingApproval!.actionDigest, true),
+      (error: unknown) => (error as { status?: number }).status === 422
+        && (error as { cause?: Error }).cause?.message === "The Playwright program finished without returning data.",
+    );
   } finally {
     console.error = originalError;
   }
+});
+
+test("messages are rejected while the user controls the browser", async () => {
+  const manager = new ConversationManager("", "gpt-5-mini");
+  const created = await manager.create();
+  await manager.takeover(created.id);
+
+  assert.throws(
+    () => manager.send(created.id, "try again"),
+    (error: unknown) => (error as { status?: number }).status === 409
+      && (error as Error).message === "Select Return control before sending a message to OpenMuse.",
+  );
+  assert.deepEqual(manager.snapshot(created.id).messages, []);
+  await manager.stop(created.id);
 });
 
 test("website approvals can be denied and stale approvals cannot execute", async () => {

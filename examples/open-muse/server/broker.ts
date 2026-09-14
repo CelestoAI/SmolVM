@@ -49,7 +49,17 @@ export class ActionBroker {
       const controlEpoch = this.context.controlEpoch;
       const browser = await this.readyBrowser();
       this.assertAgentControl(controlEpoch);
-      const encoded = Buffer.from(program).toString("base64url");
+      const wrappedProgram = [
+        "const __openMuseProgramResult = await (async () => {",
+        program,
+        "})();",
+        "const __openMuseVisibleText = await page.locator('body').innerText().catch(() => '');",
+        "return {",
+        "  programResult: __openMuseProgramResult,",
+        "  page: { title: await page.title(), url: page.url(), visibleText: __openMuseVisibleText.slice(0, 12000) },",
+        "};",
+      ].join("\n");
+      const encoded = Buffer.from(wrappedProgram).toString("base64url");
       this.emit("tool.started", { tool: "browser_run", summary: summary || "Running Playwright in the disposable browser" });
       const command = await browser.exec(["/usr/local/bin/smolvm-browser-runner", encoded], { timeoutMs: 40_000 });
       this.assertAgentControl(controlEpoch);
@@ -58,8 +68,12 @@ export class ActionBroker {
       if (!marker) throw new Error("The browser runner returned an invalid result.");
       const parsed = JSON.parse(marker.slice("SMOLVM_BROWSER_RESULT=".length)) as { ok?: unknown; value?: unknown } | null;
       if (parsed?.ok !== true) throw new Error("The browser runner returned an unsuccessful result.");
+      const value = parsed.value as { programResult?: unknown; page?: unknown } | null;
+      if (!value || typeof value !== "object" || !("programResult" in value) || value.programResult === "undefined") {
+        throw new Error("The Playwright program finished without returning data.");
+      }
       this.emit("tool.completed", { tool: "browser_run", summary: summary || "Playwright program completed" });
-      return { completed: true, result: parsed.value };
+      return { completed: true, result: value };
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       console.error(`OpenMuse website action failed: ${detail}`);

@@ -63,7 +63,7 @@ test("takeover waits for an approved browser action to finish", async () => {
     status: "ready", sessionId: "browser-test", sandboxId: "sandbox-test", cdpUrl: "http://127.0.0.1:9222",
     exec: async () => {
       await actionFinished;
-      return { ok: true, exitCode: 0, stdout: 'SMOLVM_BROWSER_RESULT={"ok":true,"value":{}}', stderr: "", durationMs: 1 };
+      return { ok: true, exitCode: 0, stdout: 'SMOLVM_BROWSER_RESULT={"ok":true,"value":{"programResult":{},"page":{"title":"","url":"about:blank","visibleText":""}}}', stderr: "", durationMs: 1 };
     },
     delete: async () => undefined,
   };
@@ -102,7 +102,7 @@ test("approved browser results resume the agent without requesting another obser
     status: "ready", sessionId: "browser-test", sandboxId: "sandbox-test", cdpUrl: "http://127.0.0.1:9222",
     exec: async () => ({
       ok: true, exitCode: 0,
-      stdout: 'SMOLVM_BROWSER_RESULT={"ok":true,"value":{"title":"Amazon.in","price":"₹59,900"}}',
+      stdout: 'SMOLVM_BROWSER_RESULT={"ok":true,"value":{"programResult":{"title":"Amazon.in","price":"₹59,900"},"page":{"title":"Amazon.in","url":"https://amazon.in","visibleText":"iPhone ₹59,900"}}}',
       stderr: "", durationMs: 1,
     }),
     delete: async () => undefined,
@@ -117,7 +117,8 @@ test("approved browser results resume the agent without requesting another obser
   await internals.turnQueue;
 
   assert.equal(prompts.length, 1);
-  assert.match(prompts[0], /"title":"Amazon\.in","price":"₹59,900"/);
+  assert.match(prompts[0], /"price":"₹59,900"/);
+  assert.match(prompts[0], /"visibleText":"iPhone ₹59,900"/);
   assert.match(prompts[0], /without calling browser_run again/);
   assert.doesNotMatch(prompts[0], /Re-observe/);
   assert.equal(manager.snapshot(created.id).pendingApproval, undefined);
@@ -142,7 +143,7 @@ test("duplicate approval submissions share one browser action", async () => {
     exec: async () => {
       executions += 1;
       await actionFinished;
-      return { ok: true, exitCode: 0, stdout: 'SMOLVM_BROWSER_RESULT={"ok":true,"value":{}}', stderr: "", durationMs: 1 };
+      return { ok: true, exitCode: 0, stdout: 'SMOLVM_BROWSER_RESULT={"ok":true,"value":{"programResult":{},"page":{"title":"","url":"about:blank","visibleText":""}}}', stderr: "", durationMs: 1 };
     },
     delete: async () => undefined,
   };
