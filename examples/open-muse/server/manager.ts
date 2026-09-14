@@ -48,7 +48,7 @@ export class ConversationManager {
       runState: context.runState, sessionLifecycle: context.sessionLifecycle,
       messages: context.messages, grants: context.grants.map(({ id: grantId, state, expiresAt }) => ({ id: grantId, state, expiresAt })),
       pendingApproval: context.pendingApproval ? (({ program: _program, ...approval }) => approval)(context.pendingApproval) : undefined,
-      viewerReady: context.sessionLifecycle === "ready" && Boolean(context.browserSession?.viewerUrl),
+      viewerReady: context.sessionLifecycle === "ready" && Boolean(context.computer?.viewerUrl),
       events: context.events,
     };
   }
@@ -160,12 +160,12 @@ export class ConversationManager {
     this.emit("conversation.stopping", { summary: "Stopping the disposable computer" }, false);
     context.agent?.abort();
     await context.playwright?.close().catch(() => undefined);
-    await context.browserSession?.delete().catch(() => undefined);
+    await context.computer?.delete().catch(() => undefined);
     await context.smolvm?.close().catch(() => undefined);
     delete context.playwright;
     delete context.page;
     delete context.storefront;
-    delete context.browserSession;
+    delete context.computer;
     delete context.smolvm;
     context.runState = "stopped";
     context.sessionLifecycle = "deleted";
@@ -175,7 +175,7 @@ export class ConversationManager {
 
   issueViewerNonce(id: string): { viewerPath: string; expiresAt: string } {
     const context = this.require(id);
-    if (!context.browserSession?.viewerUrl) throw Object.assign(new Error("The live browser is not ready yet."), { status: 409 });
+    if (!context.computer?.viewerUrl) throw Object.assign(new Error("The live computer is not ready yet."), { status: 409 });
     const nonce = randomBytes(32).toString("base64url");
     const expiresAt = Date.now() + 60_000;
     this.viewerNonces.set(nonce, { conversationId: id, expiresAt });
@@ -190,8 +190,8 @@ export class ConversationManager {
   }
 
   viewerTarget(id: string): string {
-    const url = this.require(id).browserSession?.viewerUrl;
-    if (!url) throw Object.assign(new Error("The live browser is not ready."), { status: 409 });
+    const url = this.require(id).computer?.viewerUrl;
+    if (!url) throw Object.assign(new Error("The live computer is not ready."), { status: 409 });
     return new URL(url).origin;
   }
 
@@ -237,10 +237,10 @@ export class ConversationManager {
   }
 
   private async ensureBrowser(context: ConversationContext): Promise<void> {
-    if (context.sessionLifecycle === "ready" && context.browserSession && (!this.fixtureStore || (context.playwright?.isConnected() && context.page && !context.page.isClosed()))) return;
-    if (this.fixtureStore && context.sessionLifecycle === "ready" && context.browserSession) {
+    if (context.sessionLifecycle === "ready" && context.computer && (!this.fixtureStore || (context.playwright?.isConnected() && context.page && !context.page.isClosed()))) return;
+    if (this.fixtureStore && context.sessionLifecycle === "ready" && context.computer) {
       this.emit("browser.reconnecting", { summary: "Reconnecting browser automation" }, false);
-      await this.attachBrowser(context, context.browserSession.cdpUrl);
+      await this.attachBrowser(context, context.computer.cdpUrl);
       this.emit("browser.reconnected", { summary: "Browser automation reconnected" }, false);
       return;
     }
@@ -252,12 +252,12 @@ export class ConversationManager {
     const smolvm = new SmolVM({ createTimeoutMs: 180_000 });
     context.smolvm = smolvm;
     try {
-      const session = await smolvm.browsers.create({ mode: "live", profile: { mode: "ephemeral" }, viewport: { width: 1440, height: 900 }, network: { mode: this.fixtureStore ? "off" : "open" } });
-      context.browserSession = session;
-      if (this.fixtureStore) await this.attachBrowser(context, session.cdpUrl);
+      const computer = await smolvm.browsers.create({ mode: "live", profile: { mode: "ephemeral" }, viewport: { width: 1440, height: 900 }, network: { mode: this.fixtureStore ? "off" : "open" } });
+      context.computer = computer;
+      if (this.fixtureStore) await this.attachBrowser(context, computer.cdpUrl);
       context.sessionLifecycle = "ready";
       context.stateVersion += 1;
-      this.emit("browser.ready", { summary: "Disposable browser ready", sandboxId: session.sandboxId }, false);
+      this.emit("browser.ready", { summary: "Disposable computer ready", sandboxId: computer.sandboxId }, false);
     } catch (error) {
       context.sessionLifecycle = "error";
       await smolvm.close().catch(() => undefined);

@@ -31,7 +31,7 @@ export interface ConversationContext {
   sessionLifecycle: SessionLifecycle; messages: Message[]; events: ConversationEvent[];
   grants: IntentGrant[]; cart: CartLine[]; commerceRevision: number; observationId: string;
   pendingApproval?: PendingApproval; controlEpoch?: string; lastActivityAt: number;
-  agent?: Agent; smolvm?: SmolVMClient; browserSession?: BrowserSessionClient;
+  agent?: Agent; smolvm?: SmolVMClient; computer?: BrowserSessionClient;
   playwright?: Browser; page?: Page; abortController?: AbortController;
   storefront?: StorefrontController; receipts: Map<string, string>;
   lastBrowserError?: string;

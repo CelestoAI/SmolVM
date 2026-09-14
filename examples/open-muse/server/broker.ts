@@ -16,15 +16,15 @@ export class ActionBroker {
     return this.context.storefront;
   }
 
-  private async readyBrowser() {
+  private async readyComputer() {
     if (this.context.controlOwner !== "agent") throw new Error("Browser control is paused. Wait until the user returns control.");
     await this.ensureBrowser();
-    if (!this.context.browserSession) throw new Error("The disposable browser is not ready.");
-    return this.context.browserSession;
+    if (!this.context.computer) throw new Error("The disposable computer is not ready.");
+    return this.context.computer;
   }
 
   async runProgram(program: string, interaction: boolean, summary: string, fallbackCurrentPage = false): Promise<Record<string, unknown>> {
-    await this.readyBrowser();
+    await this.readyComputer();
     if (!program.trim() || Buffer.byteLength(program) > MAX_BROWSER_PROGRAM_BYTES) throw new Error(`Playwright program must contain 1 to ${MAX_BROWSER_PROGRAM_BYTES.toLocaleString("en-US")} bytes.`);
     void interaction;
     if (this.context.pendingApproval) return { approvalRequired: true, ...this.publicApproval(this.context.pendingApproval) };
@@ -48,7 +48,7 @@ export class ActionBroker {
   private async executeProgram(program: string, summary: string, fallbackCurrentPage: boolean): Promise<{ completed: boolean; result: Record<string, unknown> }> {
     try {
       const controlEpoch = this.context.controlEpoch;
-      const browser = await this.readyBrowser();
+      const computer = await this.readyComputer();
       this.assertAgentControl(controlEpoch);
       const wrappedProgram = [
         "page.setDefaultTimeout(10_000);",
@@ -63,7 +63,7 @@ export class ActionBroker {
       ].join("\n");
       const encoded = Buffer.from(wrappedProgram).toString("base64url");
       this.emit("tool.started", { tool: "browser_run", summary: summary || "Running Playwright in the disposable browser" });
-      const command = await browser.exec(["/usr/local/bin/smolvm-browser-runner", encoded], { timeoutMs: 35_000 });
+      const command = await computer.exec(["/usr/local/bin/smolvm-browser-runner", encoded], { timeoutMs: 35_000 });
       this.assertAgentControl(controlEpoch);
       if (!command.ok) {
         const programError = command.stderr.trim() || "The Playwright program failed inside the disposable browser.";
@@ -89,7 +89,7 @@ export class ActionBroker {
           "};",
           "return pageSnapshot;",
         ].join("\n");
-        const snapshot = await browser.exec(
+        const snapshot = await computer.exec(
           ["/usr/local/bin/smolvm-browser-runner", Buffer.from(snapshotProgram).toString("base64url")],
           { timeoutMs: 10_000 },
         );
