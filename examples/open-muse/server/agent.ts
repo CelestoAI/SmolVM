@@ -3,7 +3,7 @@ import { createModels, type Api, type AssistantMessage, type Model } from "@eare
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { Type } from "typebox";
 import { z } from "zod";
-import type { ActionBroker } from "./broker.js";
+import { MAX_BROWSER_PROGRAM_BYTES, type ActionBroker } from "./broker.js";
 
 const turnCounters = new WeakMap<Agent, { turns: number }>();
 const BROWSER_PROGRAM_GUIDANCE = [
@@ -12,7 +12,8 @@ const BROWSER_PROGRAM_GUIDANCE = [
   "Do not wrap the program in a function, arrow function, or unreturned async IIFE.",
   "Browser globals such as document and window are unavailable in the runner; use Playwright locators or access them only inside page.evaluate or locator.evaluateAll callbacks.",
   "After navigation, wait for DOM content and a stable page element before extracting data.",
-  "The tool also returns the final page title, URL, and bounded visible text as a fallback when site-specific selectors find nothing.",
+  "Set fallbackCurrentPage to true only when the task needs recovery from a failed program; the approval card then tells the user that OpenMuse may read the page's main visible text.",
+  "Successful programs return only their explicit result plus the final title and URL.",
   "Example: await page.goto('https://example.com'); return { title: await page.title(), url: page.url() };",
 ].join(" ");
 
@@ -51,15 +52,16 @@ export function createAgent(apiKey: string, modelId: string, broker: ActionBroke
       label: "Run Playwright in SmolVM",
       description: `Propose a JavaScript Playwright program to run inside the disposable browser VM after user approval. Available variables are page, context, browser, and pages. ${BROWSER_PROGRAM_GUIDANCE}`,
       parameters: Type.Object({
-        program: Type.String({ minLength: 1, maxLength: 20_000 }),
+        program: Type.String({ minLength: 1, maxLength: MAX_BROWSER_PROGRAM_BYTES }),
         interaction: Type.Boolean(),
+        fallbackCurrentPage: Type.Boolean(),
         summary: Type.String({ minLength: 1, maxLength: 240 }),
       }),
       executionMode: "sequential",
       replay: "never",
       execute: async (_id, params) => {
-        const value = z.object({ program: z.string(), interaction: z.boolean(), summary: z.string() }).parse(params);
-        return result(await broker.runProgram(value.program, value.interaction, value.summary));
+        const value = z.object({ program: z.string(), interaction: z.boolean(), fallbackCurrentPage: z.boolean(), summary: z.string() }).parse(params);
+        return result(await broker.runProgram(value.program, value.interaction, value.summary, value.fallbackCurrentPage));
       },
     },
   ];

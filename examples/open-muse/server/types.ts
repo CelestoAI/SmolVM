@@ -22,7 +22,7 @@ export interface PendingApproval {
   kind: "checkout_review" | "browser_program";
   approvalId: string; actionDigest: string; reason: string; expiresAt: string;
   totalPriceMinor?: number; cartReceipt?: string; commerceRevision?: number;
-  program?: string;
+  program?: string; fallbackCurrentPage?: boolean;
 }
 export interface CartLine { productId: string; variantId: string; quantity: 1; unitPriceMinor: number }
 
