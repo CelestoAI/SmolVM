@@ -10,8 +10,10 @@ export function App() {
   const [viewerPath, setViewerPath] = useState("");
   const [controlEpoch, setControlEpoch] = useState("");
   const [approvalPending, setApprovalPending] = useState(false);
+  const [recoveryPending, setRecoveryPending] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const approvalPendingRef = useRef(false);
+  const recoveryPendingRef = useRef(false);
 
   const refresh = async (id = conversation?.id) => { if (id) setConversation(await api.getConversation(id)); };
   useEffect(() => {
@@ -74,16 +76,22 @@ export function App() {
     }
   };
   const continueConversation = async () => {
-    if (!conversation) return;
+    if (!conversation || recoveryPendingRef.current) return;
+    recoveryPendingRef.current = true;
+    setRecoveryPending(true);
     setError("");
     try { setConversation(await api.continueConversation(conversation.id)); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Could not continue the conversation."); }
+    finally { recoveryPendingRef.current = false; setRecoveryPending(false); }
   };
   const startOver = async () => {
-    if (!conversation) return;
+    if (!conversation || recoveryPendingRef.current) return;
+    recoveryPendingRef.current = true;
+    setRecoveryPending(true);
     setError("");
     try { await api.startOver(conversation.id); window.location.reload(); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Could not start over."); }
+    finally { recoveryPendingRef.current = false; setRecoveryPending(false); }
   };
 
   const busy = approvalPending || conversation?.runState === "model_turn" || conversation?.runState === "tool_action";
@@ -103,7 +111,7 @@ export function App() {
         <div className="chat-scroll">
           {!conversation?.messages.length && <div className="welcome"><div className="eyebrow">A computer coworker in a disposable VM</div><h1>What should we<br/>get done?</h1><p>Ask naturally. It can operate public websites in its own browser, while you watch, approve interactions, or take control.</p><button className="suggestion" onClick={() => void submit(SUGGESTION)}><span>Try a public web task</span><strong>{SUGGESTION}</strong><b>→</b></button></div>}
           <div className="messages">{conversation?.messages.map((message) => <article key={message.id} className={`message ${message.role}`}><div className="avatar">{message.role === "user" ? "Y" : "M"}</div><div><div className="message-role">{message.role === "user" ? "You" : "OpenMuse"}</div><p>{message.text}</p></div></article>)}</div>
-          {interrupted && <aside className="approval recovery"><div className="eyebrow">Work interrupted</div><h3>Choose how to proceed</h3><p>OpenMuse stopped while working. The previous website action may have completed. Continue in a fresh computer, or start over.</p><div><button onClick={() => void continueConversation()}>Continue</button><button className="secondary" onClick={() => void startOver()}>Start over</button></div></aside>}
+          {interrupted && <aside className="approval recovery"><div className="eyebrow">Work interrupted</div><h3>Choose how to proceed</h3><p>OpenMuse stopped while working. The previous website action may have completed. Continue in a fresh computer, or start over.</p><div><button disabled={recoveryPending} onClick={() => void continueConversation()}>Continue</button><button className="secondary" disabled={recoveryPending} onClick={() => void startOver()}>Start over</button></div></aside>}
           {conversation?.pendingApproval && <aside className="approval"><div className="eyebrow">Approval required</div><h3>Allow this website interaction?</h3><p>{conversation.pendingApproval.reason}</p>{conversation.pendingApproval.fallbackCurrentPage && <p>If the script stops early, OpenMuse may read the current page’s main visible text.</p>}<div><button disabled={approvalPending} onClick={() => void resolve(true)}>{approvalPending ? "Running…" : "Approve once"}</button><button className="secondary" disabled={approvalPending} onClick={() => void resolve(false)}>Not now</button></div></aside>}
           {busy && <div className="thinking"><i></i><i></i><i></i> Working in the browser</div>}
           <div ref={endRef}></div>

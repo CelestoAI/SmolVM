@@ -110,7 +110,10 @@ test("invalid state reports a recovery command instead of silently resetting", a
 
   await assert.rejects(
     ConversationManager.open("", "gpt-5-mini", false, store),
-    (error: unknown) => (error as Error).message.includes(`mv \"${store.path}\" \"${store.path}.bad\"`),
+    (error: unknown) => {
+      const message = (error as Error).message;
+      return message.includes(`mv \"${store.path}\" \"${store.path}.bad\"`) && message.includes("npm run dev");
+    },
   );
 });
 
@@ -301,6 +304,44 @@ test("graceful close preserves idle work but interrupts leased browser state", a
   assert.equal(snapshot.pendingApproval, undefined);
   assert.equal((await activeStore.load())?.conversation.runState, "interrupted");
   assert.equal(idleManager.snapshot(idle.id).runState, "idle");
+});
+
+test("graceful close drains active and queued turns before releasing the computer", async (t) => {
+  const store = await temporaryStore(t);
+  const manager = new ConversationManager("", "gpt-5-mini", false, store);
+  const created = await manager.create();
+  const calls: string[] = [];
+  let finishAction!: () => void;
+  const activeAction = new Promise<void>((resolve) => { finishAction = resolve; });
+  const internals = manager as unknown as {
+    context: ConversationContext;
+    activeAction: Promise<void>;
+    turnQueue: Promise<void>;
+    runTurn: (context: ConversationContext, text: string) => Promise<void>;
+    releaseComputer: (context: ConversationContext) => Promise<void>;
+  };
+  internals.context.runState = "model_turn";
+  internals.context.agent = {
+    state: { messages: [], errorMessage: undefined },
+    prompt: async () => { calls.push("prompt"); },
+    abort: () => { calls.push("abort"); },
+  } as unknown as ConversationContext["agent"];
+  internals.activeAction = activeAction;
+  internals.turnQueue = activeAction.then(() => internals.runTurn(internals.context, "queued"));
+  internals.releaseComputer = async () => { calls.push("release"); };
+
+  const closing = manager.close();
+  await Promise.resolve();
+
+  assert.equal(manager.snapshot(created.id).runState, "stopping");
+  assert.deepEqual(calls, ["abort"]);
+
+  finishAction();
+  await closing;
+
+  assert.deepEqual(calls, ["abort", "release"]);
+  assert.equal(manager.snapshot(created.id).runState, "interrupted");
+  assert.equal((await store.load())?.conversation.runState, "interrupted");
 });
 
 test("takeover, resume, and stop transitions are checkpointed", async (t) => {

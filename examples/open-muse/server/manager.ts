@@ -261,13 +261,18 @@ export class ConversationManager {
     const context = this.context;
     if (!context || context.runState === "stopped") return;
     const interrupted = context.controlOwner !== "agent" || !["idle", "failed"].includes(context.runState);
+    const finalRunState = interrupted ? "interrupted" : context.runState;
+    context.runState = "stopping";
+    context.stateVersion += 1;
     context.agent?.abort();
+    await this.activeAction?.catch(() => undefined);
+    await this.turnQueue.catch(() => undefined);
     await this.releaseComputer(context);
     delete context.pendingApproval;
     context.controlOwner = "agent";
     context.controlEpoch = randomBytes(18).toString("base64url");
     context.sessionLifecycle = "absent";
-    context.runState = interrupted ? "interrupted" : context.runState;
+    context.runState = finalRunState;
     context.stateVersion += 1;
     this.emit(interrupted ? "conversation.interrupted" : "browser.closed", { summary: interrupted ? "Work was interrupted" : "Disposable computer closed" }, false);
     await this.checkpoint();
@@ -281,18 +286,20 @@ export class ConversationManager {
   }
 
   private async runTurn(context: ConversationContext, text: string): Promise<void> {
-    if (context.runState === "stopped" || context.controlOwner !== "agent") return;
+    if (["stopped", "stopping"].includes(context.runState) || context.controlOwner !== "agent") return;
     if (context.runState !== "model_turn") {
       context.runState = "model_turn";
       context.stateVersion += 1;
       this.emit("agent.started", { summary: "OpenMuse is thinking" }, false);
     }
     await this.checkpoint();
+    if ((context.runState as string) === "stopping") return;
     try {
       context.agent ??= createAgent(this.apiKey, this.model, this.broker(context), this.fixtureStore);
       resetAgentTurnLimit(context.agent);
       context.abortController = new AbortController();
       await context.agent.prompt(text);
+      if ((context.runState as string) === "stopping") return;
       if (context.agent.state.errorMessage) throw new Error(context.agent.state.errorMessage);
       const textOutput = context.lastBrowserError
         ? `I couldn't start the disposable browser: ${context.lastBrowserError}`

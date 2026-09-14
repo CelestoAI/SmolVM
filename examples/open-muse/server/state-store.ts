@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { z } from "zod";
 import type { ConversationContext, ConversationEvent, Message } from "./types.js";
@@ -103,7 +103,7 @@ export class ConversationStateStore {
     try {
       return storedConversationSchema.parse(JSON.parse(contents));
     } catch {
-      throw new Error(`Saved OpenMuse state is invalid at '${this.path}'. Run 'mv "${this.path}" "${this.path}.bad"' and restart OpenMuse.`);
+      throw new Error(`Saved OpenMuse state is invalid at '${this.path}'. Run 'mv "${this.path}" "${this.path}.bad"', then run 'npm run dev'.`);
     }
   }
 
@@ -115,6 +115,14 @@ export class ConversationStateStore {
       try {
         await writeFile(temporaryPath, contents, { encoding: "utf8", mode: 0o600, flush: true });
         await rename(temporaryPath, this.path);
+        if (process.platform !== "win32") {
+          const directory = await open(dirname(this.path), "r");
+          try {
+            await directory.sync();
+          } finally {
+            await directory.close();
+          }
+        }
       } catch (error) {
         await unlink(temporaryPath).catch(() => undefined);
         throw error;
