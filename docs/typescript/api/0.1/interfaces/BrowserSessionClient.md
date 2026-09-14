@@ -8,11 +8,31 @@
 
 Control a ready browser computer through private automation and viewing addresses. An endpoint is a local address used to connect to that computer.
 
+## Extends
+
+- [`ComputerClient`](ComputerClient.md)
+
 ## Properties
 
 ### cdpUrl
 
 > `readonly` **cdpUrl**: `string`
+
+***
+
+### displayUrl?
+
+> `readonly` `optional` **displayUrl?**: `string`
+
+***
+
+### files
+
+> `readonly` **files**: [`SandboxFiles`](SandboxFiles.md)
+
+#### Inherited from
+
+[`ComputerClient`](ComputerClient.md).[`files`](ComputerClient.md#files)
 
 ***
 
@@ -60,8 +80,6 @@ Control a ready browser computer through private automation and viewing addresse
 
 > **exec**(`command`, `options?`): `Promise`\<[`ExecResult`](ExecResult.md)\>
 
-Run a command as the unprivileged agent user inside this browser VM.
-
 #### Parameters
 
 ##### command
@@ -75,3 +93,7 @@ Run a command as the unprivileged agent user inside this browser VM.
 #### Returns
 
 `Promise`\<[`ExecResult`](ExecResult.md)\>
+
+#### Inherited from
+
+[`ComputerClient`](ComputerClient.md).[`exec`](ComputerClient.md#exec)

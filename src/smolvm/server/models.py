@@ -117,6 +117,7 @@ class BrowserSessionResponse(BaseModel):
     status: BrowserSessionState
     cdp_url: str
     viewer_url: str | None = None
+    display_url: str | None = None
     profile_id: str | None = None
 
 
@@ -159,6 +160,7 @@ class CapabilitiesResponse(BaseModel):
         "browser.delete",
         "browser.endpoints",
         "browser.exec",
+        "browser.files",
         "browser.events",
         "events",
         "diagnostics",

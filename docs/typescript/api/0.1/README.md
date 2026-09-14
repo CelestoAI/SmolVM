@@ -15,6 +15,7 @@ The SmolVM SDK lets a Node.js application create a disposable local computer, ru
 
 - [BrowserSessionClient](interfaces/BrowserSessionClient.md)
 - [BrowserSessionCollection](interfaces/BrowserSessionCollection.md)
+- [ComputerClient](interfaces/ComputerClient.md)
 - [CreateBrowserSessionOptions](interfaces/CreateBrowserSessionOptions.md)
 - [CreateSandboxOptions](interfaces/CreateSandboxOptions.md)
 - [DiagnoseResult](interfaces/DiagnoseResult.md)

@@ -29,6 +29,6 @@ async function main() {
 main().catch((error) => { console.error(error); process.exitCode = 1; });
 ```
 
-The source checkout also includes `smolvm.browsers.create(...)`, which starts an isolated Chromium session with private automation and an optional live viewer. That API is planned for the next preview and is not included in `0.1.0-preview.1`; see the source repository's TypeScript guide for a working example.
+The source checkout also includes `smolvm.browsers.create(...)`, which starts a complete browser computer with commands, files, private Chromium automation, and an optional live desktop display. A live session returns `cdpUrl` for Playwright, `viewerUrl` for a web browser, and `displayUrl` for VNC clients or computer-use agents. That API is planned for the next preview and is not included in `0.1.0-preview.1`; see the source repository's TypeScript guide and `examples/browser-computer.ts` for working examples.
 
 See the TypeScript guide in the source repository for lifecycle, files, network policy, cancellation, diagnostics, and CI examples.

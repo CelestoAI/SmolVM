@@ -268,6 +268,7 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
             status=browser.status,
             cdp_url=browser.cdp_url,
             viewer_url=browser.viewer_url,
+            display_url=browser.display_url,
             profile_id=browser.info.profile_id,
         )
 
@@ -280,6 +281,96 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
                 f"Browser session '{session_id}' is unavailable; create a new browser session.",
             )
         return browser
+
+    async def write_vm_file(
+        vm: SmolVM,
+        *,
+        resource_kind: str,
+        resource_id: str,
+        path: str,
+        request: Request,
+    ) -> Response:
+        if not PurePosixPath(path).is_absolute():
+            raise _sdk_error(400, "invalid_path", "Sandbox file path must be absolute.")
+        try:
+            declared_size = int(request.headers.get("content-length", "0"))
+        except ValueError as exc:
+            raise _sdk_error(
+                400, "transport_failed", "File size header must be an integer."
+            ) from exc
+        if declared_size > _MAX_FILE_BYTES:
+            raise _sdk_error(413, "transport_failed", "File exceeds the 16 MiB SDK limit.")
+        temporary: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix="smolvm-sdk-upload-", delete=False) as handle:
+                temporary = Path(handle.name)
+                received = 0
+                async for chunk in request.stream():
+                    received += len(chunk)
+                    if received > _MAX_FILE_BYTES:
+                        raise _sdk_error(
+                            413, "transport_failed", "File exceeds the 16 MiB SDK limit."
+                        )
+                    handle.write(chunk)
+            await asyncio.to_thread(vm.upload_file, temporary, path)
+        except HTTPException:
+            raise
+        except (ValueError, SmolVMError) as exc:
+            raise _sdk_error(
+                409,
+                "transport_failed",
+                f"Could not write '{path}' in {resource_kind} '{resource_id}'; "
+                "check the path and retry.",
+            ) from exc
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        return Response(status_code=204)
+
+    async def read_vm_file(
+        vm: SmolVM,
+        *,
+        resource_kind: str,
+        resource_id: str,
+        path: str,
+    ) -> Response:
+        if not PurePosixPath(path).is_absolute():
+            raise _sdk_error(400, "invalid_path", "Sandbox file path must be absolute.")
+        temporary: Path | None = None
+        try:
+            size_result = await asyncio.to_thread(
+                vm.run,
+                f"stat -c %s -- {shlex.quote(path)}",
+                30,
+                "raw",
+            )
+            if size_result.exit_code != 0:
+                raise SmolVMError(size_result.stderr.strip() or f"Could not inspect '{path}'.")
+            try:
+                guest_size = int(size_result.stdout.strip())
+            except ValueError as exc:
+                raise SmolVMError(f"Could not determine the size of '{path}'.") from exc
+            if guest_size > _MAX_FILE_BYTES:
+                raise _sdk_error(413, "transport_failed", "File exceeds the 16 MiB SDK limit.")
+            with tempfile.NamedTemporaryFile(prefix="smolvm-sdk-download-", delete=False) as handle:
+                temporary = Path(handle.name)
+            await asyncio.to_thread(vm.download_file, path, temporary)
+            if temporary.stat().st_size > _MAX_FILE_BYTES:
+                raise _sdk_error(413, "transport_failed", "File exceeds the 16 MiB SDK limit.")
+            content = temporary.read_bytes()
+        except HTTPException:
+            raise
+        except (ValueError, SmolVMError) as exc:
+            raise _sdk_error(
+                409,
+                "transport_failed",
+                f"Could not read '{path}' from {resource_kind} '{resource_id}'; "
+                "check the path and retry.",
+            ) from exc
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        return Response(content=content, media_type="application/octet-stream")
 
     @app.post(
         "/browser-sessions",
@@ -431,6 +522,42 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
                 "browser session if it is no longer usable.",
             ) from exc
         return ExecResponse(**result.model_dump(), duration_ms=duration_ms)
+
+    @app.put(
+        "/browser-sessions/{session_id}/files",
+        status_code=204,
+        operation_id="writeBrowserFile",
+    )
+    async def write_browser_file(session_id: str, path: str, request: Request) -> Response:
+        browser = resolve_browser(session_id)
+        return await write_vm_file(
+            browser.vm,
+            resource_kind="browser session",
+            resource_id=session_id,
+            path=path,
+            request=request,
+        )
+
+    @app.get(
+        "/browser-sessions/{session_id}/files",
+        response_class=Response,
+        responses={
+            200: {
+                "content": {
+                    "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}
+                }
+            }
+        },
+        operation_id="readBrowserFile",
+    )
+    async def read_browser_file(session_id: str, path: str) -> Response:
+        browser = resolve_browser(session_id)
+        return await read_vm_file(
+            browser.vm,
+            resource_kind="browser session",
+            resource_id=session_id,
+            path=path,
+        )
 
     @app.post(
         "/sandboxes",
@@ -596,41 +723,13 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
     @app.put("/sandboxes/{sandbox_id}/files", status_code=204)
     async def write_file(sandbox_id: str, path: str, request: Request) -> Response:
         vm = resolve(sandbox_id)
-        if not PurePosixPath(path).is_absolute():
-            raise _sdk_error(400, "invalid_path", "Sandbox file path must be absolute.")
-        try:
-            declared_size = int(request.headers.get("content-length", "0"))
-        except ValueError as exc:
-            raise _sdk_error(
-                400, "transport_failed", "File size header must be an integer."
-            ) from exc
-        if declared_size > _MAX_FILE_BYTES:
-            raise _sdk_error(413, "transport_failed", "File exceeds the 16 MiB SDK limit.")
-        temporary: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(prefix="smolvm-sdk-upload-", delete=False) as handle:
-                temporary = Path(handle.name)
-                received = 0
-                async for chunk in request.stream():
-                    received += len(chunk)
-                    if received > _MAX_FILE_BYTES:
-                        raise _sdk_error(
-                            413, "transport_failed", "File exceeds the 16 MiB SDK limit."
-                        )
-                    handle.write(chunk)
-            await asyncio.to_thread(vm.upload_file, temporary, path)
-        except HTTPException:
-            raise
-        except (ValueError, SmolVMError) as exc:
-            raise _sdk_error(
-                409,
-                "transport_failed",
-                (f"Could not write '{path}' in sandbox '{sandbox_id}'; check the path and retry."),
-            ) from exc
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
-        return Response(status_code=204)
+        return await write_vm_file(
+            vm,
+            resource_kind="sandbox",
+            resource_id=sandbox_id,
+            path=path,
+            request=request,
+        )
 
     @app.get(
         "/sandboxes/{sandbox_id}/files",
@@ -645,41 +744,11 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
     )
     async def read_file(sandbox_id: str, path: str) -> Response:
         vm = resolve(sandbox_id)
-        if not PurePosixPath(path).is_absolute():
-            raise _sdk_error(400, "invalid_path", "Sandbox file path must be absolute.")
-        temporary: Path | None = None
-        try:
-            size_result = await asyncio.to_thread(
-                vm.run,
-                f"stat -c %s -- {shlex.quote(path)}",
-                30,
-                "raw",
-            )
-            if size_result.exit_code != 0:
-                raise SmolVMError(size_result.stderr.strip() or f"Could not inspect '{path}'.")
-            try:
-                guest_size = int(size_result.stdout.strip())
-            except ValueError as exc:
-                raise SmolVMError(f"Could not determine the size of '{path}'.") from exc
-            if guest_size > _MAX_FILE_BYTES:
-                raise _sdk_error(413, "transport_failed", "File exceeds the 16 MiB SDK limit.")
-            with tempfile.NamedTemporaryFile(prefix="smolvm-sdk-download-", delete=False) as handle:
-                temporary = Path(handle.name)
-            await asyncio.to_thread(vm.download_file, path, temporary)
-            if temporary.stat().st_size > _MAX_FILE_BYTES:
-                raise _sdk_error(413, "transport_failed", "File exceeds the 16 MiB SDK limit.")
-            content = temporary.read_bytes()
-        except HTTPException:
-            raise
-        except (ValueError, SmolVMError) as exc:
-            raise _sdk_error(
-                409,
-                "transport_failed",
-                (f"Could not read '{path}' from sandbox '{sandbox_id}'; check the path and retry."),
-            ) from exc
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
-        return Response(content=content, media_type="application/octet-stream")
+        return await read_vm_file(
+            vm,
+            resource_kind="sandbox",
+            resource_id=sandbox_id,
+            path=path,
+        )
 
     return app

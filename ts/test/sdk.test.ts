@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,7 +15,7 @@ class FakeTransport implements SmolVMTransport {
 
   async request<T>(path: string, init?: RequestInit): Promise<T> {
     this.calls.push({ path, init });
-    if (path === "/sdk/v1/capabilities") return { protocol_version: 1, capabilities: ["sandbox.create", "sandbox.delete", "sandbox.exec", "files.read", "files.write", "browser.create", "browser.delete", "browser.endpoints", "browser.exec", "browser.events", "events"] } as T;
+    if (path === "/sdk/v1/capabilities") return { protocol_version: 1, capabilities: ["sandbox.create", "sandbox.delete", "sandbox.exec", "files.read", "files.write", "browser.create", "browser.delete", "browser.endpoints", "browser.exec", "browser.files", "browser.events", "events"] } as T;
     if (path === "/sdk/v1/diagnostics") return { protocol_version: 1, runtime_version: "test", python_version: "3.13", platform: "darwin-arm64", supported: true, problems: [] } as T;
     if (path === "/sandboxes") return { id: "sbx-test", status: "running" } as T;
     if (path === "/browser-sessions") return {
@@ -24,6 +24,7 @@ class FakeTransport implements SmolVMTransport {
       status: "ready",
       cdp_url: "http://127.0.0.1:9222",
       viewer_url: "http://127.0.0.1:6080/vnc.html",
+      display_url: "vnc://127.0.0.1:5900",
       profile_id: null,
     } as T;
     if (path.endsWith("/exec")) return { exit_code: 7, stdout: "out", stderr: "err", duration_ms: 12 } as T;
@@ -38,6 +39,19 @@ class FakeTransport implements SmolVMTransport {
   async requestBytes(path: string): Promise<Uint8Array> {
     this.calls.push({ path });
     return this.files.get(path) ?? new Uint8Array();
+  }
+
+  async requestStream(path: string, content: AsyncIterable<Uint8Array>, size: number): Promise<void> {
+    this.calls.push({ path, init: { method: "PUT", headers: { "content-length": String(size) } } });
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of content) chunks.push(chunk);
+    const bytes = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.byteLength, 0));
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    this.files.set(path, bytes);
   }
 
   async close(): Promise<void> { this.closeCount += 1; }
@@ -80,6 +94,11 @@ test("creates a ready live browser session and deletes it once", async () => {
   assert.equal(browser.status, "ready");
   assert.equal(browser.cdpUrl, "http://127.0.0.1:9222");
   assert.equal(browser.viewerUrl, "http://127.0.0.1:6080/vnc.html");
+  assert.equal(browser.displayUrl, "vnc://127.0.0.1:5900");
+
+  await browser.files.write("/workspace/input.txt", "hello");
+  assert.equal(await browser.files.read("/workspace/input.txt"), "hello");
+  assert.ok(transport.calls.some((call) => call.path.startsWith("/browser-sessions/browser-test/files?")));
 
   const execResult = await browser.exec(["printf", "%s", "hello world"]);
   const execBody = JSON.parse(String(transport.calls.find((call) => call.path === "/browser-sessions/browser-test/exec")?.init?.body));
@@ -90,10 +109,31 @@ test("creates a ready live browser session and deletes it once", async () => {
   const deletion = browser.delete();
   assert.equal(browser.status, "stopping");
   await assert.rejects(() => browser.exec("echo too-late"), /not ready/);
+  await assert.rejects(() => browser.files.read("/workspace/input.txt"), /not ready/);
   await Promise.all([deletion, browser.delete()]);
   assert.equal(browser.status, "deleted");
   assert.equal(transport.calls.filter((call) => call.path === "/browser-sessions/browser-test" && call.init?.method === "DELETE").length, 1);
   assert.deepEqual(events, ["browser.starting", "browser.ready", "command.started", "command.completed", "browser.stopping", "browser.deleted"]);
+});
+
+test("browser computers upload and atomically download files", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "smolvm-browser-files-"));
+  const localInput = join(directory, "input.bin");
+  const localOutput = join(directory, "nested", "output.bin");
+  const content = new Uint8Array([0, 1, 2, 255]);
+  const client = new SmolVM({ transport: new FakeTransport() });
+  const computer = await client.browsers.create();
+
+  try {
+    await writeFile(localInput, content);
+    await computer.files.upload(localInput, "/workspace/input.bin");
+    await computer.files.download("/workspace/input.bin", localOutput);
+
+    assert.deepEqual(new Uint8Array(await readFile(localOutput)), content);
+  } finally {
+    await client.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("browser timeout records the server-confirmed session deletion", async () => {
