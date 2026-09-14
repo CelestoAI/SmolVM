@@ -14,7 +14,9 @@
 
 """Tests for browser session orchestration."""
 
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -157,12 +159,14 @@ def test_smolvm_computer_factory_starts_linux_desktop(mock_sandbox_cls: MagicMoc
     """The computer factory should create one desktop-and-browser session."""
     sandbox = MagicMock(spec=_ComputerSandbox)
     mock_sandbox_cls.return_value = sandbox
+    events: list[dict[str, object]] = []
 
     result = SmolVM.computer(
         name="computer-demo",
         backend="qemu",
         display={"width": 1440, "height": 900},
         resources={"memory_mib": 3072, "disk_mib": 8192, "vcpus": 2},
+        on_event=events.append,  # type: ignore[arg-type]
     )
 
     assert result is sandbox
@@ -175,6 +179,8 @@ def test_smolvm_computer_factory_starts_linux_desktop(mock_sandbox_cls: MagicMoc
     assert config.mem_size_mib == 3072
     assert config.disk_size_mib == 8192
     sandbox.start.assert_called_once_with(boot_timeout=90.0, on_progress=None)
+    assert events == [{"type": "computer.starting", "computer_id": "computer-demo"}]
+    sandbox.enable_events.assert_called_once_with(events.append)
 
 
 def test_smolvm_computer_rejects_unknown_template_and_vcpu_count() -> None:
@@ -200,6 +206,49 @@ def test_computer_run_uses_desktop_user_and_default_timeout() -> None:
         timeout=30,
         shell="raw",
     )
+
+
+def test_computer_health_failure_emits_error_and_updates_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A required process exit should make the owned computer visibly unusable."""
+    computer = object.__new__(_ComputerSandbox)
+    computer._info = SimpleNamespace(
+        session_id="computer-demo",
+        vm_id="vm-computer-demo",
+        status=BrowserSessionState.READY,
+    )
+    computer._state = MagicMock()
+    computer._state.update_browser_session.return_value = SimpleNamespace(
+        session_id="computer-demo",
+        vm_id="vm-computer-demo",
+        status=BrowserSessionState.ERROR,
+    )
+    computer._monitor_stop = threading.Event()
+    computer._monitor_thread = None
+    events: list[dict[str, object]] = []
+    computer._event_callback = events.append
+    computer._failed_required_process = lambda: "openbox"
+    monkeypatch.setattr("smolvm.computer._HEALTH_CHECK_INTERVAL_SECONDS", 0)
+
+    computer._monitor_required_processes()
+
+    computer._state.update_browser_session.assert_called_once_with(
+        "computer-demo",
+        status=BrowserSessionState.ERROR,
+    )
+    assert events == [
+        {
+            "type": "computer.error",
+            "computer_id": "computer-demo",
+            "sandbox_id": "vm-computer-demo",
+            "process": "openbox",
+            "message": (
+                "Required desktop process 'openbox' stopped in computer 'computer-demo'; "
+                "call computer.delete() and create another."
+            ),
+        }
+    ]
 
 
 def test_computer_files_require_absolute_paths() -> None:
@@ -379,6 +428,9 @@ def test_computer_delete_keeps_failed_cleanup_retryable() -> None:
 
     computer._state.delete_browser_session.assert_not_called()
     computer.close.assert_not_called()
+    assert computer._state.update_browser_session.call_args_list[-1].kwargs == {
+        "status": BrowserSessionState.ERROR
+    }
 
     computer.delete()
 

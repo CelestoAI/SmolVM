@@ -115,6 +115,11 @@ export class SmolVM implements SmolVMClient {
   }
 
   private emit(event: SmolVMEvent): void {
+    if (event.type === "computer.error") {
+      for (const computer of this.activeComputers) {
+        if (computer.computerId === event.computerId) computer.markError();
+      }
+    }
     try { this.onEvent?.(event); } catch { /* Lifecycle observers never change VM behavior. */ }
   }
 

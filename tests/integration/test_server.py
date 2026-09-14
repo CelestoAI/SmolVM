@@ -28,6 +28,7 @@ import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from queue import Queue
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -392,6 +393,7 @@ def test_failed_computer_delete_keeps_live_handle_for_retry(app: FastAPI) -> Non
 
     assert exc_info.value.status_code == 409
     assert "computer-demo" in app.state.computer_sessions
+    assert app.state.computer_states["computer-demo"] == "error"
     assert FakeComputer.close_calls == 0
 
     FakeSmolVM.delete_error = None
@@ -401,6 +403,76 @@ def test_failed_computer_delete_keeps_live_handle_for_retry(app: FastAPI) -> Non
     assert FakeComputer.delete_calls == 2
     deleted_again = delete("computer-demo")
     assert deleted_again.status_code == 204
+
+
+def test_computer_operations_reject_once_deletion_begins(
+    app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create = _handler(app, "/computers", "POST")
+    delete = _handler(app, "/computers/{computer_id}", "DELETE")
+    execute = _handler(app, "/computers/{computer_id}/exec", "POST")
+    launch = _handler(app, "/computers/{computer_id}/browser/launch", "POST")
+    create(CreateComputerRequest(computer_id="computer-demo"))
+    computer = app.state.computer_sessions["computer-demo"]
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocked_delete() -> None:
+        entered.set()
+        assert release.wait(timeout=2)
+
+    monkeypatch.setattr(computer, "delete", blocked_delete)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        deletion = executor.submit(delete, "computer-demo")
+        assert entered.wait(timeout=2)
+        for operation in (
+            lambda: execute("computer-demo", ExecRequest(command="whoami")),
+            lambda: launch("computer-demo"),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                operation()
+            assert exc_info.value.status_code == 409
+            assert exc_info.value.headers == {"X-SmolVM-Error-Code": "computer_not_ready"}
+        release.set()
+        assert deletion.result().status_code == 204
+
+
+def test_required_desktop_process_failure_marks_computer_error(app: FastAPI) -> None:
+    create = _handler(app, "/computers", "POST")
+    execute = _handler(app, "/computers/{computer_id}/exec", "POST")
+    create(CreateComputerRequest(computer_id="computer-demo"))
+    events: Queue[dict[str, object]] = Queue()
+    app.state.event_subscribers.add(events)
+
+    app.state.handle_computer_event(
+        {
+            "type": "computer.error",
+            "computer_id": "computer-demo",
+            "sandbox_id": "vm-computer-demo",
+            "process": "openbox",
+            "message": (
+                "Required desktop process 'openbox' stopped in computer 'computer-demo'; "
+                "call computer.delete() and create another."
+            ),
+        }
+    )
+
+    assert app.state.computer_states["computer-demo"] == "error"
+    assert events.get_nowait() == {
+        "type": "computer.error",
+        "computerId": "computer-demo",
+        "sandboxId": "vm-computer-demo",
+        "process": "openbox",
+        "message": (
+            "Required desktop process 'openbox' stopped in computer 'computer-demo'; "
+            "call computer.delete() and create another."
+        ),
+    }
+    with pytest.raises(HTTPException) as exc_info:
+        execute("computer-demo", ExecRequest(command="whoami"))
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.headers == {"X-SmolVM-Error-Code": "computer_not_ready"}
 
 
 def test_duplicate_computer_name_is_rejected_without_replacing_the_owner(app: FastAPI) -> None:
@@ -418,6 +490,8 @@ def test_duplicate_computer_name_is_rejected_without_replacing_the_owner(app: Fa
 def test_computer_command_timeout_deletes_and_evicts_the_computer(app: FastAPI) -> None:
     create = _handler(app, "/computers", "POST")
     execute = _handler(app, "/computers/{computer_id}/exec", "POST")
+    events: Queue[dict[str, object]] = Queue()
+    app.state.event_subscribers.add(events)
     create(CreateComputerRequest(computer_id="computer-demo"))
     FakeSmolVM.run_error = OperationTimeoutError("command", 1)
 
@@ -431,6 +505,12 @@ def test_computer_command_timeout_deletes_and_evicts_the_computer(app: FastAPI) 
     }
     assert "was deleted" in exc_info.value.detail
     assert "computer-demo" not in app.state.computer_sessions
+    assert [events.get_nowait()["type"] for _ in range(events.qsize())] == [
+        "computer.starting",
+        "computer.ready",
+        "computer.stopping",
+        "computer.deleted",
+    ]
 
 
 def test_computer_timeout_keeps_cleanup_retryable_when_delete_fails(app: FastAPI) -> None:
@@ -450,6 +530,7 @@ def test_computer_timeout_keeps_cleanup_retryable_when_delete_fails(app: FastAPI
     }
     assert "deletion could not be confirmed" in exc_info.value.detail
     assert "computer-demo" in app.state.computer_sessions
+    assert app.state.computer_states["computer-demo"] == "error"
     assert FakeComputer.close_calls == 0
 
     FakeSmolVM.delete_error = None
@@ -599,6 +680,7 @@ async def test_computer_file_endpoints_reject_relative_and_oversized_files(app: 
     with pytest.raises(HTTPException) as oversized:
         await read("computer-demo", "/workspace/large.bin")
     assert oversized.value.status_code == 413
+    assert oversized.value.headers == {"X-SmolVM-Error-Code": "file_too_large"}
 
 
 def test_computer_browser_launch_maps_failure_and_can_be_retried(app: FastAPI) -> None:

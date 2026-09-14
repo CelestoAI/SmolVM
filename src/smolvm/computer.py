@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import shlex
 import tempfile
+import threading
 import uuid
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from smolvm.browser import _BrowserSandbox
 from smolvm.exceptions import BrowserSessionNotFoundError, SmolVMError
-from smolvm.types import BrowserSessionState, CommandResult, VMState
+from smolvm.types import BrowserSessionState, CommandResult, ComputerEvent, VMState
+
+_HEALTH_CHECK_INTERVAL_SECONDS = 2.0
 
 
 class ComputerDisplay:
@@ -172,6 +176,9 @@ class _ComputerSandbox(_BrowserSandbox):
     )
 
     def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        self._event_callback: Callable[[ComputerEvent], None] | None = None
+        self._monitor_stop = threading.Event()
+        self._monitor_thread: threading.Thread | None = None
         super().__init__(*args, **kwargs)
         if self._session_config.mode != "computer":
             self.close()
@@ -203,6 +210,79 @@ class _ComputerSandbox(_BrowserSandbox):
             wrapped = f"runuser -u agent -- sh -lc {shlex.quote(command)}"
         return self.vm.run(wrapped, timeout=30 if timeout is None else timeout, shell="raw")
 
+    def enable_events(self, callback: Callable[[ComputerEvent], None] | None) -> None:
+        """Publish lifecycle events and watch the required desktop processes."""
+        self._event_callback = callback
+        self._emit_event(
+            {
+                "type": "computer.ready",
+                "computer_id": self.computer_id,
+                "sandbox_id": self.sandbox_id,
+            }
+        )
+        if callback is None:
+            return
+        self._monitor_thread = threading.Thread(
+            target=self._monitor_required_processes,
+            name=f"smolvm-computer-health-{self.computer_id}",
+            daemon=True,
+        )
+        self._monitor_thread.start()
+
+    def _emit_event(self, event: ComputerEvent) -> None:
+        callback = getattr(self, "_event_callback", None)
+        if callback is not None:
+            with suppress(Exception):
+                callback(event)
+
+    def _failed_required_process(self) -> str | None:
+        command = (
+            "for process in Xvfb openbox x11vnc websockify; do "
+            'pgrep -x "$process" >/dev/null || { printf \'%s\\n\' "$process"; exit; }; '
+            "done"
+        )
+        result = self.vm.run(command, timeout=10, shell="raw")
+        return result.stdout.strip() or None
+
+    def _monitor_required_processes(self) -> None:
+        while not self._monitor_stop.wait(_HEALTH_CHECK_INTERVAL_SECONDS):
+            if self.status != BrowserSessionState.READY:
+                return
+            try:
+                process = self._failed_required_process()
+            except Exception:
+                continue
+            if process is None:
+                continue
+            with suppress(BrowserSessionNotFoundError):
+                self._info = self._state.update_browser_session(
+                    self.session_id,
+                    status=BrowserSessionState.ERROR,
+                )
+            self._emit_event(
+                {
+                    "type": "computer.error",
+                    "computer_id": self.computer_id,
+                    "sandbox_id": self.sandbox_id,
+                    "process": process,
+                    "message": (
+                        f"Required desktop process '{process}' stopped in computer "
+                        f"'{self.computer_id}'; call computer.delete() and create another."
+                    ),
+                }
+            )
+            return
+
+    def _stop_monitor(self) -> None:
+        monitor_stop = getattr(self, "_monitor_stop", None)
+        if monitor_stop is None:
+            return
+        monitor_stop.set()
+        thread = getattr(self, "_monitor_thread", None)
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=12)
+        self._monitor_thread = None
+
     def delete(self) -> None:
         """Delete every owned resource while keeping failed cleanup retryable."""
         if self._vm is None:
@@ -210,21 +290,49 @@ class _ComputerSandbox(_BrowserSandbox):
                 f"Computer '{self.session_id}' cannot be deleted because it is unavailable; "
                 f"run 'smolvm computer delete {self.session_id}' to try again."
             )
+        self._stop_monitor()
         with suppress(BrowserSessionNotFoundError):
             self._info = self._state.update_browser_session(
                 self.session_id,
                 status=BrowserSessionState.STOPPING,
             )
+        self._emit_event(
+            {
+                "type": "computer.stopping",
+                "computer_id": self.computer_id,
+                "sandbox_id": self.sandbox_id,
+            }
+        )
         if self._vm.status == VMState.RUNNING:
             with suppress(Exception):
                 self._vm.run("/usr/local/bin/smolvm-browser-session stop", timeout=30)
             with suppress(Exception):
                 self.collect_artifacts()
-        self._vm.delete()
+        try:
+            self._vm.delete()
+        except Exception:
+            with suppress(BrowserSessionNotFoundError):
+                self._info = self._state.update_browser_session(
+                    self.session_id,
+                    status=BrowserSessionState.ERROR,
+                )
+            raise
         with suppress(BrowserSessionNotFoundError):
             self._state.delete_browser_session(self.session_id)
         self._info = self._info.model_copy(update={"status": BrowserSessionState.DELETED})
+        self._emit_event(
+            {
+                "type": "computer.deleted",
+                "computer_id": self.computer_id,
+                "sandbox_id": self.sandbox_id,
+            }
+        )
         self.close()
+
+    def close(self) -> None:
+        """Stop health checks and release local resources."""
+        self._stop_monitor()
+        super().close()
 
     def stop(self) -> _ComputerSandbox:
         """Compatibility hook used by the inherited context manager."""

@@ -165,7 +165,7 @@ Reuse the installed Pi packages and provider setup from OpenMuse Research, but r
 interface ConversationContext {
   id: string;
   controlOwner: "agent" | "pause_requested" | "human";
-  runState: "idle" | "model_turn" | "tool_action" | "waiting_for_approval" | "stopping" | "stopped" | "failed";
+  runState: "idle" | "model_turn" | "tool_action" | "waiting_for_approval" | "interrupted" | "stopping" | "stopped" | "failed";
   sessionLifecycle: "absent" | "starting" | "ready" | "stopping" | "deleted" | "error";
   abortController: AbortController;
   browser?: BrowserSessionClient;
@@ -176,7 +176,9 @@ interface ConversationContext {
 }
 ```
 
-An idle conversation is nonterminal. Completed user and assistant messages live in a separate message store; token deltas are compacted into one completion event. Retain at most 100 completed messages and 64,000 UTF-8 characters. At 80% of either bound, summarize older non-sensitive dialogue for Pi and retain the latest 20 messages verbatim. The summary can guide conversation but never creates or changes an intent grant. If compaction fails, pause with a recovery to start a new conversation rather than silently dropping context. Snapshots contain the bounded completed messages, current states, grants, pending approval, and events retained after the requested cursor.
+An idle conversation is nonterminal. Completed user and assistant messages live in a separate message store; token deltas are compacted into one completion event. Retain at most 100 completed messages and 64,000 UTF-8 bytes. At 80% of either bound, summarize older non-sensitive dialogue for Pi and retain the latest 20 messages verbatim. The summary can guide conversation but never creates or changes an intent grant. If compaction fails, pause with a recovery to start a new conversation rather than silently dropping context. Snapshots contain the bounded completed messages, current states, grants, pending approval, and events retained after the requested cursor.
+
+The current example checkpoints one bounded conversation to a versioned local JSON file using a temporary file and atomic rename. It persists completed messages, sanitized event summaries, and lifecycle state, but never saves VM or Playwright handles, executable browser programs, viewer tokens, grants, or pending approvals. On restart, any in-flight model turn, browser action, approval wait, shutdown, or human-control lease becomes `interrupted`; nothing runs until the user chooses **Continue** or **Start over**. Continue creates a fresh computer, replays only the visible conversation to Pi, and requires a fresh observation before any action that might duplicate an earlier effect.
 
 After each assistant turn, Pi returns to `idle` and the browser remains warm until **Stop**, the 15-minute idle timeout, server shutdown, or failure closes it. `stop` is the explicit terminal/close operation for the first release.
 
@@ -293,6 +295,8 @@ GET  /api/conversations/:id/events       (SSE, resumable with Last-Event-ID)
 POST /api/conversations/:id/approvals/:approvalId
 POST /api/conversations/:id/takeover
 POST /api/conversations/:id/resume
+POST /api/conversations/:id/continue
+POST /api/conversations/:id/start-over
 POST /api/conversations/:id/stop
 POST /api/conversations/:id/viewer-token
 GET  /api/conversations/:id/viewer/*     (authenticated noVNC HTTP proxy)
@@ -317,7 +321,7 @@ Each event has a monotonic integer `id`, `conversationId`, `stateVersion`, times
 
 - Reject a second active conversation with HTTP `409` in the first example.
 - Defaults are: 120 seconds per model turn, 90 seconds for browser startup after an image is available, 10 seconds per Playwright operation or fixture receipt, 15 seconds per navigation, 30 seconds per approved browser program with a 35-second command deadline, 10 seconds for an approved current-page fallback, 15 seconds for takeover acknowledgement, and 15 minutes idle between turns. A browser program that stops early returns bounded current-page evidence only when the approval disclosed that fallback and the page passes the sensitive-path checks; otherwise the action fails with the exact chat retry instruction and is never retried automatically. Model and startup failures clean the session; takeover timeout leaves the input overlay in place and offers **Stop**; idle timeout stops cleanly.
-- On client refresh, reconstruct chat and activity from bounded in-memory state and reconnect SSE. Conversation recovery after a Node restart is out of scope, but orphan cleanup is not.
+- On client refresh, reconstruct chat and activity from bounded manager state and reconnect SSE. After a Node restart, restore the bounded local checkpoint. Normalize in-flight work and human control to `interrupted`, discard pending approvals, and wait for an explicit **Continue** or **Start over** choice.
 - On browser disconnect, pause Pi, retry the CDP connection once, then show one fact plus an exact recovery action.
 - On noVNC failure with healthy CDP, keep the agent paused until the user explicitly chooses **Continue without live view** or stops. Do not silently operate an invisible authenticated browser.
 - On app shutdown, stop accepting work, abort Pi, close Playwright, stop the browser session, and close SmolVM. The private runtime bridge owns a lease tied to its authenticated control pipe; EOF or parent death triggers cleanup, and the next bridge startup reconciles expired session-owned records. A hard host failure is cleaned on reboot/startup, not synchronously. If cleanup cannot be confirmed, show the exact `smolvm browser stop <session-id>` recovery command.
@@ -338,6 +342,8 @@ The serialized transition rules are:
 | `human` | message | reject with **Select Return control** and preserve the unsent composer text |
 | `human` | approval | reject as stale because takeover invalidates pending approval |
 | `human` | `resume` | transfer to `agent`, invalidate refs, and re-observe before accepting later messages |
+| `interrupted` | `continue` | create a fresh agent/browser context, re-observe, and never assume the interrupted effect completed |
+| `interrupted` | `start-over` | stop the old conversation and create a new empty conversation |
 | session `stopping/deleted/error` or run `stopped/failed` | takeover/approval/resume/tool result | reject as stale; keep overlay; never revive the session |
 
 Stop prevents future dispatch; it cannot undo an effect already committed by the browser. Consequential validation therefore completes before dispatch, and UI copy never promises rollback.

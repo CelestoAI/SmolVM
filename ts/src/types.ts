@@ -107,6 +107,7 @@ export type SmolVMEvent =
   | { type: "browser.deleted"; sessionId: string; sandboxId: string }
   | { type: "computer.starting"; computerId: string }
   | { type: "computer.ready"; computerId: string; sandboxId: string }
+  | { type: "computer.error"; computerId: string; sandboxId: string; process: string; message: string }
   | { type: "computer.stopping"; computerId: string; sandboxId: string }
   | { type: "computer.deleted"; computerId: string; sandboxId: string }
   | { type: "command.started"; sandboxId: string }

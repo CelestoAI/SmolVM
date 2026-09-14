@@ -15,6 +15,7 @@ export type SmolVMErrorCode =
   | "computer_endpoint_unavailable"
   | "computer_deleted"
   | "computer_already_exists"
+  | "computer_not_ready"
   | "browser_launch_failed"
   | "profile_in_use"
   | "invalid_path"
@@ -22,6 +23,7 @@ export type SmolVMErrorCode =
   | "command_aborted"
   | "bridge_exit"
   | "cleanup_failed"
+  | "file_too_large"
   | "transport_failed";
 
 /** Adds operation context and safe recovery details to a SmolVMError. */

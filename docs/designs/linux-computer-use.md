@@ -293,7 +293,7 @@ computer = SmolVM.computer(
     resources={"memory_mib": 2048, "disk_mib": 8192, "vcpus": 2},
     network={"mode": "open"},
     workspace=[...],
-    on_event=lambda event: print(event.type),
+    on_event=lambda event: print(event["type"]),
 )
 computer.computer_id
 computer.sandbox_id
@@ -457,11 +457,12 @@ The public event payload is:
 type ComputerEvent =
   | { type: "computer.starting"; computerId: string }
   | { type: "computer.ready"; computerId: string; sandboxId: string }
-  | { type: "computer.stopping"; computerId: string; sandboxId?: string }
-  | { type: "computer.deleted"; computerId: string; sandboxId?: string };
+  | { type: "computer.error"; computerId: string; sandboxId: string; process: string; message: string }
+  | { type: "computer.stopping"; computerId: string; sandboxId: string }
+  | { type: "computer.deleted"; computerId: string; sandboxId: string };
 ```
 
-Python exposes the equivalent frozen dataclasses with snake_case fields through `on_event`.
+Python exposes the equivalent `ComputerEvent` typed-dictionary union with snake_case fields through `on_event`. The bridge translates those identifiers to camelCase for TypeScript. `computer.error` names the failed required process and includes one short recovery message; it moves the owning handle to `error`, rejects new operations, and leaves deletion retryable.
 
 Endpoint URLs remain loopback-only. They may appear only in an explicit create/get response, `computer open`, or requested JSON output. Errors, events, diagnostics, telemetry, and debug logs redact their host, port, and query credentials.
 
@@ -502,15 +503,15 @@ All errors use the existing `ErrorResponse`. It may contain a stable code, conci
 
 ### Lifecycle and observability
 
-V1 does not add a background daemon. SDK computers remain owned by the creating Python handle or TypeScript bridge and are deleted when that owner closes. CLI computers use the existing locked SQLite inventory and backend processes that survive the starting command. Later CLI invocations reconnect from that inventory for `list`, `open`, `logs`, or `delete`. A computer can become unhealthy after startup without a lifecycle event; the failing endpoint and logs are the available signals in v1.
+V1 does not add a resident system daemon. SDK computers remain owned by the creating Python handle or TypeScript bridge and are deleted when that owner closes. CLI computers use the existing locked SQLite inventory and backend processes that survive the starting command. Later CLI invocations reconnect from that inventory for `list`, `open`, `logs`, or `delete`.
 
 Crash recovery uses a write-ahead ownership journal in the existing SQLite state database. Before any SDK VM, disk, forward, or firewall rule is allocated, the owner transactionally records the computer ID, owner PID plus process-start token, host boot ID, and intended operation. It atomically adds each resource ID before exposing that resource and removes entries only after confirmed cleanup. Endpoint URLs and credentials are never journaled. Every Python factory, TypeScript bridge, and computer CLI startup scans the journal: an entry whose boot ID or owner process token is no longer live is promoted to a CLI-visible `error` record and reconciled before new allocation. This makes abrupt exit discoverable without a resident daemon and avoids PID-reuse mistakes.
 
-Creation writes the CLI inventory record before VM allocation and blocks until every readiness probe succeeds. A returned `ComputerSession` is always `ready`; a failed CLI create leaves an `error` record with diagnostics but no usable endpoints. The SDK reports the same error and completes its owned cleanup without retaining a cross-process record. Post-readiness monitoring of Xvfb, Openbox, x11vnc, and websockify is deferred; v1 neither silently restarts the desktop nor emits a process-failure event.
+Creation writes the CLI inventory record before VM allocation and blocks until every readiness probe succeeds. A returned `ComputerSession` is always `ready`; a failed CLI create leaves an `error` record with diagnostics but no usable endpoints. The SDK reports the same error and completes its owned cleanup without retaining a cross-process record. While an SDK owner is alive, its lightweight health check watches Xvfb, Openbox, x11vnc, and websockify. If one exits after readiness, the owner emits `computer.error`, marks the handle `error`, rejects new work, and retains the computer for explicit retryable deletion. V1 does not silently restart these required processes.
 
 Chromium, the panel, terminal, file manager, and editor are applications rather than the computer's lifecycle. A person may close them without destroying the computer. If Chromium closes, `computer.status` remains `ready`, `computer.browser.status` becomes `closed`, and `cdpUrl` becomes `null`. Calling `computer.browser.launch()` starts or focuses Chromium idempotently and restores CDP. The root-owned supervisor may restart Tint2 after an accidental panel crash, but never reopens a user-closed application without an explicit launch call.
 
-Computer events are `computer.starting`, `computer.ready`, `computer.stopping`, and `computer.deleted`. Each includes `computerId`. Events are ordered per owner process, best-effort, not replayed, and may omit intermediate states when an observer reconnects. The current handle status or a reconciled CLI `computer list` is authoritative. Observer exceptions never change computer behavior.
+Computer events are `computer.starting`, `computer.ready`, `computer.error`, `computer.stopping`, and `computer.deleted`. Each includes `computerId`; every event after `starting` also includes `sandboxId`. Events are ordered per owner process, best-effort, not replayed, and may omit intermediate states when an observer reconnects. The current handle status or a reconciled CLI `computer list` is authoritative. Observer exceptions never change computer behavior.
 
 Deletion proceeds in a fixed, retryable order:
 
@@ -558,7 +559,7 @@ A missing panel, unmapped Chromium window, permission mismatch, or partial endpo
 | Image unavailable | verified download error | remove partial image file and retain error record | run `smolvm computer logs <id>`, delete it, then rerun the original start command |
 | VM boot timeout | bounded VM readiness deadline | close forwards and stop/delete the owned VM | run `smolvm computer logs <id>`, then `smolvm computer delete <id>` |
 | X server missing | display socket and process probe | enter `error` and run retryable cleanup | run `smolvm computer logs <id>`, then `smolvm computer delete <id>` |
-| X server, window manager, VNC, or noVNC exits after startup | failed endpoint or user observation | keep cleanup explicit in v1 | run `smolvm computer logs <id>`, delete it, then start another computer |
+| X server, window manager, VNC, or noVNC exits after startup | owner health check and `computer.error` | mark `error` and keep cleanup explicit | run `smolvm computer logs <id>`, delete it, then start another computer |
 | Chromium is closed | process probe | keep computer ready and set browser status to `closed` | call `computer.browser.launch()` or open Chromium from the menu |
 | Panel crashes | process probe | restart Tint2 once without disturbing applications | open the menu after the panel returns; inspect logs if it fails again |
 | VNC/noVNC unavailable | guest-port and host HTTP probes | enter `error` and run retryable cleanup | run `smolvm computer logs <id>`, then `smolvm computer delete <id>` |
@@ -630,7 +631,7 @@ Lifecycle
   ├── failed partial startup cleans VM and forwards
   ├── failed CLI create leaves an inspectable error record
   ├── failed SDK create returns redacted diagnostics without a normal inventory record
-  ├── required process death after ready is visible through endpoint failure and logs
+  ├── required process death after ready emits computer.error with process identity
   ├── partial cleanup is reconciled by repeated delete
   ├── failed handle delete remains registered and retryable
   ├── failed TypeScript close keeps its transport retryable

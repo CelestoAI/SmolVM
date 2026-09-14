@@ -42,6 +42,7 @@ const ERROR_CODES: ReadonlySet<string> = new Set<SmolVMErrorCode>([
   "computer_endpoint_unavailable",
   "computer_deleted",
   "computer_already_exists",
+  "computer_not_ready",
   "browser_launch_failed",
   "profile_in_use",
   "invalid_path",
@@ -49,6 +50,7 @@ const ERROR_CODES: ReadonlySet<string> = new Set<SmolVMErrorCode>([
   "command_aborted",
   "bridge_exit",
   "cleanup_failed",
+  "file_too_large",
   "transport_failed",
 ]);
 
@@ -251,7 +253,9 @@ export class ProcessTransport implements SmolVMTransport {
               const data = frame.split("\n").find((line) => line.startsWith("data: "))?.slice(6);
               if (data) {
                 const event = JSON.parse(data) as SmolVMEvent;
-                if (event.type === "image.download") this.emit(event);
+                if (event.type === "image.download" || event.type === "computer.error") {
+                  this.emit(event);
+                }
               }
               boundary = pending.indexOf("\n\n");
             }

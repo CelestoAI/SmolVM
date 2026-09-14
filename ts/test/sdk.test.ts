@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { SmolVM, SmolVMError } from "../src/index.js";
+import { ComputerSession, SmolVM, SmolVMError } from "../src/index.js";
 import { ProcessTransport } from "../src/transport.js";
 import type { SmolVMTransport } from "../src/index.js";
 
@@ -241,6 +241,20 @@ test("deleted computers reject commands, files, and browser relaunch", async () 
   await client.close();
 });
 
+test("required desktop process failures move the computer to error", async () => {
+  const client = new SmolVM({ transport: new FakeTransport() });
+  const computer = await client.computers.create({ name: "computer-test" });
+
+  assert.ok(computer instanceof ComputerSession);
+  computer.markError();
+
+  assert.equal(computer.status, "error");
+  assert.equal(computer.browser.status, "error");
+  assert.equal(computer.browser.cdpUrl, null);
+  await assert.rejects(() => computer.exec("whoami"), /not ready/);
+  await computer.delete();
+});
+
 test("computer files round trip text through the grouped file API", async () => {
   const transport = new FakeTransport();
   const client = new SmolVM({ transport });
@@ -306,6 +320,52 @@ test("an already-aborted computer command does not start or delete the computer"
   assert.equal(transport.calls.some((call) => call.path.endsWith("/exec")), false);
   assert.equal(transport.calls.some((call) => call.path.endsWith("/cancel")), false);
   assert.deepEqual(events, ["computer.starting", "computer.ready"]);
+});
+
+test("aborting an in-flight computer command cancels it and deletes the computer", async () => {
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  class InFlightAbortTransport extends FakeTransport {
+    override async request<T>(path: string, init?: RequestInit): Promise<T> {
+      if (path === "/computers/computer-test/exec") {
+        this.calls.push({ path, init });
+        markStarted();
+        return await new Promise<T>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("aborted", "AbortError")),
+            { once: true },
+          );
+        });
+      }
+      return super.request(path, init);
+    }
+  }
+  const transport = new InFlightAbortTransport();
+  const events: string[] = [];
+  const client = new SmolVM({ transport, onEvent: (event) => events.push(event.type) });
+  const computer = await client.computers.create({ name: "computer-test" });
+  const controller = new AbortController();
+
+  const command = computer.exec("sleep 60", { signal: controller.signal });
+  await started;
+  controller.abort();
+
+  await assert.rejects(
+    command,
+    (error: unknown) => error instanceof SmolVMError
+      && error.code === "command_aborted"
+      && error.actual?.computerDeleted === true,
+  );
+  assert.equal(transport.calls.some((call) => call.path.endsWith("/exec")), true);
+  assert.equal(transport.calls.some((call) => call.path.endsWith("/cancel")), true);
+  assert.equal(computer.status, "deleted");
+  assert.deepEqual(events, [
+    "computer.starting",
+    "computer.ready",
+    "command.started",
+    "computer.deleted",
+  ]);
 });
 
 test("browser computers upload and atomically download files", async () => {

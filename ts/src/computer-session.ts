@@ -48,11 +48,14 @@ class ComputerBrowser implements ComputerBrowserClient {
   }
 
   get status(): ComputerBrowserStatus {
+    if (this.computer.status !== "ready") {
+      return this.computer.status === "error" ? "error" : "closed";
+    }
     return this.currentStatus;
   }
 
   get cdpUrl(): string | null {
-    return this.currentCdpUrl;
+    return this.status === "ready" ? this.currentCdpUrl : null;
   }
 
   async launch(): Promise<void> {
@@ -248,6 +251,11 @@ export class ComputerSession implements ComputerSessionClient {
       computerId: this.computerId,
       sandboxId: this.sandboxId,
     });
+  }
+
+  /** @internal */
+  markError(): void {
+    if (this.currentStatus === "ready") this.currentStatus = "error";
   }
 
   private async closeSessionToConfirmStop(): Promise<{

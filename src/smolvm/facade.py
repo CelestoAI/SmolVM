@@ -102,6 +102,7 @@ from smolvm.types import (
     BrowserSessionConfig,
     BrowserViewport,
     CommandResult,
+    ComputerEvent,
     ComputerSandboxProtocol,
     DesktopEndpoint,
     DisplaySandboxProtocol,
@@ -1447,6 +1448,7 @@ class SmolVM:
         ssh_key_path: str | None = None,
         boot_timeout: float = _DEFAULT_DISPLAY_SANDBOX_BOOT_TIMEOUT,
         on_progress: Callable[[str], None] | None = None,
+        on_event: Callable[[ComputerEvent], None] | None = None,
     ) -> ComputerSandboxProtocol:
         """Start a ready Linux computer with a desktop and Chromium.
 
@@ -1464,11 +1466,15 @@ class SmolVM:
 
         from smolvm.computer import _ComputerSandbox
 
+        computer_id = name or f"computer-{uuid.uuid4().hex[:8]}"
+        if on_event is not None:
+            with suppress(Exception):
+                on_event({"type": "computer.starting", "computer_id": computer_id})
         viewport = _normalize_display_viewport(display, width=1440, height=900)
-        return cls._start_display_sandbox(
+        computer = cls._start_display_sandbox(
             _ComputerSandbox,
             mode="computer",
-            session_id=name or f"computer-{uuid.uuid4().hex[:8]}",
+            session_id=computer_id,
             backend=backend,
             profile_id=None,
             persistent=False,
@@ -1489,6 +1495,8 @@ class SmolVM:
             boot_timeout=boot_timeout,
             on_progress=on_progress,
         )
+        computer.enable_events(on_event)
+        return computer
 
     @classmethod
     def from_id(

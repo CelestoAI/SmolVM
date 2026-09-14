@@ -19,7 +19,7 @@ from datetime import datetime
 from enum import Enum
 from ipaddress import IPv4Network, collapse_addresses
 from pathlib import Path
-from typing import Annotated, Any, Literal, Protocol
+from typing import Annotated, Any, Literal, Protocol, TypedDict
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -47,6 +47,56 @@ class BrowserSessionState(str, Enum):
     STOPPING = "stopping"
     ERROR = "error"
     DELETED = "deleted"
+
+
+class ComputerStartingEvent(TypedDict):
+    """A Linux computer has begun starting."""
+
+    type: Literal["computer.starting"]
+    computer_id: str
+
+
+class ComputerReadyEvent(TypedDict):
+    """A Linux computer is ready for commands and display access."""
+
+    type: Literal["computer.ready"]
+    computer_id: str
+    sandbox_id: str
+
+
+class ComputerStoppingEvent(TypedDict):
+    """A Linux computer has begun deletion."""
+
+    type: Literal["computer.stopping"]
+    computer_id: str
+    sandbox_id: str
+
+
+class ComputerDeletedEvent(TypedDict):
+    """A Linux computer and its owned resources have been deleted."""
+
+    type: Literal["computer.deleted"]
+    computer_id: str
+    sandbox_id: str
+
+
+class ComputerErrorEvent(TypedDict):
+    """A required desktop process stopped after the computer became ready."""
+
+    type: Literal["computer.error"]
+    computer_id: str
+    sandbox_id: str
+    process: str
+    message: str
+
+
+ComputerEvent = (
+    ComputerStartingEvent
+    | ComputerReadyEvent
+    | ComputerStoppingEvent
+    | ComputerDeletedEvent
+    | ComputerErrorEvent
+)
 
 
 class GuestOS(str, Enum):

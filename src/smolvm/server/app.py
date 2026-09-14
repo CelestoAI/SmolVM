@@ -46,7 +46,7 @@ from smolvm.server.models import (
     ExecResponse,
     SandboxResponse,
 )
-from smolvm.types import ComputerSandboxProtocol, DisplaySandboxProtocol
+from smolvm.types import ComputerEvent, ComputerSandboxProtocol, DisplaySandboxProtocol
 
 logger = logging.getLogger(__name__)
 _MAX_FILE_BYTES = 16 * 1024 * 1024
@@ -143,6 +143,7 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
     sandboxes: dict[str, SmolVM] = {}
     browser_sessions: dict[str, DisplaySandboxProtocol] = {}
     computer_sessions: dict[str, ComputerSandboxProtocol] = {}
+    computer_states: dict[str, Literal["ready", "stopping", "error"]] = {}
     computer_creating: set[str] = set()
     computer_lock = threading.Lock()
     event_subscribers: set[Queue[dict[str, object]]] = set()
@@ -169,6 +170,7 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
             with suppress(Exception):
                 computer.close()
         computer_sessions.clear()
+        computer_states.clear()
         for browser in list(browser_sessions.values()):
             with suppress(Exception):
                 await asyncio.to_thread(browser.delete)
@@ -192,7 +194,34 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
     app.state.sandboxes = sandboxes
     app.state.browser_sessions = browser_sessions
     app.state.computer_sessions = computer_sessions
+    app.state.computer_states = computer_states
     app.state.computer_creating = computer_creating
+    app.state.event_subscribers = event_subscribers
+
+    def handle_computer_event(event: ComputerEvent) -> None:
+        if event["type"] != "computer.error":
+            return
+        computer_id = event["computer_id"]
+        with computer_lock:
+            computer = computer_sessions.get(computer_id)
+            if (
+                computer is None
+                or computer.sandbox_id != event["sandbox_id"]
+                or computer_states.get(computer_id) != "ready"
+            ):
+                return
+            computer_states[computer_id] = "error"
+        publish(
+            {
+                "type": "computer.error",
+                "computerId": computer_id,
+                "sandboxId": event["sandbox_id"],
+                "process": event["process"],
+                "message": event["message"],
+            }
+        )
+
+    app.state.handle_computer_event = handle_computer_event
 
     if auth_token is not None:
 
@@ -317,11 +346,23 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
     def resolve_computer(computer_id: str) -> ComputerSandboxProtocol:
         with computer_lock:
             computer = computer_sessions.get(computer_id)
+            state = computer_states.get(computer_id)
         if computer is None:
             raise _sdk_error(
                 404,
                 "computer_deleted",
                 f"Computer '{computer_id}' is unavailable; create a new computer.",
+            )
+        if state != "ready":
+            recovery = (
+                "wait for deletion to finish"
+                if state == "stopping"
+                else "call computer.delete() again"
+            )
+            raise _sdk_error(
+                409,
+                "computer_not_ready",
+                f"Computer '{computer_id}' is {state or 'not ready'}; {recovery}.",
             )
         return computer
 
@@ -485,7 +526,15 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
             result = computer_response(computer)
             with computer_lock:
                 computer_sessions[computer_id] = computer
+                computer_states[computer_id] = "ready"
+            enable_events = getattr(computer, "enable_events", None)
+            if callable(enable_events):
+                enable_events(handle_computer_event)
         except HTTPException:
+            with computer_lock:
+                if computer is not None and computer_sessions.get(computer_id) is computer:
+                    computer_sessions.pop(computer_id, None)
+                    computer_states.pop(computer_id, None)
             if computer is not None:
                 with suppress(Exception):
                     computer.delete()
@@ -493,6 +542,10 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
                     computer.close()
             raise
         except (ValueError, SmolVMError) as exc:
+            with computer_lock:
+                if computer is not None and computer_sessions.get(computer_id) is computer:
+                    computer_sessions.pop(computer_id, None)
+                    computer_states.pop(computer_id, None)
             if computer is not None:
                 with suppress(Exception):
                     computer.delete()
@@ -525,6 +578,9 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
         with computer_lock:
             computer = computer_sessions.get(computer_id)
             creating = computer_id in computer_creating
+            state = computer_states.get(computer_id)
+            if computer is not None and state != "stopping":
+                computer_states[computer_id] = "stopping"
         if computer is None:
             if creating:
                 raise _sdk_error(
@@ -534,6 +590,12 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
                     "then call computer.delete() again.",
                 )
             return Response(status_code=204)
+        if state == "stopping":
+            raise _sdk_error(
+                409,
+                "computer_not_ready",
+                f"Computer '{computer_id}' is stopping; wait for deletion to finish.",
+            )
         publish(
             {
                 "type": "computer.stopping",
@@ -543,7 +605,10 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
         )
         try:
             computer.delete()
-        except (ValueError, SmolVMError) as exc:
+        except Exception as exc:
+            with computer_lock:
+                if computer_sessions.get(computer_id) is computer:
+                    computer_states[computer_id] = "error"
             raise _sdk_error(
                 409,
                 "cleanup_failed",
@@ -554,6 +619,7 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
         with computer_lock:
             if computer_sessions.get(computer_id) is computer:
                 computer_sessions.pop(computer_id, None)
+                computer_states.pop(computer_id, None)
         publish(
             {
                 "type": "computer.deleted",
@@ -582,6 +648,18 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
             duration_ms = round((time.monotonic() - started) * 1000)
         except OperationTimeoutError as exc:
             deleted = False
+            with computer_lock:
+                owns_computer = computer_sessions.get(computer_id) is computer
+                if owns_computer:
+                    computer_states[computer_id] = "stopping"
+            if owns_computer:
+                publish(
+                    {
+                        "type": "computer.stopping",
+                        "computerId": computer_id,
+                        "sandboxId": computer.sandbox_id,
+                    }
+                )
             try:
                 computer.delete()
                 deleted = True
@@ -593,6 +671,19 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
                 with computer_lock:
                     if computer_sessions.get(computer_id) is computer:
                         computer_sessions.pop(computer_id, None)
+                        computer_states.pop(computer_id, None)
+                if owns_computer:
+                    publish(
+                        {
+                            "type": "computer.deleted",
+                            "computerId": computer_id,
+                            "sandboxId": computer.sandbox_id,
+                        }
+                    )
+            elif owns_computer:
+                with computer_lock:
+                    if computer_sessions.get(computer_id) is computer:
+                        computer_states[computer_id] = "error"
             raise _sdk_error(
                 408,
                 "command_timeout",
@@ -644,7 +735,7 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
             if len(content) > _MAX_FILE_BYTES:
                 raise _sdk_error(
                     413,
-                    "transport_failed",
+                    "file_too_large",
                     f"File for computer '{computer_id}' exceeds the 16 MiB SDK limit; "
                     "retry with a smaller file.",
                 )
@@ -685,7 +776,7 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
             if size > _MAX_FILE_BYTES:
                 raise _sdk_error(
                     413,
-                    "transport_failed",
+                    "file_too_large",
                     f"File in computer '{computer_id}' exceeds the 16 MiB SDK limit; "
                     "choose a smaller file.",
                 )
@@ -705,7 +796,7 @@ def create_app(*, auth_token: str | None = None) -> FastAPI:
         if len(content) > _MAX_FILE_BYTES:
             raise _sdk_error(
                 413,
-                "transport_failed",
+                "file_too_large",
                 f"File in computer '{computer_id}' exceeds the 16 MiB SDK limit; "
                 "choose a smaller file.",
             )
