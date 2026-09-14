@@ -14,7 +14,9 @@
 
 """Tests for browser session orchestration."""
 
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -26,7 +28,8 @@ from smolvm.browser import (
     _build_browser_vm_config,
     _DesktopSandbox,
 )
-from smolvm.exceptions import BrowserSessionNotFoundError
+from smolvm.computer import ComputerBrowser, ComputerFiles, _ComputerSandbox
+from smolvm.exceptions import BrowserSessionNotFoundError, SmolVMError
 from smolvm.runtime.boot_profiles import KernelBootProfile
 from smolvm.types import (
     BrowserSessionConfig,
@@ -149,6 +152,305 @@ def test_smolvm_desktop_factory_starts_visible_sandbox(mock_sandbox_cls: MagicMo
     assert config.viewport_width == 1440
     assert config.viewport_height == 900
     sandbox.start.assert_called_once_with(boot_timeout=90.0, on_progress=None)
+
+
+@patch("smolvm.computer._ComputerSandbox")
+def test_smolvm_computer_factory_starts_linux_desktop(mock_sandbox_cls: MagicMock) -> None:
+    """The computer factory should create one desktop-and-browser session."""
+    sandbox = MagicMock(spec=_ComputerSandbox)
+    mock_sandbox_cls.return_value = sandbox
+    events: list[dict[str, object]] = []
+
+    result = SmolVM.computer(
+        name="computer-demo",
+        backend="qemu",
+        display={"width": 1440, "height": 900},
+        resources={"memory_mib": 3072, "disk_mib": 8192, "vcpus": 2},
+        on_event=events.append,  # type: ignore[arg-type]
+    )
+
+    assert result is sandbox
+    config = mock_sandbox_cls.call_args.args[0]
+    assert config.session_id == "computer-demo"
+    assert config.mode == "computer"
+    assert config.backend == "qemu"
+    assert config.viewport_width == 1440
+    assert config.viewport_height == 900
+    assert config.mem_size_mib == 3072
+    assert config.disk_size_mib == 8192
+    sandbox.start.assert_called_once_with(boot_timeout=90.0, on_progress=None)
+    assert events == [{"type": "computer.starting", "computer_id": "computer-demo"}]
+    sandbox.enable_events.assert_called_once_with(events.append)
+
+
+def test_smolvm_computer_rejects_unknown_template_and_vcpu_count() -> None:
+    """Unsupported computer choices should fail before allocating a VM."""
+    with pytest.raises(ValueError, match="template 'windows-desktop'"):
+        SmolVM.computer(template="windows-desktop")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="vcpus"):
+        SmolVM.computer(resources={"vcpus": 1})
+
+
+def test_computer_run_uses_desktop_user_and_default_timeout() -> None:
+    """Computer commands should share the desktop identity and a usable timeout."""
+    vm = MagicMock()
+    vm.run.return_value = CommandResult(exit_code=0, stdout="agent\n", stderr="")
+    computer = object.__new__(_ComputerSandbox)
+    computer._vm = vm
+
+    result = computer.run("whoami")
+
+    assert result.stdout == "agent\n"
+    vm.run.assert_called_once_with(
+        "runuser -u agent -- sh -lc whoami",
+        timeout=30,
+        shell="raw",
+    )
+
+
+def test_computer_health_failure_emits_error_and_updates_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A required process exit should make the owned computer visibly unusable."""
+    computer = object.__new__(_ComputerSandbox)
+    computer._info = SimpleNamespace(
+        session_id="computer-demo",
+        vm_id="vm-computer-demo",
+        status=BrowserSessionState.READY,
+    )
+    computer._state = MagicMock()
+    computer._state.update_browser_session.return_value = SimpleNamespace(
+        session_id="computer-demo",
+        vm_id="vm-computer-demo",
+        status=BrowserSessionState.ERROR,
+    )
+    computer._monitor_stop = threading.Event()
+    computer._monitor_thread = None
+    events: list[dict[str, object]] = []
+    computer._event_callback = events.append
+    computer._failed_required_process = lambda: "openbox"
+    monkeypatch.setattr("smolvm.computer._HEALTH_CHECK_INTERVAL_SECONDS", 0)
+
+    computer._monitor_required_processes()
+
+    computer._state.update_browser_session.assert_called_once_with(
+        "computer-demo",
+        status=BrowserSessionState.ERROR,
+    )
+    assert events == [
+        {
+            "type": "computer.error",
+            "computer_id": "computer-demo",
+            "sandbox_id": "vm-computer-demo",
+            "process": "openbox",
+            "message": (
+                "Required desktop process 'openbox' stopped in computer 'computer-demo'; "
+                "call computer.delete() and create another."
+            ),
+        }
+    ]
+
+
+def test_computer_files_require_absolute_paths() -> None:
+    """Desktop file helpers should reject ambiguous guest-relative paths."""
+    files = ComputerFiles(MagicMock())
+
+    with pytest.raises(ValueError, match="must be absolute"):
+        files.read("workspace/file.txt")
+    with pytest.raises(ValueError, match="must be absolute"):
+        files.write("workspace/file.txt", b"content")
+
+
+def test_computer_files_write_as_agent_and_replace_atomically() -> None:
+    """Desktop writes should stage content and atomically replace the destination."""
+    computer = MagicMock()
+    computer.vm.run.return_value = CommandResult(exit_code=0, stdout="", stderr="")
+    files = ComputerFiles(computer)
+
+    files.write("/workspace/nested/file.txt", "hello")
+
+    uploaded_path = computer.vm.upload_file.call_args.args[1]
+    assert uploaded_path.startswith("/tmp/smolvm-computer-")
+    install_command = computer.vm.run.call_args_list[0].args[0]
+    assert "mkdir -p -- /workspace/nested" in install_command
+    assert "install -m 0644" in install_command
+    assert "mv -f --" in install_command
+    assert "/workspace/nested/file.txt" in install_command
+
+
+def test_computer_files_read_returns_bytes_and_removes_host_staging_file() -> None:
+    """Desktop reads should not leave the temporary host copy behind."""
+    computer = MagicMock()
+    staged_paths: list[Path] = []
+    computer.vm.run.return_value = CommandResult(exit_code=0, stdout="", stderr="")
+
+    def download(_guest_path: str, local_path: Path, *, max_bytes: int | None = None) -> None:
+        assert max_bytes == 1024
+        staged_paths.append(local_path)
+        local_path.write_bytes(b"desktop")
+
+    computer.vm.download_file.side_effect = download
+
+    assert ComputerFiles(computer).read("/workspace/file.bin", max_bytes=1024) == b"desktop"
+    assert len(staged_paths) == 1
+    assert not staged_paths[0].exists()
+    stage_command = computer.vm.run.call_args_list[0].args[0]
+    assert "runuser -u agent" in stage_command
+    assert "/workspace/file.bin" in stage_command
+
+
+def test_computer_files_read_respects_desktop_user_permissions() -> None:
+    computer = MagicMock()
+    computer.vm.run.return_value = CommandResult(exit_code=1, stdout="", stderr="denied")
+
+    with pytest.raises(SmolVMError, match="choose a readable file"):
+        ComputerFiles(computer).read("/etc/shadow")
+
+    computer.vm.download_file.assert_not_called()
+
+
+def test_computer_files_write_reports_unwritable_destination() -> None:
+    """A failed guest install should produce the public writable-path recovery."""
+    computer = MagicMock()
+    computer.vm.run.return_value = CommandResult(exit_code=1, stdout="", stderr="denied")
+
+    with pytest.raises(SmolVMError, match="choose a writable path"):
+        ComputerFiles(computer).write("/root/file.txt", b"content")
+
+    computer.vm.upload_file.assert_called_once()
+    computer.run.assert_called_once()
+
+
+def test_computer_browser_launches_only_when_chromium_is_closed() -> None:
+    """Relaunch should preserve the computer and wait for the new CDP endpoint."""
+    computer = MagicMock()
+    computer.status = BrowserSessionState.READY
+    computer.cdp_url = "http://127.0.0.1:9222"
+    computer._wait_for_cdp_http.side_effect = [False, True, True]
+    browser = ComputerBrowser(computer)
+
+    browser.launch()
+
+    computer._launch_guest_browser.assert_called_once_with()
+    assert browser.cdp_url == "http://127.0.0.1:9222"
+
+
+def test_computer_browser_launch_is_a_noop_when_chromium_is_ready() -> None:
+    """Calling launch on a ready browser should not start a duplicate Chromium process."""
+    computer = MagicMock()
+    computer.status = BrowserSessionState.READY
+    computer.cdp_url = "http://127.0.0.1:9222"
+    computer._wait_for_cdp_http.return_value = True
+
+    ComputerBrowser(computer).launch()
+
+    computer._launch_guest_browser.assert_not_called()
+
+
+def test_computer_browser_reports_failed_relaunch() -> None:
+    """A Chromium relaunch without a ready CDP endpoint should remain recoverable."""
+    computer = MagicMock()
+    computer.status = BrowserSessionState.READY
+    computer.computer_id = "computer-demo"
+    computer.cdp_url = "http://127.0.0.1:9222"
+    computer._wait_for_cdp_http.return_value = False
+    browser = ComputerBrowser(computer)
+
+    with pytest.raises(SmolVMError, match="computer-demo"):
+        browser.launch()
+
+    computer._launch_guest_browser.assert_called_once_with()
+
+
+def test_computer_browser_launch_error_hides_guest_output() -> None:
+    """Launch failures should name the recovery command without exposing guest output."""
+    computer = object.__new__(_BrowserSandbox)
+    computer._info = MagicMock(session_id="computer-demo")
+    computer._session_config = MagicMock(
+        mode="computer",
+        viewport_width=1440,
+        viewport_height=900,
+        allow_downloads=True,
+    )
+    computer._vm = MagicMock()
+    computer._vm.run.return_value = CommandResult(
+        exit_code=1,
+        stdout="private stdout",
+        stderr="private stderr",
+    )
+    computer._guest_profile_dir = MagicMock(return_value="/profile")
+    computer._guest_download_dir = MagicMock(return_value="/downloads")
+
+    with pytest.raises(SmolVMError) as exc_info:
+        computer._launch_guest_browser()
+
+    message = str(exc_info.value)
+    assert "smolvm computer logs computer-demo" in message
+    assert "private stdout" not in message
+    assert "private stderr" not in message
+
+
+@pytest.mark.parametrize(
+    ("computer_status", "browser_status"),
+    [
+        (BrowserSessionState.ERROR, "error"),
+        (BrowserSessionState.STOPPING, "closed"),
+        (BrowserSessionState.DELETED, "closed"),
+    ],
+)
+def test_computer_browser_status_follows_computer_lifecycle(
+    computer_status: BrowserSessionState,
+    browser_status: str,
+) -> None:
+    """A non-ready computer must not be reported ready from a stale CDP endpoint."""
+    computer = MagicMock(status=computer_status, cdp_url="http://127.0.0.1:9222")
+
+    assert ComputerBrowser(computer).status == browser_status
+    computer._wait_for_cdp_http.assert_not_called()
+
+
+def test_computer_delete_keeps_failed_cleanup_retryable() -> None:
+    """A failed VM deletion must not discard the session record or local handle."""
+    computer = object.__new__(_ComputerSandbox)
+    computer._state = MagicMock()
+    stopping_info = MagicMock(session_id="computer-demo")
+    deleted_info = MagicMock(status=BrowserSessionState.DELETED)
+    stopping_info.model_copy.return_value = deleted_info
+    computer._info = stopping_info
+    computer._state.update_browser_session.return_value = stopping_info
+    computer._vm = MagicMock(status=VMState.RUNNING)
+    computer._vm.delete.side_effect = [SmolVMError("busy"), None]
+    computer.collect_artifacts = MagicMock()
+    computer.close = MagicMock()
+
+    with pytest.raises(SmolVMError, match="busy"):
+        computer.delete()
+
+    computer._state.delete_browser_session.assert_not_called()
+    computer.close.assert_not_called()
+    assert computer._state.update_browser_session.call_args_list[-1].kwargs == {
+        "status": BrowserSessionState.ERROR
+    }
+
+    computer.delete()
+
+    computer._state.delete_browser_session.assert_called_once_with("computer-demo")
+    assert computer._info is deleted_info
+    computer.close.assert_called_once_with()
+
+
+def test_computer_delete_without_vm_preserves_persisted_state() -> None:
+    """A detached SDK handle must not erase the record for a VM it cannot delete."""
+    computer = object.__new__(_ComputerSandbox)
+    computer._state = MagicMock()
+    computer._info = MagicMock(session_id="computer-demo")
+    computer._vm = None
+
+    with pytest.raises(SmolVMError, match="smolvm computer delete computer-demo"):
+        computer.delete()
+
+    computer._state.update_browser_session.assert_not_called()
+    computer._state.delete_browser_session.assert_not_called()
 
 
 @patch("smolvm.browser._BrowserSandbox")
@@ -502,6 +804,45 @@ def test_browser_session_start_persists_ready_state(
         {"guest_port": 6080, "guest_loopback": False},
         {"guest_port": 5900, "guest_loopback": True},
     ]
+    session.close()
+
+
+@patch("smolvm.browser.SmolVM")
+@patch("smolvm.browser._build_browser_vm_config")
+@patch("smolvm.browser._LOCAL_HTTP_OPENER.open", return_value=_CdpResponse())
+def test_computer_start_requires_healthy_desktop_processes(
+    _mock_open: MagicMock,
+    mock_build_browser_vm_config: MagicMock,
+    mock_vm_cls: MagicMock,
+    sample_vm_config: VMConfig,
+    tmp_path: Path,
+) -> None:
+    """A computer should not become ready when its desktop did not start."""
+    mock_build_browser_vm_config.return_value = (sample_vm_config, str(tmp_path / "id_ed25519"))
+
+    vm = MagicMock()
+    vm.vm_id = "computer-abc123"
+    vm.status = VMState.CREATED
+    vm.expose_local.side_effect = [39222, 36080, 35900]
+    vm.wait_for_guest_tcp_ports.side_effect = [True, True, True, True, True, True]
+    vm.run.return_value = CommandResult(exit_code=1, stdout="", stderr="desktop missing")
+    mock_vm_cls.return_value = vm
+
+    session = _BrowserSandbox(
+        BrowserSessionConfig(session_id="computer-abc123", mode="computer"),
+        data_dir=tmp_path,
+    )
+
+    with pytest.raises(SmolVMError, match="smolvm computer logs computer-abc123"):
+        session.start()
+
+    assert session.status == BrowserSessionState.ERROR
+    desktop_probe = vm.run.call_args.args[0]
+    assert "pgrep -x openbox" in desktop_probe
+    assert "pgrep -x tint2" in desktop_probe
+    assert "xdotool search --onlyvisible --classname tint2" in desktop_probe
+    assert "xdotool search --onlyvisible --class chromium" in desktop_probe
+    assert "/workspace/.smolvm-ready-" in desktop_probe
     session.close()
 
 

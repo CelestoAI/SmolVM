@@ -2,6 +2,8 @@
 
 A browser sandbox runs Chromium in a disposable sandbox. Use it when an agent needs a real browser without using your desktop profile.
 
+Choose a [sandbox](sandboxes.md) for command-only work. Choose a browser sandbox for web-only automation. Choose a [Linux computer](computers.md) when the agent needs a visible desktop with multiple applications.
+
 ## Start and open a browser
 
 ```bash
@@ -93,7 +95,7 @@ try {
 }
 ```
 
-The returned browser session is also the sandbox computer. Use `session.exec()` for commands and `session.files` for file transfer. In live mode, `viewerUrl` opens the complete graphical display through noVNC, a browser-based remote-display client. `displayUrl` connects a VNC client or computer-use agent directly to that remote display. The display uses Openbox, a lightweight desktop window manager, and contains Chromium rather than a full GNOME or XFCE installation.
+The returned browser session also supports commands and file transfer. Use `session.exec()` and `session.files` for work related to the browser. In live mode, `viewerUrl` opens Chromium's graphical display through noVNC, a browser-based remote-display client. `displayUrl` connects a VNC client or visual-control agent directly to that display. This browser view is not a general desktop; use a [Linux computer](computers.md) for a terminal, file manager, and text editor.
 
 The automation, viewer, and display endpoints are loopback-only, meaning they accept connections only from the same machine. Keep them in the trusted Node process rather than sending them to browser JavaScript or a remote client.
 

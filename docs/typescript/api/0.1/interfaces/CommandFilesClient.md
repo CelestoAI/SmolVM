@@ -2,16 +2,17 @@
 
 ***
 
-[@celestoai/smolvm](../README.md) / ComputerClient
+[@celestoai/smolvm](../README.md) / CommandFilesClient
 
-# Interface: ComputerClient
+# Interface: CommandFilesClient
 
-Run commands and exchange files with one disposable computer.
+Run commands and exchange files with one disposable environment.
 
 ## Extended by
 
 - [`SandboxClient`](SandboxClient.md)
 - [`BrowserSessionClient`](BrowserSessionClient.md)
+- [`ComputerSessionClient`](ComputerSessionClient.md)
 
 ## Properties
 

@@ -10,7 +10,7 @@ Control a ready browser computer through private automation and viewing addresse
 
 ## Extends
 
-- [`ComputerClient`](ComputerClient.md)
+- [`CommandFilesClient`](CommandFilesClient.md)
 
 ## Properties
 
@@ -32,7 +32,7 @@ Control a ready browser computer through private automation and viewing addresse
 
 #### Inherited from
 
-[`ComputerClient`](ComputerClient.md).[`files`](ComputerClient.md#files)
+[`CommandFilesClient`](CommandFilesClient.md).[`files`](CommandFilesClient.md#files)
 
 ***
 
@@ -96,4 +96,4 @@ Control a ready browser computer through private automation and viewing addresse
 
 #### Inherited from
 
-[`ComputerClient`](ComputerClient.md).[`exec`](ComputerClient.md#exec)
+[`CommandFilesClient`](CommandFilesClient.md).[`exec`](CommandFilesClient.md#exec)

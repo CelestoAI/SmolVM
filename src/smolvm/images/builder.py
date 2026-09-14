@@ -867,6 +867,7 @@ RUN chmod +x /init
         base_image: str = "debian:bookworm-slim",
         kernel_url: str | None = None,
         kernel_profile: KernelBootProfile = KernelBootProfile.MICROVM_DIRECT,
+        desktop: bool = False,
     ) -> tuple[Path, Path]:
         """Build a Chromium browser image with optional live-view tooling.
 
@@ -1004,11 +1005,12 @@ PY
 }
 
 start_live_stack() {
-    width="$1"
-    height="$2"
-    live_port="$3"
-    record_video="$4"
-    artifacts_dir="$5"
+    mode="$1"
+    width="$2"
+    height="$3"
+    live_port="$4"
+    record_video="$5"
+    artifacts_dir="$6"
 
     mkdir -p "$artifacts_dir"
 
@@ -1016,9 +1018,19 @@ start_live_stack() {
         >"${LOG_DIR}/xvfb.log" 2>&1 &
     echo $! >"${RUNTIME_DIR}/xvfb.pid"
 
-    DISPLAY=:99 HOME=/root nohup openbox \
-        >"${LOG_DIR}/openbox.log" 2>&1 &
+    if [ "${mode}" = "computer" ]; then
+        runuser -u agent -- env DISPLAY=:99 HOME=/home/agent openbox \
+            >"${LOG_DIR}/openbox.log" 2>&1 &
+    else
+        DISPLAY=:99 HOME=/root openbox >"${LOG_DIR}/openbox.log" 2>&1 &
+    fi
     echo $! >"${RUNTIME_DIR}/openbox.pid"
+
+    if [ "${mode}" = "computer" ]; then
+        runuser -u agent -- env DISPLAY=:99 HOME=/home/agent tint2 \
+            >"${LOG_DIR}/tint2.log" 2>&1 &
+        echo $! >"${RUNTIME_DIR}/tint2.pid"
+    fi
 
     nohup x11vnc -display :99 -nopw -forever -shared -rfbport 5900 \
         >"${LOG_DIR}/x11vnc.log" 2>&1 &
@@ -1041,10 +1053,82 @@ stop_session() {
     stop_pid_file "${RUNTIME_DIR}/ffmpeg.pid"
     stop_pid_file "${RUNTIME_DIR}/websockify.pid"
     stop_pid_file "${RUNTIME_DIR}/x11vnc.pid"
+    stop_pid_file "${RUNTIME_DIR}/tint2.pid"
     stop_pid_file "${RUNTIME_DIR}/openbox.pid"
     stop_pid_file "${RUNTIME_DIR}/xvfb.pid"
     stop_pid_file "${RUNTIME_DIR}/cdp-proxy.pid"
     stop_pid_file "${RUNTIME_DIR}/chromium.pid"
+}
+
+launch_browser() {
+    mode="$1"
+    width="$2"
+    height="$3"
+    debug_port="$4"
+    profile_dir="$5"
+    download_dir="$6"
+    downloads_enabled="$7"
+
+    browser_user=browser
+    browser_home=/home/browser
+    if [ "${mode}" = "computer" ]; then
+        browser_user=agent
+        browser_home=/home/agent
+    fi
+
+    mkdir -p "$profile_dir" "$download_dir" "$RUNTIME_DIR" "$LOG_DIR"
+    write_preferences "$profile_dir" "$download_dir"
+    chown -R "${browser_user}:${browser_user}" "$profile_dir" "$download_dir"
+    if [ "${downloads_enabled}" = "1" ]; then
+        chmod 700 "$download_dir"
+    else
+        chmod 500 "$download_dir"
+    fi
+
+    stop_pid_file "${RUNTIME_DIR}/chromium.pid"
+    browser_bin="$(find_browser_bin)"
+    browser_debug_port=$((debug_port + 1))
+
+    if [ "${mode}" = "headless" ]; then
+        runuser -u "${browser_user}" -- env HOME="${browser_home}" "$browser_bin" \
+            --headless=new \
+            --no-sandbox \
+            --disable-dev-shm-usage \
+            --disable-gpu \
+            --no-first-run \
+            --no-default-browser-check \
+            --disable-background-networking \
+            --disable-component-update \
+            --metrics-recording-only \
+            --password-store=basic \
+            --use-mock-keychain \
+            --remote-allow-origins=* \
+            --remote-debugging-address=127.0.0.1 \
+            --remote-debugging-port="${browser_debug_port}" \
+            --user-data-dir="${profile_dir}" \
+            --window-size="${width},${height}" \
+            about:blank >"${LOG_DIR}/chromium.log" 2>&1 &
+    else
+        runuser -u "${browser_user}" -- env DISPLAY=:99 HOME="${browser_home}" "$browser_bin" \
+            --no-sandbox \
+            --disable-dev-shm-usage \
+            --disable-gpu \
+            --no-first-run \
+            --no-default-browser-check \
+            --disable-background-networking \
+            --disable-component-update \
+            --metrics-recording-only \
+            --password-store=basic \
+            --use-mock-keychain \
+            --remote-allow-origins=* \
+            --remote-debugging-address=127.0.0.1 \
+            --remote-debugging-port="${browser_debug_port}" \
+            --user-data-dir="${profile_dir}" \
+            --window-size="${width},${height}" \
+            --start-maximized \
+            about:blank >"${LOG_DIR}/chromium.log" 2>&1 &
+    fi
+    echo $! >"${RUNTIME_DIR}/chromium.pid"
 }
 
 start_session() {
@@ -1061,7 +1145,11 @@ start_session() {
 
     mkdir -p "$profile_dir" "$download_dir" "$artifacts_dir" "$RUNTIME_DIR" "$LOG_DIR"
     write_preferences "$profile_dir" "$download_dir"
-    chown -R browser:browser \
+    browser_user=browser
+    if [ "${mode}" = "computer" ]; then
+        browser_user=agent
+    fi
+    chown -R "${browser_user}:${browser_user}" \
         "$profile_dir" "$download_dir" "$artifacts_dir"
     if [ "${downloads_enabled}" = "1" ]; then
         chmod 700 "$download_dir"
@@ -1080,64 +1168,22 @@ start_session() {
         start_cdp_proxy "$debug_port" "$browser_debug_port"
     fi
 
-    if [ "${mode}" = "live" ] || [ "${mode}" = "desktop" ]; then
-        start_live_stack "$width" "$height" "$live_port" "$record_video" "$artifacts_dir"
+    if [ "${mode}" = "live" ] || [ "${mode}" = "desktop" ] || [ "${mode}" = "computer" ]; then
+        start_live_stack "$mode" "$width" "$height" "$live_port" "$record_video" "$artifacts_dir"
     fi
 
     if [ "${mode}" = "desktop" ]; then
         return 0
     fi
 
-    browser_bin="$(find_browser_bin)"
-
-    if [ "${mode}" = "headless" ]; then
-        nohup runuser -u browser -- env HOME=/home/browser "$browser_bin" \
-            --headless=new \
-            --no-sandbox \
-            --disable-dev-shm-usage \
-            --disable-gpu \
-            --no-first-run \
-            --no-default-browser-check \
-            --disable-background-networking \
-            --disable-component-update \
-            --metrics-recording-only \
-            --password-store=basic \
-            --use-mock-keychain \
-            --remote-allow-origins=* \
-            --remote-debugging-address=127.0.0.1 \
-            --remote-debugging-port="${browser_debug_port}" \
-            --user-data-dir="${profile_dir}" \
-            --window-size="${width},${height}" \
-            about:blank \
-            >"${LOG_DIR}/chromium.log" 2>&1 &
-    else
-        nohup runuser -u browser -- env DISPLAY=:99 HOME=/home/browser "$browser_bin" \
-            --no-sandbox \
-            --disable-dev-shm-usage \
-            --disable-gpu \
-            --no-first-run \
-            --no-default-browser-check \
-            --disable-background-networking \
-            --disable-component-update \
-            --metrics-recording-only \
-            --password-store=basic \
-            --use-mock-keychain \
-            --remote-allow-origins=* \
-            --remote-debugging-address=127.0.0.1 \
-            --remote-debugging-port="${browser_debug_port}" \
-            --user-data-dir="${profile_dir}" \
-            --window-size="${width},${height}" \
-            about:blank \
-            >"${LOG_DIR}/chromium.log" 2>&1 &
-    fi
-
-    echo $! >"${RUNTIME_DIR}/chromium.pid"
+    launch_browser "$mode" "$width" "$height" "$debug_port" \
+        "$profile_dir" "$download_dir" "$downloads_enabled"
 }
 
 case "${1:-}" in
     start)
         if [ "$#" -ne 11 ]; then
-            echo "usage: smolvm-browser-session start <headless|live|desktop> <width> <height>" >&2
+            echo "usage: smolvm-browser-session start <mode> <width> <height>" >&2
             echo "  <debug_port> <live_port> <profile_dir> <download_dir>" >&2
             echo "  <record_video> <downloads_enabled> <artifacts_dir>" >&2
             exit 2
@@ -1145,11 +1191,20 @@ case "${1:-}" in
         shift
         start_session "$@"
         ;;
+    launch-browser)
+        if [ "$#" -ne 8 ]; then
+            echo "usage: smolvm-browser-session launch-browser <mode> <width> <height>" >&2
+            echo "  <debug_port> <profile_dir> <download_dir> <downloads_enabled>" >&2
+            exit 2
+        fi
+        shift
+        launch_browser "$@"
+        ;;
     stop)
         stop_session
         ;;
     *)
-        echo "usage: smolvm-browser-session {start|stop}" >&2
+        echo "usage: smolvm-browser-session {start|launch-browser|stop}" >&2
         exit 2
         ;;
 esac
@@ -1232,6 +1287,44 @@ main().catch((error) => {
 });
 """
 
+        graphical_packages = (
+            "tint2 lxterminal pcmanfm mousepad xdotool x11-xserver-utils \\\n"
+            "    git wget openssh-client jq zip unzip \\\n"
+            "    ffmpeg"
+            if desktop
+            else "ffmpeg"
+        )
+        desktop_setup = (
+            r"""
+COPY computer-menu.xml /tmp/computer-menu.xml
+RUN mkdir -p /home/agent/.config/openbox /home/agent/.config/tint2 /workspace && \
+    cp /etc/xdg/openbox/rc.xml /home/agent/.config/openbox/rc.xml && \
+    cp /tmp/computer-menu.xml /home/agent/.config/openbox/menu.xml && \
+    if [ -f /etc/xdg/tint2/tint2rc ]; then \
+        cp /etc/xdg/tint2/tint2rc /home/agent/.config/tint2/tint2rc; \
+    fi && \
+    chown -R agent:agent /home/agent /workspace
+"""
+            if desktop
+            else ""
+        )
+        computer_menu_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<openbox_menu xmlns="http://openbox.org/3.4/menu">
+  <menu id="root-menu" label="Applications">
+    <item label="Chromium">
+      <action name="Execute"><command>chromium about:blank</command></action>
+    </item>
+    <item label="Terminal">
+      <action name="Execute">
+        <command>lxterminal --working-directory=/workspace</command>
+      </action>
+    </item>
+    <item label="Files"><action name="Execute"><command>pcmanfm /workspace</command></action></item>
+    <item label="Text Editor"><action name="Execute"><command>mousepad</command></action></item>
+  </menu>
+</openbox_menu>
+"""
+
         dockerfile_content = f"""
 FROM {base_image}
 
@@ -1252,7 +1345,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     novnc \\
     websockify \\
     openbox \\
-    ffmpeg \\
+    {graphical_packages} \\
     fonts-dejavu-core \\
     fonts-liberation \\
     dbus-x11 \\
@@ -1277,6 +1370,8 @@ RUN mkdir -p \\
     useradd --system --create-home --home-dir /home/browser browser && \\
     useradd --system --create-home --home-dir /home/agent agent && \\
     chown -R browser:browser /opt/smolvm-browser
+
+{desktop_setup}
 
 RUN cd /opt/smolvm-browser-runner && \\
     npm init -y >/dev/null && \\
@@ -1304,7 +1399,8 @@ RUN chmod +x /init
                 "kernel_url": resolved_kernel_url,
                 "kernel_profile": kernel_profile.value,
                 "base_image": base_image,
-                "image_type": "browser-chromium-v5",
+                "image_type": "computer-linux-desktop-v1" if desktop else "browser-chromium-v5",
+                "desktop": desktop,
                 "_browser_session_sha256": hashlib.sha256(browser_session_sh.encode()).hexdigest(),
                 "_wait_port_sha256": hashlib.sha256(wait_port_py.encode()).hexdigest(),
                 "_browser_runner_sha256": hashlib.sha256(browser_runner_js.encode()).hexdigest(),
@@ -1340,6 +1436,7 @@ RUN chmod +x /init
                     "smolvm-browser-session": browser_session_sh,
                     "smolvm-browser-wait-port": wait_port_py,
                     "smolvm-browser-runner": browser_runner_js,
+                    **({"computer-menu.xml": computer_menu_xml} if desktop else {}),
                 },
                 kernel_url=resolved_kernel_url,
                 fingerprint_data=fingerprint_data,

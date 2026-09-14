@@ -2,17 +2,41 @@
 
 ***
 
-[@celestoai/smolvm](../README.md) / SandboxClient
+[@celestoai/smolvm](../README.md) / ComputerSessionClient
 
-# Interface: SandboxClient
+# Interface: ComputerSessionClient
 
-The mockable command, file, status, and deletion contract for one sandbox.
+A complete Linux desktop grouped by display, browser, files, and commands.
 
 ## Extends
 
 - [`CommandFilesClient`](CommandFilesClient.md)
 
 ## Properties
+
+### browser
+
+> `readonly` **browser**: [`ComputerBrowserClient`](ComputerBrowserClient.md)
+
+***
+
+### capabilities
+
+> `readonly` **capabilities**: readonly `string`[]
+
+***
+
+### computerId
+
+> `readonly` **computerId**: `string`
+
+***
+
+### display
+
+> `readonly` **display**: [`ComputerDisplayClient`](ComputerDisplayClient.md)
+
+***
 
 ### files
 
@@ -24,15 +48,21 @@ The mockable command, file, status, and deletion contract for one sandbox.
 
 ***
 
-### id
+### sandboxId
 
-> `readonly` **id**: `string`
+> `readonly` **sandboxId**: `string`
 
 ***
 
 ### status
 
-> `readonly` **status**: [`SandboxStatus`](../type-aliases/SandboxStatus.md)
+> `readonly` **status**: [`ComputerSessionStatus`](../type-aliases/ComputerSessionStatus.md)
+
+***
+
+### template
+
+> `readonly` **template**: `"linux-desktop"`
 
 ## Methods
 

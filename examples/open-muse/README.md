@@ -1,10 +1,10 @@
 # OpenMuse
 
-OpenMuse is a chat-based computer coworker that can operate public websites inside a disposable SmolVM. You chat on the left and watch its real browser on the right.
+OpenMuse is a chat-based computer coworker that can operate public websites inside a disposable Linux desktop. You chat on the left and watch its computer on the right.
 
 The agent can browse any ordinary public website without a site-specific adapter. Bounded page observation and scrolling run directly. Navigation, clicks, form changes, keypresses, and fallback model-written Playwright programs display a one-time approval before they run.
 
-The OpenAI API key stays in the host Node process. Model-written Playwright runs as an unprivileged user inside the browser VM, not in the host process.
+The OpenAI API key stays in the host Node process. Model-written Playwright runs as the unprivileged desktop user inside the VM, not in the host process.
 
 ## Run it
 
@@ -30,11 +30,11 @@ Open [http://127.0.0.1:5174](http://127.0.0.1:5174) and try:
 
 > Open https://example.com and tell me what the page says.
 
-The first browser action may take a little while because SmolVM boots a fresh browser image. The computer remains warm between chat turns and is deleted when you click **Stop** or stop the server.
+The first browser action may take a little while because SmolVM boots a fresh Linux desktop. The computer remains warm between chat turns and is deleted when you click **Stop** or stop the server.
 
 OpenMuse saves a small local conversation checkpoint in `.open-muse/state.json`. If the server stops during work, the chat returns in an interrupted state and waits for you to choose **Continue** or **Start over**. Continue always uses a fresh computer and never replays an old approval automatically. Set `OPEN_MUSE_STATE_PATH` to use a different checkpoint file.
 
-This source-checkout example uses `file:../../ts` so it can exercise the unreleased browser-session API. Build that package once before installing if its `dist/` folder is absent:
+This source-checkout example uses `file:../../ts` so it can exercise the unreleased computer API. Build that package once before installing if its `dist/` folder is absent:
 
 ```bash
 (cd ../../ts && npm install && npm run build)
@@ -45,8 +45,9 @@ On macOS, the runtime wrapper downloads the checksum-verified ARM64 Linux guest-
 ## How it works
 
 - Pi is the conversational agent harness.
-- `@celestoai/smolvm` creates one live, ephemeral browser computer with public web access.
-- That computer exposes commands and files alongside its browser connections. OpenMuse uses `exec()` for its approved runner today; future tools can use `files` for uploads, downloads, and artifacts without creating another sandbox.
+- `@celestoai/smolvm` creates one ephemeral `linux-desktop` computer with public web access.
+- The display and Chromium automation address are grouped separately. OpenMuse streams `computer.display` to the right pane and uses `computer.browser` for Playwright.
+- The computer also exposes commands and files. OpenMuse uses `exec()` for its approved runner today; future tools can use `files` without creating another sandbox.
 - Pi normally chooses a structured browser operation. OpenMuse builds the corresponding Playwright itself so the model controls arguments, not executable code.
 - The broker runs bounded observation and scrolling directly. Active operations create a one-time approval bound to the current page, exact operation arguments, and uniquely named target.
 - `browser_run` remains an approved compatibility fallback for work the structured operations cannot express.

@@ -40,6 +40,16 @@ Entry point for creating disposable local sandboxes.
 
 ***
 
+### computers
+
+> `readonly` **computers**: [`ComputerCollection`](../interfaces/ComputerCollection.md)
+
+#### Implementation of
+
+[`SmolVMClient`](../interfaces/SmolVMClient.md).[`computers`](../interfaces/SmolVMClient.md#computers)
+
+***
+
 ### sandboxes
 
 > `readonly` **sandboxes**: [`SandboxCollection`](../interfaces/SandboxCollection.md)
