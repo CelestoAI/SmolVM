@@ -51,7 +51,7 @@ On macOS, the runtime wrapper downloads the checksum-verified ARM64 Linux guest-
 
 Approval is currently bound to the complete proposed program, not to a site-specific semantic promise such as an exact cart total. Requiring approval for read-only programs is a conservative temporary policy until the runner can enforce the design's finer operation-level boundary.
 
-An approval card says when the proposed program may read the current page after its main browser script stops early. That fallback removes URL query strings, blocks visible text on known account, login, checkout, and payment paths, redacts email addresses and long payment-like numbers, and returns at most 12,000 visible-text characters. OpenMuse never retries the original website action automatically.
+An approval card says when the proposed program may read the current page after its main browser script stops early. That fallback removes URL query strings, blocks visible text when a route segment is `account`, `auth`, `billing`, `checkout`, `login`, `order`, `payment`, `profile`, `signin`, or `wallet`, redacts email addresses and long payment-like numbers, and returns at most 12,000 visible-text characters. OpenMuse never retries the original website action automatically.
 
 The initial general-web implementation uses SmolVM's open network mode. The approved follow-up design adds a public-only egress proxy that blocks private and metadata destinations before this example should be treated as a hardened browsing boundary.
 

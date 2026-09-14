@@ -313,7 +313,7 @@ Each event has a monotonic integer `id`, `conversationId`, `stateVersion`, times
 ### Lifecycle and failure behavior
 
 - Reject a second active conversation with HTTP `409` in the first example.
-- Defaults are: 120 seconds per model turn, 90 seconds for browser startup after an image is available, 10 seconds per Playwright operation or fixture receipt, 15 seconds per navigation, 35 seconds per approved browser program, 10 seconds for an approved current-page fallback, 15 seconds for takeover acknowledgement, and 15 minutes idle between turns. A browser program that stops early returns bounded current-page evidence only when the approval disclosed that fallback and the page passes the sensitive-path checks; otherwise the action fails with the exact chat retry instruction and is never retried automatically. Model and startup failures clean the session; takeover timeout leaves the input overlay in place and offers **Stop**; idle timeout stops cleanly.
+- Defaults are: 120 seconds per model turn, 90 seconds for browser startup after an image is available, 10 seconds per Playwright operation or fixture receipt, 15 seconds per navigation, 30 seconds per approved browser program with a 35-second command deadline, 10 seconds for an approved current-page fallback, 15 seconds for takeover acknowledgement, and 15 minutes idle between turns. A browser program that stops early returns bounded current-page evidence only when the approval disclosed that fallback and the page passes the sensitive-path checks; otherwise the action fails with the exact chat retry instruction and is never retried automatically. Model and startup failures clean the session; takeover timeout leaves the input overlay in place and offers **Stop**; idle timeout stops cleanly.
 - On client refresh, reconstruct chat and activity from bounded in-memory state and reconnect SSE. Conversation recovery after a Node restart is out of scope, but orphan cleanup is not.
 - On browser disconnect, pause Pi, retry the CDP connection once, then show one fact plus an exact recovery action.
 - On noVNC failure with healthy CDP, keep the agent paused until the user explicitly chooses **Continue without live view** or stops. Do not silently operate an invisible authenticated browser.
@@ -334,7 +334,7 @@ The serialized transition rules are:
 | `human` | `takeover` | idempotently acknowledge current ownership |
 | `human` | message | reject with **Select Return control** and preserve the unsent composer text |
 | `human` | approval | reject as stale because takeover invalidates pending approval |
-| `human` | `resume` | transfer to `agent`, invalidate refs, re-observe, then process queued message |
+| `human` | `resume` | transfer to `agent`, invalidate refs, and re-observe before accepting later messages |
 | session `stopping/deleted/error` or run `stopped/failed` | takeover/approval/resume/tool result | reject as stale; keep overlay; never revive the session |
 
 Stop prevents future dispatch; it cannot undo an effect already committed by the browser. Consequential validation therefore completes before dispatch, and UI copy never promises rollback.
