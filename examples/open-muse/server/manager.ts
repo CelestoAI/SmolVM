@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { SmolVM } from "@celestoai/smolvm";
 import { chromium } from "playwright-core";
 import { ActionBroker } from "./broker.js";
+import { redactBrowserOperation } from "./browser-operations.js";
 import { assistantText, createAgent, resetAgentTurnLimit } from "./agent.js";
 import { groundAddIntent } from "./intent.js";
 import { ConversationStateStore, serializeConversation, type StoredConversation } from "./state-store.js";
@@ -75,7 +76,10 @@ export class ConversationManager {
       id: context.id, stateVersion: context.stateVersion, controlOwner: context.controlOwner,
       runState: context.runState, sessionLifecycle: context.sessionLifecycle,
       messages: context.messages, grants: context.grants.map(({ id: grantId, state, expiresAt }) => ({ id: grantId, state, expiresAt })),
-      pendingApproval: context.pendingApproval ? (({ program: _program, pageBinding: _pageBinding, ...approval }) => approval)(context.pendingApproval) : undefined,
+      pendingApproval: context.pendingApproval ? (({ program: _program, pageBinding: _pageBinding, ...approval }) => ({
+        ...approval,
+        ...(approval.operation ? { operation: redactBrowserOperation(approval.operation) } : {}),
+      }))(context.pendingApproval) : undefined,
       viewerReady: context.sessionLifecycle === "ready" && Boolean(context.computer?.display.viewerUrl),
       events: context.events,
     };

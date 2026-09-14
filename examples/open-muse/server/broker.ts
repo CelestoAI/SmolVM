@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { CATALOG, STOREFRONT_VERSION, formatInr, productById } from "./catalog.js";
-import { operationProgram, operationReason, validateBrowserOperation, type BrowserOperation } from "./browser-operations.js";
+import { operationProgram, operationReason, redactBrowserOperation, validateBrowserOperation, type BrowserOperation } from "./browser-operations.js";
 import type { ConversationContext, IntentGrant, PendingApproval } from "./types.js";
 
 type Emit = (type: string, payload: Record<string, unknown>, mutates?: boolean) => void;
@@ -84,7 +84,7 @@ export class ActionBroker {
   }
 
   private publicApproval(pending: PendingApproval): Record<string, unknown> {
-    return { kind: pending.kind, approvalId: pending.approvalId, actionDigest: pending.actionDigest, reason: pending.reason, expiresAt: pending.expiresAt, ...(pending.fallbackCurrentPage ? { fallbackCurrentPage: true } : {}), ...(pending.operation ? { operation: pending.operation, pageUrl: pending.pageUrl } : {}) };
+    return { kind: pending.kind, approvalId: pending.approvalId, actionDigest: pending.actionDigest, reason: pending.reason, expiresAt: pending.expiresAt, ...(pending.fallbackCurrentPage ? { fallbackCurrentPage: true } : {}), ...(pending.operation ? { operation: redactBrowserOperation(pending.operation), pageUrl: pending.pageUrl } : {}) };
   }
 
   private async executeProgram(program: string, summary: string, fallbackCurrentPage: boolean, tool = "browser_run"): Promise<{ completed: boolean; result: Record<string, unknown> }> {

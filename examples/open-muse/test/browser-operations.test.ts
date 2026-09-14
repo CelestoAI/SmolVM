@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   operationProgram,
   operationReason,
+  redactBrowserOperation,
   validateBrowserOperation,
   type BrowserOperation,
 } from "../server/browser-operations.js";
@@ -50,7 +51,9 @@ test("operation validation normalizes public URLs and accessible targets", () =>
 test("operation validation rejects malformed, local, and sensitive actions", () => {
   for (const url of [
     "http://localhost/admin",
+    "http://localhost./admin",
     "http://service.localhost/admin",
+    "http://service.localhost./admin",
     "http://0.0.0.1/admin",
     "http://10.0.0.1/admin",
     "http://100.64.0.1/admin",
@@ -87,11 +90,27 @@ test("operation validation rejects malformed, local, and sensitive actions", () 
   assert.throws(() => validateBrowserOperation({ kind: "click", target: { role: "dialog", name: "Save" } } as never), /supported role/);
   assert.throws(() => validateBrowserOperation({ kind: "click", target: { role: "button", name: "   " } }), /supported role/);
   assert.throws(() => validateBrowserOperation({ kind: "fill", target: { role: "button", name: "Search" }, value: "muse" }), /fill only text/);
-  assert.throws(() => validateBrowserOperation({ kind: "fill", target: { role: "textbox", name: "Security code" }, value: "123456" }), /Take control/);
+  for (const name of ["Security code", "Expiry", "MM / YY", "Verification-code", "Verification_code"]) {
+    assert.throws(
+      () => validateBrowserOperation({ kind: "fill", target: { role: "textbox", name }, value: "test-value" }),
+      /Take control/,
+      name,
+    );
+  }
   assert.throws(() => validateBrowserOperation({ kind: "fill", target: { role: "textbox", name: "Notes" }, value: "x".repeat(2_001) }), /too long/);
   assert.throws(() => validateBrowserOperation({ kind: "select", target: { role: "textbox", name: "Size" }, label: "Medium" }), /only in a combobox/);
   assert.throws(() => validateBrowserOperation({ kind: "select", target: { role: "combobox", name: "Size" }, label: "   " }), /option label is invalid/);
   assert.throws(() => validateBrowserOperation({ kind: "unsupported" } as never), /not available/);
+});
+
+test("public browser operations redact fill values without changing execution data", () => {
+  const operation = { kind: "fill", target: { role: "textbox", name: "Email" }, value: "person@example.com" } as const;
+
+  assert.deepEqual(redactBrowserOperation(operation), { kind: "fill", target: operation.target });
+  assert.equal(operation.value, "person@example.com");
+  assert.deepEqual(redactBrowserOperation({ kind: "click", target: { role: "button", name: "Save" } }), {
+    kind: "click", target: { role: "button", name: "Save" },
+  });
 });
 
 test("operation programs cover every action with page and field safety checks", () => {

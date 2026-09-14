@@ -7,7 +7,6 @@ function operationDetails(operation?: api.BrowserOperation): string | undefined 
   if (!operation) return;
   if (operation.kind === "navigate") return operation.url;
   if (operation.kind === "keypress") return operation.key;
-  if (operation.kind === "fill") return operation.value ? `Value: ${operation.value}` : undefined;
   if (operation.kind === "select") return operation.label ? `Option: ${operation.label}` : undefined;
   return operation.target ? `${operation.target.role}: ${operation.target.name}` : undefined;
 }

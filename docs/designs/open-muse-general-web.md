@@ -9,7 +9,12 @@ Status: APPROVED
 Mode: Builder
 Supersedes: `docs/designs/open-muse.md` for the browser-tool and network scope; the existing document remains authoritative for the chat UI, live viewer, lifecycle, and takeover flow.
 
-> **Current implementation:** The example has a structured operation fast path. Bounded, redacted observation and scrolling run directly; navigation, click, fill, select, and keypress requests create one-time approvals bound to the current page and exact normalized arguments. A fully approved `browser_run` remains as a compatibility fallback until the guest runner exposes the complete brokered page facade described below. Structured navigation rejects literal local and private addresses, but the public-only egress proxy is still required to enforce DNS, redirects, and subresources.
+> **Current implementation:** The example has a structured operation fast path.
+>
+> - Bounded, redacted observation and scrolling run directly.
+> - Navigation, click, fill, select, and keypress requests require one-time approval bound to the current page and exact normalized arguments.
+> - Fully approved `browser_run` remains as a compatibility fallback. The guest runner is the process inside the disposable computer that executes browser code; the brokered page facade is the planned limited browser API that will enforce each operation.
+> - Structured navigation rejects literal local and private addresses. A public-only egress proxy—a network gateway that resolves and filters every outbound connection—is still required to enforce the policy across DNS, redirects, and subresources.
 
 ## Problem Statement
 

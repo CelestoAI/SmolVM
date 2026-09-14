@@ -12,7 +12,10 @@ export type BrowserOperation =
   | { kind: "select"; target: BrowserTarget; label: string }
   | { kind: "keypress"; key: "Enter" | "Escape" | "Tab" | "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" };
 
-const SENSITIVE_TARGET = /\b(?:card|credential|cvc|cvv|otp|passcode|password|payment|secret|security code|token)\b/i;
+export type PublicBrowserOperation = Exclude<BrowserOperation, { kind: "fill" }>
+  | { kind: "fill"; target: BrowserTarget };
+
+const SENSITIVE_TARGET = /\b(?:card|credential|cvc|cvv|otp|passcode|password|payment|secret|token|expir(?:y|ation)|(?:security|verification)[\s._/-]*code|mm[\s._/-]*yy)\b/i;
 const ALLOWED_KEYS = new Set(["Enter", "Escape", "Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
 const ALLOWED_ROLES = new Set(["button", "checkbox", "combobox", "link", "menuitem", "radio", "searchbox", "spinbutton", "textbox"]);
 
@@ -32,7 +35,7 @@ export function validateBrowserOperation(operation: BrowserOperation): BrowserOp
       throw new Error("The website address is invalid.");
     }
     if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("OpenMuse can navigate only to ordinary public HTTP or HTTPS addresses.");
-    const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, "");
     if (isPrivateHostname(hostname)) throw new Error("OpenMuse cannot navigate to a private or local network address.");
     return { kind: "navigate", url: url.href };
   }
@@ -58,6 +61,11 @@ export function validateBrowserOperation(operation: BrowserOperation): BrowserOp
     return { ...operation, target, label: operation.label.trim() };
   }
   return { ...operation, target };
+}
+
+export function redactBrowserOperation(operation?: BrowserOperation): PublicBrowserOperation | undefined {
+  if (operation?.kind !== "fill") return operation;
+  return { kind: operation.kind, target: operation.target };
 }
 
 export function operationReason(operation: BrowserOperation): string {

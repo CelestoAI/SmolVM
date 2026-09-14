@@ -224,7 +224,7 @@ test("concurrent active operations share the first pending approval", async () =
 });
 
 test("approval events do not retain browser field values", async () => {
-  const { broker, eventPayloads } = harness();
+  const { broker, context, eventPayloads } = harness();
 
   const pending = await broker.runWebOperation({
     kind: "fill",
@@ -232,11 +232,13 @@ test("approval events do not retain browser field values", async () => {
     value: "person@example.com",
   });
 
-  assert.equal(JSON.stringify(pending).includes("person@example.com"), true);
+  assert.equal(JSON.stringify(pending).includes("person@example.com"), false);
   assert.equal(JSON.stringify(eventPayloads.at(-1)).includes("person@example.com"), false);
+  assert.equal(context.pendingApproval?.operation?.kind, "fill");
+  assert.equal(context.pendingApproval?.operation?.kind === "fill" ? context.pendingApproval.operation.value : undefined, "person@example.com");
 });
 
-test("conversation snapshots hide the private page binding", async () => {
+test("conversation snapshots hide private page bindings and fill values", async () => {
   const manager = new ConversationManager("", "gpt-5-mini");
   const created = await manager.create();
   const context = (manager as unknown as { context: ConversationContext }).context;
@@ -244,9 +246,9 @@ test("conversation snapshots hide the private page binding", async () => {
     kind: "browser_operation",
     approvalId: "approval-test",
     actionDigest: "digest-test",
-    reason: "Click button “Open”",
+    reason: "Fill textbox “Email”",
     expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    operation: { kind: "click", target: { role: "button", name: "Open" } },
+    operation: { kind: "fill", target: { role: "textbox", name: "Email" }, value: "person@example.com" },
     pageUrl: "https://example.com/search",
     pageBinding: "https://example.com/search?q=private#results",
   };
@@ -254,9 +256,11 @@ test("conversation snapshots hide the private page binding", async () => {
   const snapshot = manager.snapshot(created.id);
 
   assert.equal(snapshot.pendingApproval?.pageUrl, "https://example.com/search");
-  assert.deepEqual(snapshot.pendingApproval?.operation, context.pendingApproval.operation);
+  assert.deepEqual(snapshot.pendingApproval?.operation, { kind: "fill", target: { role: "textbox", name: "Email" } });
+  assert.equal(context.pendingApproval.operation?.kind === "fill" ? context.pendingApproval.operation.value : undefined, "person@example.com");
   assert.equal("pageBinding" in snapshot.pendingApproval!, false);
   assert.equal(JSON.stringify(snapshot).includes("q=private"), false);
+  assert.equal(JSON.stringify(snapshot).includes("person@example.com"), false);
 });
 
 test("browser programs return the current page when generated automation stops early", async () => {
