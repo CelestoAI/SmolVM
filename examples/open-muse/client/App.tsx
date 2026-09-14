@@ -3,6 +3,15 @@ import * as api from "./api";
 
 const SUGGESTION = "Open https://example.com and tell me what the page says";
 
+function operationDetails(operation?: api.BrowserOperation): string | undefined {
+  if (!operation) return;
+  if (operation.kind === "navigate") return operation.url;
+  if (operation.kind === "keypress") return operation.key;
+  if (operation.kind === "fill") return operation.value ? `Value: ${operation.value}` : undefined;
+  if (operation.kind === "select") return operation.label ? `Option: ${operation.label}` : undefined;
+  return operation.target ? `${operation.target.role}: ${operation.target.name}` : undefined;
+}
+
 export function App() {
   const [conversation, setConversation] = useState<api.Conversation>();
   const [text, setText] = useState("");
@@ -112,7 +121,7 @@ export function App() {
           {!conversation?.messages.length && <div className="welcome"><div className="eyebrow">A computer coworker in a disposable VM</div><h1>What should we<br/>get done?</h1><p>Ask naturally. It can operate public websites in its own browser, while you watch, approve interactions, or take control.</p><button className="suggestion" onClick={() => void submit(SUGGESTION)}><span>Try a public web task</span><strong>{SUGGESTION}</strong><b>→</b></button></div>}
           <div className="messages">{conversation?.messages.map((message) => <article key={message.id} className={`message ${message.role}`}><div className="avatar">{message.role === "user" ? "Y" : "M"}</div><div><div className="message-role">{message.role === "user" ? "You" : "OpenMuse"}</div><p>{message.text}</p></div></article>)}</div>
           {interrupted && <aside className="approval recovery"><div className="eyebrow">Work interrupted</div><h3>Choose how to proceed</h3><p>OpenMuse stopped while working. The previous website action may have completed. Continue in a fresh computer, or start over.</p><div><button disabled={recoveryPending} onClick={() => void continueConversation()}>Continue</button><button className="secondary" disabled={recoveryPending} onClick={() => void startOver()}>Start over</button></div></aside>}
-          {conversation?.pendingApproval && <aside className="approval"><div className="eyebrow">Approval required</div><h3>Allow this website interaction?</h3><p>{conversation.pendingApproval.reason}</p>{conversation.pendingApproval.fallbackCurrentPage && <p>If the script stops early, OpenMuse may read the current page’s main visible text.</p>}<div><button disabled={approvalPending} onClick={() => void resolve(true)}>{approvalPending ? "Running…" : "Approve once"}</button><button className="secondary" disabled={approvalPending} onClick={() => void resolve(false)}>Not now</button></div></aside>}
+          {conversation?.pendingApproval && <aside className="approval"><div className="eyebrow">Approval required</div><h3>Allow this website interaction?</h3><p>{conversation.pendingApproval.reason}</p>{conversation.pendingApproval.pageUrl && <p>Current page: {conversation.pendingApproval.pageUrl}</p>}{operationDetails(conversation.pendingApproval.operation) && <p>{operationDetails(conversation.pendingApproval.operation)}</p>}{conversation.pendingApproval.fallbackCurrentPage && <p>If the script stops early, OpenMuse may read the current page’s main visible text.</p>}<div><button disabled={approvalPending} onClick={() => void resolve(true)}>{approvalPending ? "Running…" : "Approve once"}</button><button className="secondary" disabled={approvalPending} onClick={() => void resolve(false)}>Not now</button></div></aside>}
           {busy && <div className="thinking"><i></i><i></i><i></i> Working in the browser</div>}
           <div ref={endRef}></div>
         </div>

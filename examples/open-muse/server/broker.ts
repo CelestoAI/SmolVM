@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { CATALOG, STOREFRONT_VERSION, formatInr, productById } from "./catalog.js";
+import { operationProgram, operationReason, validateBrowserOperation, type BrowserOperation } from "./browser-operations.js";
 import type { ConversationContext, IntentGrant, PendingApproval } from "./types.js";
 
 type Emit = (type: string, payload: Record<string, unknown>, mutates?: boolean) => void;
@@ -37,15 +38,56 @@ export class ActionBroker {
     };
     this.context.pendingApproval = pending;
     this.context.runState = "waiting_for_approval";
-    this.emit("approval.requested", { ...this.publicApproval(pending), summary: pending.reason }, true);
+    this.emit("approval.requested", {
+      kind: pending.kind,
+      approvalId: pending.approvalId,
+      actionDigest: pending.actionDigest,
+      reason: pending.reason,
+      expiresAt: pending.expiresAt,
+      summary: pending.reason,
+    }, true);
+    return { approvalRequired: true, ...this.publicApproval(pending) };
+  }
+
+  async runWebOperation(operation: BrowserOperation): Promise<Record<string, unknown>> {
+    operation = validateBrowserOperation(operation);
+    await this.readyComputer();
+    const reason = operationReason(operation).slice(0, 240);
+    if (operation.kind === "observe" || operation.kind === "scroll") {
+      return (await this.executeProgram(operationProgram(operation), reason, false, `browser_${operation.kind}`)).result;
+    }
+    if (this.context.pendingApproval) return { approvalRequired: true, ...this.publicApproval(this.context.pendingApproval) };
+    const { binding: pageBinding, display: pageUrl } = await this.currentPage();
+    if (this.context.pendingApproval) return { approvalRequired: true, ...this.publicApproval(this.context.pendingApproval) };
+    const action = { kind: "browser_operation", operation, pageBinding };
+    const pending: PendingApproval = {
+      kind: "browser_operation",
+      approvalId: `approval-${randomUUID()}`,
+      actionDigest: createHash("sha256").update(JSON.stringify(action)).digest("hex"),
+      reason,
+      expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+      operation,
+      pageUrl,
+      pageBinding,
+    };
+    this.context.pendingApproval = pending;
+    this.context.runState = "waiting_for_approval";
+    this.emit("approval.requested", {
+      kind: pending.kind,
+      approvalId: pending.approvalId,
+      actionDigest: pending.actionDigest,
+      reason: pending.reason,
+      expiresAt: pending.expiresAt,
+      summary: pending.reason,
+    }, true);
     return { approvalRequired: true, ...this.publicApproval(pending) };
   }
 
   private publicApproval(pending: PendingApproval): Record<string, unknown> {
-    return { kind: pending.kind, approvalId: pending.approvalId, actionDigest: pending.actionDigest, reason: pending.reason, expiresAt: pending.expiresAt, ...(pending.fallbackCurrentPage ? { fallbackCurrentPage: true } : {}) };
+    return { kind: pending.kind, approvalId: pending.approvalId, actionDigest: pending.actionDigest, reason: pending.reason, expiresAt: pending.expiresAt, ...(pending.fallbackCurrentPage ? { fallbackCurrentPage: true } : {}), ...(pending.operation ? { operation: pending.operation, pageUrl: pending.pageUrl } : {}) };
   }
 
-  private async executeProgram(program: string, summary: string, fallbackCurrentPage: boolean): Promise<{ completed: boolean; result: Record<string, unknown> }> {
+  private async executeProgram(program: string, summary: string, fallbackCurrentPage: boolean, tool = "browser_run"): Promise<{ completed: boolean; result: Record<string, unknown> }> {
     try {
       const controlEpoch = this.context.controlEpoch;
       const computer = await this.readyComputer();
@@ -62,7 +104,7 @@ export class ActionBroker {
         "return { programResult, page: { title: await page.title().catch(() => ''), url: safeUrl } };",
       ].join("\n");
       const encoded = Buffer.from(wrappedProgram).toString("base64url");
-      this.emit("tool.started", { tool: "browser_run", summary: summary || "Running Playwright in the disposable browser" });
+      this.emit("tool.started", { tool, summary: summary || "Running Playwright in the disposable browser" });
       const command = await computer.exec(["/usr/local/bin/smolvm-browser-runner", encoded], { timeoutMs: 35_000 });
       this.assertAgentControl(controlEpoch);
       if (!command.ok) {
@@ -106,7 +148,7 @@ export class ActionBroker {
           && ((typeof page.title === "string" && page.title.trim())
             || (typeof page.visibleText === "string" && page.visibleText.trim())));
         if (!hasUsefulPage) throw new Error(programError);
-        this.emit("tool.completed", { tool: "browser_run", summary: "Website script stopped early; current page returned" });
+        this.emit("tool.completed", { tool, summary: "Website script stopped early; current page returned" });
         return { completed: false, result: { completed: false, programResult: null, programError, page } };
       }
       const marker = command.stdout.split("\n").reverse().find((line: string) => line.startsWith("SMOLVM_BROWSER_RESULT="));
@@ -117,14 +159,28 @@ export class ActionBroker {
       if (!value || typeof value !== "object" || !("programResult" in value) || value.programResult === "undefined") {
         throw new Error("The Playwright program finished without returning data.");
       }
-      this.emit("tool.completed", { tool: "browser_run", summary: summary || "Playwright program completed" });
+      this.emit("tool.completed", { tool, summary: summary || "Playwright program completed" });
       return { completed: true, result: value };
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       console.error(`OpenMuse website action failed: ${detail}`);
-      this.emit("tool.failed", { tool: "browser_run", summary: BROWSER_ACTION_FAILED });
+      this.emit("tool.failed", { tool, summary: BROWSER_ACTION_FAILED });
       throw Object.assign(new Error(BROWSER_ACTION_FAILED), { status: 422, cause: error });
     }
+  }
+
+  private async currentPage(): Promise<{ binding: string; display: string }> {
+    const execution = await this.executeProgram([
+      "const pageBindingRawUrl = page.url();",
+      "const pageBindingParsedUrl = (() => { try { return new URL(pageBindingRawUrl); } catch { return null; } })();",
+      "return {",
+      "  binding: pageBindingParsedUrl && ['http:', 'https:'].includes(pageBindingParsedUrl.protocol) ? `${pageBindingParsedUrl.origin}${pageBindingParsedUrl.pathname}${pageBindingParsedUrl.search}${pageBindingParsedUrl.hash}` : pageBindingRawUrl,",
+      "  display: pageBindingParsedUrl && ['http:', 'https:'].includes(pageBindingParsedUrl.protocol) ? `${pageBindingParsedUrl.origin}${pageBindingParsedUrl.pathname}` : pageBindingRawUrl,",
+      "};",
+    ].join("\n"), "Checking the current page", false, "browser_policy");
+    const current = execution.result.programResult as { binding?: unknown; display?: unknown } | undefined;
+    if (typeof current?.binding !== "string" || typeof current.display !== "string") throw new Error("The browser runner did not report the current page.");
+    return { binding: current.binding, display: current.display };
   }
 
   private assertAgentControl(controlEpoch: string | undefined): void {
@@ -246,6 +302,10 @@ export class ActionBroker {
               ? "Approved website interaction completed"
               : "Approved website interaction stopped early; current page returned",
           }, true);
+        } else if (pending.kind === "browser_operation") {
+          const execution = await this.executeProgram(operationProgram(pending.operation!, pending.pageBinding), pending.reason, false, `browser_${pending.operation!.kind}`);
+          browserResult = execution.result;
+          this.emit("approval.resolved", { approved: true, summary: "Approved browser operation completed" }, true);
         } else {
           const controlEpoch = this.context.controlEpoch;
           const storefront = await this.ready();
@@ -258,7 +318,7 @@ export class ActionBroker {
     } finally {
       this.context.runState = "idle";
     }
-    return pending.kind === "browser_program" && approved
+    return (pending.kind === "browser_program" || pending.kind === "browser_operation") && approved
       ? { resumeAgent: true, browserResult }
       : { resumeAgent: false };
   }
