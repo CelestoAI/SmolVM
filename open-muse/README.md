@@ -257,6 +257,13 @@ An approved operation is recorded before it runs. A failure before dispatch appe
 
 Structured navigation rejects local and private literal addresses, but the initial general-web implementation still uses SmolVM's open network mode. DNS and subresource enforcement need the approved public-only egress proxy before OpenMuse should be treated as hardened against untrusted websites.
 
+## Contributing and help
+
+- Read the repository [contribution guide](../CONTRIBUTING.md) before opening a pull request.
+- [Report an OpenMuse bug](https://github.com/CelestoAI/SmolVM/issues/new?template=bug_report.yml) with reproduction steps and host details.
+- [Propose a feature](https://github.com/CelestoAI/SmolVM/issues/new?template=feature_request.yml) before starting a large change.
+- Report security problems privately through [GitHub Security Advisories](https://github.com/CelestoAI/SmolVM/security/advisories/new), not a public issue. See the [security policy](../SECURITY.md) for details.
+
 ## Design documents
 
 - [Browser snapshots, element references, and extraction](../docs/designs/open-muse-browser-capability.md)
