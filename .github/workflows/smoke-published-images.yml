@@ -7,8 +7,8 @@
 # Each cell tests a *real* published SmolVM image (including the Alpine
 # OpenCode image), exactly how the runtime boots them:
 #   - Downloads the published kernel + ``<rootfs>-<arch>-rootfs.ext4.zst``
-#     from the release and decompresses it (no SHA pinning — we test what
-#     CI just produced, not what's pinned in the manifest).
+#     from the release, verifies the rootfs against the bundled manifest,
+#     and decompresses it.
 #   - Boots qemu-system-<arch> with the kernel + rootfs as virtio-blk,
 #     using the production boot args: ``init=/init`` (every SmolVM image
 #     boots /init, not systemd) and ``root=/dev/vda`` (single ext4). The
@@ -62,12 +62,14 @@ jobs:
       fail-fast: false
       matrix:
         arch: [amd64, arm64]
-        rootfs: [openclaw, opencode, ubuntu]
+        rootfs: [openclaw, opencode, ubuntu, linux-desktop]
         os: [ubuntu, alpine]
         exclude:
           - rootfs: openclaw
             os: alpine
           - rootfs: ubuntu
+            os: alpine
+          - rootfs: linux-desktop
             os: alpine
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     timeout-minutes: 20
@@ -140,6 +142,28 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --pattern "$asset" \
               -D smoke
+          release_digest=$(gh release view "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json assets \
+              --jq ".assets[] | select(.name == \"$asset\") | .digest")
+          release_sha=${release_digest#sha256:}
+          actual_sha=$(sha256sum "smoke/$asset" | cut -d' ' -f1)
+          if [ -z "$release_sha" ] || [ "$actual_sha" != "$release_sha" ]; then
+            echo "Published checksum mismatch for $asset" >&2
+            exit 1
+          fi
+
+          preset_symbol=$(printf '%s' "$ROOTFS" | tr '[:lower:]-' '[:upper:]_')
+          if [ "$OS" = "alpine" ]; then
+            symbol="_${preset_symbol}_${ARCH^^}_ALPINE_ROOTFS_SHA"
+          else
+            symbol="_${preset_symbol}_${ARCH^^}_ROOTFS_SHA"
+          fi
+          manifest_sha=$(awk -v symbol="$symbol" '$1 == symbol {gsub(/"/, "", $3); print $3}' src/smolvm/images/published.py)
+          if [ -n "$manifest_sha" ] && [ "$actual_sha" != "$manifest_sha" ]; then
+            echo "Manifest checksum mismatch for $asset" >&2
+            exit 1
+          fi
           zstd -d "smoke/$asset" -o smoke/rootfs.raw
           rm "smoke/$asset"
 
@@ -215,6 +239,39 @@ jobs:
                    'test -x /usr/local/bin/smolvm-guest-agent && pgrep -f smolvm-guest-agent >/dev/null'; then
               echo "guest agent present and running"
               agent_ok=1
+            fi
+            if [ "$ROOTFS" = "linux-desktop" ] && [ "$agent_ok" -eq 1 ]; then
+              if ssh -p 2223 -i smoke/id_ed25519 \
+                     -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+                     -o ConnectTimeout=10 root@127.0.0.1 \
+                     'set -eu
+                      test -x /usr/local/bin/smolvm-browser-session
+                      command -v chromium >/dev/null
+                      command -v openbox >/dev/null
+                      command -v tint2 >/dev/null
+                      command -v lxterminal >/dev/null
+                      command -v pcmanfm >/dev/null
+                      command -v mousepad >/dev/null
+                      /usr/local/bin/smolvm-browser-session start computer 1280 720 9222 6080 /opt/smolvm-browser/profiles/smoke /opt/smolvm-browser/downloads/smoke 0 1 /opt/smolvm-browser/artifacts/smoke
+                      for _attempt in $(seq 1 60); do
+                        if pgrep -x Xvfb >/dev/null &&
+                           pgrep -x openbox >/dev/null &&
+                           pgrep -x tint2 >/dev/null &&
+                           pgrep -x x11vnc >/dev/null &&
+                           pgrep -f websockify >/dev/null &&
+                           pgrep -f chromium >/dev/null &&
+                           python3 -c '\''import urllib.request; urllib.request.urlopen("http://127.0.0.1:6080/vnc.html", timeout=2).read()'\'' &&
+                           python3 -c '\''import urllib.request; urllib.request.urlopen("http://127.0.0.1:9222/json/version", timeout=2).read()'\''; then
+                          exit 0
+                        fi
+                        sleep 1
+                      done
+                      exit 1'; then
+                echo "Linux desktop applications and services are ready"
+              else
+                echo "Linux desktop applications or services did not become ready"
+                agent_ok=0
+              fi
             fi
           fi
           sudo kill "$QPID" 2>/dev/null || true
