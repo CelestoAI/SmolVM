@@ -13,6 +13,12 @@ function operationDetails(operation?: api.BrowserOperation): string | undefined 
 
 export function App() {
   const [conversation, setConversation] = useState<api.Conversation>();
+  const [modelAccess, setModelAccess] = useState<api.ModelAccess>();
+  const [authAttempt, setAuthAttempt] = useState<api.AuthAttempt>();
+  const [authValue, setAuthValue] = useState("");
+  const [selectedProviderId, setSelectedProviderId] = useState("");
+  const [selectedModelId, setSelectedModelId] = useState("");
+  const [showModelSetup, setShowModelSetup] = useState(false);
   const [text, setText] = useState("");
   const [error, setError] = useState("");
   const [viewerPath, setViewerPath] = useState("");
@@ -26,21 +32,60 @@ export function App() {
   const refresh = async (id = conversation?.id) => { if (id) setConversation(await api.getConversation(id)); };
   useEffect(() => {
     let cancelled = false;
-    let source: EventSource | undefined;
     void (async () => {
       try {
-        const { conversationId } = await api.bootstrap();
-        const created = conversationId ? await api.getConversation(conversationId) : await api.createConversation();
+        const { conversationId, modelAccess: access } = await api.bootstrap();
         if (cancelled) return;
-        setConversation(created);
-        source = new EventSource(`/api/conversations/${created.id}/events`);
-        source.onmessage = () => void refresh(created.id);
-        source.addEventListener("message.completed", () => void refresh(created.id));
-        for (const name of ["browser.starting", "browser.ready", "agent.started", "agent.completed", "agent.failed", "tool.failed", "approval.requested", "approval.resolved", "approval.invalidated", "operation.approved", "operation.dispatched", "operation.completed", "operation.outcome_unknown", "popup.quarantined", "popup.adopted", "tab.navigated", "tab.closed", "control.changed", "cart.updated", "conversation.stopped"]) source.addEventListener(name, () => void refresh(created.id));
+        setModelAccess(access);
+        if (conversationId) setConversation(await api.getConversation(conversationId));
+        else if (!access) setConversation(await api.createConversation());
+        const pendingAttempt = sessionStorage.getItem("open_muse_auth_attempt");
+        if (pendingAttempt) {
+          try {
+            const attempt = (await api.getAuthAttempt(pendingAttempt)).attempt;
+            if (["succeeded", "expired", "cancelled", "failed"].includes(attempt.state)) sessionStorage.removeItem("open_muse_auth_attempt");
+            else setAuthAttempt(attempt);
+          }
+          catch { sessionStorage.removeItem("open_muse_auth_attempt"); }
+        }
       } catch (caught) { if (!cancelled) setError(caught instanceof Error ? caught.message : "Could not start OpenMuse."); }
     })();
-    return () => { cancelled = true; source?.close(); };
+    return () => { cancelled = true; };
   }, []);
+  useEffect(() => {
+    if (!conversation?.id) return;
+    const source = new EventSource(`/api/conversations/${conversation.id}/events`);
+    const update = () => void refresh(conversation.id);
+    source.onmessage = update;
+    for (const name of ["message.completed", "browser.starting", "browser.ready", "agent.started", "agent.completed", "agent.failed", "model.auth_required", "tool.failed", "approval.requested", "approval.resolved", "approval.invalidated", "operation.approved", "operation.dispatched", "operation.completed", "operation.outcome_unknown", "popup.quarantined", "popup.adopted", "tab.navigated", "tab.closed", "control.changed", "cart.updated", "conversation.stopped"]) source.addEventListener(name, update);
+    return () => source.close();
+  }, [conversation?.id]);
+  useEffect(() => {
+    if (!authAttempt || ["succeeded", "expired", "cancelled", "failed"].includes(authAttempt.state)) return;
+    const source = new EventSource(`/api/auth-attempts/${authAttempt.id}/events`);
+    const update = (event: MessageEvent) => {
+      const next = (JSON.parse(event.data) as { snapshot: api.AuthAttempt }).snapshot;
+      setAuthAttempt(next);
+      if (next.state === "succeeded") {
+        sessionStorage.removeItem("open_muse_auth_attempt");
+        void Promise.all([
+          api.getModelAccess().then(setModelAccess),
+          conversation?.modelAccessState === "auth_required" && conversation.providerId === next.providerId ? api.reconnectConversation(conversation.id).then(setConversation) : Promise.resolve(),
+        ]).catch((caught) => setError(caught instanceof Error ? caught.message : "Could not finish connecting the model provider.")).finally(() => setAuthAttempt(undefined));
+      }
+    };
+    for (const name of ["auth.started", "auth.prompt", "auth.prompt_submitted", "auth.prompt_cancelled", "auth.auth_url", "auth.device_code", "auth.progress", "auth.info", "auth.succeeded", "auth.failed", "auth.cancelled", "auth.expired", "auth.resync_required"]) source.addEventListener(name, update as EventListener);
+    return () => source.close();
+  }, [authAttempt?.id, authAttempt?.state, conversation?.id, conversation?.modelAccessState]);
+  useEffect(() => {
+    if (!modelAccess) return;
+    const selected = modelAccess.selection;
+    const provider = selected
+      ? modelAccess.providers.find((candidate) => candidate.id === selected.providerId)
+      : modelAccess.providers.find((candidate) => candidate.configured && candidate.models.length) ?? modelAccess.providers.find((candidate) => candidate.models.length);
+    setSelectedProviderId(provider?.id ?? "");
+    setSelectedModelId(selected?.modelId ?? provider?.models.find((model) => model.recommended)?.id ?? provider?.models[0]?.id ?? "");
+  }, [modelAccess]);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [conversation?.messages.length]);
   useEffect(() => {
     if (!conversation?.viewerReady || viewerPath) return;
@@ -101,6 +146,44 @@ export function App() {
     catch (caught) { setError(caught instanceof Error ? caught.message : "Could not start over."); }
     finally { recoveryPendingRef.current = false; setRecoveryPending(false); }
   };
+  const beginAuth = async (providerId: string, method: "oauth" | "api_key") => {
+    setError(""); setAuthValue("");
+    try {
+      const { attempt } = await api.startAuth(providerId, method);
+      setAuthAttempt(attempt);
+      sessionStorage.setItem("open_muse_auth_attempt", attempt.id);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not start sign-in."); }
+  };
+  const submitAuth = async () => {
+    if (!authAttempt?.prompt || !authValue) return;
+    try {
+      const { attempt } = await api.submitAuthPrompt(authAttempt.id, authAttempt.prompt.id, authValue);
+      setAuthValue(""); setAuthAttempt(attempt);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not continue sign-in."); }
+  };
+  const cancelAuth = async () => {
+    if (!authAttempt) return;
+    try { const { attempt } = await api.cancelAuth(authAttempt.id); setAuthAttempt(attempt); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Could not cancel sign-in."); }
+    finally { sessionStorage.removeItem("open_muse_auth_attempt"); }
+  };
+  const startConversation = async (selection = { providerId: selectedProviderId, modelId: selectedModelId }) => {
+    if (!selection.providerId || !selection.modelId) return;
+    setError("");
+    try {
+      await api.selectModel(selection);
+      setConversation(await api.createConversation());
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not start a conversation."); }
+  };
+  const disconnect = async (providerId: string) => {
+    setError("");
+    try {
+      await api.disconnectProvider(providerId);
+      setAuthAttempt(undefined);
+      setModelAccess(await api.getModelAccess());
+      if (conversation) setConversation(await api.getConversation(conversation.id));
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not disconnect the model provider."); }
+  };
 
   const busy = approvalPending || conversation?.runState === "model_turn" || conversation?.runState === "tool_action";
   const interrupted = conversation?.runState === "interrupted";
@@ -127,10 +210,42 @@ export function App() {
           detail: "OpenMuse stopped while working. The previous website action may have completed. Continue in a fresh computer, or start over.",
         };
 
+  const needsModelSetup = Boolean(modelAccess && (showModelSetup || !conversation || conversation.modelAccessState !== "ready"));
+  if (needsModelSetup) {
+    const providers = modelAccess!.providers;
+    const selectedProvider = providers.find((provider) => provider.id === selectedProviderId) ?? providers[0];
+    const attemptProvider = modelAccess!.providers.find((provider) => provider.id === authAttempt?.providerId);
+    const attemptActive = authAttempt && !["succeeded", "expired", "cancelled", "failed"].includes(authAttempt.state);
+    return <main className="app-shell setup-shell">
+      <header className="topbar"><div className="brand"><span className="brandmark">M</span><span>OpenMuse</span><span className="preview">PREVIEW</span></div><span className="setup-security">Credentials stay on this computer</span></header>
+      <section className="setup-page">
+        <div className="setup-intro"><div className="eyebrow">Model access</div><h1>{conversation?.modelAccessState === "ready" ? "Model settings" : conversation ? "Reconnect to continue" : "Choose how OpenMuse thinks"}</h1><p>{conversation?.modelAccessState === "ready" ? `This conversation uses ${conversation.modelId}. You can switch its model or disconnect a saved credential.` : conversation ? `This conversation uses ${conversation.modelId}. Connect its provider again to keep going.` : "Connect a supported provider, then choose the model for this conversation."}</p></div>
+        {error && <div className="error setup-error">{error}</div>}
+        {authAttempt ? <section className="auth-flow">
+          <div className="eyebrow">{attemptProvider?.name ?? authAttempt.providerId}</div>
+          <h2>{authAttempt.state === "succeeded" ? "Connected" : authAttempt.state === "failed" ? "Sign-in did not finish" : authAttempt.state === "expired" ? "Sign-in expired" : authAttempt.state === "cancelled" ? "Sign-in cancelled" : "Finish connecting"}</h2>
+          {(authAttempt.error || authAttempt.message) && <p>{authAttempt.error ?? authAttempt.message}</p>}
+          {authAttempt.authUrl && <><p>This opens a provider-controlled page in your browser, outside the agent's disposable computer.</p><button onClick={() => window.open(authAttempt.authUrl, "_blank", "noopener,noreferrer")}>Open secure sign-in page ↗</button></>}
+          {authAttempt.deviceCode && <div className="device-code"><span>Enter this code</span><strong>{authAttempt.deviceCode.userCode}</strong><div><button onClick={() => void navigator.clipboard.writeText(authAttempt.deviceCode!.userCode).catch(() => setError("Could not copy the code. Select it and copy it manually."))}>Copy code</button><button className="secondary" onClick={() => window.open(authAttempt.deviceCode!.verificationUri, "_blank", "noopener,noreferrer")}>Open verification page ↗</button></div></div>}
+          {authAttempt.prompt && <div className="auth-prompt"><label htmlFor="auth-response">{authAttempt.prompt.message}</label>{authAttempt.prompt.type === "select" ? <select id="auth-response" value={authValue} onChange={(event) => setAuthValue(event.target.value)}><option value="">Choose an option</option>{authAttempt.prompt.options?.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select> : <input id="auth-response" autoFocus type={["secret", "manual_code"].includes(authAttempt.prompt.type) ? "password" : "text"} autoComplete="off" placeholder={authAttempt.prompt.placeholder} value={authValue} onChange={(event) => setAuthValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void submitAuth(); }}/>}<button disabled={!authValue} onClick={() => void submitAuth()}>Continue</button></div>}
+          {attemptActive ? <button className="text-button" onClick={() => void cancelAuth()}>Cancel</button> : <button className="secondary" onClick={() => { setAuthAttempt(undefined); setAuthValue(""); }}>Try again</button>}
+        </section> : <section className="provider-grid">
+          {providers.map((provider) => <article className={`provider-card ${provider.id === selectedProvider?.id ? "selected" : ""}`} key={provider.id}>
+            <div className="provider-heading"><div><div className="eyebrow">Provider</div><h2>{provider.name}</h2></div>{provider.configured && <span className="connected">Connected · {provider.source === "account" ? "account" : provider.source === "environment" ? "environment" : "API key"}</span>}</div>
+            {provider.configured ? <>
+              <label className="model-label" htmlFor={`model-${provider.id}`}>Model</label><select id={`model-${provider.id}`} value={provider.id === selectedProviderId ? selectedModelId : provider.models[0]?.id ?? ""} onChange={(event) => { setSelectedProviderId(provider.id); setSelectedModelId(event.target.value); }}>{provider.models.map((model) => <option key={model.id} value={model.id}>{model.name}{model.recommended ? " · Recommended" : ""}</option>)}</select>
+              <div className="provider-actions"><button onClick={() => { setSelectedProviderId(provider.id); const modelId = provider.id === selectedProviderId ? selectedModelId : provider.models[0]?.id ?? ""; setSelectedModelId(modelId); const sameBinding = conversation?.providerId === provider.id && conversation.modelId === modelId; if (conversation?.modelAccessState === "ready" && sameBinding) { setShowModelSetup(false); return; } void (!conversation ? startConversation({ providerId: provider.id, modelId }) : sameBinding ? api.reconnectConversation(conversation.id).then((next) => { setConversation(next); setShowModelSetup(false); }).catch((caught) => setError(caught instanceof Error ? caught.message : "Could not reconnect.")) : api.switchConversationModel(conversation.id, { providerId: provider.id, modelId }).then((next) => { setConversation(next); setShowModelSetup(false); }).catch((caught) => setError(caught instanceof Error ? caught.message : "Could not switch models."))); }}>{!conversation ? "Start using OpenMuse" : conversation.providerId === provider.id && conversation.modelId === (provider.id === selectedProviderId ? selectedModelId : provider.models[0]?.id) ? "Return to conversation" : conversation.providerId === provider.id ? "Switch model" : "Switch provider"}</button>{provider.source === "environment" ? <small>To disconnect, remove {provider.environmentVariable ?? "the provider credential"} from your environment and restart OpenMuse.</small> : <button className="text-button" onClick={() => void disconnect(provider.id)}>Disconnect</button>}</div>
+            </> : <div className="auth-methods">{provider.methods.map((method) => method.type === "api_key" ? <details key={method.type}><summary>{method.label}</summary><p>The key is stored only on this computer and is never sent to the browser again.</p><button disabled={!method.enabled} onClick={() => void beginAuth(provider.id, method.type)}>Enter API key</button>{method.unavailableReason && <small>{method.unavailableReason}</small>}</details> : <div className="auth-method" key={method.type}><button disabled={!method.enabled} onClick={() => void beginAuth(provider.id, method.type)}>{method.label}</button>{method.unavailableReason && <small>{method.unavailableReason}</small>}</div>)}</div>}
+          </article>)}
+        </section>}
+      </section>
+    </main>;
+  }
+
   return <main className="app-shell">
     <header className="topbar">
       <div className="brand"><span className="brandmark">M</span><span>OpenMuse</span><span className="preview">PREVIEW</span></div>
-      <div className="top-actions"><span className={`status-dot ${busy ? "working" : ""}`}></span><span>{status}</span>{conversation && conversation.runState !== "stopped" && <button className="quiet danger" onClick={() => void api.stopConversation(conversation.id)}>Stop</button>}</div>
+      <div className="top-actions">{modelAccess && conversation && <button className="quiet" onClick={() => setShowModelSetup(true)}>Model: {conversation.modelId}</button>}<span className={`status-dot ${busy ? "working" : ""}`}></span><span>{status}</span>{conversation && conversation.runState !== "stopped" && <button className="quiet danger" onClick={() => void api.stopConversation(conversation.id)}>Stop</button>}</div>
     </header>
     <section className="workspace">
       <section className="chat-pane">

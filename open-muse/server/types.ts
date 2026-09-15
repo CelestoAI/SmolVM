@@ -9,6 +9,7 @@ import type { BrowserTab } from "./browser-tabs.js";
 export type ControlOwner = "agent" | "pause_requested" | "human";
 export type RunState = "idle" | "model_turn" | "tool_action" | "waiting_for_approval" | "interrupted" | "stopping" | "stopped" | "failed";
 export type SessionLifecycle = "absent" | "starting" | "ready" | "stopping" | "deleted" | "error";
+export type ModelAccessState = "ready" | "auth_required" | "model_unavailable";
 
 export interface Message { id: string; role: "user" | "assistant"; text: string; createdAt: string }
 export interface ConversationEvent {
@@ -44,6 +45,7 @@ export interface BrowserRef extends BrowserTarget {
 
 export interface ConversationContext {
   id: string; stateVersion: number; controlOwner: ControlOwner; runState: RunState;
+  providerId: string; modelId: string; modelAccessState: ModelAccessState;
   sessionLifecycle: SessionLifecycle; messages: Message[]; events: ConversationEvent[];
   grants: IntentGrant[]; cart: CartLine[]; commerceRevision: number; observationId: string;
   pendingApproval?: PendingApproval; controlEpoch?: string; lastActivityAt: number;

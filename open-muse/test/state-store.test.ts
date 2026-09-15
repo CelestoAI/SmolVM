@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { ConversationManager } from "../server/manager.js";
+import type { ModelAccessService } from "../server/model-access.js";
 import { ConversationStateStore, serializeConversation, type StoredConversation } from "../server/state-store.js";
 import type { ConversationContext } from "../server/types.js";
 
@@ -119,7 +120,7 @@ test("invalid state reports a recovery command instead of silently resetting", a
   );
 });
 
-test("v1 checkpoints migrate to v2 with an empty operation journal", async (t) => {
+test("v1 checkpoints migrate to v3 with model binding and an empty operation journal", async (t) => {
   const store = await temporaryStore(t);
   const { created, context } = await conversationFixture();
   const current = serializeConversation(context);
@@ -130,8 +131,24 @@ test("v1 checkpoints migrate to v2 with an empty operation journal", async (t) =
   const migrated = await store.load();
 
   assert.equal(restored.snapshot(created.id).runState, "idle");
-  assert.equal(migrated?.fileVersion, 2);
+  assert.equal(migrated?.fileVersion, 3);
   assert.deepEqual(migrated?.conversation.operationJournal, []);
+  assert.equal(migrated?.conversation.providerId, "openai");
+  assert.equal(migrated?.conversation.modelId, "gpt-5-mini");
+  assert.equal(migrated?.conversation.modelAccessState, "ready");
+});
+
+test("restored conversations pause when their saved provider is no longer configured", async (t) => {
+  const store = await temporaryStore(t);
+  const { created, context } = await conversationFixture();
+  await store.save(serializeConversation(context));
+  const modelAccess = { accessState: async () => "auth_required" as const } as ModelAccessService;
+
+  const restored = await ConversationManager.open("", "gpt-5-mini", false, store, {}, modelAccess);
+
+  assert.equal(restored.snapshot(created.id).modelAccessState, "auth_required");
+  assert.equal((await store.load())?.conversation.modelAccessState, "auth_required");
+  assert.deepEqual(restored.snapshot(created.id).messages, []);
 });
 
 test("restart maps durable dispatched work to unknown without replay data", async (t) => {

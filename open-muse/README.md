@@ -4,7 +4,7 @@ OpenMuse is a chat-based computer coworker that can operate public websites insi
 
 The agent can browse any ordinary public website without a site-specific adapter. Bounded page observation and scrolling run directly. Navigation, clicks, form changes, and keypresses display a one-time approval before they run.
 
-The OpenAI API key stays in the host Node process. The trusted Node broker turns approved structured operations into Playwright commands that run as the unprivileged desktop user inside the VM.
+Model credentials stay in the host Node process. The trusted Node broker turns approved structured operations into Playwright commands that run as the unprivileged desktop user inside the VM.
 
 ## Run it
 
@@ -20,7 +20,7 @@ Create the local environment file:
 cp .env.example .env.local
 ```
 
-Add `OPENAI_API_KEY` to `.env.local`, then start the app:
+Start the app:
 
 ```bash
 npm run dev
@@ -29,6 +29,12 @@ npm run dev
 Open [http://127.0.0.1:5174](http://127.0.0.1:5174) and try:
 
 > Open https://example.com and tell me what the page says.
+
+OpenMuse asks you to connect a model provider before the first conversation. You can enter an OpenAI API key in the app, or continue using `OPENAI_API_KEY` from `.env.local`. Saved credentials live in `.open-muse/auth.json` with permissions limited to your operating-system user. They are never returned to the browser after setup.
+
+OpenAI account sign-in is implemented behind a temporary release gate while provider terms are reviewed. For the development smoke only, set `OPEN_MUSE_ENABLE_SUBSCRIPTION_AUTH=1`, restart OpenMuse, and choose **Continue with OpenAI**. The flow opens the provider's secure page and keeps OAuth tokens in the same host-only credential store. Gemini account sign-in is not shown because the pinned Pi harness does not currently expose that capability; it can be added without changing the UI protocol when the provider supports it.
+
+After connecting a provider, choose a model and select **Start using OpenMuse**. Use the **Model** button later to switch models or providers, reconnect an expired account, or disconnect a saved credential. Set `OPEN_MUSE_AUTH_PATH` before starting OpenMuse if you want to keep saved credentials somewhere other than `.open-muse/auth.json`.
 
 To try Markdown extraction after opening a page, ask:
 
@@ -69,6 +75,7 @@ The initial general-web implementation uses SmolVM's open network mode. Structur
 
 See [the browser snapshots, refs, and extraction design](../docs/designs/open-muse-browser-capability.md) for the current browser-tool contract.
 See [the approved general-web design](../docs/designs/open-muse-general-web.md) for the staged security model. The original [fixture-store design](../docs/designs/open-muse.md) documents the UI, lifecycle, and takeover flow.
+See [the provider-authentication design](../docs/designs/open-muse-provider-authentication.md) for credential storage, model binding, account recovery, and the temporary release gate.
 
 ## Offline fixture mode
 

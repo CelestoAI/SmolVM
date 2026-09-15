@@ -12,6 +12,9 @@ import { ConversationStateStore } from "../../server/state-store.js";
 import type { ConversationContext } from "../../server/types.js";
 
 type Scenario = "success" | "failed_before_execution" | "outcome_unknown";
+const appPort = Number(process.env.OPEN_MUSE_E2E_APP_PORT ?? 4318);
+const controlPort = Number(process.env.OPEN_MUSE_E2E_CONTROL_PORT ?? 4319);
+const viewerPort = Number(process.env.OPEN_MUSE_E2E_VIEWER_PORT ?? 4320);
 
 class FakePage extends EventEmitter {
   private closed = false;
@@ -99,7 +102,7 @@ class ScriptedRuntime {
   private createComputer(): NonNullable<ConversationContext["computer"]> {
     return {
       status: "ready", computerId: "computer-e2e", sandboxId: "sandbox-e2e", template: "linux-desktop", capabilities: [],
-      display: { viewerUrl: "http://127.0.0.1:4320", vncUrl: "vnc://127.0.0.1:5900" },
+      display: { viewerUrl: `http://127.0.0.1:${viewerPort}`, vncUrl: "vnc://127.0.0.1:5900" },
       browser: { status: "ready", cdpUrl: "http://browser-e2e", launch: async () => undefined },
       files: { read: async () => "", write: async () => undefined, upload: async () => undefined, download: async () => undefined },
       exec: async (command: string[]) => {
@@ -169,7 +172,7 @@ async function openManager(): Promise<void> {
   manager = await ConversationManager.open("", "scripted", false, store, runtime.dependencies());
   managerGeneration += 1;
   app = createApp(manager);
-  await listen(app, 4318);
+  await listen(app, appPort);
 }
 
 async function reconstruct(): Promise<void> {
@@ -227,14 +230,14 @@ const controls = createServer(async (request, response) => {
   }
   send(404, { error: "Unknown E2E control route." });
 });
-await listen(controls, 4319);
+await listen(controls, controlPort);
 
 const viewer = createServer((_request, response) => {
   response.setHeader("content-type", "text/html; charset=utf-8");
   response.end("<!doctype html><title>Scripted viewer</title><p>Deterministic browser viewer</p>");
 });
-await listen(viewer, 4320);
-console.log("Deterministic OpenMuse manager harness ready at http://127.0.0.1:4318");
+await listen(viewer, viewerPort);
+console.log(`Deterministic OpenMuse manager harness ready at http://127.0.0.1:${appPort}`);
 
 async function close(): Promise<void> {
   await manager.close().catch(() => undefined);
