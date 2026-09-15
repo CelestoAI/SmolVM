@@ -1,12 +1,22 @@
 <div align="center">
 
 
-# Try [OpenMuse](./open-muse/) -- a free and open-source alternative to GrokBot and Muse.
+# OpenMuse
+
+### Open-source personal AI agent with its own persistent computer.
 
 ![](./open-muse/banner-dark.png)
 
+OpenMuse can browse the web, use apps, and run tasks for you in the background — even when your laptop is off.
 
-# Celesto
+Every OpenMuse agent gets its own secure, persistent computer powered by Celesto, so it can continue working, keep state between tasks, and hand control back to you whenever needed.
+
+Built as an open-source alternative to Muse and GrokBot.
+
+
+---
+
+# Celesto Computer
 
 #### Secure, persistent computers that AI agents can use to browse, run code, and get real work done. 
 
