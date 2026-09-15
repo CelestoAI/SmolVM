@@ -23,35 +23,28 @@ OpenMuse is an open-source computer coworker that browses public websites in its
 
 OpenMuse runs from this SmolVM repository. The supported hosts are Linux x64 and Apple Silicon macOS.
 
-You need:
+Before you start, install:
 
 - Node.js 22.19 or newer
-- Python 3.11 or newer
-- [`uv`](https://docs.astral.sh/uv/), which runs the local SmolVM service
-- QEMU on macOS, or a working Firecracker or QEMU setup on Linux
 - An OpenAI API key
 
 ### 1. Prepare SmolVM
 
-From the repository root, install the Python packages:
+Install SmolVM, prepare your computer, and verify the setup with one command:
 
 ```bash
-uv sync
+curl -sSL https://celesto.ai/install.sh | bash
 ```
 
-On macOS, install QEMU if it is not already available:
+The installer adds the Python tooling SmolVM needs, installs SmolVM, prepares the host, and runs its readiness check. See the [manual installation guide](../docs/installation.md) if the installer reports a problem.
+
+Download and verify the desktop image now so the first task does not pause without terminal progress:
 
 ```bash
-brew install qemu
+smolvm image pull linux-desktop
 ```
 
-Check that this computer can run a sandbox:
-
-```bash
-uv run smolvm doctor
-```
-
-Fix any problem reported by `smolvm doctor` before continuing. On Linux, `uv run smolvm setup` can install or check the required host tools. See the [full SmolVM installation guide](../docs/installation.md) for platform-specific help.
+The download is needed only once. Later runs reuse the local image.
 
 ### 2. Build the local TypeScript SDK
 
@@ -75,8 +68,10 @@ npm ci
 Create the local settings file. It points OpenMuse at the SmolVM runtime in this checkout:
 
 ```bash
-cp .env.example .env.local
+test -f .env.local || cp .env.example .env.local
 ```
+
+This keeps an existing local settings file unchanged.
 
 ### 4. Start the app
 
@@ -101,7 +96,7 @@ Send:
 
 > Open https://example.com and tell me what the page says.
 
-OpenMuse will ask before opening the page. Approve the request, then watch the disposable desktop start and Chromium open the site. The first browser action is slower because SmolVM may need to download and boot the Linux desktop image; later runs reuse the verified image cache.
+OpenMuse will ask before opening the page. Approve the request, then watch the disposable desktop start and Chromium open the site. A normal first boot can take longer than later boots while SmolVM prepares the downloaded image.
 
 Try one more prompt after the page opens:
 
@@ -133,75 +128,15 @@ Every assistant turn has a collapsed **Run details** row. Expand it to see the t
 
 OpenMuse stores bounded chat history and the selected conversation in `.open-muse/state.json`. If the server stops during work, the active chat returns in an interrupted state and asks you to **Continue** or **Start over**. Continuing starts a fresh computer and never replays an old approval.
 
-## Develop without a model or VM
+## Develop OpenMuse
 
-Fixture mode replaces the public web with an in-memory `shop.smol.test` store. It makes local development and CI deterministic: no model call, VM, DNS request, or public internet access is required.
+Use fixture mode for the fastest edit-and-test loop. It replaces the public web with an in-memory store, so it needs no model, virtual machine, DNS request, or public internet access.
 
 ```bash
 OPEN_MUSE_FIXTURE_STORE=1 npm run dev
 ```
 
-Fixture mode restores the catalog-specific tools and checkout-review approval used by the original demo.
-
-## Checks
-
-Run the complete typecheck, unit-test, deterministic-evaluation, and production-build suite:
-
-```bash
-npm run check
-```
-
-Install Chromium once for browser tests:
-
-```bash
-npm run test:e2e:install
-```
-
-Run the browser tests:
-
-```bash
-npm run test:e2e
-```
-
-The browser suite drives the real OpenMuse UI against a scripted local API. It starts no VM, calls no model, and makes no internet request.
-
-### Evaluation commands
-
-| Command | Result |
-| --- | --- |
-| `npm run eval:validate` | Checks the fixed tool-choice and safety corpus. |
-| `npm run eval:artifact` | Writes a redacted result with case IDs and a prompt hash, never the prompts. |
-| `npm run eval:live` | Runs the corpus against a configured external model. This is intentionally outside pull-request CI. |
-
-Before a milestone release, validate three independently produced live-model result files:
-
-```bash
-npm run eval:release-gate -- run-1.json run-2.json run-3.json
-```
-
-Each live run must pass every safety case, at least 90% of first-tool choices, and at least 80% of tasks. Release owners can also run the manual **OpenMuse live model release eval** GitHub Actions workflow. Its inert browser tools record requested tool names and return bounded synthetic results; they do not start a VM, visit a website, or perform a browser action.
-
-## Onboarding for coding agents
-
-Use this path when an AI coding agent is working on OpenMuse:
-
-1. Read the repository-root [`AGENTS.md`](../AGENTS.md) and this README before changing files.
-2. Work from `open-muse/` for npm commands. Build `../ts` first when its `dist/` directory is absent or its source changed.
-3. Never read or print `.env.local`, `.open-muse/auth.json`, or `.open-muse/state.json`; they can contain credentials or private conversation state.
-4. Use fixture mode for UI work. Give each concurrent run its own ports and temporary state paths.
-5. Run `npm run check` and the focused tests for the changed behavior. Run `npm run test:e2e` for user-flow changes.
-
-Start an isolated fixture-mode session without touching a developer's saved credentials or conversation:
-
-```bash
-agent_state_dir="$(mktemp -d)"
-OPEN_MUSE_FIXTURE_STORE=1 \
-OPEN_MUSE_AUTH_PATH="$agent_state_dir/auth.json" \
-OPEN_MUSE_STATE_PATH="$agent_state_dir/state.json" \
-npm run dev
-```
-
-When another OpenMuse process is already running, isolate end-to-end tests with `OPEN_MUSE_E2E_APP_PORT`, `OPEN_MUSE_E2E_CONTROL_PORT`, `OPEN_MUSE_E2E_VIEWER_PORT`, and `OPEN_MUSE_E2E_CLIENT_PORT`.
+Fixture mode restores the catalog-specific tools and checkout-review approval used by the original demo. Contributors and coding agents should continue with the [OpenMuse development guide](./DEVELOPMENT.md) for isolated state, project structure, checks, browser tests, and evaluations.
 
 ## Configuration
 
@@ -229,6 +164,12 @@ Run the runtime check from the repository root and follow its recovery message:
 
 ```bash
 uv run smolvm doctor
+```
+
+If the image download was interrupted, retry it from the repository root:
+
+```bash
+uv run smolvm image pull linux-desktop
 ```
 
 ### The SmolVM TypeScript package cannot be resolved
@@ -270,10 +211,4 @@ Structured navigation rejects local and private literal addresses, but the initi
 - [Propose a feature](https://github.com/CelestoAI/SmolVM/issues/new?template=feature_request.yml) before starting a large change.
 - Report security problems privately through [GitHub Security Advisories](https://github.com/CelestoAI/SmolVM/security/advisories/new), not a public issue. See the [security policy](../SECURITY.md) for details.
 
-## Design documents
-
-- [Browser snapshots, element references, and extraction](../docs/designs/open-muse-browser-capability.md)
-- [General-web security model](../docs/designs/open-muse-general-web.md)
-- [Provider authentication and credential storage](../docs/designs/open-muse-provider-authentication.md)
-- [Expandable agent traces](../docs/designs/openmuse-expandable-agent-traces.md)
-- [Original fixture-store UI and lifecycle](../docs/designs/open-muse.md)
+Implementation maps and design documents are indexed in the [OpenMuse development guide](./DEVELOPMENT.md).
