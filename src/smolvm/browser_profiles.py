@@ -7,6 +7,7 @@ atomically replacing a small ``CURRENT`` pointer.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -86,8 +87,39 @@ class BrowserProfileStore:
         _secure_directory(profile_dir)
         _secure_directory(profile_dir / "generations")
         lock_path = profile_dir / ".lock"
-        lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-        os.chmod(lock_path, 0o600)
+        nofollow = getattr(os, "O_NOFOLLOW", None)
+        if nofollow is None:
+            raise BrowserProfileError(
+                "Browser profile locking is unavailable on this host. "
+                "Use a POSIX host before enabling persistent browser profiles."
+            )
+        try:
+            lock_fd = os.open(
+                lock_path,
+                os.O_RDWR | os.O_CREAT | nofollow,
+                0o600,
+            )
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise BrowserProfileError(
+                    f"Browser profile '{profile_id}' lock cannot be a symbolic link. "
+                    "Remove it and try again."
+                ) from exc
+            raise
+        lock_stat = os.fstat(lock_fd)
+        if not stat.S_ISREG(lock_stat.st_mode):
+            os.close(lock_fd)
+            raise BrowserProfileError(
+                f"Browser profile '{profile_id}' lock is not a regular file. "
+                "Remove it and try again."
+            )
+        if hasattr(os, "getuid") and lock_stat.st_uid != os.getuid():
+            os.close(lock_fd)
+            raise BrowserProfileError(
+                f"Browser profile '{profile_id}' lock is not owned by the current user. "
+                "Choose a profile directory owned by the current user."
+            )
+        os.fchmod(lock_fd, 0o600)
         try:
             _lock_nonblocking(lock_fd)
         except BlockingIOError as exc:
@@ -296,9 +328,24 @@ class BrowserProfileLease:
 
     def _current_generation_id(self) -> str | None:
         pointer = self.profile_dir / _CURRENT_FILE
-        if not pointer.exists():
+        try:
+            pointer_stat = pointer.lstat()
+        except FileNotFoundError:
             return None
-        generation_id = pointer.read_text(encoding="utf-8").strip()
+        if not stat.S_ISREG(pointer_stat.st_mode):
+            raise BrowserProfileCorruptError(
+                f"Browser profile '{self.profile_id}' has an invalid CURRENT pointer. "
+                "Call reset() to remove it."
+            )
+        try:
+            descriptor = _open_regular_file(pointer)
+            with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+                generation_id = handle.read(128).strip()
+        except (OSError, ValueError, UnicodeError) as exc:
+            raise BrowserProfileCorruptError(
+                f"Browser profile '{self.profile_id}' has an invalid CURRENT pointer. "
+                "Call reset() to remove it."
+            ) from exc
         if not re.fullmatch(r"[a-f0-9]{32}", generation_id):
             raise BrowserProfileCorruptError(
                 f"Browser profile '{self.profile_id}' has an invalid CURRENT pointer. "

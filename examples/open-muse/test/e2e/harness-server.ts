@@ -1,234 +1,233 @@
-import { createServer, type ServerResponse } from "node:http";
-
-interface HarnessConversation {
-  id: string;
-  stateVersion: number;
-  controlOwner: "agent" | "human";
-  runState: string;
-  sessionLifecycle: "idle" | "deleted";
-  viewerReady: boolean;
-  messages: Array<{ id: string; role: "user" | "assistant"; text: string; createdAt: string }>;
-  events: Array<{ id: number; type: string; createdAt: string; payload: Record<string, unknown> }>;
-  pendingApproval?: {
-    kind: "browser_operation";
-    approvalId: string;
-    actionDigest: string;
-    reason: string;
-    expiresAt: string;
-    operation: { kind: "navigate"; url: string };
-  };
-  recovery?: {
-    kind: "failed_before_execution" | "outcome_unknown" | "interrupted";
-    operationId?: string;
-    summary?: string;
-  };
-}
+import { EventEmitter } from "node:events";
+import { createServer, type Server } from "node:http";
+import { mkdtemp, rm, unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Agent } from "@earendil-works/pi-agent-core";
+import type { Browser, BrowserContext, Frame, Page } from "playwright-core";
+import type { ActionBroker } from "../../server/broker.js";
+import { createApp } from "../../server/index.js";
+import { ConversationManager, type RuntimeDependencies } from "../../server/manager.js";
+import { ConversationStateStore } from "../../server/state-store.js";
+import type { ConversationContext } from "../../server/types.js";
 
 type Scenario = "success" | "failed_before_execution" | "outcome_unknown";
 
-const subscribers = new Set<ServerResponse>();
-let conversation: HarnessConversation | undefined;
-let messageId = 0;
-let approvalId = 0;
-let scenario: Scenario = "success";
-let dispatchCount = 0;
-let terminalCount = 0;
-let observationCount = 0;
-let approvalResolution: Promise<void> | undefined;
-
-function freshConversation(): HarnessConversation {
-  return {
-    id: "conversation-scripted",
-    stateVersion: 1,
-    controlOwner: "agent",
-    runState: "idle",
-    sessionLifecycle: "idle",
-    viewerReady: true,
-    messages: [],
-    events: [],
-  };
+class FakePage extends EventEmitter {
+  private closed = false;
+  private readonly frame = {} as Frame;
+  url(): string { return "https://example.com/"; }
+  isClosed(): boolean { return this.closed; }
+  mainFrame(): Frame { return this.frame; }
+  async title(): Promise<string> { return "Example Domain"; }
+  closePage(): void { this.closed = true; this.emit("close"); }
 }
 
-function requestApproval(reason = "Open example.com"): void {
-  if (!conversation) return;
-  conversation.runState = "waiting_for_approval";
-  conversation.pendingApproval = {
-    kind: "browser_operation",
-    approvalId: `approval-scripted-${++approvalId}`,
-    actionDigest: "a".repeat(64),
-    reason,
-    expiresAt: new Date(Date.now() + 300_000).toISOString(),
-    operation: { kind: "navigate", url: "https://example.com" },
-  };
-  publish("approval.requested", { summary: "Navigation approval requested" });
+class FakeBrowserContext extends EventEmitter {
+  readonly page = new FakePage();
+  pages(): Page[] { return [this.page as unknown as Page]; }
+  async newPage(): Promise<Page> { return this.page as unknown as Page; }
 }
 
-function sendJson(response: ServerResponse, status: number, value: unknown): void {
-  response.statusCode = status;
-  response.setHeader("content-type", "application/json; charset=utf-8");
-  response.end(JSON.stringify(value));
+class FakeBrowser {
+  readonly context = new FakeBrowserContext();
+  private connected = true;
+  contexts(): BrowserContext[] { return [this.context as unknown as BrowserContext]; }
+  isConnected(): boolean { return this.connected; }
+  async close(): Promise<void> { this.connected = false; this.context.page.closePage(); }
 }
 
-function publish(type: string, payload: Record<string, unknown>): void {
-  if (!conversation) return;
-  const event = { id: conversation.events.length + 1, type, createdAt: new Date().toISOString(), payload };
-  conversation.events.push(event);
-  const frame = `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
-  for (const response of subscribers) response.write(frame);
+class ScriptedRuntime {
+  scenario: Scenario = "success";
+  agentCreations = 0;
+  computerCreations = 0;
+  observationCount = 0;
+  private policyChecks = 0;
+
+  reset(): void {
+    this.scenario = "success";
+    this.agentCreations = 0;
+    this.computerCreations = 0;
+    this.observationCount = 0;
+    this.policyChecks = 0;
+  }
+
+  dependencies(): Partial<RuntimeDependencies> {
+    return {
+      createAgent: (_apiKey, _model, broker) => this.createAgent(broker),
+      createSmolVM: () => this.createSmolVM(),
+      connectOverCDP: async () => new FakeBrowser() as unknown as Browser,
+    };
+  }
+
+  private createAgent(broker: ActionBroker): Agent {
+    this.agentCreations += 1;
+    const state = { messages: [] as Array<Record<string, unknown>>, errorMessage: undefined as string | undefined };
+    return {
+      state,
+      prompt: async (prompt: string) => {
+        if (prompt.includes("may have completed")) {
+          await broker.runWebOperation({ kind: "observe" });
+          state.messages.push({ role: "assistant", content: [{ type: "text", text: "I inspected the current page before deciding what to do next." }] });
+          return;
+        }
+        if (prompt.includes("did not run")) {
+          await broker.runWebOperation({ kind: "navigate", url: "https://example.com" });
+          return;
+        }
+        if (prompt.includes("browser runner returned")) {
+          state.messages.push({ role: "assistant", content: [{ type: "text", text: "The scripted browser opened Example Domain." }] });
+          return;
+        }
+        await broker.runWebOperation({ kind: "navigate", url: "https://example.com" });
+      },
+      abort: () => undefined,
+      waitForIdle: async () => undefined,
+    } as unknown as Agent;
+  }
+
+  private createSmolVM() {
+    return {
+      computers: { create: async () => {
+        this.computerCreations += 1;
+        return this.createComputer();
+      } },
+      close: async () => undefined,
+    } as unknown as ReturnType<RuntimeDependencies["createSmolVM"]>;
+  }
+
+  private createComputer(): NonNullable<ConversationContext["computer"]> {
+    return {
+      status: "ready", computerId: "computer-e2e", sandboxId: "sandbox-e2e", template: "linux-desktop", capabilities: [],
+      display: { viewerUrl: "http://127.0.0.1:4320", vncUrl: "vnc://127.0.0.1:5900" },
+      browser: { status: "ready", cdpUrl: "http://browser-e2e", launch: async () => undefined },
+      files: { read: async () => "", write: async () => undefined, upload: async () => undefined, download: async () => undefined },
+      exec: async (command: string[]) => {
+        const program = Buffer.from(command[1] ?? "", "base64url").toString("utf8");
+        if (program.includes("pageBindingRawUrl")) {
+          this.policyChecks += 1;
+          const binding = this.scenario === "failed_before_execution" && this.policyChecks > 1
+            ? "https://example.org/changed"
+            : "https://example.com/";
+          return this.result({ binding, display: "https://example.com/" });
+        }
+        if (program.includes("const sensitivePath")) {
+          this.observationCount += 1;
+          return this.result({ title: "Example Domain", url: "https://example.com/", text: "Example Domain" });
+        }
+        if (this.scenario === "outcome_unknown") {
+          return { ok: false, exitCode: 1, stdout: "", stderr: "scripted post-dispatch failure", durationMs: 1 };
+        }
+        return this.result({ navigated: true });
+      },
+      delete: async () => undefined,
+    } as NonNullable<ConversationContext["computer"]>;
+  }
+
+  private result(programResult: unknown) {
+    return {
+      ok: true, exitCode: 0, stderr: "", durationMs: 1,
+      stdout: `SMOLVM_BROWSER_RESULT=${JSON.stringify({ ok: true, value: { programResult, page: { title: "Example Domain", url: "https://example.com/" } } })}`,
+    };
+  }
 }
 
-async function body(request: import("node:http").IncomingMessage): Promise<Record<string, unknown>> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) chunks.push(Buffer.from(chunk));
-  return chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown> : {};
+const runtime = new ScriptedRuntime();
+const directory = await mkdtemp(join(tmpdir(), "open-muse-e2e-"));
+const store = new ConversationStateStore(join(directory, "state.json"));
+let manager: ConversationManager;
+let app: Server;
+let managerGeneration = 0;
+
+async function listen(server: Server, port: number): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", resolve);
+  });
 }
 
-const server = createServer(async (request, response) => {
+async function closeServer(server: Server | undefined): Promise<void> {
+  if (!server?.listening) return;
+  server.closeAllConnections();
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+}
+
+async function openManager(): Promise<void> {
+  manager = await ConversationManager.open("", "scripted", false, store, runtime.dependencies());
+  managerGeneration += 1;
+  app = createApp(manager);
+  await listen(app, 4318);
+}
+
+async function reconstruct(): Promise<void> {
+  await closeServer(app);
+  await openManager();
+}
+
+async function reset(): Promise<void> {
+  if (manager!) await manager.close().catch(() => undefined);
+  if (app!) await closeServer(app);
+  await unlink(store.path).catch(() => undefined);
+  runtime.reset();
+  await openManager();
+}
+
+await reset();
+
+const controls = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
-  const method = request.method ?? "GET";
-  if (method === "POST" && url.pathname === "/__e2e/reset") {
-    for (const subscriber of subscribers) subscriber.end();
-    subscribers.clear();
-    conversation = undefined;
-    messageId = 0;
-    approvalId = 0;
-    scenario = "success";
-    dispatchCount = 0;
-    terminalCount = 0;
-    observationCount = 0;
-    approvalResolution = undefined;
-    return sendJson(response, 200, { reset: true });
+  const send = (status: number, value: unknown) => {
+    response.statusCode = status;
+    response.setHeader("content-type", "application/json; charset=utf-8");
+    response.end(JSON.stringify(value));
+  };
+  if (request.method === "POST" && url.pathname === "/__e2e/reset") {
+    await reset();
+    return send(200, { reset: true, managerGeneration });
   }
-  if (method === "POST" && url.pathname === "/__e2e/scenario") {
-    const input = await body(request);
-    if (!new Set(["success", "failed_before_execution", "outcome_unknown"]).has(String(input.scenario))) {
-      return sendJson(response, 400, { error: "Unknown scenario." });
-    }
-    scenario = input.scenario as Scenario;
-    return sendJson(response, 200, { scenario });
+  if (request.method === "POST" && url.pathname === "/__e2e/restart") {
+    await manager.close();
+    await reconstruct();
+    return send(200, { restarted: true, managerGeneration });
   }
-  if (method === "GET" && url.pathname === "/__e2e/state") {
-    return sendJson(response, 200, { scenario, dispatchCount, terminalCount, observationCount, conversation });
+  if (request.method === "POST" && url.pathname === "/__e2e/scenario") {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const input = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { scenario?: Scenario };
+    if (!new Set(["success", "failed_before_execution", "outcome_unknown"]).has(input.scenario ?? "")) return send(400, { error: "Unknown scenario." });
+    runtime.scenario = input.scenario!;
+    return send(200, { scenario: runtime.scenario });
   }
-  if (method === "GET" && url.pathname === "/__e2e/viewer") {
-    response.statusCode = 200;
-    response.setHeader("content-type", "text/html; charset=utf-8");
-    response.end("<!doctype html><title>Scripted viewer</title><p>Deterministic browser viewer</p>");
-    return;
+  if (request.method === "GET" && url.pathname === "/__e2e/state") {
+    const snapshot = manager.activeConversationId ? manager.snapshot(manager.activeConversationId) : undefined;
+    const events = snapshot?.events ?? [];
+    const journal = (manager as unknown as { context?: ConversationContext }).context?.operationJournal ?? [];
+    return send(200, {
+      managerGeneration,
+      agentCreations: runtime.agentCreations,
+      computerCreations: runtime.computerCreations,
+      dispatchCount: events.filter((event) => event.type === "operation.dispatched").length,
+      terminalCount: journal.filter((operation) => operation.state === "completed" || operation.state === "outcome_unknown").length,
+      observationCount: runtime.observationCount,
+      conversation: snapshot,
+    });
   }
-  if (url.pathname === "/api/health") return sendJson(response, 200, { ready: true, deterministic: true });
-  if (url.pathname === "/api/bootstrap") {
-    response.setHeader("set-cookie", "open_muse_session=e2e; HttpOnly; SameSite=Strict; Path=/");
-    return sendJson(response, 200, { csrfToken: "csrf-scripted", conversationId: conversation?.id });
-  }
-  if (method === "POST" && url.pathname === "/api/conversations") {
-    conversation = freshConversation();
-    return sendJson(response, 201, conversation);
-  }
-  const match = url.pathname.match(/^\/api\/conversations\/([^/]+)(?:\/(.*))?$/);
-  if (!match || !conversation || match[1] !== conversation.id) return sendJson(response, 404, { error: "Conversation not found." });
-  const route = match[2] ?? "";
-  if (method === "GET" && route === "") return sendJson(response, 200, conversation);
-  if (method === "GET" && route === "events") {
-    response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-    subscribers.add(response);
-    request.on("close", () => subscribers.delete(response));
-    return;
-  }
-  if (method === "POST" && route === "viewer-token") {
-    return sendJson(response, 200, { viewerPath: "/__e2e/viewer" });
-  }
-  if (method === "POST" && route === "messages") {
-    const input = await body(request);
-    conversation.messages.push({ id: `message-${++messageId}`, role: "user", text: String(input.text ?? ""), createdAt: new Date().toISOString() });
-    requestApproval();
-    return sendJson(response, 202, conversation);
-  }
-  if (method === "POST" && route.startsWith("approvals/")) {
-    const input = await body(request);
-    const approved = input.approved === true;
-    if (!approvalResolution) {
-      approvalResolution = (async () => {
-        await new Promise((resolve) => setTimeout(resolve, 25));
-        if (!conversation?.pendingApproval) return;
-        conversation.pendingApproval = undefined;
-        if (!approved) {
-          conversation.runState = "idle";
-          conversation.messages.push({ id: `message-${++messageId}`, role: "assistant", text: "I did not open the website.", createdAt: new Date().toISOString() });
-          terminalCount += 1;
-          publish("approval.resolved", { summary: "Navigation declined" });
-          publish("message.completed", {});
-          return;
-        }
-        publish("operation.approved", { summary: "Open example.com" });
-        if (scenario === "failed_before_execution") {
-          terminalCount += 1;
-          conversation.runState = "interrupted";
-          conversation.recovery = { kind: "failed_before_execution", operationId: "operation-safe", summary: "Open example.com" };
-          publish("operation.completed", { summary: "Open example.com" });
-          return;
-        }
-        dispatchCount += 1;
-        publish("operation.dispatched", { summary: "Open example.com" });
-        if (scenario === "outcome_unknown") {
-          terminalCount += 1;
-          conversation.runState = "interrupted";
-          conversation.recovery = { kind: "outcome_unknown", operationId: "operation-unknown", summary: "Open example.com" };
-          publish("operation.outcome_unknown", { summary: "Open example.com" });
-          return;
-        }
-        terminalCount += 1;
-        conversation.runState = "idle";
-        conversation.messages.push({ id: `message-${++messageId}`, role: "assistant", text: "The scripted browser opened Example Domain.", createdAt: new Date().toISOString() });
-        publish("operation.completed", { summary: "Open example.com" });
-        publish("approval.resolved", { summary: "Navigation approved" });
-        publish("message.completed", {});
-      })().finally(() => { approvalResolution = undefined; });
-    }
-    await approvalResolution;
-    return sendJson(response, 200, conversation);
-  }
-  if (method === "POST" && route === "continue") {
-    const recovery = conversation.recovery;
-    conversation.recovery = undefined;
-    if (recovery?.kind === "failed_before_execution") requestApproval("Retry opening example.com with fresh approval");
-    else {
-      conversation.runState = "idle";
-      observationCount += 1;
-      conversation.messages.push({ id: `message-${++messageId}`, role: "assistant", text: "I will inspect the current page before deciding what to do next.", createdAt: new Date().toISOString() });
-      publish("message.completed", {});
-    }
-    return sendJson(response, 202, conversation);
-  }
-  if (method === "POST" && route === "start-over") {
-    conversation = { ...freshConversation(), id: "conversation-replacement" };
-    return sendJson(response, 201, conversation);
-  }
-  if (method === "POST" && route === "stop") {
-    conversation.runState = "stopped";
-    conversation.sessionLifecycle = "deleted";
-    conversation.viewerReady = false;
-    publish("conversation.stopped", { summary: "Conversation stopped" });
-    return sendJson(response, 200, conversation);
-  }
-  if (method === "POST" && route === "takeover") {
-    conversation.controlOwner = "human";
-    publish("control.changed", { summary: "You have control" });
-    return sendJson(response, 200, { controlEpoch: "control-scripted" });
-  }
-  if (method === "POST" && route === "resume") {
-    conversation.controlOwner = "agent";
-    publish("control.changed", { summary: "Agent has control" });
-    return sendJson(response, 200, conversation);
-  }
-  return sendJson(response, 404, { error: "The deterministic harness does not implement this route." });
+  send(404, { error: "Unknown E2E control route." });
 });
+await listen(controls, 4319);
 
-server.listen(4318, "127.0.0.1", () => console.log("Deterministic OpenMuse harness ready at http://127.0.0.1:4318"));
+const viewer = createServer((_request, response) => {
+  response.setHeader("content-type", "text/html; charset=utf-8");
+  response.end("<!doctype html><title>Scripted viewer</title><p>Deterministic browser viewer</p>");
+});
+await listen(viewer, 4320);
+console.log("Deterministic OpenMuse manager harness ready at http://127.0.0.1:4318");
 
-function close(): void {
-  for (const response of subscribers) response.end();
-  server.close(() => process.exit(0));
+async function close(): Promise<void> {
+  await manager.close().catch(() => undefined);
+  await Promise.all([closeServer(app), closeServer(controls), closeServer(viewer)]);
+  await rm(directory, { recursive: true, force: true });
+  process.exit(0);
 }
-process.once("SIGINT", close);
-process.once("SIGTERM", close);
+process.once("SIGINT", () => void close());
+process.once("SIGTERM", () => void close());

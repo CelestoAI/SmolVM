@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import smolvm.browser_profiles as browser_profiles
 from smolvm.browser_profiles import (
     BrowserProfileCompatibilityError,
     BrowserProfileCorruptError,
@@ -91,6 +92,21 @@ def test_profile_lease_is_exclusive_nonblocking_and_actionable(tmp_path: Path) -
         pass
 
 
+def test_rejects_hostile_lock_symlink_without_touching_target(tmp_path: Path) -> None:
+    root = tmp_path / "profiles"
+    profile_dir = root / "hostile-lock"
+    profile_dir.mkdir(parents=True)
+    target = tmp_path / "outside-lock"
+    target.write_text("outside", encoding="utf-8")
+    (profile_dir / ".lock").symlink_to(target)
+
+    with pytest.raises(BrowserProfileError, match="lock cannot be a symbolic link"):
+        store(root).acquire("hostile-lock")
+
+    assert target.read_text(encoding="utf-8") == "outside"
+    assert mode(target) != 0o600
+
+
 def test_unsupported_lock_host_fails_closed_with_guidance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -119,6 +135,53 @@ def test_failed_current_swap_preserves_prior_generation(
 
     assert loaded is not None
     assert loaded.archive_path.read_bytes() == b"first"
+    assert loaded.manifest.generation == first.manifest.generation
+
+
+def test_staged_directory_fsync_failure_preserves_prior_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "profiles"
+    with store(root).acquire("staged-fsync") as lease:
+        first = lease.save(archive(tmp_path, "fsync-first.tar", b"first"))
+        real_fsync_directory = browser_profiles._fsync_directory
+
+        def fail_staged_directory(path: Path) -> None:
+            if path.name.startswith(".staging-"):
+                raise OSError("simulated staged directory fsync failure")
+            real_fsync_directory(path)
+
+        monkeypatch.setattr(browser_profiles, "_fsync_directory", fail_staged_directory)
+        with pytest.raises(OSError, match="staged directory fsync failure"):
+            lease.save(archive(tmp_path, "fsync-second.tar", b"second"))
+        loaded = lease.load()
+
+    assert loaded is not None
+    assert loaded.manifest.generation == first.manifest.generation
+    assert {path.name for path in (root / "staged-fsync" / "generations").iterdir()} == {
+        first.manifest.generation
+    }
+
+
+def test_generation_directory_fsync_failure_never_switches_current(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "profiles"
+    with store(root).acquire("generation-fsync") as lease:
+        first = lease.save(archive(tmp_path, "generation-first.tar", b"first"))
+        real_fsync_directory = browser_profiles._fsync_directory
+
+        def fail_generation_directory(path: Path) -> None:
+            if path.name == "generations":
+                raise OSError("simulated generation directory fsync failure")
+            real_fsync_directory(path)
+
+        monkeypatch.setattr(browser_profiles, "_fsync_directory", fail_generation_directory)
+        with pytest.raises(OSError, match="generation directory fsync failure"):
+            lease.save(archive(tmp_path, "generation-second.tar", b"second"))
+        loaded = lease.load()
+
+    assert loaded is not None
     assert loaded.manifest.generation == first.manifest.generation
 
 
@@ -215,6 +278,15 @@ def test_rejects_tampered_archive_and_invalid_current_pointer(tmp_path: Path) ->
     with store(root).acquire("bad-pointer") as lease:
         pointer = root / "bad-pointer" / "CURRENT"
         pointer.write_text("../../outside\n", encoding="utf-8")
+        with pytest.raises(BrowserProfileCorruptError, match="invalid CURRENT"):
+            lease.load()
+
+
+def test_rejects_hostile_current_symlink_even_when_target_is_missing(tmp_path: Path) -> None:
+    root = tmp_path / "profiles"
+    with store(root).acquire("hostile-current") as lease:
+        pointer = root / "hostile-current" / "CURRENT"
+        pointer.symlink_to(tmp_path / "missing-outside-pointer")
         with pytest.raises(BrowserProfileCorruptError, match="invalid CURRENT"):
             lease.load()
 
