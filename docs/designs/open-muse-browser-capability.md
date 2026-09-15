@@ -20,10 +20,10 @@ Replace the current `main, [role=main]` text heuristic and caller-supplied role/
 
 ## What Already Exists
 
-- `browser-operations.ts` validates operations, generates the guest Playwright program, blocks private URLs, masks sensitive paths, and checks fields before filling. Reuse it as the only operation-program generator.
+- `browser-operations.ts` validates operations and blocks private URLs. `browser-driver.ts` executes the fixed operation set through the host's existing Playwright connection, masks sensitive paths, and checks fields before filling.
 - `ActionBroker` already serializes actions, binds approval to a tab epoch and exact page, journals dispatch, and handles uncertain outcomes. Extend this path instead of creating another action executor.
 - `ConversationManager` already invalidates approvals on new input and takeover, increments tab epochs on navigation, and forces re-observation after takeover. Clear refs at those same barriers.
-- The guest runner already bounds returned strings, arrays, objects, execution time, and program size. Keep it unchanged in this slice.
+- Raw `browser_run` remains internal and keeps its existing guest runner; production structured tools do not use that path.
 - Pi already exposes the OpenAI model catalog and request client. Reuse it for the one Markdown-formatting call.
 
 ## Architecture
@@ -38,8 +38,9 @@ ActionBroker
   └── navigation approval                    │
       │                                      │
       ▼                                      │
-short-lived guest Playwright runner          │
+host Playwright driver                       │
       │                                      │
+      ├── loopback CDP ──────────────────────┤
       ├── accessibility snapshot + ref map ──┘
       └── bounded visible text
               │
@@ -97,7 +98,7 @@ Observation uses Chromium's accessibility tree rather than a site-specific CSS l
 
 Extraction is a two-stage operation:
 
-1. The guest runner reads visible text from the document body or the element resolved by `scopeRef`. Password, payment, token, and other sensitive fields remain blocked by the current policy. The capture is normalized and capped.
+1. The host Playwright driver reads visible text from the document body or the element resolved by `scopeRef`. Password, payment, token, and other sensitive fields remain blocked by the current policy. The capture is normalized and capped.
 2. The host sends that capture to `gpt-5-nano` with instructions to preserve facts, emit Markdown only, and treat every source line as untrusted data rather than instructions.
 
 The model call has a short timeout and bounded output. Empty output, timeout, unavailable model, authentication failure, or provider failure returns the raw capture with `source: "raw-fallback"` and a one-sentence warning.
@@ -177,7 +178,7 @@ Sequential implementation, no parallelization opportunity: the operation types, 
 ## NOT in Scope
 
 - A persistent in-VM browser gateway. It remains the next runtime-hardening step after this tool contract proves useful.
-- A browser-image or Playwright upgrade. This slice must work with the currently published guest runner.
+- A browser-image or Playwright upgrade. Structured tools use the Playwright version already installed by OpenMuse.
 - Re-exposing model-written `browser_run` programs.
 - Stagehand, Browser Use, or another browser-agent dependency.
 - Typed-schema extraction, extraction-specific agents, or a live LLM evaluation campaign.

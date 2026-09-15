@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ActionBroker, MAX_BROWSER_PROGRAM_BYTES } from "../server/broker.js";
-import { operationProgram } from "../server/browser-operations.js";
+import type { ExecutableBrowserOperation } from "../server/browser-operations.js";
+import { BrowserDriverError, type BrowserDriver } from "../server/browser-driver.js";
 import { ConversationManager } from "../server/manager.js";
 import type { ConversationContext } from "../server/types.js";
 import type { TabTarget } from "../server/browser-tabs.js";
@@ -14,6 +15,8 @@ function harness(
   convertMarkdown?: (input: { title: string; url: string; text: string }) => Promise<string>,
 ) {
   const programs: string[] = [];
+  const webOperations: ExecutableBrowserOperation[] = [];
+  const expectedPages: Array<string | undefined> = [];
   const events: string[] = [];
   const eventPayloads: Record<string, unknown>[] = [];
   const context = {
@@ -41,6 +44,12 @@ function harness(
     ]),
     lastActivityAt: Date.now(),
     receipts: new Map(),
+    page: {
+      url: () => "https://example.com",
+      title: async () => "Example Domain",
+      isClosed: () => false,
+      context: () => ({ browser: () => ({ isConnected: () => true }) }),
+    },
     computer: {
       sessionId: "browser-test",
       sandboxId: "vm-test",
@@ -75,8 +84,32 @@ function harness(
       async delete() {},
     },
   } as ConversationContext;
-  const broker = new ActionBroker(context, async () => undefined, (type, payload) => { events.push(type); eventPayloads.push(payload); }, persist, resolveTabTarget, convertMarkdown);
-  return { broker, context, programs, events, eventPayloads };
+  const browserDriver: BrowserDriver = {
+    inspect: async () => ({ binding: "https://example.com", display: "https://example.com" }),
+    execute: async (_page, operation, expectedPage) => {
+      webOperations.push(operation);
+      expectedPages.push(expectedPage);
+      const observation = {
+        title: "Example Domain", url: "https://example.com", pageBinding: "https://example.com",
+        snapshot: '- document "Example Domain"\n  - button "Add to cart" [ref=e1]\n  - textbox "Email" [ref=e2]\n  - combobox "Size" [ref=e3]',
+        refs: [
+          { ref: "e1", role: "button", name: "Add to cart", publicName: "Add to cart", nth: 0, locatorId: locatorId(1), actionable: true },
+          { ref: "e2", role: "textbox", name: "Email", publicName: "Email", nth: 0, locatorId: locatorId(2), actionable: true },
+          { ref: "e3", role: "combobox", name: "Size", publicName: "Size", nth: 0, locatorId: locatorId(3), actionable: true },
+        ],
+      };
+      if (operation.kind === "observe") return observation;
+      if (operation.kind === "scroll") return { scrolled: operation.direction, observation };
+      if (operation.kind === "extract") return { title: "Example Domain", url: "https://example.com", pageBinding: "https://example.com", text: "iPhone 16 $799" };
+      if (operation.kind === "navigate") return { opened: operation.url, observation };
+      if (operation.kind === "click") return { clicked: true };
+      if (operation.kind === "fill") return { filled: true };
+      if (operation.kind === "select") return { selected: operation.label };
+      return { pressed: operation.key };
+    },
+  };
+  const broker = new ActionBroker(context, async () => undefined, (type, payload) => { events.push(type); eventPayloads.push(payload); }, persist, resolveTabTarget, convertMarkdown, browserDriver);
+  return { broker, context, programs, webOperations, expectedPages, events, eventPayloads, browserDriver };
 }
 
 test("read-only browser programs wait for one-time approval", async () => {
@@ -137,18 +170,15 @@ test("navigation programs also require approval", async () => {
   assert.equal(programs.length, 1);
 });
 
-test("passive browser operations run without approval", async () => {
-  const { broker, context, programs, events } = harness();
+test("passive browser operations use host Playwright without approval", async () => {
+  const { broker, context, programs, webOperations, events } = harness();
 
   const observed = await broker.runWebOperation({ kind: "observe" });
   await broker.runWebOperation({ kind: "scroll", direction: "down" });
 
   assert.equal(context.pendingApproval, undefined);
-  assert.equal(programs.length, 2);
-  assert.match(programs[0], /locator\('body'\)\.ariaSnapshot/);
-  assert.match(programs[0], /\[email redacted\]/);
-  assert.match(programs[0], /\[ref=/);
-  assert.match(programs[1], /mouse\.wheel\(0, 600\)/);
+  assert.equal(programs.length, 0);
+  assert.deepEqual(webOperations, [{ kind: "observe" }, { kind: "scroll", direction: "down" }]);
   assert.equal(observed.title, "Example Domain");
   assert.match(String(observed.snapshot), /Add to cart/);
   assert.deepEqual(events, ["tool.started", "tool.completed", "tool.started", "tool.completed"]);
@@ -173,12 +203,7 @@ test("page extraction uses Markdown conversion and falls back to raw redacted te
   });
 
   const empty = harness(async () => undefined, undefined, async () => "should not run");
-  empty.context.computer!.exec = async () => ({
-    ok: true, exitCode: 0, stderr: "", durationMs: 1,
-    stdout: `SMOLVM_BROWSER_RESULT=${JSON.stringify({ ok: true, value: { programResult: {
-      title: "Empty", url: "https://example.com", pageBinding: "https://example.com", text: "",
-    }, page: { title: "Empty", url: "https://example.com" } } })}\n`,
-  });
+  empty.browserDriver.execute = async () => ({ title: "Empty", url: "https://example.com", pageBinding: "https://example.com", text: "" });
   assert.deepEqual(await empty.broker.runWebOperation({ kind: "extract" }), {
     title: "Empty", url: "https://example.com", markdown: "", source: "raw-fallback",
   });
@@ -194,35 +219,29 @@ test("scoped extraction resolves the latest ref without requiring an interactive
 
   await scoped.broker.runWebOperation({ kind: "extract", scopeRef: "e8" });
 
-  assert.match(scoped.programs[0], new RegExp(locatorId(8)));
-  assert.match(scoped.programs[0], /getByRole\("region", \{ name: "Products", exact: true \}\)/);
+  assert.deepEqual(scoped.webOperations[0], {
+    kind: "extract", scopeRef: "e8",
+    target: { role: "region", name: "Products", publicName: "Products", nth: 0, locatorId: locatorId(8) },
+  });
   assert.equal(scoped.context.pendingApproval, undefined);
 });
 
 test("page capture failures are not returned as successful empty data", async () => {
   const observation = harness();
-  observation.context.computer!.exec = async () => ({
-    ok: true, exitCode: 0, stderr: "", durationMs: 1,
-    stdout: `SMOLVM_BROWSER_RESULT=${JSON.stringify({ ok: true, value: { programResult: {
-      title: "Example Domain", url: "https://example.com", pageBinding: "https://example.com",
-      snapshot: "", refs: [], captureFailed: true,
-    }, page: { title: "Example Domain", url: "https://example.com" } } })}\n`,
-  });
-  await assert.rejects(() => observation.broker.runWebOperation({ kind: "observe" }), /could not read the current page/);
+  observation.browserDriver.execute = async () => { throw new BrowserDriverError("ACCESSIBILITY_CAPTURE_FAILED", "Chromium could not produce an accessibility snapshot; try again or use Take control."); };
+  await assert.rejects(
+    () => observation.broker.runWebOperation({ kind: "observe" }),
+    (error: unknown) => (error as { code?: string }).code === "ACCESSIBILITY_CAPTURE_FAILED" && /accessibility snapshot/.test((error as Error).message),
+  );
+  assert.equal(observation.eventPayloads.at(-1)?.errorCode, "ACCESSIBILITY_CAPTURE_FAILED");
 
   const extraction = harness();
-  extraction.context.computer!.exec = async () => ({
-    ok: true, exitCode: 0, stderr: "", durationMs: 1,
-    stdout: `SMOLVM_BROWSER_RESULT=${JSON.stringify({ ok: true, value: { programResult: {
-      title: "Example Domain", url: "https://example.com", pageBinding: "https://example.com",
-      text: "", captureFailed: true,
-    }, page: { title: "Example Domain", url: "https://example.com" } } })}\n`,
-  });
-  await assert.rejects(() => extraction.broker.runWebOperation({ kind: "extract" }), /could not extract data/);
+  extraction.browserDriver.execute = async () => { throw new BrowserDriverError("TEXT_EXTRACTION_FAILED", "Chromium could not extract text from the page; try again or use Take control."); };
+  await assert.rejects(() => extraction.broker.runWebOperation({ kind: "extract" }), /could not extract text/);
 });
 
 test("active browser operations create page-bound one-shot approvals", async () => {
-  const { broker, context, programs, events } = harness();
+  const { broker, context, programs, webOperations, expectedPages, events } = harness();
 
   const pending = await broker.runWebOperation({
     kind: "click",
@@ -233,18 +252,20 @@ test("active browser operations create page-bound one-shot approvals", async () 
   assert.equal(pending.pageUrl, "https://example.com");
   assert.equal("pageBinding" in pending, false);
   assert.deepEqual(pending.operation, { kind: "click", ref: "e1" });
-  assert.equal(programs.length, 1);
+  assert.equal(programs.length, 0);
+  assert.equal(webOperations.length, 0);
   assert.equal(context.runState, "waiting_for_approval");
   assert.equal(events.at(-1), "approval.requested");
 
   const approval = context.pendingApproval!;
   const outcome = await broker.resolveApproval(approval.approvalId, approval.actionDigest, true);
 
-  assert.equal(programs.length, 3);
-  assert.match(programs[2], /currentPage !== "https:\/\/example\.com"/);
-  assert.match(programs[2], /getByRole\("button", \{ name: "Add to cart", exact: true \}\)/);
-  assert.match(programs[2], /data-smolvm-browser-ref/);
-  assert.match(programs[2], /candidates\.count\(\) !== 1/);
+  assert.equal(programs.length, 0);
+  assert.deepEqual(webOperations, [{
+    kind: "click", ref: "e1",
+    target: { role: "button", name: "Add to cart", publicName: "Add to cart", nth: 0, locatorId: locatorId(1) },
+  }]);
+  assert.deepEqual(expectedPages, ["https://example.com"]);
   assert.equal(context.pendingApproval, undefined);
   assert.equal(context.runState, "idle");
   assert.equal("browserResult" in outcome, true);
@@ -257,23 +278,6 @@ test("browser refs expire when the tab epoch changes", async () => {
 
   await assert.rejects(() => broker.runWebOperation({ kind: "click", ref: "e1" }), /ref is stale/);
   assert.equal(context.pendingApproval, undefined);
-});
-
-test("operation programs serialize model fields as data", () => {
-  const program = operationProgram({
-    kind: "fill",
-    ref: "e1",
-    target: { role: "textbox", name: "Name\"; process.exit(1); //", nth: 0, locatorId: locatorId(1) },
-    value: "hello\nworld\"; throw new Error('injected'); //",
-  }, "https://example.com/form");
-
-  assert.match(program, /getByRole\("textbox"/);
-  assert.match(program, /Name\\\"; process\.exit/);
-  assert.match(program, /hello\\nworld\\\"; throw/);
-  assert.doesNotMatch(program, /name: "Name"; process/);
-  assert.match(program, /fieldSafety\.type === 'password'/);
-  assert.match(program, /cc-\|current-password\|new-password\|one-time-code/);
-  assert.match(operationProgram({ kind: "click", ref: "e1", target: { role: "button", name: "Open", nth: 0, locatorId: locatorId(1) } }, "about:blank"), /: currentRawUrl/);
 });
 
 test("operation policy rejects private navigation and sensitive fields", async () => {
@@ -290,20 +294,8 @@ test("operation policy rejects private navigation and sensitive fields", async (
 });
 
 test("operation approvals bind URL queries without exposing them in the approval card", async () => {
-  const { broker, context, programs } = harness();
-  context.computer!.exec = async (command: string | readonly string[]) => {
-    const encoded = Array.isArray(command) ? command[1] : "";
-    const program = Buffer.from(encoded, "base64url").toString("utf8");
-    programs.push(program);
-    const programResult = program.includes("pageBindingRawUrl")
-      ? { binding: "https://example.com/search?q=private#results", display: "https://example.com/search" }
-      : { clicked: true };
-    return {
-      ok: true, exitCode: 0,
-      stdout: `SMOLVM_BROWSER_RESULT=${JSON.stringify({ ok: true, value: { programResult, page: { title: "Search", url: "https://example.com/search" } } })}\n`,
-      stderr: "", durationMs: 1,
-    };
-  };
+  const { broker, context, programs, expectedPages, browserDriver } = harness();
+  browserDriver.inspect = async () => ({ binding: "https://example.com/search?q=private#results", display: "https://example.com/search" });
 
   const pending = await broker.runWebOperation({ kind: "click", ref: "e7" });
 
@@ -312,15 +304,16 @@ test("operation approvals bind URL queries without exposing them in the approval
   assert.equal(context.pendingApproval?.pageBinding, "https://example.com/search?q=private#results");
 
   await broker.resolveApproval(context.pendingApproval!.approvalId, context.pendingApproval!.actionDigest, true);
-  assert.match(programs[2], /https:\/\/example\.com\/search\?q=private#results/);
+  assert.equal(programs.length, 0);
+  assert.deepEqual(expectedPages, ["https://example.com/search?q=private#results"]);
 });
 
 test("concurrent active operations share the first pending approval", async () => {
-  const { broker, context } = harness();
-  const originalExec = context.computer!.exec.bind(context.computer);
-  context.computer!.exec = async (command: string | readonly string[], options?: { timeoutMs?: number }) => {
+  const { broker, context, browserDriver } = harness();
+  const originalInspect = browserDriver.inspect.bind(browserDriver);
+  browserDriver.inspect = async (page) => {
     await new Promise((resolve) => setTimeout(resolve, 5));
-    return originalExec(command, options);
+    return originalInspect(page);
   };
 
   const [first, second] = await Promise.all([
@@ -565,16 +558,14 @@ test("approvals bind to one tab epoch and stale tabs fail before execution", asy
   assert.equal(programs.length, 0);
 });
 
-test("runner targets the approved tab index", async () => {
+test("structured operations use the active host page without computer.exec", async () => {
   const target: TabTarget = { id: "tab-three", epoch: 1, controlEpoch: "control-one", pageIndex: 2 };
-  const { broker, programs } = harness(async () => undefined, () => target);
+  const { broker, programs, webOperations } = harness(async () => undefined, () => target);
 
   await broker.runWebOperation({ kind: "observe" });
 
-  assert.match(programs[0]!, /page = pages\[2\]/);
-  assert.match(programs[0]!, /const pages = \[page\]/);
-  assert.match(programs[0]!, /const context = undefined/);
-  assert.match(programs[0]!, /const browser = undefined/);
+  assert.equal(programs.length, 0);
+  assert.deepEqual(webOperations, [{ kind: "observe" }]);
 });
 
 test("raw programs re-check the approved page inside the dispatched runner", async () => {
@@ -582,16 +573,12 @@ test("raw programs re-check the approved page inside the dispatched runner", asy
     id: "tab-bound", epoch: 1, controlEpoch: "agent-control-test", pageIndex: 0,
     pageBinding: "https://example.com/form?draft=secret", pageUrl: "https://example.com/form",
   };
-  const { broker, context, programs } = harness(async () => undefined, () => target);
-  let calls = 0;
+  const { broker, context, programs, browserDriver } = harness(async () => undefined, () => target);
+  browserDriver.inspect = async () => ({ binding: "https://example.com/form?draft=secret", display: "https://example.com/form" });
   context.computer!.exec = async (command: string | readonly string[]) => {
     const encoded = Array.isArray(command) ? command[1] : "";
     const program = Buffer.from(encoded, "base64url").toString("utf8");
     programs.push(program);
-    calls += 1;
-    if (calls === 1) {
-      return { ok: true, exitCode: 0, stdout: 'SMOLVM_BROWSER_RESULT={"ok":true,"value":{"programResult":{"binding":"https://example.com/form?draft=secret","display":"https://example.com/form"},"page":{"title":"Form","url":"https://example.com/form"}}}\n', stderr: "", durationMs: 1 };
-    }
     return { ok: false, exitCode: 1, stdout: "", stderr: "The approved page changed before execution.", durationMs: 1 };
   };
 
@@ -602,8 +589,8 @@ test("raw programs re-check the approved page inside the dispatched runner", asy
   assert.equal(outcome.resumeAgent, false);
   assert.equal(context.operationJournal.at(-1)?.state, "outcome_unknown");
   assert.equal(context.operationJournal.at(-1)?.summary, "Run approved browser program");
-  assert.equal(programs.length, 2);
-  assert.ok(programs[1]!.indexOf("dispatchPageBinding !== approvedPageBinding") < programs[1]!.indexOf("return { changed: true };"));
+  assert.equal(programs.length, 1);
+  assert.ok(programs[0]!.indexOf("dispatchPageBinding !== approvedPageBinding") < programs[0]!.indexOf("return { changed: true };"));
 });
 
 test("post-dispatch failures do not replace a stopping state", async () => {

@@ -12,6 +12,9 @@ class FakePage extends EventEmitter {
   constructor(private address: string) { super(); }
   url() { return this.address; }
   isClosed() { return this.closed; }
+  context() { return { browser: () => ({ isConnected: () => true }) }; }
+  async title() { return this.address.includes("profile") ? "Profile" : "Example"; }
+  locator() { return { ariaSnapshot: async () => "" }; }
   mainFrame() { return this.frame; }
   navigate(address: string) { this.address = address; this.emit("framenavigated", this.frame); }
   closePage() { this.closed = true; this.emit("close"); }
@@ -193,24 +196,6 @@ test("takeover and return control update every owned tab epoch", async () => {
   internals.context.computer = {
     display: { viewerUrl: "http://viewer.test" },
     browser: { cdpUrl: "http://browser.test", launch: async () => undefined },
-    exec: async () => ({
-      ok: true,
-      exitCode: 0,
-      stderr: "",
-      durationMs: 1,
-      stdout: `SMOLVM_BROWSER_RESULT=${JSON.stringify({ ok: true, value: {
-        programResult: {
-          title: "Profile",
-          url: "https://example.org/profile.html",
-          pageBinding: "https://example.org/profile.html",
-          snapshot: "",
-          refs: [],
-          truncated: false,
-          textBlocked: true,
-        },
-        page: { title: "Profile", url: "https://example.org/profile.html" },
-      } })}\n`,
-    }),
   } as ConversationContext["computer"];
   const observation = await internals.broker(internals.context).runWebOperation({ kind: "observe" });
   assert.equal(observation.textBlocked, true);
