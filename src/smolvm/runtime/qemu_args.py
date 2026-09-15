@@ -35,6 +35,10 @@ from pathlib import Path
 from typing import cast
 
 from smolvm.exceptions import SmolVMError
+from smolvm.host._public_egress import (
+    QEMU_PUBLIC_PROXY_GUEST_IP,
+    QEMU_PUBLIC_PROXY_GUEST_PORT,
+)
 from smolvm.runtime.guest_platforms import GuestPlatformSpec
 from smolvm.runtime.qemu import QEMU_ROOT_NODE_NAME
 from smolvm.types import GuestOS, QemuMachine, VMInfo
@@ -43,7 +47,6 @@ from smolvm.types import GuestOS, QemuMachine, VMInfo
 # also work; we set it explicitly so the guest sees the same address whether
 # QEMU's compiled-in default ever changes upstream.
 QEMU_SLIRP_DNS = "10.0.2.3"
-
 # Number of AHCI/SATA ports the q35 ICH9 chipset exposes. ISO extras with
 # cdrom_bus="ide" occupy ide.0..ide.5 in order; any beyond port 5 fall back
 # to virtio-blk-pci so the QEMU command line stays valid.
@@ -242,7 +245,19 @@ def build_qemu_argv(
             )
         netdev_options = [f"user,id=net0,dns={QEMU_SLIRP_DNS}", *hostfwd_rules]
         settings = vm_info.config.internet_settings
-        if settings is not None and settings.mode == "off":
+        proxy_host_port = vm_info.network.egress_proxy_host_port
+        if proxy_host_port is not None:
+            netdev_options.extend(
+                [
+                    "restrict=on",
+                    "ipv6=off",
+                    (
+                        f"guestfwd=tcp:{QEMU_PUBLIC_PROXY_GUEST_IP}:"
+                        f"{QEMU_PUBLIC_PROXY_GUEST_PORT}-tcp:127.0.0.1:{proxy_host_port}"
+                    ),
+                ]
+            )
+        elif settings is not None and settings.mode == "off":
             netdev_options.extend(["restrict=on", "ipv6=off"])
         netdev_arg = ",".join(netdev_options)
 

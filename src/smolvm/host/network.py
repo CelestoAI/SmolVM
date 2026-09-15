@@ -1992,6 +1992,84 @@ class NetworkManager:
         self._ensure_nftables_base()
         self._run_nft_script(script)
 
+    def _public_proxy_policy_script(
+        self,
+        tap_device: str,
+        *,
+        guest_ip: str,
+        proxy_host_ip: str,
+        proxy_port: int,
+    ) -> str:
+        """Build a fail-closed TAP policy that exposes only one host proxy.
+
+        The guest cannot forward packets to the internet or open connections to
+        another host service. Host-initiated TCP connections may still receive
+        established replies, preserving the existing control-channel behavior.
+        """
+        table = self._policy_table(tap_device)
+        tap = self._quote(tap_device)
+        guest = str(IPv4Address(guest_ip))
+        proxy = str(IPv4Address(proxy_host_ip))
+        if not 1 <= proxy_port <= 65535:
+            raise ValueError("proxy_port must be between 1 and 65535")
+        lines = [
+            f"add table inet {table}",
+            f"flush table inet {table}",
+            f"add chain inet {table} forward "
+            "{ type filter hook forward priority -10; policy accept; }",
+            f"add chain inet {table} input "
+            "{ type filter hook input priority -10; policy accept; }",
+            (
+                f"add rule inet {table} input iifname {tap} ip saddr {guest} "
+                "meta l4proto tcp ct direction reply ct state established counter accept"
+            ),
+            (
+                f"add rule inet {table} input iifname {tap} ip saddr {guest} ip daddr {proxy} "
+                f"tcp dport {proxy_port} ct state new,established counter accept"
+            ),
+            f"add rule inet {table} input iifname {tap} counter drop",
+            f"add rule inet {table} forward iifname {tap} counter drop",
+            f"add element inet {_NFT_FILTER_TABLE} {_NFT_SET_ALLOWED_TAPS} {{ {tap} }}",
+            f"delete element inet {_NFT_FILTER_TABLE} {_NFT_SET_ALLOWED_TAPS} {{ {tap} }}",
+        ]
+        return "\n".join(lines) + "\n"
+
+    def apply_public_proxy_policy(
+        self,
+        tap_device: str,
+        *,
+        guest_ip: str,
+        proxy_host_ip: str,
+        proxy_port: int,
+    ) -> None:
+        """Restrict one TAP guest to its host-owned public-egress proxy."""
+        script = self._public_proxy_policy_script(
+            tap_device,
+            guest_ip=guest_ip,
+            proxy_host_ip=proxy_host_ip,
+            proxy_port=proxy_port,
+        )
+        self._ensure_nftables_base()
+        self._run_nft_script(script)
+
+    async def async_apply_public_proxy_policy(
+        self,
+        tap_device: str,
+        *,
+        guest_ip: str,
+        proxy_host_ip: str,
+        proxy_port: int,
+    ) -> None:
+        """Async counterpart of :meth:`apply_public_proxy_policy`."""
+        script = self._public_proxy_policy_script(
+            tap_device,
+            guest_ip=guest_ip,
+            proxy_host_ip=proxy_host_ip,
+            proxy_port=proxy_port,
+        )
+        await self._async_ensure_nftables_base()
+        await self._async_run_nft_script(script)
+
     async def async_apply_network_policy(
         self, tap_device: str, allowed_ips: list[str] | None, *, guest_ip: str | None = None
     ) -> None:
@@ -2004,6 +2082,15 @@ class NetworkManager:
         """Idempotently delete only this managed interface's policy table."""
         table = self._policy_table(tap_device)
         self._run_nft_script(f"add table inet {table}\ndelete table inet {table}\n")
+
+    @staticmethod
+    def tap_exists(tap_device: str) -> bool:
+        """Return whether a TAP still exists before releasing its fail-closed policy."""
+        try:
+            socket.if_nametoindex(tap_device)
+        except OSError:
+            return False
+        return True
 
     async def async_remove_network_policy(self, tap_device: str) -> None:
         table = self._policy_table(tap_device)
