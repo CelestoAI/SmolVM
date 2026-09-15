@@ -8,9 +8,7 @@
 
 ### [Try OpenMuse](./open-muse/README.md)
 
-<p align="left">OpenMuse is an open-source computer coworker that browses public websites in its own disposable Linux desktop. Chat with it locally, watch it work, and approve actions before they change a page.</p>
-
-<p align="left">The current source preview runs on your computer and lets you take control of the desktop whenever a task needs you. <b>OpenMuse is powered by SmolVM.</b></p>
+<p align="left">OpenMuse is an open-source computer coworker that can browse the web, use apps, and keep working in the background — even when your laptop is off. <b>OpenMuse is powered by SmolVM.</b></p>
 
 
 </div>
