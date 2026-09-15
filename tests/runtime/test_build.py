@@ -494,7 +494,21 @@ class TestBrowserImageBuilder:
             assert "start_cdp_proxy" in helper_script
             assert 'ThreadingServer(("0.0.0.0", listen_port)' in helper_script
             assert "--remote-debugging-address=127.0.0.1" in helper_script
+            assert 'set -- "--proxy-server=${proxy_endpoint}"' in helper_script
+            assert helper_script.count("--proxy-bypass-list='<-loopback>'") == 2
+            assert 'proxy_endpoint="${8:-}"' in helper_script
+            assert 'proxy_endpoint="${11:-}"' in helper_script
+            assert '[ "$#" -ne 11 ] && [ "$#" -ne 12 ]' in helper_script
+            assert '[ "$#" -ne 8 ] && [ "$#" -ne 9 ]' in helper_script
             assert "debug_port must be <= 65534" in helper_script
+            syntax = subprocess.run(
+                ["/bin/sh", "-n"],
+                input=helper_script,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert syntax.returncode == 0, syntax.stderr
             kernel_path.touch()
             rootfs_path.touch()
 

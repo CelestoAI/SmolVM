@@ -151,6 +151,38 @@ def test_slirp_off_preserves_forwards_and_shared_folder_devices(tmp_path, system
     assert "-fsdev" in argv
 
 
+@pytest.mark.parametrize(
+    "system,binary",
+    [("Linux", "qemu-system-x86_64"), ("Darwin", "qemu-system-aarch64")],
+)
+def test_slirp_public_proxy_is_the_only_guest_egress_path(
+    tmp_path: Path,
+    system: str,
+    binary: str,
+) -> None:
+    info = _qemu_vm_info(tmp_path)
+    assert info.network is not None
+    info = info.model_copy(
+        update={
+            "network": info.network.model_copy(update={"egress_proxy_host_port": 43128}),
+        }
+    )
+    argv = build_qemu_argv(
+        info,
+        qemu_bin=Path(binary),
+        boot_args=info.config.boot_args,
+        platform_spec=_LINUX_SPEC,
+        host_system=system,
+    )
+
+    netdev = argv[argv.index("-netdev") + 1]
+    assert netdev == (
+        "user,id=net0,dns=10.0.2.3,hostfwd=tcp:127.0.0.1:2200-:22,"
+        "restrict=on,ipv6=off,"
+        "guestfwd=tcp:10.0.2.100:3128-tcp:127.0.0.1:43128"
+    )
+
+
 def test_root_drive_format_uses_declared_rootfs_format(tmp_path: Path) -> None:
     """A raw-ext4 disk with a .qcow2 suffix is still passed to QEMU as raw."""
     vm_info = _qemu_vm_info(tmp_path)

@@ -1,0 +1,107 @@
+[
+  {
+    "name": "public-navigation",
+    "kind": "navigation",
+    "transport": "https",
+    "hostname": "public.test",
+    "answers": ["93.184.216.34"],
+    "allowed": true
+  },
+  {
+    "name": "redirect-to-private",
+    "kind": "redirect",
+    "transport": "https",
+    "hostname": "redirect-private.test",
+    "answers": ["10.10.0.8"],
+    "allowed": false,
+    "reason": "private"
+  },
+  {
+    "name": "private-subresource",
+    "kind": "subresource",
+    "transport": "https",
+    "hostname": "asset-private.test",
+    "answers": ["172.20.1.4"],
+    "allowed": false,
+    "reason": "private"
+  },
+  {
+    "name": "service-worker-private-fetch",
+    "kind": "service_worker",
+    "transport": "https",
+    "hostname": "worker-private.test",
+    "answers": ["192.168.12.2"],
+    "allowed": false,
+    "reason": "private"
+  },
+  {
+    "name": "public-websocket",
+    "kind": "websocket",
+    "transport": "websocket_secure",
+    "hostname": "socket-public.test",
+    "answers": ["1.1.1.1"],
+    "allowed": true
+  },
+  {
+    "name": "private-websocket",
+    "kind": "websocket",
+    "transport": "websocket",
+    "hostname": "socket-private.test",
+    "answers": ["127.0.0.1"],
+    "allowed": false,
+    "reason": "loopback"
+  },
+  {
+    "name": "mixed-public-private-dns",
+    "kind": "navigation",
+    "transport": "https",
+    "hostname": "mixed.test",
+    "answers": ["1.1.1.1", "10.0.0.1"],
+    "allowed": false,
+    "reason": "mixed_address_scope"
+  },
+  {
+    "name": "cname-chain-to-private-address",
+    "kind": "navigation",
+    "transport": "https",
+    "hostname": "cname-private.test",
+    "answers": ["10.20.30.40"],
+    "allowed": false,
+    "reason": "private"
+  },
+  {
+    "name": "cname-chain-to-public-address",
+    "kind": "navigation",
+    "transport": "https",
+    "hostname": "cname-public.test",
+    "answers": ["8.8.8.8"],
+    "allowed": true
+  },
+  {
+    "name": "deprecated-ipv6-site-local",
+    "kind": "navigation",
+    "transport": "https",
+    "hostname": "site-local.test",
+    "answers": ["fec0::1"],
+    "allowed": false,
+    "reason": "private"
+  },
+  {
+    "name": "direct-dns-bypass",
+    "kind": "subresource",
+    "transport": "direct_dns",
+    "hostname": "resolver.test",
+    "answers": ["8.8.8.8"],
+    "allowed": false,
+    "reason": "unsupported_transport"
+  },
+  {
+    "name": "raw-socket-bypass",
+    "kind": "subresource",
+    "transport": "raw_socket",
+    "hostname": "public.test",
+    "answers": ["93.184.216.34"],
+    "allowed": false,
+    "reason": "unsupported_transport"
+  }
+]
