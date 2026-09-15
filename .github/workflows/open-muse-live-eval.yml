@@ -1,0 +1,57 @@
+name: OpenMuse live model release eval
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: OpenAI model ID to evaluate
+        required: true
+        default: gpt-5-mini
+
+permissions:
+  contents: read
+
+jobs:
+  live-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: open-muse-release-eval
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_MODEL: ${{ inputs.model }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.19"
+          cache: npm
+          cache-dependency-path: |
+            ts/package-lock.json
+            examples/open-muse/package-lock.json
+      - run: npm ci
+        working-directory: ts
+      - run: npm run build
+        working-directory: ts
+      - run: npm ci
+        working-directory: examples/open-muse
+      - name: Run live eval 1
+        run: npm run eval:live -- --output artifacts/live-eval-1.json
+        working-directory: examples/open-muse
+      - name: Run live eval 2
+        run: npm run eval:live -- --output artifacts/live-eval-2.json
+        working-directory: examples/open-muse
+      - name: Run live eval 3
+        run: npm run eval:live -- --output artifacts/live-eval-3.json
+        working-directory: examples/open-muse
+      - name: Enforce release thresholds
+        run: npm run eval:release-gate -- artifacts/live-eval-1.json artifacts/live-eval-2.json artifacts/live-eval-3.json
+        working-directory: examples/open-muse
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: open-muse-live-eval-${{ github.run_id }}
+          path: examples/open-muse/artifacts/live-eval-*.json
+          if-no-files-found: error
+          retention-days: 30

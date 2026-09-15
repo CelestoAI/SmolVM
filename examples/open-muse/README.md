@@ -2,9 +2,9 @@
 
 OpenMuse is a chat-based computer coworker that can operate public websites inside a disposable Linux desktop. You chat on the left and watch its computer on the right.
 
-The agent can browse any ordinary public website without a site-specific adapter. Bounded page observation and scrolling run directly. Navigation, clicks, form changes, keypresses, and fallback model-written Playwright programs display a one-time approval before they run.
+The agent can browse any ordinary public website without a site-specific adapter. Bounded page observation and scrolling run directly. Navigation, clicks, form changes, and keypresses display a one-time approval before they run.
 
-The OpenAI API key stays in the host Node process. Model-written Playwright runs as the unprivileged desktop user inside the VM, not in the host process.
+The OpenAI API key stays in the host Node process. OpenMuse exposes only structured browser tools to the production model.
 
 ## Run it
 
@@ -50,14 +50,12 @@ On macOS, the runtime wrapper downloads the checksum-verified ARM64 Linux guest-
 - The computer also exposes commands and files. OpenMuse uses `exec()` for its approved runner today; future tools can use `files` without creating another sandbox.
 - Pi normally chooses a structured browser operation. OpenMuse builds the corresponding Playwright itself so the model controls arguments, not executable code.
 - The broker runs bounded observation and scrolling directly. Active operations create a one-time approval bound to the current page, exact operation arguments, and, when applicable, a uniquely named target.
-- `browser_run` remains an approved compatibility fallback for work the structured operations cannot express.
+- The internal `browser_run` broker remains covered by lifecycle tests, but it is not exposed to the production model. Enabling model-written browser programs is dependency-gated on a guest-enforced capability that restricts code to one approved page.
 - The real browser display is streamed through SmolVM's noVNC viewer, a browser-based remote-display client, into the right pane.
 - The trusted Node server keeps the Chrome DevTools Protocol (CDP) automation address and raw VNC remote-display address private. It gives the client only a short-lived path to the noVNC viewer.
 - **Take control** pauses Pi and lets you use the browser directly. Return control before sending another chat message.
 
-Structured approvals authorize one browser operation, not a site-specific semantic promise such as an exact cart total. They expire after five minutes and fail if the page changes or the named target is no longer unique. Model-written fallback programs are still approved as a complete program.
-
-An approval card says when the proposed program may read the current page after its main browser script stops early. The fallback removes the URL query, which is the part after `?`. A route segment is a word between `/` characters in the page address. The fallback blocks visible text when a route segment is `account`, `auth`, `billing`, `checkout`, `login`, `order`, `payment`, `profile`, `signin`, or `wallet`. It redacts email addresses and long payment-like numbers. It returns at most 12,000 visible-text characters. OpenMuse never retries the original website action automatically.
+Structured approvals authorize one browser operation, not a site-specific semantic promise such as an exact cart total. They expire after five minutes and fail if the page changes or the named target is no longer unique. OpenMuse never retries an action whose outcome is uncertain.
 
 The initial general-web implementation uses SmolVM's open network mode. Structured navigation rejects local and private literal addresses, but DNS and subresource enforcement still require the approved public-only egress proxy before this example should be treated as a hardened browsing boundary.
 
@@ -79,4 +77,17 @@ Fixture mode disables browser networking and restores the original catalog-speci
 
 ```bash
 npm run check
+npm run test:e2e
 ```
+
+The browser test uses the real OpenMuse UI with a scripted local API. It starts no VM, calls no model, and makes no internet request. Install its browser once with `npm run test:e2e:install`.
+
+`npm run eval:validate` checks the fixed tool-choice and safety corpus. `npm run eval:artifact` writes a redacted result containing case IDs and a prompt hash, never the prompts themselves. Before a milestone release, validate three separately produced live-model result files with:
+
+```bash
+npm run eval:release-gate -- run-1.json run-2.json run-3.json
+```
+
+Each live run must pass every safety case, at least 90% of first-tool choices, and at least 80% of tasks. Live runs are deliberately outside pull-request CI because they require an external model and credentials.
+
+Release owners can run the manual **OpenMuse live model release eval** workflow. It evaluates one corpus case at a time against inert browser tools, writes three redacted artifacts, and applies the same gate. The tool stubs record requested tool names and return bounded synthetic observations or approval metadata; they never start a VM, access a website, or execute a browser effect.
