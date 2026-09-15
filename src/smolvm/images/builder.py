@@ -1068,6 +1068,7 @@ launch_browser() {
     profile_dir="$5"
     download_dir="$6"
     downloads_enabled="$7"
+    proxy_endpoint="${8:-}"
 
     browser_user=browser
     browser_home=/home/browser
@@ -1088,9 +1089,14 @@ launch_browser() {
     stop_pid_file "${RUNTIME_DIR}/chromium.pid"
     browser_bin="$(find_browser_bin)"
     browser_debug_port=$((debug_port + 1))
+    if [ -n "$proxy_endpoint" ]; then
+        set -- "--proxy-server=${proxy_endpoint}"
+    else
+        set --
+    fi
 
     if [ "${mode}" = "headless" ]; then
-        runuser -u "${browser_user}" -- env HOME="${browser_home}" "$browser_bin" \
+        runuser -u "${browser_user}" -- env HOME="${browser_home}" "$browser_bin" "$@" \
             --headless=new \
             --no-sandbox \
             --disable-dev-shm-usage \
@@ -1102,6 +1108,7 @@ launch_browser() {
             --metrics-recording-only \
             --password-store=basic \
             --use-mock-keychain \
+            --proxy-bypass-list='<-loopback>' \
             --remote-allow-origins=* \
             --remote-debugging-address=127.0.0.1 \
             --remote-debugging-port="${browser_debug_port}" \
@@ -1109,7 +1116,7 @@ launch_browser() {
             --window-size="${width},${height}" \
             about:blank >"${LOG_DIR}/chromium.log" 2>&1 &
     else
-        runuser -u "${browser_user}" -- env DISPLAY=:99 HOME="${browser_home}" "$browser_bin" \
+        runuser -u "${browser_user}" -- env DISPLAY=:99 HOME="${browser_home}" "$browser_bin" "$@" \
             --no-sandbox \
             --disable-dev-shm-usage \
             --disable-gpu \
@@ -1120,6 +1127,7 @@ launch_browser() {
             --metrics-recording-only \
             --password-store=basic \
             --use-mock-keychain \
+            --proxy-bypass-list='<-loopback>' \
             --remote-allow-origins=* \
             --remote-debugging-address=127.0.0.1 \
             --remote-debugging-port="${browser_debug_port}" \
@@ -1142,6 +1150,7 @@ start_session() {
     record_video="$8"
     downloads_enabled="$9"
     artifacts_dir="${10}"
+    proxy_endpoint="${11:-}"
 
     mkdir -p "$profile_dir" "$download_dir" "$artifacts_dir" "$RUNTIME_DIR" "$LOG_DIR"
     write_preferences "$profile_dir" "$download_dir"
@@ -1177,24 +1186,25 @@ start_session() {
     fi
 
     launch_browser "$mode" "$width" "$height" "$debug_port" \
-        "$profile_dir" "$download_dir" "$downloads_enabled"
+        "$profile_dir" "$download_dir" "$downloads_enabled" "$proxy_endpoint"
 }
 
 case "${1:-}" in
     start)
-        if [ "$#" -ne 11 ]; then
+        if [ "$#" -ne 11 ] && [ "$#" -ne 12 ]; then
             echo "usage: smolvm-browser-session start <mode> <width> <height>" >&2
             echo "  <debug_port> <live_port> <profile_dir> <download_dir>" >&2
-            echo "  <record_video> <downloads_enabled> <artifacts_dir>" >&2
+            echo "  <record_video> <downloads_enabled> <artifacts_dir> [proxy_endpoint]" >&2
             exit 2
         fi
         shift
         start_session "$@"
         ;;
     launch-browser)
-        if [ "$#" -ne 8 ]; then
+        if [ "$#" -ne 8 ] && [ "$#" -ne 9 ]; then
             echo "usage: smolvm-browser-session launch-browser <mode> <width> <height>" >&2
             echo "  <debug_port> <profile_dir> <download_dir> <downloads_enabled>" >&2
+            echo "  [proxy_endpoint]" >&2
             exit 2
         fi
         shift

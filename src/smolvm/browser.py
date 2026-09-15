@@ -20,6 +20,10 @@ from typing import Any
 
 from smolvm.exceptions import BrowserSessionNotFoundError, SmolVMError
 from smolvm.facade import SmolVM
+from smolvm.host._public_egress import (
+    QEMU_PUBLIC_PROXY_GUEST_IP,
+    QEMU_PUBLIC_PROXY_GUEST_PORT,
+)
 from smolvm.runtime.backends import (
     BACKEND_AUTO,
     BACKEND_FIRECRACKER,
@@ -38,6 +42,7 @@ from smolvm.types import (
     BrowserSessionState,
     PortForwardConfig,
     VMConfig,
+    VMInfo,
     VMState,
 )
 from smolvm.vm import resolve_data_dir
@@ -120,6 +125,32 @@ def _browser_boot_args_for_backend(backend: str) -> str:
     arch = platform.machine().lower()
     profile = get_boot_profile_spec(_BROWSER_KERNEL_PROFILE)
     return profile.base_boot_args_for_backend(backend, arch)
+
+
+def _guest_browser_proxy_endpoint(vm_info: VMInfo) -> str | None:
+    """Return the private proxy URL already wired into a VM network."""
+    network = vm_info.network
+    if network is None or network.egress_proxy_host_port is None:
+        return None
+    if vm_info.config.backend == BACKEND_QEMU and vm_info.config.qemu_network == "slirp":
+        return f"http://{QEMU_PUBLIC_PROXY_GUEST_IP}:{QEMU_PUBLIC_PROXY_GUEST_PORT}"
+    if network.gateway_ip is None:
+        return None
+    host = f"[{network.gateway_ip}]" if ":" in network.gateway_ip else network.gateway_ip
+    return f"http://{host}:{network.egress_proxy_host_port}"
+
+
+def _guest_browser_session_command(
+    action: str,
+    arguments: list[str],
+    *,
+    proxy_endpoint: str | None = None,
+) -> str:
+    """Build a quoted guest launcher command with an optional proxy argument."""
+    parts = ["/usr/local/bin/smolvm-browser-session", action, *arguments]
+    if proxy_endpoint is not None:
+        parts.append(proxy_endpoint)
+    return " ".join(shlex.quote(part) for part in parts)
 
 
 def _build_browser_vm_config(
@@ -740,21 +771,25 @@ class _BrowserSandbox:
         if self._vm is None:
             raise SmolVMError("Browser sandbox VM is unavailable.")
 
-        command = " ".join(
+        vm_info = self._vm.info
+        proxy_endpoint = (
+            _guest_browser_proxy_endpoint(vm_info) if isinstance(vm_info, VMInfo) else None
+        )
+        command = _guest_browser_session_command(
+            "start",
             [
-                "/usr/local/bin/smolvm-browser-session",
-                "start",
-                shlex.quote(self._session_config.mode),
+                self._session_config.mode,
                 str(self._session_config.viewport_width),
                 str(self._session_config.viewport_height),
                 str(_BROWSER_DEBUG_PORT),
                 str(_BROWSER_LIVE_PORT),
-                shlex.quote(self._guest_profile_dir()),
-                shlex.quote(self._guest_download_dir()),
+                self._guest_profile_dir(),
+                self._guest_download_dir(),
                 "1" if self._session_config.record_video else "0",
                 "1" if self._session_config.allow_downloads else "0",
-                shlex.quote(self._guest_artifacts_dir()),
-            ]
+                self._guest_artifacts_dir(),
+            ],
+            proxy_endpoint=proxy_endpoint,
         )
         result = self._vm.run(command, timeout=60)
         if not result.ok:
@@ -766,18 +801,22 @@ class _BrowserSandbox:
         """Launch only Chromium, preserving the running graphical desktop."""
         if self._vm is None:
             raise SmolVMError("Browser sandbox VM is unavailable.")
-        command = " ".join(
+        vm_info = self._vm.info
+        proxy_endpoint = (
+            _guest_browser_proxy_endpoint(vm_info) if isinstance(vm_info, VMInfo) else None
+        )
+        command = _guest_browser_session_command(
+            "launch-browser",
             [
-                "/usr/local/bin/smolvm-browser-session",
-                "launch-browser",
-                shlex.quote(self._session_config.mode),
+                self._session_config.mode,
                 str(self._session_config.viewport_width),
                 str(self._session_config.viewport_height),
                 str(_BROWSER_DEBUG_PORT),
-                shlex.quote(self._guest_profile_dir()),
-                shlex.quote(self._guest_download_dir()),
+                self._guest_profile_dir(),
+                self._guest_download_dir(),
                 "1" if self._session_config.allow_downloads else "0",
-            ]
+            ],
+            proxy_endpoint=proxy_endpoint,
         )
         result = self._vm.run(command, timeout=60)
         if not result.ok:

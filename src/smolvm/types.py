@@ -969,6 +969,8 @@ class NetworkConfig(BaseModel):
         guest_mac: MAC address for the guest interface.
         ssh_host_port: Optional host TCP port forwarded to guest SSH (22).
             None in bridge mode.
+        egress_proxy_host_port: Internal host listener used by restricted QEMU
+            user networking. It is not a public network-policy option.
         mode: Network mode — ``"nat"`` (default) or ``"bridge"``.
         bridge: Bridge name when mode is ``"bridge"``; None for NAT.
     """
@@ -979,6 +981,7 @@ class NetworkConfig(BaseModel):
     tap_device: str
     guest_mac: str
     ssh_host_port: int | None = None
+    egress_proxy_host_port: Annotated[int | None, Field(ge=1, le=65535)] = None
     mode: Literal["nat", "bridge"] = "nat"
     bridge: str | None = None
 
@@ -1018,6 +1021,8 @@ class NetworkConfig(BaseModel):
                     "mode='bridge' must not set ssh_host_port; "
                     "use vsock (smolvm sandbox shell) instead"
                 )
+            if self.egress_proxy_host_port is not None:
+                raise ValueError("mode='bridge' must not set egress_proxy_host_port")
         elif self.mode == "nat":
             if self.bridge is not None:
                 raise ValueError("mode='nat' must not set bridge")

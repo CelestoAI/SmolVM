@@ -24,6 +24,7 @@ SmolVM gives an AI agent a disposable computer for running code, using a browser
 ## Contributors
 
 - [Architecture](contributing/architecture.md) — find the part of the codebase that owns a behavior.
+- [Public-egress release gate](deep-dive/public-egress-release-gate.md) — verify both VM backends, browser routing, attack cases, and image pins before exposing public-only networking.
 - [macOS runtime spike](contributing/macos-spike.md) — see verified behavior and release blockers for the desktop preview.
 - [Native core](contributing/native-core.md) — work on the optional Rust acceleration package.
 
