@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 import type { Browser, BrowserContext, Frame, Page } from "playwright-core";
+import type { ActionBroker } from "../server/broker.js";
 import { ConversationManager } from "../server/manager.js";
 import type { ConversationContext } from "../server/types.js";
 
@@ -163,12 +164,14 @@ test("takeover and return control update every owned tab epoch", async () => {
   const internals = manager as unknown as {
     context: ConversationContext;
     attachBrowser: (context: ConversationContext, url: string) => Promise<void>;
+    broker: (context: ConversationContext) => ActionBroker;
   };
   await internals.attachBrowser(internals.context, "http://browser.test");
   const popup = new FakePage("https://example.org/popup");
   browserContext.popup(popup);
   const popupId = manager.snapshot(created.id).tabs.find((tab) => tab.owner === "quarantined")!.id;
   await manager.adoptPopup(created.id, popupId);
+  popup.navigate("https://example.org/profile.html");
   const before = new Map(manager.snapshot(created.id).tabs.map((tab) => [tab.id, tab.epoch]));
   internals.context.observationId = "obs-before-takeover";
   internals.context.browserRefs.set("e1", {} as never);
@@ -185,6 +188,35 @@ test("takeover and return control update every owned tab epoch", async () => {
   assert.ok(resumed.tabs.every((tab) => tab.owner === "agent" && tab.epoch > humanTabs.find((old) => old.id === tab.id)!.epoch));
   assert.equal(internals.context.observationId, "");
   assert.equal(internals.context.browserRefs.size, 0);
+
+  internals.context.sessionLifecycle = "ready";
+  internals.context.computer = {
+    display: { viewerUrl: "http://viewer.test" },
+    browser: { cdpUrl: "http://browser.test", launch: async () => undefined },
+    exec: async () => ({
+      ok: true,
+      exitCode: 0,
+      stderr: "",
+      durationMs: 1,
+      stdout: `SMOLVM_BROWSER_RESULT=${JSON.stringify({ ok: true, value: {
+        programResult: {
+          title: "Profile",
+          url: "https://example.org/profile.html",
+          pageBinding: "https://example.org/profile.html",
+          snapshot: "",
+          refs: [],
+          truncated: false,
+          textBlocked: true,
+        },
+        page: { title: "Profile", url: "https://example.org/profile.html" },
+      } })}\n`,
+    }),
+  } as ConversationContext["computer"];
+  const observation = await internals.broker(internals.context).runWebOperation({ kind: "observe" });
+  assert.equal(observation.textBlocked, true);
+  assert.equal(observation.snapshot, "");
+  assert.deepEqual(observation.refs, []);
+  assert.match(String(observation.observationId), /^obs-/);
 });
 
 test("stopping closes browser ownership and clears every tab", async () => {
