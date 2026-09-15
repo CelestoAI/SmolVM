@@ -15,6 +15,7 @@
 """Tests for browser session orchestration."""
 
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -105,6 +106,7 @@ def test_smolvm_browser_factory_starts_headless_sandbox(mock_sandbox_cls: MagicM
         "data_dir": None,
         "socket_dir": None,
         "ssh_key_path": None,
+        "on_progress": None,
     }
     sandbox.start.assert_called_once_with(boot_timeout=12.5, on_progress=None)
 
@@ -160,12 +162,14 @@ def test_smolvm_computer_factory_starts_linux_desktop(mock_sandbox_cls: MagicMoc
     sandbox = MagicMock(spec=_ComputerSandbox)
     mock_sandbox_cls.return_value = sandbox
     events: list[dict[str, object]] = []
+    progress = MagicMock()
 
     result = SmolVM.computer(
         name="computer-demo",
         backend="qemu",
         display={"width": 1440, "height": 900},
         resources={"memory_mib": 3072, "disk_mib": 8192, "vcpus": 2},
+        on_progress=progress,
         on_event=events.append,  # type: ignore[arg-type]
     )
 
@@ -178,7 +182,8 @@ def test_smolvm_computer_factory_starts_linux_desktop(mock_sandbox_cls: MagicMoc
     assert config.viewport_height == 900
     assert config.mem_size_mib == 3072
     assert config.disk_size_mib == 8192
-    sandbox.start.assert_called_once_with(boot_timeout=90.0, on_progress=None)
+    assert mock_sandbox_cls.call_args.kwargs["on_progress"] is progress
+    sandbox.start.assert_called_once_with(boot_timeout=90.0, on_progress=progress)
     assert events == [{"type": "computer.starting", "computer_id": "computer-demo"}]
     sandbox.enable_events.assert_called_once_with(events.append)
 
@@ -671,6 +676,163 @@ def test_build_browser_vm_config_allocates_qemu_live_port_forwards(
         (39013, 5900),
     ]
     assert mock_allocate_host_port.call_count == 3
+
+
+@patch("smolvm.browser.platform.machine", return_value="x86_64")
+@patch("smolvm.browser._allocate_browser_host_port", side_effect=[39101, 39102, 39103])
+@patch("smolvm.utils.ensure_ssh_key")
+@patch("smolvm.images.builder.ImageBuilder")
+@patch("smolvm.images.published.ensure_published_image")
+def test_build_computer_vm_config_uses_published_linux_desktop(
+    mock_ensure_published_image: MagicMock,
+    mock_builder_cls: MagicMock,
+    mock_ensure_ssh_key: MagicMock,
+    mock_allocate_host_port: MagicMock,
+    _mock_machine: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """Computer sessions should download the published desktop instead of building it."""
+    kernel = tmp_path / "kernel"
+    rootfs = tmp_path / "rootfs.ext4"
+    private_key = tmp_path / "id_ed25519"
+    public_key = tmp_path / "id_ed25519.pub"
+    kernel.touch()
+    rootfs.touch()
+    private_key.touch()
+    public_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMock user@test\n")
+    mock_ensure_ssh_key.return_value = (private_key, public_key)
+    mock_ensure_published_image.return_value = SimpleNamespace(
+        kernel_path=kernel,
+        rootfs_path=rootfs,
+    )
+
+    vm_config, _ = _build_browser_vm_config(
+        session_id="computer-published",
+        browser_config=BrowserSessionConfig(
+            session_id="computer-published",
+            backend="qemu",
+            mode="computer",
+            disk_size_mib=8192,
+        ),
+    )
+
+    mock_ensure_published_image.assert_called_once_with(
+        "linux-desktop", "amd64", "qemu", on_download=None
+    )
+    mock_builder_cls.assert_not_called()
+    assert vm_config.kernel_path == kernel
+    assert vm_config.rootfs_path == rootfs
+    assert vm_config.disk_size_mib == 8192
+    assert vm_config.grow_filesystem is False
+    assert [(forward.host_port, forward.guest_port) for forward in vm_config.port_forwards] == [
+        (39101, 9222),
+        (39102, 6080),
+        (39103, 5900),
+    ]
+    assert mock_allocate_host_port.call_count == 3
+
+
+@patch("smolvm.browser.platform.machine", return_value="arm64")
+@patch("smolvm.browser.resolve_backend", return_value="firecracker")
+@patch("smolvm.utils.ensure_ssh_key")
+@patch("smolvm.images.builder.ImageBuilder")
+@patch("smolvm.images.published.ensure_published_image")
+def test_build_computer_vm_config_resolves_arm64_and_grows_published_desktop(
+    mock_ensure_published_image: MagicMock,
+    mock_builder_cls: MagicMock,
+    mock_ensure_ssh_key: MagicMock,
+    _mock_resolve_backend: MagicMock,
+    _mock_machine: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """Larger ARM computers should grow an isolated published desktop disk."""
+    kernel = tmp_path / "kernel"
+    rootfs = tmp_path / "rootfs.ext4"
+    private_key = tmp_path / "id_ed25519"
+    public_key = tmp_path / "id_ed25519.pub"
+    kernel.touch()
+    rootfs.touch()
+    private_key.touch()
+    public_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMock user@test\n")
+    mock_ensure_ssh_key.return_value = (private_key, public_key)
+    local_image = SimpleNamespace(
+        kernel_path=kernel,
+        rootfs_path=rootfs,
+    )
+    progress: list[str] = []
+
+    def ensure_image(
+        _preset: str,
+        _arch: str,
+        _vmm: str,
+        *,
+        on_download: Callable[[str, int, int | None], None] | None,
+    ) -> SimpleNamespace:
+        """Simulate one progress update from the published image cache."""
+        assert on_download is not None
+        on_download("rootfs", 1024 * 1024, 2 * 1024 * 1024)
+        return local_image
+
+    mock_ensure_published_image.side_effect = ensure_image
+
+    vm_config, _ = _build_browser_vm_config(
+        session_id="computer-arm64",
+        browser_config=BrowserSessionConfig(
+            session_id="computer-arm64",
+            backend="auto",
+            mode="computer",
+            disk_size_mib=12288,
+        ),
+        on_progress=progress.append,
+    )
+
+    assert mock_ensure_published_image.call_args.args == (
+        "linux-desktop",
+        "arm64",
+        "firecracker",
+    )
+    assert progress == [
+        "Preparing the Linux desktop image...",
+        "Downloading the Linux desktop image: 1 of 2 MiB.",
+        "The Linux desktop image is ready.",
+    ]
+    mock_builder_cls.assert_not_called()
+    assert vm_config.disk_size_mib == 12288
+    assert vm_config.grow_filesystem is True
+
+
+@patch("smolvm.utils.ensure_ssh_key")
+@patch("smolvm.images.published.ensure_published_image")
+def test_build_computer_vm_config_rejects_disk_smaller_than_published_image(
+    mock_ensure_published_image: MagicMock,
+    mock_ensure_ssh_key: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """A computer disk cannot be smaller than its published desktop filesystem."""
+    private_key = tmp_path / "id_ed25519"
+    public_key = tmp_path / "id_ed25519.pub"
+    private_key.touch()
+    public_key.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMock user@test\n")
+    mock_ensure_ssh_key.return_value = (private_key, public_key)
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "Linux computer 'computer-small' needs at least 8192 MiB of disk; run "
+            "'smolvm computer start --name computer-small --disk-size 8192'"
+        ),
+    ):
+        _build_browser_vm_config(
+            session_id="computer-small",
+            browser_config=BrowserSessionConfig(
+                session_id="computer-small",
+                backend="qemu",
+                mode="computer",
+                disk_size_mib=4096,
+            ),
+        )
+
+    mock_ensure_published_image.assert_not_called()
 
 
 @patch("smolvm.utils.ensure_ssh_key")

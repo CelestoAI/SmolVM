@@ -1309,6 +1309,7 @@ class SmolVM:
             data_dir=data_dir,
             socket_dir=socket_dir,
             ssh_key_path=ssh_key_path,
+            on_progress=on_progress,
         )
         try:
             sandbox.start(boot_timeout=resolved_boot_timeout, on_progress=on_progress)
