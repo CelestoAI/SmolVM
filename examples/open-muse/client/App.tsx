@@ -36,7 +36,7 @@ export function App() {
         source = new EventSource(`/api/conversations/${created.id}/events`);
         source.onmessage = () => void refresh(created.id);
         source.addEventListener("message.completed", () => void refresh(created.id));
-        for (const name of ["browser.starting", "browser.ready", "agent.started", "agent.completed", "agent.failed", "tool.failed", "approval.requested", "approval.resolved", "approval.invalidated", "control.changed", "cart.updated", "conversation.stopped"]) source.addEventListener(name, () => void refresh(created.id));
+        for (const name of ["browser.starting", "browser.ready", "agent.started", "agent.completed", "agent.failed", "tool.failed", "approval.requested", "approval.resolved", "approval.invalidated", "operation.approved", "operation.dispatched", "operation.completed", "operation.outcome_unknown", "popup.quarantined", "popup.adopted", "tab.navigated", "tab.closed", "control.changed", "cart.updated", "conversation.stopped"]) source.addEventListener(name, () => void refresh(created.id));
       } catch (caught) { if (!cancelled) setError(caught instanceof Error ? caught.message : "Could not start OpenMuse."); }
     })();
     return () => { cancelled = true; source?.close(); };
@@ -108,6 +108,24 @@ export function App() {
   const pausingControl = conversation?.controlOwner === "pause_requested";
   const status = conversation?.runState === "stopped" ? "Stopped" : interrupted ? "Interrupted" : humanControl ? "You have control" : pausingControl ? "Pausing agent control…" : busy ? "Agent working" : conversation?.runState === "waiting_for_approval" ? "Waiting for you" : "Ready";
   const activities = [...(conversation?.events ?? [])].reverse().filter((event) => !["message.completed", "conversation.created"].includes(event.type)).slice(0, 8);
+  const quarantinedPopups = (conversation?.tabs ?? []).filter((tab) => tab.owner === "quarantined");
+  const recoveryCopy = conversation?.recovery?.kind === "failed_before_execution"
+    ? {
+        eyebrow: "Action did not run",
+        title: "Choose how to proceed",
+        detail: `${conversation.recovery.summary ? `${conversation.recovery.summary} did not run. ` : "The approved website action did not run. "}Continue so OpenMuse can re-plan and request fresh approval, or start over.`,
+      }
+    : conversation?.recovery?.kind === "outcome_unknown"
+      ? {
+          eyebrow: "Action outcome unknown",
+          title: "Check before doing it again",
+          detail: `${conversation.recovery.summary ? `${conversation.recovery.summary} may have completed. ` : "The approved website action may have completed. "}Continue in a fresh computer to inspect the result without repeating it, or start over.`,
+        }
+      : {
+          eyebrow: "Work interrupted",
+          title: "Choose how to proceed",
+          detail: "OpenMuse stopped while working. The previous website action may have completed. Continue in a fresh computer, or start over.",
+        };
 
   return <main className="app-shell">
     <header className="topbar">
@@ -119,8 +137,9 @@ export function App() {
         <div className="chat-scroll">
           {!conversation?.messages.length && <div className="welcome"><div className="eyebrow">A computer coworker in a disposable VM</div><h1>What should we<br/>get done?</h1><p>Ask naturally. It can operate public websites in its own browser, while you watch, approve interactions, or take control.</p><button className="suggestion" onClick={() => void submit(SUGGESTION)}><span>Try a public web task</span><strong>{SUGGESTION}</strong><b>→</b></button></div>}
           <div className="messages">{conversation?.messages.map((message) => <article key={message.id} className={`message ${message.role}`}><div className="avatar">{message.role === "user" ? "Y" : "M"}</div><div><div className="message-role">{message.role === "user" ? "You" : "OpenMuse"}</div><p>{message.text}</p></div></article>)}</div>
-          {interrupted && <aside className="approval recovery"><div className="eyebrow">Work interrupted</div><h3>Choose how to proceed</h3><p>OpenMuse stopped while working. The previous website action may have completed. Continue in a fresh computer, or start over.</p><div><button disabled={recoveryPending} onClick={() => void continueConversation()}>Continue</button><button className="secondary" disabled={recoveryPending} onClick={() => void startOver()}>Start over</button></div></aside>}
-          {conversation?.pendingApproval && <aside className="approval"><div className="eyebrow">Approval required</div><h3>Allow this website interaction?</h3><p>{conversation.pendingApproval.reason}</p>{conversation.pendingApproval.pageUrl && <p>Current page: {conversation.pendingApproval.pageUrl}</p>}{operationDetails(conversation.pendingApproval.operation) && <p>{operationDetails(conversation.pendingApproval.operation)}</p>}{conversation.pendingApproval.fallbackCurrentPage && <p>If the script stops early, OpenMuse may read the current page’s main visible text.</p>}<div><button disabled={approvalPending} onClick={() => void resolve(true)}>{approvalPending ? "Running…" : "Approve once"}</button><button className="secondary" disabled={approvalPending} onClick={() => void resolve(false)}>Not now</button></div></aside>}
+          {interrupted && <aside className="approval recovery"><div className="eyebrow">{recoveryCopy.eyebrow}</div><h3>{recoveryCopy.title}</h3><p>{recoveryCopy.detail}</p><div><button disabled={recoveryPending} onClick={() => void continueConversation()}>Continue</button><button className="secondary" disabled={recoveryPending} onClick={() => void startOver()}>Start over</button></div></aside>}
+          {quarantinedPopups.map((tab) => <aside className="approval" key={tab.id}><div className="eyebrow">Popup quarantined</div><h3>Use this new tab?</h3><p>{tab.url}</p><div><button onClick={() => void api.adoptPopup(conversation!.id, tab.id).then(setConversation).catch((caught) => setError(caught instanceof Error ? caught.message : "Could not adopt the popup."))}>Adopt tab</button></div></aside>)}
+          {conversation?.pendingApproval && <aside className="approval"><div className="eyebrow">Approval required</div><h3>Allow this website interaction?</h3><p>{conversation.pendingApproval.reason}</p>{conversation.pendingApproval.pageUrl && <p>Current page: {conversation.pendingApproval.pageUrl}</p>}{operationDetails(conversation.pendingApproval.operation) && <p>{operationDetails(conversation.pendingApproval.operation)}</p>}<div><button disabled={approvalPending} onClick={() => void resolve(true)}>{approvalPending ? "Running…" : "Approve once"}</button><button className="secondary" disabled={approvalPending} onClick={() => void resolve(false)}>Not now</button></div></aside>}
           {busy && <div className="thinking"><i></i><i></i><i></i> Working in the browser</div>}
           <div ref={endRef}></div>
         </div>

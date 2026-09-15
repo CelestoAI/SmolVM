@@ -9,12 +9,12 @@ Status: APPROVED
 Mode: Builder
 Supersedes: `docs/designs/open-muse.md` for the browser-tool and network scope; the existing document remains authoritative for the chat UI, live viewer, lifecycle, and takeover flow.
 
-> **Current implementation:** The example has a structured operation fast path.
+> **Current implementation:** The example exposes only structured browser operations to the production model.
 >
 > - Bounded, redacted observation and scrolling run directly.
-> - Navigation, click, fill, select, and keypress requests require one-time approval bound to the current page and exact normalized arguments.
-> - Fully approved `browser_run` remains as a compatibility fallback. The guest runner is the process inside the disposable computer that executes browser code; the brokered page facade is the planned limited browser API that will enforce each operation.
-> - Structured navigation rejects literal local and private addresses. A public-only egress proxy—a network gateway that resolves and filters every outbound connection—is still required to enforce the policy across DNS, redirects, and subresources.
+> - Navigation, click, fill, select, and keypress requests require one-time approval bound to the current tab epoch, page, and exact normalized arguments. Approved operations have durable `approved`, `dispatched`, `completed`, and `outcome_unknown` states and are never replayed after uncertainty.
+> - Popups are quarantined until explicit adoption. Takeover pauses every owned tab. Raw `browser_run` remains internal and is not exposed to the production model because a real Playwright `Page` can reach its browser context; exposure waits for the brokered guest-side page facade described below.
+> - SmolVM now has private public-egress building blocks: connection-time DNS classification, pinned upstream connections, a per-session proxy, TAP restrictions, QEMU restricted forwarding, and Chromium proxy plumbing. The public API and OpenMuse switch remain gated on real Firecracker and QEMU attack-suite smokes and image release pins.
 
 ## Problem Statement
 
@@ -139,11 +139,11 @@ The UI remains the repository's `examples/open-muse` example, but the capability
 
 ## Next Steps
 
-1. Add the hardened public-web egress path and prove it against redirect, rebinding, IPv6, WebSocket, and service-worker fixtures.
-2. Add the in-VM Playwright runner and replace fixture-specific agent tools with `browser_run` in read-only mode.
-3. Generalize approvals to one-shot origin/tab/operation/target-bound records, then enable active interactions in ephemeral sessions.
-4. Add multi-tab ownership, bounded observations, secret masking, and uncertain-effect recovery.
-5. Design the dedicated profile artifact before evaluating authenticated Amazon.in and two unrelated sites without adapters.
+1. Build and smoke the private public-egress path against the complete attack matrix on Firecracker/TAP and QEMU/slirp, then publish and pin the tested browser images.
+2. Expose public-only networking in Python, TypeScript, OpenAPI, and capability negotiation together; switch OpenMuse from `open` to `public` without fallback.
+3. Replace the raw Playwright `Page` with the brokered guest-side facade before re-exposing `browser_run`.
+4. Add policy-bound uploads, quarantined downloads, and masked visual fallback on the proven tab and egress boundaries.
+5. Integrate the dedicated profile artifact with authenticated sessions only after the egress, masking, takeover, and artifact migration gates pass.
 
 ## What I noticed about how you think
 

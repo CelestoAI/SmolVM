@@ -1,14 +1,43 @@
 import { createHash, randomUUID } from "node:crypto";
 import { CATALOG, STOREFRONT_VERSION, formatInr, productById } from "./catalog.js";
 import { operationProgram, operationReason, redactBrowserOperation, validateBrowserOperation, type BrowserOperation } from "./browser-operations.js";
+import { approveOperation, completeOperation, dispatchOperation, markOutcomeUnknown, upsertOperation, type OperationRecord, type RecoveryState } from "./operation-lifecycle.js";
+import type { TabTarget } from "./browser-tabs.js";
 import type { ConversationContext, IntentGrant, PendingApproval } from "./types.js";
 
 type Emit = (type: string, payload: Record<string, unknown>, mutates?: boolean) => void;
-const BROWSER_ACTION_FAILED = "The website action did not finish. Type ‘retry using the current page’ in chat and press Enter.";
+type Persist = () => Promise<void>;
+type ApprovalResolution = { resumeAgent: false; recovery?: RecoveryState } | { resumeAgent: true; browserResult: unknown };
+const BROWSER_ACTION_FAILED = "The website action did not finish.";
 export const MAX_BROWSER_PROGRAM_BYTES = 18_000;
 
+function toolEventSummary(tool: string, completed = false): string {
+  if (tool === "browser_policy") return completed ? "Browser page check completed" : "Checking browser page";
+  if (tool === "browser_run") return completed ? "Approved browser program completed" : "Running approved browser program";
+  return completed ? "Browser operation completed" : "Running browser operation";
+}
+
+function approvalEventSummary(kind: PendingApproval["kind"]): string {
+  return kind === "checkout_review" ? "Checkout review approval requested" : "Browser operation approval requested";
+}
+
 export class ActionBroker {
-  constructor(private readonly context: ConversationContext, private readonly ensureBrowser: () => Promise<void>, private readonly emit: Emit) {}
+  constructor(
+    private readonly context: ConversationContext,
+    private readonly ensureBrowser: () => Promise<void>,
+    private readonly emit: Emit,
+    private readonly persist: Persist = async () => undefined,
+    private readonly resolveTabTarget?: () => TabTarget,
+  ) {}
+
+  private tabTarget(): TabTarget {
+    return this.resolveTabTarget?.() ?? {
+      id: "legacy-tab",
+      epoch: 1,
+      controlEpoch: this.context.controlEpoch ?? "legacy-control",
+      pageIndex: 0,
+    };
+  }
 
   private async ready() {
     if (this.context.controlOwner !== "agent") throw new Error("Browser control is paused. Wait until the user returns control.");
@@ -24,17 +53,21 @@ export class ActionBroker {
     return this.context.computer;
   }
 
-  async runProgram(program: string, interaction: boolean, summary: string, fallbackCurrentPage = false): Promise<Record<string, unknown>> {
+  async runProgram(program: string, interaction: boolean, summary: string): Promise<Record<string, unknown>> {
     await this.readyComputer();
     if (!program.trim() || Buffer.byteLength(program) > MAX_BROWSER_PROGRAM_BYTES) throw new Error(`Playwright program must contain 1 to ${MAX_BROWSER_PROGRAM_BYTES.toLocaleString("en-US")} bytes.`);
     void interaction;
     if (this.context.pendingApproval) return { approvalRequired: true, ...this.publicApproval(this.context.pendingApproval) };
-    const action = { kind: "browser_program", summary: summary.trim().slice(0, 240), fallbackCurrentPage, programHash: createHash("sha256").update(program).digest("hex") };
+    const tab = this.tabTarget();
+    const pageBinding = tab.pageBinding;
+    const pageUrl = tab.pageUrl;
+    const action = { kind: "browser_program", summary: summary.trim().slice(0, 240), programHash: createHash("sha256").update(program).digest("hex"), tabId: tab.id, tabEpoch: tab.epoch, pageBinding };
     const pending: PendingApproval = {
       kind: "browser_program", approvalId: `approval-${randomUUID()}`,
       actionDigest: createHash("sha256").update(JSON.stringify(action)).digest("hex"),
       reason: action.summary || "Allow this website interaction once?",
-      expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(), program, fallbackCurrentPage,
+      expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(), program, pageBinding, pageUrl,
+      tabId: tab.id, tabEpoch: tab.epoch, tabControlEpoch: tab.controlEpoch, tabPageIndex: tab.pageIndex,
     };
     this.context.pendingApproval = pending;
     this.context.runState = "waiting_for_approval";
@@ -44,7 +77,7 @@ export class ActionBroker {
       actionDigest: pending.actionDigest,
       reason: pending.reason,
       expiresAt: pending.expiresAt,
-      summary: pending.reason,
+      summary: approvalEventSummary(pending.kind),
     }, true);
     return { approvalRequired: true, ...this.publicApproval(pending) };
   }
@@ -53,13 +86,14 @@ export class ActionBroker {
     operation = validateBrowserOperation(operation);
     await this.readyComputer();
     const reason = operationReason(operation).slice(0, 240);
+    const tab = this.tabTarget();
     if (operation.kind === "observe" || operation.kind === "scroll") {
-      return (await this.executeProgram(operationProgram(operation), reason, false, `browser_${operation.kind}`)).result;
+      return (await this.executeProgram(operationProgram(operation), reason, `browser_${operation.kind}`, undefined, tab)).result;
     }
     if (this.context.pendingApproval) return { approvalRequired: true, ...this.publicApproval(this.context.pendingApproval) };
-    const { binding: pageBinding, display: pageUrl } = await this.currentPage();
+    const { binding: pageBinding, display: pageUrl } = await this.currentPage(tab);
     if (this.context.pendingApproval) return { approvalRequired: true, ...this.publicApproval(this.context.pendingApproval) };
-    const action = { kind: "browser_operation", operation, pageBinding };
+    const action = { kind: "browser_operation", operation, pageBinding, tabId: tab.id, tabEpoch: tab.epoch };
     const pending: PendingApproval = {
       kind: "browser_operation",
       approvalId: `approval-${randomUUID()}`,
@@ -69,6 +103,7 @@ export class ActionBroker {
       operation,
       pageUrl,
       pageBinding,
+      tabId: tab.id, tabEpoch: tab.epoch, tabControlEpoch: tab.controlEpoch, tabPageIndex: tab.pageIndex,
     };
     this.context.pendingApproval = pending;
     this.context.runState = "waiting_for_approval";
@@ -78,24 +113,44 @@ export class ActionBroker {
       actionDigest: pending.actionDigest,
       reason: pending.reason,
       expiresAt: pending.expiresAt,
-      summary: pending.reason,
+      summary: approvalEventSummary(pending.kind),
     }, true);
     return { approvalRequired: true, ...this.publicApproval(pending) };
   }
 
   private publicApproval(pending: PendingApproval): Record<string, unknown> {
-    return { kind: pending.kind, approvalId: pending.approvalId, actionDigest: pending.actionDigest, reason: pending.reason, expiresAt: pending.expiresAt, ...(pending.fallbackCurrentPage ? { fallbackCurrentPage: true } : {}), ...(pending.operation ? { operation: redactBrowserOperation(pending.operation), pageUrl: pending.pageUrl } : {}) };
+    return { kind: pending.kind, approvalId: pending.approvalId, actionDigest: pending.actionDigest, reason: pending.reason, expiresAt: pending.expiresAt, ...(pending.operation ? { operation: redactBrowserOperation(pending.operation), pageUrl: pending.pageUrl } : {}) };
   }
 
-  private async executeProgram(program: string, summary: string, fallbackCurrentPage: boolean, tool = "browser_run"): Promise<{ completed: boolean; result: Record<string, unknown> }> {
+  private async executeProgram(
+    program: string,
+    summary: string,
+    tool = "browser_run",
+    onDispatch?: () => Promise<void>,
+    target = this.tabTarget(),
+  ): Promise<{ completed: boolean; result: Record<string, unknown> }> {
     try {
       const controlEpoch = this.context.controlEpoch;
       const computer = await this.readyComputer();
       this.assertAgentControl(controlEpoch);
       const wrappedProgram = [
+        `page = pages[${target.pageIndex}];`,
+        "if (!page || page.isClosed()) throw new Error('The approved tab is no longer available.');",
         "page.setDefaultTimeout(10_000);",
         "page.setDefaultNavigationTimeout(15_000);",
         "const programResult = await (async () => {",
+        // Keep model-authored code scoped to the approved tab. Browser-wide
+        // handles would otherwise make quarantined popups reachable.
+        "const pages = [page];",
+        "const context = undefined;",
+        "const browser = undefined;",
+        ...(target.pageBinding === undefined ? [] : [
+          `const approvedPageBinding = ${JSON.stringify(target.pageBinding)};`,
+          "const dispatchPageRawUrl = page.url();",
+          "const dispatchPageParsedUrl = (() => { try { return new URL(dispatchPageRawUrl); } catch { return null; } })();",
+          "const dispatchPageBinding = dispatchPageParsedUrl && ['http:', 'https:'].includes(dispatchPageParsedUrl.protocol) ? `${dispatchPageParsedUrl.origin}${dispatchPageParsedUrl.pathname}${dispatchPageParsedUrl.search}${dispatchPageParsedUrl.hash}` : dispatchPageRawUrl;",
+          "if (dispatchPageBinding !== approvedPageBinding) throw new Error('The approved page changed before execution.');",
+        ]),
         program,
         "})();",
         "const rawUrl = page.url();",
@@ -104,52 +159,14 @@ export class ActionBroker {
         "return { programResult, page: { title: await page.title().catch(() => ''), url: safeUrl } };",
       ].join("\n");
       const encoded = Buffer.from(wrappedProgram).toString("base64url");
-      this.emit("tool.started", { tool, summary: summary || "Running Playwright in the disposable browser" });
+      await onDispatch?.();
+      void summary;
+      this.emit("tool.started", { tool, summary: toolEventSummary(tool) });
       const command = await computer.exec(["/usr/local/bin/smolvm-browser-runner", encoded], { timeoutMs: 35_000 });
       this.assertAgentControl(controlEpoch);
       if (!command.ok) {
         const programError = command.stderr.trim() || "The Playwright program failed inside the disposable browser.";
-        if (!fallbackCurrentPage) throw new Error(programError);
-        const snapshotProgram = [
-          "page = pages.find((candidate) => !candidate.isClosed()) || page;",
-          "const rawUrl = page.url();",
-          "const parsedUrl = (() => { try { return new URL(rawUrl); } catch { return null; } })();",
-          "const safeUrl = parsedUrl ? `${parsedUrl.origin}${parsedUrl.pathname}` : rawUrl;",
-          "const sensitivePath = parsedUrl ? /(?:^|\\/)(?:account|auth|billing|checkout|login|orders?|payments?|profile|signin|wallet)(?:\\/|$)/i.test(parsedUrl.pathname) : true;",
-          "const primary = page.locator('main, [role=main]');",
-          "const hasPrimary = await primary.count().catch(() => 0) > 0;",
-          "const rawText = sensitivePath || !hasPrimary ? '' : await primary.first().innerText({ timeout: 5_000 }).catch(() => '');",
-          "const visibleText = rawText",
-          "  .replace(/\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b/gi, '[email redacted]')",
-          "  .replace(/\\b(?:\\d[ -]*?){13,19}\\b/g, '[number redacted]')",
-          "  .slice(0, 12000);",
-          "const pageSnapshot = {",
-          "  title: await page.title().catch(() => ''),",
-          "  url: safeUrl,",
-          "  ...(hasPrimary ? { visibleText } : {}),",
-          "  ...(sensitivePath ? { textBlocked: true } : {}),",
-          "};",
-          "return pageSnapshot;",
-        ].join("\n");
-        const snapshot = await computer.exec(
-          ["/usr/local/bin/smolvm-browser-runner", Buffer.from(snapshotProgram).toString("base64url")],
-          { timeoutMs: 10_000 },
-        );
-        this.assertAgentControl(controlEpoch);
-        if (!snapshot.ok) throw new Error(programError);
-        const snapshotMarker = snapshot.stdout.split("\n").reverse().find((line: string) => line.startsWith("SMOLVM_BROWSER_RESULT="));
-        if (!snapshotMarker) throw new Error(programError);
-        const snapshotEnvelope = JSON.parse(snapshotMarker.slice("SMOLVM_BROWSER_RESULT=".length)) as { ok?: unknown; value?: unknown } | null;
-        const page = snapshotEnvelope?.ok === true
-          ? snapshotEnvelope.value as { title?: unknown; url?: unknown; visibleText?: unknown } | null
-          : null;
-        const hasUsefulPage = Boolean(page
-          && typeof page.url === "string" && page.url !== "about:blank"
-          && ((typeof page.title === "string" && page.title.trim())
-            || (typeof page.visibleText === "string" && page.visibleText.trim())));
-        if (!hasUsefulPage) throw new Error(programError);
-        this.emit("tool.completed", { tool, summary: "Website script stopped early; current page returned" });
-        return { completed: false, result: { completed: false, programResult: null, programError, page } };
+        throw new Error(programError);
       }
       const marker = command.stdout.split("\n").reverse().find((line: string) => line.startsWith("SMOLVM_BROWSER_RESULT="));
       if (!marker) throw new Error("The browser runner returned an invalid result.");
@@ -159,17 +176,16 @@ export class ActionBroker {
       if (!value || typeof value !== "object" || !("programResult" in value) || value.programResult === "undefined") {
         throw new Error("The Playwright program finished without returning data.");
       }
-      this.emit("tool.completed", { tool, summary: summary || "Playwright program completed" });
+      this.emit("tool.completed", { tool, summary: toolEventSummary(tool, true) });
       return { completed: true, result: value };
     } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      console.error(`OpenMuse website action failed: ${detail}`);
+      console.error("OpenMuse website action failed.");
       this.emit("tool.failed", { tool, summary: BROWSER_ACTION_FAILED });
       throw Object.assign(new Error(BROWSER_ACTION_FAILED), { status: 422, cause: error });
     }
   }
 
-  private async currentPage(): Promise<{ binding: string; display: string }> {
+  private async currentPage(target = this.tabTarget()): Promise<{ binding: string; display: string }> {
     const execution = await this.executeProgram([
       "const pageBindingRawUrl = page.url();",
       "const pageBindingParsedUrl = (() => { try { return new URL(pageBindingRawUrl); } catch { return null; } })();",
@@ -177,7 +193,7 @@ export class ActionBroker {
       "  binding: pageBindingParsedUrl && ['http:', 'https:'].includes(pageBindingParsedUrl.protocol) ? `${pageBindingParsedUrl.origin}${pageBindingParsedUrl.pathname}${pageBindingParsedUrl.search}${pageBindingParsedUrl.hash}` : pageBindingRawUrl,",
       "  display: pageBindingParsedUrl && ['http:', 'https:'].includes(pageBindingParsedUrl.protocol) ? `${pageBindingParsedUrl.origin}${pageBindingParsedUrl.pathname}` : pageBindingRawUrl,",
       "};",
-    ].join("\n"), "Checking the current page", false, "browser_policy");
+    ].join("\n"), "Checking the current page", "browser_policy", undefined, target);
     const current = execution.result.programResult as { binding?: unknown; display?: unknown } | undefined;
     if (typeof current?.binding !== "string" || typeof current.display !== "string") throw new Error("The browser runner did not report the current page.");
     return { binding: current.binding, display: current.display };
@@ -285,41 +301,121 @@ export class ActionBroker {
     approvalId: string,
     actionDigest: string,
     approved: boolean,
-  ): Promise<{ resumeAgent: false } | { resumeAgent: true; browserResult: unknown }> {
+  ): Promise<ApprovalResolution> {
     const pending = this.context.pendingApproval;
     if (!pending || pending.approvalId !== approvalId || pending.actionDigest !== actionDigest) throw Object.assign(new Error("That approval is no longer current."), { status: 409 });
-    if (Date.parse(pending.expiresAt) <= Date.now() || (pending.kind === "checkout_review" && pending.commerceRevision !== this.context.commerceRevision)) throw Object.assign(new Error("That approval expired or the page changed."), { status: 409 });
     delete this.context.pendingApproval;
-    let browserResult: unknown;
-    try {
-      if (approved) {
-        if (pending.kind === "browser_program") {
-          const execution = await this.executeProgram(pending.program!, pending.reason, pending.fallbackCurrentPage === true);
-          browserResult = execution.result;
-          this.emit("approval.resolved", {
-            approved: true,
-            summary: execution.completed
-              ? "Approved website interaction completed"
-              : "Approved website interaction stopped early; current page returned",
-          }, true);
-        } else if (pending.kind === "browser_operation") {
-          const execution = await this.executeProgram(operationProgram(pending.operation!, pending.pageBinding), pending.reason, false, `browser_${pending.operation!.kind}`);
-          browserResult = execution.result;
-          this.emit("approval.resolved", { approved: true, summary: "Approved browser operation completed" }, true);
-        } else {
-          const controlEpoch = this.context.controlEpoch;
-          const storefront = await this.ready();
-          this.assertAgentControl(controlEpoch);
-          await storefront.navigate("/review");
-          this.assertAgentControl(controlEpoch);
-          this.emit("approval.resolved", { approved: true, summary: "Opened order review; no order can be placed." }, true);
-        }
-      } else this.emit("approval.resolved", { approved: false, summary: "Website interaction was not approved." }, true);
-    } finally {
+    if (!approved) {
       this.context.runState = "idle";
+      this.emit("approval.resolved", { approved: false, summary: "Website interaction was not approved." }, true);
+      await this.persist();
+      return { resumeAgent: false };
     }
-    return (pending.kind === "browser_program" || pending.kind === "browser_operation") && approved
+
+    let operation = approveOperation(pending.kind, pending.reason);
+    this.context.operationJournal = upsertOperation(this.context.operationJournal, operation);
+    delete this.context.recovery;
+    this.emit("operation.approved", { operationId: operation.id, kind: operation.kind, summary: operation.summary }, true);
+    try {
+      await this.persist();
+    } catch {
+      return this.failBeforeExecution(operation, "APPROVED_CHECKPOINT_FAILED");
+    }
+
+    let browserResult: unknown;
+    let dispatchPersisted = false;
+    try {
+      if (Date.parse(pending.expiresAt) <= Date.now() || (pending.kind === "checkout_review" && pending.commerceRevision !== this.context.commerceRevision)) {
+        return this.failBeforeExecution(operation, "APPROVAL_STALE");
+      }
+      const tab = this.tabTarget();
+      if (pending.tabId !== undefined && (pending.tabId !== tab.id || pending.tabEpoch !== tab.epoch || pending.tabControlEpoch !== tab.controlEpoch)) {
+        return this.failBeforeExecution(operation, "TAB_CHANGED");
+      }
+      if ((pending.kind === "browser_operation" || pending.kind === "browser_program") && pending.pageBinding !== undefined) {
+        const current = await this.currentPage(tab);
+        if (current.binding !== pending.pageBinding) return this.failBeforeExecution(operation, "PAGE_CHANGED");
+      }
+
+      const dispatch = async () => {
+        // TODO(P2): replace this conservative host-call boundary with a two-phase guest-runner acknowledgement.
+        operation = dispatchOperation(operation);
+        this.context.operationJournal = upsertOperation(this.context.operationJournal, operation);
+        await this.persist();
+        dispatchPersisted = true;
+        this.emit("operation.dispatched", { operationId: operation.id, kind: operation.kind, summary: operation.summary }, true);
+      };
+
+      if (pending.kind === "browser_program") {
+        const execution = await this.executeProgram(pending.program!, pending.reason, "browser_run", dispatch, tab);
+        browserResult = execution.result;
+      } else if (pending.kind === "browser_operation") {
+        const execution = await this.executeProgram(
+          operationProgram(pending.operation!, pending.pageBinding),
+          pending.reason,
+          `browser_${pending.operation!.kind}`,
+          dispatch,
+          tab,
+        );
+        browserResult = execution.result;
+      } else {
+        const controlEpoch = this.context.controlEpoch;
+        const storefront = await this.ready();
+        this.assertAgentControl(controlEpoch);
+        await dispatch();
+        await storefront.navigate("/review");
+        this.assertAgentControl(controlEpoch);
+      }
+
+      operation = completeOperation(operation, "succeeded");
+      this.context.operationJournal = upsertOperation(this.context.operationJournal, operation);
+      try {
+        await this.persist();
+      } catch {
+        return this.outcomeUnknown({ ...operation, state: "dispatched", outcome: undefined }, "COMPLETION_CHECKPOINT_FAILED");
+      }
+      this.emit("operation.completed", { operationId: operation.id, outcome: "succeeded", summary: operation.summary }, true);
+      this.emit("approval.resolved", {
+        approved: true,
+        summary: pending.kind === "checkout_review" ? "Opened order review; no order can be placed." : "Approved website interaction completed",
+      }, true);
+      await this.persist().catch(() => undefined);
+    } catch (error) {
+      if (operation.state === "dispatched" && dispatchPersisted) {
+        return this.outcomeUnknown(operation, "EXECUTION_FAILED");
+      }
+      return this.failBeforeExecution(operation, "PRE_DISPATCH_FAILED");
+    } finally {
+      if (!(["interrupted", "stopping", "stopped"] as string[]).includes(this.context.runState)) this.context.runState = "idle";
+    }
+    return (pending.kind === "browser_program" || pending.kind === "browser_operation")
       ? { resumeAgent: true, browserResult }
       : { resumeAgent: false };
+  }
+
+  private async failBeforeExecution(operation: OperationRecord, errorCode: string): Promise<ApprovalResolution> {
+    const completed = completeOperation(operation, "failed_before_execution", errorCode);
+    this.context.operationJournal = upsertOperation(this.context.operationJournal, completed);
+    const stopping = this.context.runState === "stopping" || this.context.runState === "stopped";
+    if (!stopping) {
+      this.context.recovery = { kind: "failed_before_execution", operationId: completed.id, summary: completed.summary };
+      this.context.runState = "interrupted";
+    }
+    this.emit("operation.completed", { operationId: completed.id, outcome: "failed_before_execution", summary: completed.summary }, true);
+    await this.persist().catch(() => undefined);
+    return { resumeAgent: false, ...(stopping ? {} : { recovery: this.context.recovery }) };
+  }
+
+  private async outcomeUnknown(operation: OperationRecord, errorCode: string): Promise<ApprovalResolution> {
+    const unknown = markOutcomeUnknown(operation, errorCode);
+    this.context.operationJournal = upsertOperation(this.context.operationJournal, unknown);
+    const stopping = this.context.runState === "stopping" || this.context.runState === "stopped";
+    if (!stopping) {
+      this.context.recovery = { kind: "outcome_unknown", operationId: unknown.id, summary: unknown.summary };
+      this.context.runState = "interrupted";
+    }
+    this.emit("operation.outcome_unknown", { operationId: unknown.id, summary: unknown.summary }, true);
+    await this.persist().catch(() => undefined);
+    return { resumeAgent: false, ...(stopping ? {} : { recovery: this.context.recovery }) };
   }
 }

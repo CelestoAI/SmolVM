@@ -1,11 +1,15 @@
 export interface Message { id: string; role: "user" | "assistant"; text: string; createdAt: string }
 export interface BrowserOperation { kind: string; url?: string; direction?: string; key?: string; value?: string; label?: string; target?: { role: string; name: string } }
-export interface Approval { kind: "checkout_review" | "browser_program" | "browser_operation"; approvalId: string; actionDigest: string; reason: string; expiresAt: string; totalPriceMinor?: number; fallbackCurrentPage?: boolean; operation?: BrowserOperation; pageUrl?: string }
+export interface Approval { kind: "checkout_review" | "browser_program" | "browser_operation"; approvalId: string; actionDigest: string; reason: string; expiresAt: string; totalPriceMinor?: number; operation?: BrowserOperation; pageUrl?: string }
 export interface Event { id: number; type: string; createdAt: string; payload: Record<string, unknown> }
+export interface Recovery { kind: "failed_before_execution" | "outcome_unknown" | "interrupted"; operationId?: string; summary?: string }
+export interface BrowserTab { id: string; owner: "agent" | "paused" | "human" | "quarantined"; epoch: number; url: string; active: boolean; openerTabId?: string }
 export interface Conversation {
   id: string; stateVersion: number; controlOwner: "agent" | "pause_requested" | "human";
   runState: string; sessionLifecycle: string; messages: Message[]; pendingApproval?: Approval;
   viewerReady: boolean; events: Event[];
+  recovery?: Recovery;
+  tabs: BrowserTab[];
 }
 
 let csrfToken = "";
@@ -31,6 +35,7 @@ export const getConversation = (id: string) => request<Conversation>(`/api/conve
 export const sendMessage = (id: string, text: string) => request(`/api/conversations/${id}/messages`, "POST", { text });
 export const stopConversation = (id: string) => request(`/api/conversations/${id}/stop`, "POST", {});
 export const takeOver = (id: string) => request<{ controlEpoch: string }>(`/api/conversations/${id}/takeover`, "POST", {});
+export const adoptPopup = (id: string, tabId: string) => request<Conversation>(`/api/conversations/${id}/tabs/${tabId}/adopt`, "POST", {});
 export const resume = (id: string, controlEpoch: string) => request<Conversation>(`/api/conversations/${id}/resume`, "POST", { controlEpoch });
 export const continueConversation = (id: string) => request<Conversation>(`/api/conversations/${id}/continue`, "POST", {});
 export const startOver = (id: string) => request<Conversation>(`/api/conversations/${id}/start-over`, "POST", {});

@@ -3,6 +3,8 @@ import type { Agent } from "@earendil-works/pi-agent-core";
 import type { ComputerSessionClient, SmolVMClient } from "@celestoai/smolvm";
 import type { StorefrontController } from "./storefront.js";
 import type { BrowserOperation } from "./browser-operations.js";
+import type { OperationRecord, RecoveryState } from "./operation-lifecycle.js";
+import type { BrowserTab } from "./browser-tabs.js";
 
 export type ControlOwner = "agent" | "pause_requested" | "human";
 export type RunState = "idle" | "model_turn" | "tool_action" | "waiting_for_approval" | "interrupted" | "stopping" | "stopped" | "failed";
@@ -23,8 +25,9 @@ export interface PendingApproval {
   kind: "checkout_review" | "browser_program" | "browser_operation";
   approvalId: string; actionDigest: string; reason: string; expiresAt: string;
   totalPriceMinor?: number; cartReceipt?: string; commerceRevision?: number;
-  program?: string; fallbackCurrentPage?: boolean;
+  program?: string;
   operation?: BrowserOperation; pageUrl?: string; pageBinding?: string;
+  tabId?: string; tabEpoch?: number; tabControlEpoch?: string; tabPageIndex?: number;
 }
 export interface CartLine { productId: string; variantId: string; quantity: 1; unitPriceMinor: number }
 
@@ -33,6 +36,8 @@ export interface ConversationContext {
   sessionLifecycle: SessionLifecycle; messages: Message[]; events: ConversationEvent[];
   grants: IntentGrant[]; cart: CartLine[]; commerceRevision: number; observationId: string;
   pendingApproval?: PendingApproval; controlEpoch?: string; lastActivityAt: number;
+  operationJournal: OperationRecord[]; recovery?: RecoveryState;
+  tabs: Map<string, BrowserTab>; activeTabId?: string;
   agent?: Agent; smolvm?: SmolVMClient; computer?: ComputerSessionClient;
   playwright?: Browser; page?: Page; abortController?: AbortController;
   storefront?: StorefrontController; receipts: Map<string, string>;
