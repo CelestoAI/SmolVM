@@ -30,3 +30,19 @@ jobs:
         working-directory: examples/open-muse
       - run: npm run check
         working-directory: examples/open-muse
+      - run: npx playwright install --with-deps chromium
+        working-directory: examples/open-muse
+      - run: npm run test:e2e
+        working-directory: examples/open-muse
+      - run: npm run eval:artifact
+        working-directory: examples/open-muse
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: open-muse-test-artifacts
+          path: |
+            examples/open-muse/artifacts/open-muse-eval.json
+            examples/open-muse/artifacts/playwright-report
+            examples/open-muse/artifacts/playwright-results
+          if-no-files-found: ignore
+          retention-days: 14

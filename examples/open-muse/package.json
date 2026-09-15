@@ -9,9 +9,16 @@
     "build": "npm run clean && tsc -p tsconfig.server.json && vite build",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "start": "node dist/server/index.js",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.server.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.server.json && tsc --noEmit -p tsconfig.test.json",
     "test": "tsx --test test/*.test.ts",
-    "check": "npm run typecheck && npm test && npm run build"
+    "test:e2e": "playwright test",
+    "test:e2e:install": "playwright install chromium",
+    "eval:validate": "tsx eval/run-deterministic.ts",
+    "eval:artifact": "tsx eval/run-deterministic.ts --output artifacts/open-muse-eval.json",
+    "eval:live": "tsx eval/run-live.ts",
+    "eval:release-gate": "tsx eval/check-release-gate.ts",
+    "dev:e2e:harness": "tsx test/e2e/harness-server.ts",
+    "check": "npm run typecheck && npm test && npm run eval:validate && npm run build"
   },
   "dependencies": {
     "@celestoai/smolvm": "file:../../ts",
@@ -25,6 +32,7 @@
     "zod": "^4.6.2"
   },
   "devDependencies": {
+    "@playwright/test": "^1.55.0",
     "@types/http-proxy": "^1.17.16",
     "@types/node": "^20.19.17",
     "@types/react": "^19.1.12",
