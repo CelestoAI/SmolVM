@@ -105,6 +105,32 @@ def test_version_sensitive_special_ranges_are_always_denied(address: str) -> Non
     assert classify_public_address(address).allowed is False
 
 
+def test_every_denial_fixture_has_one_matching_public_control() -> None:
+    fixtures = json.loads(_FIXTURE_PATH.read_text())
+    names = [fixture["name"] for fixture in fixtures]
+    assert len(names) == len(set(names))
+
+    denials = {fixture["name"]: fixture for fixture in fixtures if not fixture["allowed"]}
+    controls: dict[str, list[dict]] = {}
+    for fixture in fixtures:
+        control_for = fixture.get("control_for")
+        if control_for is not None:
+            assert fixture["allowed"] is True
+            controls.setdefault(control_for, []).append(fixture)
+
+    assert set(controls) == set(denials)
+    for denial_name, denial in denials.items():
+        assert len(controls[denial_name]) == 1
+        control = controls[denial_name][0]
+        assert control["kind"] == denial["kind"]
+        assert control["hostname"] == denial["hostname"]
+        if denial["transport"] in {"direct_dns", "raw_socket"}:
+            assert control["transport"] in {"http", "https", "websocket", "websocket_secure"}
+        else:
+            assert control["transport"] == denial["transport"]
+        assert all(classify_public_address(answer).allowed for answer in control["answers"])
+
+
 def test_contract_attack_fixtures() -> None:
     fixtures = json.loads(_FIXTURE_PATH.read_text())
     for fixture in fixtures:
