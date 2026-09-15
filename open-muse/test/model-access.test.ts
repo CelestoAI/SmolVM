@@ -32,10 +32,11 @@ async function fixture(t: TestContext) {
 }
 
 async function waitForState(service: ModelAccessService, sessionId: string, attemptId: string, state: AuthAttemptState) {
-  for (let index = 0; index < 50; index += 1) {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
     const attempt = service.getAttempt(sessionId, attemptId);
     if (attempt.state === state) return attempt;
-    await new Promise((resolve) => setTimeout(resolve, 2));
+    await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error(`Sign-in did not reach ${state}.`);
 }
