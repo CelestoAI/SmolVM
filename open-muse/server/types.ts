@@ -11,7 +11,7 @@ export type RunState = "idle" | "model_turn" | "tool_action" | "waiting_for_appr
 export type SessionLifecycle = "absent" | "starting" | "ready" | "stopping" | "deleted" | "error";
 export type ModelAccessState = "ready" | "auth_required" | "model_unavailable";
 
-export interface Message { id: string; role: "user" | "assistant"; text: string; createdAt: string }
+export interface Message { id: string; role: "user" | "assistant"; text: string; createdAt: string; turnId?: string }
 export interface ConversationEvent {
   id: number; conversationId: string; stateVersion: number; createdAt: string; type: string;
   payload: Record<string, unknown>;
@@ -29,6 +29,7 @@ export interface PendingApproval {
   program?: string;
   operation?: ExecutableBrowserOperation; pageUrl?: string; pageBinding?: string;
   tabId?: string; tabEpoch?: number; tabControlEpoch?: string; tabPageIndex?: number;
+  turnId?: string; userMessageId?: string; traceStepId?: number;
 }
 export interface CartLine { productId: string; variantId: string; quantity: 1; unitPriceMinor: number }
 
@@ -50,6 +51,7 @@ export interface ConversationContext {
   grants: IntentGrant[]; cart: CartLine[]; commerceRevision: number; observationId: string;
   pendingApproval?: PendingApproval; controlEpoch?: string; lastActivityAt: number;
   operationJournal: OperationRecord[]; recovery?: RecoveryState;
+  recoveryTurn?: { turnId: string; userMessageId: string };
   tabs: Map<string, BrowserTab>; activeTabId?: string;
   browserRefs: Map<string, BrowserRef>;
   agent?: Agent; smolvm?: SmolVMClient; computer?: ComputerSessionClient;

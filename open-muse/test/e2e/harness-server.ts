@@ -10,6 +10,8 @@ import { createApp } from "../../server/index.js";
 import { ConversationManager, type RuntimeDependencies } from "../../server/manager.js";
 import { ConversationStateStore } from "../../server/state-store.js";
 import type { ConversationContext } from "../../server/types.js";
+import type { BrowserDriver } from "../../server/browser-driver.js";
+import type { ToolTraceAdapter } from "../../server/trace.js";
 
 type Scenario = "success" | "failed_before_execution" | "outcome_unknown";
 const appPort = Number(process.env.OPEN_MUSE_E2E_APP_PORT ?? 4318);
@@ -57,36 +59,68 @@ class ScriptedRuntime {
 
   dependencies(): Partial<RuntimeDependencies> {
     return {
-      createAgent: (_apiKey, _model, broker) => this.createAgent(broker),
+      createAgent: (_apiKey, _model, broker, _fixture, trace) => this.createAgent(broker, trace),
       createSmolVM: () => this.createSmolVM(),
       connectOverCDP: async () => new FakeBrowser() as unknown as Browser,
+      browserDriver: this.createBrowserDriver(),
     };
   }
 
-  private createAgent(broker: ActionBroker): Agent {
+  private createAgent(broker: ActionBroker, trace?: ToolTraceAdapter): Agent {
     this.agentCreations += 1;
     const state = { messages: [] as Array<Record<string, unknown>>, errorMessage: undefined as string | undefined };
     return {
       state,
       prompt: async (prompt: string) => {
         if (prompt.includes("may have completed")) {
-          await broker.runWebOperation({ kind: "observe" });
+          await this.traced(trace, "browser_observe", {}, () => broker.runWebOperation({ kind: "observe" }));
           state.messages.push({ role: "assistant", content: [{ type: "text", text: "I inspected the current page before deciding what to do next." }] });
           return;
         }
         if (prompt.includes("did not run")) {
-          await broker.runWebOperation({ kind: "navigate", url: "https://example.com" });
+          await this.traced(trace, "browser_navigate", { url: "https://example.com" }, () => broker.runWebOperation({ kind: "navigate", url: "https://example.com" }));
           return;
         }
         if (prompt.includes("browser runner returned")) {
           state.messages.push({ role: "assistant", content: [{ type: "text", text: "The scripted browser opened Example Domain." }] });
           return;
         }
-        await broker.runWebOperation({ kind: "navigate", url: "https://example.com" });
+        await this.traced(trace, "browser_navigate", { url: "https://example.com" }, () => broker.runWebOperation({ kind: "navigate", url: "https://example.com" }));
       },
       abort: () => undefined,
       waitForIdle: async () => undefined,
     } as unknown as Agent;
+  }
+
+  private traced<T>(trace: ToolTraceAdapter | undefined, tool: string, input: unknown, execute: () => Promise<T>): Promise<T> {
+    return trace ? trace.run(tool, input, execute) : execute();
+  }
+
+  private createBrowserDriver(): BrowserDriver {
+    return {
+      inspect: async () => {
+        this.policyChecks += 1;
+        const binding = this.scenario === "failed_before_execution" && this.policyChecks > 1
+          ? "https://example.org/changed"
+          : "https://example.com/";
+        return { binding, display: "https://example.com/" };
+      },
+      execute: async (_page, operation) => {
+        if (this.scenario === "outcome_unknown" && operation.kind === "navigate") throw new Error("scripted post-dispatch failure");
+        const observation = {
+          title: "Example Domain", url: "https://example.com/", pageBinding: "https://example.com/",
+          snapshot: '- document "Example Domain"', refs: [], truncated: false,
+        };
+        if (operation.kind === "observe") { this.observationCount += 1; return observation; }
+        if (operation.kind === "navigate") return { opened: operation.url, observation };
+        if (operation.kind === "scroll") return { scrolled: operation.direction, observation };
+        if (operation.kind === "extract") return { title: "Example Domain", url: "https://example.com/", text: "Example Domain" };
+        if (operation.kind === "click") return { clicked: true };
+        if (operation.kind === "fill") return { filled: true, outcome: "filled", fieldClass: "ordinary" };
+        if (operation.kind === "select") return { selected: operation.label };
+        return { pressed: operation.key };
+      },
+    };
   }
 
   private createSmolVM() {

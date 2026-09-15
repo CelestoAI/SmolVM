@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,6 +11,44 @@ import { ConversationManager, type RuntimeDependencies } from "../server/manager
 import type { ModelAccessService } from "../server/model-access.js";
 import { ConversationStateStore, serializeConversation } from "../server/state-store.js";
 import type { ConversationContext } from "../server/types.js";
+
+test("trace endpoints are session-bound and stale generations request a resync", async (t) => {
+  const manager = new ConversationManager("", "gpt-5-mini");
+  const created = await manager.create();
+  const server = createApp(manager);
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  t.after(() => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+  const unauthenticated = await fetch(`${origin}/api/conversations/${created.id}/traces`);
+  assert.equal(unauthenticated.status, 401);
+
+  const bootstrapResponse = await fetch(`${origin}/api/bootstrap`);
+  const cookie = bootstrapResponse.headers.get("set-cookie")!.split(";")[0]!;
+  const snapshotResponse = await fetch(`${origin}/api/conversations/${created.id}/traces`, { headers: { cookie } });
+  const snapshot = await snapshotResponse.json() as { streamId: string; cursor: number; turns: unknown[]; limits: Record<string, number> };
+  assert.equal(snapshotResponse.status, 200);
+  assert.deepEqual(snapshot.turns, []);
+  assert.ok(snapshot.limits.maxPayloadBytes > 0);
+
+  const nonLoopbackStatus = await new Promise<number>((resolve, reject) => {
+    const request = httpRequest({ hostname: "127.0.0.1", port: (server.address() as AddressInfo).port, path: `/api/conversations/${created.id}/traces`, headers: { cookie, host: "example.com" } }, (response) => {
+      response.resume();
+      response.on("end", () => resolve(response.statusCode ?? 0));
+    });
+    request.on("error", reject);
+    request.end();
+  });
+  assert.equal(nonLoopbackStatus, 403);
+
+  const missing = await fetch(`${origin}/api/conversations/not-this-conversation/traces`, { headers: { cookie } });
+  assert.equal(missing.status, 404);
+
+  const resync = await fetch(`${origin}/api/conversations/${created.id}/traces/events?after=old-stream%3A0`, { headers: { cookie } });
+  const body = await resync.text();
+  assert.match(body, /event: trace\.resync_required/);
+  assert.match(body, new RegExp(`id: ${snapshot.streamId}:${snapshot.cursor}`));
+});
 
 test("recovery routes continue interrupted work and start over with a clean conversation", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "open-muse-routes-"));
