@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Package release tag to publish a dashboard for (for example, v0.0.35)."
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -17,6 +23,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Set up Node.js # zizmor: ignore[cache-poisoning]
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -33,19 +40,70 @@ jobs:
 
       - name: Package dashboard dist
         env:
-          REF_NAME: ${{ github.ref_name }}
+          REF_NAME: ${{ inputs.release_tag || github.ref_name }}
         run: |
           tar -C ui -czf "smolvm-dashboard-ui-${REF_NAME}.tar.gz" dist
 
       - name: Upload release asset
         env:
           GH_TOKEN: ${{ github.token }}
-          REF_NAME: ${{ github.ref_name }}
+          REF_NAME: ${{ inputs.release_tag || github.ref_name }}
         run: |
+          asset="smolvm-dashboard-ui-${REF_NAME}.tar.gz"
+
           if ! gh release view "${REF_NAME}" >/dev/null 2>&1; then
             gh release create "${REF_NAME}" \
               --verify-tag \
               --title "${REF_NAME}" \
-              --generate-notes
+              --generate-notes \
+              "${asset}"
+            exit 0
           fi
-          gh release upload "${REF_NAME}" "smolvm-dashboard-ui-${REF_NAME}.tar.gz" --clobber
+
+          if gh release view "${REF_NAME}" --json assets \
+            --jq '.assets[].name' | grep -Fxq "${asset}"; then
+            echo "${asset} is already attached to ${REF_NAME}."
+            exit 0
+          fi
+
+          immutable=$(gh release view "${REF_NAME}" --json isImmutable --jq '.isImmutable')
+          if [ "${immutable}" != "true" ]; then
+            gh release upload "${REF_NAME}" "${asset}"
+            exit 0
+          fi
+
+          # A published immutable release cannot accept another asset. Publish
+          # the dashboard in its own immutable release instead. Passing the
+          # asset to `gh release create` makes gh upload it while the release is
+          # still a draft, before GitHub locks the published release.
+          dashboard_tag="dashboard-${REF_NAME}"
+          dashboard_asset="smolvm-dashboard-ui-${dashboard_tag}.tar.gz"
+          mv "${asset}" "${dashboard_asset}"
+
+          if gh release view "${dashboard_tag}" >/dev/null 2>&1; then
+            if ! gh release view "${dashboard_tag}" --json assets \
+              --jq '.assets[].name' | grep -Fxq "${dashboard_asset}"; then
+              sidecar_immutable=$(
+                gh release view "${dashboard_tag}" --json isImmutable --jq '.isImmutable'
+              )
+              if [ "${sidecar_immutable}" = "true" ]; then
+                echo "${dashboard_tag} is immutable but does not contain ${dashboard_asset}." >&2
+                exit 1
+              fi
+              gh release upload "${dashboard_tag}" "${dashboard_asset}"
+            fi
+
+            sidecar_draft=$(gh release view "${dashboard_tag}" --json isDraft --jq '.isDraft')
+            if [ "${sidecar_draft}" = "true" ]; then
+              gh release edit "${dashboard_tag}" --draft=false --latest=false
+            fi
+            echo "${dashboard_asset} is available from ${dashboard_tag}."
+            exit 0
+          fi
+
+          gh release create "${dashboard_tag}" \
+            --target "$(git rev-parse HEAD)" \
+            --title "Dashboard UI for ${REF_NAME}" \
+            --notes "Dashboard UI bundle for SmolVM ${REF_NAME}." \
+            --latest=false \
+            "${dashboard_asset}"
