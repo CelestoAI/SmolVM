@@ -1,6 +1,12 @@
 <div align="center">
 
-# Celesto Computer
+
+# Try OpenMuse -- a free and open-source alternative to GrokBot and Muse.
+
+![](./open-muse/banner-dark.png)
+
+
+# Celesto
 
 #### Secure, persistent computers that AI agents can use to browse, run code, and get real work done. 
 
