@@ -5,8 +5,10 @@ import {
   operationReason,
   redactBrowserOperation,
   validateBrowserOperation,
-  type BrowserOperation,
+  type ExecutableBrowserOperation,
 } from "../server/browser-operations.js";
+
+const LOCATOR_ID = "00000000-0000-4000-8000-000000000001";
 
 async function executeOperationProgram(program: string, page: unknown): Promise<unknown> {
   const execute = new Function("page", `return (async () => { ${program} })();`) as (value: unknown) => Promise<unknown>;
@@ -14,36 +16,38 @@ async function executeOperationProgram(program: string, page: unknown): Promise<
 }
 
 test("operation reasons describe every supported browser action", () => {
-  const cases: Array<[BrowserOperation, string]> = [
+  const cases: Array<[ExecutableBrowserOperation, string]> = [
     [{ kind: "observe" }, "Read the current page"],
+    [{ kind: "extract" }, "Extract the current page"],
     [{ kind: "scroll", direction: "up" }, "Scroll up"],
     [{ kind: "navigate", url: "https://example.com" }, "Open https://example.com"],
-    [{ kind: "click", target: { role: "button", name: "Save" } }, "Click button “Save”"],
-    [{ kind: "fill", target: { role: "textbox", name: "Email" }, value: "person@example.com" }, "Fill textbox “Email”"],
-    [{ kind: "select", target: { role: "combobox", name: "Size" }, label: "Medium" }, "Choose an option in combobox “Size”"],
+    [{ kind: "click", ref: "e1", target: { role: "button", name: "Save", nth: 0, locatorId: LOCATOR_ID } }, "Click button “Save”"],
+    [{ kind: "fill", ref: "e2", target: { role: "textbox", name: "Email", nth: 0, locatorId: LOCATOR_ID }, value: "person@example.com" }, "Fill textbox “Email”"],
+    [{ kind: "select", ref: "e3", target: { role: "combobox", name: "Size", nth: 0, locatorId: LOCATOR_ID }, label: "Medium" }, "Choose an option in combobox “Size”"],
     [{ kind: "keypress", key: "Enter" }, "Press Enter"],
   ];
 
   for (const [operation, expected] of cases) assert.equal(operationReason(operation), expected);
 });
 
-test("operation validation normalizes public URLs and accessible targets", () => {
+test("operation validation normalizes public URLs and refs", () => {
   assert.deepEqual(
     validateBrowserOperation({ kind: "navigate", url: "HTTPS://Example.COM/path?q=1#result" }),
     { kind: "navigate", url: "https://example.com/path?q=1#result" },
   );
   assert.deepEqual(
-    validateBrowserOperation({ kind: "click", target: { role: "button", name: "  Save  " } }),
-    { kind: "click", target: { role: "button", name: "Save" } },
+    validateBrowserOperation({ kind: "click", ref: " e1 " }),
+    { kind: "click", ref: "e1" },
   );
   assert.deepEqual(
-    validateBrowserOperation({ kind: "fill", target: { role: "searchbox", name: "  Search  " }, value: "muse" }),
-    { kind: "fill", target: { role: "searchbox", name: "Search" }, value: "muse" },
+    validateBrowserOperation({ kind: "fill", ref: "e2", value: "muse" }),
+    { kind: "fill", ref: "e2", value: "muse" },
   );
   assert.deepEqual(
-    validateBrowserOperation({ kind: "select", target: { role: "combobox", name: "  Size  " }, label: "  Medium  " }),
-    { kind: "select", target: { role: "combobox", name: "Size" }, label: "Medium" },
+    validateBrowserOperation({ kind: "select", ref: "e3", label: "  Medium  " }),
+    { kind: "select", ref: "e3", label: "Medium" },
   );
+  assert.deepEqual(validateBrowserOperation({ kind: "extract", scopeRef: " e4 " }), { kind: "extract", scopeRef: "e4" });
   assert.deepEqual(validateBrowserOperation({ kind: "scroll", direction: "down" }), { kind: "scroll", direction: "down" });
   assert.deepEqual(validateBrowserOperation({ kind: "keypress", key: "Escape" }), { kind: "keypress", key: "Escape" });
 });
@@ -87,84 +91,72 @@ test("operation validation rejects malformed, local, and sensitive actions", () 
   credentialedUrl.username = "test-user";
   assert.throws(() => validateBrowserOperation({ kind: "navigate", url: credentialedUrl.href }), /ordinary public HTTP or HTTPS/);
   assert.throws(() => validateBrowserOperation({ kind: "keypress", key: "Meta+A" } as never), /key is not available/);
-  assert.throws(() => validateBrowserOperation({ kind: "click", target: { role: "dialog", name: "Save" } } as never), /supported role/);
-  assert.throws(() => validateBrowserOperation({ kind: "click", target: { role: "button", name: "   " } }), /supported role/);
-  assert.throws(() => validateBrowserOperation({ kind: "fill", target: { role: "button", name: "Search" }, value: "muse" }), /fill only text/);
-  for (const name of ["Security code", "Expiry", "MM / YY", "Verification-code", "Verification_code"]) {
-    assert.throws(
-      () => validateBrowserOperation({ kind: "fill", target: { role: "textbox", name }, value: "test-value" }),
-      /Take control/,
-      name,
-    );
-  }
-  assert.throws(() => validateBrowserOperation({ kind: "fill", target: { role: "textbox", name: "Notes" }, value: "x".repeat(2_001) }), /too long/);
-  assert.throws(() => validateBrowserOperation({ kind: "select", target: { role: "textbox", name: "Size" }, label: "Medium" }), /only in a combobox/);
-  assert.throws(() => validateBrowserOperation({ kind: "select", target: { role: "combobox", name: "Size" }, label: "   " }), /option label is invalid/);
+  assert.throws(() => validateBrowserOperation({ kind: "extract", scopeRef: "section-1" }), /ref is invalid/);
+  assert.throws(() => validateBrowserOperation({ kind: "click", ref: "dialog-1" } as never), /ref is invalid/);
+  assert.throws(() => validateBrowserOperation({ kind: "click", ref: "e0" }), /ref is invalid/);
+  assert.throws(() => validateBrowserOperation({ kind: "fill", ref: "e1", value: "x".repeat(2_001) }), /too long/);
+  assert.throws(() => validateBrowserOperation({ kind: "select", ref: "e1", label: "   " }), /option label is invalid/);
   assert.throws(() => validateBrowserOperation({ kind: "unsupported" } as never), /not available/);
 });
 
 test("public browser operations redact fill values without changing execution data", () => {
-  const operation = { kind: "fill", target: { role: "textbox", name: "Email" }, value: "person@example.com" } as const;
+  const operation = { kind: "fill", ref: "e2", target: { role: "textbox", name: "Email", nth: 0, locatorId: LOCATOR_ID }, value: "person@example.com" } as const;
 
-  assert.deepEqual(redactBrowserOperation(operation), { kind: "fill", target: operation.target });
+  assert.deepEqual(redactBrowserOperation(operation), { kind: "fill", ref: "e2" });
   assert.equal(operation.value, "person@example.com");
-  assert.deepEqual(redactBrowserOperation({ kind: "click", target: { role: "button", name: "Save" } }), {
-    kind: "click", target: { role: "button", name: "Save" },
-  });
+  assert.deepEqual(redactBrowserOperation({ kind: "click", ref: "e1", target: { role: "button", name: "Save", nth: 0, locatorId: LOCATOR_ID } }), { kind: "click", ref: "e1" });
 });
 
 test("operation programs cover every action with page and field safety checks", () => {
   const expectedPage = "https://example.com/form?q=private#section";
   const programs = [
     operationProgram({ kind: "observe" }),
+    operationProgram({ kind: "extract", target: { role: "region", name: "Products", nth: 0, locatorId: LOCATOR_ID } }),
     operationProgram({ kind: "scroll", direction: "up" }),
     operationProgram({ kind: "navigate", url: "https://example.org/path?q=1" }, expectedPage),
-    operationProgram({ kind: "click", target: { role: "button", name: "Save" } }, expectedPage),
-    operationProgram({ kind: "fill", target: { role: "textbox", name: "Name" }, value: "Ada" }, expectedPage),
-    operationProgram({ kind: "select", target: { role: "combobox", name: "Size" }, label: "Medium" }, expectedPage),
+    operationProgram({ kind: "click", ref: "e1", target: { role: "button", name: "Save", nth: 0, locatorId: LOCATOR_ID } }, expectedPage),
+    operationProgram({ kind: "fill", ref: "e2", target: { role: "textbox", name: "Name", nth: 0, locatorId: LOCATOR_ID }, value: "Ada" }, expectedPage),
+    operationProgram({ kind: "select", ref: "e3", target: { role: "combobox", name: "Size", nth: 0, locatorId: LOCATOR_ID }, label: "Medium" }, expectedPage),
     operationProgram({ kind: "keypress", key: "ArrowDown" }, expectedPage),
   ];
 
   for (const program of programs) assert.doesNotThrow(() => new Function("page", `return (async () => { ${program} })();`));
-  assert.match(programs[0], /slice\(0, 12000\)/);
-  assert.match(programs[0], /nodes\.slice\(0, 40\)/);
+  assert.match(programs[0], /ariaSnapshot/);
+  assert.match(programs[0], /snapshotRefs\.length < 100/);
   assert.match(programs[0], /textBlocked/);
-  assert.match(programs[1], /mouse\.wheel\(0, -600\)/);
-  assert.match(programs[2], /currentPage !== "https:\/\/example\.com\/form\?q=private#section"/);
-  assert.match(programs[2], /page\.goto\("https:\/\/example\.org\/path\?q=1"\)/);
-  assert.match(programs[3], /target\.count\(\) !== 1/);
-  assert.match(programs[4], /fieldSafety\.type === 'password'/);
-  assert.match(programs[4], /target\.fill\("Ada"\)/);
-  assert.match(programs[5], /selectOption\(\{ label: "Medium" \}\)/);
-  assert.match(programs[6], /keyboard\.press\("ArrowDown"\)/);
+  assert.match(programs[1], /data-smolvm-browser-ref/);
+  assert.match(programs[1], /target\.innerText/);
+  assert.match(programs[2], /mouse\.wheel\(0, -600\)/);
+  assert.match(programs[3], /currentPage !== "https:\/\/example\.com\/form\?q=private#section"/);
+  assert.match(programs[3], /page\.goto\("https:\/\/example\.org\/path\?q=1"\)/);
+  assert.match(programs[4], /data-smolvm-browser-ref/);
+  assert.match(programs[4], /candidates\.count\(\) !== 1/);
+  assert.match(programs[5], /fieldSafety\.type === 'password'/);
+  assert.match(programs[5], /target\.fill\("Ada"\)/);
+  assert.match(programs[6], /selectOption\(\{ label: "Medium" \}\)/);
+  assert.match(programs[7], /keyboard\.press\("ArrowDown"\)/);
 });
 
 test("generated programs enforce page, target, observation, and field checks at runtime", async () => {
   const observed = await executeOperationProgram(operationProgram({ kind: "observe" }), {
     url: () => "https://example.com/catalog",
     title: async () => "Catalog",
-    locator: (selector: string) => selector === "main, [role=main]"
-      ? {
-          count: async () => 1,
-          first: () => ({ innerText: async () => "Email ada@example.com card 4111 1111 1111 1111" }),
-        }
-      : { evaluateAll: async () => [{ role: "button", name: "Buy" }] },
-  }) as { visibleText: string; controls: unknown[]; textBlocked?: boolean };
-  assert.equal(observed.visibleText, "Email [email redacted] card [number redacted]");
-  assert.deepEqual(observed.controls, [{ role: "button", name: "Buy" }]);
+    locator: () => ({ ariaSnapshot: async () => '- document "Catalog"\n  - text: Email ada@example.com card 4111 1111 1111 1111\n  - button "Buy"' }),
+    getByRole: () => ({ nth: () => ({ evaluate: async () => LOCATOR_ID }) }),
+  }) as { snapshot: string; refs: Array<{ ref: string; role: string; name: string }>; textBlocked?: boolean };
+  assert.match(observed.snapshot, /Email \[email redacted\] card \[number redacted\]/);
+  assert.deepEqual(observed.refs.map(({ locatorId: _locatorId, ...ref }) => ref), [{ ref: "e1", role: "document", name: "Catalog", publicName: "Catalog", nth: 0, actionable: false }, { ref: "e2", role: "button", name: "Buy", publicName: "Buy", nth: 0, actionable: true }]);
+  assert.equal(new Set(observed.refs.map((ref) => (ref as { locatorId: string }).locatorId)).size, 2);
+  for (const ref of observed.refs) assert.match((ref as { locatorId: string }).locatorId, /^[0-9a-f-]{36}$/i);
   assert.equal(observed.textBlocked, undefined);
 
   const sensitive = await executeOperationProgram(operationProgram({ kind: "observe" }), {
     url: () => "https://example.com/checkout",
     title: async () => "Checkout",
-    locator: () => ({
-      count: async () => 1,
-      first: () => ({ innerText: async () => { throw new Error("must not read"); } }),
-      evaluateAll: async () => { throw new Error("must not enumerate"); },
-    }),
-  }) as { visibleText: string; controls: unknown[]; textBlocked?: boolean };
-  assert.equal(sensitive.visibleText, "");
-  assert.deepEqual(sensitive.controls, []);
+    locator: () => ({ ariaSnapshot: async () => { throw new Error("must not read"); } }),
+  }) as { snapshot: string; refs: unknown[]; textBlocked?: boolean };
+  assert.equal(sensitive.snapshot, "");
+  assert.deepEqual(sensitive.refs, []);
   assert.equal(sensitive.textBlocked, true);
 
   let navigated = false;
@@ -178,24 +170,124 @@ test("generated programs enforce page, target, observation, and field checks at 
   assert.equal(navigated, false);
 
   await assert.rejects(
-    executeOperationProgram(operationProgram({ kind: "click", target: { role: "button", name: "Save" } }, "https://example.com/start"), {
+    executeOperationProgram(operationProgram({ kind: "click", ref: "e1", target: { role: "button", name: "Save", nth: 0, locatorId: LOCATOR_ID } }, "https://example.com/start"), {
       url: () => "https://example.com/start",
-      getByRole: () => ({ count: async () => 2, click: async () => undefined }),
+      locator: () => ({ and: () => ({ count: async () => 0, first: () => ({ click: async () => undefined }) }) }),
+      getByRole: () => ({}),
     }),
-    /target is no longer unique/i,
+    /target is no longer available/i,
   );
 
   let filled = false;
   await assert.rejects(
-    executeOperationProgram(operationProgram({ kind: "fill", target: { role: "textbox", name: "Name" }, value: "Ada" }, "https://example.com/start"), {
+    executeOperationProgram(operationProgram({ kind: "fill", ref: "e2", target: { role: "textbox", name: "Name", nth: 0, locatorId: LOCATOR_ID }, value: "Ada" }, "https://example.com/start"), {
       url: () => "https://example.com/start",
+      locator: () => ({
+        and: () => ({
+          count: async () => 1,
+          first: () => ({
+            evaluate: async () => ({ type: "password", autocomplete: "" }),
+            fill: async () => { filled = true; },
+          }),
+        }),
+      }),
       getByRole: () => ({
-        count: async () => 1,
-        evaluate: async () => ({ type: "password", autocomplete: "" }),
-        fill: async () => { filled = true; },
+        nth: () => ({
+          evaluate: async () => ({ type: "password", autocomplete: "" }),
+          fill: async () => { filled = true; },
+        }),
       }),
     }),
     /Take control/,
   );
   assert.equal(filled, false);
+});
+
+test("page capture reports Playwright failures and accurate truncation", async () => {
+  const failedObservation = await executeOperationProgram(operationProgram({ kind: "observe" }), {
+    url: () => "https://example.com/catalog",
+    title: async () => "Catalog",
+    locator: () => ({ ariaSnapshot: async () => { throw new Error("snapshot timeout"); } }),
+  }) as { captureFailed?: boolean; snapshot: string };
+  assert.equal(failedObservation.captureFailed, true);
+  assert.equal(failedObservation.snapshot, "");
+
+  const completeRedactedObservation = await executeOperationProgram(operationProgram({ kind: "observe" }), {
+    url: () => "https://example.com/catalog",
+    title: async () => "Catalog",
+    locator: () => ({ ariaSnapshot: async () => "- text: card 4111 1111 1111 1111" }),
+    getByRole: () => { throw new Error("text nodes do not receive refs"); },
+  }) as { truncated: boolean; snapshot: string };
+  assert.equal(completeRedactedObservation.truncated, false);
+  assert.match(completeRedactedObservation.snapshot, /\[number redacted\]/);
+
+  const truncatedObservation = await executeOperationProgram(operationProgram({ kind: "observe" }), {
+    url: () => "https://example.com/catalog",
+    title: async () => "Catalog",
+    locator: () => ({ ariaSnapshot: async () => `- text: ${"x".repeat(12_001)}` }),
+  }) as { truncated: boolean; snapshot: string };
+  assert.equal(truncatedObservation.truncated, true);
+  assert.equal(truncatedObservation.snapshot, "");
+
+  const failedExtraction = await executeOperationProgram(operationProgram({ kind: "extract" }), {
+    url: () => "https://example.com/catalog",
+    title: async () => "Catalog",
+    locator: () => ({ innerText: async () => { throw new Error("text timeout"); } }),
+  }) as { captureFailed?: boolean; text: string };
+  assert.equal(failedExtraction.captureFailed, true);
+  assert.equal(failedExtraction.text, "");
+
+  const truncatedExtraction = await executeOperationProgram(operationProgram({ kind: "extract" }), {
+    url: () => "https://example.com/catalog",
+    title: async () => "Catalog",
+    locator: () => ({ innerText: async () => "x".repeat(16_001) }),
+  }) as { text: string; truncated: boolean };
+  assert.equal(truncatedExtraction.text.length, 16_000);
+  assert.equal(truncatedExtraction.truncated, true);
+
+  const sensitiveExtraction = await executeOperationProgram(operationProgram({ kind: "extract" }), {
+    url: () => "https://example.com/account",
+    title: async () => "Account",
+    locator: () => ({ innerText: async () => { throw new Error("must not read"); } }),
+  }) as { text: string; textBlocked?: boolean; captureFailed?: boolean };
+  assert.equal(sensitiveExtraction.text, "");
+  assert.equal(sensitiveExtraction.textBlocked, true);
+  assert.equal(sensitiveExtraction.captureFailed, undefined);
+
+  const sensitiveFilenameObservation = await executeOperationProgram(operationProgram({ kind: "observe" }), {
+    url: () => "https://example.com/profile.html",
+    title: async () => "Profile",
+    locator: () => ({ ariaSnapshot: async () => { throw new Error("must not read"); } }),
+  }) as { snapshot: string; textBlocked?: boolean; captureFailed?: boolean };
+  assert.equal(sensitiveFilenameObservation.snapshot, "");
+  assert.equal(sensitiveFilenameObservation.textBlocked, true);
+  assert.equal(sensitiveFilenameObservation.captureFailed, undefined);
+
+  const sensitiveSuffixExtraction = await executeOperationProgram(operationProgram({ kind: "extract" }), {
+    url: () => "https://example.com/account-settings",
+    title: async () => "Account settings",
+    locator: () => ({ innerText: async () => { throw new Error("must not read"); } }),
+  }) as { text: string; textBlocked?: boolean; captureFailed?: boolean };
+  assert.equal(sensitiveSuffixExtraction.text, "");
+  assert.equal(sensitiveSuffixExtraction.textBlocked, true);
+  assert.equal(sensitiveSuffixExtraction.captureFailed, undefined);
+});
+
+test("marker-bound actions do not rebind by ordinal position", async () => {
+  let clicked = false;
+  await executeOperationProgram(operationProgram({
+    kind: "click",
+    ref: "e2",
+    target: { role: "button", name: "Add to cart", nth: 99, locatorId: LOCATOR_ID },
+  }, "https://example.com/catalog"), {
+    url: () => "https://example.com/catalog",
+    locator: () => ({
+      and: () => ({
+        count: async () => 1,
+        first: () => ({ click: async () => { clicked = true; } }),
+      }),
+    }),
+    getByRole: () => ({}),
+  });
+  assert.equal(clicked, true);
 });

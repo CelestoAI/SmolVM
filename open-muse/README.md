@@ -30,6 +30,10 @@ Open [http://127.0.0.1:5174](http://127.0.0.1:5174) and try:
 
 > Open https://example.com and tell me what the page says.
 
+To try Markdown extraction after opening a page, ask:
+
+> Give me the raw page data as Markdown.
+
 The first browser action may take a little while while SmolVM downloads and boots a fresh Linux desktop. Later runs reuse the verified image cache. The computer remains warm between chat turns and is deleted when you click **Stop** or stop the server.
 
 OpenMuse saves a small local conversation checkpoint in `.open-muse/state.json`. If the server stops during work, the chat returns in an interrupted state and waits for you to choose **Continue** or **Start over**. Continue always uses a fresh computer and never replays an old approval automatically. Set `OPEN_MUSE_STATE_PATH` to use a different checkpoint file.
@@ -49,7 +53,7 @@ On macOS, the runtime wrapper downloads the checksum-verified ARM64 Linux guest-
 - The display and Chromium automation address are grouped separately. OpenMuse streams `computer.display` to the right pane and uses `computer.browser` for Playwright.
 - The computer also exposes commands and files. OpenMuse uses `exec()` for its approved runner today; future tools can use `files` without creating another sandbox.
 - Pi normally chooses a structured browser operation. OpenMuse builds the corresponding Playwright itself so the model controls arguments, not executable code.
-- The broker runs bounded observation and scrolling directly. Active operations create a one-time approval bound to the current page, exact operation arguments, and, when applicable, a uniquely named target.
+- The broker runs bounded observation, Markdown extraction, and scrolling directly. Active operations create a one-time approval bound to the current page, exact operation arguments, and, when applicable, a short-lived element ref from the latest observation.
 - Raw `browser_run` is internal and is not available to the production model. It stays disabled until the guest exposes a browser interface that cannot reach other tabs or the wider browser context.
 - New popups stay quarantined until you explicitly adopt them. Each approval is bound to one owned tab and its current page.
 - The conversation diagnostics endpoint reports aggregate operation states, durations, and tab counts without including raw URLs, browser arguments, form values, or user text.
@@ -57,12 +61,13 @@ On macOS, the runtime wrapper downloads the checksum-verified ARM64 Linux guest-
 - The trusted Node server keeps the Chrome DevTools Protocol (CDP) automation address and raw VNC remote-display address private. It gives the client only a short-lived path to the noVNC viewer.
 - **Take control** pauses Pi across every owned tab and lets you use the browser directly. Return control before sending another chat message.
 
-Structured approvals authorize one browser operation, not a site-specific semantic promise such as an exact cart total. They expire after five minutes and fail if the tab, page, or named target changes.
+Structured approvals authorize one browser operation, not a site-specific semantic promise such as an exact cart total. They expire after five minutes and fail if the tab, page, or referenced element changes.
 
 OpenMuse records an approved operation before dispatch and marks it complete only after the browser returns a valid result. A validation or checkpoint failure before dispatch is shown as **Action did not run**. A timeout, crash, malformed result, or other failure after dispatch is shown as **Action outcome unknown**. Continue asks the agent to inspect or ask before acting again; it never retries the uncertain operation automatically.
 
 The initial general-web implementation uses SmolVM's open network mode. Structured navigation rejects local and private literal addresses, but DNS and subresource enforcement still require the approved public-only egress proxy before this example should be treated as a hardened browsing boundary.
 
+See [the browser snapshots, refs, and extraction design](../docs/designs/open-muse-browser-capability.md) for the current browser-tool contract.
 See [the approved general-web design](../docs/designs/open-muse-general-web.md) for the staged security model. The original [fixture-store design](../docs/designs/open-muse.md) documents the UI, lifecycle, and takeover flow.
 
 ## Offline fixture mode

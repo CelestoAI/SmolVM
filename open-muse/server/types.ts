@@ -2,7 +2,7 @@ import type { Browser, Page } from "playwright-core";
 import type { Agent } from "@earendil-works/pi-agent-core";
 import type { ComputerSessionClient, SmolVMClient } from "@celestoai/smolvm";
 import type { StorefrontController } from "./storefront.js";
-import type { BrowserOperation } from "./browser-operations.js";
+import type { BrowserTarget, ExecutableBrowserOperation } from "./browser-operations.js";
 import type { OperationRecord, RecoveryState } from "./operation-lifecycle.js";
 import type { BrowserTab } from "./browser-tabs.js";
 
@@ -26,10 +26,21 @@ export interface PendingApproval {
   approvalId: string; actionDigest: string; reason: string; expiresAt: string;
   totalPriceMinor?: number; cartReceipt?: string; commerceRevision?: number;
   program?: string;
-  operation?: BrowserOperation; pageUrl?: string; pageBinding?: string;
+  operation?: ExecutableBrowserOperation; pageUrl?: string; pageBinding?: string;
   tabId?: string; tabEpoch?: number; tabControlEpoch?: string; tabPageIndex?: number;
 }
 export interface CartLine { productId: string; variantId: string; quantity: 1; unitPriceMinor: number }
+
+export interface BrowserRef extends BrowserTarget {
+  ref: string;
+  publicName: string;
+  actionable: boolean;
+  observationId: string;
+  tabId: string;
+  tabEpoch: number;
+  controlEpoch: string;
+  pageBinding: string;
+}
 
 export interface ConversationContext {
   id: string; stateVersion: number; controlOwner: ControlOwner; runState: RunState;
@@ -38,6 +49,7 @@ export interface ConversationContext {
   pendingApproval?: PendingApproval; controlEpoch?: string; lastActivityAt: number;
   operationJournal: OperationRecord[]; recovery?: RecoveryState;
   tabs: Map<string, BrowserTab>; activeTabId?: string;
+  browserRefs: Map<string, BrowserRef>;
   agent?: Agent; smolvm?: SmolVMClient; computer?: ComputerSessionClient;
   playwright?: Browser; page?: Page; abortController?: AbortController;
   storefront?: StorefrontController; receipts: Map<string, string>;
