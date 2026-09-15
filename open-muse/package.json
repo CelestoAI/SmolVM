@@ -21,7 +21,7 @@
     "check": "npm run typecheck && npm test && npm run eval:validate && npm run build"
   },
   "dependencies": {
-    "@celestoai/smolvm": "file:../../ts",
+    "@celestoai/smolvm": "file:../ts",
     "@earendil-works/pi-agent-core": "0.85.1",
     "@earendil-works/pi-ai": "0.85.1",
     "http-proxy": "^1.18.1",

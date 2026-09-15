@@ -29,29 +29,29 @@ jobs:
           cache: npm
           cache-dependency-path: |
             ts/package-lock.json
-            examples/open-muse/package-lock.json
+            open-muse/package-lock.json
       - run: npm ci
         working-directory: ts
       - run: npm run build
         working-directory: ts
       - run: npm ci
-        working-directory: examples/open-muse
+        working-directory: open-muse
       - name: Run live eval 1
         run: npm run eval:live -- --output artifacts/live-eval-1.json
-        working-directory: examples/open-muse
+        working-directory: open-muse
       - name: Run live eval 2
         run: npm run eval:live -- --output artifacts/live-eval-2.json
-        working-directory: examples/open-muse
+        working-directory: open-muse
       - name: Run live eval 3
         run: npm run eval:live -- --output artifacts/live-eval-3.json
-        working-directory: examples/open-muse
+        working-directory: open-muse
       - name: Enforce release thresholds
         run: npm run eval:release-gate -- artifacts/live-eval-1.json artifacts/live-eval-2.json artifacts/live-eval-3.json
-        working-directory: examples/open-muse
+        working-directory: open-muse
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: open-muse-live-eval-${{ github.run_id }}
-          path: examples/open-muse/artifacts/live-eval-*.json
+          path: open-muse/artifacts/live-eval-*.json
           if-no-files-found: error
           retention-days: 30

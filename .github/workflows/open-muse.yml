@@ -21,28 +21,28 @@ jobs:
           cache: npm
           cache-dependency-path: |
             ts/package-lock.json
-            examples/open-muse/package-lock.json
+            open-muse/package-lock.json
       - run: npm ci
         working-directory: ts
       - run: npm run build
         working-directory: ts
       - run: npm ci
-        working-directory: examples/open-muse
+        working-directory: open-muse
       - run: npm run check
-        working-directory: examples/open-muse
+        working-directory: open-muse
       - run: npx playwright install --with-deps chromium
-        working-directory: examples/open-muse
+        working-directory: open-muse
       - run: npm run test:e2e
-        working-directory: examples/open-muse
+        working-directory: open-muse
       - run: npm run eval:artifact
-        working-directory: examples/open-muse
+        working-directory: open-muse
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: open-muse-test-artifacts
           path: |
-            examples/open-muse/artifacts/open-muse-eval.json
-            examples/open-muse/artifacts/playwright-report
-            examples/open-muse/artifacts/playwright-results
+            open-muse/artifacts/open-muse-eval.json
+            open-muse/artifacts/playwright-report
+            open-muse/artifacts/playwright-results
           if-no-files-found: ignore
           retention-days: 14

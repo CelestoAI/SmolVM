@@ -129,7 +129,7 @@ celerybeat.pid
 
 # Environments
 .env
-examples/open-muse/.env.local
+open-muse/.env.local
 examples/open-muse-research/.env.local
 .venv
 env/
@@ -226,4 +226,4 @@ notes/
 .gstack/
 
 # OpenMuse local conversation checkpoint
-examples/open-muse/.open-muse/
+open-muse/.open-muse/

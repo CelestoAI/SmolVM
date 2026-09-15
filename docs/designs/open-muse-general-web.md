@@ -136,7 +136,7 @@ CAPTCHAs, browser-attestation challenges, anti-bot blocks, DRM surfaces, and sit
 
 ## Distribution Plan
 
-The UI remains the repository's `examples/open-muse` example, but the capability requires first-class platform work: browser-image user separation, guest runner and egress-proxy packaging, runtime protocol negotiation, TypeScript SDK support, and a dedicated example workflow. Image releases follow the repository checklist: build and smoke each backend, publish the guest and rootfs artifacts, update the rootfs and guest-agent SHA pins, and only then tag the SmolVM package. CI builds the example, runs fixture/policy tests, and smokes the released image on every supported backend. Real-site tests remain opt-in local evaluations.
+The UI remains the repository's top-level `open-muse` app, but the capability requires first-class platform work: browser-image user separation, guest runner and egress-proxy packaging, runtime protocol negotiation, TypeScript SDK support, and a dedicated example workflow. Image releases follow the repository checklist: build and smoke each backend, publish the guest and rootfs artifacts, update the rootfs and guest-agent SHA pins, and only then tag the SmolVM package. CI builds the app, runs fixture/policy tests, and smokes the released image on every supported backend. Real-site tests remain opt-in local evaluations.
 
 ## Next Steps
 

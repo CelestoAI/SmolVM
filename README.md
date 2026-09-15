@@ -156,7 +156,7 @@ main().catch((error) => { console.error(error); process.exitCode = 1; });
 
 Run it with `npx tsx quickstart.ts`. See the [TypeScript guide](docs/typescript/index.md) for files, network rules, cancellation, diagnostics, CI, and the current alpha limits.
 
-For a free-flow chat experience with a live computer pane, try [OpenMuse](examples/open-muse/README.md). It uses Pi and an ephemeral, open-network browser with approval-gated interactions. An offline fixture mode is available for deterministic testing without a real account.
+For a free-flow chat experience with a live computer pane, try [OpenMuse](open-muse/README.md). It uses Pi and an ephemeral, open-network browser with approval-gated interactions. An offline fixture mode is available for deterministic testing without a real account.
 
 For a structured workflow, try [OpenMuse Research](examples/open-muse-research/README.md). It researches a three-day trip in a temporary VM and exports a sourced itinerary, budget, and ZIP packet.
 

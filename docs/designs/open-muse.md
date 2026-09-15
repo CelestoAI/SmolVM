@@ -23,7 +23,7 @@ The user sees the agent working in a real disposable computer, not a transcript 
 
 ## Constraints
 
-- Add a sibling developer-facing example, now `examples/open-muse/`; keep OpenMuse Research as the structured workflow.
+- Add a sibling developer-facing app, now `open-muse/`; keep OpenMuse Research as the structured workflow.
 - Keep Pi as the host-side agent harness. The model API key remains on the host and never enters the VM or browser profile.
 - Add a real typed browser-session surface to the TypeScript SDK and its private runtime bridge. Do not shell out to the SmolVM CLI from the example.
 - One conversation owns at most one browser-capable disposable SmolVM session. The first release is ephemeral; a named persistent profile is a second milestone after authenticated-browser isolation is proven.
@@ -351,7 +351,7 @@ Stop prevents future dispatch; it cannot undo an effect already committed by the
 ## Proposed Repository Layout
 
 ```text
-examples/open-muse/
+open-muse/
 ├── README.md
 ├── package.json
 ├── package-lock.json
@@ -401,7 +401,7 @@ src/smolvm/server/
 
 ## Success Criteria
 
-1. A developer can install the preview TypeScript package, configure `OPENAI_API_KEY`, start `examples/open-muse`, send a message, and see an ephemeral live SmolVM browser in the right pane.
+1. A developer can install the preview TypeScript package, configure `OPENAI_API_KEY`, start `open-muse`, send a message, and see an ephemeral live SmolVM browser in the right pane.
 2. The example uses Pi on the host and the public typed SmolVM API. It contains no CLI subprocess wrapper and no import from `ts/src`.
 3. On a warm run with the browser image cached on an Apple M-series host, the interval from broker dispatch timestamp to the first `browser.starting` SSE event is below two seconds; cold image download time is reported separately.
 4. The local fake-store test asks for a specific product under a price cap, compares options, and adds exactly one matching item without an extra approval.
@@ -420,7 +420,7 @@ src/smolvm/server/
 
 Ship the browser API in the next TypeScript preview package through the existing GitHub Release tarball channel. CI builds and packs `ts/`, installs the produced tarball into the example, and runs typecheck/unit tests so repository-relative imports cannot hide packaging errors. Real-VM smoke jobs remain gated to supported hardware-enabled runners.
 
-After that preview is published, pin `examples/open-muse/package.json` and its lockfile to the immutable release tarball, matching the honest install path used by OpenMuse Research. Add the example to the root and docs indexes with a clear distinction: OpenMuse Research is a bounded research workflow; OpenMuse is the conversational computer-use pattern.
+After that preview is published, pin `open-muse/package.json` and its lockfile to the immutable release tarball, matching the honest install path used by OpenMuse Research. Add the app to the root and docs indexes with a clear distinction: OpenMuse Research is a bounded research workflow; OpenMuse is the conversational computer-use pattern.
 
 Browser-image changes required for noVNC or the guest user split follow the repository’s image release checklist: build and smoke the image, publish it, update rootfs and guest-agent SHA pins, and only then tag the package release.
 
@@ -428,7 +428,7 @@ Browser-image changes required for noVNC or the guest user split follow the repo
 
 1. Prototype the authenticated same-origin viewer proxy, then extend the private bridge and packed TypeScript SDK with owned ephemeral live browser sessions and lifecycle events.
 2. Build the versioned, network-off fake storefront and its trusted adapter; implement the exact `ProposedAction`, grant transaction, malicious-effect handlers, and race tests.
-3. Build `examples/open-muse` around `ConversationManager`, Pi, the broker, SSE snapshots/replay, takeover, stop, and the approved two-pane UI.
+3. Build `open-muse` around `ConversationManager`, Pi, the broker, SSE snapshots/replay, takeover, stop, and the approved two-pane UI.
 4. Run the packed SDK real-VM smoke and the unassisted developer assignment. This completes milestone 1.
 5. Design-review and implement dedicated profiles, safe human login, network interception, and one real-site adapter before any Amazon demonstration.
 6. Add shell/files only if the guest isolation prototype proves profile and CDP separation on supported backends.

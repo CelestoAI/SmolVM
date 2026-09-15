@@ -34,10 +34,10 @@ The first browser action may take a little while while SmolVM downloads and boot
 
 OpenMuse saves a small local conversation checkpoint in `.open-muse/state.json`. If the server stops during work, the chat returns in an interrupted state and waits for you to choose **Continue** or **Start over**. Continue always uses a fresh computer and never replays an old approval automatically. Set `OPEN_MUSE_STATE_PATH` to use a different checkpoint file.
 
-This source-checkout example uses `file:../../ts` so it can exercise the unreleased computer API. Build that package once before installing if its `dist/` folder is absent:
+This source-checkout app uses `file:../ts` so it can exercise the unreleased computer API. Build that package once before installing if its `dist/` folder is absent:
 
 ```bash
-(cd ../../ts && npm install && npm run build)
+(cd ../ts && npm install && npm run build)
 ```
 
 On macOS, the runtime wrapper downloads the checksum-verified ARM64 Linux guest-agent binary pinned by this checkout. This avoids requiring a Linux cross-linker just to run the example.
@@ -63,7 +63,7 @@ OpenMuse records an approved operation before dispatch and marks it complete onl
 
 The initial general-web implementation uses SmolVM's open network mode. Structured navigation rejects local and private literal addresses, but DNS and subresource enforcement still require the approved public-only egress proxy before this example should be treated as a hardened browsing boundary.
 
-See [the approved general-web design](../../docs/designs/open-muse-general-web.md) for the staged security model. The original [fixture-store design](../../docs/designs/open-muse.md) documents the UI, lifecycle, and takeover flow.
+See [the approved general-web design](../docs/designs/open-muse-general-web.md) for the staged security model. The original [fixture-store design](../docs/designs/open-muse.md) documents the UI, lifecycle, and takeover flow.
 
 ## Offline fixture mode
 
