@@ -7,7 +7,7 @@ SmolVM gives an AI agent a disposable computer for running code, using a browser
 - [Install SmolVM](installation.md) — prepare your machine and check it is ready.
 - [Run a sandbox](guides/sandboxes.md) — create, use, and remove an isolated computer.
 - [CLI reference](reference/cli.md) — scan every current command and its purpose.
-- [OpenMuse example](../examples/open-muse/README.md) — chat with a Pi agent while watching its disposable browser.
+- [OpenMuse example](../open-muse/README.md) — chat with a Pi agent while watching its disposable browser.
 - [OpenMuse Research example](../examples/open-muse-research/README.md) — run a structured TypeScript research workflow inside a temporary SmolVM.
 
 ## Guides

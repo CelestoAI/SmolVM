@@ -49,7 +49,7 @@ export function resetAgentTurnLimit(agent: Agent): void {
 }
 
 export function createAgent(apiKey: string, modelId: string, broker: ActionBroker, fixtureStore = false): Agent {
-  if (!apiKey) throw new Error("OPENAI_API_KEY is missing. Add it to .env.local, then run cd examples/open-muse && npm run dev.");
+  if (!apiKey) throw new Error("OPENAI_API_KEY is missing. Add it to .env.local, then run cd open-muse && npm run dev.");
   const models = createModels();
   models.setProvider(openaiProvider());
   const model = models.getModel("openai", modelId);

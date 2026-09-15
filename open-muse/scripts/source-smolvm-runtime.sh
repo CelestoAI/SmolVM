@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 
 # A macOS linker cannot directly produce SmolVM's static Linux guest binary.
 # Use the release asset pinned and checksum-verified by this source checkout.
