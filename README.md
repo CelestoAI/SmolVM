@@ -8,9 +8,9 @@
 
 ### [Try OpenMuse](./open-muse/README.md)
 
-<p align="left">OpenMuse is an open-source personal AI agent that can browse the web, use apps, and keep working in the background — even when your laptop is off.</p>
+<p align="left">OpenMuse is an open-source computer coworker that browses public websites in its own disposable Linux desktop. Chat with it locally, watch it work, and approve actions before they change a page.</p>
 
-<p align="left">Every OpenMuse agent gets its own secure, persistent computer powered by Celesto, so it can continue working, keep state between tasks, and hand control back to you whenever needed. <b>OpenMuse is built on Celesto Computer, powered by SmolVM.</b></p>
+<p align="left">The current source preview runs on your computer and lets you take control of the desktop whenever a task needs you. <b>OpenMuse is powered by SmolVM.</b></p>
 
 
 </div>
