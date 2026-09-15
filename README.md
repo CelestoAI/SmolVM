@@ -1,24 +1,23 @@
 <div align="center">
 
+# Celesto AI
 
-# OpenMuse
-
-### Open-source personal AI agent with its own persistent computer.
+## Give AI agents secure, persistent computers
 
 ![](./open-muse/banner-dark.png)
 
-OpenMuse can browse the web, use apps, and run tasks for you in the background — even when your laptop is off.
+### [Try OpenMuse](./open-muse/README.md)
 
-Every OpenMuse agent gets its own secure, persistent computer powered by Celesto, so it can continue working, keep state between tasks, and hand control back to you whenever needed.
+<p align="left">OpenMuse is an open-source personal AI agent that can browse the web, use apps, and keep working in the background — even when your laptop is off.</p>
 
-Built as an open-source alternative to Muse and GrokBot.
+<p align="left">Every OpenMuse agent gets its own secure, persistent computer powered by Celesto, so it can continue working, keep state between tasks, and hand control back to you whenever needed. <b>OpenMuse is built on Celesto Computer, powered by SmolVM.</b></p>
 
+
+</div>
 
 ---
 
-# Celesto Computer
-
-#### Secure, persistent computers that AI agents can use to browse, run code, and get real work done. 
+<div align="center">
 
 
 <img src="https://ik.imagekit.io/gradsflow/celestoai/logo/celesto%20cover%20low_vFigbRaJI.png">
@@ -28,7 +27,7 @@ Built as an open-source alternative to Muse and GrokBot.
 [![License](https://img.shields.io/badge/License-Apache_2.0-orange.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-orange.svg)](https://www.python.org/downloads/)
 
-[Quick start](#quickstart) • [Examples](#examples) • [Features](https://docs.celesto.ai/smolvm/features) • [Performance](#performance) • [Docs](https://docs.celesto.ai) • [Discord](https://discord.gg/KNb5UkrAmm) 
+[Quick start](#quickstart) • [Examples](#examples) • [Features](https://docs.celesto.ai/smolvm/features) • [Performance](#performance) • [Docs](https://docs.celesto.ai) • [Discord](https://discord.gg/KNb5UkrAmm)
 
 </div>
 
