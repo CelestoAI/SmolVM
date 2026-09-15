@@ -4,8 +4,10 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { Agent } from "@earendil-works/pi-agent-core";
 import { createApp } from "../server/index.js";
-import { ConversationManager } from "../server/manager.js";
+import { ConversationManager, type RuntimeDependencies } from "../server/manager.js";
+import type { ModelAccessService } from "../server/model-access.js";
 import { ConversationStateStore, serializeConversation } from "../server/state-store.js";
 import type { ConversationContext } from "../server/types.js";
 
@@ -117,4 +119,101 @@ test("message and resume routes wait for their checkpoints before responding", a
   });
   assert.equal(resumeResponse.status, 200);
   assert.equal((await store.load())?.conversation.controlOwner, "agent");
+});
+
+test("model-access mutations require CSRF and reject unknown JSON fields", async (t) => {
+  const manager = new ConversationManager("", "gpt-5-mini");
+  let cancelled = false;
+  let started = false;
+  const modelAccess = {
+    snapshot: async () => ({ providers: [], disconnectingProviderIds: [] }),
+    cancelSessionAttempts: () => undefined,
+    close: () => undefined,
+    cancelAttempt: () => { cancelled = true; return { id: "attempt", providerId: "openai", state: "cancelled", createdAt: new Date().toISOString(), expiresAt: new Date().toISOString() }; },
+    startAttempt: () => { started = true; throw new Error("should not run"); },
+  } as unknown as ModelAccessService;
+  const server = createApp(manager, undefined, modelAccess);
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  t.after(() => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const bootstrapResponse = await fetch(`${origin}/api/bootstrap`);
+  const bootstrap = await bootstrapResponse.json() as { csrfToken: string };
+  const cookie = bootstrapResponse.headers.get("set-cookie")!.split(";")[0]!;
+
+  const missingCsrf = await fetch(`${origin}/api/auth-attempts/attempt`, { method: "DELETE", headers: { "content-type": "application/json", cookie, origin }, body: "{}" });
+  assert.equal(missingCsrf.status, 403);
+  assert.equal(cancelled, false);
+
+  const invalidBody = await fetch(`${origin}/api/auth-attempts`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-smol-csrf": bootstrap.csrfToken, cookie, origin },
+    body: JSON.stringify({ providerId: "openai", method: "api_key", unexpected: true }),
+  });
+  assert.equal(invalidBody.status, 400);
+  assert.deepEqual(await invalidBody.json(), { error: "Request body is invalid. Check the fields and try again.", code: "invalid_request" });
+  assert.equal(started, false);
+});
+
+test("model-access routes preserve session selection and expose the complete local lifecycle", async (t) => {
+  const now = new Date().toISOString();
+  const calls: string[] = [];
+  const attempt = { id: "attempt-positive", providerId: "test-provider", state: "waiting_for_input" as const, createdAt: now, expiresAt: now, prompt: { id: "prompt-positive", type: "secret" as const, message: "Enter key" } };
+  const modelAccess = {
+    models: {},
+    snapshot: async (selection?: { providerId: string; modelId: string }) => ({
+      providers: [{ id: "test-provider", name: "Test Provider", configured: true, source: "api_key" as const, methods: [{ type: "api_key" as const, label: "Use a key", enabled: true }], models: [{ id: "model-a", name: "Model A", recommended: true }, { id: "model-b", name: "Model B", recommended: false }] }],
+      selection,
+      disconnectingProviderIds: [],
+    }),
+    validateSelection: async (selection: { providerId: string; modelId: string }) => { calls.push(`validate:${selection.modelId}`); return { id: selection.modelId }; },
+    preflight: async (selection: { providerId: string; modelId: string }) => { calls.push(`preflight:${selection.modelId}`); return { id: selection.modelId }; },
+    startAttempt: () => { calls.push("start"); return attempt; },
+    getAttempt: () => attempt,
+    submitPrompt: (_session: string, _attempt: string, promptId: string, value: string) => { calls.push(`prompt:${promptId}:${value}`); return { ...attempt, state: "succeeded" as const, prompt: undefined }; },
+    cancelAttempt: () => { calls.push("cancel"); return { ...attempt, state: "cancelled" as const, prompt: undefined }; },
+    subscribe: (_session: string, _attempt: string, listener: (event: { id: number; type: string; snapshot: unknown }) => void) => {
+      listener({ id: 1, type: "auth.succeeded", snapshot: { ...attempt, state: "succeeded", prompt: undefined } });
+      return () => undefined;
+    },
+    logout: async (providerId: string) => { calls.push(`logout:${providerId}`); },
+    cancelSessionAttempts: () => undefined,
+    close: () => undefined,
+  } as unknown as ModelAccessService;
+  const fakeAgent = { state: { messages: [] }, abort: () => undefined, waitForIdle: async () => undefined } as unknown as Agent;
+  const runtime = { createAgentWithModel: () => fakeAgent } satisfies Partial<RuntimeDependencies>;
+  const manager = new ConversationManager("", "legacy", false, undefined, undefined, runtime, modelAccess);
+  const server = createApp(manager, undefined, modelAccess);
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  t.after(() => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const bootstrapResponse = await fetch(`${origin}/api/bootstrap`);
+  const bootstrap = await bootstrapResponse.json() as { csrfToken: string; modelAccess: { selection?: unknown } };
+  const headers = { "content-type": "application/json", "x-smol-csrf": bootstrap.csrfToken, cookie: bootstrapResponse.headers.get("set-cookie")!.split(";")[0]!, origin };
+
+  const selection = { providerId: "test-provider", modelId: "model-a" };
+  assert.equal((await fetch(`${origin}/api/model-access`, { headers: { cookie: headers.cookie } })).status, 200);
+  assert.equal((await fetch(`${origin}/api/model-access/selection`, { method: "PUT", headers, body: JSON.stringify(selection) })).status, 200);
+  const selectedAccess = await (await fetch(`${origin}/api/model-access`, { headers: { cookie: headers.cookie } })).json() as { selection: typeof selection };
+  assert.deepEqual(selectedAccess.selection, selection);
+
+  const createdResponse = await fetch(`${origin}/api/conversations`, { method: "POST", headers, body: "{}" });
+  const created = await createdResponse.json() as { id: string; modelId: string };
+  assert.equal(created.modelId, "model-a");
+  assert.equal(createdResponse.status, 201);
+
+  const started = await fetch(`${origin}/api/auth-attempts`, { method: "POST", headers, body: JSON.stringify({ providerId: "test-provider", method: "api_key" }) });
+  assert.equal(started.status, 201);
+  assert.equal((await fetch(`${origin}/api/auth-attempts/${attempt.id}`, { headers: { cookie: headers.cookie } })).status, 200);
+  assert.equal((await fetch(`${origin}/api/auth-attempts/${attempt.id}/prompts/${attempt.prompt.id}`, { method: "POST", headers, body: JSON.stringify({ value: "secret" }) })).status, 200);
+  const eventResponse = await fetch(`${origin}/api/auth-attempts/${attempt.id}/events`, { headers: { cookie: headers.cookie } });
+  assert.match(await eventResponse.text(), /event: auth\.succeeded/);
+  assert.equal((await fetch(`${origin}/api/auth-attempts/${attempt.id}`, { method: "DELETE", headers, body: "{}" })).status, 202);
+
+  const switchedResponse = await fetch(`${origin}/api/conversations/${created.id}/model-access`, { method: "PUT", headers, body: JSON.stringify({ providerId: "test-provider", modelId: "model-b" }) });
+  assert.equal(switchedResponse.status, 200);
+  assert.equal(((await switchedResponse.json()) as { modelId: string }).modelId, "model-b");
+  assert.equal((await fetch(`${origin}/api/model-access/providers/test-provider`, { method: "DELETE", headers, body: "{}" })).status, 200);
+  assert.equal((await fetch(`${origin}/api/conversations/${created.id}/model-access/reconnect`, { method: "POST", headers, body: "{}" })).status, 200);
+
+  assert.deepEqual(calls, ["validate:model-a", "validate:model-a", "start", "prompt:prompt-positive:secret", "cancel", "preflight:model-b", "logout:test-provider", "preflight:model-b"]);
 });

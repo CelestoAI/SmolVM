@@ -3,7 +3,7 @@ import { SmolVM } from "@celestoai/smolvm";
 import { chromium } from "playwright-core";
 import { ActionBroker } from "./broker.js";
 import { redactBrowserOperation, validateBrowserOperation } from "./browser-operations.js";
-import { assistantText, createAgent, resetAgentTurnLimit } from "./agent.js";
+import { assistantText, createAgent, createAgentWithModel, resetAgentTurnLimit } from "./agent.js";
 import { groundAddIntent } from "./intent.js";
 import { ConversationStateStore, serializeConversation, type StoredConversation } from "./state-store.js";
 import { installStorefront } from "./storefront.js";
@@ -12,11 +12,13 @@ import { bumpTab, createTab, publicTabUrl, type BrowserTab, type TabTarget } fro
 import { conversationDiagnostics } from "./diagnostics.js";
 import { convertPageToMarkdown } from "./markdown.js";
 import type { ConversationContext, ConversationEvent, Message } from "./types.js";
+import { ModelAccessService, sanitizeModelAccessError, type ModelSelection } from "./model-access.js";
 
 type Listener = (event: ConversationEvent) => void;
 
 export interface RuntimeDependencies {
   createAgent: typeof createAgent;
+  createAgentWithModel: typeof createAgentWithModel;
   createSmolVM: () => SmolVM;
   connectOverCDP: typeof chromium.connectOverCDP;
   convertPageToMarkdown: typeof convertPageToMarkdown;
@@ -24,6 +26,7 @@ export interface RuntimeDependencies {
 
 const DEFAULT_RUNTIME_DEPENDENCIES: RuntimeDependencies = {
   createAgent,
+  createAgentWithModel,
   createSmolVM: () => new SmolVM({ createTimeoutMs: 180_000 }),
   connectOverCDP: chromium.connectOverCDP.bind(chromium),
   convertPageToMarkdown,
@@ -40,6 +43,7 @@ export class ConversationManager {
   };
   private viewerNonces = new Map<string, { conversationId: string; expiresAt: number }>();
   private replayConversationOnNextTurn = false;
+  private modelAccessTransition = false;
   private readonly runtime: RuntimeDependencies;
 
   constructor(
@@ -49,6 +53,7 @@ export class ConversationManager {
     private readonly stateStore?: ConversationStateStore,
     restored?: StoredConversation,
     runtime: Partial<RuntimeDependencies> = {},
+    private readonly modelAccess?: ModelAccessService,
   ) {
     this.runtime = { ...DEFAULT_RUNTIME_DEPENDENCIES, ...runtime };
     if (restored) {
@@ -63,9 +68,11 @@ export class ConversationManager {
     fixtureStore = false,
     stateStore = new ConversationStateStore(),
     runtime: Partial<RuntimeDependencies> = {},
+    modelAccess?: ModelAccessService,
   ): Promise<ConversationManager> {
     const restored = await stateStore.load();
-    const manager = new ConversationManager(apiKey, model, fixtureStore, stateStore, restored, runtime);
+    const manager = new ConversationManager(apiKey, model, fixtureStore, stateStore, restored, runtime, modelAccess);
+    if (restored && modelAccess) await manager.reconcileModelAccess();
     if (restored) await manager.checkpoint();
     return manager;
   }
@@ -74,7 +81,7 @@ export class ConversationManager {
     return this.context && !["stopped", "failed"].includes(this.context.runState) ? this.context.id : undefined;
   }
 
-  async create(): Promise<ReturnType<ConversationManager["snapshot"]>> {
+  async create(selection?: ModelSelection): Promise<ReturnType<ConversationManager["snapshot"]>> {
     if (this.context && !["stopped", "failed"].includes(this.context.runState)) throw Object.assign(new Error("Stop the active conversation before starting another."), { status: 409 });
     if (this.context?.runState === "failed") {
       await this.activeAction;
@@ -82,8 +89,12 @@ export class ConversationManager {
     }
     this.listeners.clear();
     this.replayConversationOnNextTurn = false;
+    if (this.modelAccess && !selection) throw Object.assign(new Error("Choose a model before starting a conversation."), { status: 409, code: "selection_required" });
+    const binding = selection ?? { providerId: "openai", modelId: this.model };
+    if (this.modelAccess) await this.modelAccess.validateSelection(binding);
     this.context = {
       id: randomUUID(), stateVersion: 1, controlOwner: "agent", controlEpoch: randomBytes(18).toString("base64url"), runState: "idle", sessionLifecycle: "absent",
+      providerId: binding.providerId, modelId: binding.modelId, modelAccessState: "ready",
       messages: [], events: [], grants: [], cart: [], receipts: new Map(), commerceRevision: 0,
       observationId: "", browserRefs: new Map(), operationJournal: [], tabs: new Map(), lastActivityAt: Date.now(),
     };
@@ -97,6 +108,7 @@ export class ConversationManager {
     return {
       id: context.id, stateVersion: context.stateVersion, controlOwner: context.controlOwner,
       runState: context.runState, sessionLifecycle: context.sessionLifecycle,
+      providerId: context.providerId, modelId: context.modelId, modelAccessState: context.modelAccessState,
       messages: context.messages, grants: context.grants.map(({ id: grantId, state, expiresAt }) => ({ id: grantId, state, expiresAt })),
       pendingApproval: context.pendingApproval ? (({ program: _program, pageBinding: _pageBinding, tabControlEpoch: _tabControlEpoch, tabPageIndex: _tabPageIndex, ...approval }) => ({
         ...approval,
@@ -130,6 +142,8 @@ export class ConversationManager {
 
   async send(id: string, text: string): Promise<{ accepted: true; stateVersion: number }> {
     const context = this.require(id);
+    if (this.modelAccessTransition) throw Object.assign(new Error("Wait for the current model change to finish, then try again."), { status: 409, code: "model_access_busy" });
+    if (context.modelAccessState !== "ready") throw Object.assign(new Error("Reconnect the model provider before sending another message."), { status: 409, code: "auth_required" });
     if (this.activeApproval) throw Object.assign(new Error("Wait for the approved website action to finish, then send the message again."), { status: 409 });
     if (context.runState === "stopped" || context.runState === "stopping") throw Object.assign(new Error("This conversation is stopped. Start a new one to continue."), { status: 409 });
     if (context.runState === "interrupted") throw Object.assign(new Error("This conversation was interrupted. Select Continue or Start over."), { status: 409 });
@@ -161,6 +175,7 @@ export class ConversationManager {
 
   async continueInterrupted(id: string): Promise<ReturnType<ConversationManager["snapshot"]>> {
     const context = this.require(id);
+    if (this.modelAccessTransition) throw Object.assign(new Error("Wait for the current model change to finish, then try again."), { status: 409, code: "model_access_busy" });
     if (context.runState !== "interrupted") throw Object.assign(new Error("This conversation is not waiting to continue."), { status: 409 });
     context.runState = "model_turn";
     context.controlOwner = "agent";
@@ -182,11 +197,93 @@ export class ConversationManager {
   }
 
   async startOver(id: string): Promise<ReturnType<ConversationManager["snapshot"]>> {
-    this.require(id);
+    const context = this.require(id);
+    if (this.modelAccessTransition) throw Object.assign(new Error("Wait for the current model change to finish, then try again."), { status: 409, code: "model_access_busy" });
+    const binding = { providerId: context.providerId, modelId: context.modelId };
     await this.stop(id);
     await this.activeAction?.catch(() => undefined);
     await this.turnQueue.catch(() => undefined);
-    return this.create();
+    return this.create(binding);
+  }
+
+  async disconnectProvider(providerId: string): Promise<void> {
+    if (this.modelAccessTransition) throw Object.assign(new Error("Wait for the current model change to finish, then try again."), { status: 409, code: "model_access_busy" });
+    this.modelAccessTransition = true;
+    const context = this.context;
+    try {
+      if (context?.providerId === providerId && !["stopped", "failed"].includes(context.runState)) {
+        context.agent?.abort();
+        if (context.agent) {
+          let timeout: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await Promise.race([
+              context.agent.waitForIdle(),
+              new Promise<never>((_resolve, reject) => { timeout = setTimeout(() => reject(Object.assign(new Error("OpenMuse could not stop the current model request. Try disconnecting again."), { status: 409, code: "logout_timeout" })), 10_000); }),
+            ]);
+          } finally { if (timeout) clearTimeout(timeout); }
+        }
+        context.modelAccessState = "auth_required";
+        context.runState = context.runState === "stopping" ? "stopping" : "idle";
+        context.stateVersion += 1;
+        this.emit("model.auth_required", { summary: "Reconnect the model provider to continue" }, false);
+        await this.checkpoint();
+      }
+      await this.modelAccess?.logout(providerId);
+    } finally {
+      this.modelAccessTransition = false;
+    }
+  }
+
+  async reconnectProvider(id: string): Promise<ReturnType<ConversationManager["snapshot"]>> {
+    const context = this.require(id);
+    if (!this.modelAccess) throw Object.assign(new Error("Model account setup is not available."), { status: 409, code: "model_access_unavailable" });
+    if (this.modelAccessTransition) throw Object.assign(new Error("Wait for the current model change to finish, then try again."), { status: 409, code: "model_access_busy" });
+    this.modelAccessTransition = true;
+    try {
+      await this.modelAccess.preflight({ providerId: context.providerId, modelId: context.modelId });
+      context.modelAccessState = "ready";
+      context.stateVersion += 1;
+      this.emit("model.reconnected", { summary: "Model provider reconnected" }, false);
+      await this.checkpoint();
+      return this.snapshot(id);
+    } finally {
+      this.modelAccessTransition = false;
+    }
+  }
+
+  async switchModel(id: string, selection: ModelSelection): Promise<ReturnType<ConversationManager["snapshot"]>> {
+    const context = this.require(id);
+    if (!this.modelAccess) throw Object.assign(new Error("Model account setup is not available."), { status: 409, code: "model_access_unavailable" });
+    if (!["idle", "interrupted"].includes(context.runState)) throw Object.assign(new Error("Wait for the current work to finish before switching models."), { status: 409, code: "conversation_busy" });
+    if (this.modelAccessTransition) throw Object.assign(new Error("Wait for the current model change to finish, then try again."), { status: 409, code: "model_access_busy" });
+    this.modelAccessTransition = true;
+    try {
+      const model = await this.modelAccess.preflight(selection);
+      const replacement = this.runtime.createAgentWithModel(this.modelAccess.models, model, this.broker(context), this.fixtureStore);
+      const previous = { providerId: context.providerId, modelId: context.modelId, modelAccessState: context.modelAccessState, agent: context.agent };
+      context.agent?.abort();
+      if (context.agent) await context.agent.waitForIdle();
+      context.providerId = selection.providerId;
+      context.modelId = selection.modelId;
+      context.modelAccessState = "ready";
+      context.agent = replacement;
+      context.stateVersion += 1;
+      this.emit("model.switched", { summary: "Conversation model changed" }, false);
+      try { await this.checkpoint(); }
+      catch (error) {
+        replacement.abort();
+        context.providerId = previous.providerId;
+        context.modelId = previous.modelId;
+        context.modelAccessState = previous.modelAccessState;
+        context.agent = previous.agent;
+        context.stateVersion += 1;
+        throw error;
+      }
+      this.replayConversationOnNextTurn = true;
+      return this.snapshot(id);
+    } finally {
+      this.modelAccessTransition = false;
+    }
   }
 
   async approve(id: string, approvalId: string, actionDigest: string, approved: boolean): Promise<ReturnType<ConversationManager["snapshot"]>> {
@@ -386,7 +483,13 @@ export class ConversationManager {
     await this.checkpoint();
     if ((context.runState as string) === "stopping") return;
     try {
-      context.agent ??= this.runtime.createAgent(this.apiKey, this.model, this.broker(context), this.fixtureStore);
+      if (this.modelAccess) {
+        const model = await this.modelAccess.preflight({ providerId: context.providerId, modelId: context.modelId });
+        context.modelAccessState = "ready";
+        context.agent ??= this.runtime.createAgentWithModel(this.modelAccess.models, model, this.broker(context), this.fixtureStore);
+      } else {
+        context.agent ??= this.runtime.createAgent(this.apiKey, this.model, this.broker(context), this.fixtureStore);
+      }
       resetAgentTurnLimit(context.agent);
       context.abortController = new AbortController();
       await context.agent.prompt(text);
@@ -406,6 +509,16 @@ export class ConversationManager {
       await this.checkpoint();
     } catch (error) {
       if ((context.controlOwner as string) === "human" || (context.runState as string) === "stopping") return;
+      const safe = this.modelAccess ? sanitizeModelAccessError(error) : error;
+      const accessCode = (safe as { code?: unknown })?.code;
+      if (accessCode === "auth_required" || accessCode === "model_unavailable") {
+        context.modelAccessState = accessCode;
+        context.runState = "idle";
+        context.stateVersion += 1;
+        this.emit(accessCode === "auth_required" ? "model.auth_required" : "model.unavailable", { summary: accessCode === "auth_required" ? "Reconnect the model provider to continue" : "Choose an available model to continue" }, false);
+        await this.checkpoint();
+        return;
+      }
       context.runState = "failed";
       context.sessionLifecycle = context.sessionLifecycle === "ready" ? "ready" : "error";
       context.stateVersion += 1;
@@ -451,6 +564,12 @@ export class ConversationManager {
       await this.checkpoint();
       throw error;
     }
+  }
+
+  private async reconcileModelAccess(): Promise<void> {
+    const context = this.context;
+    if (!context || !this.modelAccess) return;
+    context.modelAccessState = await this.modelAccess.accessState({ providerId: context.providerId, modelId: context.modelId });
   }
 
   private async attachBrowser(context: ConversationContext, cdpUrl: string): Promise<void> {
@@ -557,6 +676,9 @@ export class ConversationManager {
       controlOwner: "agent",
       controlEpoch: randomBytes(18).toString("base64url"),
       runState: interrupted ? "interrupted" : saved.runState,
+      providerId: saved.providerId,
+      modelId: saved.modelId,
+      modelAccessState: saved.modelAccessState,
       sessionLifecycle: saved.runState === "stopped" ? "deleted" : "absent",
       messages: saved.messages.map((message) => ({ ...message })),
       events: saved.events.map((event) => ({ ...event, payload: { ...event.payload } })),

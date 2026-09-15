@@ -10,15 +10,34 @@ export interface Conversation {
   viewerReady: boolean; events: Event[];
   recovery?: Recovery;
   tabs: BrowserTab[];
+  providerId: string; modelId: string; modelAccessState: "ready" | "auth_required" | "model_unavailable";
+}
+
+export interface ModelSelection { providerId: string; modelId: string }
+export interface ProviderAccess {
+  id: string; name: string; configured: boolean; source?: "account" | "api_key" | "environment";
+  environmentVariable?: string;
+  methods: Array<{ type: "oauth" | "api_key"; label: string; enabled: boolean; unavailableReason?: string }>;
+  models: Array<{ id: string; name: string; recommended: boolean }>;
+}
+export interface ModelAccess { providers: ProviderAccess[]; selection?: ModelSelection; disconnectingProviderIds: string[] }
+export interface AuthPrompt {
+  id: string; type: "text" | "secret" | "select" | "manual_code"; message: string; placeholder?: string;
+  options?: Array<{ id: string; label: string; description?: string }>;
+}
+export interface AuthAttempt {
+  id: string; providerId: string; state: "starting" | "waiting_for_browser" | "waiting_for_device" | "waiting_for_input" | "succeeded" | "expired" | "cancelled" | "failed";
+  createdAt: string; expiresAt: string; prompt?: AuthPrompt; authUrl?: string;
+  deviceCode?: { userCode: string; verificationUri: string }; message?: string; error?: string;
 }
 
 let csrfToken = "";
-export async function bootstrap(): Promise<{ conversationId?: string }> {
+export async function bootstrap(): Promise<{ conversationId?: string; modelAccess?: ModelAccess }> {
   const response = await fetch("/api/bootstrap", { credentials: "same-origin" });
   if (!response.ok) throw new Error("Could not start the local OpenMuse session.");
-  const result = await response.json() as { csrfToken: string; conversationId?: string };
+  const result = await response.json() as { csrfToken: string; conversationId?: string; modelAccess?: ModelAccess };
   csrfToken = result.csrfToken;
-  return { conversationId: result.conversationId };
+  return { conversationId: result.conversationId, modelAccess: result.modelAccess };
 }
 async function request<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   const response = await fetch(path, {
@@ -31,7 +50,16 @@ async function request<T>(path: string, method = "GET", body?: unknown): Promise
   return data;
 }
 export const createConversation = () => request<Conversation>("/api/conversations", "POST", {});
+export const getModelAccess = () => request<ModelAccess>("/api/model-access");
+export const selectModel = (selection: ModelSelection) => request<ModelSelection>("/api/model-access/selection", "PUT", selection);
+export const startAuth = (providerId: string, method: "oauth" | "api_key") => request<{ attempt: AuthAttempt }>("/api/auth-attempts", "POST", { providerId, method });
+export const getAuthAttempt = (attemptId: string) => request<{ attempt: AuthAttempt }>(`/api/auth-attempts/${attemptId}`);
+export const submitAuthPrompt = (attemptId: string, promptId: string, value: string) => request<{ attempt: AuthAttempt }>(`/api/auth-attempts/${attemptId}/prompts/${promptId}`, "POST", { value });
+export const cancelAuth = (attemptId: string) => request<{ attempt: AuthAttempt }>(`/api/auth-attempts/${attemptId}`, "DELETE", {});
+export const disconnectProvider = (providerId: string) => request<{ disconnected: true }>(`/api/model-access/providers/${providerId}`, "DELETE", {});
 export const getConversation = (id: string) => request<Conversation>(`/api/conversations/${id}`);
+export const reconnectConversation = (id: string) => request<Conversation>(`/api/conversations/${id}/model-access/reconnect`, "POST", {});
+export const switchConversationModel = (id: string, selection: ModelSelection) => request<Conversation>(`/api/conversations/${id}/model-access`, "PUT", selection);
 export const sendMessage = (id: string, text: string) => request(`/api/conversations/${id}/messages`, "POST", { text });
 export const stopConversation = (id: string) => request(`/api/conversations/${id}/stop`, "POST", {});
 export const takeOver = (id: string) => request<{ controlEpoch: string }>(`/api/conversations/${id}/takeover`, "POST", {});

@@ -1,9 +1,9 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { z } from "zod";
 import { MAX_OPERATION_SUMMARY_CHARACTERS, redactOperationRecord, upsertOperation } from "./operation-lifecycle.js";
 import type { ConversationContext, ConversationEvent, Message } from "./types.js";
+import { writePrivateFileAtomically } from "./private-file.js";
 
 const MAX_MESSAGES = 100;
 const MAX_MESSAGE_BYTES = 64_000;
@@ -54,9 +54,19 @@ const storedConversationV1Schema = z.object({
   conversation: conversationV1Schema,
 });
 
-const storedConversationSchema = z.object({
+const storedConversationV2Schema = z.object({
   fileVersion: z.literal(2),
   conversation: conversationV1Schema.extend({ operationJournal: z.array(operationSchema).max(101) }),
+});
+
+const storedConversationSchema = z.object({
+  fileVersion: z.literal(3),
+  conversation: conversationV1Schema.extend({
+    providerId: z.string().min(1).max(80),
+    modelId: z.string().min(1).max(200),
+    modelAccessState: z.enum(["ready", "auth_required", "model_unavailable"]),
+    operationJournal: z.array(operationSchema).max(101),
+  }),
 });
 
 export type StoredConversation = z.infer<typeof storedConversationSchema>;
@@ -82,6 +92,10 @@ const DURABLE_EVENT_SUMMARIES: Readonly<Record<string, string>> = {
   "agent.started": "Agent turn started",
   "agent.completed": "Agent turn completed",
   "agent.failed": "Agent turn failed",
+  "model.auth_required": "Model provider needs authentication",
+  "model.reconnected": "Model provider reconnected",
+  "model.switched": "Conversation model changed",
+  "model.unavailable": "Conversation model unavailable",
   "browser.starting": "Browser starting",
   "browser.ready": "Browser ready",
   "browser.failed": "Browser failed",
@@ -122,12 +136,15 @@ function safeEvent(event: ConversationEvent): StoredConversation["conversation"]
 
 export function serializeConversation(context: ConversationContext): StoredConversation {
   return {
-    fileVersion: 2,
+    fileVersion: 3,
     conversation: {
       id: context.id,
       stateVersion: context.stateVersion,
       controlOwner: context.controlOwner,
       runState: context.runState,
+      providerId: context.providerId,
+      modelId: context.modelId,
+      modelAccessState: context.modelAccessState,
       sessionLifecycle: context.sessionLifecycle,
       messages: boundedMessages(context.messages),
       events: context.events.slice(-MAX_EVENTS).map(safeEvent),
@@ -168,12 +185,27 @@ export class ConversationStateStore {
           operationJournal: current.data.conversation.operationJournal.map(redactOperationRecord),
         },
       };
-      const legacy = storedConversationV1Schema.safeParse(parsed);
-      if (legacy.success) return {
-        fileVersion: 2,
+      const legacyV2 = storedConversationV2Schema.safeParse(parsed);
+      if (legacyV2.success) return {
+        fileVersion: 3,
         conversation: {
-          ...legacy.data.conversation,
-          events: legacy.data.conversation.events.map((event) => safeEvent(event as ConversationEvent)),
+          ...legacyV2.data.conversation,
+          providerId: "openai",
+          modelId: process.env.OPENAI_MODEL ?? "gpt-5-mini",
+          modelAccessState: "ready",
+          events: legacyV2.data.conversation.events.map((event) => safeEvent(event as ConversationEvent)),
+          operationJournal: legacyV2.data.conversation.operationJournal.map(redactOperationRecord),
+        },
+      };
+      const legacyV1 = storedConversationV1Schema.safeParse(parsed);
+      if (legacyV1.success) return {
+        fileVersion: 3,
+        conversation: {
+          ...legacyV1.data.conversation,
+          providerId: "openai",
+          modelId: process.env.OPENAI_MODEL ?? "gpt-5-mini",
+          modelAccessState: "ready",
+          events: legacyV1.data.conversation.events.map((event) => safeEvent(event as ConversationEvent)),
           operationJournal: [],
         },
       };
@@ -185,25 +217,7 @@ export class ConversationStateStore {
 
   save(state: StoredConversation): Promise<void> {
     const contents = `${JSON.stringify(storedConversationSchema.parse(state), null, 2)}\n`;
-    const write = async () => {
-      await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
-      const temporaryPath = `${this.path}.${randomUUID()}.tmp`;
-      try {
-        await writeFile(temporaryPath, contents, { encoding: "utf8", mode: 0o600, flush: true });
-        await rename(temporaryPath, this.path);
-        if (process.platform !== "win32") {
-          const directory = await open(dirname(this.path), "r");
-          try {
-            await directory.sync();
-          } finally {
-            await directory.close();
-          }
-        }
-      } catch (error) {
-        await unlink(temporaryPath).catch(() => undefined);
-        throw error;
-      }
-    };
+    const write = () => writePrivateFileAtomically(this.path, contents);
     const queued = this.writeQueue.catch(() => undefined).then(write);
     this.writeQueue = queued;
     return queued;

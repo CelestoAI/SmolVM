@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+const controlOrigin = `http://127.0.0.1:${process.env.OPEN_MUSE_E2E_CONTROL_PORT ?? 4319}`;
 
 type HarnessState = {
   managerGeneration: number;
@@ -11,7 +12,7 @@ type HarnessState = {
 };
 
 async function setScenario(request: APIRequestContext, scenario: "failed_before_execution" | "outcome_unknown"): Promise<void> {
-  const response = await request.post("http://127.0.0.1:4319/__e2e/scenario", { data: { scenario } });
+  const response = await request.post(`${controlOrigin}/__e2e/scenario`, { data: { scenario } });
   expect(response.ok()).toBeTruthy();
 }
 
@@ -23,11 +24,11 @@ async function requestAndApprove(page: Page): Promise<void> {
 }
 
 async function harnessState(request: APIRequestContext): Promise<HarnessState> {
-  return await (await request.get("http://127.0.0.1:4319/__e2e/state")).json() as HarnessState;
+  return await (await request.get(`${controlOrigin}/__e2e/state`)).json() as HarnessState;
 }
 
 test.beforeEach(async ({ request }) => {
-  await request.post("http://127.0.0.1:4319/__e2e/reset");
+  await request.post(`${controlOrigin}/__e2e/reset`);
 });
 
 test("safe pre-dispatch failure survives reload and Continue requires fresh approval", async ({ page, request }) => {
@@ -37,7 +38,7 @@ test("safe pre-dispatch failure survives reload and Continue requires fresh appr
   await expect(page.getByText("Action did not run", { exact: true })).toBeVisible();
   await expect(page.getByText(/Run approved browser operation did not run/)).toBeVisible();
   const beforeRestart = await harnessState(request);
-  await request.post("http://127.0.0.1:4319/__e2e/restart");
+  await request.post(`${controlOrigin}/__e2e/restart`);
   await page.reload();
   await expect(page.getByText("Action did not run", { exact: true })).toBeVisible();
   expect((await harnessState(request)).managerGeneration).toBe(beforeRestart.managerGeneration + 1);
@@ -61,7 +62,7 @@ test("unknown outcome survives reload and Continue observes without replay", asy
   await expect(page.getByText("Action outcome unknown", { exact: true })).toBeVisible();
   await expect(page.getByText(/Run approved browser operation may have completed/)).toBeVisible();
   const beforeRestart = await harnessState(request);
-  await request.post("http://127.0.0.1:4319/__e2e/restart");
+  await request.post(`${controlOrigin}/__e2e/restart`);
   await page.reload();
   await expect(page.getByText("Check before doing it again")).toBeVisible();
   expect((await harnessState(request)).managerGeneration).toBe(beforeRestart.managerGeneration + 1);

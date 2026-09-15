@@ -1,7 +1,8 @@
 import { expect, test } from "@playwright/test";
+const controlOrigin = `http://127.0.0.1:${process.env.OPEN_MUSE_E2E_CONTROL_PORT ?? 4319}`;
 
 test.beforeEach(async ({ request }) => {
-  await request.post("http://127.0.0.1:4319/__e2e/reset");
+  await request.post(`${controlOrigin}/__e2e/reset`);
 });
 
 test("uses the real UI to take control, return control, and stop", async ({ page }) => {
