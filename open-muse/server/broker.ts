@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { CATALOG, STOREFRONT_VERSION, formatInr, productById } from "./catalog.js";
-import { operationProgram, operationReason, redactBrowserOperation, validateBrowserOperation, type BrowserOperation, type BrowserTarget, type ExecutableBrowserOperation } from "./browser-operations.js";
+import { operationReason, redactBrowserOperation, validateBrowserOperation, type BrowserOperation, type BrowserTarget, type ExecutableBrowserOperation } from "./browser-operations.js";
+import { BrowserDriverError, hostBrowserDriver, type BrowserDriver } from "./browser-driver.js";
 import { approveOperation, completeOperation, dispatchOperation, markOutcomeUnknown, upsertOperation, type OperationRecord, type RecoveryState } from "./operation-lifecycle.js";
 import type { TabTarget } from "./browser-tabs.js";
 import type { BrowserRef, ConversationContext, IntentGrant, PendingApproval } from "./types.js";
@@ -31,6 +32,7 @@ export class ActionBroker {
     private readonly persist: Persist = async () => undefined,
     private readonly resolveTabTarget?: () => TabTarget,
     private readonly convertMarkdown?: (input: MarkdownInput) => Promise<string>,
+    private readonly browserDriver: BrowserDriver = hostBrowserDriver,
   ) {}
 
   private tabTarget(): TabTarget {
@@ -54,6 +56,13 @@ export class ActionBroker {
     await this.ensureBrowser();
     if (!this.context.computer) throw new Error("The disposable computer is not ready.");
     return this.context.computer;
+  }
+
+  private async readyPage() {
+    if (this.context.controlOwner !== "agent") throw new Error("Browser control is paused. Wait until the user returns control.");
+    await this.ensureBrowser();
+    if (!this.context.page) throw new Error("The disposable browser does not have an active tab. Open or adopt a tab, then try again.");
+    return this.context.page;
   }
 
   async runProgram(program: string, interaction: boolean, summary: string): Promise<Record<string, unknown>> {
@@ -87,23 +96,22 @@ export class ActionBroker {
 
   async runWebOperation(operation: BrowserOperation): Promise<Record<string, unknown>> {
     operation = validateBrowserOperation(operation);
-    await this.readyComputer();
+    const page = await this.readyPage();
     const tab = this.tabTarget();
     if (operation.kind === "observe") {
-      const execution = await this.executeProgram(operationProgram(operation), "Read the current page", "browser_observe", undefined, tab);
-      return this.registerObservation(execution.result.programResult, this.tabTarget());
+      const result = await this.executeWebOperation(page, operation, "browser_observe");
+      return this.registerObservation(result, this.tabTarget());
     }
     if (operation.kind === "scroll") {
-      const execution = await this.executeProgram(operationProgram(operation), operationReason(operation), "browser_scroll", undefined, tab);
-      const result = execution.result.programResult as { scrolled?: unknown; observation?: unknown } | undefined;
+      const result = await this.executeWebOperation(page, operation, "browser_scroll") as { scrolled?: unknown; observation?: unknown } | undefined;
       return { scrolled: result?.scrolled, observation: this.registerObservation(result?.observation, this.tabTarget()) };
     }
     if (operation.kind === "extract") {
       const executable: ExecutableBrowserOperation = operation.scopeRef
         ? { ...operation, target: this.resolveRef(operation.scopeRef, tab).target }
         : operation;
-      const execution = await this.executeProgram(operationProgram(executable), operationReason(executable), "browser_extract", undefined, tab);
-      return this.formatExtraction(execution.result.programResult);
+      const result = await this.executeWebOperation(page, executable, "browser_extract");
+      return this.formatExtraction(result);
     }
     if (this.context.pendingApproval) return { approvalRequired: true, ...this.publicApproval(this.context.pendingApproval) };
     const executable = this.resolveOperation(operation, tab);
@@ -133,6 +141,30 @@ export class ActionBroker {
       summary: approvalEventSummary(pending.kind),
     }, true);
     return { approvalRequired: true, ...this.publicApproval(pending) };
+  }
+
+  private async executeWebOperation(
+    page: NonNullable<ConversationContext["page"]>,
+    operation: ExecutableBrowserOperation,
+    tool: string,
+    onDispatch?: () => Promise<void>,
+    expectedPage?: string,
+  ): Promise<unknown> {
+    const controlEpoch = this.context.controlEpoch;
+    try {
+      this.assertAgentControl(controlEpoch);
+      await onDispatch?.();
+      this.emit("tool.started", { tool, summary: toolEventSummary(tool) });
+      const result = await this.browserDriver.execute(page, operation, expectedPage);
+      this.assertAgentControl(controlEpoch);
+      this.emit("tool.completed", { tool, summary: toolEventSummary(tool, true) });
+      return result;
+    } catch (error) {
+      const failure = error instanceof BrowserDriverError ? error : undefined;
+      const message = failure?.message ?? (error instanceof Error ? error.message : BROWSER_ACTION_FAILED);
+      this.emit("tool.failed", { tool, summary: message, ...(failure ? { errorCode: failure.code } : {}) });
+      throw Object.assign(new Error(message), { status: 422, ...(failure ? { code: failure.code } : {}), cause: error });
+    }
   }
 
   private publicApproval(pending: PendingApproval): Record<string, unknown> {
@@ -203,17 +235,19 @@ export class ActionBroker {
   }
 
   private async currentPage(target = this.tabTarget()): Promise<{ binding: string; display: string }> {
-    const execution = await this.executeProgram([
-      "const pageBindingRawUrl = page.url();",
-      "const pageBindingParsedUrl = (() => { try { return new URL(pageBindingRawUrl); } catch { return null; } })();",
-      "return {",
-      "  binding: pageBindingParsedUrl && ['http:', 'https:'].includes(pageBindingParsedUrl.protocol) ? `${pageBindingParsedUrl.origin}${pageBindingParsedUrl.pathname}${pageBindingParsedUrl.search}${pageBindingParsedUrl.hash}` : pageBindingRawUrl,",
-      "  display: pageBindingParsedUrl && ['http:', 'https:'].includes(pageBindingParsedUrl.protocol) ? `${pageBindingParsedUrl.origin}${pageBindingParsedUrl.pathname}` : pageBindingRawUrl,",
-      "};",
-    ].join("\n"), "Checking the current page", "browser_policy", undefined, target);
-    const current = execution.result.programResult as { binding?: unknown; display?: unknown } | undefined;
-    if (typeof current?.binding !== "string" || typeof current.display !== "string") throw new Error("The browser runner did not report the current page.");
-    return { binding: current.binding, display: current.display };
+    void target;
+    const page = await this.readyPage();
+    this.emit("tool.started", { tool: "browser_policy", summary: toolEventSummary("browser_policy") });
+    try {
+      const current = await this.browserDriver.inspect(page);
+      this.emit("tool.completed", { tool: "browser_policy", summary: toolEventSummary("browser_policy", true) });
+      return current;
+    } catch (error) {
+      const failure = error instanceof BrowserDriverError ? error : undefined;
+      const message = failure?.message ?? "The browser could not report the current page; restart the disposable browser, then try again.";
+      this.emit("tool.failed", { tool: "browser_policy", summary: message, ...(failure ? { errorCode: failure.code } : {}) });
+      throw Object.assign(new Error(message), { status: 422, ...(failure ? { code: failure.code } : {}), cause: error });
+    }
   }
 
   private assertAgentControl(controlEpoch: string | undefined): void {
@@ -355,7 +389,7 @@ export class ActionBroker {
       }
 
       const dispatch = async () => {
-        // TODO(P2): replace this conservative host-call boundary with a two-phase guest-runner acknowledgement.
+        // TODO(P2): replace this conservative dispatch boundary with a two-phase browser-execution acknowledgement.
         operation = dispatchOperation(operation);
         this.context.operationJournal = upsertOperation(this.context.operationJournal, operation);
         await this.persist();
@@ -367,17 +401,18 @@ export class ActionBroker {
         const execution = await this.executeProgram(pending.program!, pending.reason, "browser_run", dispatch, tab);
         browserResult = execution.result;
       } else if (pending.kind === "browser_operation") {
-        const execution = await this.executeProgram(
-          operationProgram(pending.operation!, pending.pageBinding),
-          pending.reason,
+        const page = await this.readyPage();
+        const programResult = await this.executeWebOperation(
+          page,
+          pending.operation!,
           `browser_${pending.operation!.kind}`,
           dispatch,
-          tab,
+          pending.pageBinding,
         );
-        const programResult = execution.result.programResult as { observation?: unknown } | undefined;
-        browserResult = programResult?.observation
-          ? { ...execution.result, programResult: { ...programResult, observation: this.registerObservation(programResult.observation, this.tabTarget()) } }
-          : execution.result;
+        const result = programResult as { observation?: unknown } | undefined;
+        browserResult = result?.observation
+          ? { ...result, observation: this.registerObservation(result.observation, this.tabTarget()) }
+          : result;
       } else {
         const controlEpoch = this.context.controlEpoch;
         const storefront = await this.ready();

@@ -4,7 +4,7 @@ OpenMuse is a chat-based computer coworker that can operate public websites insi
 
 The agent can browse any ordinary public website without a site-specific adapter. Bounded page observation and scrolling run directly. Navigation, clicks, form changes, and keypresses display a one-time approval before they run.
 
-Model credentials stay in the host Node process. The trusted Node broker turns approved structured operations into Playwright commands that run as the unprivileged desktop user inside the VM.
+Model credentials stay in the host Node process. The trusted Node broker validates and authorizes structured operations, then a host Playwright driver sends them to Chromium through its loopback-only CDP address.
 
 ## Run it
 
@@ -57,7 +57,7 @@ On macOS, the runtime wrapper downloads the checksum-verified ARM64 Linux guest-
 - Pi is the conversational agent harness.
 - `@celestoai/smolvm` creates one ephemeral `linux-desktop` computer with public web access.
 - The display and Chromium automation address are grouped separately. OpenMuse streams `computer.display` to the right pane and uses `computer.browser` for Playwright.
-- The computer also exposes commands and files. OpenMuse uses `exec()` for its approved runner today; future tools can use `files` without creating another sandbox.
+- The computer also exposes commands and files. Structured browser tools use the existing host Playwright connection rather than starting a guest command for each operation.
 - Pi normally chooses a structured browser operation. OpenMuse builds the corresponding Playwright itself so the model controls arguments, not executable code.
 - The broker runs bounded observation, Markdown extraction, and scrolling directly. Active operations create a one-time approval bound to the current page, exact operation arguments, and, when applicable, a short-lived element ref from the latest observation.
 - Raw `browser_run` is internal and is not available to the production model. It stays disabled until the guest exposes a browser interface that cannot reach other tabs or the wider browser context.
