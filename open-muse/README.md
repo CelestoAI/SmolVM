@@ -34,6 +34,8 @@ OpenMuse asks you to connect a model provider before the first conversation. You
 
 OpenAI account sign-in is implemented behind a temporary release gate while provider terms are reviewed. For the development smoke only, set `OPEN_MUSE_ENABLE_SUBSCRIPTION_AUTH=1`, restart OpenMuse, and choose **Continue with OpenAI**. The flow opens the provider's secure page and keeps OAuth tokens in the same host-only credential store. Gemini account sign-in is not shown because the pinned Pi harness does not currently expose that capability; it can be added without changing the UI protocol when the provider supports it.
 
+After connecting a provider, choose a model and select **Start using OpenMuse**. Use the **Model** button later to switch models or providers, reconnect an expired account, or disconnect a saved credential. Set `OPEN_MUSE_AUTH_PATH` before starting OpenMuse if you want to keep saved credentials somewhere other than `.open-muse/auth.json`.
+
 To try Markdown extraction after opening a page, ask:
 
 > Give me the raw page data as Markdown.
@@ -73,6 +75,7 @@ The initial general-web implementation uses SmolVM's open network mode. Structur
 
 See [the browser snapshots, refs, and extraction design](../docs/designs/open-muse-browser-capability.md) for the current browser-tool contract.
 See [the approved general-web design](../docs/designs/open-muse-general-web.md) for the staged security model. The original [fixture-store design](../docs/designs/open-muse.md) documents the UI, lifecycle, and takeover flow.
+See [the provider-authentication design](../docs/designs/open-muse-provider-authentication.md) for credential storage, model binding, account recovery, and the temporary release gate.
 
 ## Offline fixture mode
 

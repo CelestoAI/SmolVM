@@ -13,7 +13,7 @@ Extends: `docs/designs/open-muse.md` and `docs/designs/open-muse-general-web.md`
 
 ## Problem Statement
 
-OpenMuse currently works only when its operator creates `.env.local` and adds an `OPENAI_API_KEY`. That is appropriate for a developer example, but it excludes users who already pay for access through a supported model-provider account and expect a normal sign-in experience.
+Before this work, OpenMuse worked only when its operator created `.env.local` and added an `OPENAI_API_KEY`. That was appropriate for a developer example, but it excluded users who already paid for access through a supported model-provider account and expected a normal sign-in experience.
 
 The desired first run is simple: choose a supported account, finish authentication in the user's normal browser, select a model, and start chatting. API keys remain available under an advanced path. OAuth credentials stay in the trusted host process. An API key typed in the setup page exists transiently in that input and its loopback request, but is never returned to the client, retained in application state after submission, logged, or sent to the disposable VM, agent-controlled browser, diagnostics, or conversation history.
 
@@ -23,9 +23,9 @@ OpenMuse stops feeling like a source checkout that must be wired to a developer 
 
 The deeper product improvement is that the interface does not hardcode this one provider. It asks Pi which authentication methods each installed provider actually supports. A future Pi release can add account authentication without forcing OpenMuse to invent another login architecture.
 
-## Current Reality
+## Starting Point
 
-OpenMuse pins `@earendil-works/pi-ai` and `@earendil-works/pi-agent-core` at `0.85.1`. The server currently:
+OpenMuse pins `@earendil-works/pi-ai` and `@earendil-works/pi-agent-core` at `0.85.1`. At the start of this work, the server:
 
 - registers only `openaiProvider()`;
 - chooses one process-wide `OPENAI_MODEL`;
