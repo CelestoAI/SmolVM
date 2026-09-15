@@ -301,6 +301,11 @@ async function serveStatic(root: string, pathname: string, response: ServerRespo
 }
 function sendJson(response: ServerResponse, status: number, body: unknown): void { response.statusCode = status; response.setHeader("content-type", "application/json; charset=utf-8"); response.end(JSON.stringify(body)); }
 
+export function startupFailureMessage(error: unknown): string {
+  const detail = error instanceof Error && error.message.trim() ? error.message.trim() : "An unknown error occurred.";
+  return `OpenMuse could not start: ${detail}`;
+}
+
 async function main(): Promise<void> {
   try { process.loadEnvFile(".env.local"); } catch { /* optional */ }
   const host = process.env.OPEN_MUSE_HOST ?? "127.0.0.1"; const port = Number(process.env.OPEN_MUSE_PORT ?? 4318);
@@ -320,8 +325,8 @@ async function main(): Promise<void> {
   server.listen(port, host, () => console.log(`OpenMuse is ready at http://${host}:${port}`));
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  void main().catch(() => {
-    console.error("OpenMuse could not start.");
+  void main().catch((error: unknown) => {
+    console.error(startupFailureMessage(error));
     process.exitCode = 1;
   });
 }
