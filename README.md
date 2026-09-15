@@ -8,7 +8,7 @@
 
 ### [Try OpenMuse](./open-muse/README.md)
 
-<p align="left">OpenMuse is an open-source computer coworker that can browse the web, use apps, and keep working in the background — even when your laptop is off. <b>OpenMuse is powered by SmolVM.</b></p>
+<p align="left">OpenMuse is an open-source computer coworker that can browse the web, use apps, and keep working in the background — even when your laptop is off. <b>OpenMuse is powered by Celesto</b></p>
 
 
 </div>
