@@ -15,6 +15,7 @@ Supersedes: `docs/designs/open-muse.md` for the browser-tool and network scope; 
 > - Navigation, click, fill, select, and keypress requests require one-time approval bound to the current tab epoch, page, and exact normalized arguments. Approved operations have durable `approved`, `dispatched`, `completed`, and `outcome_unknown` states and are never replayed after uncertainty.
 > - Popups are quarantined until explicit adoption. Takeover pauses every owned tab. Raw `browser_run` remains internal and is not exposed to the production model because a real Playwright `Page` can reach its browser context; exposure waits for the brokered guest-side page facade described below.
 > - SmolVM now has private public-egress building blocks: connection-time DNS classification, pinned upstream connections, a per-session proxy, TAP restrictions, QEMU restricted forwarding, and Chromium proxy plumbing. The public API and OpenMuse switch remain gated on real Firecracker and QEMU attack-suite smokes and image release pins.
+> - SmolVM now has an internal, unintegrated browser-profile artifact store with versioned manifests, exclusive locking, private permissions, atomic generation saves, bounded retention, and explicit reset and migration. Authenticated OpenMuse sessions remain gated on egress enforcement, masking, takeover, and profile integration.
 
 ## Problem Statement
 
@@ -111,7 +112,7 @@ Each tab has an owner and navigation epoch. New popups are quarantined until the
 
 During takeover, all model observations stop. Before resuming, the broker masks password and payment inputs, blocks cookie/storage/header and clipboard APIs, disables autofill inspection, and refuses screenshots while a sensitive input contains a value. Accessibility snapshots, locator text/value reads, returned JSON, approval snapshots, logs, and errors never include sensitive input values. A sensitive input is any password control, payment/autocomplete field, or control marked sensitive by Chromium. The UI explains that other page content and screenshots sent to the configured model provider remain subject to that provider's retention terms.
 
-Persistent login remains deferred until SmolVM has a dedicated, versioned browser-profile artifact with exclusive locking, current-user-only host permissions, atomic save, and explicit reset/migration. The current persistent mode retains the whole VM disk and must not be used for this authenticated example. Ephemeral login through takeover is permitted for local evaluation.
+Persistent login remains deferred. SmolVM now has the dedicated, versioned browser-profile artifact store, but OpenMuse does not use it yet. The current persistent mode retains the whole VM disk and must not be used for this authenticated example. Ephemeral login through takeover is permitted for local evaluation.
 
 ### Delivery stages
 
