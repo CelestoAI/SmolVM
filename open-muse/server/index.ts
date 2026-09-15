@@ -260,7 +260,7 @@ async function main(): Promise<void> {
   const modelAccess = ModelAccessService.createDefault();
   const manager = await ConversationManager.open(
     process.env.OPENAI_API_KEY ?? "",
-    process.env.OPENAI_MODEL ?? "gpt-5-mini",
+    process.env.OPENAI_MODEL ?? "gpt-5.6-luna",
     process.env.OPEN_MUSE_FIXTURE_STORE === "1",
     undefined,
     {},
