@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-import smolvm.browser_profiles as browser_profiles
 from smolvm.browser_profiles import (
     BrowserProfileCompatibilityError,
     BrowserProfileCorruptError,
@@ -16,6 +15,7 @@ from smolvm.browser_profiles import (
     BrowserProfileLockedError,
     BrowserProfileOutcomeUnknownError,
     BrowserProfileStore,
+    _fsync_directory,
 )
 
 
@@ -145,14 +145,14 @@ def test_staged_directory_fsync_failure_preserves_prior_generation(
     root = tmp_path / "profiles"
     with store(root).acquire("staged-fsync") as lease:
         first = lease.save(archive(tmp_path, "fsync-first.tar", b"first"))
-        real_fsync_directory = browser_profiles._fsync_directory
+        real_fsync_directory = _fsync_directory
 
         def fail_staged_directory(path: Path) -> None:
             if path.name.startswith(".staging-"):
                 raise OSError("simulated staged directory fsync failure")
             real_fsync_directory(path)
 
-        monkeypatch.setattr(browser_profiles, "_fsync_directory", fail_staged_directory)
+        monkeypatch.setattr("smolvm.browser_profiles._fsync_directory", fail_staged_directory)
         with pytest.raises(OSError, match="staged directory fsync failure"):
             lease.save(archive(tmp_path, "fsync-second.tar", b"second"))
         loaded = lease.load()
@@ -170,14 +170,14 @@ def test_generation_directory_fsync_failure_never_switches_current(
     root = tmp_path / "profiles"
     with store(root).acquire("generation-fsync") as lease:
         first = lease.save(archive(tmp_path, "generation-first.tar", b"first"))
-        real_fsync_directory = browser_profiles._fsync_directory
+        real_fsync_directory = _fsync_directory
 
         def fail_generation_directory(path: Path) -> None:
             if path.name == "generations":
                 raise OSError("simulated generation directory fsync failure")
             real_fsync_directory(path)
 
-        monkeypatch.setattr(browser_profiles, "_fsync_directory", fail_generation_directory)
+        monkeypatch.setattr("smolvm.browser_profiles._fsync_directory", fail_generation_directory)
         with pytest.raises(OSError, match="generation directory fsync failure"):
             lease.save(archive(tmp_path, "generation-second.tar", b"second"))
         loaded = lease.load()
@@ -192,14 +192,14 @@ def test_profile_directory_fsync_failure_reports_unknown_committed_generation(
     root = tmp_path / "profiles"
     with store(root).acquire("pointer-fsync") as lease:
         first = lease.save(archive(tmp_path, "pointer-first.tar", b"first"))
-        real_fsync_directory = browser_profiles._fsync_directory
+        real_fsync_directory = _fsync_directory
 
         def fail_profile_directory(path: Path) -> None:
             if path == root / "pointer-fsync":
                 raise OSError("simulated profile directory fsync failure")
             real_fsync_directory(path)
 
-        monkeypatch.setattr(browser_profiles, "_fsync_directory", fail_profile_directory)
+        monkeypatch.setattr("smolvm.browser_profiles._fsync_directory", fail_profile_directory)
         with pytest.raises(BrowserProfileOutcomeUnknownError) as raised:
             lease.save(archive(tmp_path, "pointer-second.tar", b"second"))
         loaded = lease.load()
