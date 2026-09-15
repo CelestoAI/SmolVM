@@ -21,6 +21,8 @@ Do not add `mode="public"` to Python or `{ mode: "public" }` to TypeScript until
 
 Use deterministic host-owned DNS and HTTP/TLS fixtures. Do not use the public internet as correctness evidence. Run the same candidate browser image with Linux Firecracker/TAP and QEMU/slirp; include macOS QEMU/HVF when release infrastructure can provide it.
 
+Before running a real guest, keep the deterministic contract matrix green with `uv run pytest tests/runtime/test_public_egress.py tests/host/test_public_egress_proxy.py tests/host/test_public_egress_session.py tests/host/test_public_proxy_network.py tests/runtime/test_browser_proxy_plumbing.py tests/runtime/test_qemu_args.py`. Every denial fixture must name exactly one matching public control so the suite distinguishes policy enforcement from a broken transport. The proxy tests must also reject malformed or ambiguous HTTP framing and allow CONNECT only to the configured secure-tunnel port, currently 443.
+
 For each backend, prove these positive controls:
 
 - Public HTTP and HTTPS requests complete through the proxy.
