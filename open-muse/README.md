@@ -106,6 +106,12 @@ Click **Stop** when you are done. OpenMuse deletes the disposable computer when 
 
 ## Everyday controls
 
+### Chats and model settings
+
+Open **Chats** to start a new conversation or return to one of up to 50 saved local chats. Only the selected chat can use an agent or disposable computer; switching releases the current idle computer, and returning starts a fresh one only when needed. **Reset conversation** permanently removes the selected transcript and computer after confirmation.
+
+Select the current model in the header to open model settings. Use **Back to conversation** to return without changing it.
+
 ### Approvals
 
 Reading the current page and scrolling can run directly. Navigation, clicks, form changes, and keypresses require a one-time approval tied to the current page and exact action. Approvals expire after five minutes and stop working if the page or target element changes.
@@ -120,7 +126,7 @@ Every assistant turn has a collapsed **Run details** row. Expand it to see the t
 
 ### Recovery after a restart
 
-OpenMuse stores a small conversation checkpoint in `.open-muse/state.json`. If the server stops during work, the chat returns in an interrupted state and asks you to **Continue** or **Start over**. Continuing starts a fresh computer and never replays an old approval.
+OpenMuse stores bounded chat history and the selected conversation in `.open-muse/state.json`. If the server stops during work, the active chat returns in an interrupted state and asks you to **Continue** or **Start over**. Continuing starts a fresh computer and never replays an old approval.
 
 ## Develop OpenMuse
 
@@ -184,7 +190,7 @@ npm run test:e2e:install
 
 ### A previous conversation appears during development
 
-OpenMuse restores `.open-muse/state.json` by design. Use **Start over**, or start the app with a separate `OPEN_MUSE_STATE_PATH`. Coding agents should use the isolated fixture-mode command above.
+OpenMuse restores `.open-muse/state.json` by design. Use **Reset conversation**, or start the app with a separate `OPEN_MUSE_STATE_PATH`. Coding agents should use the isolated fixture-mode command above.
 
 ## How it works
 

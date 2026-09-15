@@ -6,13 +6,13 @@ import { ActionBroker } from "./broker.js";
 import { redactBrowserOperation, validateBrowserOperation } from "./browser-operations.js";
 import { assistantText, createAgent, createAgentWithModel, resetAgentTurnLimit } from "./agent.js";
 import { groundAddIntent } from "./intent.js";
-import { ConversationStateStore, serializeConversation, type StoredConversation } from "./state-store.js";
+import { ConversationStateStore, serializeConversationRecord, type StoredConversation, type StoredConversationRecord } from "./state-store.js";
 import { installStorefront } from "./storefront.js";
 import { acknowledgeRecovery, recoverOperations } from "./operation-lifecycle.js";
 import { bumpTab, createTab, publicTabUrl, type BrowserTab, type TabTarget } from "./browser-tabs.js";
 import { conversationDiagnostics } from "./diagnostics.js";
 import { convertPageToMarkdown } from "./markdown.js";
-import type { ConversationContext, ConversationEvent, Message } from "./types.js";
+import type { ConversationContext, ConversationEvent, ConversationSummary, Message } from "./types.js";
 import { ModelAccessService, sanitizeModelAccessError, type ModelSelection } from "./model-access.js";
 import { TraceBuffer, type ToolTraceAdapter, type TraceCursor, type TraceEvent, type TraceSnapshot, type TraceTurnState, type TurnExecution } from "./trace.js";
 import { hostBrowserDriver, type BrowserDriver } from "./browser-driver.js";
@@ -38,7 +38,9 @@ const DEFAULT_RUNTIME_DEPENDENCIES: RuntimeDependencies = {
 };
 
 export class ConversationManager {
+  static readonly maxConversations = 50;
   private context?: ConversationContext;
+  private readonly history = new Map<string, StoredConversationRecord>();
   private listeners = new Set<Listener>();
   private turnQueue: Promise<void> = Promise.resolve();
   private activeAction?: Promise<void>;
@@ -49,6 +51,7 @@ export class ConversationManager {
   private viewerNonces = new Map<string, { conversationId: string; expiresAt: number }>();
   private replayConversationOnNextTurn = false;
   private modelAccessTransition = false;
+  private conversationTransition = false;
   private traces?: TraceBuffer;
   private currentExecution?: TurnExecution;
   private readonly traceScope = new AsyncLocalStorage<{ execution: TurnExecution; stepId?: number }>();
@@ -66,7 +69,9 @@ export class ConversationManager {
   ) {
     this.runtime = { ...DEFAULT_RUNTIME_DEPENDENCIES, ...runtime };
     if (restored) {
-      this.context = this.restore(restored);
+      const active = restored.conversations.find((conversation) => conversation.id === restored.activeConversationId)!;
+      for (const conversation of restored.conversations) if (conversation.id !== active.id) this.history.set(conversation.id, conversation);
+      this.context = this.restore(active);
       this.traces = new TraceBuffer(this.context.id);
       if (this.context.recoveryTurn) {
         const execution = { conversationId: this.context.id, ...this.context.recoveryTurn };
@@ -95,32 +100,57 @@ export class ConversationManager {
   }
 
   get activeConversationId(): string | undefined {
-    return this.context && !["stopped", "failed"].includes(this.context.runState) ? this.context.id : undefined;
+    return this.context?.id;
   }
 
   async create(selection?: ModelSelection): Promise<ReturnType<ConversationManager["snapshot"]>> {
-    if (this.context && !["stopped", "failed"].includes(this.context.runState)) throw Object.assign(new Error("Stop the active conversation before starting another."), { status: 409 });
-    if (this.context?.runState === "failed") {
-      await this.activeAction;
-      await this.stop(this.context.id);
-    }
-    this.listeners.clear();
-    this.traces?.close();
-    this.replayConversationOnNextTurn = false;
-    if (this.modelAccess && !selection) throw Object.assign(new Error("Choose a model before starting a conversation."), { status: 409, code: "selection_required" });
-    const binding = selection ?? { providerId: "openai", modelId: this.model };
+    return this.runConversationTransition(() => this.createUnlocked(selection));
+  }
+
+  private async createUnlocked(selection?: ModelSelection): Promise<ReturnType<ConversationManager["snapshot"]>> {
+    if (this.history.size + (this.context ? 1 : 0) >= ConversationManager.maxConversations) throw Object.assign(new Error("Open a saved chat and reset it before starting another."), { status: 409, code: "conversation_limit" });
+    const inheritedSelection = this.context ? { providerId: this.context.providerId, modelId: this.context.modelId } : undefined;
+    const binding = selection ?? inheritedSelection ?? (this.modelAccess ? undefined : { providerId: "openai", modelId: this.model });
+    if (!binding) throw Object.assign(new Error("Choose a model before starting a conversation."), { status: 409, code: "selection_required" });
     if (this.modelAccess) await this.modelAccess.validateSelection(binding);
-    this.context = {
-      id: randomUUID(), stateVersion: 1, controlOwner: "agent", controlEpoch: randomBytes(18).toString("base64url"), runState: "idle", sessionLifecycle: "absent",
-      providerId: binding.providerId, modelId: binding.modelId, modelAccessState: "ready",
-      messages: [], events: [], grants: [], cart: [], receipts: new Map(), commerceRevision: 0,
-      observationId: "", browserRefs: new Map(), operationJournal: [], tabs: new Map(), lastActivityAt: Date.now(),
+    const nextHistory = new Map(this.history);
+    if (this.context) {
+      const archived = await this.deactivateCurrent();
+      nextHistory.set(archived.id, archived);
+    }
+    const next = this.newConversationContext(binding);
+    await this.checkpointState(next, nextHistory);
+    this.commitConversation(next, nextHistory, false);
+    return this.snapshot(next.id);
+  }
+
+  list(): { activeConversationId?: string; conversations: ConversationSummary[] } {
+    const records = [...this.history.values(), ...(this.context ? [serializeConversationRecord(this.context)] : [])];
+    return {
+      activeConversationId: this.context?.id,
+      conversations: records
+        .map((conversation) => this.summary(conversation))
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     };
-    this.traces = new TraceBuffer(this.context.id);
-    this.currentExecution = undefined;
-    this.emit("conversation.created", { summary: "Conversation ready" });
-    await this.checkpoint();
-    return this.snapshot(this.context.id);
+  }
+
+  async activate(id: string): Promise<ReturnType<ConversationManager["snapshot"]>> {
+    return this.runConversationTransition(async () => {
+      if (this.context?.id === id) return this.snapshot(id);
+      const saved = this.history.get(id);
+      if (!saved) throw Object.assign(new Error("That conversation was not found."), { status: 404 });
+      const nextHistory = new Map(this.history);
+      if (this.context) {
+        const archived = await this.deactivateCurrent();
+        nextHistory.set(archived.id, archived);
+      }
+      nextHistory.delete(id);
+      const next = this.restore(saved, true);
+      await this.reconcileModelAccess(next);
+      await this.checkpointState(next, nextHistory);
+      this.commitConversation(next, nextHistory, next.messages.length > 0);
+      return this.snapshot(id);
+    });
   }
 
   snapshot(id: string) {
@@ -171,6 +201,7 @@ export class ConversationManager {
   }
 
   async send(id: string, text: string): Promise<{ accepted: true; stateVersion: number }> {
+    this.assertConversationStable();
     const context = this.require(id);
     if (this.modelAccessTransition) throw Object.assign(new Error("Wait for the current model change to finish, then try again."), { status: 409, code: "model_access_busy" });
     if (context.modelAccessState !== "ready") throw Object.assign(new Error("Reconnect the model provider before sending another message."), { status: 409, code: "auth_required" });
@@ -209,6 +240,7 @@ export class ConversationManager {
   }
 
   async continueInterrupted(id: string): Promise<ReturnType<ConversationManager["snapshot"]>> {
+    this.assertConversationStable();
     const context = this.require(id);
     if (this.modelAccessTransition) throw Object.assign(new Error("Wait for the current model change to finish, then try again."), { status: 409, code: "model_access_busy" });
     if (context.runState !== "interrupted") throw Object.assign(new Error("This conversation is not waiting to continue."), { status: 409 });
@@ -238,16 +270,30 @@ export class ConversationManager {
   }
 
   async startOver(id: string): Promise<ReturnType<ConversationManager["snapshot"]>> {
-    const context = this.require(id);
-    if (this.modelAccessTransition) throw Object.assign(new Error("Wait for the current model change to finish, then try again."), { status: 409, code: "model_access_busy" });
-    const binding = { providerId: context.providerId, modelId: context.modelId };
-    await this.stop(id);
-    await this.activeAction?.catch(() => undefined);
-    await this.turnQueue.catch(() => undefined);
-    return this.create(binding);
+    return this.runConversationTransition(async () => {
+      const context = this.require(id);
+      if (this.modelAccessTransition) throw Object.assign(new Error("Wait for the current model change to finish, then try again."), { status: 409, code: "model_access_busy" });
+      const binding = { providerId: context.providerId, modelId: context.modelId };
+      if (!this.history.size && this.modelAccess) await this.modelAccess.validateSelection(binding);
+      await this.stopUnlocked(id);
+      await this.activeAction?.catch(() => undefined);
+      await this.turnQueue.catch(() => undefined);
+      const newest = [...this.history.values()].sort((a, b) => b.lastActivityAt - a.lastActivityAt)[0];
+      const nextHistory = new Map(this.history);
+      let next: ConversationContext;
+      if (newest) {
+        nextHistory.delete(newest.id);
+        next = this.restore(newest, true);
+        await this.reconcileModelAccess(next);
+      } else next = this.newConversationContext(binding);
+      await this.checkpointState(next, nextHistory);
+      this.commitConversation(next, nextHistory, next.messages.length > 0);
+      return this.snapshot(next.id);
+    });
   }
 
   async disconnectProvider(providerId: string): Promise<void> {
+    this.assertConversationStable();
     if (this.modelAccessTransition) throw Object.assign(new Error("Wait for the current model change to finish, then try again."), { status: 409, code: "model_access_busy" });
     this.modelAccessTransition = true;
     const context = this.context;
@@ -277,6 +323,7 @@ export class ConversationManager {
   }
 
   async reconnectProvider(id: string): Promise<ReturnType<ConversationManager["snapshot"]>> {
+    this.assertConversationStable();
     const context = this.require(id);
     if (!this.modelAccess) throw Object.assign(new Error("Model account setup is not available."), { status: 409, code: "model_access_unavailable" });
     if (this.modelAccessTransition) throw Object.assign(new Error("Wait for the current model change to finish, then try again."), { status: 409, code: "model_access_busy" });
@@ -294,6 +341,7 @@ export class ConversationManager {
   }
 
   async switchModel(id: string, selection: ModelSelection): Promise<ReturnType<ConversationManager["snapshot"]>> {
+    this.assertConversationStable();
     const context = this.require(id);
     if (!this.modelAccess) throw Object.assign(new Error("Model account setup is not available."), { status: 409, code: "model_access_unavailable" });
     if (!["idle", "interrupted"].includes(context.runState)) throw Object.assign(new Error("Wait for the current work to finish before switching models."), { status: 409, code: "conversation_busy" });
@@ -329,6 +377,7 @@ export class ConversationManager {
   }
 
   async approve(id: string, approvalId: string, actionDigest: string, approved: boolean): Promise<ReturnType<ConversationManager["snapshot"]>> {
+    this.assertConversationStable();
     const context = this.require(id);
     if (context.runState === "stopping" || context.runState === "stopped") throw Object.assign(new Error("This conversation is stopping. Start a new one to continue."), { status: 409 });
     const active = this.activeApproval;
@@ -404,6 +453,7 @@ export class ConversationManager {
   }
 
   async takeover(id: string): Promise<{ controlEpoch: string; stateVersion: number }> {
+    this.assertConversationStable();
     const context = this.require(id);
     if (context.controlOwner === "human") return { controlEpoch: context.controlEpoch!, stateVersion: context.stateVersion };
     if (context.pendingApproval) {
@@ -439,6 +489,7 @@ export class ConversationManager {
   }
 
   async resume(id: string, controlEpoch: string): Promise<ReturnType<ConversationManager["snapshot"]>> {
+    this.assertConversationStable();
     const context = this.require(id);
     if (context.controlOwner !== "human" || context.controlEpoch !== controlEpoch) throw Object.assign(new Error("Browser control changed. Take control again and retry."), { status: 409 });
     context.controlOwner = "agent";
@@ -454,6 +505,7 @@ export class ConversationManager {
   }
 
   async adoptPopup(id: string, tabId: string): Promise<ReturnType<ConversationManager["snapshot"]>> {
+    this.assertConversationStable();
     const context = this.require(id);
     if (this.activeApproval) throw Object.assign(new Error("Wait for the approved website action to finish before adopting a popup."), { status: 409 });
     if (context.controlOwner === "pause_requested" || ["interrupted", "stopping", "stopped"].includes(context.runState)) {
@@ -479,6 +531,11 @@ export class ConversationManager {
   }
 
   async stop(id: string): Promise<void> {
+    this.assertConversationStable();
+    return this.stopUnlocked(id);
+  }
+
+  private async stopUnlocked(id: string): Promise<void> {
     const context = this.require(id);
     if (context.runState === "stopped") return;
     context.runState = "stopping";
@@ -499,6 +556,7 @@ export class ConversationManager {
   }
 
   issueViewerNonce(id: string): { viewerPath: string; expiresAt: string } {
+    this.assertConversationStable();
     const context = this.require(id);
     if (!context.computer?.display.viewerUrl) throw Object.assign(new Error("The live computer is not ready yet."), { status: 409 });
     const nonce = randomBytes(32).toString("base64url");
@@ -509,6 +567,7 @@ export class ConversationManager {
   }
 
   consumeViewerNonce(id: string, nonce: string): boolean {
+    if (this.conversationTransition) return false;
     const value = this.viewerNonces.get(nonce);
     this.viewerNonces.delete(nonce);
     return Boolean(value && value.conversationId === id && value.expiresAt > Date.now());
@@ -767,8 +826,7 @@ export class ConversationManager {
     }
   }
 
-  private async reconcileModelAccess(): Promise<void> {
-    const context = this.context;
+  private async reconcileModelAccess(context = this.context): Promise<void> {
     if (!context || !this.modelAccess) return;
     context.modelAccessState = await this.modelAccess.accessState({ providerId: context.providerId, modelId: context.modelId });
   }
@@ -872,24 +930,94 @@ export class ConversationManager {
 
   private checkpoint(): Promise<void> {
     if (!this.context || !this.stateStore) return Promise.resolve();
-    return this.stateStore.save(serializeConversation(this.context));
+    return this.checkpointState(this.context, this.history);
   }
 
-  private restore(stored: StoredConversation): ConversationContext {
-    const saved = stored.conversation;
+  private checkpointState(context: ConversationContext, history: Map<string, StoredConversationRecord>): Promise<void> {
+    if (!this.stateStore) return Promise.resolve();
+    return this.stateStore.save({
+      fileVersion: 5,
+      activeConversationId: context.id,
+      conversations: [serializeConversationRecord(context), ...history.values()],
+    });
+  }
+
+  private async deactivateCurrent(): Promise<StoredConversationRecord> {
+    const context = this.context;
+    if (!context) throw new Error("No active conversation can be archived.");
+    if (this.modelAccessTransition) throw Object.assign(new Error("Wait for the current model change to finish, then try again."), { status: 409, code: "model_access_busy" });
+    if (context.controlOwner !== "agent") throw Object.assign(new Error("Return browser control before switching conversations."), { status: 409, code: "conversation_busy" });
+    if (!["idle", "interrupted", "stopped", "failed"].includes(context.runState) || this.activeApproval) {
+      throw Object.assign(new Error("Stop the current work before switching conversations."), { status: 409, code: "conversation_busy" });
+    }
+    await this.releaseComputer(context);
+    if (!["stopped", "failed"].includes(context.runState)) context.sessionLifecycle = "absent";
+    return serializeConversationRecord(context);
+  }
+
+  private async runConversationTransition<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.conversationTransition) throw Object.assign(new Error("Wait for the current conversation change to finish, then try again."), { status: 409, code: "conversation_busy" });
+    this.conversationTransition = true;
+    try { return await operation(); }
+    finally { this.conversationTransition = false; }
+  }
+
+  private assertConversationStable(): void {
+    if (this.conversationTransition) throw Object.assign(new Error("Wait for the current conversation change to finish, then try again."), { status: 409, code: "conversation_busy" });
+  }
+
+  private newConversationContext(binding: ModelSelection): ConversationContext {
+    const id = randomUUID();
+    const createdAt = new Date().toISOString();
+    return {
+      id, stateVersion: 2, controlOwner: "agent", controlEpoch: randomBytes(18).toString("base64url"), runState: "idle", sessionLifecycle: "absent",
+      providerId: binding.providerId, modelId: binding.modelId, modelAccessState: "ready",
+      messages: [], events: [{ id: 1, conversationId: id, stateVersion: 2, createdAt, type: "conversation.created", payload: { summary: "Conversation ready" } }],
+      grants: [], cart: [], receipts: new Map(), commerceRevision: 0,
+      observationId: "", browserRefs: new Map(), operationJournal: [], tabs: new Map(), lastActivityAt: Date.now(),
+    };
+  }
+
+  private commitConversation(context: ConversationContext, history: Map<string, StoredConversationRecord>, replay: boolean): void {
+    this.listeners.clear();
+    this.traces?.close();
+    this.history.clear();
+    for (const [id, conversation] of history) this.history.set(id, conversation);
+    this.context = context;
+    this.traces = new TraceBuffer(context.id);
+    this.currentExecution = undefined;
+    this.replayConversationOnNextTurn = replay;
+  }
+
+  private summary(conversation: StoredConversationRecord): ConversationSummary {
+    const firstUserMessage = conversation.messages.find((message) => message.role === "user")?.text.trim().replace(/\s+/g, " ");
+    const title = firstUserMessage ? firstUserMessage.slice(0, 48) : "New chat";
+    return {
+      id: conversation.id,
+      title,
+      providerId: conversation.providerId,
+      modelId: conversation.modelId,
+      runState: conversation.runState,
+      updatedAt: new Date(conversation.lastActivityAt).toISOString(),
+    };
+  }
+
+  private restore(saved: StoredConversationRecord, reactivate = false): ConversationContext {
     const recoveredOperations = recoverOperations(saved.operationJournal);
-    const terminal = saved.runState === "stopped" || saved.runState === "failed";
+    const wasTerminal = saved.runState === "stopped" || saved.runState === "failed";
+    const terminal = wasTerminal && !reactivate;
     const interrupted = !terminal && (Boolean(recoveredOperations.recovery) || saved.controlOwner !== "agent" || ["model_turn", "tool_action", "waiting_for_approval", "stopping", "interrupted"].includes(saved.runState));
+    const reopened = reactivate && wasTerminal;
     const context: ConversationContext = {
       id: saved.id,
-      stateVersion: saved.stateVersion + (interrupted ? 1 : 0),
+      stateVersion: saved.stateVersion + (interrupted || reopened ? 1 : 0),
       controlOwner: "agent",
       controlEpoch: randomBytes(18).toString("base64url"),
-      runState: interrupted ? "interrupted" : saved.runState,
+      runState: interrupted ? "interrupted" : reopened ? "idle" : saved.runState,
       providerId: saved.providerId,
       modelId: saved.modelId,
       modelAccessState: saved.modelAccessState,
-      sessionLifecycle: saved.runState === "stopped" ? "deleted" : "absent",
+      sessionLifecycle: terminal ? "deleted" : "absent",
       messages: saved.messages.map((message) => ({ ...message })),
       events: saved.events.map((event) => ({ ...event, payload: { ...event.payload } })),
       grants: [], cart: [], receipts: new Map(), commerceRevision: 0, observationId: "", browserRefs: new Map(),
@@ -952,7 +1080,7 @@ export class ConversationManager {
   }
 
   private visibleTranscript(context: ConversationContext): string {
-    return serializeConversation(context).conversation.messages
+    return serializeConversationRecord(context).messages
       .map((message) => `${message.role === "user" ? "USER" : "ASSISTANT"}: ${message.text}`)
       .join("\n\n");
   }

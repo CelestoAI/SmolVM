@@ -256,3 +256,34 @@ test("model-access routes preserve session selection and expose the complete loc
 
   assert.deepEqual(calls, ["validate:model-a", "validate:model-a", "start", "prompt:prompt-positive:secret", "cancel", "preflight:model-b", "logout:test-provider", "preflight:model-b"]);
 });
+
+test("conversation history routes list, create, and activate saved chats", async (t) => {
+  const manager = new ConversationManager("", "gpt-5-mini");
+  const first = await manager.create();
+  const context = (manager as unknown as { context: ConversationContext }).context;
+  context.messages.push({ id: "history-title", role: "user", text: "Plan a weekend trip", createdAt: new Date().toISOString() });
+  const server = createApp(manager);
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  t.after(() => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const bootstrapResponse = await fetch(`${origin}/api/bootstrap`);
+  const bootstrap = await bootstrapResponse.json() as { csrfToken: string; conversationId: string };
+  const cookie = bootstrapResponse.headers.get("set-cookie")!.split(";")[0]!;
+  const headers = { "content-type": "application/json", "x-smol-csrf": bootstrap.csrfToken, cookie, origin };
+
+  assert.equal(bootstrap.conversationId, first.id);
+  const initialList = await (await fetch(`${origin}/api/conversations`, { headers: { cookie } })).json() as { activeConversationId: string; conversations: Array<{ id: string; title: string }> };
+  assert.equal(initialList.activeConversationId, first.id);
+  assert.equal(initialList.conversations[0]?.title, "Plan a weekend trip");
+
+  const createdResponse = await fetch(`${origin}/api/conversations`, { method: "POST", headers, body: JSON.stringify({ providerId: "openai", modelId: "gpt-5-mini" }) });
+  const second = await createdResponse.json() as { id: string };
+  assert.equal(createdResponse.status, 201);
+  assert.notEqual(second.id, first.id);
+
+  const activatedResponse = await fetch(`${origin}/api/conversations/${first.id}/activate`, { method: "POST", headers, body: "{}" });
+  assert.equal(activatedResponse.status, 200);
+  assert.equal(((await activatedResponse.json()) as { id: string }).id, first.id);
+  assert.equal((await fetch(`${origin}/api/conversations/missing/activate`, { method: "POST", headers, body: "{}" })).status, 404);
+  assert.equal((await fetch(`${origin}/api/conversations`, { method: "POST", headers, body: JSON.stringify({ providerId: "openai", extra: true }) })).status, 400);
+});

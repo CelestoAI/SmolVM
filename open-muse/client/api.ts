@@ -14,6 +14,10 @@ export interface Conversation {
   tabs: BrowserTab[];
   providerId: string; modelId: string; modelAccessState: "ready" | "auth_required" | "model_unavailable";
 }
+export interface ConversationSummary {
+  id: string; title: string; providerId: string; modelId: string; runState: string; updatedAt: string;
+}
+export interface ConversationList { activeConversationId?: string; conversations: ConversationSummary[] }
 
 export interface ModelSelection { providerId: string; modelId: string }
 export interface ProviderAccess {
@@ -51,7 +55,9 @@ async function request<T>(path: string, method = "GET", body?: unknown): Promise
   if (!response.ok) throw new Error(data.error ?? "OpenMuse request failed.");
   return data;
 }
-export const createConversation = () => request<Conversation>("/api/conversations", "POST", {});
+export const listConversations = () => request<ConversationList>("/api/conversations");
+export const createConversation = (selection?: ModelSelection) => request<Conversation>("/api/conversations", "POST", selection ?? {});
+export const activateConversation = (id: string) => request<Conversation>(`/api/conversations/${id}/activate`, "POST", {});
 export const getModelAccess = () => request<ModelAccess>("/api/model-access");
 export const selectModel = (selection: ModelSelection) => request<ModelSelection>("/api/model-access/selection", "PUT", selection);
 export const startAuth = (providerId: string, method: "oauth" | "api_key") => request<{ attempt: AuthAttempt }>("/api/auth-attempts", "POST", { providerId, method });
