@@ -26,7 +26,7 @@ on:
     inputs:
       presets:
         description: >-
-          Comma-separated presets to build (e.g. "openclaw,codex,claude-code,opencode").
+          Comma-separated presets to build (e.g. "linux-desktop,openclaw,codex,opencode").
           Use "all" to build every preset.
         type: string
         default: "all"
@@ -53,11 +53,17 @@ permissions:
 jobs:
   # ── Stage 1: Build shared base rootfs (once per arch) ─────────
   #
-  # Skipped when only openclaw is requested — openclaw uses its own
-  # builder and doesn't consume the layered base, so building it in
-  # that case just wastes 3-5 min of runner time per arch.
+  # Skipped when only a custom image is requested — neither custom builder
+  # consumes the layered base, so building it would waste runner time.
   base-rootfs:
-    if: ${{ inputs.presets != 'openclaw' }}
+    if: >-
+      ${{ inputs.presets == 'all' ||
+          contains(format(',{0},', inputs.presets), ',codex,') ||
+          contains(format(',{0},', inputs.presets), ',claude-code,') ||
+          contains(format(',{0},', inputs.presets), ',hermes,') ||
+          contains(format(',{0},', inputs.presets), ',opencode,') ||
+          contains(format(',{0},', inputs.presets), ',pi,') ||
+          contains(format(',{0},', inputs.presets), ',ubuntu,') }}
     strategy:
       fail-fast: false
       matrix:
@@ -451,7 +457,216 @@ jobs:
             echo "| ${NAME}-rootfs.ext4.zst | $(numfmt --to=iec-i --suffix=B ${ROOTFS_SIZE}) | \`${ROOTFS_SHA}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # ── Stage 2b: Layer presets on top of base ────────────────────
+  # ── Stage 2b: Build Linux desktop (custom builder) ────────────
+  #
+  # This is the ready-to-use computer image behind SmolVM.computer(). It
+  # includes Chromium, Openbox, a panel, terminal, file manager, and editor.
+  linux-desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 45
+
+    steps:
+      - name: Check preset filter
+        id: filter
+        env:
+          INPUT_PRESETS: ${{ inputs.presets }}
+        run: |
+          normalized=$(printf '%s' "$INPUT_PRESETS" | tr -d '[:space:]')
+          if [ "$normalized" = "all" ] || echo ",$normalized," | grep -q ",linux-desktop,"; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Skipping linux-desktop (not in filter: $INPUT_PRESETS)"
+          fi
+
+      - name: Check out repository
+        if: steps.filter.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.13
+        if: steps.filter.outputs.skip != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Rust toolchain
+        if: steps.filter.outputs.skip != 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Rust musl target
+        if: steps.filter.outputs.skip != 'true'
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          case "$ARCH" in
+            amd64) target="x86_64-unknown-linux-musl" ;;
+            arm64) target="aarch64-unknown-linux-musl" ;;
+            *) echo "Unsupported arch: $ARCH" >&2; exit 1 ;;
+          esac
+          rustup target add "$target"
+
+      - name: Cache Rust build
+        if: steps.filter.outputs.skip != 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'smolvm-core/Cargo.toml', 'guest-agent/Cargo.toml') }}
+          restore-keys: rust-${{ runner.os }}-${{ matrix.arch }}-
+
+      - name: Install uv
+        if: steps.filter.outputs.skip != 'true'
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+
+      - name: Install dependencies
+        if: steps.filter.outputs.skip != 'true'
+        run: uv sync --extra dev
+
+      - name: Confirm Docker is available
+        if: steps.filter.outputs.skip != 'true'
+        run: docker info >/dev/null
+
+      - name: Resolve release tag
+        if: steps.filter.outputs.skip != 'true'
+        id: release
+        env:
+          INPUT_TAG: ${{ inputs.release_tag }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            tag="$INPUT_TAG"
+          else
+            tag=$(awk -F'"' '/^IMAGES_RELEASE_TAG[[:space:]]*=/{print $2; exit}' src/smolvm/images/published.py)
+          fi
+          if [ -z "$tag" ]; then
+            echo "ERROR: IMAGES_RELEASE_TAG could not be parsed from src/smolvm/images/published.py" >&2
+            exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Release tag: ${tag}"
+
+      - name: Download Linux desktop kernel
+        if: steps.filter.outputs.skip != 'true'
+        id: desktop_kernel
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p kernel-assets
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "vmlinux-${ARCH}.elf" \
+            -D kernel-assets
+          kernel_path="$PWD/kernel-assets/vmlinux-${ARCH}.elf"
+          test -s "$kernel_path"
+          echo "path=$kernel_path" >> "$GITHUB_OUTPUT"
+
+      - name: Build Linux desktop image
+        if: steps.filter.outputs.skip != 'true'
+        id: build
+        env:
+          ARCH: ${{ matrix.arch }}
+          KERNEL_PATH: ${{ steps.desktop_kernel.outputs.path }}
+        run: |
+          uv run python <<'PY'
+          import os
+          from pathlib import Path
+          from smolvm.images.builder import ImageBuilder
+
+          arch = os.environ["ARCH"]
+          kernel_url = Path(os.environ["KERNEL_PATH"]).resolve().as_uri()
+          name = f"linux-desktop-{arch}"
+
+          builder = ImageBuilder()
+          _kernel, rootfs = builder.build_browser_rootfs(
+              "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKey ci@smolvm",
+              name=name,
+              rootfs_size_mb=8192,
+              kernel_url=kernel_url,
+              desktop=True,
+          )
+
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as fh:
+              fh.write(f"rootfs_path={rootfs}\n")
+              fh.write(f"name={name}\n")
+          print(f"rootfs: {rootfs} ({rootfs.stat().st_size:,} bytes)")
+          PY
+
+      - name: Stage release asset
+        if: steps.filter.outputs.skip != 'true'
+        env:
+          NAME: ${{ steps.build.outputs.name }}
+          ROOTFS_PATH: ${{ steps.build.outputs.rootfs_path }}
+        run: |
+          zstd -19 -T0 --rm -o "${NAME}-rootfs.ext4.zst" "$ROOTFS_PATH"
+          ls -lh "${NAME}-rootfs.ext4.zst"
+
+      - name: Compute SHA-256
+        if: steps.filter.outputs.skip != 'true'
+        id: sha
+        env:
+          NAME: ${{ steps.build.outputs.name }}
+        run: |
+          rootfs_sha=$(sha256sum "${NAME}-rootfs.ext4.zst" | cut -d' ' -f1)
+          rootfs_size=$(stat -c '%s' "${NAME}-rootfs.ext4.zst")
+          {
+            echo "rootfs_sha=${rootfs_sha}"
+            echo "rootfs_size=${rootfs_size}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload to GitHub Releases (draft)
+        if: steps.filter.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+          NAME: ${{ steps.build.outputs.name }}
+          FORCE_OVERWRITE: ${{ inputs.force_overwrite }}
+        run: |
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft \
+              --title "Published images $TAG" \
+              --notes "Auto-generated draft release for SmolVM published images. Verify SHA-256 sums and content before publishing." \
+              || echo "Draft already exists (race with another matrix cell), continuing."
+          fi
+
+          upload_args=()
+          if [ "${FORCE_OVERWRITE:-false}" = "true" ]; then
+            upload_args+=(--clobber)
+          fi
+          gh release upload "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            "${upload_args[@]}" \
+            "${NAME}-rootfs.ext4.zst"
+
+      - name: Step summary
+        if: steps.filter.outputs.skip != 'true'
+        env:
+          NAME: ${{ steps.build.outputs.name }}
+          TAG: ${{ steps.release.outputs.tag }}
+          ROOTFS_SHA: ${{ steps.sha.outputs.rootfs_sha }}
+          ROOTFS_SIZE: ${{ steps.sha.outputs.rootfs_size }}
+        run: |
+          {
+            echo "## Build summary: \`${NAME}\`"
+            echo ""
+            echo "Uploaded to draft release [\`${TAG}\`](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG})."
+            echo ""
+            echo "| File | Size | SHA-256 |"
+            echo "| --- | --- | --- |"
+            echo "| ${NAME}-rootfs.ext4.zst | $(numfmt --to=iec-i --suffix=B ${ROOTFS_SIZE}) | \`${ROOTFS_SHA}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Stage 2c: Layer presets on top of base ────────────────────
   #
   # codex, claude-code, hermes, opencode, and pi use the shared base rootfs.
   # Each job copies the base, chroots in, runs the preset's install.

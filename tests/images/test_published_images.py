@@ -866,6 +866,17 @@ class TestBundledManifest:
         assert amd_qemu.kernel_url.endswith("vmlinux-amd64.image")
         assert arm_qemu.kernel_url.endswith("vmlinux-arm64.image")
 
+    def test_linux_desktop_entries_cover_both_architectures(self) -> None:
+        """The computer API should have a downloadable desktop for each host architecture."""
+        amd = MANIFEST[("linux-desktop", "amd64", "firecracker", "ubuntu")]
+        arm = MANIFEST[("linux-desktop", "arm64", "firecracker", "ubuntu")]
+
+        assert amd.rootfs_url.endswith("linux-desktop-amd64-rootfs.ext4.zst")
+        assert arm.rootfs_url.endswith("linux-desktop-arm64-rootfs.ext4.zst")
+        assert len(amd.rootfs_sha256) == 64
+        assert len(arm.rootfs_sha256) == 64
+        assert amd.rootfs_sha256 != arm.rootfs_sha256
+
     def test_arches_have_distinct_rootfs_shas(self) -> None:
         """Sanity: copy-paste error would give both arches the same rootfs SHA."""
         amd = MANIFEST[("openclaw", "amd64", "firecracker", "ubuntu")]

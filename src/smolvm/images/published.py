@@ -49,7 +49,16 @@ from smolvm.exceptions import ImageError
 from smolvm.images.manager import ImageManager, ImageSource, LocalImage
 
 Arch = Literal["amd64", "arm64"]
-Preset = Literal["codex", "claude-code", "openclaw", "opencode", "hermes", "pi", "ubuntu"]
+Preset = Literal[
+    "codex",
+    "claude-code",
+    "openclaw",
+    "opencode",
+    "hermes",
+    "pi",
+    "ubuntu",
+    "linux-desktop",
+]
 # ``libkrun`` is reserved here for a future spike — manifest accepts the type
 # but the CLI never resolves a host to it until libkrun support is wired.
 Vmm = Literal["firecracker", "qemu", "libkrun"]
@@ -273,6 +282,9 @@ _HERMES_AMD64_ROOTFS_SHA = "227ca95fad257eecc929313d107b2e046c8f424899134deb9dd9
 _HERMES_ARM64_ROOTFS_SHA = "e42994ed1a49df3d9b1d5852522c566e2d8c2b5843c7597f08ffb126f5f39d10"
 _PI_AMD64_ROOTFS_SHA = "7724e3d85f748868cb17e9fe151e84c8172ff5164948d97fcfce65a8c89cd026"
 _PI_ARM64_ROOTFS_SHA = "9b22d25639e52823263023df233a428091cfe019298abc2044b0df20ef3b1c11"
+# Complete Linux desktop image used by ``SmolVM.computer()``.
+_LINUX_DESKTOP_AMD64_ROOTFS_SHA = "a2be5b81ccdfabeed77b5e3a6e6d549375a9d7898d9ce5be275da20f776c44c7"
+_LINUX_DESKTOP_ARM64_ROOTFS_SHA = "c8456d54db3b18922b2f394815279767f6127f229c801e658f62afb23de9dc7d"
 # Bare Ubuntu base image (no preset install) — raw-ext4, agent baked in.
 _UBUNTU_AMD64_ROOTFS_SHA = "b94628bba9e7384ca286427d0a9769d2141bba0eaf183faa9a28ec23b2926507"
 _UBUNTU_ARM64_ROOTFS_SHA = "eadf9e8681ee700cb41440c54fd247ce5d34b3afc87a203ba0ed2990ef27757d"
@@ -320,6 +332,11 @@ MANIFEST: dict[ManifestKey, PublishedImage] = {
     **_preset_rows("claude-code", _CLAUDE_CODE_AMD64_ROOTFS_SHA, _CLAUDE_CODE_ARM64_ROOTFS_SHA),
     **_preset_rows("hermes", _HERMES_AMD64_ROOTFS_SHA, _HERMES_ARM64_ROOTFS_SHA),
     **_preset_rows("pi", _PI_AMD64_ROOTFS_SHA, _PI_ARM64_ROOTFS_SHA),
+    **_preset_rows(
+        "linux-desktop",
+        _LINUX_DESKTOP_AMD64_ROOTFS_SHA,
+        _LINUX_DESKTOP_ARM64_ROOTFS_SHA,
+    ),
     # Bare Ubuntu base image (raw-ext4, agent baked in) — powers
     # ``create --os ubuntu`` on every supported VMM. Same rootfs shared
     # across vmms; only the kernel differs.

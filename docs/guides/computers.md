@@ -14,8 +14,8 @@ Use the smallest resource that fits the job:
 
 A computer includes a browser, but a browser sandbox is still the simpler choice for web-only work.
 
-Linux computer images are currently built locally on first use, so Docker must be running. Later
-starts reuse the cached image. This prerequisite will be removed when the desktop image is published.
+SmolVM downloads the Linux desktop image on first use and verifies its checksum. Later starts reuse
+the cached image, so applications do not need Docker to create a computer.
 
 ## Start and view a computer
 
