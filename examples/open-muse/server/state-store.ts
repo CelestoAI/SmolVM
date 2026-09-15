@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { z } from "zod";
+import { MAX_OPERATION_SUMMARY_CHARACTERS, redactOperationRecord, upsertOperation } from "./operation-lifecycle.js";
 import type { ConversationContext, ConversationEvent, Message } from "./types.js";
 
 const MAX_MESSAGES = 100;
@@ -25,9 +26,7 @@ const eventSchema = z.object({
   payload: z.object({ summary: z.string().max(MAX_EVENT_SUMMARY_CHARACTERS).optional() }),
 });
 
-const storedConversationSchema = z.object({
-  fileVersion: z.literal(1),
-  conversation: z.object({
+const conversationV1Schema = z.object({
     id: z.string(),
     stateVersion: z.number().int().positive(),
     controlOwner: z.enum(["agent", "pause_requested", "human"]),
@@ -35,8 +34,29 @@ const storedConversationSchema = z.object({
     sessionLifecycle: z.enum(["absent", "starting", "ready", "stopping", "deleted", "error"]),
     messages: z.array(messageSchema).max(MAX_MESSAGES),
     events: z.array(eventSchema).max(MAX_EVENTS),
-    lastActivityAt: z.number().nonnegative(),
-  }),
+  lastActivityAt: z.number().nonnegative(),
+});
+
+const operationSchema = z.object({
+  id: z.string(),
+  kind: z.enum(["checkout_review", "browser_program", "browser_operation"]),
+  summary: z.string().max(MAX_OPERATION_SUMMARY_CHARACTERS),
+  state: z.enum(["approved", "dispatched", "completed", "outcome_unknown"]),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  outcome: z.enum(["succeeded", "failed_before_execution"]).optional(),
+  errorCode: z.string().max(120).optional(),
+  recoveryAcknowledgedAt: z.string().optional(),
+});
+
+const storedConversationV1Schema = z.object({
+  fileVersion: z.literal(1),
+  conversation: conversationV1Schema,
+});
+
+const storedConversationSchema = z.object({
+  fileVersion: z.literal(2),
+  conversation: conversationV1Schema.extend({ operationJournal: z.array(operationSchema).max(101) }),
 });
 
 export type StoredConversation = z.infer<typeof storedConversationSchema>;
@@ -53,10 +73,43 @@ function boundedMessages(messages: Message[]): Message[] {
   return result.reverse();
 }
 
+const DURABLE_EVENT_SUMMARIES: Readonly<Record<string, string>> = {
+  "conversation.created": "Conversation ready",
+  "conversation.stopping": "Conversation stopping",
+  "conversation.stopped": "Conversation stopped",
+  "conversation.interrupted": "Conversation interrupted",
+  "conversation.continued": "Conversation continuing",
+  "agent.started": "Agent turn started",
+  "agent.completed": "Agent turn completed",
+  "agent.failed": "Agent turn failed",
+  "browser.starting": "Browser starting",
+  "browser.ready": "Browser ready",
+  "browser.failed": "Browser failed",
+  "browser.reconnecting": "Browser reconnecting",
+  "browser.reconnected": "Browser reconnected",
+  "browser.closed": "Browser closed",
+  "tool.started": "Browser tool started",
+  "tool.completed": "Browser tool completed",
+  "tool.failed": "Browser tool failed",
+  "approval.requested": "Browser approval requested",
+  "approval.resolved": "Browser approval resolved",
+  "approval.invalidated": "Browser approval invalidated",
+  "operation.approved": "Browser operation approved",
+  "operation.dispatched": "Browser operation dispatched",
+  "operation.completed": "Browser operation completed",
+  "operation.outcome_unknown": "Browser operation outcome unknown",
+  "popup.quarantined": "Popup quarantined",
+  "popup.adopted": "Popup adopted",
+  "tab.opened": "Browser tab opened",
+  "tab.navigated": "Browser tab navigated",
+  "tab.closed": "Browser tab closed",
+  "control.changed": "Browser control changed",
+  "broker.decision": "Browser policy decision recorded",
+  "cart.updated": "Cart updated",
+};
+
 function safeEvent(event: ConversationEvent): StoredConversation["conversation"]["events"][number] {
-  const summary = typeof event.payload.summary === "string"
-    ? event.payload.summary.slice(0, MAX_EVENT_SUMMARY_CHARACTERS)
-    : undefined;
+  const summary = DURABLE_EVENT_SUMMARIES[event.type];
   return {
     id: event.id,
     conversationId: event.conversationId,
@@ -69,7 +122,7 @@ function safeEvent(event: ConversationEvent): StoredConversation["conversation"]
 
 export function serializeConversation(context: ConversationContext): StoredConversation {
   return {
-    fileVersion: 1,
+    fileVersion: 2,
     conversation: {
       id: context.id,
       stateVersion: context.stateVersion,
@@ -78,6 +131,10 @@ export function serializeConversation(context: ConversationContext): StoredConve
       sessionLifecycle: context.sessionLifecycle,
       messages: boundedMessages(context.messages),
       events: context.events.slice(-MAX_EVENTS).map(safeEvent),
+      operationJournal: context.operationJournal.reduce(
+        (journal, operation) => upsertOperation(journal, redactOperationRecord(operation)),
+        [] as ConversationContext["operationJournal"],
+      ),
       lastActivityAt: context.lastActivityAt,
     },
   };
@@ -101,7 +158,26 @@ export class ConversationStateStore {
       throw error;
     }
     try {
-      return storedConversationSchema.parse(JSON.parse(contents));
+      const parsed = JSON.parse(contents);
+      const current = storedConversationSchema.safeParse(parsed);
+      if (current.success) return {
+        ...current.data,
+        conversation: {
+          ...current.data.conversation,
+          events: current.data.conversation.events.map((event) => safeEvent(event as ConversationEvent)),
+          operationJournal: current.data.conversation.operationJournal.map(redactOperationRecord),
+        },
+      };
+      const legacy = storedConversationV1Schema.safeParse(parsed);
+      if (legacy.success) return {
+        fileVersion: 2,
+        conversation: {
+          ...legacy.data.conversation,
+          events: legacy.data.conversation.events.map((event) => safeEvent(event as ConversationEvent)),
+          operationJournal: [],
+        },
+      };
+      throw new Error("invalid state");
     } catch {
       throw new Error(`Saved OpenMuse state is invalid at '${this.path}'. Run 'mv "${this.path}" "${this.path}.bad"', then run 'npm run dev'.`);
     }

@@ -81,11 +81,13 @@ test("in-flight work restores as interrupted without replayable approval state",
   const snapshot = restored.snapshot(created.id);
 
   assert.equal(snapshot.runState, "interrupted");
+  assert.deepEqual(snapshot.tabs, []);
   assert.equal(snapshot.sessionLifecycle, "absent");
   assert.equal(snapshot.controlOwner, "agent");
   assert.equal(snapshot.pendingApproval, undefined);
   const contents = await readFile(store.path, "utf8");
-  assert.match(contents, /Place the order/);
+  assert.doesNotMatch(contents, /Place the order/);
+  assert.match(contents, /Browser approval requested/);
   assert.doesNotMatch(contents, /approval-secret|getByText|"actionDigest"/);
 });
 
@@ -115,6 +117,57 @@ test("invalid state reports a recovery command instead of silently resetting", a
       return message.includes(`mv \"${store.path}\" \"${store.path}.bad\"`) && message.includes("npm run dev");
     },
   );
+});
+
+test("v1 checkpoints migrate to v2 with an empty operation journal", async (t) => {
+  const store = await temporaryStore(t);
+  const { created, context } = await conversationFixture();
+  const current = serializeConversation(context);
+  const { operationJournal: _operationJournal, ...legacyConversation } = current.conversation;
+  await writeFile(store.path, JSON.stringify({ fileVersion: 1, conversation: legacyConversation }), "utf8");
+
+  const restored = await ConversationManager.open("", "gpt-5-mini", false, store);
+  const migrated = await store.load();
+
+  assert.equal(restored.snapshot(created.id).runState, "idle");
+  assert.equal(migrated?.fileVersion, 2);
+  assert.deepEqual(migrated?.conversation.operationJournal, []);
+});
+
+test("restart maps durable dispatched work to unknown without replay data", async (t) => {
+  const store = await temporaryStore(t);
+  const { created, context } = await conversationFixture();
+  context.operationJournal = [{
+    id: "operation-dispatched",
+    kind: "browser_program",
+    summary: "Submit the form",
+    state: "dispatched",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  }];
+  context.runState = "tool_action";
+  await store.save(serializeConversation(context));
+
+  const restored = await ConversationManager.open("", "gpt-5-mini", false, store);
+  const snapshot = restored.snapshot(created.id);
+
+  assert.equal(snapshot.runState, "interrupted");
+  assert.deepEqual(snapshot.recovery, { kind: "outcome_unknown", operationId: "operation-dispatched", summary: "Run approved browser program" });
+  assert.equal((await store.load())?.conversation.operationJournal[0]?.state, "outcome_unknown");
+  assert.doesNotMatch(await readFile(store.path, "utf8"), /page\.|approvalId|actionDigest/);
+
+  const prompts: string[] = [];
+  const internals = restored as unknown as {
+    turnQueue: Promise<void>;
+    runTurn: (context: ConversationContext, prompt: string) => Promise<void>;
+  };
+  internals.runTurn = async (_context, prompt) => { prompts.push(prompt); };
+  await restored.continueInterrupted(created.id);
+  await internals.turnQueue;
+
+  assert.match(prompts[0]!, /may have completed/);
+  assert.match(prompts[0]!, /Do not repeat it automatically/);
+  assert.ok((await store.load())?.conversation.operationJournal[0]?.recoveryAcknowledgedAt);
 });
 
 test("serialized writes cannot let an older checkpoint overwrite a newer one", async (t) => {
@@ -207,8 +260,28 @@ test("checkpoint serialization bounds messages and strips event payload details"
   assert.equal(saved.messages[0]?.id, "message-5");
   assert.equal(saved.events.length, 500);
   assert.equal(saved.events[0]?.id, 6);
-  assert.equal(saved.events[0]?.payload.summary?.length, 1_000);
+  assert.equal(saved.events[0]?.payload.summary, undefined);
   assert.equal("secret" in saved.events[0]!.payload, false);
+});
+
+test("durable lifecycle events replace URLs, model text, targets, and errors with closed labels", async () => {
+  const { context } = await conversationFixture();
+  const createdAt = new Date().toISOString();
+  context.events = [
+    { id: 1, conversationId: context.id, stateVersion: 1, createdAt, type: "approval.requested", payload: { summary: "Click Secret Account at https://example.com/private?token=hidden" } },
+    { id: 2, conversationId: context.id, stateVersion: 1, createdAt, type: "tab.navigated", payload: { summary: "Tab opened https://example.com/orders/123" } },
+    { id: 3, conversationId: context.id, stateVersion: 1, createdAt, type: "agent.failed", payload: { summary: "upstream failed with bearer-secret" } },
+  ];
+
+  const saved = serializeConversation(context).conversation.events;
+  const serialized = JSON.stringify(saved);
+
+  assert.deepEqual(saved.map((event) => event.payload.summary), [
+    "Browser approval requested",
+    "Browser tab navigated",
+    "Agent turn failed",
+  ]);
+  assert.doesNotMatch(serialized, /Secret Account|example\.com|orders|token|bearer-secret/);
 });
 
 test("checkpoint serialization enforces the UTF-8 message byte budget", async () => {
@@ -344,6 +417,41 @@ test("graceful close drains active and queued turns before releasing the compute
   assert.equal((await store.load())?.conversation.runState, "interrupted");
 });
 
+test("Stop drains an active approval and queued turn before releasing the computer", async (t) => {
+  const store = await temporaryStore(t);
+  const manager = new ConversationManager("", "gpt-5-mini", false, store);
+  const created = await manager.create();
+  const calls: string[] = [];
+  let finishAction!: () => void;
+  const activeAction = new Promise<void>((resolve) => { finishAction = resolve; });
+  const internals = manager as unknown as {
+    context: ConversationContext;
+    activeAction: Promise<void>;
+    turnQueue: Promise<void>;
+    runTurn: (context: ConversationContext, text: string) => Promise<void>;
+    releaseComputer: (context: ConversationContext) => Promise<void>;
+  };
+  internals.context.runState = "tool_action";
+  internals.context.agent = {
+    state: { messages: [], errorMessage: undefined },
+    abort: () => { calls.push("abort"); },
+  } as unknown as ConversationContext["agent"];
+  internals.activeAction = activeAction;
+  internals.turnQueue = activeAction.then(() => internals.runTurn(internals.context, "queued"));
+  internals.releaseComputer = async () => { calls.push("release"); };
+
+  const stopping = manager.stop(created.id);
+  await Promise.resolve();
+  assert.equal(manager.snapshot(created.id).runState, "stopping");
+  assert.deepEqual(calls, []);
+  finishAction();
+  await stopping;
+
+  assert.deepEqual(calls, ["abort", "release"]);
+  assert.equal(manager.snapshot(created.id).runState, "stopped");
+  assert.equal((await store.load())?.conversation.runState, "stopped");
+});
+
 test("takeover, resume, and stop transitions are checkpointed", async (t) => {
   const store = await temporaryStore(t);
   const manager = new ConversationManager("", "gpt-5-mini", false, store);
@@ -372,6 +480,11 @@ test("approved browser actions clear approval data before the next durable turn"
   };
   internals.runTurn = async () => undefined;
   internals.context.sessionLifecycle = "ready";
+  const page = { url: () => "https://example.com", isClosed: () => false } as ConversationContext["page"];
+  internals.context.page = page;
+  internals.context.activeTabId = "tab-test";
+  internals.context.tabs.set("tab-test", { id: "tab-test", owner: "agent", epoch: 1, controlEpoch: internals.context.controlEpoch!, page: page! });
+  internals.context.playwright = { isConnected: () => true, contexts: () => [{ pages: () => [page] }] } as unknown as ConversationContext["playwright"];
   internals.context.computer = {
     status: "ready",
     computerId: "computer-test",
@@ -416,7 +529,8 @@ test("approved browser actions clear approval data before the next durable turn"
   const checkpoint = await readFile(store.path, "utf8");
 
   assert.equal((await store.load())?.conversation.runState, "model_turn");
-  assert.doesNotMatch(checkpoint, /approval-durable|actionDigest|program/);
+  assert.doesNotMatch(checkpoint, /approval-durable|actionDigest|return \{ done: true \}/);
+  assert.match(checkpoint, /"kind": "browser_program"/);
 });
 
 test("terminal checkpoints restore without being mislabeled as interrupted", async (t) => {
@@ -432,6 +546,24 @@ test("terminal checkpoints restore without being mislabeled as interrupted", asy
     assert.equal(restored.snapshot(created.id).runState, runState);
     assert.equal(restored.activeConversationId, undefined);
   }
+});
+
+test("a stopped checkpoint remains terminal even when its journal contains dispatched work", async (t) => {
+  const store = await temporaryStore(t);
+  const { created, context } = await conversationFixture();
+  context.runState = "stopped";
+  context.sessionLifecycle = "deleted";
+  context.operationJournal = [{
+    id: "operation-during-stop", kind: "browser_program", summary: "model text with https://example.com/private",
+    state: "dispatched", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+  }];
+  await store.save(serializeConversation(context));
+
+  const restored = await ConversationManager.open("", "gpt-5-mini", false, store);
+
+  assert.equal(restored.snapshot(created.id).runState, "stopped");
+  assert.equal(restored.snapshot(created.id).recovery, undefined);
+  assert.equal((await store.load())?.conversation.operationJournal[0]?.state, "outcome_unknown");
 });
 
 test("agent completion and failure states are durable", async (t) => {

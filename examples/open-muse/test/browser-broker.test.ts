@@ -4,8 +4,9 @@ import { ActionBroker, MAX_BROWSER_PROGRAM_BYTES } from "../server/broker.js";
 import { operationProgram } from "../server/browser-operations.js";
 import { ConversationManager } from "../server/manager.js";
 import type { ConversationContext } from "../server/types.js";
+import type { TabTarget } from "../server/browser-tabs.js";
 
-function harness() {
+function harness(persist: () => Promise<void> = async () => undefined, resolveTabTarget?: () => TabTarget) {
   const programs: string[] = [];
   const events: string[] = [];
   const eventPayloads: Record<string, unknown>[] = [];
@@ -18,6 +19,7 @@ function harness() {
     sessionLifecycle: "ready",
     messages: [],
     events: [],
+    operationJournal: [],
     grants: [],
     cart: [],
     commerceRevision: 0,
@@ -45,7 +47,7 @@ function harness() {
       async delete() {},
     },
   } as ConversationContext;
-  const broker = new ActionBroker(context, async () => undefined, (type, payload) => { events.push(type); eventPayloads.push(payload); });
+  const broker = new ActionBroker(context, async () => undefined, (type, payload) => { events.push(type); eventPayloads.push(payload); }, persist, resolveTabTarget);
   return { broker, context, programs, events, eventPayloads };
 }
 
@@ -142,10 +144,10 @@ test("active browser operations create page-bound one-shot approvals", async () 
   const approval = context.pendingApproval!;
   const outcome = await broker.resolveApproval(approval.approvalId, approval.actionDigest, true);
 
-  assert.equal(programs.length, 2);
-  assert.match(programs[1], /currentPage !== "https:\/\/example\.com"/);
-  assert.match(programs[1], /getByRole\("button", \{ name: "Add to cart", exact: true \}\)/);
-  assert.match(programs[1], /target\.count\(\) !== 1/);
+  assert.equal(programs.length, 3);
+  assert.match(programs[2], /currentPage !== "https:\/\/example\.com"/);
+  assert.match(programs[2], /getByRole\("button", \{ name: "Add to cart", exact: true \}\)/);
+  assert.match(programs[2], /target\.count\(\) !== 1/);
   assert.equal(context.pendingApproval, undefined);
   assert.equal(context.runState, "idle");
   assert.equal("browserResult" in outcome, true);
@@ -203,7 +205,7 @@ test("operation approvals bind URL queries without exposing them in the approval
   assert.equal(context.pendingApproval?.pageBinding, "https://example.com/search?q=private#results");
 
   await broker.resolveApproval(context.pendingApproval!.approvalId, context.pendingApproval!.actionDigest, true);
-  assert.match(programs[1], /https:\/\/example\.com\/search\?q=private#results/);
+  assert.match(programs[2], /https:\/\/example\.com\/search\?q=private#results/);
 });
 
 test("concurrent active operations share the first pending approval", async () => {
@@ -263,7 +265,7 @@ test("conversation snapshots hide private page bindings and fill values", async 
   assert.equal(JSON.stringify(snapshot).includes("person@example.com"), false);
 });
 
-test("browser programs return the current page when generated automation stops early", async () => {
+test("browser programs never retry or return page data after an uncertain failure", async () => {
   const { broker, context, programs, events } = harness();
   let executions = 0;
   context.computer!.exec = async (command: string | readonly string[]) => {
@@ -299,7 +301,6 @@ test("browser programs return the current page when generated automation stops e
     "await page.goto('https://www.amazon.com'); await page.waitForSelector('#missing'); return [];",
     false,
     "Search Amazon for iPhone prices",
-    true,
   );
   const outcome = await broker.resolveApproval(
     context.pendingApproval!.approvalId,
@@ -311,113 +312,36 @@ test("browser programs return the current page when generated automation stops e
   assert.match(programs[0], /setDefaultNavigationTimeout\(15_000\)/);
   assert.doesNotMatch(programs[0], /Promise\.race/);
   assert.doesNotMatch(programs[0], /visibleText/);
-  assert.match(programs[1], /innerText\(\{ timeout: 5_000 \}\)/);
-  assert.match(programs[1], /pages\.find/);
-  assert.match(programs[1], /parsedUrl\.origin.*parsedUrl\.pathname/);
-  assert.match(programs[1], /primary\.first\(\)/);
-  assert.doesNotMatch(programs[1], /page\.locator\('body'\)/);
-  assert.match(programs[1], /account\|auth\|billing\|checkout/);
-  assert.match(programs[1], /\[email redacted\]/);
+  assert.equal(programs.length, 1);
   assert.deepEqual(outcome, {
-    resumeAgent: true,
-    browserResult: {
-      completed: false,
-      programResult: null,
-      programError: "Locator wait exceeded the per-operation limit.",
-      page: {
-        title: "Amazon.com : iPhone",
-        url: "https://www.amazon.com/s",
-        visibleText: "Results iPhone $799.00 $899.00",
-      },
-    },
+    resumeAgent: false,
+    recovery: { kind: "outcome_unknown", operationId: context.operationJournal.at(-1)?.id, summary: "Run approved browser program" },
   });
-  assert.equal(events.at(-2), "tool.completed");
-  assert.equal(events.at(-1), "approval.resolved");
-  assert.equal(context.runState, "idle");
+  assert.equal(events.at(-1), "operation.outcome_unknown");
+  assert.equal(context.runState, "interrupted");
+  assert.equal(context.operationJournal.at(-1)?.state, "outcome_unknown");
 });
 
-test("browser programs reject empty, oversized, failed, malformed, and empty runner results", async () => {
-  const { broker, context } = harness();
+test("browser programs reject invalid input and mark malformed post-dispatch results unknown", async () => {
+  const initial = harness();
 
-  await assert.rejects(() => broker.runProgram(" ", false, "Empty"), /1 to 18,000 bytes/);
+  await assert.rejects(() => initial.broker.runProgram(" ", false, "Empty"), /1 to 18,000 bytes/);
   await assert.rejects(
-    () => broker.runProgram("x".repeat(MAX_BROWSER_PROGRAM_BYTES + 1), false, "Oversized"),
+    () => initial.broker.runProgram("x".repeat(MAX_BROWSER_PROGRAM_BYTES + 1), false, "Oversized"),
     /1 to 18,000 bytes/,
   );
 
-  context.computer!.exec = async () => ({
-    ok: false, exitCode: 1, stdout: "", stderr: "page crashed", durationMs: 1,
-  });
-  await broker.runProgram("return true;", false, "Failing runner");
   const originalError = console.error;
   console.error = () => undefined;
   try {
-    await assert.rejects(
-      () => broker.resolveApproval(context.pendingApproval!.approvalId, context.pendingApproval!.actionDigest, true),
-      (error: unknown) => (error as { status?: number }).status === 422
-        && (error as Error).message.includes("retry using the current page")
-        && (error as { cause?: Error }).cause?.message === "page crashed",
-    );
-
-    context.computer!.exec = async () => ({
-      ok: true, exitCode: 0, stdout: "unexpected output", stderr: "", durationMs: 1,
-    });
-    await broker.runProgram("return true;", false, "Malformed runner");
-    await assert.rejects(
-      () => broker.resolveApproval(context.pendingApproval!.approvalId, context.pendingApproval!.actionDigest, true),
-      (error: unknown) => (error as { status?: number }).status === 422
-        && (error as { cause?: Error }).cause?.message === "The browser runner returned an invalid result.",
-    );
-
-    context.computer!.exec = async () => ({
-      ok: true, exitCode: 0, stdout: "SMOLVM_BROWSER_RESULT={not-json}\n", stderr: "", durationMs: 1,
-    });
-    await broker.runProgram("return true;", false, "Invalid JSON runner result");
-    await assert.rejects(
-      () => broker.resolveApproval(context.pendingApproval!.approvalId, context.pendingApproval!.actionDigest, true),
-      (error: unknown) => (error as { status?: number }).status === 422
-        && (error as { cause?: Error }).cause instanceof SyntaxError,
-    );
-
-    context.computer!.exec = async () => ({
-      ok: true, exitCode: 0, stdout: 'SMOLVM_BROWSER_RESULT={"ok":false}\n', stderr: "", durationMs: 1,
-    });
-    await broker.runProgram("return true;", false, "Unsuccessful runner result");
-    await assert.rejects(
-      () => broker.resolveApproval(context.pendingApproval!.approvalId, context.pendingApproval!.actionDigest, true),
-      (error: unknown) => (error as { status?: number }).status === 422
-        && (error as { cause?: Error }).cause?.message === "The browser runner returned an unsuccessful result.",
-    );
-
-    let fallbackExecutions = 0;
-    context.computer!.exec = async () => {
-      fallbackExecutions += 1;
-      return fallbackExecutions === 1
-        ? { ok: false, exitCode: 1, stdout: "", stderr: "locator timed out", durationMs: 1 }
-        : {
-            ok: true, exitCode: 0,
-            stdout: 'SMOLVM_BROWSER_RESULT={"ok":true,"value":{"title":"","url":"about:blank","visibleText":""}}\n',
-            stderr: "", durationMs: 1,
-          };
-    };
-    await broker.runProgram("return true;", false, "No useful page fallback", true);
-    await assert.rejects(
-      () => broker.resolveApproval(context.pendingApproval!.approvalId, context.pendingApproval!.actionDigest, true),
-      (error: unknown) => (error as { status?: number }).status === 422
-        && (error as { cause?: Error }).cause?.message === "locator timed out",
-    );
-
-    context.computer!.exec = async () => ({
-      ok: true, exitCode: 0,
-      stdout: 'SMOLVM_BROWSER_RESULT={"ok":true,"value":{"programResult":"undefined","page":{"title":"","url":"about:blank","visibleText":""}}}\n',
-      stderr: "", durationMs: 1,
-    });
-    await broker.runProgram("async function unused() { return true; }", false, "No-op runner result");
-    await assert.rejects(
-      () => broker.resolveApproval(context.pendingApproval!.approvalId, context.pendingApproval!.actionDigest, true),
-      (error: unknown) => (error as { status?: number }).status === 422
-        && (error as { cause?: Error }).cause?.message === "The Playwright program finished without returning data.",
-    );
+    for (const stdout of ["unexpected output", "SMOLVM_BROWSER_RESULT={not-json}\n", 'SMOLVM_BROWSER_RESULT={"ok":false}\n']) {
+      const { broker, context } = harness();
+      context.computer!.exec = async () => ({ ok: true, exitCode: 0, stdout, stderr: "", durationMs: 1 });
+      await broker.runProgram("return true;", false, "Malformed runner");
+      const outcome = await broker.resolveApproval(context.pendingApproval!.approvalId, context.pendingApproval!.actionDigest, true);
+      assert.equal(outcome.resumeAgent, false);
+      assert.equal(context.recovery?.kind, "outcome_unknown");
+    }
   } finally {
     console.error = originalError;
   }
@@ -462,13 +386,132 @@ test("website approvals can be denied and stale approvals cannot execute", async
   const stale = harness();
   await stale.broker.runProgram("await page.locator('button').click();", true, "Click once");
   stale.context.pendingApproval!.expiresAt = new Date(Date.now() - 1).toISOString();
-  await assert.rejects(
-    () => stale.broker.resolveApproval(
-      stale.context.pendingApproval!.approvalId,
-      stale.context.pendingApproval!.actionDigest,
-      true,
-    ),
-    (error: unknown) => (error as { status?: number }).status === 409,
+  const staleOutcome = await stale.broker.resolveApproval(
+    stale.context.pendingApproval!.approvalId,
+    stale.context.pendingApproval!.actionDigest,
+    true,
   );
+  assert.equal(staleOutcome.resumeAgent, false);
+  assert.equal(stale.context.recovery?.kind, "failed_before_execution");
   assert.equal(stale.programs.length, 0);
+});
+
+test("checkpoint failures before computer.exec are safe and never dispatch", async () => {
+  let checkpoints = 0;
+  const { broker, context, programs, events } = harness(async () => {
+    checkpoints += 1;
+    if (checkpoints === 2) throw new Error("state disk unavailable");
+  });
+  await broker.runProgram("return { changed: true };", true, "Change the page");
+
+  const outcome = await broker.resolveApproval(context.pendingApproval!.approvalId, context.pendingApproval!.actionDigest, true);
+
+  assert.equal(programs.length, 0);
+  assert.equal(outcome.resumeAgent, false);
+  assert.equal(context.recovery?.kind, "failed_before_execution");
+  assert.equal(context.operationJournal.at(-1)?.outcome, "failed_before_execution");
+  assert.equal(events.includes("operation.dispatched"), false);
+  assert.equal(events.includes("tool.started"), false);
+});
+
+test("completion checkpoint failures become unknown after one execution", async () => {
+  let checkpoints = 0;
+  const { broker, context, programs, events } = harness(async () => {
+    checkpoints += 1;
+    if (checkpoints === 3) throw new Error("state disk unavailable");
+  });
+  await broker.runProgram("return { changed: true };", true, "Change the page");
+
+  const outcome = await broker.resolveApproval(context.pendingApproval!.approvalId, context.pendingApproval!.actionDigest, true);
+
+  assert.equal(programs.length, 1);
+  assert.equal(outcome.resumeAgent, false);
+  assert.equal(context.recovery?.kind, "outcome_unknown");
+  assert.equal(context.operationJournal.at(-1)?.state, "outcome_unknown");
+  assert.equal(events.includes("operation.completed"), false);
+  assert.equal(events.includes("approval.resolved"), false);
+});
+
+test("approvals bind to one tab epoch and stale tabs fail before execution", async () => {
+  let target: TabTarget = {
+    id: "tab-one",
+    epoch: 3,
+    controlEpoch: "control-one",
+    pageIndex: 2,
+    pageBinding: "https://example.com/form?draft=1",
+    pageUrl: "https://example.com/form",
+  };
+  const { broker, context, programs } = harness(async () => undefined, () => target);
+  const pending = await broker.runProgram("return { submitted: true };", true, "Submit form");
+
+  assert.equal(pending.approvalRequired, true);
+  assert.equal(context.pendingApproval?.tabId, "tab-one");
+  assert.equal(context.pendingApproval?.tabEpoch, 3);
+  assert.equal(programs.length, 0);
+
+  target = { ...target, epoch: 4 };
+  const outcome = await broker.resolveApproval(context.pendingApproval!.approvalId, context.pendingApproval!.actionDigest, true);
+
+  assert.equal(outcome.resumeAgent, false);
+  assert.equal(context.recovery?.kind, "failed_before_execution");
+  assert.equal(context.operationJournal.at(-1)?.errorCode, "TAB_CHANGED");
+  assert.equal(programs.length, 0);
+});
+
+test("runner targets the approved tab index", async () => {
+  const target: TabTarget = { id: "tab-three", epoch: 1, controlEpoch: "control-one", pageIndex: 2 };
+  const { broker, programs } = harness(async () => undefined, () => target);
+
+  await broker.runWebOperation({ kind: "observe" });
+
+  assert.match(programs[0]!, /page = pages\[2\]/);
+  assert.match(programs[0]!, /const pages = \[page\]/);
+  assert.match(programs[0]!, /const context = undefined/);
+  assert.match(programs[0]!, /const browser = undefined/);
+});
+
+test("raw programs re-check the approved page inside the dispatched runner", async () => {
+  const target: TabTarget = {
+    id: "tab-bound", epoch: 1, controlEpoch: "agent-control-test", pageIndex: 0,
+    pageBinding: "https://example.com/form?draft=secret", pageUrl: "https://example.com/form",
+  };
+  const { broker, context, programs } = harness(async () => undefined, () => target);
+  let calls = 0;
+  context.computer!.exec = async (command: string | readonly string[]) => {
+    const encoded = Array.isArray(command) ? command[1] : "";
+    const program = Buffer.from(encoded, "base64url").toString("utf8");
+    programs.push(program);
+    calls += 1;
+    if (calls === 1) {
+      return { ok: true, exitCode: 0, stdout: 'SMOLVM_BROWSER_RESULT={"ok":true,"value":{"programResult":{"binding":"https://example.com/form?draft=secret","display":"https://example.com/form"},"page":{"title":"Form","url":"https://example.com/form"}}}\n', stderr: "", durationMs: 1 };
+    }
+    return { ok: false, exitCode: 1, stdout: "", stderr: "The approved page changed before execution.", durationMs: 1 };
+  };
+
+  await broker.runProgram("return { changed: true };", true, "model supplied secret https://example.com/private");
+  const pending = context.pendingApproval!;
+  const outcome = await broker.resolveApproval(pending.approvalId, pending.actionDigest, true);
+
+  assert.equal(outcome.resumeAgent, false);
+  assert.equal(context.operationJournal.at(-1)?.state, "outcome_unknown");
+  assert.equal(context.operationJournal.at(-1)?.summary, "Run approved browser program");
+  assert.equal(programs.length, 2);
+  assert.ok(programs[1]!.indexOf("dispatchPageBinding !== approvedPageBinding") < programs[1]!.indexOf("return { changed: true };"));
+});
+
+test("post-dispatch failures do not replace a stopping state", async () => {
+  const { broker, context } = harness();
+  context.computer!.exec = async () => {
+    context.runState = "stopping";
+    return { ok: false, exitCode: 1, stdout: "", stderr: "runner failed", durationMs: 1 };
+  };
+  await broker.runProgram("return true;", true, "Run once");
+  const pending = context.pendingApproval!;
+
+  const outcome = await broker.resolveApproval(pending.approvalId, pending.actionDigest, true);
+
+  assert.deepEqual(outcome, { resumeAgent: false });
+  assert.equal(context.runState, "stopping");
+  assert.equal(context.recovery, undefined);
+  assert.equal(context.operationJournal.at(-1)?.state, "outcome_unknown");
 });

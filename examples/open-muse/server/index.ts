@@ -30,7 +30,7 @@ export function createApp(manager: ConversationManager, staticRoot = fileURLToPa
       if (response.headersSent) return response.end();
       const status = typeof (error as { status?: unknown })?.status === "number" ? (error as { status: number }).status : 500;
       const message = status < 500 && error instanceof Error ? error.message : "OpenMuse hit an unexpected error. Check the server log and try again.";
-      if (status >= 500) console.error(error instanceof Error ? error.message : error);
+      if (status >= 500) console.error("OpenMuse request failed.");
       sendJson(response, status, { error: message });
     }
   });
@@ -64,6 +64,11 @@ async function route(manager: ConversationManager, staticRoot: string, request: 
   if (method === "POST" && url.pathname === "/api/conversations") return sendJson(response, 201, await manager.create());
   const snapshotMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)$/);
   if (method === "GET" && snapshotMatch) return sendJson(response, 200, manager.snapshot(snapshotMatch[1]));
+  const diagnosticsMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/diagnostics$/);
+  if (method === "GET" && diagnosticsMatch) {
+    assertLoopbackRequest(request);
+    return sendJson(response, 200, manager.diagnostics(diagnosticsMatch[1]));
+  }
   const messagesMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
   if (method === "POST" && messagesMatch) return sendJson(response, 202, await manager.send(messagesMatch[1], messageBody.parse(await readJson(request)).text));
   const eventsMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/events$/);
@@ -75,6 +80,8 @@ async function route(manager: ConversationManager, staticRoot: string, request: 
   }
   const takeoverMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/takeover$/);
   if (method === "POST" && takeoverMatch) return sendJson(response, 200, await manager.takeover(takeoverMatch[1]));
+  const adoptPopupMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/tabs\/([^/]+)\/adopt$/);
+  if (method === "POST" && adoptPopupMatch) return sendJson(response, 200, await manager.adoptPopup(adoptPopupMatch[1], adoptPopupMatch[2]));
   const resumeMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/resume$/);
   if (method === "POST" && resumeMatch) return sendJson(response, 200, await manager.resume(resumeMatch[1], resumeBody.parse(await readJson(request)).controlEpoch));
   const continueMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/continue$/);
@@ -84,7 +91,7 @@ async function route(manager: ConversationManager, staticRoot: string, request: 
   const stopMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/stop$/);
   if (method === "POST" && stopMatch) {
     manager.snapshot(stopMatch[1]);
-    void manager.stop(stopMatch[1]).catch((error) => console.error(error instanceof Error ? error.message : error));
+    void manager.stop(stopMatch[1]).catch(() => console.error("OpenMuse stop failed."));
     return sendJson(response, 202, { stopping: true });
   }
   const tokenMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/viewer-token$/);
@@ -164,8 +171,8 @@ async function main(): Promise<void> {
   server.listen(port, host, () => console.log(`OpenMuse is ready at http://${host}:${port}`));
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  void main().catch((error) => {
-    console.error(error instanceof Error ? error.message : "OpenMuse could not start.");
+  void main().catch(() => {
+    console.error("OpenMuse could not start.");
     process.exitCode = 1;
   });
 }

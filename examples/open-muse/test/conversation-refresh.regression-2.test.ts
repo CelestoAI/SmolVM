@@ -3,6 +3,15 @@ import test from "node:test";
 import { ConversationManager } from "../server/manager.js";
 import type { ConversationContext } from "../server/types.js";
 
+function attachSyntheticTab(context: ConversationContext): void {
+  const page = { url: () => "https://example.com", isClosed: () => false } as ConversationContext["page"];
+  const id = "tab-test";
+  context.page = page;
+  context.activeTabId = id;
+  context.tabs.set(id, { id, owner: "agent", epoch: 1, controlEpoch: context.controlEpoch!, page: page! });
+  context.playwright = { isConnected: () => true, contexts: () => [{ pages: () => [page] }], close: async () => undefined } as unknown as ConversationContext["playwright"];
+}
+
 // Regression: ISSUE-002 — refreshing always created a second active conversation
 // Found by /qa on 2026-09-13
 // Report: .gstack/qa-reports/qa-report-127-0-0-1-2026-09-13.md
@@ -52,18 +61,22 @@ test("replacing a failed conversation releases its disposable resources", async 
   assert.deepEqual(closed, ["playwright", "computer", "smolvm"]);
 });
 
-test("takeover waits for an approved browser action to finish", async () => {
+test("takeover pauses an in-flight approved action and requires recovery", async () => {
   const manager = new ConversationManager("", "gpt-5-mini");
   const created = await manager.create();
   const context = (manager as unknown as { context: ConversationContext }).context;
   let finishAction!: () => void;
+  let markStarted!: () => void;
   const actionFinished = new Promise<void>((resolve) => { finishAction = resolve; });
+  const actionStarted = new Promise<void>((resolve) => { markStarted = resolve; });
   context.sessionLifecycle = "ready";
+  attachSyntheticTab(context);
   context.computer = {
     status: "ready", computerId: "computer-test", sandboxId: "sandbox-test",
     display: { viewerUrl: "http://127.0.0.1:6080/vnc.html" },
     browser: { status: "ready", cdpUrl: "http://127.0.0.1:9222" },
     exec: async () => {
+      markStarted();
       await actionFinished;
       return { ok: true, exitCode: 0, stdout: 'SMOLVM_BROWSER_RESULT={"ok":true,"value":{"programResult":{},"page":{"title":"","url":"about:blank","visibleText":""}}}', stderr: "", durationMs: 1 };
     },
@@ -75,17 +88,14 @@ test("takeover waits for an approved browser action to finish", async () => {
   };
 
   const approval = manager.approve(created.id, "approval-test", "a".repeat(64), true);
+  await actionStarted;
   const takeover = manager.takeover(created.id);
-  let takeoverFinished = false;
-  void takeover.then(() => { takeoverFinished = true; });
-  await Promise.resolve();
-  assert.equal(takeoverFinished, false);
-
   finishAction();
   await approval;
-  const control = await takeover;
-  assert.equal(manager.snapshot(created.id).controlOwner, "human");
-  assert.ok(control.controlEpoch);
+  await assert.rejects(takeover, (error: unknown) => (error as { status?: number }).status === 409);
+  assert.equal(manager.snapshot(created.id).runState, "interrupted");
+  assert.equal(manager.snapshot(created.id).recovery?.kind, "outcome_unknown");
+  assert.equal(manager.snapshot(created.id).controlOwner, "pause_requested");
   await manager.stop(created.id);
 });
 
@@ -100,6 +110,7 @@ test("approved browser results resume the agent without requesting another obser
   const prompts: string[] = [];
   internals.runTurn = async (_context, text) => { prompts.push(text); };
   internals.context.sessionLifecycle = "ready";
+  attachSyntheticTab(internals.context);
   internals.context.computer = {
     status: "ready", computerId: "computer-test", sandboxId: "sandbox-test",
     display: { viewerUrl: "http://127.0.0.1:6080/vnc.html" },
@@ -123,7 +134,7 @@ test("approved browser results resume the agent without requesting another obser
   assert.equal(prompts.length, 1);
   assert.match(prompts[0], /"price":"₹59,900"/);
   assert.match(prompts[0], /"visibleText":"iPhone ₹59,900"/);
-  assert.match(prompts[0], /without calling browser_run again/);
+  assert.match(prompts[0], /without repeating the browser operation/);
   assert.doesNotMatch(prompts[0], /Re-observe/);
   assert.equal(manager.snapshot(created.id).pendingApproval, undefined);
   await manager.stop(created.id);
@@ -142,6 +153,7 @@ test("duplicate approval submissions share one browser action", async () => {
   const actionFinished = new Promise<void>((resolve) => { finishAction = resolve; });
   let executions = 0;
   internals.context.sessionLifecycle = "ready";
+  attachSyntheticTab(internals.context);
   internals.context.computer = {
     status: "ready", computerId: "computer-test", sandboxId: "sandbox-test",
     display: { viewerUrl: "http://127.0.0.1:6080/vnc.html" },
@@ -168,11 +180,12 @@ test("duplicate approval submissions share one browser action", async () => {
   await manager.stop(created.id);
 });
 
-test("failed approved browser actions return an actionable error and clear stale approval state", async () => {
+test("failed approved browser actions enter durable unknown-outcome recovery", async () => {
   const manager = new ConversationManager("", "gpt-5-mini");
   const created = await manager.create();
   const context = (manager as unknown as { context: ConversationContext }).context;
   context.sessionLifecycle = "ready";
+  attachSyntheticTab(context);
   context.computer = {
     status: "ready", computerId: "computer-test", sandboxId: "sandbox-test",
     display: { viewerUrl: "http://127.0.0.1:6080/vnc.html" },
@@ -189,20 +202,17 @@ test("failed approved browser actions return an actionable error and clear stale
   console.error = (...args: unknown[]) => { logs.push(args); };
 
   try {
-    await assert.rejects(
-      manager.approve(created.id, "approval-failed", "d".repeat(64), true),
-      (error: unknown) => (error as { status?: number; message?: string }).status === 422
-        && (error as Error).message.includes("retry using the current page"),
-    );
+    await manager.approve(created.id, "approval-failed", "d".repeat(64), true);
   } finally {
     console.error = originalError;
   }
 
   const snapshot = manager.snapshot(created.id);
   assert.equal(snapshot.pendingApproval, undefined);
-  assert.equal(snapshot.runState, "idle");
-  assert.equal(snapshot.events.at(-1)?.type, "tool.failed");
-  assert.match(String(snapshot.events.at(-1)?.payload.summary), /retry using the current page/);
-  assert.match(String(logs[0]?.[0]), /locator timed out/);
+  assert.equal(snapshot.runState, "interrupted");
+  assert.equal(snapshot.recovery?.kind, "outcome_unknown");
+  assert.equal(snapshot.events.at(-1)?.type, "operation.outcome_unknown");
+  assert.equal(String(logs[0]?.[0]), "OpenMuse website action failed.");
+  assert.doesNotMatch(JSON.stringify(logs), /locator timed out/);
   await manager.stop(created.id);
 });
