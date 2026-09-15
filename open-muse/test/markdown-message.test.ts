@@ -22,7 +22,7 @@ test("renders structured assistant Markdown", () => {
 test("does not render raw HTML from assistant output", () => {
   const html = render("Before <script>alert('nope')</script> after");
 
-  assert.doesNotMatch(html, /<script>/);
+  assert.doesNotMatch(html, /<script\b/i);
   assert.match(html, /Before alert\(&#x27;nope&#x27;\) after/);
 });
 
