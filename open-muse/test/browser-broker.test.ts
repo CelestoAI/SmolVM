@@ -6,7 +6,11 @@ import { ConversationManager } from "../server/manager.js";
 import type { ConversationContext } from "../server/types.js";
 import type { TabTarget } from "../server/browser-tabs.js";
 
-function harness(persist: () => Promise<void> = async () => undefined, resolveTabTarget?: () => TabTarget) {
+function harness(
+  persist: () => Promise<void> = async () => undefined,
+  resolveTabTarget?: () => TabTarget,
+  convertMarkdown?: (input: { title: string; url: string; text: string }) => Promise<string>,
+) {
   const programs: string[] = [];
   const events: string[] = [];
   const eventPayloads: Record<string, unknown>[] = [];
@@ -23,7 +27,16 @@ function harness(persist: () => Promise<void> = async () => undefined, resolveTa
     grants: [],
     cart: [],
     commerceRevision: 0,
-    observationId: "",
+    observationId: "obs-test",
+    browserRefs: new Map([
+      ["e1", { ref: "e1", role: "button", name: "Add to cart", publicName: "Add to cart", nth: 0, actionable: true, observationId: "obs-test", tabId: "legacy-tab", tabEpoch: 1, controlEpoch: "agent-control-test", pageBinding: "https://example.com" }],
+      ["e2", { ref: "e2", role: "textbox", name: "Email", publicName: "Email", nth: 0, actionable: true, observationId: "obs-test", tabId: "legacy-tab", tabEpoch: 1, controlEpoch: "agent-control-test", pageBinding: "https://example.com" }],
+      ["e3", { ref: "e3", role: "combobox", name: "Size", publicName: "Size", nth: 0, actionable: true, observationId: "obs-test", tabId: "legacy-tab", tabEpoch: 1, controlEpoch: "agent-control-test", pageBinding: "https://example.com" }],
+      ["e4", { ref: "e4", role: "button", name: "First", publicName: "First", nth: 0, actionable: true, observationId: "obs-test", tabId: "legacy-tab", tabEpoch: 1, controlEpoch: "agent-control-test", pageBinding: "https://example.com" }],
+      ["e5", { ref: "e5", role: "button", name: "Second", publicName: "Second", nth: 0, actionable: true, observationId: "obs-test", tabId: "legacy-tab", tabEpoch: 1, controlEpoch: "agent-control-test", pageBinding: "https://example.com" }],
+      ["e6", { ref: "e6", role: "textbox", name: "Password", publicName: "Password", nth: 0, actionable: true, observationId: "obs-test", tabId: "legacy-tab", tabEpoch: 1, controlEpoch: "agent-control-test", pageBinding: "https://example.com" }],
+      ["e7", { ref: "e7", role: "button", name: "Open", publicName: "Open", nth: 0, actionable: true, observationId: "obs-test", tabId: "legacy-tab", tabEpoch: 1, controlEpoch: "agent-control-test", pageBinding: "https://example.com" }],
+    ]),
     lastActivityAt: Date.now(),
     receipts: new Map(),
     computer: {
@@ -35,9 +48,22 @@ function harness(persist: () => Promise<void> = async () => undefined, resolveTa
         const encoded = Array.isArray(command) ? command[1] : "";
         const program = Buffer.from(encoded, "base64url").toString("utf8");
         programs.push(program);
+        const observation = {
+          title: "Example Domain", url: "https://example.com", pageBinding: "https://example.com",
+          snapshot: '- document "Example Domain"\n  - button "Add to cart" [ref=e1]\n  - textbox "Email" [ref=e2]\n  - combobox "Size" [ref=e3]',
+          refs: [
+            { ref: "e1", role: "button", name: "Add to cart", publicName: "Add to cart", nth: 0, actionable: true },
+            { ref: "e2", role: "textbox", name: "Email", publicName: "Email", nth: 0, actionable: true },
+            { ref: "e3", role: "combobox", name: "Size", publicName: "Size", nth: 0, actionable: true },
+          ],
+        };
         const programResult = program.includes("pageBindingRawUrl")
           ? { binding: "https://example.com", display: "https://example.com" }
-          : { title: "Example Domain" };
+          : program.includes("extractRawText")
+            ? { title: "Example Domain", url: "https://example.com", pageBinding: "https://example.com", text: "iPhone 16 $799" }
+          : program.includes("const observation =")
+            ? (program.includes("mouse.wheel") ? { scrolled: "down", observation } : observation)
+            : { title: "Example Domain" };
         return {
           ok: true, exitCode: 0,
           stdout: `SMOLVM_BROWSER_RESULT=${JSON.stringify({ ok: true, value: { programResult, page: { title: "Example Domain", url: "https://example.com" } } })}\n`,
@@ -47,7 +73,7 @@ function harness(persist: () => Promise<void> = async () => undefined, resolveTa
       async delete() {},
     },
   } as ConversationContext;
-  const broker = new ActionBroker(context, async () => undefined, (type, payload) => { events.push(type); eventPayloads.push(payload); }, persist, resolveTabTarget);
+  const broker = new ActionBroker(context, async () => undefined, (type, payload) => { events.push(type); eventPayloads.push(payload); }, persist, resolveTabTarget, convertMarkdown);
   return { broker, context, programs, events, eventPayloads };
 }
 
@@ -117,12 +143,25 @@ test("passive browser operations run without approval", async () => {
 
   assert.equal(context.pendingApproval, undefined);
   assert.equal(programs.length, 2);
-  assert.match(programs[0], /main, \[role=main\]/);
+  assert.match(programs[0], /locator\('body'\)\.ariaSnapshot/);
   assert.match(programs[0], /\[email redacted\]/);
-  assert.doesNotMatch(programs[0], /locator\('body'\)/);
+  assert.match(programs[0], /\[ref=/);
   assert.match(programs[1], /mouse\.wheel\(0, 600\)/);
-  assert.deepEqual(observed.page, { title: "Example Domain", url: "https://example.com" });
+  assert.equal(observed.title, "Example Domain");
+  assert.match(String(observed.snapshot), /Add to cart/);
   assert.deepEqual(events, ["tool.started", "tool.completed", "tool.started", "tool.completed"]);
+});
+
+test("page extraction uses Markdown conversion and falls back to raw redacted text", async () => {
+  const converted = harness(async () => undefined, undefined, async ({ text }) => `# Products\n\n${text}`);
+  assert.deepEqual(await converted.broker.runWebOperation({ kind: "extract" }), {
+    title: "Example Domain", url: "https://example.com", markdown: "# Products\n\niPhone 16 $799",
+  });
+
+  const fallback = harness(async () => undefined, undefined, async () => { throw new Error("model unavailable"); });
+  const result = await fallback.broker.runWebOperation({ kind: "extract" });
+  assert.equal(result.markdown, "iPhone 16 $799");
+  assert.match(String(result.warning), /conversion failed/);
 });
 
 test("active browser operations create page-bound one-shot approvals", async () => {
@@ -130,13 +169,13 @@ test("active browser operations create page-bound one-shot approvals", async () 
 
   const pending = await broker.runWebOperation({
     kind: "click",
-    target: { role: "button", name: "Add to cart" },
+    ref: "e1",
   });
 
   assert.equal(pending.approvalRequired, true);
   assert.equal(pending.pageUrl, "https://example.com");
   assert.equal("pageBinding" in pending, false);
-  assert.deepEqual(pending.operation, { kind: "click", target: { role: "button", name: "Add to cart" } });
+  assert.deepEqual(pending.operation, { kind: "click", ref: "e1" });
   assert.equal(programs.length, 1);
   assert.equal(context.runState, "waiting_for_approval");
   assert.equal(events.at(-1), "approval.requested");
@@ -147,16 +186,26 @@ test("active browser operations create page-bound one-shot approvals", async () 
   assert.equal(programs.length, 3);
   assert.match(programs[2], /currentPage !== "https:\/\/example\.com"/);
   assert.match(programs[2], /getByRole\("button", \{ name: "Add to cart", exact: true \}\)/);
-  assert.match(programs[2], /target\.count\(\) !== 1/);
+  assert.match(programs[2], /candidates\.count\(\) <= 0/);
   assert.equal(context.pendingApproval, undefined);
   assert.equal(context.runState, "idle");
   assert.equal("browserResult" in outcome, true);
 });
 
+test("browser refs expire when the tab epoch changes", async () => {
+  let target: TabTarget = { id: "legacy-tab", epoch: 1, controlEpoch: "agent-control-test", pageIndex: 0, pageBinding: "https://example.com" };
+  const { broker, context } = harness(async () => undefined, () => target);
+  target = { ...target, epoch: 2 };
+
+  await assert.rejects(() => broker.runWebOperation({ kind: "click", ref: "e1" }), /ref is stale/);
+  assert.equal(context.pendingApproval, undefined);
+});
+
 test("operation programs serialize model fields as data", () => {
   const program = operationProgram({
     kind: "fill",
-    target: { role: "textbox", name: "Name\"; process.exit(1); //" },
+    ref: "e1",
+    target: { role: "textbox", name: "Name\"; process.exit(1); //", nth: 0 },
     value: "hello\nworld\"; throw new Error('injected'); //",
   }, "https://example.com/form");
 
@@ -166,7 +215,7 @@ test("operation programs serialize model fields as data", () => {
   assert.doesNotMatch(program, /name: "Name"; process/);
   assert.match(program, /fieldSafety\.type === 'password'/);
   assert.match(program, /cc-\|current-password\|new-password\|one-time-code/);
-  assert.match(operationProgram({ kind: "click", target: { role: "button", name: "Open" } }, "about:blank"), /: currentRawUrl/);
+  assert.match(operationProgram({ kind: "click", ref: "e1", target: { role: "button", name: "Open", nth: 0 } }, "about:blank"), /: currentRawUrl/);
 });
 
 test("operation policy rejects private navigation and sensitive fields", async () => {
@@ -176,9 +225,9 @@ test("operation policy rejects private navigation and sensitive fields", async (
   await assert.rejects(() => broker.runWebOperation({ kind: "navigate", url: "http://169.254.169.254/latest/meta-data" }), /private or local/);
   await assert.rejects(() => broker.runWebOperation({ kind: "navigate", url: "http://[::1]/admin" }), /private or local/);
   await assert.rejects(() => broker.runWebOperation({ kind: "navigate", url: "file:///etc/passwd" }), /public HTTP or HTTPS/);
-  await assert.rejects(() => broker.runWebOperation({ kind: "fill", target: { role: "textbox", name: "Password" }, value: "secret" }), /Take control/);
-  await assert.rejects(() => broker.runWebOperation({ kind: "click", target: { role: "button", name: 42 } } as never), /supported role/);
-  await assert.rejects(() => broker.runWebOperation({ kind: "select", target: { role: "combobox", name: "Size" } } as never), /option label/);
+  await assert.rejects(() => broker.runWebOperation({ kind: "fill", ref: "e6", value: "secret" }), /Take control/);
+  await assert.rejects(() => broker.runWebOperation({ kind: "click", ref: "bad" } as never), /ref is invalid/);
+  await assert.rejects(() => broker.runWebOperation({ kind: "select", ref: "e3" } as never), /option label/);
   assert.equal(programs.length, 0);
 });
 
@@ -198,7 +247,7 @@ test("operation approvals bind URL queries without exposing them in the approval
     };
   };
 
-  const pending = await broker.runWebOperation({ kind: "click", target: { role: "button", name: "Open" } });
+  const pending = await broker.runWebOperation({ kind: "click", ref: "e7" });
 
   assert.equal(pending.pageUrl, "https://example.com/search");
   assert.equal(JSON.stringify(pending).includes("q=private"), false);
@@ -217,12 +266,12 @@ test("concurrent active operations share the first pending approval", async () =
   };
 
   const [first, second] = await Promise.all([
-    broker.runWebOperation({ kind: "click", target: { role: "button", name: "First" } }),
-    broker.runWebOperation({ kind: "click", target: { role: "button", name: "Second" } }),
+    broker.runWebOperation({ kind: "click", ref: "e4" }),
+    broker.runWebOperation({ kind: "click", ref: "e5" }),
   ]);
 
   assert.equal(first.approvalId, second.approvalId);
-  assert.deepEqual(context.pendingApproval?.operation, { kind: "click", target: { role: "button", name: "First" } });
+  assert.deepEqual(context.pendingApproval?.operation, { kind: "click", ref: "e4", target: { role: "button", name: "First", nth: 0, publicName: "First" } });
 });
 
 test("approval events do not retain browser field values", async () => {
@@ -230,7 +279,7 @@ test("approval events do not retain browser field values", async () => {
 
   const pending = await broker.runWebOperation({
     kind: "fill",
-    target: { role: "textbox", name: "Email" },
+    ref: "e2",
     value: "person@example.com",
   });
 
@@ -250,7 +299,7 @@ test("conversation snapshots hide private page bindings and fill values", async 
     actionDigest: "digest-test",
     reason: "Fill textbox “Email”",
     expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    operation: { kind: "fill", target: { role: "textbox", name: "Email" }, value: "person@example.com" },
+    operation: { kind: "fill", ref: "e2", target: { role: "textbox", name: "Email", nth: 0 }, value: "person@example.com" },
     pageUrl: "https://example.com/search",
     pageBinding: "https://example.com/search?q=private#results",
   };
@@ -258,7 +307,7 @@ test("conversation snapshots hide private page bindings and fill values", async 
   const snapshot = manager.snapshot(created.id);
 
   assert.equal(snapshot.pendingApproval?.pageUrl, "https://example.com/search");
-  assert.deepEqual(snapshot.pendingApproval?.operation, { kind: "fill", target: { role: "textbox", name: "Email" } });
+  assert.deepEqual(snapshot.pendingApproval?.operation, { kind: "fill", ref: "e2" });
   assert.equal(context.pendingApproval.operation?.kind === "fill" ? context.pendingApproval.operation.value : undefined, "person@example.com");
   assert.equal("pageBinding" in snapshot.pendingApproval!, false);
   assert.equal(JSON.stringify(snapshot).includes("q=private"), false);

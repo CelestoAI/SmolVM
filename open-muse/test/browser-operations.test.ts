@@ -5,7 +5,7 @@ import {
   operationReason,
   redactBrowserOperation,
   validateBrowserOperation,
-  type BrowserOperation,
+  type ExecutableBrowserOperation,
 } from "../server/browser-operations.js";
 
 async function executeOperationProgram(program: string, page: unknown): Promise<unknown> {
@@ -14,35 +14,36 @@ async function executeOperationProgram(program: string, page: unknown): Promise<
 }
 
 test("operation reasons describe every supported browser action", () => {
-  const cases: Array<[BrowserOperation, string]> = [
+  const cases: Array<[ExecutableBrowserOperation, string]> = [
     [{ kind: "observe" }, "Read the current page"],
+    [{ kind: "extract" }, "Extract the current page"],
     [{ kind: "scroll", direction: "up" }, "Scroll up"],
     [{ kind: "navigate", url: "https://example.com" }, "Open https://example.com"],
-    [{ kind: "click", target: { role: "button", name: "Save" } }, "Click button “Save”"],
-    [{ kind: "fill", target: { role: "textbox", name: "Email" }, value: "person@example.com" }, "Fill textbox “Email”"],
-    [{ kind: "select", target: { role: "combobox", name: "Size" }, label: "Medium" }, "Choose an option in combobox “Size”"],
+    [{ kind: "click", ref: "e1", target: { role: "button", name: "Save", nth: 0 } }, "Click button “Save”"],
+    [{ kind: "fill", ref: "e2", target: { role: "textbox", name: "Email", nth: 0 }, value: "person@example.com" }, "Fill textbox “Email”"],
+    [{ kind: "select", ref: "e3", target: { role: "combobox", name: "Size", nth: 0 }, label: "Medium" }, "Choose an option in combobox “Size”"],
     [{ kind: "keypress", key: "Enter" }, "Press Enter"],
   ];
 
   for (const [operation, expected] of cases) assert.equal(operationReason(operation), expected);
 });
 
-test("operation validation normalizes public URLs and accessible targets", () => {
+test("operation validation normalizes public URLs and refs", () => {
   assert.deepEqual(
     validateBrowserOperation({ kind: "navigate", url: "HTTPS://Example.COM/path?q=1#result" }),
     { kind: "navigate", url: "https://example.com/path?q=1#result" },
   );
   assert.deepEqual(
-    validateBrowserOperation({ kind: "click", target: { role: "button", name: "  Save  " } }),
-    { kind: "click", target: { role: "button", name: "Save" } },
+    validateBrowserOperation({ kind: "click", ref: " e1 " }),
+    { kind: "click", ref: "e1" },
   );
   assert.deepEqual(
-    validateBrowserOperation({ kind: "fill", target: { role: "searchbox", name: "  Search  " }, value: "muse" }),
-    { kind: "fill", target: { role: "searchbox", name: "Search" }, value: "muse" },
+    validateBrowserOperation({ kind: "fill", ref: "e2", value: "muse" }),
+    { kind: "fill", ref: "e2", value: "muse" },
   );
   assert.deepEqual(
-    validateBrowserOperation({ kind: "select", target: { role: "combobox", name: "  Size  " }, label: "  Medium  " }),
-    { kind: "select", target: { role: "combobox", name: "Size" }, label: "Medium" },
+    validateBrowserOperation({ kind: "select", ref: "e3", label: "  Medium  " }),
+    { kind: "select", ref: "e3", label: "Medium" },
   );
   assert.deepEqual(validateBrowserOperation({ kind: "scroll", direction: "down" }), { kind: "scroll", direction: "down" });
   assert.deepEqual(validateBrowserOperation({ kind: "keypress", key: "Escape" }), { kind: "keypress", key: "Escape" });
@@ -87,30 +88,19 @@ test("operation validation rejects malformed, local, and sensitive actions", () 
   credentialedUrl.username = "test-user";
   assert.throws(() => validateBrowserOperation({ kind: "navigate", url: credentialedUrl.href }), /ordinary public HTTP or HTTPS/);
   assert.throws(() => validateBrowserOperation({ kind: "keypress", key: "Meta+A" } as never), /key is not available/);
-  assert.throws(() => validateBrowserOperation({ kind: "click", target: { role: "dialog", name: "Save" } } as never), /supported role/);
-  assert.throws(() => validateBrowserOperation({ kind: "click", target: { role: "button", name: "   " } }), /supported role/);
-  assert.throws(() => validateBrowserOperation({ kind: "fill", target: { role: "button", name: "Search" }, value: "muse" }), /fill only text/);
-  for (const name of ["Security code", "Expiry", "MM / YY", "Verification-code", "Verification_code"]) {
-    assert.throws(
-      () => validateBrowserOperation({ kind: "fill", target: { role: "textbox", name }, value: "test-value" }),
-      /Take control/,
-      name,
-    );
-  }
-  assert.throws(() => validateBrowserOperation({ kind: "fill", target: { role: "textbox", name: "Notes" }, value: "x".repeat(2_001) }), /too long/);
-  assert.throws(() => validateBrowserOperation({ kind: "select", target: { role: "textbox", name: "Size" }, label: "Medium" }), /only in a combobox/);
-  assert.throws(() => validateBrowserOperation({ kind: "select", target: { role: "combobox", name: "Size" }, label: "   " }), /option label is invalid/);
+  assert.throws(() => validateBrowserOperation({ kind: "click", ref: "dialog-1" } as never), /ref is invalid/);
+  assert.throws(() => validateBrowserOperation({ kind: "click", ref: "e0" }), /ref is invalid/);
+  assert.throws(() => validateBrowserOperation({ kind: "fill", ref: "e1", value: "x".repeat(2_001) }), /too long/);
+  assert.throws(() => validateBrowserOperation({ kind: "select", ref: "e1", label: "   " }), /option label is invalid/);
   assert.throws(() => validateBrowserOperation({ kind: "unsupported" } as never), /not available/);
 });
 
 test("public browser operations redact fill values without changing execution data", () => {
-  const operation = { kind: "fill", target: { role: "textbox", name: "Email" }, value: "person@example.com" } as const;
+  const operation = { kind: "fill", ref: "e2", target: { role: "textbox", name: "Email", nth: 0 }, value: "person@example.com" } as const;
 
-  assert.deepEqual(redactBrowserOperation(operation), { kind: "fill", target: operation.target });
+  assert.deepEqual(redactBrowserOperation(operation), { kind: "fill", ref: "e2" });
   assert.equal(operation.value, "person@example.com");
-  assert.deepEqual(redactBrowserOperation({ kind: "click", target: { role: "button", name: "Save" } }), {
-    kind: "click", target: { role: "button", name: "Save" },
-  });
+  assert.deepEqual(redactBrowserOperation({ kind: "click", ref: "e1", target: { role: "button", name: "Save", nth: 0 } }), { kind: "click", ref: "e1" });
 });
 
 test("operation programs cover every action with page and field safety checks", () => {
@@ -119,20 +109,20 @@ test("operation programs cover every action with page and field safety checks", 
     operationProgram({ kind: "observe" }),
     operationProgram({ kind: "scroll", direction: "up" }),
     operationProgram({ kind: "navigate", url: "https://example.org/path?q=1" }, expectedPage),
-    operationProgram({ kind: "click", target: { role: "button", name: "Save" } }, expectedPage),
-    operationProgram({ kind: "fill", target: { role: "textbox", name: "Name" }, value: "Ada" }, expectedPage),
-    operationProgram({ kind: "select", target: { role: "combobox", name: "Size" }, label: "Medium" }, expectedPage),
+    operationProgram({ kind: "click", ref: "e1", target: { role: "button", name: "Save", nth: 0 } }, expectedPage),
+    operationProgram({ kind: "fill", ref: "e2", target: { role: "textbox", name: "Name", nth: 0 }, value: "Ada" }, expectedPage),
+    operationProgram({ kind: "select", ref: "e3", target: { role: "combobox", name: "Size", nth: 0 }, label: "Medium" }, expectedPage),
     operationProgram({ kind: "keypress", key: "ArrowDown" }, expectedPage),
   ];
 
   for (const program of programs) assert.doesNotThrow(() => new Function("page", `return (async () => { ${program} })();`));
-  assert.match(programs[0], /slice\(0, 12000\)/);
-  assert.match(programs[0], /nodes\.slice\(0, 40\)/);
+  assert.match(programs[0], /ariaSnapshot/);
+  assert.match(programs[0], /snapshotRefs\.length < 100/);
   assert.match(programs[0], /textBlocked/);
   assert.match(programs[1], /mouse\.wheel\(0, -600\)/);
   assert.match(programs[2], /currentPage !== "https:\/\/example\.com\/form\?q=private#section"/);
   assert.match(programs[2], /page\.goto\("https:\/\/example\.org\/path\?q=1"\)/);
-  assert.match(programs[3], /target\.count\(\) !== 1/);
+  assert.match(programs[3], /candidates\.count\(\) <= 0/);
   assert.match(programs[4], /fieldSafety\.type === 'password'/);
   assert.match(programs[4], /target\.fill\("Ada"\)/);
   assert.match(programs[5], /selectOption\(\{ label: "Medium" \}\)/);
@@ -143,28 +133,19 @@ test("generated programs enforce page, target, observation, and field checks at 
   const observed = await executeOperationProgram(operationProgram({ kind: "observe" }), {
     url: () => "https://example.com/catalog",
     title: async () => "Catalog",
-    locator: (selector: string) => selector === "main, [role=main]"
-      ? {
-          count: async () => 1,
-          first: () => ({ innerText: async () => "Email ada@example.com card 4111 1111 1111 1111" }),
-        }
-      : { evaluateAll: async () => [{ role: "button", name: "Buy" }] },
-  }) as { visibleText: string; controls: unknown[]; textBlocked?: boolean };
-  assert.equal(observed.visibleText, "Email [email redacted] card [number redacted]");
-  assert.deepEqual(observed.controls, [{ role: "button", name: "Buy" }]);
+    locator: () => ({ ariaSnapshot: async () => '- document "Catalog"\n  - text: Email ada@example.com card 4111 1111 1111 1111\n  - button "Buy"' }),
+  }) as { snapshot: string; refs: Array<{ ref: string; role: string; name: string }>; textBlocked?: boolean };
+  assert.match(observed.snapshot, /Email \[email redacted\] card \[number redacted\]/);
+  assert.deepEqual(observed.refs, [{ ref: "e1", role: "document", name: "Catalog", publicName: "Catalog", nth: 0, actionable: false }, { ref: "e2", role: "button", name: "Buy", publicName: "Buy", nth: 0, actionable: true }]);
   assert.equal(observed.textBlocked, undefined);
 
   const sensitive = await executeOperationProgram(operationProgram({ kind: "observe" }), {
     url: () => "https://example.com/checkout",
     title: async () => "Checkout",
-    locator: () => ({
-      count: async () => 1,
-      first: () => ({ innerText: async () => { throw new Error("must not read"); } }),
-      evaluateAll: async () => { throw new Error("must not enumerate"); },
-    }),
-  }) as { visibleText: string; controls: unknown[]; textBlocked?: boolean };
-  assert.equal(sensitive.visibleText, "");
-  assert.deepEqual(sensitive.controls, []);
+    locator: () => ({ ariaSnapshot: async () => { throw new Error("must not read"); } }),
+  }) as { snapshot: string; refs: unknown[]; textBlocked?: boolean };
+  assert.equal(sensitive.snapshot, "");
+  assert.deepEqual(sensitive.refs, []);
   assert.equal(sensitive.textBlocked, true);
 
   let navigated = false;
@@ -178,21 +159,23 @@ test("generated programs enforce page, target, observation, and field checks at 
   assert.equal(navigated, false);
 
   await assert.rejects(
-    executeOperationProgram(operationProgram({ kind: "click", target: { role: "button", name: "Save" } }, "https://example.com/start"), {
+    executeOperationProgram(operationProgram({ kind: "click", ref: "e1", target: { role: "button", name: "Save", nth: 0 } }, "https://example.com/start"), {
       url: () => "https://example.com/start",
-      getByRole: () => ({ count: async () => 2, click: async () => undefined }),
+      getByRole: () => ({ count: async () => 0, nth: () => ({ click: async () => undefined }) }),
     }),
-    /target is no longer unique/i,
+    /target is no longer available/i,
   );
 
   let filled = false;
   await assert.rejects(
-    executeOperationProgram(operationProgram({ kind: "fill", target: { role: "textbox", name: "Name" }, value: "Ada" }, "https://example.com/start"), {
+    executeOperationProgram(operationProgram({ kind: "fill", ref: "e2", target: { role: "textbox", name: "Name", nth: 0 }, value: "Ada" }, "https://example.com/start"), {
       url: () => "https://example.com/start",
       getByRole: () => ({
         count: async () => 1,
-        evaluate: async () => ({ type: "password", autocomplete: "" }),
-        fill: async () => { filled = true; },
+        nth: () => ({
+          evaluate: async () => ({ type: "password", autocomplete: "" }),
+          fill: async () => { filled = true; },
+        }),
       }),
     }),
     /Take control/,

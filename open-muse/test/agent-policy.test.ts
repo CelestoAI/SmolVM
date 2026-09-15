@@ -8,6 +8,7 @@ test("production policy exposes only structured browser tools", () => {
 
   assert.deepEqual(names, [
     "browser_observe",
+    "browser_extract",
     "browser_scroll",
     "browser_navigate",
     "browser_click",

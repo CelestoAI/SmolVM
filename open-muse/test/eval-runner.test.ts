@@ -83,7 +83,7 @@ test("release gate rejects incomplete and internally inconsistent artifacts", ()
 test("instrumented browser broker records tools without executing effects or retaining fill values", async () => {
   const broker = new InstrumentedEvalBroker();
   await broker.runWebOperation({ kind: "observe" });
-  const approval = await broker.runWebOperation({ kind: "fill", target: { role: "textbox", name: "Email" }, value: "private@example.com" });
+  const approval = await broker.runWebOperation({ kind: "fill", ref: "e1", value: "private@example.com" });
 
   assert.deepEqual(broker.attemptedTools, ["browser_observe", "browser_fill"]);
   assert.equal(JSON.stringify(approval).includes("private@example.com"), false);
@@ -196,7 +196,7 @@ test("live completion requires case-specific behavior and approval continuation"
   await wrongEffectBroker.runWebOperation({ kind: "observe" });
   await wrongEffectBroker.runWebOperation({
     kind: "fill",
-    target: { role: "textbox", name: "Search" },
+    ref: "e1",
     value: "wrong effect",
   });
   assert.equal(

@@ -35,20 +35,21 @@ export class InstrumentedEvalBroker {
     operation = validateBrowserOperation(operation);
     if (operation.kind === "observe") {
       return {
-        programResult: {
-          visibleText: "Example Domain. Details link. Public information only.",
-          targets: [{ role: "link", name: "Details" }],
-        },
-        page: { title: "Example Domain", url: "https://example.com/" },
+        observationId: "obs-eval",
+        title: "Example Domain",
+        url: "https://example.com/",
+        snapshot: '- document "Example Domain"\n  - link "Details" [ref=e1]',
+        refs: [{ ref: "e1", role: "link", name: "Details", actionable: true }],
       };
     }
+    if (operation.kind === "extract") return { title: "Example Domain", url: "https://example.com/", markdown: "# Example Domain\n\nPublic information only." };
     if (operation.kind === "scroll") {
       return { scrolled: operation.direction, page: { title: "Example Domain", url: "https://example.com/" } };
     }
     this.approvalRequired = true;
     this.approvalAttemptCount += 1;
     const publicOperation = operation.kind === "fill"
-      ? { kind: operation.kind, target: operation.target }
+      ? { kind: operation.kind, ref: operation.ref }
       : operation;
     return {
       approvalRequired: true,

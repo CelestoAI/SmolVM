@@ -10,6 +10,7 @@ import { installStorefront } from "./storefront.js";
 import { acknowledgeRecovery, recoverOperations } from "./operation-lifecycle.js";
 import { bumpTab, createTab, publicTabUrl, type BrowserTab, type TabTarget } from "./browser-tabs.js";
 import { conversationDiagnostics } from "./diagnostics.js";
+import { convertPageToMarkdown } from "./markdown.js";
 import type { ConversationContext, ConversationEvent, Message } from "./types.js";
 
 type Listener = (event: ConversationEvent) => void;
@@ -18,12 +19,14 @@ export interface RuntimeDependencies {
   createAgent: typeof createAgent;
   createSmolVM: () => SmolVM;
   connectOverCDP: typeof chromium.connectOverCDP;
+  convertPageToMarkdown: typeof convertPageToMarkdown;
 }
 
 const DEFAULT_RUNTIME_DEPENDENCIES: RuntimeDependencies = {
   createAgent,
   createSmolVM: () => new SmolVM({ createTimeoutMs: 180_000 }),
   connectOverCDP: chromium.connectOverCDP.bind(chromium),
+  convertPageToMarkdown,
 };
 
 export class ConversationManager {
@@ -82,7 +85,7 @@ export class ConversationManager {
     this.context = {
       id: randomUUID(), stateVersion: 1, controlOwner: "agent", controlEpoch: randomBytes(18).toString("base64url"), runState: "idle", sessionLifecycle: "absent",
       messages: [], events: [], grants: [], cart: [], receipts: new Map(), commerceRevision: 0,
-      observationId: "", operationJournal: [], tabs: new Map(), lastActivityAt: Date.now(),
+      observationId: "", browserRefs: new Map(), operationJournal: [], tabs: new Map(), lastActivityAt: Date.now(),
     };
     this.emit("conversation.created", { summary: "Conversation ready" });
     await this.checkpoint();
@@ -133,6 +136,7 @@ export class ConversationManager {
     if (context.controlOwner === "pause_requested") throw Object.assign(new Error("Wait for browser control to finish transferring, then send the message again."), { status: 409 });
     if (context.controlOwner === "human") throw Object.assign(new Error("Select Return control before sending a message to OpenMuse."), { status: 409 });
     context.agent?.abort();
+    this.invalidateBrowserRefs(context);
     for (const grant of context.grants) if (grant.state === "available" || grant.state === "reserved") grant.state = "cancelled";
     if (context.pendingApproval) {
       delete context.pendingApproval;
@@ -161,6 +165,7 @@ export class ConversationManager {
     context.runState = "model_turn";
     context.controlOwner = "agent";
     context.controlEpoch = randomBytes(18).toString("base64url");
+    this.invalidateBrowserRefs(context);
     for (const [tabId, tab] of context.tabs) {
       if (tab.owner === "paused" || tab.owner === "human") context.tabs.set(tabId, bumpTab(tab, "agent", context.controlEpoch));
     }
@@ -237,6 +242,7 @@ export class ConversationManager {
     if (this.context !== context || context.controlOwner !== "agent") throw Object.assign(new Error("Browser control changed. Take control again and retry."), { status: 409 });
     context.controlOwner = "pause_requested";
     context.controlEpoch = randomBytes(18).toString("base64url");
+    this.invalidateBrowserRefs(context);
     for (const [tabId, tab] of context.tabs) {
       if (tab.owner === "agent") context.tabs.set(tabId, bumpTab(tab, "paused", context.controlEpoch));
     }
@@ -265,6 +271,7 @@ export class ConversationManager {
     if (context.controlOwner !== "human" || context.controlEpoch !== controlEpoch) throw Object.assign(new Error("Browser control changed. Take control again and retry."), { status: 409 });
     context.controlOwner = "agent";
     context.controlEpoch = randomBytes(18).toString("base64url");
+    this.invalidateBrowserRefs(context);
     for (const [tabId, tab] of context.tabs) {
       if (tab.owner === "human") context.tabs.set(tabId, bumpTab(tab, "agent", context.controlEpoch));
     }
@@ -292,6 +299,7 @@ export class ConversationManager {
     context.tabs.set(tabId, bumpTab(tab, owner, context.controlEpoch!));
     context.activeTabId = tabId;
     context.page = tab.page;
+    this.invalidateBrowserRefs(context);
     context.stateVersion += 1;
     this.emit("popup.adopted", { tabId, summary: "Popup adopted" }, false);
     await this.checkpoint();
@@ -365,7 +373,7 @@ export class ConversationManager {
     return new ActionBroker(context, () => this.ensureBrowser(context), (type, payload, mutates = false) => {
       if (mutates) context.stateVersion += 1;
       this.emit(type, payload, false);
-    }, () => this.checkpoint(), () => this.activeTabTarget(context));
+    }, () => this.checkpoint(), () => this.activeTabTarget(context), (input) => this.runtime.convertPageToMarkdown(this.apiKey, input));
   }
 
   private async runTurn(context: ConversationContext, text: string): Promise<void> {
@@ -452,6 +460,7 @@ export class ConversationManager {
     delete context.activeTabId;
     delete context.page;
     context.tabs.clear();
+    this.invalidateBrowserRefs(context);
     const pages = browserContext.pages().filter((candidate) => !candidate.isClosed());
     const page = pages[0] ?? await browserContext.newPage();
     this.registerTab(context, page, "agent");
@@ -474,6 +483,7 @@ export class ConversationManager {
       const current = context.tabs.get(tab.id);
       if (!current) return;
       context.tabs.set(tab.id, bumpTab(current));
+      this.invalidateBrowserRefs(context);
       this.emit("tab.navigated", { tabId: tab.id, summary: "Browser tab navigated" }, false);
     });
     page.on("close", () => {
@@ -483,6 +493,7 @@ export class ConversationManager {
         context.activeTabId = replacement?.id;
         context.page = replacement?.page;
       }
+      this.invalidateBrowserRefs(context);
       this.emit("tab.closed", { tabId: tab.id, summary: "Browser tab closed" }, false);
     });
     this.emit(owner === "quarantined" ? "popup.quarantined" : "tab.opened", {
@@ -549,7 +560,7 @@ export class ConversationManager {
       sessionLifecycle: saved.runState === "stopped" ? "deleted" : "absent",
       messages: saved.messages.map((message) => ({ ...message })),
       events: saved.events.map((event) => ({ ...event, payload: { ...event.payload } })),
-      grants: [], cart: [], receipts: new Map(), commerceRevision: 0, observationId: "",
+      grants: [], cart: [], receipts: new Map(), commerceRevision: 0, observationId: "", browserRefs: new Map(),
       operationJournal: recoveredOperations.journal,
       tabs: new Map(),
       recovery: interrupted ? recoveredOperations.recovery ?? { kind: "interrupted" } : undefined,
@@ -614,6 +625,7 @@ export class ConversationManager {
   }
 
   private async releaseComputer(context: ConversationContext): Promise<void> {
+    this.invalidateBrowserRefs(context);
     await context.playwright?.close().catch(() => undefined);
     await context.computer?.delete().catch(() => undefined);
     await context.smolvm?.close().catch(() => undefined);
@@ -626,5 +638,10 @@ export class ConversationManager {
     delete context.smolvm;
     delete context.agent;
     delete context.abortController;
+  }
+
+  private invalidateBrowserRefs(context: ConversationContext): void {
+    context.observationId = "";
+    context.browserRefs.clear();
   }
 }
