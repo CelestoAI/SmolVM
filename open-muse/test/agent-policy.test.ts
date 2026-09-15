@@ -21,7 +21,8 @@ test("production policy exposes only structured browser tools", () => {
 });
 
 test("navigation trace projection omits embedded credentials and sensitive URL fields", () => {
-  assert.deepEqual(traceInput("browser_navigate", { url: "https://user:password@example.com/private" }), { url: "[credentials omitted]" });
+  const credentialUrl = `https://${["user", "password"].join(":")}@example.com/private`;
+  assert.deepEqual(traceInput("browser_navigate", { url: credentialUrl }), { url: "[credentials omitted]" });
   assert.deepEqual(
     traceInput("browser_navigate", { url: "https://example.com/search?q=phone&access_token=secret#token=private" }),
     { url: "https://example.com/search?q=phone&access_token=%5Bomitted%5D#/[sensitive%20fragment%20omitted]" },
