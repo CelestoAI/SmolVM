@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import * as api from "./api";
 import { MarkdownMessage } from "./MarkdownMessage";
+import { TurnTrace } from "./TurnTrace";
+import { applyTraceEvent, type TraceEvent, type TraceSnapshot } from "./trace";
+import "./trace.css";
+import "./trace-state.css";
 
 const SUGGESTION = "Open https://example.com and tell me what the page says";
 
@@ -26,6 +30,8 @@ export function App() {
   const [controlEpoch, setControlEpoch] = useState("");
   const [approvalPending, setApprovalPending] = useState(false);
   const [recoveryPending, setRecoveryPending] = useState(false);
+  const [traces, setTraces] = useState<TraceSnapshot>();
+  const [traceStatus, setTraceStatus] = useState<"ready" | "reconnecting" | "unavailable">("ready");
   const endRef = useRef<HTMLDivElement>(null);
   const approvalPendingRef = useRef(false);
   const recoveryPendingRef = useRef(false);
@@ -60,6 +66,39 @@ export function App() {
     source.onmessage = update;
     for (const name of ["message.completed", "browser.starting", "browser.ready", "agent.started", "agent.completed", "agent.failed", "model.auth_required", "tool.failed", "approval.requested", "approval.resolved", "approval.invalidated", "operation.approved", "operation.dispatched", "operation.completed", "operation.outcome_unknown", "popup.quarantined", "popup.adopted", "tab.navigated", "tab.closed", "control.changed", "cart.updated", "conversation.stopped"]) source.addEventListener(name, update);
     return () => source.close();
+  }, [conversation?.id]);
+  useEffect(() => {
+    const id = conversation?.id;
+    if (!id) { setTraces(undefined); setTraceStatus("ready"); return; }
+    let cancelled = false;
+    let source: EventSource | undefined;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const connect = () => void api.getTraces(id).then((snapshot) => {
+        if (cancelled) return;
+        setTraces(snapshot);
+        setTraceStatus("ready");
+        source?.close();
+        source = new EventSource(`/api/conversations/${id}/traces/events?after=${encodeURIComponent(`${snapshot.streamId}:${snapshot.cursor}`)}`);
+        const update = (raw: MessageEvent) => {
+          setTraceStatus("ready");
+          const event = JSON.parse(raw.data) as TraceEvent;
+          if (event.type === "trace.resync_required") {
+            source?.close();
+            connect();
+            return;
+          }
+          setTraces((current) => current ? applyTraceEvent(current, event) : current);
+        };
+        for (const name of ["trace.turn_upsert", "trace.step_upsert", "trace.turn_evict", "trace.resync_required"]) source.addEventListener(name, update as EventListener);
+        source.onopen = () => { if (!cancelled) setTraceStatus("ready"); };
+        source.onerror = () => { if (!cancelled) setTraceStatus("reconnecting"); };
+      }).catch(() => {
+        if (cancelled) return;
+        setTraceStatus("unavailable");
+        retry = setTimeout(connect, 1_500);
+      });
+    connect();
+    return () => { cancelled = true; if (retry) clearTimeout(retry); source?.close(); };
   }, [conversation?.id]);
   useEffect(() => {
     if (!authAttempt || ["succeeded", "expired", "cancelled", "failed"].includes(authAttempt.state)) return;
@@ -191,7 +230,7 @@ export function App() {
   const humanControl = conversation?.controlOwner === "human";
   const pausingControl = conversation?.controlOwner === "pause_requested";
   const status = conversation?.runState === "stopped" ? "Stopped" : interrupted ? "Interrupted" : humanControl ? "You have control" : pausingControl ? "Pausing agent control…" : busy ? "Agent working" : conversation?.runState === "waiting_for_approval" ? "Waiting for you" : "Ready";
-  const activities = [...(conversation?.events ?? [])].reverse().filter((event) => !["message.completed", "conversation.created"].includes(event.type)).slice(0, 8);
+  const traceByTurn = new Map((traces?.turns ?? []).map((turn) => [turn.turnId, turn]));
   const quarantinedPopups = (conversation?.tabs ?? []).filter((tab) => tab.owner === "quarantined");
   const recoveryCopy = conversation?.recovery?.kind === "failed_before_execution"
     ? {
@@ -252,7 +291,11 @@ export function App() {
       <section className="chat-pane">
         <div className="chat-scroll">
           {!conversation?.messages.length && <div className="welcome"><div className="eyebrow">A computer coworker in a disposable VM</div><h1>What should we<br/>get done?</h1><p>Ask naturally. It can operate public websites in its own browser, while you watch, approve interactions, or take control.</p><button className="suggestion" onClick={() => void submit(SUGGESTION)}><span>Try a public web task</span><strong>{SUGGESTION}</strong><b>→</b></button></div>}
+<<<<<<< HEAD
           <div className="messages">{conversation?.messages.map((message) => <article key={message.id} className={`message ${message.role}`}><div className="avatar">{message.role === "user" ? "Y" : "M"}</div><div className="message-content"><div className="message-role">{message.role === "user" ? "You" : "OpenMuse"}</div>{message.role === "assistant" ? <MarkdownMessage>{message.text}</MarkdownMessage> : <p>{message.text}</p>}</div></article>)}</div>
+=======
+          <div className="messages">{conversation?.messages.map((message) => <div className="message-block" key={message.id}><article className={`message ${message.role}`}><div className="avatar">{message.role === "user" ? "Y" : "M"}</div><div className="message-content"><div className="message-role">{message.role === "user" ? "You" : "OpenMuse"}</div>{message.role === "assistant" ? <MarkdownMessage>{message.text}</MarkdownMessage> : <p>{message.text}</p>}</div></article>{message.role === "user" && message.turnId && traceByTurn.get(message.turnId) && <TurnTrace turn={traceByTurn.get(message.turnId)!}/>} {message.role === "user" && message.turnId && !traceByTurn.get(message.turnId) && traceStatus !== "ready" && <div className="trace-unavailable">{traceStatus === "reconnecting" ? "Run details reconnecting…" : "Run details unavailable"}</div>}</div>)}</div>
+>>>>>>> origin/main
           {interrupted && <aside className="approval recovery"><div className="eyebrow">{recoveryCopy.eyebrow}</div><h3>{recoveryCopy.title}</h3><p>{recoveryCopy.detail}</p><div><button disabled={recoveryPending} onClick={() => void continueConversation()}>Continue</button><button className="secondary" disabled={recoveryPending} onClick={() => void startOver()}>Start over</button></div></aside>}
           {quarantinedPopups.map((tab) => <aside className="approval" key={tab.id}><div className="eyebrow">Popup quarantined</div><h3>Use this new tab?</h3><p>{tab.url}</p><div><button disabled={interrupted} onClick={() => void api.adoptPopup(conversation!.id, tab.id).then(setConversation).catch((caught) => setError(caught instanceof Error ? caught.message : "Could not adopt the popup."))}>Adopt tab</button></div></aside>)}
           {conversation?.pendingApproval && <aside className="approval"><div className="eyebrow">Approval required</div><h3>Allow this website interaction?</h3><p>{conversation.pendingApproval.reason}</p>{conversation.pendingApproval.pageUrl && <p>Current page: {conversation.pendingApproval.pageUrl}</p>}{operationDetails(conversation.pendingApproval.operation) && <p>{operationDetails(conversation.pendingApproval.operation)}</p>}<div><button disabled={approvalPending} onClick={() => void resolve(true)}>{approvalPending ? "Running…" : "Approve once"}</button><button className="secondary" disabled={approvalPending} onClick={() => void resolve(false)}>Not now</button></div></aside>}
@@ -268,7 +311,6 @@ export function App() {
           {viewerPath && conversation?.controlOwner === "agent" && <div className="input-shield"><span><i></i> LIVE · Agent controlling</span><button onClick={() => void takeControl()}>Take control</button></div>}
           {viewerPath && pausingControl && <div className="input-shield"><span><i></i> LIVE · Pausing agent control</span><button disabled>Pausing…</button></div>}
         </div>
-        <div className="activity"><div className="activity-title"><span>Live activity</span><span>{activities.length ? "Current session" : "Waiting"}</span></div>{!activities.length ? <div className="activity-empty">Browser actions will appear here.</div> : activities.map((event) => <div className="activity-row" key={event.id}><span className="activity-icon"></span><div><strong>{String(event.payload.summary ?? event.type.replaceAll(".", " "))}</strong><small>{new Date(event.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</small></div></div>)}</div>
       </section>
     </section>
   </main>;

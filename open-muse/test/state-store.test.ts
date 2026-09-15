@@ -52,6 +52,9 @@ test("an accepted user message is durable before send returns", async (t) => {
   const saved = await store.load();
 
   assert.equal(saved?.conversation.messages.at(-1)?.text, "Remember this request");
+  assert.equal(saved?.conversation.messages.at(-1)?.turnId, saved?.conversation.recoveryTurn?.turnId);
+  assert.equal(saved?.conversation.messages.at(-1)?.id, saved?.conversation.recoveryTurn?.userMessageId);
+  assert.doesNotMatch(await readFile(store.path, "utf8"), /trace\.step|agent-visible page/);
   assert.equal((await stat(store.path)).mode & 0o777, 0o600);
 });
 
@@ -120,7 +123,7 @@ test("invalid state reports a recovery command instead of silently resetting", a
   );
 });
 
-test("v1 checkpoints migrate to v3 with model binding and an empty operation journal", async (t) => {
+test("v1 checkpoints migrate to v4 with model binding and an empty operation journal", async (t) => {
   const store = await temporaryStore(t);
   const { created, context } = await conversationFixture();
   const current = serializeConversation(context);
@@ -131,7 +134,7 @@ test("v1 checkpoints migrate to v3 with model binding and an empty operation jou
   const migrated = await store.load();
 
   assert.equal(restored.snapshot(created.id).runState, "idle");
-  assert.equal(migrated?.fileVersion, 3);
+  assert.equal(migrated?.fileVersion, 4);
   assert.deepEqual(migrated?.conversation.operationJournal, []);
   assert.equal(migrated?.conversation.providerId, "openai");
   assert.equal(migrated?.conversation.modelId, "gpt-5-mini");

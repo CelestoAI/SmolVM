@@ -1,4 +1,6 @@
-export interface Message { id: string; role: "user" | "assistant"; text: string; createdAt: string }
+import type { TraceSnapshot } from "./trace";
+
+export interface Message { id: string; role: "user" | "assistant"; text: string; createdAt: string; turnId?: string }
 export interface BrowserOperation { kind: string; url?: string; direction?: string; key?: string; value?: string; label?: string; target?: { role: string; name: string } }
 export interface Approval { kind: "checkout_review" | "browser_program" | "browser_operation"; approvalId: string; actionDigest: string; reason: string; expiresAt: string; totalPriceMinor?: number; operation?: BrowserOperation; pageUrl?: string }
 export interface Event { id: number; type: string; createdAt: string; payload: Record<string, unknown> }
@@ -58,6 +60,7 @@ export const submitAuthPrompt = (attemptId: string, promptId: string, value: str
 export const cancelAuth = (attemptId: string) => request<{ attempt: AuthAttempt }>(`/api/auth-attempts/${attemptId}`, "DELETE", {});
 export const disconnectProvider = (providerId: string) => request<{ disconnected: true }>(`/api/model-access/providers/${providerId}`, "DELETE", {});
 export const getConversation = (id: string) => request<Conversation>(`/api/conversations/${id}`);
+export const getTraces = (id: string) => request<TraceSnapshot>(`/api/conversations/${id}/traces`);
 export const reconnectConversation = (id: string) => request<Conversation>(`/api/conversations/${id}/model-access/reconnect`, "POST", {});
 export const switchConversationModel = (id: string, selection: ModelSelection) => request<Conversation>(`/api/conversations/${id}/model-access`, "PUT", selection);
 export const sendMessage = (id: string, text: string) => request(`/api/conversations/${id}/messages`, "POST", { text });

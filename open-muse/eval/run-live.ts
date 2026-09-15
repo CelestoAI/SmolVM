@@ -6,7 +6,7 @@ import { hasCaseCompletionEvidence, InstrumentedEvalBroker } from "./live-harnes
 import { runEval, type EvalActual } from "./runner.js";
 
 const apiKey = process.env.OPENAI_API_KEY ?? "";
-const modelId = process.env.OPENAI_MODEL ?? "gpt-5-mini";
+const modelId = process.env.OPENAI_MODEL ?? "gpt-5.6-luna";
 const arguments_ = process.argv.slice(2);
 const output = arguments_.length === 2 && arguments_[0] === "--output" ? arguments_[1] : undefined;
 if (!apiKey) throw new Error("OPENAI_API_KEY is required for the manual live eval.");

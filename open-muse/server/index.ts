@@ -8,6 +8,7 @@ import httpProxy from "http-proxy";
 import { z } from "zod";
 import { ConversationManager } from "./manager.js";
 import { ModelAccessService, type ModelSelection } from "./model-access.js";
+import { parseTraceCursor, type TraceEvent } from "./trace.js";
 
 const messageBody = z.object({ text: z.string().trim().min(1).max(8_000) });
 const approvalBody = z.object({ actionDigest: z.string().length(64), approved: z.boolean() });
@@ -112,6 +113,10 @@ async function route(manager: ConversationManager, staticRoot: string, request: 
     return sendJson(response, 200, { disconnected: true });
   }
   if (method === "POST" && url.pathname === "/api/conversations") return sendJson(response, 201, await manager.create(modelAccess ? session.selection : undefined));
+  const tracesMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/traces$/);
+  if (method === "GET" && tracesMatch) { assertLoopbackRequest(request); return sendJson(response, 200, manager.traceSnapshot(tracesMatch[1])); }
+  const traceEventsMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/traces\/events$/);
+  if (method === "GET" && traceEventsMatch) { assertLoopbackRequest(request); return streamTraceEvents(manager, traceEventsMatch[1], request, response, url.searchParams.get("after") ?? undefined); }
   const snapshotMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)$/);
   if (method === "GET" && snapshotMatch) return sendJson(response, 200, manager.snapshot(snapshotMatch[1]));
   const diagnosticsMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/diagnostics$/);
@@ -242,6 +247,49 @@ function streamEvents(manager: ConversationManager, id: string, request: Incomin
   request.on("close", () => { clearInterval(heartbeat); unsubscribe(); });
 }
 
+function streamTraceEvents(manager: ConversationManager, id: string, request: IncomingMessage, response: ServerResponse, after?: string): void {
+  response.statusCode = 200;
+  response.setHeader("content-type", "text/event-stream");
+  response.setHeader("connection", "keep-alive");
+  response.setHeader("x-accel-buffering", "no");
+  response.setHeader("cache-control", "no-store");
+  response.flushHeaders();
+  const cursor = parseTraceCursor(typeof request.headers["last-event-id"] === "string" ? request.headers["last-event-id"] : after);
+  let closed = false;
+  let unsubscribe: () => void = () => undefined;
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    if (heartbeat) clearInterval(heartbeat);
+    unsubscribe();
+    response.end();
+  };
+  const closeAfterDrain = () => {
+    if (closed) return;
+    closed = true;
+    if (heartbeat) clearInterval(heartbeat);
+    unsubscribe();
+    response.once("drain", () => response.end());
+  };
+  const write = (event: TraceEvent): void => {
+    if (closed) return;
+    const ok = response.write(`id: ${event.streamId}:${event.eventId}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+    if (!ok) closeAfterDrain();
+    else if (event.type === "trace.resync_required") queueMicrotask(close);
+  };
+  const subscription = manager.subscribeTraces(id, write, cursor);
+  unsubscribe = subscription.unsubscribe ?? (() => undefined);
+  if (subscription.resync) {
+    const snapshot = manager.traceSnapshot(id);
+    response.end(`id: ${snapshot.streamId}:${snapshot.cursor}\nevent: trace.resync_required\ndata: ${JSON.stringify({ type: "trace.resync_required", streamId: snapshot.streamId, eventId: snapshot.cursor, conversationId: id, createdAt: new Date().toISOString() })}\n\n`);
+    return;
+  }
+  if (closed) { unsubscribe(); return; }
+  heartbeat = setInterval(() => { if (!response.write(": heartbeat\n\n")) closeAfterDrain(); }, 15_000);
+  request.on("close", close);
+}
+
 async function serveStatic(root: string, pathname: string, response: ServerResponse, head: boolean): Promise<void> {
   const relative = normalize(decodeURIComponent(pathname)).replace(/^([/\\])+/, ""); let target = join(root, relative || "index.html");
   if (target !== root && !target.startsWith(`${root}${sep}`)) throw Object.assign(new Error("Not found."), { status: 404 });
@@ -260,7 +308,7 @@ async function main(): Promise<void> {
   const modelAccess = ModelAccessService.createDefault();
   const manager = await ConversationManager.open(
     process.env.OPENAI_API_KEY ?? "",
-    process.env.OPENAI_MODEL ?? "gpt-5-mini",
+    process.env.OPENAI_MODEL ?? "gpt-5.6-luna",
     process.env.OPEN_MUSE_FIXTURE_STORE === "1",
     undefined,
     {},
