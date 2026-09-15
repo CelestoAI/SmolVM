@@ -45,6 +45,17 @@ class BrowserProfileCorruptError(BrowserProfileError):
     """Raised when a profile generation fails integrity validation."""
 
 
+class BrowserProfileOutcomeUnknownError(BrowserProfileError):
+    """Raised when a profile save may have become current but is not crash-durable."""
+
+    def __init__(self, profile_id: str, generation_id: str) -> None:
+        self.generation_id = generation_id
+        super().__init__(
+            f"Browser profile '{profile_id}' may now use generation '{generation_id}', "
+            "but the save outcome is unknown. Load the profile before trying again."
+        )
+
+
 @dataclass(frozen=True)
 class BrowserProfileManifest:
     """Version and integrity metadata for one immutable generation."""
@@ -234,7 +245,10 @@ class BrowserProfileLease:
         try:
             _write_fsynced(pointer_temp, f"{generation_id}\n".encode())
             os.replace(pointer_temp, self.profile_dir / _CURRENT_FILE)
-            _fsync_directory(self.profile_dir)
+            try:
+                _fsync_directory(self.profile_dir)
+            except BaseException as exc:
+                raise BrowserProfileOutcomeUnknownError(self.profile_id, generation_id) from exc
         finally:
             pointer_temp.unlink(missing_ok=True)
         retained = {generation_id}

@@ -19,7 +19,7 @@ test("approves a scripted browser operation through the real UI", async ({ page 
   await expect(page.getByText("Approval required")).toBeHidden();
 });
 
-test("declines a scripted browser operation without executing it", async ({ page }) => {
+test("declines a scripted browser operation without executing it", async ({ page, request }) => {
   await page.goto("/");
   await page.getByRole("button", { name: /Try a public web task/ }).click();
   await expect(page.getByText("Approval required")).toBeVisible();
@@ -27,4 +27,7 @@ test("declines a scripted browser operation without executing it", async ({ page
   await page.getByRole("button", { name: "Not now" }).click();
 
   await expect(page.getByText("Approval required")).toBeHidden();
+  const state = await request.get("http://127.0.0.1:4319/__e2e/state");
+  expect(state.ok()).toBeTruthy();
+  expect(await state.json()).toMatchObject({ dispatchCount: 0, terminalCount: 0 });
 });

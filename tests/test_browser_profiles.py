@@ -14,6 +14,7 @@ from smolvm.browser_profiles import (
     BrowserProfileCorruptError,
     BrowserProfileError,
     BrowserProfileLockedError,
+    BrowserProfileOutcomeUnknownError,
     BrowserProfileStore,
 )
 
@@ -183,6 +184,30 @@ def test_generation_directory_fsync_failure_never_switches_current(
 
     assert loaded is not None
     assert loaded.manifest.generation == first.manifest.generation
+
+
+def test_profile_directory_fsync_failure_reports_unknown_committed_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "profiles"
+    with store(root).acquire("pointer-fsync") as lease:
+        first = lease.save(archive(tmp_path, "pointer-first.tar", b"first"))
+        real_fsync_directory = browser_profiles._fsync_directory
+
+        def fail_profile_directory(path: Path) -> None:
+            if path == root / "pointer-fsync":
+                raise OSError("simulated profile directory fsync failure")
+            real_fsync_directory(path)
+
+        monkeypatch.setattr(browser_profiles, "_fsync_directory", fail_profile_directory)
+        with pytest.raises(BrowserProfileOutcomeUnknownError) as raised:
+            lease.save(archive(tmp_path, "pointer-second.tar", b"second"))
+        loaded = lease.load()
+
+    assert loaded is not None
+    assert loaded.manifest.generation == raised.value.generation_id
+    assert loaded.manifest.generation != first.manifest.generation
+    assert "Load the profile before trying again" in str(raised.value)
 
 
 def test_save_retains_only_current_and_previous_generations(tmp_path: Path) -> None:
