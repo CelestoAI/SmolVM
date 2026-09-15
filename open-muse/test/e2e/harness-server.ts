@@ -111,9 +111,22 @@ class ScriptedRuntime {
             : "https://example.com/";
           return this.result({ binding, display: "https://example.com/" });
         }
-        if (program.includes("const sensitivePath")) {
+        if (this.scenario === "outcome_unknown" && program.includes("page.goto(")) {
+          return { ok: false, exitCode: 1, stdout: "", stderr: "scripted post-dispatch failure", durationMs: 1 };
+        }
+        if (program.includes(".ariaSnapshot()")) {
           this.observationCount += 1;
-          return this.result({ title: "Example Domain", url: "https://example.com/", text: "Example Domain" });
+          const observation = {
+            title: "Example Domain",
+            url: "https://example.com/",
+            pageBinding: "https://example.com/",
+            snapshot: '- document "Example Domain"',
+            refs: [{
+              ref: "e1", role: "document", name: "Example Domain", publicName: "Example Domain", nth: 0,
+              locatorId: "00000000-0000-4000-8000-000000000001", actionable: false,
+            }],
+          };
+          return this.result(program.includes("page.goto(") ? { opened: "https://example.com/", observation } : observation);
         }
         if (this.scenario === "outcome_unknown") {
           return { ok: false, exitCode: 1, stdout: "", stderr: "scripted post-dispatch failure", durationMs: 1 };

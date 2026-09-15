@@ -57,6 +57,7 @@ type BrowserRef = {
   role: string;
   name: string;
   nth: number;
+  locatorId: string;
   actionable: boolean;
   observationId: string;
   tabId: string;
@@ -66,7 +67,7 @@ type BrowserRef = {
 };
 ```
 
-The model sees `ref`, `role`, `name`, and `actionable`, but not the binding fields. Action lookup rejects an unknown, non-actionable, or stale ref before creating an approval. The resolved role/name/nth target is stored in the pending approval and revalidated against the existing tab and page checks immediately before dispatch.
+The model sees `ref`, `role`, `name`, and `actionable`, but not the binding fields or locator ID. Observation marks the exact DOM element with a random locator ID. Action lookup rejects an unknown, non-actionable, or stale ref before creating an approval. The resolved locator ID, role, and name are stored in the pending approval and revalidated against the element, tab, and page immediately before dispatch. Reordering duplicate controls keeps the marker on the originally observed element; replacing it makes the ref stale.
 
 ## Browser Tool Contract
 
@@ -125,7 +126,7 @@ Refs are deliberately not checkpointed. After restart or uncertain recovery, the
 | Failure | Handling | User-visible result | Test |
 |---|---|---|---|
 | Page has no `main` landmark | Capture the whole accessibility tree/body | Page content is present | Regression unit test |
-| Duplicate role/name controls | Store and execute `nth` from the snapshot | Exact referenced control is used | Unit test |
+| Duplicate role/name controls | Mark the observed DOM node and revalidate its role/name | Exact referenced control is used | Unit test |
 | Ref used after navigation or takeover | Reject before approval | “Observe the page again…” | Broker test |
 | Page changes after approval | Existing page/epoch validation aborts dispatch | Existing interrupted recovery | Broker regression |
 | Sensitive route or field | Preserve current blocking rules | Empty/blocked capture or Take control recovery | Existing plus focused unit test |

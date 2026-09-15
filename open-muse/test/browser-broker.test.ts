@@ -6,6 +6,8 @@ import { ConversationManager } from "../server/manager.js";
 import type { ConversationContext } from "../server/types.js";
 import type { TabTarget } from "../server/browser-tabs.js";
 
+const locatorId = (index: number) => `00000000-0000-4000-8000-${index.toString().padStart(12, "0")}`;
+
 function harness(
   persist: () => Promise<void> = async () => undefined,
   resolveTabTarget?: () => TabTarget,
@@ -29,13 +31,13 @@ function harness(
     commerceRevision: 0,
     observationId: "obs-test",
     browserRefs: new Map([
-      ["e1", { ref: "e1", role: "button", name: "Add to cart", publicName: "Add to cart", nth: 0, actionable: true, observationId: "obs-test", tabId: "legacy-tab", tabEpoch: 1, controlEpoch: "agent-control-test", pageBinding: "https://example.com" }],
-      ["e2", { ref: "e2", role: "textbox", name: "Email", publicName: "Email", nth: 0, actionable: true, observationId: "obs-test", tabId: "legacy-tab", tabEpoch: 1, controlEpoch: "agent-control-test", pageBinding: "https://example.com" }],
-      ["e3", { ref: "e3", role: "combobox", name: "Size", publicName: "Size", nth: 0, actionable: true, observationId: "obs-test", tabId: "legacy-tab", tabEpoch: 1, controlEpoch: "agent-control-test", pageBinding: "https://example.com" }],
-      ["e4", { ref: "e4", role: "button", name: "First", publicName: "First", nth: 0, actionable: true, observationId: "obs-test", tabId: "legacy-tab", tabEpoch: 1, controlEpoch: "agent-control-test", pageBinding: "https://example.com" }],
-      ["e5", { ref: "e5", role: "button", name: "Second", publicName: "Second", nth: 0, actionable: true, observationId: "obs-test", tabId: "legacy-tab", tabEpoch: 1, controlEpoch: "agent-control-test", pageBinding: "https://example.com" }],
-      ["e6", { ref: "e6", role: "textbox", name: "Password", publicName: "Password", nth: 0, actionable: true, observationId: "obs-test", tabId: "legacy-tab", tabEpoch: 1, controlEpoch: "agent-control-test", pageBinding: "https://example.com" }],
-      ["e7", { ref: "e7", role: "button", name: "Open", publicName: "Open", nth: 0, actionable: true, observationId: "obs-test", tabId: "legacy-tab", tabEpoch: 1, controlEpoch: "agent-control-test", pageBinding: "https://example.com" }],
+      ["e1", { ref: "e1", role: "button", name: "Add to cart", publicName: "Add to cart", nth: 0, locatorId: locatorId(1), actionable: true, observationId: "obs-test", tabId: "legacy-tab", tabEpoch: 1, controlEpoch: "agent-control-test", pageBinding: "https://example.com" }],
+      ["e2", { ref: "e2", role: "textbox", name: "Email", publicName: "Email", nth: 0, locatorId: locatorId(2), actionable: true, observationId: "obs-test", tabId: "legacy-tab", tabEpoch: 1, controlEpoch: "agent-control-test", pageBinding: "https://example.com" }],
+      ["e3", { ref: "e3", role: "combobox", name: "Size", publicName: "Size", nth: 0, locatorId: locatorId(3), actionable: true, observationId: "obs-test", tabId: "legacy-tab", tabEpoch: 1, controlEpoch: "agent-control-test", pageBinding: "https://example.com" }],
+      ["e4", { ref: "e4", role: "button", name: "First", publicName: "First", nth: 0, locatorId: locatorId(4), actionable: true, observationId: "obs-test", tabId: "legacy-tab", tabEpoch: 1, controlEpoch: "agent-control-test", pageBinding: "https://example.com" }],
+      ["e5", { ref: "e5", role: "button", name: "Second", publicName: "Second", nth: 0, locatorId: locatorId(5), actionable: true, observationId: "obs-test", tabId: "legacy-tab", tabEpoch: 1, controlEpoch: "agent-control-test", pageBinding: "https://example.com" }],
+      ["e6", { ref: "e6", role: "textbox", name: "Password", publicName: "Password", nth: 0, locatorId: locatorId(6), actionable: true, observationId: "obs-test", tabId: "legacy-tab", tabEpoch: 1, controlEpoch: "agent-control-test", pageBinding: "https://example.com" }],
+      ["e7", { ref: "e7", role: "button", name: "Open", publicName: "Open", nth: 0, locatorId: locatorId(7), actionable: true, observationId: "obs-test", tabId: "legacy-tab", tabEpoch: 1, controlEpoch: "agent-control-test", pageBinding: "https://example.com" }],
     ]),
     lastActivityAt: Date.now(),
     receipts: new Map(),
@@ -52,9 +54,9 @@ function harness(
           title: "Example Domain", url: "https://example.com", pageBinding: "https://example.com",
           snapshot: '- document "Example Domain"\n  - button "Add to cart" [ref=e1]\n  - textbox "Email" [ref=e2]\n  - combobox "Size" [ref=e3]',
           refs: [
-            { ref: "e1", role: "button", name: "Add to cart", publicName: "Add to cart", nth: 0, actionable: true },
-            { ref: "e2", role: "textbox", name: "Email", publicName: "Email", nth: 0, actionable: true },
-            { ref: "e3", role: "combobox", name: "Size", publicName: "Size", nth: 0, actionable: true },
+            { ref: "e1", role: "button", name: "Add to cart", publicName: "Add to cart", nth: 0, locatorId: locatorId(1), actionable: true },
+            { ref: "e2", role: "textbox", name: "Email", publicName: "Email", nth: 0, locatorId: locatorId(2), actionable: true },
+            { ref: "e3", role: "combobox", name: "Size", publicName: "Size", nth: 0, locatorId: locatorId(3), actionable: true },
           ],
         };
         const programResult = program.includes("pageBindingRawUrl")
@@ -155,13 +157,68 @@ test("passive browser operations run without approval", async () => {
 test("page extraction uses Markdown conversion and falls back to raw redacted text", async () => {
   const converted = harness(async () => undefined, undefined, async ({ text }) => `# Products\n\n${text}`);
   assert.deepEqual(await converted.broker.runWebOperation({ kind: "extract" }), {
-    title: "Example Domain", url: "https://example.com", markdown: "# Products\n\niPhone 16 $799",
+    title: "Example Domain", url: "https://example.com", markdown: "# Products\n\niPhone 16 $799", source: "gpt-5-nano",
   });
 
   const fallback = harness(async () => undefined, undefined, async () => { throw new Error("model unavailable"); });
   const result = await fallback.broker.runWebOperation({ kind: "extract" });
   assert.equal(result.markdown, "iPhone 16 $799");
+  assert.equal(result.source, "raw-fallback");
   assert.match(String(result.warning), /conversion failed/);
+
+  const unavailable = harness();
+  assert.deepEqual(await unavailable.broker.runWebOperation({ kind: "extract" }), {
+    title: "Example Domain", url: "https://example.com", markdown: "iPhone 16 $799", source: "raw-fallback",
+    warning: "Markdown conversion was unavailable, so this is the raw redacted page text.",
+  });
+
+  const empty = harness(async () => undefined, undefined, async () => "should not run");
+  empty.context.computer!.exec = async () => ({
+    ok: true, exitCode: 0, stderr: "", durationMs: 1,
+    stdout: `SMOLVM_BROWSER_RESULT=${JSON.stringify({ ok: true, value: { programResult: {
+      title: "Empty", url: "https://example.com", pageBinding: "https://example.com", text: "",
+    }, page: { title: "Empty", url: "https://example.com" } } })}\n`,
+  });
+  assert.deepEqual(await empty.broker.runWebOperation({ kind: "extract" }), {
+    title: "Empty", url: "https://example.com", markdown: "", source: "raw-fallback",
+  });
+});
+
+test("scoped extraction resolves the latest ref without requiring an interactive target", async () => {
+  const scoped = harness(async () => undefined, undefined, async ({ text }) => text);
+  scoped.context.browserRefs.set("e8", {
+    ref: "e8", role: "region", name: "Products", publicName: "Products", nth: 0, locatorId: locatorId(8),
+    actionable: false, observationId: "obs-test", tabId: "legacy-tab", tabEpoch: 1,
+    controlEpoch: "agent-control-test", pageBinding: "https://example.com",
+  });
+
+  await scoped.broker.runWebOperation({ kind: "extract", scopeRef: "e8" });
+
+  assert.match(scoped.programs[0], new RegExp(locatorId(8)));
+  assert.match(scoped.programs[0], /getByRole\("region", \{ name: "Products", exact: true \}\)/);
+  assert.equal(scoped.context.pendingApproval, undefined);
+});
+
+test("page capture failures are not returned as successful empty data", async () => {
+  const observation = harness();
+  observation.context.computer!.exec = async () => ({
+    ok: true, exitCode: 0, stderr: "", durationMs: 1,
+    stdout: `SMOLVM_BROWSER_RESULT=${JSON.stringify({ ok: true, value: { programResult: {
+      title: "Example Domain", url: "https://example.com", pageBinding: "https://example.com",
+      snapshot: "", refs: [], captureFailed: true,
+    }, page: { title: "Example Domain", url: "https://example.com" } } })}\n`,
+  });
+  await assert.rejects(() => observation.broker.runWebOperation({ kind: "observe" }), /could not read the current page/);
+
+  const extraction = harness();
+  extraction.context.computer!.exec = async () => ({
+    ok: true, exitCode: 0, stderr: "", durationMs: 1,
+    stdout: `SMOLVM_BROWSER_RESULT=${JSON.stringify({ ok: true, value: { programResult: {
+      title: "Example Domain", url: "https://example.com", pageBinding: "https://example.com",
+      text: "", captureFailed: true,
+    }, page: { title: "Example Domain", url: "https://example.com" } } })}\n`,
+  });
+  await assert.rejects(() => extraction.broker.runWebOperation({ kind: "extract" }), /could not extract data/);
 });
 
 test("active browser operations create page-bound one-shot approvals", async () => {
@@ -186,7 +243,8 @@ test("active browser operations create page-bound one-shot approvals", async () 
   assert.equal(programs.length, 3);
   assert.match(programs[2], /currentPage !== "https:\/\/example\.com"/);
   assert.match(programs[2], /getByRole\("button", \{ name: "Add to cart", exact: true \}\)/);
-  assert.match(programs[2], /candidates\.count\(\) <= 0/);
+  assert.match(programs[2], /data-smolvm-browser-ref/);
+  assert.match(programs[2], /candidates\.count\(\) !== 1/);
   assert.equal(context.pendingApproval, undefined);
   assert.equal(context.runState, "idle");
   assert.equal("browserResult" in outcome, true);
@@ -205,7 +263,7 @@ test("operation programs serialize model fields as data", () => {
   const program = operationProgram({
     kind: "fill",
     ref: "e1",
-    target: { role: "textbox", name: "Name\"; process.exit(1); //", nth: 0 },
+    target: { role: "textbox", name: "Name\"; process.exit(1); //", nth: 0, locatorId: locatorId(1) },
     value: "hello\nworld\"; throw new Error('injected'); //",
   }, "https://example.com/form");
 
@@ -215,7 +273,7 @@ test("operation programs serialize model fields as data", () => {
   assert.doesNotMatch(program, /name: "Name"; process/);
   assert.match(program, /fieldSafety\.type === 'password'/);
   assert.match(program, /cc-\|current-password\|new-password\|one-time-code/);
-  assert.match(operationProgram({ kind: "click", ref: "e1", target: { role: "button", name: "Open", nth: 0 } }, "about:blank"), /: currentRawUrl/);
+  assert.match(operationProgram({ kind: "click", ref: "e1", target: { role: "button", name: "Open", nth: 0, locatorId: locatorId(1) } }, "about:blank"), /: currentRawUrl/);
 });
 
 test("operation policy rejects private navigation and sensitive fields", async () => {
@@ -271,7 +329,7 @@ test("concurrent active operations share the first pending approval", async () =
   ]);
 
   assert.equal(first.approvalId, second.approvalId);
-  assert.deepEqual(context.pendingApproval?.operation, { kind: "click", ref: "e4", target: { role: "button", name: "First", nth: 0, publicName: "First" } });
+  assert.deepEqual(context.pendingApproval?.operation, { kind: "click", ref: "e4", target: { role: "button", name: "First", nth: 0, locatorId: locatorId(4), publicName: "First" } });
 });
 
 test("approval events do not retain browser field values", async () => {
@@ -299,7 +357,7 @@ test("conversation snapshots hide private page bindings and fill values", async 
     actionDigest: "digest-test",
     reason: "Fill textbox “Email”",
     expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    operation: { kind: "fill", ref: "e2", target: { role: "textbox", name: "Email", nth: 0 }, value: "person@example.com" },
+    operation: { kind: "fill", ref: "e2", target: { role: "textbox", name: "Email", nth: 0, locatorId: locatorId(2) }, value: "person@example.com" },
     pageUrl: "https://example.com/search",
     pageBinding: "https://example.com/search?q=private#results",
   };

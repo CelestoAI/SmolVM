@@ -2,6 +2,7 @@ export type BrowserTarget = {
   role: string;
   name: string;
   nth: number;
+  locatorId: string;
   publicName?: string;
 };
 
@@ -117,14 +118,16 @@ function snapshotProgram(resultExpression = "observation"): string {
     "const snapshotParsedUrl = (() => { try { return new URL(snapshotRawUrl); } catch { return null; } })();",
     "const snapshotSafeUrl = snapshotParsedUrl && ['http:', 'https:'].includes(snapshotParsedUrl.protocol) ? `${snapshotParsedUrl.origin}${snapshotParsedUrl.pathname}` : snapshotRawUrl;",
     "const snapshotPageBinding = snapshotParsedUrl && ['http:', 'https:'].includes(snapshotParsedUrl.protocol) ? `${snapshotParsedUrl.origin}${snapshotParsedUrl.pathname}${snapshotParsedUrl.search}${snapshotParsedUrl.hash}` : snapshotRawUrl;",
-    "const snapshotSensitivePath = snapshotParsedUrl ? /(?:^|\\/)(?:account|auth|billing|checkout|login|orders?|payments?|profile|signin|wallet)(?:\\/|$)/i.test(snapshotParsedUrl.pathname) : true;",
-    "const snapshotRaw = snapshotSensitivePath ? '' : await page.locator('body').ariaSnapshot().catch(() => '');",
+    "const snapshotSensitivePath = snapshotParsedUrl ? /(?:^|\\/)(?:account|auth|billing|checkout|login|orders?|payments?|profile|signin|wallet)(?:[._-][^/]+)?(?:\\/|$)/i.test(snapshotParsedUrl.pathname) : true;",
+    "const snapshotCapture = snapshotSensitivePath ? { value: '' } : await page.locator('body').ariaSnapshot().then((value) => ({ value })).catch(() => ({ failed: true, value: '' }));",
+    "const snapshotRaw = snapshotCapture.value;",
     "const snapshotRedact = (value) => value.replace(/\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b/gi, '[email redacted]').replace(/\\b(?:\\d[ -]*?){13,19}\\b/g, '[number redacted]');",
     "const snapshotActionRoles = new Set(['button', 'checkbox', 'combobox', 'link', 'menuitem', 'radio', 'searchbox', 'spinbutton', 'textbox']);",
     "const snapshotCounts = new Map();",
     "const snapshotRefs = [];",
     "const snapshotLines = [];",
     "let snapshotLength = 0;",
+    "let snapshotTruncated = false;",
     "for (const line of snapshotRaw.split('\\n')) {",
     "  const match = line.match(/^(\\s*-\\s+)([a-z][a-z0-9]*)\\s+\"((?:[^\"\\\\]|\\\\.)*)\"(.*)$/);",
     "  let rendered = snapshotRedact(line);",
@@ -133,14 +136,16 @@ function snapshotProgram(resultExpression = "observation"): string {
     "    let name; try { name = JSON.parse(`\"${match[3]}\"`); } catch { name = match[3]; }",
     "    const key = `${match[2]}\\u0000${name}`;",
     "    const nth = snapshotCounts.get(key) || 0; snapshotCounts.set(key, nth + 1);",
-    "    candidate = { ref: `e${snapshotRefs.length + 1}`, role: match[2], name, publicName: snapshotRedact(name).slice(0, 160), nth, actionable: snapshotActionRoles.has(match[2]) };",
-    "    rendered = `${match[1]}${match[2]} \"${candidate.publicName}\" [ref=${candidate.ref}]${match[4]}`;",
+    "    const locatorId = globalThis.crypto.randomUUID();",
+    "    const marked = await page.getByRole(match[2], { name, exact: true }).nth(nth).evaluate((node, id) => node.setAttribute('data-smolvm-browser-ref', id), locatorId).then(() => true).catch(() => false);",
+    "    if (marked) candidate = { ref: `e${snapshotRefs.length + 1}`, role: match[2], name, publicName: snapshotRedact(name).slice(0, 160), nth, locatorId, actionable: snapshotActionRoles.has(match[2]) };",
+    "    if (candidate) rendered = `${match[1]}${match[2]} \"${candidate.publicName}\" [ref=${candidate.ref}]${match[4]}`;",
     "  }",
     "  const addition = `${rendered}\\n`;",
-    "  if (snapshotLength + addition.length > 12000) break;",
+    "  if (snapshotLength + addition.length > 12000) { snapshotTruncated = true; break; }",
     "  snapshotLines.push(rendered); snapshotLength += addition.length; if (candidate) snapshotRefs.push(candidate);",
     "}",
-    "const observation = { title: await page.title().catch(() => ''), url: snapshotSafeUrl, pageBinding: snapshotPageBinding, snapshot: snapshotLines.join('\\n'), refs: snapshotRefs, truncated: snapshotLength < snapshotRaw.length, ...(snapshotSensitivePath ? { textBlocked: true } : {}) };",
+    "const observation = { title: await page.title().catch(() => ''), url: snapshotSafeUrl, pageBinding: snapshotPageBinding, snapshot: snapshotLines.join('\\n'), refs: snapshotRefs, truncated: snapshotTruncated, ...(snapshotCapture.failed ? { captureFailed: true } : {}), ...(snapshotSensitivePath ? { textBlocked: true } : {}) };",
     `return ${resultExpression};`,
   ].join("\n");
 }
@@ -151,11 +156,12 @@ function extractionProgram(target?: BrowserTarget): string {
     "const extractParsedUrl = (() => { try { return new URL(extractRawUrl); } catch { return null; } })();",
     "const extractSafeUrl = extractParsedUrl && ['http:', 'https:'].includes(extractParsedUrl.protocol) ? `${extractParsedUrl.origin}${extractParsedUrl.pathname}` : extractRawUrl;",
     "const extractPageBinding = extractParsedUrl && ['http:', 'https:'].includes(extractParsedUrl.protocol) ? `${extractParsedUrl.origin}${extractParsedUrl.pathname}${extractParsedUrl.search}${extractParsedUrl.hash}` : extractRawUrl;",
-    "const extractSensitivePath = extractParsedUrl ? /(?:^|\\/)(?:account|auth|billing|checkout|login|orders?|payments?|profile|signin|wallet)(?:\\/|$)/i.test(extractParsedUrl.pathname) : true;",
+    "const extractSensitivePath = extractParsedUrl ? /(?:^|\\/)(?:account|auth|billing|checkout|login|orders?|payments?|profile|signin|wallet)(?:[._-][^/]+)?(?:\\/|$)/i.test(extractParsedUrl.pathname) : true;",
     ...(target ? [targetProgram(target)] : ["const target = page.locator('body');"]),
-    "const extractRawText = extractSensitivePath ? '' : await target.innerText({ timeout: 5_000 }).catch(() => '');",
+    "const extractCapture = extractSensitivePath ? { value: '' } : await target.innerText({ timeout: 5_000 }).then((value) => ({ value })).catch(() => ({ failed: true, value: '' }));",
+    "const extractRawText = extractCapture.value;",
     "const extractText = extractRawText.replace(/\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b/gi, '[email redacted]').replace(/\\b(?:\\d[ -]*?){13,19}\\b/g, '[number redacted]').slice(0, 16000);",
-    "return { title: await page.title().catch(() => ''), url: extractSafeUrl, pageBinding: extractPageBinding, text: extractText, truncated: extractRawText.length > 16000, ...(extractSensitivePath ? { textBlocked: true } : {}) };",
+    "return { title: await page.title().catch(() => ''), url: extractSafeUrl, pageBinding: extractPageBinding, text: extractText, truncated: extractRawText.length > 16000, ...(extractCapture.failed ? { captureFailed: true } : {}), ...(extractSensitivePath ? { textBlocked: true } : {}) };",
   ].join("\n");
 }
 
@@ -178,8 +184,8 @@ function isPrivateHostname(hostname: string): boolean {
 
 function targetProgram(target: BrowserTarget): string {
   return [
-    `const candidates = page.getByRole(${JSON.stringify(target.role)}, { name: ${JSON.stringify(target.name)}, exact: true });`,
-    `if (await candidates.count() <= ${target.nth}) throw new Error('The observed target is no longer available.');`,
-    `const target = candidates.nth(${target.nth});`,
+    `const candidates = page.locator(${JSON.stringify(`[data-smolvm-browser-ref="${target.locatorId}"]`)}).and(page.getByRole(${JSON.stringify(target.role)}, { name: ${JSON.stringify(target.name)}, exact: true }));`,
+    "if (await candidates.count() !== 1) throw new Error('The observed target is no longer available.');",
+    "const target = candidates.first();",
   ].join("\n");
 }

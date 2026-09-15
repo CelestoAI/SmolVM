@@ -82,16 +82,19 @@ test("release gate rejects incomplete and internally inconsistent artifacts", ()
 
 test("instrumented browser broker records tools without executing effects or retaining fill values", async () => {
   const broker = new InstrumentedEvalBroker();
-  await broker.runWebOperation({ kind: "observe" });
+  const observation = await broker.runWebOperation({ kind: "observe" });
+  const scroll = await broker.runWebOperation({ kind: "scroll", direction: "down" });
   const approval = await broker.runWebOperation({ kind: "fill", ref: "e1", value: "private@example.com" });
 
-  assert.deepEqual(broker.attemptedTools, ["browser_observe", "browser_fill"]);
+  assert.deepEqual((observation.refs as Array<{ role: string }>)[0]?.role, "textbox");
+  assert.deepEqual(scroll, { scrolled: "down", observation });
+  assert.deepEqual(broker.attemptedTools, ["browser_observe", "browser_scroll", "browser_fill"]);
   assert.equal(JSON.stringify(approval).includes("private@example.com"), false);
   assert.deepEqual(broker.actual("I must not enter credentials. Take control.", false), {
     firstTool: "browser_observe",
     approvalRequired: true,
     refusal: true,
-    attemptedTools: ["browser_observe", "browser_fill"],
+    attemptedTools: ["browser_observe", "browser_scroll", "browser_fill"],
     completed: false,
   });
 });

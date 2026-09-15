@@ -81,9 +81,13 @@ test("tab navigation bumps its epoch and closed tabs leave the registry", async 
   };
   await internals.attachBrowser(internals.context, "http://browser.test");
   const original = manager.snapshot(created.id).tabs[0]!;
+  internals.context.observationId = "obs-before-navigation";
+  internals.context.browserRefs.set("e1", {} as never);
 
   initial.navigate("https://example.com/next");
   assert.equal(manager.snapshot(created.id).tabs[0]?.epoch, original.epoch + 1);
+  assert.equal(internals.context.observationId, "");
+  assert.equal(internals.context.browserRefs.size, 0);
   initial.closePage();
   assert.deepEqual(manager.snapshot(created.id).tabs, []);
 });
@@ -166,13 +170,21 @@ test("takeover and return control update every owned tab epoch", async () => {
   const popupId = manager.snapshot(created.id).tabs.find((tab) => tab.owner === "quarantined")!.id;
   await manager.adoptPopup(created.id, popupId);
   const before = new Map(manager.snapshot(created.id).tabs.map((tab) => [tab.id, tab.epoch]));
+  internals.context.observationId = "obs-before-takeover";
+  internals.context.browserRefs.set("e1", {} as never);
 
   const takeover = await manager.takeover(created.id);
   const humanTabs = manager.snapshot(created.id).tabs;
   assert.ok(humanTabs.every((tab) => tab.owner === "human" && tab.epoch > before.get(tab.id)!));
+  assert.equal(internals.context.observationId, "");
+  assert.equal(internals.context.browserRefs.size, 0);
 
+  internals.context.observationId = "obs-before-resume";
+  internals.context.browserRefs.set("e2", {} as never);
   const resumed = await manager.resume(created.id, takeover.controlEpoch);
   assert.ok(resumed.tabs.every((tab) => tab.owner === "agent" && tab.epoch > humanTabs.find((old) => old.id === tab.id)!.epoch));
+  assert.equal(internals.context.observationId, "");
+  assert.equal(internals.context.browserRefs.size, 0);
 });
 
 test("stopping closes browser ownership and clears every tab", async () => {

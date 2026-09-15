@@ -4,7 +4,7 @@ import { operationProgram, operationReason, redactBrowserOperation, validateBrow
 import { approveOperation, completeOperation, dispatchOperation, markOutcomeUnknown, upsertOperation, type OperationRecord, type RecoveryState } from "./operation-lifecycle.js";
 import type { TabTarget } from "./browser-tabs.js";
 import type { BrowserRef, ConversationContext, IntentGrant, PendingApproval } from "./types.js";
-import type { MarkdownInput } from "./markdown.js";
+import { MARKDOWN_MODEL, type MarkdownInput } from "./markdown.js";
 
 type Emit = (type: string, payload: Record<string, unknown>, mutates?: boolean) => void;
 type Persist = () => Promise<void>;
@@ -458,14 +458,15 @@ export class ActionBroker {
       || tab.pageBinding !== undefined && found.pageBinding !== tab.pageBinding) {
       throw new Error("That browser ref is stale. Observe the page again and use a current ref.");
     }
-    return { ref: found, target: { role: found.role, name: found.name, nth: found.nth, publicName: found.publicName } };
+    return { ref: found, target: { role: found.role, name: found.name, nth: found.nth, locatorId: found.locatorId, publicName: found.publicName } };
   }
 
   private registerObservation(value: unknown, tab: TabTarget): Record<string, unknown> {
     const observation = value as {
       title?: unknown; url?: unknown; pageBinding?: unknown; snapshot?: unknown; refs?: unknown;
-      truncated?: unknown; textBlocked?: unknown;
+      truncated?: unknown; captureFailed?: unknown; textBlocked?: unknown;
     } | null;
+    if (observation?.captureFailed === true) throw new Error("OpenMuse could not read the current page. Try again, or use Take control to inspect it yourself.");
     if (!observation || typeof observation.title !== "string" || typeof observation.url !== "string"
       || typeof observation.pageBinding !== "string" || typeof observation.snapshot !== "string" || !Array.isArray(observation.refs)) {
       throw new Error("The browser runner did not return a usable page observation.");
@@ -475,9 +476,10 @@ export class ActionBroker {
       const candidate = item as Partial<BrowserRef> | null;
       if (!candidate || typeof candidate.ref !== "string" || typeof candidate.role !== "string" || typeof candidate.name !== "string"
         || typeof candidate.publicName !== "string" || typeof candidate.nth !== "number" || !Number.isInteger(candidate.nth)
+        || typeof candidate.locatorId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidate.locatorId)
         || candidate.nth < 0 || typeof candidate.actionable !== "boolean") return [];
       return [{
-        ref: candidate.ref, role: candidate.role, name: candidate.name, publicName: candidate.publicName,
+        ref: candidate.ref, role: candidate.role, name: candidate.name, publicName: candidate.publicName, locatorId: candidate.locatorId,
         nth: candidate.nth, actionable: candidate.actionable, observationId, tabId: tab.id,
         tabEpoch: tab.epoch, controlEpoch: tab.controlEpoch, pageBinding: observation.pageBinding as string,
       } satisfies BrowserRef];
@@ -495,7 +497,8 @@ export class ActionBroker {
   }
 
   private async formatExtraction(value: unknown): Promise<Record<string, unknown>> {
-    const extraction = value as { title?: unknown; url?: unknown; text?: unknown; truncated?: unknown; textBlocked?: unknown } | null;
+    const extraction = value as { title?: unknown; url?: unknown; text?: unknown; truncated?: unknown; captureFailed?: unknown; textBlocked?: unknown } | null;
+    if (extraction?.captureFailed === true) throw new Error("OpenMuse could not extract data from the current page. Try again, or use Take control to inspect it yourself.");
     if (!extraction || typeof extraction.title !== "string" || typeof extraction.url !== "string" || typeof extraction.text !== "string") {
       throw new Error("The browser runner did not return usable page data.");
     }
@@ -505,14 +508,14 @@ export class ActionBroker {
       ...(extraction.truncated === true ? { truncated: true } : {}),
       ...(extraction.textBlocked === true ? { textBlocked: true } : {}),
     };
-    if (!extraction.text || !this.convertMarkdown) return { ...base, markdown: extraction.text, warning: "Markdown conversion was unavailable, so this is the raw redacted page text." };
+    if (!extraction.text) return { ...base, markdown: "", source: "raw-fallback" };
+    if (!this.convertMarkdown) return { ...base, markdown: extraction.text, source: "raw-fallback", warning: "Markdown conversion was unavailable, so this is the raw redacted page text." };
     try {
-      // gstack-shortcut(dec-openmuse-extraction-eval): focused smoke coverage only; upgrade when extraction becomes a release gate.
       const markdown = await this.convertMarkdown({ title: extraction.title, url: extraction.url, text: extraction.text });
       if (!markdown.trim()) throw new Error("empty Markdown");
-      return { ...base, markdown: markdown.slice(0, 16_000) };
+      return { ...base, markdown: markdown.slice(0, 16_000), source: MARKDOWN_MODEL };
     } catch {
-      return { ...base, markdown: extraction.text, warning: "Markdown conversion failed, so this is the raw redacted page text." };
+      return { ...base, markdown: extraction.text, source: "raw-fallback", warning: "Markdown conversion failed, so this is the raw redacted page text." };
     }
   }
 }

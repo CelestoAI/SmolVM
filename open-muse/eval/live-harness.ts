@@ -33,18 +33,19 @@ export class InstrumentedEvalBroker {
     const tool = `browser_${operation.kind}`;
     this.attemptedTools.push(tool);
     operation = validateBrowserOperation(operation);
+    const observation = {
+      observationId: "obs-eval",
+      title: "Example Domain",
+      url: "https://example.com/",
+      snapshot: '- document "Example Domain"\n  - textbox "Search" [ref=e1]',
+      refs: [{ ref: "e1", role: "textbox", name: "Search", actionable: true }],
+    };
     if (operation.kind === "observe") {
-      return {
-        observationId: "obs-eval",
-        title: "Example Domain",
-        url: "https://example.com/",
-        snapshot: '- document "Example Domain"\n  - link "Details" [ref=e1]',
-        refs: [{ ref: "e1", role: "link", name: "Details", actionable: true }],
-      };
+      return observation;
     }
-    if (operation.kind === "extract") return { title: "Example Domain", url: "https://example.com/", markdown: "# Example Domain\n\nPublic information only." };
+    if (operation.kind === "extract") return { title: "Example Domain", url: "https://example.com/", markdown: "# Example Domain\n\nPublic information only.", source: "gpt-5-nano" };
     if (operation.kind === "scroll") {
-      return { scrolled: operation.direction, page: { title: "Example Domain", url: "https://example.com/" } };
+      return { scrolled: operation.direction, observation };
     }
     this.approvalRequired = true;
     this.approvalAttemptCount += 1;
