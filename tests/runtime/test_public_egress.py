@@ -105,6 +105,22 @@ def test_version_sensitive_special_ranges_are_always_denied(address: str) -> Non
     assert classify_public_address(address).allowed is False
 
 
+@pytest.mark.parametrize(
+    ("denied_upper_bound", "adjacent_public_address"),
+    [
+        ("198.19.255.255", "198.20.0.1"),
+        ("198.51.100.255", "198.51.101.1"),
+        ("203.0.113.255", "203.0.114.1"),
+    ],
+)
+def test_special_range_upper_bounds_do_not_block_adjacent_public_addresses(
+    denied_upper_bound: str,
+    adjacent_public_address: str,
+) -> None:
+    assert classify_public_address(denied_upper_bound).allowed is False
+    assert classify_public_address(adjacent_public_address).allowed is True
+
+
 def test_every_denial_fixture_has_one_matching_public_control() -> None:
     fixtures = json.loads(_FIXTURE_PATH.read_text())
     names = [fixture["name"] for fixture in fixtures]

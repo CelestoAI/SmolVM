@@ -229,6 +229,35 @@ def test_invalid_framing_header_name_is_rejected_before_forwarding(
     assert resolver.calls == []
 
 
+@pytest.mark.parametrize(
+    "raw_request",
+    [
+        b"GET http://public.test/ HTTP/1.1\nX-Smuggled: true\r\nHost: public.test\r\n\r\n",
+        b"GET http://public.test/ HTTP/1.1\r\nHost: public.test\nX-Smuggled: true\r\n\r\n",
+        b"GET http://public.test/ HTTP/1.1\r\nHost: public.test\rX-Smuggled: true\r\n\r\n",
+    ],
+)
+def test_non_crlf_line_endings_are_rejected_before_forwarding(raw_request: bytes) -> None:
+    resolver = StaticResolver(["1.1.1.1"])
+
+    def forbidden_connector(_address: str, _port: int, _timeout: float) -> socket.socket:
+        raise AssertionError("ambiguous line framing reached connector")
+
+    with (
+        PublicEgressProxy(
+            "line-framing-test",
+            resolver=resolver,
+            connector=forbidden_connector,
+        ) as proxy,
+        socket.create_connection((proxy.endpoint.host, proxy.endpoint.port)) as client,
+    ):
+        client.sendall(raw_request)
+        response = _recv_until(client, b"\r\n\r\n")
+        assert response.startswith(b"HTTP/1.1 400")
+
+    assert resolver.calls == []
+
+
 def test_proxy_lifecycle_is_idempotent_and_releases_listener() -> None:
     proxy = PublicEgressProxy("lifecycle-test")
     endpoint = proxy.start()

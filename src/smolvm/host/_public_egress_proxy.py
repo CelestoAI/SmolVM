@@ -293,6 +293,8 @@ def _read_request(client: socket.socket) -> _ParsedRequest:
 
     raw_headers, body_prefix = bytes(buffer).split(b"\r\n\r\n", 1)
     lines = raw_headers.split(b"\r\n")
+    if any(b"\r" in line or b"\n" in line for line in lines):
+        raise _ProxyRequestError(HTTPStatus.BAD_REQUEST, "Proxy request is invalid.")
     try:
         method_raw, target_raw, version_raw = lines[0].split(b" ", 2)
         method = method_raw.decode("ascii").upper()
