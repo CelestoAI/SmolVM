@@ -479,7 +479,7 @@ export class ConversationManager {
     page.on("close", () => {
       context.tabs.delete(tab.id);
       if (context.activeTabId === tab.id) {
-        const replacement = [...context.tabs.values()].find((candidate) => candidate.owner === "agent" || candidate.owner === "human");
+        const replacement = [...context.tabs.values()].find((candidate) => candidate.owner === "agent" || candidate.owner === "paused" || candidate.owner === "human");
         context.activeTabId = replacement?.id;
         context.page = replacement?.page;
       }

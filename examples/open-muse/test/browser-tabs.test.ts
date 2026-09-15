@@ -88,6 +88,31 @@ test("tab navigation bumps its epoch and closed tabs leave the registry", async 
   assert.deepEqual(manager.snapshot(created.id).tabs, []);
 });
 
+test("closing the active tab retains a paused replacement during takeover", async () => {
+  const { manager, initial, browserContext } = managerHarness();
+  const created = await manager.create();
+  const internals = manager as unknown as {
+    context: ConversationContext;
+    attachBrowser: (context: ConversationContext, url: string) => Promise<void>;
+  };
+  await internals.attachBrowser(internals.context, "http://browser.test");
+  const popup = new FakePage("https://example.org/popup");
+  browserContext.popup(popup);
+  const popupId = manager.snapshot(created.id).tabs.find((tab) => tab.owner === "quarantined")!.id;
+  await manager.adoptPopup(created.id, popupId);
+  const activeId = internals.context.activeTabId!;
+  for (const [tabId, tab] of internals.context.tabs) {
+    internals.context.tabs.set(tabId, { ...tab, owner: "paused" });
+  }
+  internals.context.controlOwner = "pause_requested";
+
+  (internals.context.tabs.get(activeId)!.page as unknown as FakePage).closePage();
+
+  assert.notEqual(internals.context.activeTabId, activeId);
+  assert.equal(internals.context.tabs.get(internals.context.activeTabId!)?.owner, "paused");
+  assert.equal(manager.snapshot(created.id).tabs.filter((tab) => tab.active).length, 1);
+});
+
 test("closing every tab reconnects browser automation instead of using a missing page", async () => {
   const { manager, initial } = managerHarness();
   const created = await manager.create();
