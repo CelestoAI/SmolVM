@@ -1,7 +1,7 @@
 <div align="center">
 
 
-# Try OpenMuse -- a free and open-source alternative to GrokBot and Muse.
+# Try [OpenMuse](./open-muse/) -- a free and open-source alternative to GrokBot and Muse.
 
 ![](./open-muse/banner-dark.png)
 
