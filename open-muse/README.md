@@ -26,50 +26,22 @@ OpenMuse runs from this SmolVM repository. The supported hosts are Linux x64 and
 Before you start, install:
 
 - Node.js 22.19 or newer
-- Python 3.11 or newer
-- [`uv`](https://docs.astral.sh/uv/), which runs the local SmolVM service
 - An OpenAI API key
-
-On Apple Silicon macOS, you also need QEMU:
-
-```bash
-brew install qemu
-```
-
-On Linux, `smolvm setup` checks or installs the tools that start the disposable computer. The commands below show when to run it.
 
 ### 1. Prepare SmolVM
 
-From the repository root, install SmolVM:
+Install SmolVM, prepare your computer, and verify the setup with one command:
 
 ```bash
-uv sync
+curl -sSL https://celesto.ai/install.sh | bash
 ```
 
-Check whether this computer is ready:
-
-```bash
-uv run smolvm doctor
-```
-
-If the check reports missing Linux host tools, run:
-
-```bash
-uv run smolvm setup
-```
-
-Then run the check again:
-
-```bash
-uv run smolvm doctor
-```
-
-Fix any remaining problem before continuing. See the [SmolVM installation guide](../docs/installation.md) for platform-specific help.
+The installer adds the Python tooling SmolVM needs, installs SmolVM, prepares the host, and runs its readiness check. See the [manual installation guide](../docs/installation.md) if the installer reports a problem.
 
 Download and verify the desktop image now so the first task does not pause without terminal progress:
 
 ```bash
-uv run smolvm image pull linux-desktop
+smolvm image pull linux-desktop
 ```
 
 The download is needed only once. Later runs reuse the local image.
