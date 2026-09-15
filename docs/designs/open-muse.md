@@ -69,7 +69,7 @@ Browser on 127.0.0.1
                  │ HTTP + SSE
                  ▼
 Node control server
-  ├── ConversationManager (one active conversation)
+  ├── ConversationManager (saved history; one live conversation)
   ├── Pi Agent (host-side model loop)
   ├── IntentLedger + ActionBroker
   ├── Playwright over private CDP URL
@@ -178,7 +178,7 @@ interface ConversationContext {
 
 An idle conversation is nonterminal. Completed user and assistant messages live in a separate message store; token deltas are compacted into one completion event. Retain at most 100 completed messages and 64,000 UTF-8 bytes. At 80% of either bound, summarize older non-sensitive dialogue for Pi and retain the latest 20 messages verbatim. The summary can guide conversation but never creates or changes an intent grant. If compaction fails, pause with a recovery to start a new conversation rather than silently dropping context. Snapshots contain the bounded completed messages, current states, grants, pending approval, and events retained after the requested cursor.
 
-The current example checkpoints one bounded conversation to a versioned local JSON file using a temporary file and atomic rename. Checkpoint v2 persists completed messages, sanitized event summaries, lifecycle state, and a redacted operation journal, but never saves VM or Playwright handles, executable browser programs, form values, viewer tokens, grants, or pending approvals. It still reads v1 checkpoints and migrates them with an empty journal. On restart, an operation saved as `approved` becomes `completed/failed_before_execution`, while one saved as `dispatched` becomes `outcome_unknown`; neither is replayed. Other in-flight work becomes `interrupted`, and nothing runs until the user chooses **Continue** or **Start over**. Continue creates a fresh computer and tells Pi to re-plan after safe failure or observe and ask before acting after an unknown outcome.
+The current example checkpoints up to 50 bounded conversations plus the selected conversation ID to a versioned local JSON file using a temporary file and atomic rename. Checkpoint v5 persists completed messages, sanitized event summaries, lifecycle state, and a redacted operation journal, but never saves VM or Playwright handles, executable browser programs, form values, viewer tokens, grants, traces, or pending approvals. It reads v1-v4 checkpoints and wraps the legacy conversation as the selected history entry. On restart, an operation saved as `approved` becomes `completed/failed_before_execution`, while one saved as `dispatched` becomes `outcome_unknown`; neither is replayed. Other in-flight work becomes `interrupted`, and nothing runs until the user chooses **Continue** or **Start over**. Continue creates a fresh computer and tells Pi to re-plan after safe failure or observe and ask before acting after an unknown outcome.
 
 After each assistant turn, Pi returns to `idle` and the browser remains warm until **Stop**, the 15-minute idle timeout, server shutdown, or failure closes it. `stop` is the explicit terminal/close operation for the first release.
 
@@ -288,8 +288,10 @@ The local Node server exposes a small conversation API:
 
 ```text
 GET  /api/bootstrap
+GET  /api/conversations
 POST /api/conversations
 GET  /api/conversations/:id
+POST /api/conversations/:id/activate
 POST /api/conversations/:id/messages
 GET  /api/conversations/:id/events       (SSE, resumable with Last-Event-ID)
 POST /api/conversations/:id/approvals/:approvalId
@@ -303,7 +305,7 @@ GET  /api/conversations/:id/viewer/*     (authenticated noVNC HTTP proxy)
 WS   /api/conversations/:id/viewer/websockify
 ```
 
-Bootstrap sets the capability cookie and returns `{csrfToken}`. Create returns `{id, stateVersion}` for an empty conversation. Immediately before opening noVNC, the client calls `viewer-token`; it returns a single-use, 60-second websocket nonce bound to the conversation and capability cookie. Every mutation uses an idempotency key, but concurrency is endpoint-specific:
+Bootstrap sets the capability cookie and returns `{csrfToken, conversationId}`. The conversation list returns bounded summaries sorted by recent activity. Create preserves the idle selected conversation and returns a new empty one; activate releases the outgoing disposable computer and resumes the requested transcript. Immediately before opening noVNC, the client calls `viewer-token`; it returns a single-use, 60-second websocket nonce bound to the conversation and capability cookie. Every mutation uses an idempotency key, but concurrency is endpoint-specific:
 
 - message receipt and takeover install their safety barriers regardless of internal `stateVersion`;
 - Stop bypasses optimistic concurrency and the normal queue;
@@ -319,7 +321,7 @@ Each event has a monotonic integer `id`, `conversationId`, `stateVersion`, times
 
 ### Lifecycle and failure behavior
 
-- Reject a second active conversation with HTTP `409` in the first example.
+- Save multiple conversations, but allow only the selected conversation to own an agent or disposable computer. Creating or switching while work, approval, model transition, or human control is active returns HTTP `409` with the required recovery action.
 - Defaults are: 120 seconds per model turn, 90 seconds for browser startup after an image is available, 10 seconds per Playwright operation or fixture receipt, 15 seconds per navigation, 30 seconds per approved browser program with a 35-second command deadline, 10 seconds for an approved current-page fallback, 15 seconds for takeover acknowledgement, and 15 minutes idle between turns. A browser program that stops early returns bounded current-page evidence only when the approval disclosed that fallback and the page passes the sensitive-path checks; otherwise the action fails with the exact chat retry instruction and is never retried automatically. Model and startup failures clean the session; takeover timeout leaves the input overlay in place and offers **Stop**; idle timeout stops cleanly.
 - On client refresh, reconstruct chat and activity from bounded manager state and reconnect SSE. After a Node restart, restore the bounded local checkpoint. Map approved-but-undispatched work to safe failure, map dispatched work to unknown outcome, normalize other in-flight work and human control to `interrupted`, discard pending approvals, and wait for an explicit **Continue** or **Start over** choice.
 - On browser disconnect, pause Pi, retry the CDP connection once, then show one fact plus an exact recovery action.

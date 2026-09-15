@@ -18,6 +18,7 @@ function operationDetails(operation?: api.BrowserOperation): string | undefined 
 
 export function App() {
   const [conversation, setConversation] = useState<api.Conversation>();
+  const [conversationList, setConversationList] = useState<api.ConversationList>({ conversations: [] });
   const [modelAccess, setModelAccess] = useState<api.ModelAccess>();
   const [authAttempt, setAuthAttempt] = useState<api.AuthAttempt>();
   const [authValue, setAuthValue] = useState("");
@@ -30,13 +31,23 @@ export function App() {
   const [controlEpoch, setControlEpoch] = useState("");
   const [approvalPending, setApprovalPending] = useState(false);
   const [recoveryPending, setRecoveryPending] = useState(false);
+  const [conversationPending, setConversationPending] = useState(false);
   const [traces, setTraces] = useState<TraceSnapshot>();
   const [traceStatus, setTraceStatus] = useState<"ready" | "reconnecting" | "unavailable">("ready");
   const endRef = useRef<HTMLDivElement>(null);
   const approvalPendingRef = useRef(false);
   const recoveryPendingRef = useRef(false);
+  const conversationPendingRef = useRef(false);
+  const conversationIdRef = useRef<string | undefined>(undefined);
+  const chatMenuRef = useRef<HTMLDetailsElement>(null);
 
-  const refresh = async (id = conversation?.id) => { if (id) setConversation(await api.getConversation(id)); };
+  const showConversation = (next: api.Conversation) => { conversationIdRef.current = next.id; setConversation(next); };
+  const refresh = async (id = conversationIdRef.current) => {
+    if (!id) return;
+    const next = await api.getConversation(id);
+    if (conversationIdRef.current === id) showConversation(next);
+  };
+  const refreshConversationList = async () => setConversationList(await api.listConversations());
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -44,8 +55,9 @@ export function App() {
         const { conversationId, modelAccess: access } = await api.bootstrap();
         if (cancelled) return;
         setModelAccess(access);
-        if (conversationId) setConversation(await api.getConversation(conversationId));
-        else if (!access) setConversation(await api.createConversation());
+        if (conversationId) showConversation(await api.getConversation(conversationId));
+        else if (!access) showConversation(await api.createConversation());
+        await refreshConversationList();
         const pendingAttempt = sessionStorage.getItem("open_muse_auth_attempt");
         if (pendingAttempt) {
           try {
@@ -62,7 +74,7 @@ export function App() {
   useEffect(() => {
     if (!conversation?.id) return;
     const source = new EventSource(`/api/conversations/${conversation.id}/events`);
-    const update = () => void refresh(conversation.id);
+    const update = () => { void refresh(conversation.id).catch(() => undefined); void refreshConversationList().catch(() => undefined); };
     source.onmessage = update;
     for (const name of ["message.completed", "browser.starting", "browser.ready", "agent.started", "agent.completed", "agent.failed", "model.auth_required", "tool.failed", "approval.requested", "approval.resolved", "approval.invalidated", "operation.approved", "operation.dispatched", "operation.completed", "operation.outcome_unknown", "popup.quarantined", "popup.adopted", "tab.navigated", "tab.closed", "control.changed", "cart.updated", "conversation.stopped"]) source.addEventListener(name, update);
     return () => source.close();
@@ -110,7 +122,7 @@ export function App() {
         sessionStorage.removeItem("open_muse_auth_attempt");
         void Promise.all([
           api.getModelAccess().then(setModelAccess),
-          conversation?.modelAccessState === "auth_required" && conversation.providerId === next.providerId ? api.reconnectConversation(conversation.id).then(setConversation) : Promise.resolve(),
+          conversation?.modelAccessState === "auth_required" && conversation.providerId === next.providerId ? api.reconnectConversation(conversation.id).then(showConversation) : Promise.resolve(),
         ]).catch((caught) => setError(caught instanceof Error ? caught.message : "Could not finish connecting the model provider.")).finally(() => setAuthAttempt(undefined));
       }
     };
@@ -127,6 +139,7 @@ export function App() {
     setSelectedModelId(selected?.modelId ?? provider?.models.find((model) => model.recommended)?.id ?? provider?.models[0]?.id ?? "");
   }, [modelAccess]);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [conversation?.messages.length]);
+  useEffect(() => { setViewerPath(""); setControlEpoch(""); }, [conversation?.id]);
   useEffect(() => {
     if (!conversation?.viewerReady || viewerPath) return;
     void api.viewerToken(conversation.id).then(({ viewerPath: path }) => setViewerPath(path)).catch((caught) => setError(String(caught)));
@@ -150,7 +163,7 @@ export function App() {
   };
   const returnControl = async () => {
     if (!conversation) return;
-    try { setConversation(await api.resume(conversation.id, controlEpoch)); setControlEpoch(""); }
+    try { showConversation(await api.resume(conversation.id, controlEpoch)); setControlEpoch(""); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Could not return control."); }
   };
   const resolve = async (approved: boolean) => {
@@ -159,7 +172,7 @@ export function App() {
     approvalPendingRef.current = true;
     setApprovalPending(true);
     setError("");
-    try { setConversation(await api.resolveApproval(id, pendingApproval, approved)); }
+    try { showConversation(await api.resolveApproval(id, pendingApproval, approved)); }
     catch (caught) {
       setError(caught instanceof Error ? caught.message : "Approval failed.");
       await refresh(id).catch(() => undefined);
@@ -173,7 +186,7 @@ export function App() {
     recoveryPendingRef.current = true;
     setRecoveryPending(true);
     setError("");
-    try { setConversation(await api.continueConversation(conversation.id)); }
+    try { showConversation(await api.continueConversation(conversation.id)); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Could not continue the conversation."); }
     finally { recoveryPendingRef.current = false; setRecoveryPending(false); }
   };
@@ -182,7 +195,7 @@ export function App() {
     recoveryPendingRef.current = true;
     setRecoveryPending(true);
     setError("");
-    try { await api.startOver(conversation.id); window.location.reload(); }
+    try { showConversation(await api.startOver(conversation.id)); await refreshConversationList(); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Could not start over."); }
     finally { recoveryPendingRef.current = false; setRecoveryPending(false); }
   };
@@ -212,8 +225,47 @@ export function App() {
     setError("");
     try {
       await api.selectModel(selection);
-      setConversation(await api.createConversation());
+      showConversation(await api.createConversation(selection));
+      setShowModelSetup(false);
+      await refreshConversationList();
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not start a conversation."); }
+  };
+  const newConversation = async () => {
+    if (conversationPendingRef.current) return;
+    conversationPendingRef.current = true;
+    setConversationPending(true);
+    setError("");
+    try {
+      const selection = conversation ? { providerId: conversation.providerId, modelId: conversation.modelId } : undefined;
+      showConversation(await api.createConversation(selection));
+      await refreshConversationList();
+      chatMenuRef.current?.removeAttribute("open");
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not start a new conversation."); }
+    finally { conversationPendingRef.current = false; setConversationPending(false); }
+  };
+  const activateConversation = async (id: string) => {
+    if (id === conversation?.id || conversationPendingRef.current) { chatMenuRef.current?.removeAttribute("open"); return; }
+    conversationPendingRef.current = true;
+    setConversationPending(true);
+    setError("");
+    try {
+      showConversation(await api.activateConversation(id));
+      await refreshConversationList();
+      chatMenuRef.current?.removeAttribute("open");
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not open that conversation."); }
+    finally { conversationPendingRef.current = false; setConversationPending(false); }
+  };
+  const resetConversation = async () => {
+    if (!conversation || conversationPendingRef.current || !window.confirm("Reset this conversation? Its messages and disposable computer will be permanently deleted.")) return;
+    conversationPendingRef.current = true;
+    setConversationPending(true);
+    setError("");
+    try {
+      showConversation(await api.startOver(conversation.id));
+      await refreshConversationList();
+      chatMenuRef.current?.removeAttribute("open");
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not reset the conversation."); }
+    finally { conversationPendingRef.current = false; setConversationPending(false); }
   };
   const disconnect = async (providerId: string) => {
     setError("");
@@ -221,7 +273,7 @@ export function App() {
       await api.disconnectProvider(providerId);
       setAuthAttempt(undefined);
       setModelAccess(await api.getModelAccess());
-      if (conversation) setConversation(await api.getConversation(conversation.id));
+      if (conversation) showConversation(await api.getConversation(conversation.id));
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not disconnect the model provider."); }
   };
 
@@ -230,6 +282,7 @@ export function App() {
   const humanControl = conversation?.controlOwner === "human";
   const pausingControl = conversation?.controlOwner === "pause_requested";
   const status = conversation?.runState === "stopped" ? "Stopped" : interrupted ? "Interrupted" : humanControl ? "You have control" : pausingControl ? "Pausing agent control…" : busy ? "Agent working" : conversation?.runState === "waiting_for_approval" ? "Waiting for you" : "Ready";
+  const canChangeConversation = Boolean(conversation && conversation.controlOwner === "agent" && !["model_turn", "tool_action", "waiting_for_approval", "stopping"].includes(conversation.runState));
   const traceByTurn = new Map((traces?.turns ?? []).map((turn) => [turn.turnId, turn]));
   const quarantinedPopups = (conversation?.tabs ?? []).filter((tab) => tab.owner === "quarantined");
   const recoveryCopy = conversation?.recovery?.kind === "failed_before_execution"
@@ -257,7 +310,7 @@ export function App() {
     const attemptProvider = modelAccess!.providers.find((provider) => provider.id === authAttempt?.providerId);
     const attemptActive = authAttempt && !["succeeded", "expired", "cancelled", "failed"].includes(authAttempt.state);
     return <main className="app-shell setup-shell">
-      <header className="topbar"><div className="brand"><span className="brandmark">M</span><span>OpenMuse</span><span className="preview">PREVIEW</span></div><span className="setup-security">Credentials stay on this computer</span></header>
+      <header className="topbar"><div className="brand"><span className="brandmark">M</span><span>OpenMuse</span><span className="preview">PREVIEW</span></div><div className="setup-nav">{conversation?.modelAccessState === "ready" && <button className="quiet" onClick={() => setShowModelSetup(false)}>← Back to conversation</button>}<span className="setup-security">Credentials stay on this computer</span></div></header>
       <section className="setup-page">
         <div className="setup-intro"><div className="eyebrow">Model access</div><h1>{conversation?.modelAccessState === "ready" ? "Model settings" : conversation ? "Reconnect to continue" : "Choose how OpenMuse thinks"}</h1><p>{conversation?.modelAccessState === "ready" ? `This conversation uses ${conversation.modelId}. You can switch its model or disconnect a saved credential.` : conversation ? `This conversation uses ${conversation.modelId}. Connect its provider again to keep going.` : "Connect a supported provider, then choose the model for this conversation."}</p></div>
         {error && <div className="error setup-error">{error}</div>}
@@ -274,7 +327,7 @@ export function App() {
             <div className="provider-heading"><div><div className="eyebrow">Provider</div><h2>{provider.name}</h2></div>{provider.configured && <span className="connected">Connected · {provider.source === "account" ? "account" : provider.source === "environment" ? "environment" : "API key"}</span>}</div>
             {provider.configured ? <>
               <label className="model-label" htmlFor={`model-${provider.id}`}>Model</label><select id={`model-${provider.id}`} value={provider.id === selectedProviderId ? selectedModelId : provider.models[0]?.id ?? ""} onChange={(event) => { setSelectedProviderId(provider.id); setSelectedModelId(event.target.value); }}>{provider.models.map((model) => <option key={model.id} value={model.id}>{model.name}{model.recommended ? " · Recommended" : ""}</option>)}</select>
-              <div className="provider-actions"><button onClick={() => { setSelectedProviderId(provider.id); const modelId = provider.id === selectedProviderId ? selectedModelId : provider.models[0]?.id ?? ""; setSelectedModelId(modelId); const sameBinding = conversation?.providerId === provider.id && conversation.modelId === modelId; if (conversation?.modelAccessState === "ready" && sameBinding) { setShowModelSetup(false); return; } void (!conversation ? startConversation({ providerId: provider.id, modelId }) : sameBinding ? api.reconnectConversation(conversation.id).then((next) => { setConversation(next); setShowModelSetup(false); }).catch((caught) => setError(caught instanceof Error ? caught.message : "Could not reconnect.")) : api.switchConversationModel(conversation.id, { providerId: provider.id, modelId }).then((next) => { setConversation(next); setShowModelSetup(false); }).catch((caught) => setError(caught instanceof Error ? caught.message : "Could not switch models."))); }}>{!conversation ? "Start using OpenMuse" : conversation.providerId === provider.id && conversation.modelId === (provider.id === selectedProviderId ? selectedModelId : provider.models[0]?.id) ? "Return to conversation" : conversation.providerId === provider.id ? "Switch model" : "Switch provider"}</button>{provider.source === "environment" ? <small>To disconnect, remove {provider.environmentVariable ?? "the provider credential"} from your environment and restart OpenMuse.</small> : <button className="text-button" onClick={() => void disconnect(provider.id)}>Disconnect</button>}</div>
+              <div className="provider-actions"><button onClick={() => { setSelectedProviderId(provider.id); const modelId = provider.id === selectedProviderId ? selectedModelId : provider.models[0]?.id ?? ""; setSelectedModelId(modelId); const sameBinding = conversation?.providerId === provider.id && conversation.modelId === modelId; if (conversation?.modelAccessState === "ready" && sameBinding) { setShowModelSetup(false); return; } void (!conversation ? startConversation({ providerId: provider.id, modelId }) : sameBinding ? api.reconnectConversation(conversation.id).then((next) => { showConversation(next); setShowModelSetup(false); }).catch((caught) => setError(caught instanceof Error ? caught.message : "Could not reconnect.")) : api.switchConversationModel(conversation.id, { providerId: provider.id, modelId }).then((next) => { showConversation(next); setShowModelSetup(false); void refreshConversationList(); }).catch((caught) => setError(caught instanceof Error ? caught.message : "Could not switch models."))); }}>{!conversation ? "Start using OpenMuse" : conversation.providerId === provider.id && conversation.modelId === (provider.id === selectedProviderId ? selectedModelId : provider.models[0]?.id) ? "Return to conversation" : conversation.providerId === provider.id ? "Switch model" : "Switch provider"}</button>{provider.source === "environment" ? <small>To disconnect, remove {provider.environmentVariable ?? "the provider credential"} from your environment and restart OpenMuse.</small> : <button className="text-button" onClick={() => void disconnect(provider.id)}>Disconnect</button>}</div>
             </> : <div className="auth-methods">{provider.methods.map((method) => method.type === "api_key" ? <details key={method.type}><summary>{method.label}</summary><p>The key is stored only on this computer and is never sent to the browser again.</p><button disabled={!method.enabled} onClick={() => void beginAuth(provider.id, method.type)}>Enter API key</button>{method.unavailableReason && <small>{method.unavailableReason}</small>}</details> : <div className="auth-method" key={method.type}><button disabled={!method.enabled} onClick={() => void beginAuth(provider.id, method.type)}>{method.label}</button>{method.unavailableReason && <small>{method.unavailableReason}</small>}</div>)}</div>}
           </article>)}
         </section>}
@@ -285,7 +338,10 @@ export function App() {
   return <main className="app-shell">
     <header className="topbar">
       <div className="brand"><span className="brandmark">M</span><span>OpenMuse</span><span className="preview">PREVIEW</span></div>
-      <div className="top-actions">{modelAccess && conversation && <button className="quiet" onClick={() => setShowModelSetup(true)}>Model: {conversation.modelId}</button>}<span className={`status-dot ${busy ? "working" : ""}`}></span><span>{status}</span>{conversation && conversation.runState !== "stopped" && <button className="quiet danger" onClick={() => void api.stopConversation(conversation.id)}>Stop</button>}</div>
+      <div className="top-actions">
+        <details className="chat-menu" ref={chatMenuRef}><summary>Chats</summary><div className="chat-menu-popover"><button className="new-chat" disabled={!canChangeConversation || conversationPending} onClick={() => void newConversation()}>+ New chat</button><div className="chat-list">{conversationList.conversations.map((item) => <button className={item.id === conversation?.id ? "active" : ""} disabled={!canChangeConversation || conversationPending} key={item.id} onClick={() => void activateConversation(item.id)}><span>{item.title}</span><small>{item.modelId}</small></button>)}</div><button className="reset-chat" disabled={!canChangeConversation || conversationPending} onClick={() => void resetConversation()}>Reset conversation</button></div></details>
+        {modelAccess && conversation && <button className="quiet" onClick={() => setShowModelSetup(true)}>Model: {conversation.modelId}</button>}<span className={`status-dot ${busy ? "working" : ""}`}></span><span>{status}</span>{conversation && conversation.runState !== "stopped" && <button className="quiet danger" onClick={() => void api.stopConversation(conversation.id)}>Stop</button>}
+      </div>
     </header>
     <section className="workspace">
       <section className="chat-pane">
@@ -293,7 +349,7 @@ export function App() {
           {!conversation?.messages.length && <div className="welcome"><div className="eyebrow">A computer coworker in a disposable VM</div><h1>What should we<br/>get done?</h1><p>Ask naturally. It can operate public websites in its own browser, while you watch, approve interactions, or take control.</p><button className="suggestion" onClick={() => void submit(SUGGESTION)}><span>Try a public web task</span><strong>{SUGGESTION}</strong><b>→</b></button></div>}
           <div className="messages">{conversation?.messages.map((message) => <div className="message-block" key={message.id}><article className={`message ${message.role}`}><div className="avatar">{message.role === "user" ? "Y" : "M"}</div><div className="message-content"><div className="message-role">{message.role === "user" ? "You" : "OpenMuse"}</div>{message.role === "assistant" ? <MarkdownMessage>{message.text}</MarkdownMessage> : <p>{message.text}</p>}</div></article>{message.role === "user" && message.turnId && traceByTurn.get(message.turnId) && <TurnTrace turn={traceByTurn.get(message.turnId)!}/>} {message.role === "user" && message.turnId && !traceByTurn.get(message.turnId) && traceStatus !== "ready" && <div className="trace-unavailable">{traceStatus === "reconnecting" ? "Run details reconnecting…" : "Run details unavailable"}</div>}</div>)}</div>
           {interrupted && <aside className="approval recovery"><div className="eyebrow">{recoveryCopy.eyebrow}</div><h3>{recoveryCopy.title}</h3><p>{recoveryCopy.detail}</p><div><button disabled={recoveryPending} onClick={() => void continueConversation()}>Continue</button><button className="secondary" disabled={recoveryPending} onClick={() => void startOver()}>Start over</button></div></aside>}
-          {quarantinedPopups.map((tab) => <aside className="approval" key={tab.id}><div className="eyebrow">Popup quarantined</div><h3>Use this new tab?</h3><p>{tab.url}</p><div><button disabled={interrupted} onClick={() => void api.adoptPopup(conversation!.id, tab.id).then(setConversation).catch((caught) => setError(caught instanceof Error ? caught.message : "Could not adopt the popup."))}>Adopt tab</button></div></aside>)}
+          {quarantinedPopups.map((tab) => <aside className="approval" key={tab.id}><div className="eyebrow">Popup quarantined</div><h3>Use this new tab?</h3><p>{tab.url}</p><div><button disabled={interrupted} onClick={() => void api.adoptPopup(conversation!.id, tab.id).then(showConversation).catch((caught) => setError(caught instanceof Error ? caught.message : "Could not adopt the popup."))}>Adopt tab</button></div></aside>)}
           {conversation?.pendingApproval && <aside className="approval"><div className="eyebrow">Approval required</div><h3>Allow this website interaction?</h3><p>{conversation.pendingApproval.reason}</p>{conversation.pendingApproval.pageUrl && <p>Current page: {conversation.pendingApproval.pageUrl}</p>}{operationDetails(conversation.pendingApproval.operation) && <p>{operationDetails(conversation.pendingApproval.operation)}</p>}<div><button disabled={approvalPending} onClick={() => void resolve(true)}>{approvalPending ? "Running…" : "Approve once"}</button><button className="secondary" disabled={approvalPending} onClick={() => void resolve(false)}>Not now</button></div></aside>}
           {busy && <div className="thinking"><i></i><i></i><i></i> Working in the browser</div>}
           <div ref={endRef}></div>

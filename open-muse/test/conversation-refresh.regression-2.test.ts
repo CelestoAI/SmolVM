@@ -21,20 +21,21 @@ test("bootstrap callers can recover the active conversation", async () => {
   assert.equal(manager.activeConversationId, created.id);
   assert.equal(manager.snapshot(manager.activeConversationId!).id, created.id);
   await manager.stop(created.id);
-  assert.equal(manager.activeConversationId, undefined);
+  assert.equal(manager.activeConversationId, created.id);
 });
 
-test("conversation creation and human control use single-owner state transitions", async () => {
+test("conversation creation preserves history and human control blocks switching", async () => {
   const manager = new ConversationManager("", "gpt-5-mini");
   const created = await manager.create();
-  await assert.rejects(
-    manager.create(),
-    (error: unknown) => (error as { status?: number }).status === 409,
-  );
+  const replacement = await manager.create();
+  assert.notEqual(replacement.id, created.id);
+  assert.equal(manager.list().conversations.length, 2);
+  await manager.activate(created.id);
 
   const takeover = await manager.takeover(created.id);
   assert.equal(manager.snapshot(created.id).controlOwner, "human");
   assert.deepEqual(await manager.takeover(created.id), takeover);
+  await assert.rejects(manager.activate(replacement.id), (error: unknown) => (error as { status?: number }).status === 409);
   await assert.rejects(
     manager.resume(created.id, "wrong-control-epoch"),
     (error: unknown) => (error as { status?: number }).status === 409,

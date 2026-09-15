@@ -16,6 +16,7 @@ const resumeBody = z.object({ controlEpoch: z.string().min(12).max(200) });
 const authAttemptBody = z.object({ providerId: z.string().min(1).max(80), method: z.enum(["oauth", "api_key"]) }).strict();
 const authPromptBody = z.object({ value: z.string().min(1).max(16_384) }).strict();
 const selectionBody = z.object({ providerId: z.string().min(1).max(80), modelId: z.string().min(1).max(200) }).strict();
+const createConversationBody = z.union([z.object({}).strict(), selectionBody]);
 interface LocalSession { csrfToken: string; createdAt: number; lastSeenAt: number; selection?: ModelSelection }
 const sessions = new Map<string, LocalSession>();
 const SESSION_IDLE_MS = 12 * 60 * 60_000;
@@ -112,13 +113,26 @@ async function route(manager: ConversationManager, staticRoot: string, request: 
     await manager.disconnectProvider(logoutMatch[1]);
     return sendJson(response, 200, { disconnected: true });
   }
-  if (method === "POST" && url.pathname === "/api/conversations") return sendJson(response, 201, await manager.create(modelAccess ? session.selection : undefined));
+  if (method === "GET" && url.pathname === "/api/conversations") return sendJson(response, 200, manager.list());
+  if (method === "POST" && url.pathname === "/api/conversations") {
+    const body = createConversationBody.parse(await readJson(request));
+    const requested = "providerId" in body ? selectionBody.parse(body) : modelAccess ? session.selection : undefined;
+    const conversation = await manager.create(requested);
+    if (modelAccess) session.selection = { providerId: conversation.providerId, modelId: conversation.modelId };
+    return sendJson(response, 201, conversation);
+  }
   const tracesMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/traces$/);
   if (method === "GET" && tracesMatch) { assertLoopbackRequest(request); return sendJson(response, 200, manager.traceSnapshot(tracesMatch[1])); }
   const traceEventsMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/traces\/events$/);
   if (method === "GET" && traceEventsMatch) { assertLoopbackRequest(request); return streamTraceEvents(manager, traceEventsMatch[1], request, response, url.searchParams.get("after") ?? undefined); }
   const snapshotMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)$/);
   if (method === "GET" && snapshotMatch) return sendJson(response, 200, manager.snapshot(snapshotMatch[1]));
+  const activateMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/activate$/);
+  if (method === "POST" && activateMatch) {
+    const conversation = await manager.activate(activateMatch[1]);
+    if (modelAccess) session.selection = { providerId: conversation.providerId, modelId: conversation.modelId };
+    return sendJson(response, 200, conversation);
+  }
   const diagnosticsMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/diagnostics$/);
   if (method === "GET" && diagnosticsMatch) {
     assertLoopbackRequest(request);

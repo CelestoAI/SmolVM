@@ -9,6 +9,7 @@ import type { ActionBroker } from "../../server/broker.js";
 import { createApp } from "../../server/index.js";
 import { ConversationManager, type RuntimeDependencies } from "../../server/manager.js";
 import { ConversationStateStore } from "../../server/state-store.js";
+import type { ModelAccessService } from "../../server/model-access.js";
 import type { ConversationContext } from "../../server/types.js";
 import type { BrowserDriver } from "../../server/browser-driver.js";
 import type { ToolTraceAdapter } from "../../server/trace.js";
@@ -188,6 +189,19 @@ const store = new ConversationStateStore(join(directory, "state.json"));
 let manager: ConversationManager;
 let app: Server;
 let managerGeneration = 0;
+const modelAccess = {
+  snapshot: async (selection?: { providerId: string; modelId: string }) => ({
+    providers: [{
+      id: "openai", name: "OpenAI", configured: true, source: "environment" as const,
+      environmentVariable: "OPENAI_API_KEY", methods: [],
+      models: [{ id: "scripted", name: "Scripted", recommended: true }],
+    }],
+    selection: selection ?? { providerId: "openai", modelId: "scripted" },
+    disconnectingProviderIds: [],
+  }),
+  cancelSessionAttempts: () => undefined,
+  close: () => undefined,
+} as unknown as ModelAccessService;
 
 async function listen(server: Server, port: number): Promise<void> {
   await new Promise<void>((resolve, reject) => {
@@ -204,8 +218,9 @@ async function closeServer(server: Server | undefined): Promise<void> {
 
 async function openManager(): Promise<void> {
   manager = await ConversationManager.open("", "scripted", false, store, runtime.dependencies());
+  if (!manager.activeConversationId) await manager.create({ providerId: "openai", modelId: "scripted" });
   managerGeneration += 1;
-  app = createApp(manager);
+  app = createApp(manager, undefined, modelAccess);
   await listen(app, appPort);
 }
 

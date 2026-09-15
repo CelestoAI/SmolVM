@@ -123,7 +123,7 @@ test("invalid state reports a recovery command instead of silently resetting", a
   );
 });
 
-test("v1 checkpoints migrate to v4 with model binding and an empty operation journal", async (t) => {
+test("v1 checkpoints migrate to v5 with model binding and an empty operation journal", async (t) => {
   const store = await temporaryStore(t);
   const { created, context } = await conversationFixture();
   const current = serializeConversation(context);
@@ -134,11 +134,32 @@ test("v1 checkpoints migrate to v4 with model binding and an empty operation jou
   const migrated = await store.load();
 
   assert.equal(restored.snapshot(created.id).runState, "idle");
-  assert.equal(migrated?.fileVersion, 4);
+  assert.equal(migrated?.fileVersion, 5);
   assert.deepEqual(migrated?.conversation.operationJournal, []);
   assert.equal(migrated?.conversation.providerId, "openai");
   assert.equal(migrated?.conversation.modelId, "gpt-5-mini");
   assert.equal(migrated?.conversation.modelAccessState, "ready");
+});
+
+test("v2-v4 checkpoints migrate to a single active v5 history entry", async (t) => {
+  const { context } = await conversationFixture();
+  const current = serializeConversation(context).conversation;
+  const variants = [
+    { fileVersion: 2, conversation: current },
+    { fileVersion: 3, conversation: current },
+    { fileVersion: 4, conversation: current },
+  ];
+
+  for (const variant of variants) {
+    const store = await temporaryStore(t);
+    await writeFile(store.path, JSON.stringify(variant), "utf8");
+
+    const migrated = await store.load();
+
+    assert.equal(migrated?.fileVersion, 5);
+    assert.equal(migrated?.activeConversationId, current.id);
+    assert.deepEqual(migrated?.conversations.map((conversation) => conversation.id), [current.id]);
+  }
 });
 
 test("restored conversations pause when their saved provider is no longer configured", async (t) => {
@@ -564,7 +585,7 @@ test("terminal checkpoints restore without being mislabeled as interrupted", asy
     const restored = await ConversationManager.open("", "gpt-5-mini", false, store);
 
     assert.equal(restored.snapshot(created.id).runState, runState);
-    assert.equal(restored.activeConversationId, undefined);
+    assert.equal(restored.activeConversationId, created.id);
   }
 });
 

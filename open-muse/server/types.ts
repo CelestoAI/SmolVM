@@ -12,6 +12,9 @@ export type SessionLifecycle = "absent" | "starting" | "ready" | "stopping" | "d
 export type ModelAccessState = "ready" | "auth_required" | "model_unavailable";
 
 export interface Message { id: string; role: "user" | "assistant"; text: string; createdAt: string; turnId?: string }
+export interface ConversationSummary {
+  id: string; title: string; providerId: string; modelId: string; runState: RunState; updatedAt: string;
+}
 export interface ConversationEvent {
   id: number; conversationId: string; stateVersion: number; createdAt: string; type: string;
   payload: Record<string, unknown>;

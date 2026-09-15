@@ -70,14 +70,27 @@ const storedConversationV3Schema = z.object({
   }),
 });
 
-const storedConversationSchema = z.object({
+const storedConversationV4Schema = z.object({
   fileVersion: z.literal(4),
   conversation: storedConversationV3Schema.shape.conversation.extend({
     recoveryTurn: z.object({ turnId: z.string(), userMessageId: z.string() }).optional(),
   }),
 });
 
-export type StoredConversation = z.infer<typeof storedConversationSchema>;
+const conversationRecordSchema = storedConversationV4Schema.shape.conversation;
+const storedConversationSchema = z.object({
+  fileVersion: z.literal(5),
+  activeConversationId: z.string(),
+  conversations: z.array(conversationRecordSchema).min(1).max(50),
+}).superRefine((value, context) => {
+  const ids = value.conversations.map((conversation) => conversation.id);
+  if (!ids.includes(value.activeConversationId)) context.addIssue({ code: "custom", message: "active conversation is missing" });
+  if (new Set(ids).size !== ids.length) context.addIssue({ code: "custom", message: "conversation ids must be unique" });
+});
+
+export type StoredConversationRecord = z.infer<typeof conversationRecordSchema>;
+type StoredConversationState = z.infer<typeof storedConversationSchema>;
+export type StoredConversation = StoredConversationState & { conversation: StoredConversationRecord };
 
 function boundedMessages(messages: Message[]): Message[] {
   const result: Message[] = [];
@@ -130,7 +143,7 @@ const DURABLE_EVENT_SUMMARIES: Readonly<Record<string, string>> = {
   "cart.updated": "Cart updated",
 };
 
-function safeEvent(event: ConversationEvent): StoredConversation["conversation"]["events"][number] {
+function safeEvent(event: ConversationEvent): StoredConversationRecord["events"][number] {
   const summary = DURABLE_EVENT_SUMMARIES[event.type];
   return {
     id: event.id,
@@ -142,10 +155,8 @@ function safeEvent(event: ConversationEvent): StoredConversation["conversation"]
   };
 }
 
-export function serializeConversation(context: ConversationContext): StoredConversation {
+export function serializeConversationRecord(context: ConversationContext): StoredConversationRecord {
   return {
-    fileVersion: 4,
-    conversation: {
       id: context.id,
       stateVersion: context.stateVersion,
       controlOwner: context.controlOwner,
@@ -162,8 +173,12 @@ export function serializeConversation(context: ConversationContext): StoredConve
       ),
       recoveryTurn: context.recoveryTurn,
       lastActivityAt: context.lastActivityAt,
-    },
   };
+}
+
+export function serializeConversation(context: ConversationContext): StoredConversation {
+  const conversation = serializeConversationRecord(context);
+  return withActiveConversation({ fileVersion: 5, activeConversationId: conversation.id, conversations: [conversation] });
 }
 
 export class ConversationStateStore {
@@ -186,54 +201,47 @@ export class ConversationStateStore {
     try {
       const parsed = JSON.parse(contents);
       const current = storedConversationSchema.safeParse(parsed);
-      if (current.success) return {
+      if (current.success) return withActiveConversation({
         ...current.data,
-        conversation: {
-          ...current.data.conversation,
-          events: current.data.conversation.events.map((event) => safeEvent(event as ConversationEvent)),
-          operationJournal: current.data.conversation.operationJournal.map(redactOperationRecord),
-        },
-      };
+        conversations: current.data.conversations.map((conversation) => ({
+          ...conversation,
+          events: conversation.events.map((event) => safeEvent(event as ConversationEvent)),
+          operationJournal: conversation.operationJournal.map(redactOperationRecord),
+        })),
+      });
+      const legacyV4 = storedConversationV4Schema.safeParse(parsed);
+      if (legacyV4.success) return wrapLegacy(legacyV4.data.conversation);
       const legacyV3 = storedConversationV3Schema.safeParse(parsed);
-      if (legacyV3.success) return {
-        fileVersion: 4,
-        conversation: {
+      if (legacyV3.success) return wrapLegacy({
           ...legacyV3.data.conversation,
           events: legacyV3.data.conversation.events.map((event) => safeEvent(event as ConversationEvent)),
           operationJournal: legacyV3.data.conversation.operationJournal.map(redactOperationRecord),
-        },
-      };
+        });
       const legacyV2 = storedConversationV2Schema.safeParse(parsed);
-      if (legacyV2.success) return {
-        fileVersion: 4,
-        conversation: {
+      if (legacyV2.success) return wrapLegacy({
           ...legacyV2.data.conversation,
           providerId: "openai",
           modelId: process.env.OPENAI_MODEL ?? "gpt-5-mini",
           modelAccessState: "ready",
           events: legacyV2.data.conversation.events.map((event) => safeEvent(event as ConversationEvent)),
           operationJournal: legacyV2.data.conversation.operationJournal.map(redactOperationRecord),
-        },
-      };
+        });
       const legacyV1 = storedConversationV1Schema.safeParse(parsed);
-      if (legacyV1.success) return {
-        fileVersion: 4,
-        conversation: {
+      if (legacyV1.success) return wrapLegacy({
           ...legacyV1.data.conversation,
           providerId: "openai",
           modelId: process.env.OPENAI_MODEL ?? "gpt-5-mini",
           modelAccessState: "ready",
           events: legacyV1.data.conversation.events.map((event) => safeEvent(event as ConversationEvent)),
           operationJournal: [],
-        },
-      };
+        });
       throw new Error("invalid state");
     } catch {
       throw new Error(`Saved OpenMuse state is invalid at '${this.path}'. Run 'mv "${this.path}" "${this.path}.bad"', then run 'npm run dev'.`);
     }
   }
 
-  save(state: StoredConversation): Promise<void> {
+  save(state: StoredConversationState): Promise<void> {
     const contents = `${JSON.stringify(storedConversationSchema.parse(state), null, 2)}\n`;
     const write = () => writePrivateFileAtomically(this.path, contents);
     const queued = this.writeQueue.catch(() => undefined).then(write);
@@ -244,4 +252,20 @@ export class ConversationStateStore {
   flush(): Promise<void> {
     return this.writeQueue;
   }
+}
+
+function wrapLegacy(conversation: StoredConversationRecord): StoredConversation {
+  const sanitized = {
+    ...conversation,
+    events: conversation.events.map((event) => safeEvent(event as ConversationEvent)),
+    operationJournal: conversation.operationJournal.map(redactOperationRecord),
+  };
+  return withActiveConversation({ fileVersion: 5, activeConversationId: sanitized.id, conversations: [sanitized] });
+}
+
+function withActiveConversation(state: StoredConversationState): StoredConversation {
+  return {
+    ...state,
+    conversation: state.conversations.find((conversation) => conversation.id === state.activeConversationId)!,
+  };
 }
