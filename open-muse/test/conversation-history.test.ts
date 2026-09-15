@@ -2,10 +2,27 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { ConversationManager } from "../server/manager.js";
 import { ConversationStateStore } from "../server/state-store.js";
 import type { ConversationContext } from "../server/types.js";
+
+class ControlledStateStore extends ConversationStateStore {
+  writes = 0;
+  failAt?: number;
+
+  override save(state: Parameters<ConversationStateStore["save"]>[0]): Promise<void> {
+    this.writes += 1;
+    if (this.writes === this.failAt) return Promise.reject(new Error("checkpoint failed"));
+    return super.save(state);
+  }
+}
+
+async function controlledStore(t: TestContext) {
+  const directory = await mkdtemp(join(tmpdir(), "open-muse-history-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  return new ControlledStateStore(join(directory, "state.json"));
+}
 
 function contextOf(manager: ConversationManager): ConversationContext {
   return (manager as unknown as { context: ConversationContext }).context;
@@ -70,6 +87,76 @@ test("conversation changes reject busy, human-controlled, and overlapping transi
   await assert.rejects(manager.activate(first.id), (error: unknown) => (error as { code?: string }).code === "conversation_busy");
   finishDelete();
   await creating;
+});
+
+test("a turn cannot be accepted after conversation cleanup begins", async () => {
+  const manager = new ConversationManager("", "gpt-5-mini");
+  await manager.create();
+  let finishDelete!: () => void;
+  const deleting = new Promise<void>((resolve) => { finishDelete = resolve; });
+  const internals = manager as unknown as {
+    context: ConversationContext;
+    runTurn: (context: ConversationContext, text: string) => Promise<void>;
+  };
+  internals.runTurn = async () => undefined;
+  internals.context.computer = { delete: async () => deleting } as ConversationContext["computer"];
+  const creating = manager.create();
+  await Promise.resolve();
+
+  let code: string | undefined;
+  try { await manager.send(internals.context.id, "Do not lose this turn"); }
+  catch (error) { code = (error as { code?: string }).code; }
+  finishDelete();
+  await creating;
+
+  assert.equal(code, "conversation_busy");
+  assert.equal(manager.list().conversations.every((conversation) => conversation.title === "New chat"), true);
+});
+
+test("failed create and activate checkpoints preserve the active conversation", async (t) => {
+  const store = await controlledStore(t);
+  const manager = new ConversationManager("", "gpt-5-mini", false, store);
+  const first = await manager.create();
+  const listener = () => undefined;
+  manager.subscribe(first.id, listener);
+  const beforeCreate = manager as unknown as { context: ConversationContext; listeners: Set<unknown>; traces: unknown; replayConversationOnNextTurn: boolean };
+  const originalContext = beforeCreate.context;
+  const originalTraces = beforeCreate.traces;
+  store.failAt = store.writes + 1;
+
+  await assert.rejects(manager.create(), /checkpoint failed/);
+
+  assert.equal(manager.activeConversationId, first.id);
+  assert.equal(beforeCreate.context, originalContext);
+  assert.equal(beforeCreate.traces, originalTraces);
+  assert.equal(beforeCreate.listeners.size, 1);
+  assert.equal(manager.list().conversations.length, 1);
+
+  store.failAt = undefined;
+  const second = await manager.create();
+  const beforeActivate = (manager as unknown as { context: ConversationContext }).context;
+  store.failAt = store.writes + 1;
+
+  await assert.rejects(manager.activate(first.id), /checkpoint failed/);
+
+  assert.equal(manager.activeConversationId, second.id);
+  assert.equal((manager as unknown as { context: ConversationContext }).context, beforeActivate);
+  assert.deepEqual(new Set(manager.list().conversations.map((conversation) => conversation.id)), new Set([first.id, second.id]));
+});
+
+test("a failed reset replacement keeps the stopped conversation active", async (t) => {
+  const store = await controlledStore(t);
+  const manager = new ConversationManager("", "gpt-5-mini", false, store);
+  const first = await manager.create();
+  const second = await manager.create();
+  store.failAt = store.writes + 3;
+
+  await assert.rejects(manager.startOver(second.id), /checkpoint failed/);
+
+  assert.equal(manager.activeConversationId, second.id);
+  assert.equal(manager.snapshot(second.id).runState, "stopped");
+  assert.deepEqual(new Set(manager.list().conversations.map((conversation) => conversation.id)), new Set([first.id, second.id]));
+  assert.equal((await store.load())?.activeConversationId, second.id);
 });
 
 test("reset removes the selected chat and activates the newest remaining chat", async () => {

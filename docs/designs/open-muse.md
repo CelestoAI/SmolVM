@@ -305,13 +305,14 @@ GET  /api/conversations/:id/viewer/*     (authenticated noVNC HTTP proxy)
 WS   /api/conversations/:id/viewer/websockify
 ```
 
-Bootstrap sets the capability cookie and returns `{csrfToken, conversationId}`. The conversation list returns bounded summaries sorted by recent activity. Create preserves the idle selected conversation and returns a new empty one; activate releases the outgoing disposable computer and resumes the requested transcript. Immediately before opening noVNC, the client calls `viewer-token`; it returns a single-use, 60-second websocket nonce bound to the conversation and capability cookie. Every mutation uses an idempotency key, but concurrency is endpoint-specific:
+Bootstrap sets the capability cookie and returns `{csrfToken, conversationId}`. The conversation list returns bounded summaries sorted by recent activity. Create preserves the idle selected conversation and returns a new empty one; activate releases the outgoing disposable computer and resumes the requested transcript. Immediately before opening noVNC, the client calls `viewer-token`; it returns a single-use, 60-second websocket nonce bound to the conversation and capability cookie. Concurrency is endpoint-specific:
 
-- message receipt and takeover install their safety barriers regardless of internal `stateVersion`;
-- Stop bypasses optimistic concurrency and the normal queue;
+- create, activate, and start-over run one at a time; other mutations reject while one of those transitions is in progress;
+- message receipt and takeover install their safety barriers before yielding;
+- Stop bypasses the normal turn queue;
 - resume requires the current `controlOwner` to be `human` and matches a control-epoch token returned by takeover;
 - approval requires exact action digest, commerce revision, approval state, and expiry;
-- ordinary non-safety mutations use `expectedStateVersion` and return `409 state_conflict` when stale.
+- duplicate approval submissions for the same action share the existing result, while conflicting or stale submissions return `409`.
 
 A pending approval contains `{approvalId, proposedAction, actionDigest, reason, expiresAt, stateVersion}` and **Approve once** / **Not now**. The server rejects stale, mismatched, duplicate, expired, or post-stop approvals.
 
