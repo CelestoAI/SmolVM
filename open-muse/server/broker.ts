@@ -6,6 +6,7 @@ import { approveOperation, completeOperation, dispatchOperation, markOutcomeUnkn
 import type { TabTarget } from "./browser-tabs.js";
 import type { BrowserRef, ConversationContext, IntentGrant, PendingApproval } from "./types.js";
 import { MARKDOWN_MODEL, type MarkdownInput } from "./markdown.js";
+import type { TurnExecution } from "./trace.js";
 
 type Emit = (type: string, payload: Record<string, unknown>, mutates?: boolean) => void;
 type Persist = () => Promise<void>;
@@ -13,6 +14,12 @@ type ApprovalResolution = { resumeAgent: false; recovery?: RecoveryState } | { r
 const BROWSER_ACTION_FAILED = "The website action did not finish.";
 const SENSITIVE_TARGET = /\b(?:card|credential|cvc|cvv|otp|passcode|password|payment|secret|token|expir(?:y|ation)|(?:security|verification)[\s._/-]*code|mm[\s._/-]*yy)\b/i;
 export const MAX_BROWSER_PROGRAM_BYTES = 18_000;
+export interface BrokerTraceHooks {
+  currentExecution: () => TurnExecution | undefined;
+  isCurrentExecution: () => boolean;
+  approvalRequested: (pending: PendingApproval) => void;
+  revealCurrentStepInput: (input: unknown) => void;
+}
 
 function toolEventSummary(tool: string, completed = false): string {
   if (tool === "browser_policy") return completed ? "Browser page check completed" : "Checking browser page";
@@ -33,7 +40,18 @@ export class ActionBroker {
     private readonly resolveTabTarget?: () => TabTarget,
     private readonly convertMarkdown?: (input: MarkdownInput) => Promise<string>,
     private readonly browserDriver: BrowserDriver = hostBrowserDriver,
+    private readonly trace?: BrokerTraceHooks,
   ) {}
+
+  private registerPending(pending: PendingApproval): void {
+    const execution = this.trace?.currentExecution();
+    if (execution) {
+      pending.turnId = execution.turnId;
+      pending.userMessageId = execution.userMessageId;
+    }
+    this.context.pendingApproval = pending;
+    this.trace?.approvalRequested(pending);
+  }
 
   private tabTarget(): TabTarget {
     return this.resolveTabTarget?.() ?? {
@@ -47,6 +65,7 @@ export class ActionBroker {
   private async ready() {
     if (this.context.controlOwner !== "agent") throw new Error("Browser control is paused. Wait until the user returns control.");
     await this.ensureBrowser();
+    this.assertAgentControl(this.context.controlEpoch);
     if (!this.context.storefront || !this.context.page) throw new Error("The demo browser is not ready.");
     return this.context.storefront;
   }
@@ -54,6 +73,7 @@ export class ActionBroker {
   private async readyComputer() {
     if (this.context.controlOwner !== "agent") throw new Error("Browser control is paused. Wait until the user returns control.");
     await this.ensureBrowser();
+    this.assertAgentControl(this.context.controlEpoch);
     if (!this.context.computer) throw new Error("The disposable computer is not ready.");
     return this.context.computer;
   }
@@ -61,6 +81,7 @@ export class ActionBroker {
   private async readyPage() {
     if (this.context.controlOwner !== "agent") throw new Error("Browser control is paused. Wait until the user returns control.");
     await this.ensureBrowser();
+    this.assertAgentControl(this.context.controlEpoch);
     if (!this.context.page) throw new Error("The disposable browser does not have an active tab. Open or adopt a tab, then try again.");
     return this.context.page;
   }
@@ -81,7 +102,7 @@ export class ActionBroker {
       expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(), program, pageBinding, pageUrl,
       tabId: tab.id, tabEpoch: tab.epoch, tabControlEpoch: tab.controlEpoch, tabPageIndex: tab.pageIndex,
     };
-    this.context.pendingApproval = pending;
+    this.registerPending(pending);
     this.context.runState = "waiting_for_approval";
     this.emit("approval.requested", {
       kind: pending.kind,
@@ -130,7 +151,7 @@ export class ActionBroker {
       pageBinding,
       tabId: tab.id, tabEpoch: tab.epoch, tabControlEpoch: tab.controlEpoch, tabPageIndex: tab.pageIndex,
     };
-    this.context.pendingApproval = pending;
+    this.registerPending(pending);
     this.context.runState = "waiting_for_approval";
     this.emit("approval.requested", {
       kind: pending.kind,
@@ -237,9 +258,11 @@ export class ActionBroker {
   private async currentPage(target = this.tabTarget()): Promise<{ binding: string; display: string }> {
     void target;
     const page = await this.readyPage();
+    const controlEpoch = this.context.controlEpoch;
     this.emit("tool.started", { tool: "browser_policy", summary: toolEventSummary("browser_policy") });
     try {
       const current = await this.browserDriver.inspect(page);
+      this.assertAgentControl(controlEpoch);
       this.emit("tool.completed", { tool: "browser_policy", summary: toolEventSummary("browser_policy", true) });
       return current;
     } catch (error) {
@@ -251,7 +274,7 @@ export class ActionBroker {
   }
 
   private assertAgentControl(controlEpoch: string | undefined): void {
-    if (this.context.controlOwner !== "agent" || this.context.controlEpoch !== controlEpoch) {
+    if (this.context.controlOwner !== "agent" || this.context.controlEpoch !== controlEpoch || this.trace?.isCurrentExecution() === false) {
       throw Object.assign(new Error("Browser control changed before the action completed."), { status: 409 });
     }
   }
@@ -342,7 +365,7 @@ export class ActionBroker {
       expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(), totalPriceMinor, cartReceipt,
       commerceRevision: this.context.commerceRevision,
     };
-    this.context.pendingApproval = pending;
+    this.registerPending(pending);
     this.context.runState = "waiting_for_approval";
     this.emit("approval.requested", { ...pending, total: formatInr(totalPriceMinor) }, true);
     return pending;
@@ -409,6 +432,15 @@ export class ActionBroker {
           dispatch,
           pending.pageBinding,
         );
+        if (pending.operation?.kind === "fill") {
+          const fillResult = programResult as { outcome?: unknown; fieldClass?: unknown } | undefined;
+          if (fillResult?.outcome === "blocked" || fillResult?.fieldClass === "credential") {
+            throw new Error("Use Take control to enter passwords, payment details, codes, or other secrets.");
+          }
+          if (fillResult?.outcome === "filled" && fillResult.fieldClass === "ordinary") {
+            this.trace?.revealCurrentStepInput({ ref: pending.operation.ref, value: pending.operation.value });
+          }
+        }
         const result = programResult as { observation?: unknown } | undefined;
         browserResult = result?.observation
           ? { ...result, observation: this.registerObservation(result.observation, this.tabTarget()) }

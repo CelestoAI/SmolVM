@@ -2,6 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 const ci = process.env.CI === "true";
 const appPort = Number(process.env.OPEN_MUSE_E2E_APP_PORT ?? 4318);
+const controlPort = Number(process.env.OPEN_MUSE_E2E_CONTROL_PORT ?? 4319);
 const clientPort = Number(process.env.OPEN_MUSE_E2E_CLIENT_PORT ?? 5174);
 
 export default defineConfig({
@@ -25,7 +26,7 @@ export default defineConfig({
   webServer: [
     {
       command: "npm run dev:e2e:harness",
-      url: `http://127.0.0.1:${appPort}/api/health`,
+      url: `http://127.0.0.1:${controlPort}/__e2e/state`,
       reuseExistingServer: !ci,
       timeout: 30_000,
     },

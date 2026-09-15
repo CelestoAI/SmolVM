@@ -67,6 +67,8 @@ On macOS, the runtime wrapper downloads the checksum-verified ARM64 Linux guest-
 - The trusted Node server keeps the Chrome DevTools Protocol (CDP) automation address and raw VNC remote-display address private. It gives the client only a short-lived path to the noVNC viewer.
 - **Take control** pauses Pi across every owned tab and lets you use the browser directly. Return control before sending another chat message.
 
+Each chat turn has a collapsed **Run details** trace between the user message and the agent response. Expand it to inspect model-visible tool inputs, bounded observations, results, approvals, timing, and failures. Traces stay in memory for the active conversation; protected credential fields and takeover-only input are never captured. See [the expandable agent traces design](../docs/designs/openmuse-expandable-agent-traces.md) for the trace contract and retention limits.
+
 Structured approvals authorize one browser operation, not a site-specific semantic promise such as an exact cart total. They expire after five minutes and fail if the tab, page, or referenced element changes.
 
 OpenMuse records an approved operation before dispatch and marks it complete only after the browser returns a valid result. A validation or checkpoint failure before dispatch is shown as **Action did not run**. A timeout, crash, malformed result, or other failure after dispatch is shown as **Action outcome unknown**. Continue asks the agent to inspect or ask before acting again; it never retries the uncertain operation automatically.

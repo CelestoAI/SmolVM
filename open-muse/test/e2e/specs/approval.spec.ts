@@ -12,7 +12,7 @@ test("approves a scripted browser operation through the real UI", async ({ page 
   await page.getByRole("button", { name: /Try a public web task/ }).click();
 
   await expect(page.getByText("Approval required")).toBeVisible();
-  await expect(page.getByText("Open https://example.com/")).toBeVisible();
+  await expect(page.getByText("Open https://example.com/", { exact: true })).toBeVisible();
   await expect(page.getByText("https://example.com/", { exact: true }).first()).toBeVisible();
   await page.getByRole("button", { name: "Approve once" }).click();
 

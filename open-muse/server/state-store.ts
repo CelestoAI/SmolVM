@@ -15,6 +15,7 @@ const messageSchema = z.object({
   role: z.enum(["user", "assistant"]),
   text: z.string(),
   createdAt: z.string(),
+  turnId: z.string().optional(),
 });
 
 const eventSchema = z.object({
@@ -59,13 +60,20 @@ const storedConversationV2Schema = z.object({
   conversation: conversationV1Schema.extend({ operationJournal: z.array(operationSchema).max(101) }),
 });
 
-const storedConversationSchema = z.object({
+const storedConversationV3Schema = z.object({
   fileVersion: z.literal(3),
   conversation: conversationV1Schema.extend({
     providerId: z.string().min(1).max(80),
     modelId: z.string().min(1).max(200),
     modelAccessState: z.enum(["ready", "auth_required", "model_unavailable"]),
     operationJournal: z.array(operationSchema).max(101),
+  }),
+});
+
+const storedConversationSchema = z.object({
+  fileVersion: z.literal(4),
+  conversation: storedConversationV3Schema.shape.conversation.extend({
+    recoveryTurn: z.object({ turnId: z.string(), userMessageId: z.string() }).optional(),
   }),
 });
 
@@ -136,7 +144,7 @@ function safeEvent(event: ConversationEvent): StoredConversation["conversation"]
 
 export function serializeConversation(context: ConversationContext): StoredConversation {
   return {
-    fileVersion: 3,
+    fileVersion: 4,
     conversation: {
       id: context.id,
       stateVersion: context.stateVersion,
@@ -152,6 +160,7 @@ export function serializeConversation(context: ConversationContext): StoredConve
         (journal, operation) => upsertOperation(journal, redactOperationRecord(operation)),
         [] as ConversationContext["operationJournal"],
       ),
+      recoveryTurn: context.recoveryTurn,
       lastActivityAt: context.lastActivityAt,
     },
   };
@@ -185,9 +194,18 @@ export class ConversationStateStore {
           operationJournal: current.data.conversation.operationJournal.map(redactOperationRecord),
         },
       };
+      const legacyV3 = storedConversationV3Schema.safeParse(parsed);
+      if (legacyV3.success) return {
+        fileVersion: 4,
+        conversation: {
+          ...legacyV3.data.conversation,
+          events: legacyV3.data.conversation.events.map((event) => safeEvent(event as ConversationEvent)),
+          operationJournal: legacyV3.data.conversation.operationJournal.map(redactOperationRecord),
+        },
+      };
       const legacyV2 = storedConversationV2Schema.safeParse(parsed);
       if (legacyV2.success) return {
-        fileVersion: 3,
+        fileVersion: 4,
         conversation: {
           ...legacyV2.data.conversation,
           providerId: "openai",
@@ -199,7 +217,7 @@ export class ConversationStateStore {
       };
       const legacyV1 = storedConversationV1Schema.safeParse(parsed);
       if (legacyV1.success) return {
-        fileVersion: 3,
+        fileVersion: 4,
         conversation: {
           ...legacyV1.data.conversation,
           providerId: "openai",

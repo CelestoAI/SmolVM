@@ -46,7 +46,7 @@ test("safe pre-dispatch failure survives reload and Continue requires fresh appr
   await page.getByRole("button", { name: "Continue" }).click();
 
   await expect(page.getByText("Approval required")).toBeVisible();
-  await expect(page.getByText("Open https://example.com/")).toBeVisible();
+  await expect(page.getByText("Open https://example.com/", { exact: true })).toBeVisible();
   const state = await harnessState(request);
   expect(state.dispatchCount).toBe(0);
   expect(state.terminalCount).toBe(1);

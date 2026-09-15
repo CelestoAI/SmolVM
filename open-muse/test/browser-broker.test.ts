@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ActionBroker, MAX_BROWSER_PROGRAM_BYTES } from "../server/broker.js";
+import { ActionBroker, MAX_BROWSER_PROGRAM_BYTES, type BrokerTraceHooks } from "../server/broker.js";
 import type { ExecutableBrowserOperation } from "../server/browser-operations.js";
 import { BrowserDriverError, type BrowserDriver } from "../server/browser-driver.js";
 import { ConversationManager } from "../server/manager.js";
@@ -13,6 +13,7 @@ function harness(
   persist: () => Promise<void> = async () => undefined,
   resolveTabTarget?: () => TabTarget,
   convertMarkdown?: (input: { title: string; url: string; text: string }) => Promise<string>,
+  trace?: BrokerTraceHooks,
 ) {
   const programs: string[] = [];
   const webOperations: ExecutableBrowserOperation[] = [];
@@ -103,12 +104,12 @@ function harness(
       if (operation.kind === "extract") return { title: "Example Domain", url: "https://example.com", pageBinding: "https://example.com", text: "iPhone 16 $799" };
       if (operation.kind === "navigate") return { opened: operation.url, observation };
       if (operation.kind === "click") return { clicked: true };
-      if (operation.kind === "fill") return { filled: true };
+      if (operation.kind === "fill") return { filled: true, outcome: "filled", fieldClass: "ordinary" };
       if (operation.kind === "select") return { selected: operation.label };
       return { pressed: operation.key };
     },
   };
-  const broker = new ActionBroker(context, async () => undefined, (type, payload) => { events.push(type); eventPayloads.push(payload); }, persist, resolveTabTarget, convertMarkdown, browserDriver);
+  const broker = new ActionBroker(context, async () => undefined, (type, payload) => { events.push(type); eventPayloads.push(payload); }, persist, resolveTabTarget, convertMarkdown, browserDriver, trace);
   return { broker, context, programs, webOperations, expectedPages, events, eventPayloads, browserDriver };
 }
 
@@ -338,6 +339,27 @@ test("approval events do not retain browser field values", async () => {
   assert.equal(JSON.stringify(eventPayloads.at(-1)).includes("person@example.com"), false);
   assert.equal(context.pendingApproval?.operation?.kind, "fill");
   assert.equal(context.pendingApproval?.operation?.kind === "fill" ? context.pendingApproval.operation.value : undefined, "person@example.com");
+});
+
+test("fill values reach trace projection only after an ordinary successful fill", async () => {
+  const revealed: unknown[] = [];
+  const requested: unknown[] = [];
+  const trace: BrokerTraceHooks = {
+    currentExecution: () => ({ conversationId: "conversation-test", turnId: "turn-one", userMessageId: "message-one" }),
+    isCurrentExecution: () => true,
+    approvalRequested: (pending) => requested.push(pending),
+    revealCurrentStepInput: (input) => revealed.push(input),
+  };
+  const { broker, context } = harness(async () => undefined, undefined, undefined, trace);
+
+  await broker.runWebOperation({ kind: "fill", ref: "e2", value: "person@example.com" });
+  assert.equal(revealed.length, 0);
+  assert.equal(context.pendingApproval?.turnId, "turn-one");
+  assert.equal(requested.length, 1);
+  const pending = context.pendingApproval!;
+  await broker.resolveApproval(pending.approvalId, pending.actionDigest, true);
+
+  assert.deepEqual(revealed, [{ ref: "e2", value: "person@example.com" }]);
 });
 
 test("conversation snapshots hide private page bindings and fill values", async () => {

@@ -70,7 +70,7 @@ export async function executeBrowserOperation(
           throw new Error("Use Take control to enter passwords, payment details, codes, or other secrets.");
         }
         await target.fill(operation.value);
-        return { filled: true };
+        return { filled: true, outcome: "filled", fieldClass: "ordinary" };
       }
       case "select": {
         const target = await resolveTarget(page, operation.target);
